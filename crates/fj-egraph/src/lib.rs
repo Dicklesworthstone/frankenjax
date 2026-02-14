@@ -113,10 +113,19 @@ pub fn egraph_to_jaxpr(
     let mut equations = Vec::new();
     let mut node_to_var: BTreeMap<usize, VarId> = BTreeMap::new();
 
-    // Map input variables
-    // In the simple case, input nodes are at the beginning of the RecExpr
-    for (idx, var) in invars.iter().enumerate() {
-        node_to_var.insert(idx, *var);
+    // Map Symbol nodes back to their original VarIds by parsing the symbol name.
+    // After equality saturation + extraction, Symbol nodes may appear in any order
+    // in the RecExpr, so we cannot assume positional correspondence with invars.
+    for (idx, node) in expr.as_ref().iter().enumerate() {
+        if let FjLang::Symbol(sym) = node
+            && let Some(rest) = sym.as_str().strip_prefix('v')
+            && let Ok(var_num) = rest.parse::<u32>()
+        {
+            let var_id = VarId(var_num);
+            if invars.contains(&var_id) {
+                node_to_var.insert(idx, var_id);
+            }
+        }
     }
 
     fn resolve_or_create(
@@ -222,14 +231,26 @@ pub fn egraph_to_jaxpr(
 
 fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLang>) -> Atom {
     let idx: usize = id.into();
-    if let Some(var) = node_to_var.get(&idx) {
-        // Check if this is a literal node
-        match &expr.as_ref()[idx] {
-            FjLang::Num(n) => Atom::Lit(Literal::I64(*n)),
-            _ => Atom::Var(*var),
+    // Check if this node is a literal (Num or f64-encoded Symbol)
+    match &expr.as_ref()[idx] {
+        FjLang::Num(n) => Atom::Lit(Literal::I64(*n)),
+        FjLang::Symbol(sym) => {
+            // f64 literals were encoded as Symbol("f64:{bits}") in jaxpr_to_egraph
+            if let Some(bits_str) = sym.as_str().strip_prefix("f64:")
+                && let Ok(bits) = bits_str.parse::<u64>()
+            {
+                return Atom::Lit(Literal::F64Bits(bits));
+            }
+            // Otherwise it's a variable reference
+            node_to_var
+                .get(&idx)
+                .map(|var| Atom::Var(*var))
+                .unwrap_or_else(|| Atom::Var(VarId(idx as u32)))
         }
-    } else {
-        Atom::Var(VarId(idx as u32))
+        _ => node_to_var
+            .get(&idx)
+            .map(|var| Atom::Var(*var))
+            .unwrap_or_else(|| Atom::Var(VarId(idx as u32))),
     }
 }
 
@@ -303,6 +324,65 @@ mod tests {
             optimized.equations.len() <= jaxpr.equations.len(),
             "optimization should not increase equation count"
         );
+    }
+
+    #[test]
+    fn round_trip_add2_asymmetric_args() {
+        // Regression: after commutativity rewrites, input Symbols may be reordered.
+        // With asymmetric args (3, 7) we can't accidentally pass with swapped inputs.
+        let original = build_program(ProgramSpec::Add2);
+        let optimized = optimize_jaxpr(&original);
+
+        let orig_out =
+            eval_jaxpr(&original, &[Value::scalar_i64(3), Value::scalar_i64(7)]).unwrap();
+        let opt_out =
+            eval_jaxpr(&optimized, &[Value::scalar_i64(3), Value::scalar_i64(7)]).unwrap();
+        assert_eq!(orig_out, opt_out);
+    }
+
+    #[test]
+    fn round_trip_square_plus_linear() {
+        // x²+2x uses both mul and add with shared variable x, and a literal 2.
+        // This exercises Symbol reordering after saturation.
+        let original = build_program(ProgramSpec::SquarePlusLinear);
+        let optimized = optimize_jaxpr(&original);
+
+        for &x in &[0.0, 1.0, -2.5, 7.0] {
+            let orig_out = eval_jaxpr(&original, &[Value::scalar_f64(x)]).unwrap();
+            let opt_out = eval_jaxpr(&optimized, &[Value::scalar_f64(x)]).unwrap();
+            assert_eq!(
+                orig_out, opt_out,
+                "mismatch at x={x}: original={orig_out:?}, optimized={opt_out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trip_with_f64_literal() {
+        // Regression: f64 literals are encoded as Symbol("f64:{bits}") in the e-graph.
+        // id_to_atom must decode them back to Atom::Lit(Literal::F64Bits(...)).
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::from_f64(2.5))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+            }],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+
+        for &x in &[0.0, 1.0, 3.0, -4.0] {
+            let orig_out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x)]).unwrap();
+            let opt_out = eval_jaxpr(&optimized, &[Value::scalar_f64(x)]).unwrap();
+            assert_eq!(
+                orig_out, opt_out,
+                "f64 literal round-trip mismatch at x={x}: original={orig_out:?}, optimized={opt_out:?}"
+            );
+        }
     }
 
     #[test]

@@ -251,7 +251,7 @@ impl LogDomainPosterior {
         let log_numerator = self.log_prior_abandoned + self.accumulated_log_likelihood;
         let log_denominator = log_sum_exp(
             log_numerator,
-            self.log_prior_useful, // likelihood ratio for useful = 0 in log space
+            self.log_prior_useful, // no accumulated evidence for "useful" (log-likelihood = 0)
         );
         (log_numerator - log_denominator).exp().clamp(0.0, 1.0)
     }
@@ -303,9 +303,10 @@ impl CalibrationReport {
     }
 
     pub fn observe(&mut self, predicted: f64, observed: bool) {
-        let bin_idx = ((predicted * self.num_bins as f64) as usize).min(self.num_bins - 1);
+        let clamped = predicted.clamp(0.0, 1.0);
+        let bin_idx = ((clamped * self.num_bins as f64) as usize).min(self.num_bins - 1);
         let bin = &mut self.bins[bin_idx];
-        bin.predicted_sum += predicted;
+        bin.predicted_sum += clamped;
         bin.observed_sum += if observed { 1.0 } else { 0.0 };
         bin.count += 1;
     }
