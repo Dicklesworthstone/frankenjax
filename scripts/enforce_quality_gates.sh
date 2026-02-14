@@ -202,7 +202,9 @@ if [[ $SKIP_COVERAGE -eq 0 ]]; then
       crates: $report[0].crates
     }' >"$snapshot_tmp"
 
-  if [[ -f "$COVERAGE_TREND_JSON" ]]; then
+  if [[ -s "$COVERAGE_TREND_JSON" ]] \
+    && jq -e '.schema_version == "frankenjax.coverage-trend.v1" and (.snapshots | type == "array")' \
+      "$COVERAGE_TREND_JSON" >/dev/null 2>&1; then
     jq --slurpfile snap "$snapshot_tmp" '.snapshots += $snap' "$COVERAGE_TREND_JSON" >"$trend_tmp"
   else
     jq --slurpfile snap "$snapshot_tmp" \

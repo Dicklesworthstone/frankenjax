@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.reliability-gate-report.v1",
-  "generated_at_unix_ms": 1771096204759,
+  "generated_at_unix_ms": 1771096252531,
   "budgets_path": "/data/projects/frankenjax/artifacts/ci/reliability_budgets.v1.json",
   "coverage": {
     "enabled": true,

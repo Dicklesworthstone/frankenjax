@@ -1,0 +1,175 @@
+{
+  "schema_version": "frankenjax.coverage-trend.v1",
+  "snapshots": [
+    {
+      "ts_unix_ms": 1771096232249,
+      "crates": [
+        {
+          "crate": "fj-cache",
+          "line_percent": 91.5033,
+          "line_floor": 85.0,
+          "branch_percent": 92.8571,
+          "branch_floor": 75.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-conformance",
+          "line_percent": 74.6520,
+          "line_floor": 70.0,
+          "branch_percent": 71.4751,
+          "branch_floor": 60.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-core",
+          "line_percent": 77.2152,
+          "line_floor": 90.0,
+          "branch_percent": 77.7523,
+          "branch_floor": 80.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": false
+        },
+        {
+          "crate": "fj-dispatch",
+          "line_percent": 72.7494,
+          "line_floor": 85.0,
+          "branch_percent": 72.5806,
+          "branch_floor": 80.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": false
+        },
+        {
+          "crate": "fj-interpreters",
+          "line_percent": 84.0909,
+          "line_floor": 85.0,
+          "branch_percent": 84.2105,
+          "branch_floor": 75.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-lax",
+          "line_percent": 50.6173,
+          "line_floor": 90.0,
+          "branch_percent": 55.5809,
+          "branch_floor": 85.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": false
+        },
+        {
+          "crate": "fj-ledger",
+          "line_percent": 95.9596,
+          "line_floor": 80.0,
+          "branch_percent": 96.3855,
+          "branch_floor": 70.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-runtime",
+          "line_percent": 100.0000,
+          "line_floor": 75.0,
+          "branch_percent": 100.0000,
+          "branch_floor": 65.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        }
+      ]
+    },
+    {
+      "ts_unix_ms": 1771096252496,
+      "crates": [
+        {
+          "crate": "fj-cache",
+          "line_percent": 91.5033,
+          "line_floor": 85.0,
+          "branch_percent": 92.8571,
+          "branch_floor": 75.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-conformance",
+          "line_percent": 74.6520,
+          "line_floor": 70.0,
+          "branch_percent": 71.4751,
+          "branch_floor": 60.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-core",
+          "line_percent": 77.2152,
+          "line_floor": 90.0,
+          "branch_percent": 77.7523,
+          "branch_floor": 80.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": false
+        },
+        {
+          "crate": "fj-dispatch",
+          "line_percent": 72.7494,
+          "line_floor": 85.0,
+          "branch_percent": 72.5806,
+          "branch_floor": 80.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": false
+        },
+        {
+          "crate": "fj-interpreters",
+          "line_percent": 84.0909,
+          "line_floor": 85.0,
+          "branch_percent": 84.2105,
+          "branch_floor": 75.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-lax",
+          "line_percent": 50.6173,
+          "line_floor": 90.0,
+          "branch_percent": 55.5809,
+          "branch_floor": 85.0,
+          "branch_source": "regions",
+          "line_ok": false,
+          "branch_ok": false
+        },
+        {
+          "crate": "fj-ledger",
+          "line_percent": 95.9596,
+          "line_floor": 80.0,
+          "branch_percent": 96.3855,
+          "branch_floor": 70.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        },
+        {
+          "crate": "fj-runtime",
+          "line_percent": 100.0000,
+          "line_floor": 75.0,
+          "branch_percent": 100.0000,
+          "branch_floor": 65.0,
+          "branch_source": "regions",
+          "line_ok": true,
+          "branch_ok": true
+        }
+      ]
+    }
+  ]
+}
