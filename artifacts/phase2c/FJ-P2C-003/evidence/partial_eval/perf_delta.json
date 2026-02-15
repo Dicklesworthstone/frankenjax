@@ -1,0 +1,122 @@
+{
+  "schema_version": "frankenjax.perf-delta.v1",
+  "packet_id": "FJ-P2C-003",
+  "subsystem": "partial_eval",
+  "generated_at": "2026-02-15T01:10:00Z",
+  "benchmark_tool": "criterion 0.5",
+  "optimization_lever": "varid_indexed_bitset_with_fast_path_shortcuts",
+  "regression_threshold_percent": 5.0,
+  "metrics": [
+    {
+      "benchmark": "partial_eval/all_known/10eq",
+      "before_ns": 569,
+      "after_ns": 478,
+      "delta_percent": -16.0,
+      "status": "improved"
+    },
+    {
+      "benchmark": "partial_eval/all_unknown/10eq",
+      "before_ns": 1125,
+      "after_ns": 493,
+      "delta_percent": -56.2,
+      "status": "improved"
+    },
+    {
+      "benchmark": "partial_eval/mixed/neg_mul",
+      "before_ns": 300,
+      "after_ns": 297,
+      "delta_percent": -1.0,
+      "status": "unchanged"
+    },
+    {
+      "benchmark": "partial_eval/all_known/100eq",
+      "before_ns": 4460,
+      "after_ns": 4090,
+      "delta_percent": -8.3,
+      "status": "improved"
+    },
+    {
+      "benchmark": "partial_eval/all_known/1000eq",
+      "before_ns": 42949,
+      "after_ns": 40067,
+      "delta_percent": -6.7,
+      "status": "improved"
+    },
+    {
+      "benchmark": "partial_eval/program_spec/square_plus_linear",
+      "before_ns": 195,
+      "after_ns": 179,
+      "delta_percent": -8.2,
+      "status": "improved"
+    },
+    {
+      "benchmark": "dce/all_used/10eq",
+      "before_ns": 832,
+      "after_ns": 601,
+      "delta_percent": -27.8,
+      "status": "improved"
+    },
+    {
+      "benchmark": "dce/all_used/100eq",
+      "before_ns": 6713,
+      "after_ns": 4913,
+      "delta_percent": -26.8,
+      "status": "improved"
+    },
+    {
+      "benchmark": "dce/all_used/1000eq",
+      "before_ns": 65958,
+      "after_ns": 46450,
+      "delta_percent": -29.6,
+      "status": "improved"
+    },
+    {
+      "benchmark": "staging/full_pipeline/neg_mul_mixed",
+      "before_ns": 654,
+      "after_ns": 686,
+      "delta_percent": 4.9,
+      "status": "unchanged",
+      "note": "within measurement noise (5% threshold)"
+    },
+    {
+      "benchmark": "staging/full_pipeline/all_known_add2",
+      "before_ns": 330,
+      "after_ns": 300,
+      "delta_percent": -9.1,
+      "status": "improved"
+    },
+    {
+      "benchmark": "staging/full_pipeline/chain_100eq",
+      "before_ns": 10751,
+      "after_ns": 10062,
+      "delta_percent": -6.4,
+      "status": "improved"
+    }
+  ],
+  "summary": {
+    "total_benchmarks": 12,
+    "improved": 10,
+    "regressed": 0,
+    "unchanged": 2,
+    "max_improvement_percent": 56.2,
+    "avg_improvement_percent": 17.2
+  },
+  "benchmark_targets": {
+    "pe_10eq_50pct_known_target_us": 5.0,
+    "pe_10eq_50pct_known_actual_us": 0.297,
+    "constant_fold_10eq_all_known_target_us": 2.0,
+    "constant_fold_10eq_all_known_actual_us": 0.478,
+    "dce_10eq_target_us": 1.0,
+    "dce_10eq_actual_us": 0.601,
+    "all_targets_met": true
+  },
+  "gate_status": "PASS",
+  "evidence_source": "artifacts/performance/evidence/partial_eval/bitset_fast_path.json",
+  "isomorphism_proof": {
+    "all_tests_pass": true,
+    "unit_tests": "67/67",
+    "oracle_tests": "20/20",
+    "e2e_tests": "6/6",
+    "hash_compatibility": "Vec<bool> bitset is semantically equivalent to FxHashSet<VarId>"
+  }
+}

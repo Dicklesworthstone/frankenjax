@@ -600,6 +600,7 @@ dependencies = [
 name = "fj-interpreters"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "fj-core",
  "fj-lax",
  "fj-test-utils",

@@ -1,0 +1,151 @@
+{
+  "schema_version": "frankenjax.conformance-report.v1",
+  "packet_id": "FJ-P2C-003",
+  "subsystem": "partial_eval",
+  "generated_at": "2026-02-15T01:10:00Z",
+  "unit_tests": {
+    "total": 44,
+    "passed": 44,
+    "failed": 0,
+    "categories": {
+      "partial_eval_constant_folding": 6,
+      "partial_eval_full_residual": 5,
+      "partial_eval_mixed": 4,
+      "partial_eval_edge_cases": 7,
+      "partial_eval_staging_equivalence": 3,
+      "partial_val_accessors": 3,
+      "dce_correctness": 6,
+      "proptest_pe": 7,
+      "log_schema_contract": 1,
+      "error_display": 1,
+      "staging_unit": 1
+    },
+    "tests": [
+      "test_pe_constant_fold_single_eqn",
+      "test_pe_constant_fold_add_chain",
+      "test_pe_constant_fold_deep_chain",
+      "test_pe_constant_fold_multi_output",
+      "test_pe_constant_fold_program_spec_add2",
+      "test_pe_constant_fold_with_literal",
+      "test_pe_full_residual_add_chain",
+      "test_pe_full_residual_deep_chain",
+      "test_pe_full_residual_preserves_primitives",
+      "test_pe_full_residual_program_specs",
+      "test_pe_full_residual_three_inputs",
+      "test_pe_mixed_known_unknown_split",
+      "test_pe_mixed_literal_inputs_always_known",
+      "test_pe_mixed_preserves_equation_order",
+      "test_pe_mixed_three_inputs_partial",
+      "test_pe_mixed_residual_count_matches",
+      "test_pe_edge_empty_jaxpr_known",
+      "test_pe_edge_empty_jaxpr_unknown",
+      "test_pe_edge_empty_mask",
+      "test_pe_edge_mask_too_long",
+      "test_pe_edge_mask_too_short",
+      "test_pe_edge_single_equation_known",
+      "test_pe_edge_single_equation_unknown",
+      "test_pe_staging_equivalence_all_known",
+      "test_pe_staging_equivalence_neg_mul",
+      "test_pe_staging_module_roundtrip",
+      "test_partial_val_abstract_value_of_types",
+      "test_partial_val_known_accessors",
+      "test_partial_val_unknown_accessors",
+      "test_pe_error_display_variants",
+      "test_pe_test_log_schema_contract",
+      "test_dce_all_used_keeps_everything",
+      "test_dce_all_unused_removes_everything",
+      "test_dce_empty_jaxpr",
+      "test_dce_keeps_chain_dependencies",
+      "test_dce_removes_unused_equations",
+      "test_dce_selective_multi_output",
+      "prop_pe_all_known_yields_empty_unknown",
+      "prop_pe_all_unknown_yields_empty_known",
+      "prop_pe_equation_count_conservation",
+      "prop_pe_out_unknowns_length",
+      "prop_pe_staging_semantic_equivalence",
+      "prop_dce_all_used_preserves_chain",
+      "prop_dce_never_increases_equations"
+    ]
+  },
+  "staging_tests": {
+    "total": 16,
+    "passed": 16,
+    "failed": 0,
+    "tests": [
+      "test_staging_mixed_neg_mul",
+      "test_staging_all_known_produces_residuals",
+      "test_staging_all_unknown_no_residuals",
+      "test_staging_execute_roundtrip",
+      "test_staging_execute_all_known_returns_residuals",
+      "test_staging_execute_add2_various_values",
+      "test_staging_error_display_variants",
+      "test_staging_error_mask_mismatch_propagated",
+      "test_staging_make_jaxpr_well_formed",
+      "test_staging_make_jaxpr_all_specs",
+      "test_staging_test_log_schema_contract",
+      "prop_staging_roundtrip_neg_mul",
+      "prop_staging_all_known_add2",
+      "prop_make_jaxpr_well_formed"
+    ]
+  },
+  "oracle_tests": {
+    "total": 7,
+    "passed": 7,
+    "failed": 0,
+    "tests": [
+      "oracle_pe_all_known_yields_full_known_jaxpr",
+      "oracle_pe_all_unknown_yields_full_unknown_jaxpr",
+      "oracle_pe_constant_folding_correctness",
+      "oracle_pe_residual_shape_correctness",
+      "oracle_staging_pipeline_equivalence",
+      "oracle_staging_boundary_values",
+      "oracle_dce_correctness"
+    ]
+  },
+  "metamorphic_tests": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0,
+    "tests": [
+      "metamorphic_pe_determinism_100x",
+      "metamorphic_pe_all_known_equals_full_eval",
+      "metamorphic_pe_no_knowns_is_identity",
+      "metamorphic_staging_determinism_50x",
+      "metamorphic_dce_determinism_100x"
+    ]
+  },
+  "adversarial_tests": {
+    "total": 8,
+    "passed": 8,
+    "failed": 0,
+    "tests": [
+      "adversarial_pe_empty_jaxpr",
+      "adversarial_pe_identity_jaxpr",
+      "adversarial_pe_large_chain",
+      "adversarial_pe_mask_length_mismatch",
+      "adversarial_pe_nothing_foldable",
+      "adversarial_staging_error_propagation",
+      "adversarial_make_jaxpr_all_specs_well_formed",
+      "adversarial_dce_large_chain"
+    ]
+  },
+  "e2e_scenarios": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "tests": [
+      "e2e_p2c003_jit_constant_folding",
+      "e2e_p2c003_jit_mixed_known_unknown",
+      "e2e_p2c003_staging_residual_graph",
+      "e2e_p2c003_staging_roundtrip",
+      "e2e_p2c003_nested_jit",
+      "e2e_p2c003_large_graph_staging"
+    ]
+  },
+  "overall": {
+    "total_tests": 86,
+    "passed": 86,
+    "failed": 0,
+    "status": "pass"
+  }
+}

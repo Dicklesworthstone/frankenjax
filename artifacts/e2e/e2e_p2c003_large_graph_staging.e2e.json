@@ -6,7 +6,7 @@
   "fixture_id": "d348b1aab3ca81e28418c82209bec7e9f8472b4b465755e2ae95b708a27d8795",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1771116472393,
+  "ts_utc_unix_ms": 1771117594366,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -35,14 +35,14 @@
       "within_budget": true
     },
     {
-      "duration_ms": 1,
+      "duration_ms": 0,
       "known_eqns": 0,
       "step": "pe_all_unknown",
       "unknown_eqns": 1000,
       "within_budget": true
     },
     {
-      "duration_ms": 1,
+      "duration_ms": 2,
       "step": "staging_all_known",
       "within_budget": true
     },
@@ -72,8 +72,8 @@
     "full_eval_ms": 0,
     "output_correct": true,
     "pe_all_known_ms": 0,
-    "pe_all_unknown_ms": 1,
-    "staging_ms": 1
+    "pe_all_unknown_ms": 0,
+    "staging_ms": 2
   },
   "result": "pass",
   "duration_ms": 6,

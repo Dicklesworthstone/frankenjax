@@ -1,0 +1,180 @@
+{
+  "schema_version": "frankenjax.evidence-manifest.v1",
+  "packet_id": "FJ-P2C-003",
+  "subsystem": "partial_eval",
+  "generated_at": "2026-02-15T01:15:00Z",
+  "author": "SageKite",
+  "artifacts": {
+    "conformance_report": {
+      "path": "conformance_report.json",
+      "description": "86-test conformance report: unit, property, oracle, metamorphic, adversarial, e2e",
+      "status": "complete"
+    },
+    "risk_note": {
+      "path": "risk_note.md",
+      "description": "5-threat risk analysis with residual risk ratings and mitigation evidence",
+      "status": "complete"
+    },
+    "invariant_checklist": {
+      "path": "invariant_checklist.md",
+      "description": "5 verified invariants with test evidence references",
+      "status": "complete"
+    },
+    "perf_delta": {
+      "path": "perf_delta.json",
+      "description": "Criterion benchmark delta from bitset fast-path optimization (12 benchmarks)",
+      "status": "complete"
+    },
+    "perf_evidence": {
+      "path": "../../performance/evidence/partial_eval/bitset_fast_path.json",
+      "description": "Detailed performance evidence with before/after metrics and isomorphism proof",
+      "status": "complete"
+    },
+    "e2e_forensic_logs": {
+      "path": "../../e2e/e2e_p2c003_*.e2e.json",
+      "description": "6 E2E forensic JSON logs with intermediate states and replay commands",
+      "status": "complete"
+    },
+    "durability_sidecars": {
+      "path": "durability/",
+      "description": "RaptorQ sidecars for evidence bundle (2 sidecars generated; decode-proof blocked by known upstream issue)",
+      "status": "partial",
+      "known_issue": "Pre-existing RaptorQ decoder bug prevents scrub/proof for small files (bd-3dl.9 residual)"
+    }
+  },
+  "parity_gates": {
+    "G1_format": {
+      "status": "PASS",
+      "evidence": "cargo fmt --check passes on all crates"
+    },
+    "G2_unit_tests": {
+      "status": "PASS",
+      "evidence": "67/67 fj-interpreters tests pass (44 PE + 16 staging + 7 interpreter)",
+      "tests": [
+        "test_pe_constant_fold_single_eqn",
+        "test_pe_constant_fold_add_chain",
+        "test_pe_constant_fold_deep_chain",
+        "test_pe_constant_fold_multi_output",
+        "test_pe_constant_fold_program_spec_add2",
+        "test_pe_constant_fold_with_literal",
+        "test_pe_full_residual_add_chain",
+        "test_pe_full_residual_deep_chain",
+        "test_pe_full_residual_preserves_primitives",
+        "test_pe_full_residual_program_specs",
+        "test_pe_full_residual_three_inputs",
+        "test_pe_mixed_known_unknown_split",
+        "test_pe_mixed_literal_inputs_always_known",
+        "test_pe_mixed_preserves_equation_order",
+        "test_pe_mixed_three_inputs_partial",
+        "test_pe_mixed_residual_count_matches",
+        "test_pe_edge_empty_jaxpr_known",
+        "test_pe_edge_empty_jaxpr_unknown",
+        "test_pe_edge_empty_mask",
+        "test_pe_edge_mask_too_long",
+        "test_pe_edge_mask_too_short",
+        "test_pe_edge_single_equation_known",
+        "test_pe_edge_single_equation_unknown",
+        "test_pe_staging_equivalence_all_known",
+        "test_pe_staging_equivalence_neg_mul",
+        "test_pe_staging_module_roundtrip",
+        "test_partial_val_abstract_value_of_types",
+        "test_partial_val_known_accessors",
+        "test_partial_val_unknown_accessors",
+        "test_pe_error_display_variants",
+        "test_pe_test_log_schema_contract",
+        "test_dce_all_used_keeps_everything",
+        "test_dce_all_unused_removes_everything",
+        "test_dce_empty_jaxpr",
+        "test_dce_keeps_chain_dependencies",
+        "test_dce_removes_unused_equations",
+        "test_dce_selective_multi_output",
+        "prop_pe_all_known_yields_empty_unknown",
+        "prop_pe_all_unknown_yields_empty_known",
+        "prop_pe_equation_count_conservation",
+        "prop_pe_out_unknowns_length",
+        "prop_pe_staging_semantic_equivalence",
+        "prop_dce_all_used_preserves_chain",
+        "prop_dce_never_increases_equations"
+      ]
+    },
+    "G3_oracle": {
+      "status": "PASS",
+      "evidence": "7/7 oracle tests pass (pe_staging_oracle.rs)",
+      "tests": [
+        "oracle_pe_all_known_yields_full_known_jaxpr",
+        "oracle_pe_all_unknown_yields_full_unknown_jaxpr",
+        "oracle_pe_constant_folding_correctness",
+        "oracle_pe_residual_shape_correctness",
+        "oracle_staging_pipeline_equivalence",
+        "oracle_staging_boundary_values",
+        "oracle_dce_correctness"
+      ]
+    },
+    "G4_adversarial": {
+      "status": "PASS",
+      "evidence": "8/8 adversarial tests pass",
+      "tests": [
+        "adversarial_pe_empty_jaxpr",
+        "adversarial_pe_identity_jaxpr",
+        "adversarial_pe_large_chain",
+        "adversarial_pe_mask_length_mismatch",
+        "adversarial_pe_nothing_foldable",
+        "adversarial_staging_error_propagation",
+        "adversarial_make_jaxpr_all_specs_well_formed",
+        "adversarial_dce_large_chain"
+      ]
+    },
+    "G5_metamorphic": {
+      "status": "PASS",
+      "evidence": "5/5 metamorphic tests pass",
+      "tests": [
+        "metamorphic_pe_determinism_100x",
+        "metamorphic_pe_all_known_equals_full_eval",
+        "metamorphic_pe_no_knowns_is_identity",
+        "metamorphic_staging_determinism_50x",
+        "metamorphic_dce_determinism_100x"
+      ]
+    },
+    "G6_performance": {
+      "status": "PASS",
+      "evidence": "0 regressions detected, 10 benchmarks improved (avg 17.2%), all targets met",
+      "regression_threshold": "5% p95"
+    },
+    "G7_e2e": {
+      "status": "PASS",
+      "evidence": "6/6 e2e scenarios pass with forensic JSON logs",
+      "tests": [
+        "e2e_p2c003_jit_constant_folding",
+        "e2e_p2c003_jit_mixed_known_unknown",
+        "e2e_p2c003_staging_residual_graph",
+        "e2e_p2c003_staging_roundtrip",
+        "e2e_p2c003_nested_jit",
+        "e2e_p2c003_large_graph_staging"
+      ]
+    },
+    "G8_golden_journeys": {
+      "status": "N/A",
+      "evidence": "Golden journey tests are defined at P2C-001 level; PE-specific golden journeys covered by E2E scenarios"
+    },
+    "G9_coverage": {
+      "status": "PASS",
+      "evidence": "86/86 PE-related tests pass across 4 test files. Full statement coverage of partial_eval.rs public API (partial_eval_jaxpr, dce_jaxpr, stage_jaxpr, execute_staged, make_jaxpr)."
+    },
+    "G10_durability": {
+      "status": "PARTIAL",
+      "evidence": "2/2 sidecars generated; scrub/decode-proof blocked by known RaptorQ issue",
+      "known_issue": "Pre-existing upstream decoder bug (bd-3dl.9 residual)"
+    }
+  },
+  "overall_assessment": {
+    "gates_passed": 8,
+    "gates_partial": 1,
+    "gates_na": 1,
+    "gates_failed": 0,
+    "verdict": "PASS_WITH_KNOWN_ISSUES",
+    "known_issues": [
+      "G10 durability scrub blocked by pre-existing RaptorQ small-file decode bug",
+      "G8 golden journeys N/A — covered by E2E scenarios at P2C-003 level"
+    ]
+  }
+}
