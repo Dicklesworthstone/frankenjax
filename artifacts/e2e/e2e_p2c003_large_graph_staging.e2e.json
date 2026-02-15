@@ -1,0 +1,81 @@
+{
+  "schema_version": "frankenjax.e2e.log.v1",
+  "scenario_id": "e2e_p2c003_large_graph_staging",
+  "test_id": "e2e_p2c003::e2e_p2c003_large_graph_staging",
+  "packet_id": "P2C-003",
+  "fixture_id": "d348b1aab3ca81e28418c82209bec7e9f8472b4b465755e2ae95b708a27d8795",
+  "seed": null,
+  "mode": "strict",
+  "ts_utc_unix_ms": 1771116472393,
+  "env": {
+    "arch": "x86_64",
+    "os": "linux",
+    "rust_toolchain": "nightly-x86_64-unknown-linux-gnu"
+  },
+  "artifact_refs": [],
+  "replay_command": "cargo test -p fj-conformance --test e2e_p2c003 -- e2e_p2c003_large_graph_staging --exact --nocapture",
+  "input_capture": {
+    "description": "1000-op graph, verify partial eval + staging completes in <500ms",
+    "equation_count": 1000,
+    "pe_budget_ms": 500,
+    "stage_budget_ms": 500
+  },
+  "intermediate_states": [
+    {
+      "equations": 1000,
+      "invars": 1,
+      "outvars": 1,
+      "step": "jaxpr_built"
+    },
+    {
+      "duration_ms": 0,
+      "known_eqns": 1000,
+      "step": "pe_all_known",
+      "unknown_eqns": 0,
+      "within_budget": true
+    },
+    {
+      "duration_ms": 1,
+      "known_eqns": 0,
+      "step": "pe_all_unknown",
+      "unknown_eqns": 1000,
+      "within_budget": true
+    },
+    {
+      "duration_ms": 1,
+      "step": "staging_all_known",
+      "within_budget": true
+    },
+    {
+      "correct": true,
+      "expected": 1000,
+      "output": 1000,
+      "step": "correctness_check"
+    },
+    {
+      "full_eval_ms": 0,
+      "matches": true,
+      "step": "full_eval_comparison"
+    },
+    {
+      "duration_ms": 0,
+      "original_eqns": 1000,
+      "post_dce_eqns": 1000,
+      "step": "dce_timing",
+      "within_budget": true
+    }
+  ],
+  "output_capture": {
+    "all_within_budget": true,
+    "dce_ms": 0,
+    "equation_count": 1000,
+    "full_eval_ms": 0,
+    "output_correct": true,
+    "pe_all_known_ms": 0,
+    "pe_all_unknown_ms": 1,
+    "staging_ms": 1
+  },
+  "result": "pass",
+  "duration_ms": 6,
+  "details": null
+}

@@ -1,0 +1,51 @@
+{
+  "schema_version": "frankenjax.e2e.log.v1",
+  "scenario_id": "e2e_p2c003_staging_roundtrip",
+  "test_id": "e2e_p2c003::e2e_p2c003_staging_roundtrip",
+  "packet_id": "P2C-003",
+  "fixture_id": "bf649e68ee97dad153f04325a8379fe2d0423b3826f269bfce97b72e6255f4ab",
+  "seed": null,
+  "mode": "strict",
+  "ts_utc_unix_ms": 1771116472393,
+  "env": {
+    "arch": "x86_64",
+    "os": "linux",
+    "rust_toolchain": "nightly-x86_64-unknown-linux-gnu"
+  },
+  "artifact_refs": [],
+  "replay_command": "cargo test -p fj-conformance --test e2e_p2c003 -- e2e_p2c003_staging_roundtrip --exact --nocapture",
+  "input_capture": {
+    "description": "eval(jaxpr, all_args) == staged(residual, dynamic_args) for 100 inputs",
+    "input_count": 100,
+    "known_input": 7,
+    "program": "neg_mul: f(a, b) = neg(a) * b"
+  },
+  "intermediate_states": [
+    {
+      "known_equations": 1,
+      "step": "staged",
+      "unknown_equations": 1
+    },
+    {
+      "max_abs_output": 350,
+      "mismatches": 0,
+      "step": "roundtrip_complete",
+      "total_inputs": 100
+    },
+    {
+      "mismatches": 0,
+      "step": "add2_roundtrip",
+      "total": 100
+    }
+  ],
+  "output_capture": {
+    "add2_mismatches": 0,
+    "add2_roundtrips": 100,
+    "neg_mul_mismatches": 0,
+    "neg_mul_roundtrips": 100,
+    "total_roundtrips": 200
+  },
+  "result": "pass",
+  "duration_ms": 1,
+  "details": null
+}

@@ -18,7 +18,9 @@
 //!   3. Large chain PE (1000 equations)
 //!   4. PE of identity Jaxpr (no equations)
 
-use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Value, VarId, build_program};
+use fj_core::{
+    Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Value, VarId, build_program,
+};
 use fj_interpreters::partial_eval::{dce_jaxpr, partial_eval_jaxpr};
 use fj_interpreters::staging::{execute_staged, make_jaxpr, stage_jaxpr};
 use smallvec::smallvec;
@@ -200,12 +202,12 @@ fn oracle_pe_constant_folding_correctness() {
     let staged_result = fj_interpreters::eval_jaxpr(&pe.jaxpr_unknown, &unk_inputs).unwrap();
 
     // Full eval: neg(-5) * 3 = 5 * 3 = 15
-    let full = fj_interpreters::eval_jaxpr(
-        &jaxpr,
-        &[Value::scalar_i64(-5), Value::scalar_i64(3)],
-    )
-    .unwrap();
-    assert_eq!(staged_result, full, "PE constant folding should preserve semantics");
+    let full = fj_interpreters::eval_jaxpr(&jaxpr, &[Value::scalar_i64(-5), Value::scalar_i64(3)])
+        .unwrap();
+    assert_eq!(
+        staged_result, full,
+        "PE constant folding should preserve semantics"
+    );
 }
 
 /// Oracle comparison point 3: Residual shape — verify equation counts in each
@@ -325,13 +327,7 @@ fn oracle_staging_pipeline_equivalence() {
 #[test]
 fn oracle_staging_boundary_values() {
     let jaxpr = make_neg_mul_jaxpr();
-    let cases: Vec<(i64, i64)> = vec![
-        (0, 0),
-        (1, -1),
-        (-1, 1),
-        (100, -100),
-        (-999, 999),
-    ];
+    let cases: Vec<(i64, i64)> = vec![(0, 0), (1, -1), (-1, 1), (100, -100), (-999, 999)];
 
     for (a, b) in cases {
         let va = Value::scalar_i64(a);
@@ -339,10 +335,7 @@ fn oracle_staging_boundary_values() {
         let full = fj_interpreters::eval_jaxpr(&jaxpr, &[va.clone(), vb.clone()]).unwrap();
         let staged = stage_jaxpr(&jaxpr, &[false, true], &[va]).unwrap();
         let result = execute_staged(&staged, &[vb]).unwrap();
-        assert_eq!(
-            result, full,
-            "staging mismatch for neg_mul({a}, {b})"
-        );
+        assert_eq!(result, full, "staging mismatch for neg_mul({a}, {b})");
     }
 }
 
@@ -361,10 +354,7 @@ fn metamorphic_pe_all_known_equals_full_eval() {
         ),
         (ProgramSpec::Square, vec![Value::scalar_i64(7)]),
         (ProgramSpec::AddOne, vec![Value::scalar_i64(42)]),
-        (
-            ProgramSpec::SquarePlusLinear,
-            vec![Value::scalar_i64(4)],
-        ),
+        (ProgramSpec::SquarePlusLinear, vec![Value::scalar_i64(4)]),
     ];
 
     for (spec, args) in specs_and_args {
@@ -567,10 +557,7 @@ fn adversarial_pe_nothing_foldable() {
 
     // Everything should be in the unknown jaxpr
     assert_eq!(pe.jaxpr_known.equations.len(), 0);
-    assert_eq!(
-        pe.jaxpr_unknown.equations.len(),
-        jaxpr.equations.len()
-    );
+    assert_eq!(pe.jaxpr_unknown.equations.len(), jaxpr.equations.len());
     assert!(pe.residual_avals.is_empty());
 
     // The unknown jaxpr should evaluate correctly
@@ -600,7 +587,11 @@ fn adversarial_pe_large_chain() {
     let staged = stage_jaxpr(&jaxpr, &[false], &[Value::scalar_i64(0)]).unwrap();
     let result = execute_staged(&staged, &[]).unwrap();
     let val = result[0].as_scalar_literal().and_then(|l| l.as_i64());
-    assert_eq!(val, Some(n as i64), "staging chain of {n} +1 should equal {n}");
+    assert_eq!(
+        val,
+        Some(n as i64),
+        "staging chain of {n} +1 should equal {n}"
+    );
 }
 
 /// Adversarial case 4: PE of identity Jaxpr (no equations).
