@@ -373,7 +373,10 @@ impl SimpleTraceContext {
             | Primitive::Mul
             | Primitive::Max
             | Primitive::Min
-            | Primitive::Pow => {
+            | Primitive::Pow
+            | Primitive::Div
+            | Primitive::Rem
+            | Primitive::Atan2 => {
                 if inputs.len() != 2 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
@@ -431,7 +434,22 @@ impl SimpleTraceContext {
             | Primitive::Ceil
             | Primitive::Round
             | Primitive::Sin
-            | Primitive::Cos => {
+            | Primitive::Cos
+            | Primitive::Tan
+            | Primitive::Asin
+            | Primitive::Acos
+            | Primitive::Atan
+            | Primitive::Sinh
+            | Primitive::Cosh
+            | Primitive::Tanh
+            | Primitive::Expm1
+            | Primitive::Log1p
+            | Primitive::Sign
+            | Primitive::Square
+            | Primitive::Reciprocal
+            | Primitive::Logistic
+            | Primitive::Erf
+            | Primitive::Erfc => {
                 if inputs.len() != 1 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
@@ -451,6 +469,38 @@ impl SimpleTraceContext {
             Primitive::Scatter => infer_scatter(inputs),
             Primitive::Transpose => infer_transpose(inputs, params),
             Primitive::BroadcastInDim => infer_broadcast_in_dim(inputs, params),
+            Primitive::Select => {
+                if inputs.len() != 3 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 3 inputs, got {}", inputs.len()),
+                    });
+                }
+                // Output shape is broadcast of all three inputs; dtype from on_true
+                let shape_01 =
+                    broadcast_shape(&inputs[0].shape, &inputs[1].shape).ok_or(
+                        TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "cannot broadcast {:?} with {:?}",
+                                inputs[0].shape.dims, inputs[1].shape.dims
+                            ),
+                        },
+                    )?;
+                let shape = broadcast_shape(&shape_01, &inputs[2].shape).ok_or(
+                    TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "cannot broadcast {:?} with {:?}",
+                            shape_01.dims, inputs[2].shape.dims
+                        ),
+                    },
+                )?;
+                Ok(vec![ShapedArray {
+                    dtype: promote_dtype(inputs[1].dtype, inputs[2].dtype),
+                    shape,
+                }])
+            }
             Primitive::Concatenate => infer_concatenate(inputs, params),
         }
     }

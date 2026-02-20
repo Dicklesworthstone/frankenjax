@@ -179,6 +179,74 @@ pub(crate) fn eval_unary_int_or_float(
     }
 }
 
+/// Select operation: select(cond, on_true, on_false) -> on_true where cond else on_false.
+pub(crate) fn eval_select(
+    primitive: Primitive,
+    inputs: &[Value],
+) -> Result<Value, EvalError> {
+    if inputs.len() != 3 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 3,
+            actual: inputs.len(),
+        });
+    }
+
+    match (&inputs[0], &inputs[1], &inputs[2]) {
+        (Value::Scalar(cond), Value::Scalar(on_true), Value::Scalar(on_false)) => {
+            let c = match cond {
+                Literal::Bool(b) => *b,
+                Literal::I64(v) => *v != 0,
+                Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
+            };
+            Ok(Value::Scalar(if c { *on_true } else { *on_false }))
+        }
+        (Value::Tensor(cond), Value::Tensor(on_true), Value::Tensor(on_false)) => {
+            if cond.shape != on_true.shape || cond.shape != on_false.shape {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "select requires all inputs to have the same shape".to_owned(),
+                });
+            }
+            let elements: Vec<Literal> = cond
+                .elements
+                .iter()
+                .zip(on_true.elements.iter())
+                .zip(on_false.elements.iter())
+                .map(|((c, t), f)| {
+                    let flag = match c {
+                        Literal::Bool(b) => *b,
+                        Literal::I64(v) => *v != 0,
+                        Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
+                    };
+                    if flag { *t } else { *f }
+                })
+                .collect();
+            let dtype = crate::type_promotion::infer_dtype(&elements);
+            Ok(Value::Tensor(TensorValue::new(
+                dtype,
+                cond.shape.clone(),
+                elements,
+            )?))
+        }
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: "select requires matching scalar/tensor kinds".to_owned(),
+        }),
+    }
+}
+
+/// Approximate erf using Abramowitz & Stegun formula (max error ~1.5e-7).
+pub(crate) fn erf_approx(x: f64) -> f64 {
+    let sign = x.signum();
+    let x = x.abs();
+    let t = 1.0 / (1.0 + 0.3275911 * x);
+    let poly = t
+        * (0.254829592
+            + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    sign * (1.0 - poly * (-x * x).exp())
+}
+
 /// Dot product: scalar-scalar, vector-vector.
 pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
     let primitive = Primitive::Dot;

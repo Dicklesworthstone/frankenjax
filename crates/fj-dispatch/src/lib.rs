@@ -306,19 +306,21 @@ fn execute_grad(
         .into());
     }
 
-    args[0]
-        .as_f64_scalar()
-        .ok_or(TransformExecutionError::NonScalarGradientInput)?;
-
     // If there are remaining transforms in the tail, fall back to finite-diff
     // (symbolic AD only applies to the innermost evaluation).
+    // For finite-diff, we still require scalar first argument.
     if !tail.is_empty() {
+        args[0]
+            .as_f64_scalar()
+            .ok_or(TransformExecutionError::NonScalarGradientInput)?;
         return execute_grad_finite_diff(root_jaxpr, tail, args);
     }
 
-    let derivative = fj_ad::grad_first(root_jaxpr, args)
+    // Tensor-aware AD: grad_jaxpr returns Value gradients for all inputs
+    let grads = fj_ad::grad_jaxpr(root_jaxpr, args)
         .map_err(|e| TransformExecutionError::TensorBuild(format!("AD error: {e}")))?;
-    Ok(vec![Value::scalar_f64(derivative)])
+    // Return gradient of first input (matches JAX's default grad behavior)
+    Ok(vec![grads.into_iter().next().unwrap_or(Value::scalar_f64(0.0))])
 }
 
 fn execute_grad_finite_diff(

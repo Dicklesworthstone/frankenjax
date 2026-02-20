@@ -9,9 +9,12 @@ mod type_promotion;
 use fj_core::{Primitive, Shape, Value, ValueError};
 use std::collections::BTreeMap;
 
-use arithmetic::{eval_binary_elementwise, eval_dot, eval_unary_elementwise, eval_unary_int_or_float};
+use arithmetic::{
+    eval_binary_elementwise, eval_dot, eval_select, eval_unary_elementwise,
+    eval_unary_int_or_float, erf_approx,
+};
 use comparison::eval_comparison;
-use reduction::eval_reduce;
+use reduction::{eval_reduce, eval_reduce_axes};
 use tensor_ops::{eval_broadcast_in_dim, eval_concatenate, eval_reshape, eval_slice, eval_transpose};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,6 +120,54 @@ pub fn eval_primitive(
         // Trigonometric
         Primitive::Sin => eval_unary_elementwise(primitive, inputs, f64::sin),
         Primitive::Cos => eval_unary_elementwise(primitive, inputs, f64::cos),
+        Primitive::Tan => eval_unary_elementwise(primitive, inputs, f64::tan),
+        Primitive::Asin => eval_unary_elementwise(primitive, inputs, f64::asin),
+        Primitive::Acos => eval_unary_elementwise(primitive, inputs, f64::acos),
+        Primitive::Atan => eval_unary_elementwise(primitive, inputs, f64::atan),
+        // Hyperbolic
+        Primitive::Sinh => eval_unary_elementwise(primitive, inputs, f64::sinh),
+        Primitive::Cosh => eval_unary_elementwise(primitive, inputs, f64::cosh),
+        Primitive::Tanh => eval_unary_elementwise(primitive, inputs, f64::tanh),
+        // Additional math
+        Primitive::Expm1 => eval_unary_elementwise(primitive, inputs, f64::exp_m1),
+        Primitive::Log1p => eval_unary_elementwise(primitive, inputs, f64::ln_1p),
+        Primitive::Sign => eval_unary_int_or_float(
+            primitive,
+            inputs,
+            |x| x.signum(),
+            |x| {
+                if x.is_nan() {
+                    f64::NAN
+                } else {
+                    x.signum()
+                }
+            },
+        ),
+        Primitive::Square => eval_unary_int_or_float(primitive, inputs, |x| x * x, |x| x * x),
+        Primitive::Reciprocal => eval_unary_elementwise(primitive, inputs, |x| 1.0 / x),
+        Primitive::Logistic => {
+            eval_unary_elementwise(primitive, inputs, |x| 1.0 / (1.0 + (-x).exp()))
+        }
+        Primitive::Erf => eval_unary_elementwise(primitive, inputs, erf_approx),
+        Primitive::Erfc => eval_unary_elementwise(primitive, inputs, |x| 1.0 - erf_approx(x)),
+        // Binary math
+        Primitive::Div => eval_binary_elementwise(
+            primitive,
+            inputs,
+            |a, b| if b != 0 { a / b } else { 0 },
+            |a, b| a / b,
+        ),
+        Primitive::Rem => eval_binary_elementwise(
+            primitive,
+            inputs,
+            |a, b| if b != 0 { a % b } else { 0 },
+            |a, b| a % b,
+        ),
+        Primitive::Atan2 => {
+            eval_binary_elementwise(primitive, inputs, |a, b| (a as f64).atan2(b as f64) as i64, f64::atan2)
+        }
+        // Selection
+        Primitive::Select => eval_select(primitive, inputs),
         // Dot product
         Primitive::Dot => eval_dot(inputs),
         // Comparison
@@ -126,28 +177,30 @@ pub fn eval_primitive(
         Primitive::Le => eval_comparison(primitive, inputs, |a, b| a <= b, |a, b| a <= b),
         Primitive::Gt => eval_comparison(primitive, inputs, |a, b| a > b, |a, b| a > b),
         Primitive::Ge => eval_comparison(primitive, inputs, |a, b| a >= b, |a, b| a >= b),
-        // Reductions
+        // Reductions (axis-aware)
         Primitive::ReduceSum => {
-            eval_reduce(primitive, inputs, 0_i64, 0.0, |a, b| a + b, |a, b| a + b)
+            eval_reduce_axes(primitive, inputs, params, 0_i64, 0.0, |a, b| a + b, |a, b| a + b)
         }
-        Primitive::ReduceMax => eval_reduce(
+        Primitive::ReduceMax => eval_reduce_axes(
             primitive,
             inputs,
+            params,
             i64::MIN,
             f64::NEG_INFINITY,
             i64::max,
             f64::max,
         ),
-        Primitive::ReduceMin => eval_reduce(
+        Primitive::ReduceMin => eval_reduce_axes(
             primitive,
             inputs,
+            params,
             i64::MAX,
             f64::INFINITY,
             i64::min,
             f64::min,
         ),
         Primitive::ReduceProd => {
-            eval_reduce(primitive, inputs, 1_i64, 1.0, |a, b| a * b, |a, b| a * b)
+            eval_reduce_axes(primitive, inputs, params, 1_i64, 1.0, |a, b| a * b, |a, b| a * b)
         }
         // Shape manipulation
         Primitive::Reshape => eval_reshape(inputs, params),
