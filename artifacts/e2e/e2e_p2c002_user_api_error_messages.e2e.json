@@ -6,7 +6,7 @@
   "fixture_id": "36ccf0c0606c9fed7bd5a65a4807c44785c9bab0570a48084b875268e2791a62",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1771593520312,
+  "ts_utc_unix_ms": 1771615483099,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -25,7 +25,7 @@
   },
   "intermediate_states": [
     {
-      "error_message": "grad requires scalar input and output: grad currently requires scalar first input",
+      "error_message": "grad requires scalar input and output: grad currently requires scalar first output",
       "is_grad_requires_scalar": true,
       "message_is_user_friendly": true,
       "step": "grad_vector_error"
@@ -58,7 +58,7 @@
       "type": "EvalError"
     },
     "grad_vector": {
-      "message": "grad requires scalar input and output: grad currently requires scalar first input",
+      "message": "grad requires scalar input and output: grad currently requires scalar first output",
       "type": "GradRequiresScalar"
     },
     "grad_vmap": {

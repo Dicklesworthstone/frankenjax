@@ -79,13 +79,21 @@ fn oracle_vmap_output_matches_elementwise() {
         .call(vec![input])
         .expect("vmap should succeed");
     let t = vmap_result[0].as_tensor().expect("tensor");
-    let vmap_vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().expect("i64")).collect();
+    let vmap_vals: Vec<i64> = t
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("i64"))
+        .collect();
 
     // Compare against element-wise direct evaluation
     for (i, &x) in batch.iter().enumerate() {
         let direct =
             fj_interpreters::eval_jaxpr(&jaxpr, &[Value::scalar_i64(x)]).expect("direct eval");
-        let direct_val = direct[0].as_scalar_literal().expect("scalar").as_i64().expect("i64");
+        let direct_val = direct[0]
+            .as_scalar_literal()
+            .expect("scalar")
+            .as_i64()
+            .expect("i64");
         assert_eq!(
             vmap_vals[i], direct_val,
             "vmap(f)(batch)[{i}] != f(batch[{i}])"
@@ -129,13 +137,14 @@ fn oracle_composition_jit_grad_consistent() {
 fn oracle_error_behavior_vector_to_grad() {
     let jaxpr = build_program(ProgramSpec::Square);
     let err = grad(jaxpr)
-        .call(vec![
-            Value::vector_f64(&[1.0, 2.0]).expect("vector"),
-        ])
+        .call(vec![Value::vector_f64(&[1.0, 2.0]).expect("vector")])
         .expect_err("grad with vector should fail");
     // JAX raises TypeError; FrankenJAX raises GradRequiresScalar
     assert!(matches!(err, ApiError::GradRequiresScalar { .. }));
-    log_oracle("oracle_error_behavior_vector_to_grad", &("oracle_err", "grad_vector"));
+    log_oracle(
+        "oracle_error_behavior_vector_to_grad",
+        &("oracle_err", "grad_vector"),
+    );
 }
 
 #[test]
@@ -145,7 +154,10 @@ fn oracle_error_behavior_scalar_to_vmap() {
         .call(vec![Value::scalar_i64(1)])
         .expect_err("vmap with scalar should fail");
     assert!(matches!(err, ApiError::EvalError { .. }));
-    log_oracle("oracle_error_behavior_scalar_to_vmap", &("oracle_err", "vmap_scalar"));
+    log_oracle(
+        "oracle_error_behavior_scalar_to_vmap",
+        &("oracle_err", "vmap_scalar"),
+    );
 }
 
 // ============================================================================
@@ -155,11 +167,7 @@ fn oracle_error_behavior_scalar_to_vmap() {
 /// Metamorphic 1: jit is transparent — jit(f)(x) == f(x) for all pure f.
 #[test]
 fn metamorphic_jit_transparent() {
-    let programs = [
-        ProgramSpec::Add2,
-        ProgramSpec::Square,
-        ProgramSpec::AddOne,
-    ];
+    let programs = [ProgramSpec::Add2, ProgramSpec::Square, ProgramSpec::AddOne];
     let args_sets: Vec<Vec<Value>> = vec![
         vec![Value::scalar_i64(5), Value::scalar_i64(3)],
         vec![Value::scalar_f64(2.5)],
@@ -174,7 +182,10 @@ fn metamorphic_jit_transparent() {
             fj_interpreters::eval_jaxpr(&jaxpr, args).expect("direct eval should succeed");
         assert_eq!(jit_out, direct_out, "jit({spec:?}) not transparent");
     }
-    log_oracle("metamorphic_jit_transparent", &("metamorphic", "jit_transparent"));
+    log_oracle(
+        "metamorphic_jit_transparent",
+        &("metamorphic", "jit_transparent"),
+    );
 }
 
 /// Metamorphic 2: grad of linear function = constant slope.
@@ -199,7 +210,10 @@ fn metamorphic_grad_linear_constant() {
             );
         }
     }
-    log_oracle("metamorphic_grad_linear_constant", &("metamorphic", "grad_linear"));
+    log_oracle(
+        "metamorphic_grad_linear_constant",
+        &("metamorphic", "grad_linear"),
+    );
 }
 
 /// Metamorphic 3: vmap distributes — vmap(f)(xs)[i] == f(xs[i]) for all i.
@@ -213,16 +227,27 @@ fn metamorphic_vmap_distributes() {
         .call(vec![input])
         .expect("vmap should succeed");
     let t = vmap_result[0].as_tensor().expect("tensor");
-    let vmap_vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().expect("i64")).collect();
+    let vmap_vals: Vec<i64> = t
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("i64"))
+        .collect();
 
     assert_eq!(vmap_vals.len(), elements.len());
     for (i, &x) in elements.iter().enumerate() {
         let point_result =
             fj_interpreters::eval_jaxpr(&jaxpr, &[Value::scalar_i64(x)]).expect("eval");
-        let expected = point_result[0].as_scalar_literal().expect("scalar").as_i64().expect("i64");
+        let expected = point_result[0]
+            .as_scalar_literal()
+            .expect("scalar")
+            .as_i64()
+            .expect("i64");
         assert_eq!(vmap_vals[i], expected, "vmap(f)(xs)[{i}] != f(xs[{i}])");
     }
-    log_oracle("metamorphic_vmap_distributes", &("metamorphic", "vmap_distributes"));
+    log_oracle(
+        "metamorphic_vmap_distributes",
+        &("metamorphic", "vmap_distributes"),
+    );
 }
 
 // ============================================================================
@@ -234,12 +259,13 @@ fn metamorphic_vmap_distributes() {
 fn adversarial_empty_batch_vmap() {
     let jaxpr = build_program(ProgramSpec::AddOne);
     let err = vmap(jaxpr)
-        .call(vec![
-            Value::vector_i64(&[]).expect("empty vector"),
-        ])
+        .call(vec![Value::vector_i64(&[]).expect("empty vector")])
         .expect_err("vmap with empty batch should fail");
     assert!(matches!(err, ApiError::EvalError { .. }));
-    log_oracle("adversarial_empty_batch_vmap", &("adversarial", "empty_batch"));
+    log_oracle(
+        "adversarial_empty_batch_vmap",
+        &("adversarial", "empty_batch"),
+    );
 }
 
 /// Adversarial: scalar where vector expected in vmap.
@@ -252,7 +278,10 @@ fn adversarial_scalar_to_vmap() {
     // Should produce a clear error, not a panic
     let msg = format!("{err}");
     assert!(!msg.is_empty(), "error message should be non-empty");
-    log_oracle("adversarial_scalar_to_vmap", &("adversarial", "scalar_to_vmap"));
+    log_oracle(
+        "adversarial_scalar_to_vmap",
+        &("adversarial", "scalar_to_vmap"),
+    );
 }
 
 /// Adversarial: double-wrapping jit(jit(f)) — should be transparent.
@@ -284,9 +313,7 @@ fn adversarial_grad_no_args() {
 fn adversarial_grad_vmap_composition() {
     let jaxpr = build_program(ProgramSpec::Square);
     let err = compose(jaxpr, vec![Transform::Grad, Transform::Vmap])
-        .call(vec![
-            Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector"),
-        ])
+        .call(vec![Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector")])
         .expect_err("grad(vmap(f)) should fail");
     assert!(matches!(err, ApiError::GradRequiresScalar { .. }));
     log_oracle(
@@ -354,8 +381,8 @@ fn cross_validate_value_and_grad() {
 
 #[test]
 fn test_log_schema_contract() {
-    let fixture_id = fixture_id_from_json(&("api_transforms_oracle", "schema"))
-        .expect("fixture digest");
+    let fixture_id =
+        fixture_id_from_json(&("api_transforms_oracle", "schema")).expect("fixture digest");
     let log = TestLogV1::unit(
         test_id(module_path!(), "test_log_schema_contract"),
         fixture_id,

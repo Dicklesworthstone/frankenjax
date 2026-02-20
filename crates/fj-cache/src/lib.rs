@@ -610,8 +610,8 @@ mod tests {
 
     #[test]
     fn persistence_round_trip_preserves_data() {
-        use super::persistence::{deserialize, serialize};
         use super::backend::CachedArtifact;
+        use super::persistence::{deserialize, serialize};
 
         let artifact = CachedArtifact {
             data: b"test_computation_result".to_vec(),
@@ -697,8 +697,8 @@ mod tests {
 
     #[test]
     fn cache_manager_eviction_enforces_budget() {
-        use super::{CacheLookup, CacheManager};
         use super::eviction::LruConfig;
+        use super::{CacheLookup, CacheManager};
 
         let config = LruConfig {
             max_entries: 2,

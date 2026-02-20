@@ -54,7 +54,11 @@ impl EffectContext {
         };
         self.next_sequence += 1;
         // Overwrite existing entry with same name (preserves BTreeMap semantics).
-        if let Some(pos) = self.tokens.iter().position(|t| t.effect_name == token.effect_name) {
+        if let Some(pos) = self
+            .tokens
+            .iter()
+            .position(|t| t.effect_name == token.effect_name)
+        {
             self.tokens[pos] = token.clone();
         } else {
             self.tokens.push(token.clone());
@@ -317,10 +321,14 @@ fn execute_grad(
     }
 
     // Tensor-aware AD: grad_jaxpr returns Value gradients for all inputs
-    let grads = fj_ad::grad_jaxpr(root_jaxpr, args)
-        .map_err(|e| TransformExecutionError::TensorBuild(format!("AD error: {e}")))?;
+    let grads = fj_ad::grad_jaxpr(root_jaxpr, args).map_err(|e| match e {
+        fj_ad::AdError::NonScalarGradientOutput => TransformExecutionError::NonScalarGradientOutput,
+        other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
+    })?;
     // Return gradient of first input (matches JAX's default grad behavior)
-    Ok(vec![grads.into_iter().next().unwrap_or(Value::scalar_f64(0.0))])
+    Ok(vec![
+        grads.into_iter().next().unwrap_or(Value::scalar_f64(0.0)),
+    ])
 }
 
 fn execute_grad_finite_diff(
@@ -764,6 +772,9 @@ mod tests {
             unknown_incompatible_features: vec![],
         })
         .expect("dispatch 3");
-        assert_ne!(r1.cache_key, r3.cache_key, "different program = different key");
+        assert_ne!(
+            r1.cache_key, r3.cache_key,
+            "different program = different key"
+        );
     }
 }

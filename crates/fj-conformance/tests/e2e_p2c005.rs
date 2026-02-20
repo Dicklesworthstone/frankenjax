@@ -6,9 +6,7 @@
 //! Each scenario produces a forensic JSON record that captures the scenario_id,
 //! keys generated, hit/miss outcomes, eviction events, and timing.
 
-use fj_cache::{
-    build_cache_key, eviction::LruConfig, CacheKeyInput, CacheLookup, CacheManager,
-};
+use fj_cache::{CacheKeyInput, CacheLookup, CacheManager, build_cache_key, eviction::LruConfig};
 use fj_core::{CompatibilityMode, Jaxpr, ProgramSpec, Transform, build_program};
 use fj_test_utils::{TestLogV1, TestMode, TestResult, fixture_id_from_json, test_id};
 use std::collections::{BTreeMap, HashSet};
@@ -194,10 +192,7 @@ fn e2e_strict_mode_rejection() {
         "error message must include rejected feature"
     );
 
-    log_e2e(
-        "e2e_strict_mode_rejection",
-        &("strict_rejection", "pass"),
-    );
+    log_e2e("e2e_strict_mode_rejection", &("strict_rejection", "pass"));
 }
 
 #[test]

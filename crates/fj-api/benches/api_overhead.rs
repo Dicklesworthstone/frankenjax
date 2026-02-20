@@ -169,9 +169,12 @@ fn bench_api_composition(c: &mut Criterion) {
         let vec_arg = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
         b.iter(|| {
             let jaxpr = build_program(ProgramSpec::Square);
-            compose(jaxpr, vec![Transform::Jit, Transform::Vmap, Transform::Grad])
-                .call(vec![vec_arg.clone()])
-                .expect("compose 3-deep");
+            compose(
+                jaxpr,
+                vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+            )
+            .call(vec![vec_arg.clone()])
+            .expect("compose 3-deep");
         });
     });
 

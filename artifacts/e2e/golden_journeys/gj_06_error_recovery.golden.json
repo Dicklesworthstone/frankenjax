@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_06_error_recovery",
   "scenario_category": "error_recovery",
-  "ts_utc_unix_ms": 1771593520440,
+  "ts_utc_unix_ms": 1771615483230,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_06 --exact --nocapture",
   "input_capture": {
     "error_cases": [
@@ -16,7 +16,7 @@
     {
       "name": "grad_rejects_tensor_input",
       "passed": true,
-      "detail": "error=Some(TransformExecution(NonScalarGradientInput))"
+      "detail": "error=Some(TransformExecution(NonScalarGradientOutput))"
     },
     {
       "name": "vmap_rejects_scalar_input",

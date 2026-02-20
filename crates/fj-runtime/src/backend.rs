@@ -87,11 +87,7 @@ pub trait Backend: Send + Sync {
     /// Transfer a buffer from one device to another.
     /// V1 (CPU): clone semantics (no cross-device transfer).
     /// Legacy anchor: P2C006-A23 (transfer_to_device).
-    fn transfer(
-        &self,
-        buffer: &Buffer,
-        target: DeviceId,
-    ) -> Result<Buffer, BackendError>;
+    fn transfer(&self, buffer: &Buffer, target: DeviceId) -> Result<Buffer, BackendError>;
 
     /// Platform version string for cache key inclusion.
     /// Legacy anchor: P2C006-A20 (backend_xla_version).
@@ -134,7 +130,10 @@ impl BackendRegistry {
 
     /// Look up a backend by name. Returns None if not found.
     pub fn get(&self, name: &str) -> Option<&dyn Backend> {
-        self.backends.iter().find(|b| b.name() == name).map(|b| b.as_ref())
+        self.backends
+            .iter()
+            .find(|b| b.name() == name)
+            .map(|b| b.as_ref())
     }
 
     /// Return the highest-priority (first) backend.
@@ -167,11 +166,11 @@ impl BackendRegistry {
                 Ok((backend, backend.default_device()))
             }
             (DevicePlacement::Default, None) => {
-                let backend =
-                    self.default_backend()
-                        .ok_or_else(|| BackendError::Unavailable {
-                            backend: "(none)".to_owned(),
-                        })?;
+                let backend = self
+                    .default_backend()
+                    .ok_or_else(|| BackendError::Unavailable {
+                        backend: "(none)".to_owned(),
+                    })?;
                 Ok((backend, backend.default_device()))
             }
             (DevicePlacement::Explicit(device_id), Some(name)) => {
@@ -181,11 +180,11 @@ impl BackendRegistry {
                 Ok((backend, *device_id))
             }
             (DevicePlacement::Explicit(device_id), None) => {
-                let backend =
-                    self.default_backend()
-                        .ok_or_else(|| BackendError::Unavailable {
-                            backend: "(none)".to_owned(),
-                        })?;
+                let backend = self
+                    .default_backend()
+                    .ok_or_else(|| BackendError::Unavailable {
+                        backend: "(none)".to_owned(),
+                    })?;
                 Ok((backend, *device_id))
             }
         }
@@ -204,11 +203,11 @@ impl BackendRegistry {
         match self.resolve_placement(placement, requested_backend) {
             Ok((backend, device)) => Ok((backend, device, false)),
             Err(BackendError::Unavailable { .. }) => {
-                let fallback =
-                    self.default_backend()
-                        .ok_or_else(|| BackendError::Unavailable {
-                            backend: "(no fallback)".to_owned(),
-                        })?;
+                let fallback = self
+                    .default_backend()
+                    .ok_or_else(|| BackendError::Unavailable {
+                        backend: "(no fallback)".to_owned(),
+                    })?;
                 let device = match placement {
                     DevicePlacement::Default => fallback.default_device(),
                     DevicePlacement::Explicit(id) => *id,

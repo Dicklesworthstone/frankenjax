@@ -49,14 +49,19 @@ fn api_grad_square_strict() {
 fn api_vmap_add_one_strict() {
     let jaxpr = build_program(ProgramSpec::AddOne);
     let result = vmap(jaxpr)
-        .call(vec![
-            Value::vector_i64(&[100, 200, 300]).expect("vector"),
-        ])
+        .call(vec![Value::vector_i64(&[100, 200, 300]).expect("vector")])
         .expect("vmap should succeed");
     let t = result[0].as_tensor().expect("tensor");
-    let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().expect("i64")).collect();
+    let vals: Vec<i64> = t
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("i64"))
+        .collect();
     assert_eq!(vals, vec![101, 201, 301]);
-    log_pass("api_vmap_add_one_strict", &("vmap", "add_one", vec![100, 200, 300]));
+    log_pass(
+        "api_vmap_add_one_strict",
+        &("vmap", "add_one", vec![100, 200, 300]),
+    );
 }
 
 #[test]
@@ -69,7 +74,10 @@ fn api_value_and_grad_square() {
     let g = grd[0].as_f64_scalar().expect("scalar");
     assert!((v - 9.0).abs() < 1e-6);
     assert!((g - 6.0).abs() < 1e-3);
-    log_pass("api_value_and_grad_square", &("value_and_grad", "square", 3.0));
+    log_pass(
+        "api_value_and_grad_square",
+        &("value_and_grad", "square", 3.0),
+    );
 }
 
 // ============================================================================
@@ -93,12 +101,14 @@ fn stacking_jit_vmap() {
     let jaxpr = build_program(ProgramSpec::AddOne);
     let result = jit(jaxpr)
         .compose_vmap()
-        .call(vec![
-            Value::vector_i64(&[5, 10, 15]).expect("vector"),
-        ])
+        .call(vec![Value::vector_i64(&[5, 10, 15]).expect("vector")])
         .expect("jit(vmap) should succeed");
     let t = result[0].as_tensor().expect("tensor");
-    let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().expect("i64")).collect();
+    let vals: Vec<i64> = t
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("i64"))
+        .collect();
     assert_eq!(vals, vec![6, 11, 16]);
     log_pass("stacking_jit_vmap", &("jit_vmap", "add_one"));
 }
@@ -117,7 +127,10 @@ fn stacking_vmap_grad() {
     assert_eq!(vals.len(), 4);
     for (i, &v) in vals.iter().enumerate() {
         let expected = 2.0 * (i as f64 + 1.0);
-        assert!((v - expected).abs() < 1e-3, "index {i}: expected {expected}, got {v}");
+        assert!(
+            (v - expected).abs() < 1e-3,
+            "index {i}: expected {expected}, got {v}"
+        );
     }
     log_pass("stacking_vmap_grad", &("vmap_grad", "square"));
 }
@@ -125,16 +138,20 @@ fn stacking_vmap_grad() {
 #[test]
 fn stacking_compose_jit_vmap_grad() {
     let jaxpr = build_program(ProgramSpec::Square);
-    let result = compose(jaxpr, vec![Transform::Jit, Transform::Vmap, Transform::Grad])
-        .call(vec![
-            Value::vector_f64(&[2.0, 3.0]).expect("vector"),
-        ])
-        .expect("jit(vmap(grad)) should succeed");
+    let result = compose(
+        jaxpr,
+        vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+    )
+    .call(vec![Value::vector_f64(&[2.0, 3.0]).expect("vector")])
+    .expect("jit(vmap(grad)) should succeed");
     let t = result[0].as_tensor().expect("tensor");
     let vals = t.to_f64_vec().expect("f64");
     assert!((vals[0] - 4.0).abs() < 1e-3);
     assert!((vals[1] - 6.0).abs() < 1e-3);
-    log_pass("stacking_compose_jit_vmap_grad", &("jit_vmap_grad", "square"));
+    log_pass(
+        "stacking_compose_jit_vmap_grad",
+        &("jit_vmap_grad", "square"),
+    );
 }
 
 // ============================================================================
@@ -145,13 +162,14 @@ fn stacking_compose_jit_vmap_grad() {
 fn error_grad_vector_input() {
     let jaxpr = build_program(ProgramSpec::Square);
     let err = grad(jaxpr)
-        .call(vec![
-            Value::vector_f64(&[1.0, 2.0]).expect("vector"),
-        ])
+        .call(vec![Value::vector_f64(&[1.0, 2.0]).expect("vector")])
         .expect_err("grad with vector input should fail");
     match &err {
         ApiError::GradRequiresScalar { detail } => {
-            assert!(detail.contains("scalar"), "error should mention scalar: {detail}");
+            assert!(
+                detail.contains("scalar"),
+                "error should mention scalar: {detail}"
+            );
         }
         other => panic!("expected GradRequiresScalar, got: {other}"),
     }
@@ -182,9 +200,7 @@ fn error_vmap_scalar_input() {
 fn error_grad_vmap_order() {
     let jaxpr = build_program(ProgramSpec::Square);
     let err = compose(jaxpr, vec![Transform::Grad, Transform::Vmap])
-        .call(vec![
-            Value::vector_f64(&[1.0, 2.0]).expect("vector"),
-        ])
+        .call(vec![Value::vector_f64(&[1.0, 2.0]).expect("vector")])
         .expect_err("grad(vmap(f)) should fail");
     assert!(matches!(err, ApiError::GradRequiresScalar { .. }));
     log_pass("error_grad_vmap_order", &("error", "grad_vmap"));
@@ -264,11 +280,12 @@ fn ttl_jit_has_one_transform() {
 #[test]
 fn ttl_composition_three_transforms() {
     let jaxpr = build_program(ProgramSpec::Square);
-    let result = compose(jaxpr, vec![Transform::Jit, Transform::Vmap, Transform::Grad])
-        .call(vec![
-            Value::vector_f64(&[1.0]).expect("vector"),
-        ])
-        .expect("3-transform composition should succeed");
+    let result = compose(
+        jaxpr,
+        vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+    )
+    .call(vec![Value::vector_f64(&[1.0]).expect("vector")])
+    .expect("3-transform composition should succeed");
     let t = result[0].as_tensor().expect("tensor");
     let vals = t.to_f64_vec().expect("f64 vec");
     assert!((vals[0] - 2.0).abs() < 1e-3);
@@ -281,8 +298,8 @@ fn ttl_composition_three_transforms() {
 
 #[test]
 fn test_log_schema_contract() {
-    let fixture_id = fixture_id_from_json(&("api_transform_suite", "schema_contract"))
-        .expect("fixture digest");
+    let fixture_id =
+        fixture_id_from_json(&("api_transform_suite", "schema_contract")).expect("fixture digest");
     let log = TestLogV1::unit(
         test_id(module_path!(), "test_log_schema_contract"),
         fixture_id,

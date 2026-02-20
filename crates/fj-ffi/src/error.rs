@@ -36,9 +36,7 @@ pub enum FfiError {
     },
 
     /// Dtype not supported at the FFI boundary.
-    UnsupportedDtype {
-        dtype: fj_core::DType,
-    },
+    UnsupportedDtype { dtype: fj_core::DType },
 }
 
 impl fmt::Display for FfiError {

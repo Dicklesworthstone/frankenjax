@@ -6,7 +6,7 @@
   "fixture_id": "d348b1aab3ca81e28418c82209bec7e9f8472b4b465755e2ae95b708a27d8795",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1771593520315,
+  "ts_utc_unix_ms": 1771615483103,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -76,6 +76,6 @@
     "staging_ms": 1
   },
   "result": "pass",
-  "duration_ms": 4,
+  "duration_ms": 5,
   "details": null
 }

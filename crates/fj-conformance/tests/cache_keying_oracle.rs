@@ -13,10 +13,8 @@
 //! - Adversarial: large programs, edge cases, concurrent-safe patterns
 
 use fj_cache::{
-    build_cache_key, build_cache_key_ref,
-    eviction::LruConfig,
-    CacheLookup, CacheManager,
-    CacheKeyInput, CacheKeyInputRef, CacheKeyError,
+    CacheKeyError, CacheKeyInput, CacheKeyInputRef, CacheLookup, CacheManager, build_cache_key,
+    build_cache_key_ref, eviction::LruConfig,
 };
 use fj_core::{
     Atom, CompatibilityMode, Equation, Jaxpr, Primitive, ProgramSpec, Transform, VarId,
@@ -116,11 +114,7 @@ fn oracle_cache_key_sensitivity_per_field() {
     // Jaxpr change.
     let mut alt = baseline_input();
     alt.jaxpr = build_program(ProgramSpec::SquarePlusLinear);
-    assert_ne!(
-        base_hex,
-        build_cache_key(&alt).unwrap().digest_hex,
-        "jaxpr"
-    );
+    assert_ne!(base_hex, build_cache_key(&alt).unwrap().digest_hex, "jaxpr");
 
     log_oracle(
         "oracle_cache_key_sensitivity_per_field",

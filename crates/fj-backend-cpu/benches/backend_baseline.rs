@@ -28,10 +28,7 @@ fn bench_execute_square(c: &mut Criterion) {
 fn bench_execute_10eqn(c: &mut Criterion) {
     let backend = CpuBackend::new();
     let jaxpr = build_program(ProgramSpec::Dot3);
-    let args = vec![
-        Value::scalar_f64(1.0),
-        Value::scalar_f64(2.0),
-    ];
+    let args = vec![Value::scalar_f64(1.0), Value::scalar_f64(2.0)];
     c.bench_function("backend_execute/dot3_10eqn", |b| {
         b.iter(|| backend.execute(&jaxpr, &args, DeviceId(0)).unwrap())
     });

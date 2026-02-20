@@ -63,18 +63,13 @@ pub struct DeviceInfo {
 ///
 /// V1: always `Default` (single CPU device).
 /// Future: explicit device targeting or automatic placement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DevicePlacement {
     /// Use the backend's default device.
+    #[default]
     Default,
     /// Place on a specific device.
     Explicit(DeviceId),
-}
-
-impl Default for DevicePlacement {
-    fn default() -> Self {
-        Self::Default
-    }
 }
 
 #[cfg(test)]

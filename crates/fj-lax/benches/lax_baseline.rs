@@ -50,7 +50,7 @@ fn bench_reduce_sum_1k(c: &mut Criterion) {
     let input = Value::vector_i64(&data).unwrap();
     let p = no_params();
     c.bench_function("eval/reduce_sum_1k_i64", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::ReduceSum, &[input.clone()], &p))
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p))
     });
 }
 
@@ -59,7 +59,7 @@ fn bench_sin_1k(c: &mut Criterion) {
     let input = Value::vector_f64(&data).unwrap();
     let p = no_params();
     c.bench_function("eval/sin_1k_f64", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::Sin, &[input.clone()], &p))
+        bencher.iter(|| eval_primitive(Primitive::Sin, std::slice::from_ref(&input), &p))
     });
 }
 
@@ -68,7 +68,7 @@ fn bench_exp_1k(c: &mut Criterion) {
     let input = Value::vector_f64(&data).unwrap();
     let p = no_params();
     c.bench_function("eval/exp_1k_f64", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::Exp, &[input.clone()], &p))
+        bencher.iter(|| eval_primitive(Primitive::Exp, std::slice::from_ref(&input), &p))
     });
 }
 
@@ -78,7 +78,7 @@ fn bench_reshape(c: &mut Criterion) {
     let mut params = BTreeMap::new();
     params.insert("new_shape".into(), "10,100".into());
     c.bench_function("eval/reshape_1k_to_10x100", |bencher| {
-        bencher.iter(|| eval_primitive(Primitive::Reshape, &[input.clone()], &params))
+        bencher.iter(|| eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &params))
     });
 }
 

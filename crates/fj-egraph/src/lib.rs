@@ -142,7 +142,26 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
             | Primitive::Scatter
             | Primitive::Transpose
             | Primitive::BroadcastInDim
-            | Primitive::Concatenate => {
+            | Primitive::Concatenate
+            | Primitive::Tan
+            | Primitive::Asin
+            | Primitive::Acos
+            | Primitive::Atan
+            | Primitive::Sinh
+            | Primitive::Cosh
+            | Primitive::Tanh
+            | Primitive::Expm1
+            | Primitive::Log1p
+            | Primitive::Sign
+            | Primitive::Square
+            | Primitive::Reciprocal
+            | Primitive::Logistic
+            | Primitive::Erf
+            | Primitive::Erfc
+            | Primitive::Div
+            | Primitive::Rem
+            | Primitive::Atan2
+            | Primitive::Select => {
                 panic!(
                     "primitive {} not supported by egraph lowering",
                     eqn.primitive.as_str()

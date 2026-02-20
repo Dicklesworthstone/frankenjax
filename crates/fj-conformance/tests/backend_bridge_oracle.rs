@@ -19,10 +19,12 @@ fn oracle_cpu_backend_matches_eval_jaxpr_add2() {
     let backend_result = backend
         .execute(&jaxpr, &args, DeviceId(0))
         .expect("backend execute");
-    let direct_result =
-        fj_interpreters::eval_jaxpr(&jaxpr, &args).expect("direct eval");
+    let direct_result = fj_interpreters::eval_jaxpr(&jaxpr, &args).expect("direct eval");
 
-    assert_eq!(backend_result, direct_result, "backend must match direct eval");
+    assert_eq!(
+        backend_result, direct_result,
+        "backend must match direct eval"
+    );
 }
 
 /// Oracle: CPU backend execution matches direct eval_jaxpr for Square (f64).
@@ -35,8 +37,7 @@ fn oracle_cpu_backend_matches_eval_jaxpr_square() {
     let backend_result = backend
         .execute(&jaxpr, &args, DeviceId(0))
         .expect("backend execute");
-    let direct_result =
-        fj_interpreters::eval_jaxpr(&jaxpr, &args).expect("direct eval");
+    let direct_result = fj_interpreters::eval_jaxpr(&jaxpr, &args).expect("direct eval");
 
     assert_eq!(backend_result, direct_result);
 }
@@ -46,10 +47,16 @@ fn oracle_cpu_backend_matches_eval_jaxpr_square() {
 fn oracle_cpu_backend_matches_all_programs() {
     let backend = CpuBackend::new();
     let specs: Vec<(ProgramSpec, Vec<Value>)> = vec![
-        (ProgramSpec::Add2, vec![Value::scalar_i64(5), Value::scalar_i64(3)]),
+        (
+            ProgramSpec::Add2,
+            vec![Value::scalar_i64(5), Value::scalar_i64(3)],
+        ),
         (ProgramSpec::Square, vec![Value::scalar_f64(4.0)]),
         (ProgramSpec::AddOne, vec![Value::scalar_i64(99)]),
-        (ProgramSpec::SinX, vec![Value::scalar_f64(std::f64::consts::FRAC_PI_2)]),
+        (
+            ProgramSpec::SinX,
+            vec![Value::scalar_f64(std::f64::consts::FRAC_PI_2)],
+        ),
         (ProgramSpec::CosX, vec![Value::scalar_f64(0.0)]),
     ];
 
@@ -60,11 +67,7 @@ fn oracle_cpu_backend_matches_all_programs() {
             .unwrap_or_else(|e| panic!("{spec:?} backend failed: {e}"));
         let direct_result = fj_interpreters::eval_jaxpr(&jaxpr, &args)
             .unwrap_or_else(|e| panic!("{spec:?} direct failed: {e}"));
-        assert_eq!(
-            backend_result, direct_result,
-            "mismatch for {:?}",
-            spec
-        );
+        assert_eq!(backend_result, direct_result, "mismatch for {:?}", spec);
     }
 }
 
@@ -111,7 +114,10 @@ fn metamorphic_same_program_different_device_counts() {
         .execute(&jaxpr, &args, DeviceId(0))
         .expect("4-device");
 
-    assert_eq!(result_1, result_4, "device count must not affect computation");
+    assert_eq!(
+        result_1, result_4,
+        "device count must not affect computation"
+    );
 }
 
 /// Metamorphic: transfer to same device is identity.

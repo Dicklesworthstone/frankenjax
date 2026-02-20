@@ -5,7 +5,7 @@
 
 use fj_core::{DType, Literal, Shape, TensorValue, Value};
 
-use crate::buffer::{dtype_size_bytes, FfiBuffer};
+use crate::buffer::{FfiBuffer, dtype_size_bytes};
 use crate::error::FfiError;
 
 /// Marshal a `Value` into an `FfiBuffer` for passing to an external function.
@@ -189,6 +189,9 @@ mod tests {
     fn buffer_to_value_f32_unsupported() {
         let buf = FfiBuffer::new(vec![0u8; 4], vec![], DType::F32).unwrap();
         let err = buffer_to_value(&buf).unwrap_err();
-        assert!(matches!(err, FfiError::UnsupportedDtype { dtype: DType::F32 }));
+        assert!(matches!(
+            err,
+            FfiError::UnsupportedDtype { dtype: DType::F32 }
+        ));
     }
 }

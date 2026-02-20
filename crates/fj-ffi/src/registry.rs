@@ -91,10 +91,13 @@ impl FfiRegistry {
     /// Look up a registered target by name.
     pub fn get(&self, name: &str) -> Result<FfiTarget, FfiError> {
         let targets = self.targets.read().unwrap();
-        targets.get(name).cloned().ok_or_else(|| FfiError::TargetNotFound {
-            name: name.to_string(),
-            available: targets.keys().cloned().collect(),
-        })
+        targets
+            .get(name)
+            .cloned()
+            .ok_or_else(|| FfiError::TargetNotFound {
+                name: name.to_string(),
+                available: targets.keys().cloned().collect(),
+            })
     }
 
     /// List all registered target names.

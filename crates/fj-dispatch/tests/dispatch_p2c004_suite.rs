@@ -8,7 +8,9 @@ use fj_core::{
     Atom, CompatibilityMode, Equation, Jaxpr, Primitive, ProgramSpec, TraceTransformLedger,
     Transform, Value, VarId, build_program,
 };
-use fj_dispatch::{dispatch, DispatchError, DispatchRequest, EffectContext, TransformExecutionError};
+use fj_dispatch::{
+    DispatchError, DispatchRequest, EffectContext, TransformExecutionError, dispatch,
+};
 use std::collections::BTreeMap;
 
 fn ledger(program: ProgramSpec, transforms: &[Transform]) -> TraceTransformLedger {
@@ -60,11 +62,7 @@ fn jit_vector_add_one() {
     ))
     .unwrap();
     let out = r.outputs[0].as_tensor().unwrap();
-    let elems: Vec<i64> = out
-        .elements
-        .iter()
-        .map(|l| l.as_i64().unwrap())
-        .collect();
+    let elems: Vec<i64> = out.elements.iter().map(|l| l.as_i64().unwrap()).collect();
     assert_eq!(elems, vec![2, 3, 4]);
 }
 
@@ -77,7 +75,10 @@ fn grad_polynomial_square_at_3() {
     ))
     .unwrap();
     let derivative = r.outputs[0].as_f64_scalar().unwrap();
-    assert!((derivative - 6.0).abs() < 1e-3, "d/dx(x²) at 3 = 6, got {derivative}");
+    assert!(
+        (derivative - 6.0).abs() < 1e-3,
+        "d/dx(x²) at 3 = 6, got {derivative}"
+    );
 }
 
 #[test]
@@ -119,7 +120,10 @@ fn jit_grad_composition() {
     ))
     .unwrap();
     let derivative = r.outputs[0].as_f64_scalar().unwrap();
-    assert!((derivative - 10.0).abs() < 1e-3, "jit(grad(x²)) at 5 = 10, got {derivative}");
+    assert!(
+        (derivative - 10.0).abs() < 1e-3,
+        "jit(grad(x²)) at 5 = 10, got {derivative}"
+    );
 }
 
 #[test]
@@ -221,7 +225,10 @@ fn grad_sin_at_zero_is_one() {
     })
     .unwrap();
     let deriv = r.outputs[0].as_f64_scalar().unwrap();
-    assert!((deriv - 1.0).abs() < 1e-3, "d/dx(sin(x)) at 0 = cos(0) = 1, got {deriv}");
+    assert!(
+        (deriv - 1.0).abs() < 1e-3,
+        "d/dx(sin(x)) at 0 = cos(0) = 1, got {deriv}"
+    );
 }
 
 #[test]
@@ -423,7 +430,11 @@ fn ledger_entry_contains_all_signals() {
     let entry = &r.evidence_ledger.entries()[0];
     assert_eq!(entry.signals.len(), 4);
 
-    let signal_names: Vec<&str> = entry.signals.iter().map(|s| s.signal_name.as_str()).collect();
+    let signal_names: Vec<&str> = entry
+        .signals
+        .iter()
+        .map(|s| s.signal_name.as_str())
+        .collect();
     assert!(signal_names.contains(&"eqn_count"));
     assert!(signal_names.contains(&"transform_depth"));
     assert!(signal_names.contains(&"transform_stack_hash"));

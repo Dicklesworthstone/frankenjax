@@ -10,12 +10,14 @@ use fj_core::{Primitive, Shape, Value, ValueError};
 use std::collections::BTreeMap;
 
 use arithmetic::{
-    eval_binary_elementwise, eval_dot, eval_select, eval_unary_elementwise,
-    eval_unary_int_or_float, erf_approx,
+    erf_approx, eval_binary_elementwise, eval_dot, eval_select, eval_unary_elementwise,
+    eval_unary_int_or_float,
 };
 use comparison::eval_comparison;
-use reduction::{eval_reduce, eval_reduce_axes};
-use tensor_ops::{eval_broadcast_in_dim, eval_concatenate, eval_reshape, eval_slice, eval_transpose};
+use reduction::eval_reduce_axes;
+use tensor_ops::{
+    eval_broadcast_in_dim, eval_concatenate, eval_reshape, eval_slice, eval_transpose,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EvalError {
@@ -136,11 +138,7 @@ pub fn eval_primitive(
             inputs,
             |x| x.signum(),
             |x| {
-                if x.is_nan() {
-                    f64::NAN
-                } else {
-                    x.signum()
-                }
+                if x.is_nan() { f64::NAN } else { x.signum() }
             },
         ),
         Primitive::Square => eval_unary_int_or_float(primitive, inputs, |x| x * x, |x| x * x),
@@ -163,9 +161,12 @@ pub fn eval_primitive(
             |a, b| if b != 0 { a % b } else { 0 },
             |a, b| a % b,
         ),
-        Primitive::Atan2 => {
-            eval_binary_elementwise(primitive, inputs, |a, b| (a as f64).atan2(b as f64) as i64, f64::atan2)
-        }
+        Primitive::Atan2 => eval_binary_elementwise(
+            primitive,
+            inputs,
+            |a, b| (a as f64).atan2(b as f64) as i64,
+            f64::atan2,
+        ),
         // Selection
         Primitive::Select => eval_select(primitive, inputs),
         // Dot product
@@ -178,9 +179,15 @@ pub fn eval_primitive(
         Primitive::Gt => eval_comparison(primitive, inputs, |a, b| a > b, |a, b| a > b),
         Primitive::Ge => eval_comparison(primitive, inputs, |a, b| a >= b, |a, b| a >= b),
         // Reductions (axis-aware)
-        Primitive::ReduceSum => {
-            eval_reduce_axes(primitive, inputs, params, 0_i64, 0.0, |a, b| a + b, |a, b| a + b)
-        }
+        Primitive::ReduceSum => eval_reduce_axes(
+            primitive,
+            inputs,
+            params,
+            0_i64,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        ),
         Primitive::ReduceMax => eval_reduce_axes(
             primitive,
             inputs,
@@ -199,9 +206,15 @@ pub fn eval_primitive(
             i64::min,
             f64::min,
         ),
-        Primitive::ReduceProd => {
-            eval_reduce_axes(primitive, inputs, params, 1_i64, 1.0, |a, b| a * b, |a, b| a * b)
-        }
+        Primitive::ReduceProd => eval_reduce_axes(
+            primitive,
+            inputs,
+            params,
+            1_i64,
+            1.0,
+            |a, b| a * b,
+            |a, b| a * b,
+        ),
         // Shape manipulation
         Primitive::Reshape => eval_reshape(inputs, params),
         Primitive::Transpose => eval_transpose(inputs, params),
@@ -667,7 +680,10 @@ mod tests {
     fn sub_inf_inf_is_nan() {
         let out = eval_primitive(
             Primitive::Sub,
-            &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(f64::INFINITY)],
+            &[
+                Value::scalar_f64(f64::INFINITY),
+                Value::scalar_f64(f64::INFINITY),
+            ],
             &no_params(),
         )
         .unwrap();
@@ -838,7 +854,8 @@ mod tests {
     #[test]
     fn sub_vector_broadcasts_scalar() {
         let vec = Value::vector_i64(&[10, 20, 30]).unwrap();
-        let out = eval_primitive(Primitive::Sub, &[vec, Value::scalar_i64(5)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Sub, &[vec, Value::scalar_i64(5)], &no_params()).unwrap();
         let expected = Value::vector_i64(&[5, 15, 25]).unwrap();
         assert_eq!(out, expected);
     }
@@ -883,7 +900,8 @@ mod tests {
 
     #[test]
     fn binary_wrong_arity_error() {
-        let err = eval_primitive(Primitive::Add, &[Value::scalar_i64(1)], &no_params()).unwrap_err();
+        let err =
+            eval_primitive(Primitive::Add, &[Value::scalar_i64(1)], &no_params()).unwrap_err();
         assert!(matches!(
             err,
             EvalError::ArityMismatch {
@@ -940,7 +958,8 @@ mod tests {
 
     #[test]
     fn reduce_sum_scalar_identity() {
-        let out = eval_primitive(Primitive::ReduceSum, &[Value::scalar_i64(42)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::ReduceSum, &[Value::scalar_i64(42)], &no_params()).unwrap();
         assert_eq!(out, Value::scalar_i64(42));
     }
 
@@ -1031,7 +1050,8 @@ mod tests {
 
     #[test]
     fn gather_unsupported() {
-        let err = eval_primitive(Primitive::Gather, &[Value::scalar_i64(1)], &no_params()).unwrap_err();
+        let err =
+            eval_primitive(Primitive::Gather, &[Value::scalar_i64(1)], &no_params()).unwrap_err();
         assert!(matches!(err, EvalError::Unsupported { .. }));
     }
 
@@ -1310,7 +1330,7 @@ mod prop_tests {
 
             let mut to_3x1 = BTreeMap::new();
             to_3x1.insert("new_shape".into(), "3,1".into());
-            let reshaped = eval_primitive(Primitive::Reshape, &[input.clone()], &to_3x1).unwrap();
+            let reshaped = eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &to_3x1).unwrap();
 
             let mut to_3 = BTreeMap::new();
             to_3.insert("new_shape".into(), "3".into());

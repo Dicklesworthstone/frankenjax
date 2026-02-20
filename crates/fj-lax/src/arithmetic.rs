@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 
-use fj_core::{DType, Literal, Primitive, TensorValue, Value};
+use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 
 use crate::EvalError;
 use crate::type_promotion::{binary_literal_op, infer_dtype};
 
 /// Binary elementwise operation dispatching on int/float paths.
+/// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
+/// scalar-tensor, tensor-scalar, and multi-dim broadcasting.
 #[inline]
 pub(crate) fn eval_binary_elementwise(
     primitive: Primitive,
@@ -26,28 +28,28 @@ pub(crate) fn eval_binary_elementwise(
             *lhs, *rhs, primitive, &int_op, &float_op,
         )?)),
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
-            if lhs.shape != rhs.shape {
-                return Err(EvalError::ShapeMismatch {
-                    primitive,
-                    left: lhs.shape.clone(),
-                    right: rhs.shape.clone(),
-                });
+            if lhs.shape == rhs.shape {
+                // Same shape: elementwise
+                let elements = lhs
+                    .elements
+                    .iter()
+                    .copied()
+                    .zip(rhs.elements.iter().copied())
+                    .map(|(left, right)| {
+                        binary_literal_op(left, right, primitive, &int_op, &float_op)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let dtype = infer_dtype(&elements);
+                Ok(Value::Tensor(TensorValue::new(
+                    dtype,
+                    lhs.shape.clone(),
+                    elements,
+                )?))
+            } else {
+                // Attempt NumPy multi-dim broadcasting
+                broadcast_binary_tensors(primitive, lhs, rhs, &int_op, &float_op)
             }
-
-            let elements = lhs
-                .elements
-                .iter()
-                .copied()
-                .zip(rhs.elements.iter().copied())
-                .map(|(left, right)| binary_literal_op(left, right, primitive, &int_op, &float_op))
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let dtype = infer_dtype(&elements);
-            Ok(Value::Tensor(TensorValue::new(
-                dtype,
-                lhs.shape.clone(),
-                elements,
-            )?))
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
             let elements = rhs
@@ -80,6 +82,119 @@ pub(crate) fn eval_binary_elementwise(
             )?))
         }
     }
+}
+
+/// Full NumPy multi-dim broadcasting for two tensors.
+fn broadcast_binary_tensors(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    int_op: &impl Fn(i64, i64) -> i64,
+    float_op: &impl Fn(f64, f64) -> f64,
+) -> Result<Value, EvalError> {
+    let out_shape = broadcast_shape(&lhs.shape, &rhs.shape).ok_or(EvalError::ShapeMismatch {
+        primitive,
+        left: lhs.shape.clone(),
+        right: rhs.shape.clone(),
+    })?;
+
+    let out_count = out_shape.element_count().unwrap_or(0) as usize;
+    let out_strides = compute_strides(&out_shape.dims);
+
+    // Compute broadcast-aware strides for lhs and rhs
+    let lhs_strides = broadcast_strides(&lhs.shape, &out_shape);
+    let rhs_strides = broadcast_strides(&rhs.shape, &out_shape);
+
+    let mut elements = Vec::with_capacity(out_count);
+    for flat_idx in 0..out_count {
+        // Convert output flat index to multi-index
+        let multi = flat_to_multi(flat_idx, &out_strides);
+        // Map to input indices
+        let lhs_idx = broadcast_flat_index(&multi, &lhs_strides);
+        let rhs_idx = broadcast_flat_index(&multi, &rhs_strides);
+
+        let l = lhs.elements[lhs_idx];
+        let r = rhs.elements[rhs_idx];
+        elements.push(binary_literal_op(l, r, primitive, int_op, float_op)?);
+    }
+
+    let dtype = infer_dtype(&elements);
+    Ok(Value::Tensor(TensorValue::new(dtype, out_shape, elements)?))
+}
+
+fn broadcast_shape(lhs: &Shape, rhs: &Shape) -> Option<Shape> {
+    let max_rank = lhs.rank().max(rhs.rank());
+    let mut dims = Vec::with_capacity(max_rank);
+
+    for offset in 0..max_rank {
+        let lhs_dim = if offset < lhs.rank() {
+            lhs.dims[lhs.rank() - 1 - offset]
+        } else {
+            1
+        };
+        let rhs_dim = if offset < rhs.rank() {
+            rhs.dims[rhs.rank() - 1 - offset]
+        } else {
+            1
+        };
+
+        let out_dim = if lhs_dim == rhs_dim {
+            lhs_dim
+        } else if lhs_dim == 1 {
+            rhs_dim
+        } else if rhs_dim == 1 {
+            lhs_dim
+        } else {
+            return None;
+        };
+        dims.push(out_dim);
+    }
+
+    dims.reverse();
+    Some(Shape { dims })
+}
+
+fn compute_strides(dims: &[u32]) -> Vec<usize> {
+    let mut strides = vec![1_usize; dims.len()];
+    for i in (0..dims.len().saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * dims[i + 1] as usize;
+    }
+    strides
+}
+
+fn flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
+    let mut multi = Vec::with_capacity(strides.len());
+    let mut remainder = flat;
+    for &stride in strides {
+        multi.push(remainder / stride);
+        remainder %= stride;
+    }
+    multi
+}
+
+/// Compute strides for a tensor being broadcast to out_shape.
+/// Dimensions of size 1 get stride 0 (broadcast), left-padded with 0s.
+fn broadcast_strides(shape: &Shape, out_shape: &Shape) -> Vec<usize> {
+    let rank = shape.rank();
+    let out_rank = out_shape.rank();
+
+    // Compute real strides for the input tensor
+    let real_strides = compute_strides(&shape.dims);
+
+    let mut result = vec![0_usize; out_rank];
+    for (i, &stride) in real_strides.iter().enumerate().take(rank) {
+        let out_axis = out_rank - rank + i;
+        if shape.dims[i] == 1 {
+            result[out_axis] = 0; // broadcast
+        } else {
+            result[out_axis] = stride;
+        }
+    }
+    result
+}
+
+fn broadcast_flat_index(multi: &[usize], strides: &[usize]) -> usize {
+    multi.iter().zip(strides.iter()).map(|(&m, &s)| m * s).sum()
 }
 
 /// Unary elementwise operation that converts to f64 first (exp, log, sqrt, etc.).
@@ -180,10 +295,7 @@ pub(crate) fn eval_unary_int_or_float(
 }
 
 /// Select operation: select(cond, on_true, on_false) -> on_true where cond else on_false.
-pub(crate) fn eval_select(
-    primitive: Primitive,
-    inputs: &[Value],
-) -> Result<Value, EvalError> {
+pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 3 {
         return Err(EvalError::ArityMismatch {
             primitive,
@@ -222,7 +334,7 @@ pub(crate) fn eval_select(
                     if flag { *t } else { *f }
                 })
                 .collect();
-            let dtype = crate::type_promotion::infer_dtype(&elements);
+            let dtype = infer_dtype(&elements);
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 cond.shape.clone(),

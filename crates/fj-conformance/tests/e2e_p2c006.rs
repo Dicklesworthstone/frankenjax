@@ -14,7 +14,11 @@ fn e2e_cpu_backend_all_primitives() {
     // Add2: 3 + 4 = 7
     let jaxpr = build_program(ProgramSpec::Add2);
     let result = backend
-        .execute(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(4)], device)
+        .execute(
+            &jaxpr,
+            &[Value::scalar_i64(3), Value::scalar_i64(4)],
+            device,
+        )
         .expect("Add2");
     assert_eq!(result, vec![Value::scalar_i64(7)]);
 
@@ -68,7 +72,10 @@ fn e2e_backend_discovery_capabilities() {
     let caps = backend.capabilities();
     assert!(caps.supported_dtypes.contains(&fj_core::DType::F64));
     assert!(caps.supported_dtypes.contains(&fj_core::DType::I64));
-    assert!(caps.max_tensor_rank >= 1, "must support at least rank-1 tensors");
+    assert!(
+        caps.max_tensor_rank >= 1,
+        "must support at least rank-1 tensors"
+    );
 
     // Version string
     assert!(!backend.version().is_empty());
@@ -160,8 +167,14 @@ fn e2e_cross_backend_consistency() {
         .execute(&jaxpr, &args, device_default)
         .expect("default execution");
 
-    assert_eq!(result_direct, result_fallback, "direct vs fallback must match");
-    assert_eq!(result_direct, result_default, "direct vs default must match");
+    assert_eq!(
+        result_direct, result_fallback,
+        "direct vs fallback must match"
+    );
+    assert_eq!(
+        result_direct, result_default,
+        "direct vs default must match"
+    );
 }
 
 /// E2E Scenario 6: Buffer round-trip through backend allocate + transfer.
@@ -180,7 +193,9 @@ fn e2e_buffer_roundtrip_through_backend() {
     assert_eq!(transferred.as_bytes(), &payload);
 
     // Transfer back to device 0
-    let round_tripped = backend.transfer(&transferred, DeviceId(0)).expect("round-trip");
+    let round_tripped = backend
+        .transfer(&transferred, DeviceId(0))
+        .expect("round-trip");
     assert_eq!(round_tripped.device(), DeviceId(0));
     assert_eq!(round_tripped.as_bytes(), &payload);
 }

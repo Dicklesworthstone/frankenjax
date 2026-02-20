@@ -81,9 +81,7 @@ mod tests {
                 Value::vector_i64(&[10, 20, 30]).expect("vector should build"),
             ])
             .expect("vmap should succeed");
-        let output = result[0]
-            .as_tensor()
-            .expect("vmap output should be tensor");
+        let output = result[0].as_tensor().expect("vmap output should be tensor");
         let values: Vec<i64> = output
             .elements
             .iter()
@@ -99,9 +97,7 @@ mod tests {
             .call(vec![Value::scalar_f64(4.0)])
             .expect("value_and_grad should succeed");
 
-        let val = value[0]
-            .as_f64_scalar()
-            .expect("value should be scalar");
+        let val = value[0].as_f64_scalar().expect("value should be scalar");
         assert!((val - 16.0).abs() < 1e-6);
 
         let grad_val = gradient[0]
@@ -119,9 +115,7 @@ mod tests {
             .compose_grad()
             .call(vec![Value::scalar_f64(5.0)])
             .expect("jit(grad(f)) should succeed");
-        let derivative = result[0]
-            .as_f64_scalar()
-            .expect("should be scalar");
+        let derivative = result[0].as_f64_scalar().expect("should be scalar");
         assert!((derivative - 10.0).abs() < 1e-3);
     }
 
@@ -134,9 +128,7 @@ mod tests {
                 Value::vector_i64(&[1, 2, 3]).expect("vector should build"),
             ])
             .expect("jit(vmap(f)) should succeed");
-        let output = result[0]
-            .as_tensor()
-            .expect("should be tensor");
+        let output = result[0].as_tensor().expect("should be tensor");
         let values: Vec<i64> = output
             .elements
             .iter()
@@ -154,9 +146,7 @@ mod tests {
                 Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector should build"),
             ])
             .expect("vmap(grad(f)) should succeed");
-        let output = result[0]
-            .as_tensor()
-            .expect("should be tensor");
+        let output = result[0].as_tensor().expect("should be tensor");
         let values = output.to_f64_vec().expect("f64 elements");
         assert_eq!(values.len(), 3);
         assert!((values[0] - 2.0).abs() < 1e-3);
@@ -170,9 +160,7 @@ mod tests {
         let result = compose(jaxpr, vec![Transform::Jit, Transform::Grad])
             .call(vec![Value::scalar_f64(7.0)])
             .expect("compose(jit, grad) should succeed");
-        let derivative = result[0]
-            .as_f64_scalar()
-            .expect("should be scalar");
+        let derivative = result[0].as_f64_scalar().expect("should be scalar");
         assert!((derivative - 14.0).abs() < 1e-3);
     }
 
@@ -238,9 +226,7 @@ mod tests {
             .with_mode(fj_core::CompatibilityMode::Hardened)
             .call(vec![Value::scalar_f64(2.0)])
             .expect("hardened jit(grad(f)) should succeed");
-        let derivative = result[0]
-            .as_f64_scalar()
-            .expect("should be scalar");
+        let derivative = result[0].as_f64_scalar().expect("should be scalar");
         assert!((derivative - 4.0).abs() < 1e-3);
     }
 }

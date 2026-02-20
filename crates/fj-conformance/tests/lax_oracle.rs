@@ -16,7 +16,10 @@ fn assert_f64_close(actual: f64, expected: f64, tol: f64, context: &str) {
     if expected.is_nan() {
         assert!(actual.is_nan(), "{context}: expected NaN, got {actual}");
     } else if expected.is_infinite() {
-        assert_eq!(actual, expected, "{context}: expected {expected}, got {actual}");
+        assert_eq!(
+            actual, expected,
+            "{context}: expected {expected}, got {actual}"
+        );
     } else {
         assert!(
             (actual - expected).abs() < tol,
@@ -50,153 +53,540 @@ fn eval_bool(prim: Primitive, inputs: &[Value], params: &BTreeMap<String, String
 
 #[test]
 fn oracle_add_i64() {
-    assert_eq!(eval_i64(Primitive::Add, &[Value::scalar_i64(7), Value::scalar_i64(3)], &no_params()), 10);
-    assert_eq!(eval_i64(Primitive::Add, &[Value::scalar_i64(-5), Value::scalar_i64(5)], &no_params()), 0);
-    assert_eq!(eval_i64(Primitive::Add, &[Value::scalar_i64(0), Value::scalar_i64(0)], &no_params()), 0);
+    assert_eq!(
+        eval_i64(
+            Primitive::Add,
+            &[Value::scalar_i64(7), Value::scalar_i64(3)],
+            &no_params()
+        ),
+        10
+    );
+    assert_eq!(
+        eval_i64(
+            Primitive::Add,
+            &[Value::scalar_i64(-5), Value::scalar_i64(5)],
+            &no_params()
+        ),
+        0
+    );
+    assert_eq!(
+        eval_i64(
+            Primitive::Add,
+            &[Value::scalar_i64(0), Value::scalar_i64(0)],
+            &no_params()
+        ),
+        0
+    );
 }
 
 #[test]
 fn oracle_add_f64() {
-    assert_f64_close(eval_f64(Primitive::Add, &[Value::scalar_f64(1.5), Value::scalar_f64(2.5)], &no_params()), 4.0, 1e-14, "add(1.5, 2.5)");
-    assert_f64_close(eval_f64(Primitive::Add, &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(1.0)], &no_params()), f64::INFINITY, 1e-14, "add(Inf, 1)");
-    assert_f64_close(eval_f64(Primitive::Add, &[Value::scalar_f64(f64::NAN), Value::scalar_f64(1.0)], &no_params()), f64::NAN, 1e-14, "add(NaN, 1)");
+    assert_f64_close(
+        eval_f64(
+            Primitive::Add,
+            &[Value::scalar_f64(1.5), Value::scalar_f64(2.5)],
+            &no_params(),
+        ),
+        4.0,
+        1e-14,
+        "add(1.5, 2.5)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Add,
+            &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(1.0)],
+            &no_params(),
+        ),
+        f64::INFINITY,
+        1e-14,
+        "add(Inf, 1)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Add,
+            &[Value::scalar_f64(f64::NAN), Value::scalar_f64(1.0)],
+            &no_params(),
+        ),
+        f64::NAN,
+        1e-14,
+        "add(NaN, 1)",
+    );
 }
 
 #[test]
 fn oracle_sub_i64() {
-    assert_eq!(eval_i64(Primitive::Sub, &[Value::scalar_i64(10), Value::scalar_i64(3)], &no_params()), 7);
-    assert_eq!(eval_i64(Primitive::Sub, &[Value::scalar_i64(3), Value::scalar_i64(10)], &no_params()), -7);
+    assert_eq!(
+        eval_i64(
+            Primitive::Sub,
+            &[Value::scalar_i64(10), Value::scalar_i64(3)],
+            &no_params()
+        ),
+        7
+    );
+    assert_eq!(
+        eval_i64(
+            Primitive::Sub,
+            &[Value::scalar_i64(3), Value::scalar_i64(10)],
+            &no_params()
+        ),
+        -7
+    );
 }
 
 #[test]
 fn oracle_sub_f64_inf() {
-    assert_f64_close(eval_f64(Primitive::Sub, &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(f64::INFINITY)], &no_params()), f64::NAN, 1e-14, "Inf - Inf = NaN");
+    assert_f64_close(
+        eval_f64(
+            Primitive::Sub,
+            &[
+                Value::scalar_f64(f64::INFINITY),
+                Value::scalar_f64(f64::INFINITY),
+            ],
+            &no_params(),
+        ),
+        f64::NAN,
+        1e-14,
+        "Inf - Inf = NaN",
+    );
 }
 
 #[test]
 fn oracle_mul_i64() {
-    assert_eq!(eval_i64(Primitive::Mul, &[Value::scalar_i64(6), Value::scalar_i64(7)], &no_params()), 42);
-    assert_eq!(eval_i64(Primitive::Mul, &[Value::scalar_i64(-3), Value::scalar_i64(4)], &no_params()), -12);
-    assert_eq!(eval_i64(Primitive::Mul, &[Value::scalar_i64(0), Value::scalar_i64(999)], &no_params()), 0);
+    assert_eq!(
+        eval_i64(
+            Primitive::Mul,
+            &[Value::scalar_i64(6), Value::scalar_i64(7)],
+            &no_params()
+        ),
+        42
+    );
+    assert_eq!(
+        eval_i64(
+            Primitive::Mul,
+            &[Value::scalar_i64(-3), Value::scalar_i64(4)],
+            &no_params()
+        ),
+        -12
+    );
+    assert_eq!(
+        eval_i64(
+            Primitive::Mul,
+            &[Value::scalar_i64(0), Value::scalar_i64(999)],
+            &no_params()
+        ),
+        0
+    );
 }
 
 #[test]
 fn oracle_neg() {
-    assert_eq!(eval_i64(Primitive::Neg, &[Value::scalar_i64(5)], &no_params()), -5);
-    assert_eq!(eval_i64(Primitive::Neg, &[Value::scalar_i64(-5)], &no_params()), 5);
-    assert_eq!(eval_i64(Primitive::Neg, &[Value::scalar_i64(0)], &no_params()), 0);
+    assert_eq!(
+        eval_i64(Primitive::Neg, &[Value::scalar_i64(5)], &no_params()),
+        -5
+    );
+    assert_eq!(
+        eval_i64(Primitive::Neg, &[Value::scalar_i64(-5)], &no_params()),
+        5
+    );
+    assert_eq!(
+        eval_i64(Primitive::Neg, &[Value::scalar_i64(0)], &no_params()),
+        0
+    );
 }
 
 #[test]
 fn oracle_abs() {
-    assert_eq!(eval_i64(Primitive::Abs, &[Value::scalar_i64(-42)], &no_params()), 42);
-    assert_eq!(eval_i64(Primitive::Abs, &[Value::scalar_i64(42)], &no_params()), 42);
-    assert_eq!(eval_i64(Primitive::Abs, &[Value::scalar_i64(0)], &no_params()), 0);
+    assert_eq!(
+        eval_i64(Primitive::Abs, &[Value::scalar_i64(-42)], &no_params()),
+        42
+    );
+    assert_eq!(
+        eval_i64(Primitive::Abs, &[Value::scalar_i64(42)], &no_params()),
+        42
+    );
+    assert_eq!(
+        eval_i64(Primitive::Abs, &[Value::scalar_i64(0)], &no_params()),
+        0
+    );
 }
 
 #[test]
 fn oracle_max() {
-    assert_eq!(eval_i64(Primitive::Max, &[Value::scalar_i64(3), Value::scalar_i64(7)], &no_params()), 7);
-    assert_eq!(eval_i64(Primitive::Max, &[Value::scalar_i64(7), Value::scalar_i64(3)], &no_params()), 7);
-    assert_f64_close(eval_f64(Primitive::Max, &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(1.0)], &no_params()), f64::INFINITY, 1e-14, "max(Inf, 1)");
+    assert_eq!(
+        eval_i64(
+            Primitive::Max,
+            &[Value::scalar_i64(3), Value::scalar_i64(7)],
+            &no_params()
+        ),
+        7
+    );
+    assert_eq!(
+        eval_i64(
+            Primitive::Max,
+            &[Value::scalar_i64(7), Value::scalar_i64(3)],
+            &no_params()
+        ),
+        7
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Max,
+            &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(1.0)],
+            &no_params(),
+        ),
+        f64::INFINITY,
+        1e-14,
+        "max(Inf, 1)",
+    );
 }
 
 #[test]
 fn oracle_min() {
-    assert_eq!(eval_i64(Primitive::Min, &[Value::scalar_i64(3), Value::scalar_i64(7)], &no_params()), 3);
-    assert_f64_close(eval_f64(Primitive::Min, &[Value::scalar_f64(f64::NEG_INFINITY), Value::scalar_f64(1.0)], &no_params()), f64::NEG_INFINITY, 1e-14, "min(-Inf, 1)");
+    assert_eq!(
+        eval_i64(
+            Primitive::Min,
+            &[Value::scalar_i64(3), Value::scalar_i64(7)],
+            &no_params()
+        ),
+        3
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Min,
+            &[Value::scalar_f64(f64::NEG_INFINITY), Value::scalar_f64(1.0)],
+            &no_params(),
+        ),
+        f64::NEG_INFINITY,
+        1e-14,
+        "min(-Inf, 1)",
+    );
 }
 
 #[test]
 fn oracle_pow() {
-    assert_f64_close(eval_f64(Primitive::Pow, &[Value::scalar_f64(2.0), Value::scalar_f64(10.0)], &no_params()), 1024.0, 1e-10, "2^10");
-    assert_f64_close(eval_f64(Primitive::Pow, &[Value::scalar_f64(3.0), Value::scalar_f64(0.0)], &no_params()), 1.0, 1e-14, "3^0 = 1");
-    assert_f64_close(eval_f64(Primitive::Pow, &[Value::scalar_f64(0.0), Value::scalar_f64(0.0)], &no_params()), 1.0, 1e-14, "0^0 = 1");
+    assert_f64_close(
+        eval_f64(
+            Primitive::Pow,
+            &[Value::scalar_f64(2.0), Value::scalar_f64(10.0)],
+            &no_params(),
+        ),
+        1024.0,
+        1e-10,
+        "2^10",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Pow,
+            &[Value::scalar_f64(3.0), Value::scalar_f64(0.0)],
+            &no_params(),
+        ),
+        1.0,
+        1e-14,
+        "3^0 = 1",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Pow,
+            &[Value::scalar_f64(0.0), Value::scalar_f64(0.0)],
+            &no_params(),
+        ),
+        1.0,
+        1e-14,
+        "0^0 = 1",
+    );
 }
 
 // ======================== Oracle: Transcendental ========================
 
 #[test]
 fn oracle_exp() {
-    assert_f64_close(eval_f64(Primitive::Exp, &[Value::scalar_f64(0.0)], &no_params()), 1.0, 1e-14, "exp(0)");
-    assert_f64_close(eval_f64(Primitive::Exp, &[Value::scalar_f64(1.0)], &no_params()), std::f64::consts::E, 1e-14, "exp(1)");
-    assert_f64_close(eval_f64(Primitive::Exp, &[Value::scalar_f64(f64::NEG_INFINITY)], &no_params()), 0.0, 1e-14, "exp(-Inf)");
-    assert_f64_close(eval_f64(Primitive::Exp, &[Value::scalar_f64(f64::INFINITY)], &no_params()), f64::INFINITY, 1e-14, "exp(Inf)");
+    assert_f64_close(
+        eval_f64(Primitive::Exp, &[Value::scalar_f64(0.0)], &no_params()),
+        1.0,
+        1e-14,
+        "exp(0)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Exp, &[Value::scalar_f64(1.0)], &no_params()),
+        std::f64::consts::E,
+        1e-14,
+        "exp(1)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Exp,
+            &[Value::scalar_f64(f64::NEG_INFINITY)],
+            &no_params(),
+        ),
+        0.0,
+        1e-14,
+        "exp(-Inf)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Exp,
+            &[Value::scalar_f64(f64::INFINITY)],
+            &no_params(),
+        ),
+        f64::INFINITY,
+        1e-14,
+        "exp(Inf)",
+    );
 }
 
 #[test]
 fn oracle_log() {
-    assert_f64_close(eval_f64(Primitive::Log, &[Value::scalar_f64(1.0)], &no_params()), 0.0, 1e-14, "log(1)");
-    assert_f64_close(eval_f64(Primitive::Log, &[Value::scalar_f64(std::f64::consts::E)], &no_params()), 1.0, 1e-14, "log(e)");
-    assert_f64_close(eval_f64(Primitive::Log, &[Value::scalar_f64(0.0)], &no_params()), f64::NEG_INFINITY, 1e-14, "log(0)");
-    assert_f64_close(eval_f64(Primitive::Log, &[Value::scalar_f64(-1.0)], &no_params()), f64::NAN, 1e-14, "log(-1)");
+    assert_f64_close(
+        eval_f64(Primitive::Log, &[Value::scalar_f64(1.0)], &no_params()),
+        0.0,
+        1e-14,
+        "log(1)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Log,
+            &[Value::scalar_f64(std::f64::consts::E)],
+            &no_params(),
+        ),
+        1.0,
+        1e-14,
+        "log(e)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Log, &[Value::scalar_f64(0.0)], &no_params()),
+        f64::NEG_INFINITY,
+        1e-14,
+        "log(0)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Log, &[Value::scalar_f64(-1.0)], &no_params()),
+        f64::NAN,
+        1e-14,
+        "log(-1)",
+    );
 }
 
 #[test]
 fn oracle_sqrt() {
-    assert_f64_close(eval_f64(Primitive::Sqrt, &[Value::scalar_f64(4.0)], &no_params()), 2.0, 1e-14, "sqrt(4)");
-    assert_f64_close(eval_f64(Primitive::Sqrt, &[Value::scalar_f64(0.0)], &no_params()), 0.0, 1e-14, "sqrt(0)");
-    assert_f64_close(eval_f64(Primitive::Sqrt, &[Value::scalar_f64(-1.0)], &no_params()), f64::NAN, 1e-14, "sqrt(-1)");
-    assert_f64_close(eval_f64(Primitive::Sqrt, &[Value::scalar_f64(f64::INFINITY)], &no_params()), f64::INFINITY, 1e-14, "sqrt(Inf)");
+    assert_f64_close(
+        eval_f64(Primitive::Sqrt, &[Value::scalar_f64(4.0)], &no_params()),
+        2.0,
+        1e-14,
+        "sqrt(4)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Sqrt, &[Value::scalar_f64(0.0)], &no_params()),
+        0.0,
+        1e-14,
+        "sqrt(0)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Sqrt, &[Value::scalar_f64(-1.0)], &no_params()),
+        f64::NAN,
+        1e-14,
+        "sqrt(-1)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Sqrt,
+            &[Value::scalar_f64(f64::INFINITY)],
+            &no_params(),
+        ),
+        f64::INFINITY,
+        1e-14,
+        "sqrt(Inf)",
+    );
 }
 
 #[test]
 fn oracle_rsqrt() {
-    assert_f64_close(eval_f64(Primitive::Rsqrt, &[Value::scalar_f64(4.0)], &no_params()), 0.5, 1e-14, "rsqrt(4)");
-    assert_f64_close(eval_f64(Primitive::Rsqrt, &[Value::scalar_f64(1.0)], &no_params()), 1.0, 1e-14, "rsqrt(1)");
+    assert_f64_close(
+        eval_f64(Primitive::Rsqrt, &[Value::scalar_f64(4.0)], &no_params()),
+        0.5,
+        1e-14,
+        "rsqrt(4)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Rsqrt, &[Value::scalar_f64(1.0)], &no_params()),
+        1.0,
+        1e-14,
+        "rsqrt(1)",
+    );
 }
 
 #[test]
 fn oracle_sin_cos() {
-    assert_f64_close(eval_f64(Primitive::Sin, &[Value::scalar_f64(0.0)], &no_params()), 0.0, 1e-14, "sin(0)");
-    assert_f64_close(eval_f64(Primitive::Cos, &[Value::scalar_f64(0.0)], &no_params()), 1.0, 1e-14, "cos(0)");
-    assert_f64_close(eval_f64(Primitive::Sin, &[Value::scalar_f64(std::f64::consts::FRAC_PI_2)], &no_params()), 1.0, 1e-14, "sin(pi/2)");
-    assert_f64_close(eval_f64(Primitive::Cos, &[Value::scalar_f64(std::f64::consts::PI)], &no_params()), -1.0, 1e-14, "cos(pi)");
+    assert_f64_close(
+        eval_f64(Primitive::Sin, &[Value::scalar_f64(0.0)], &no_params()),
+        0.0,
+        1e-14,
+        "sin(0)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Cos, &[Value::scalar_f64(0.0)], &no_params()),
+        1.0,
+        1e-14,
+        "cos(0)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Sin,
+            &[Value::scalar_f64(std::f64::consts::FRAC_PI_2)],
+            &no_params(),
+        ),
+        1.0,
+        1e-14,
+        "sin(pi/2)",
+    );
+    assert_f64_close(
+        eval_f64(
+            Primitive::Cos,
+            &[Value::scalar_f64(std::f64::consts::PI)],
+            &no_params(),
+        ),
+        -1.0,
+        1e-14,
+        "cos(pi)",
+    );
 }
 
 #[test]
 fn oracle_floor_ceil_round() {
-    assert_f64_close(eval_f64(Primitive::Floor, &[Value::scalar_f64(3.7)], &no_params()), 3.0, 1e-14, "floor(3.7)");
-    assert_f64_close(eval_f64(Primitive::Floor, &[Value::scalar_f64(-1.2)], &no_params()), -2.0, 1e-14, "floor(-1.2)");
-    assert_f64_close(eval_f64(Primitive::Ceil, &[Value::scalar_f64(3.2)], &no_params()), 4.0, 1e-14, "ceil(3.2)");
-    assert_f64_close(eval_f64(Primitive::Ceil, &[Value::scalar_f64(-1.7)], &no_params()), -1.0, 1e-14, "ceil(-1.7)");
-    assert_f64_close(eval_f64(Primitive::Round, &[Value::scalar_f64(3.5)], &no_params()), 4.0, 1e-14, "round(3.5)");
+    assert_f64_close(
+        eval_f64(Primitive::Floor, &[Value::scalar_f64(3.7)], &no_params()),
+        3.0,
+        1e-14,
+        "floor(3.7)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Floor, &[Value::scalar_f64(-1.2)], &no_params()),
+        -2.0,
+        1e-14,
+        "floor(-1.2)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Ceil, &[Value::scalar_f64(3.2)], &no_params()),
+        4.0,
+        1e-14,
+        "ceil(3.2)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Ceil, &[Value::scalar_f64(-1.7)], &no_params()),
+        -1.0,
+        1e-14,
+        "ceil(-1.7)",
+    );
+    assert_f64_close(
+        eval_f64(Primitive::Round, &[Value::scalar_f64(3.5)], &no_params()),
+        4.0,
+        1e-14,
+        "round(3.5)",
+    );
     // Rust f64::round rounds half away from zero (3.0), not banker's rounding (2.0)
-    assert_f64_close(eval_f64(Primitive::Round, &[Value::scalar_f64(2.5)], &no_params()), 3.0, 1e-14, "round(2.5)");
+    assert_f64_close(
+        eval_f64(Primitive::Round, &[Value::scalar_f64(2.5)], &no_params()),
+        3.0,
+        1e-14,
+        "round(2.5)",
+    );
 }
 
 // ======================== Oracle: Comparison ========================
 
 #[test]
 fn oracle_eq() {
-    assert!(eval_bool(Primitive::Eq, &[Value::scalar_i64(3), Value::scalar_i64(3)], &no_params()));
-    assert!(!eval_bool(Primitive::Eq, &[Value::scalar_i64(3), Value::scalar_i64(4)], &no_params()));
-    assert!(!eval_bool(Primitive::Eq, &[Value::scalar_f64(f64::NAN), Value::scalar_f64(f64::NAN)], &no_params()));
+    assert!(eval_bool(
+        Primitive::Eq,
+        &[Value::scalar_i64(3), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Eq,
+        &[Value::scalar_i64(3), Value::scalar_i64(4)],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Eq,
+        &[Value::scalar_f64(f64::NAN), Value::scalar_f64(f64::NAN)],
+        &no_params()
+    ));
 }
 
 #[test]
 fn oracle_ne() {
-    assert!(!eval_bool(Primitive::Ne, &[Value::scalar_i64(3), Value::scalar_i64(3)], &no_params()));
-    assert!(eval_bool(Primitive::Ne, &[Value::scalar_i64(3), Value::scalar_i64(4)], &no_params()));
-    assert!(eval_bool(Primitive::Ne, &[Value::scalar_f64(f64::NAN), Value::scalar_f64(f64::NAN)], &no_params()));
+    assert!(!eval_bool(
+        Primitive::Ne,
+        &[Value::scalar_i64(3), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(eval_bool(
+        Primitive::Ne,
+        &[Value::scalar_i64(3), Value::scalar_i64(4)],
+        &no_params()
+    ));
+    assert!(eval_bool(
+        Primitive::Ne,
+        &[Value::scalar_f64(f64::NAN), Value::scalar_f64(f64::NAN)],
+        &no_params()
+    ));
 }
 
 #[test]
 fn oracle_lt_le_gt_ge() {
     // lt
-    assert!(eval_bool(Primitive::Lt, &[Value::scalar_i64(2), Value::scalar_i64(3)], &no_params()));
-    assert!(!eval_bool(Primitive::Lt, &[Value::scalar_i64(3), Value::scalar_i64(3)], &no_params()));
+    assert!(eval_bool(
+        Primitive::Lt,
+        &[Value::scalar_i64(2), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Lt,
+        &[Value::scalar_i64(3), Value::scalar_i64(3)],
+        &no_params()
+    ));
     // le
-    assert!(eval_bool(Primitive::Le, &[Value::scalar_i64(3), Value::scalar_i64(3)], &no_params()));
-    assert!(eval_bool(Primitive::Le, &[Value::scalar_i64(2), Value::scalar_i64(3)], &no_params()));
-    assert!(!eval_bool(Primitive::Le, &[Value::scalar_i64(4), Value::scalar_i64(3)], &no_params()));
+    assert!(eval_bool(
+        Primitive::Le,
+        &[Value::scalar_i64(3), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(eval_bool(
+        Primitive::Le,
+        &[Value::scalar_i64(2), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Le,
+        &[Value::scalar_i64(4), Value::scalar_i64(3)],
+        &no_params()
+    ));
     // gt
-    assert!(eval_bool(Primitive::Gt, &[Value::scalar_i64(4), Value::scalar_i64(3)], &no_params()));
-    assert!(!eval_bool(Primitive::Gt, &[Value::scalar_i64(3), Value::scalar_i64(3)], &no_params()));
+    assert!(eval_bool(
+        Primitive::Gt,
+        &[Value::scalar_i64(4), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Gt,
+        &[Value::scalar_i64(3), Value::scalar_i64(3)],
+        &no_params()
+    ));
     // ge
-    assert!(eval_bool(Primitive::Ge, &[Value::scalar_i64(3), Value::scalar_i64(3)], &no_params()));
-    assert!(eval_bool(Primitive::Ge, &[Value::scalar_i64(4), Value::scalar_i64(3)], &no_params()));
-    assert!(!eval_bool(Primitive::Ge, &[Value::scalar_i64(2), Value::scalar_i64(3)], &no_params()));
+    assert!(eval_bool(
+        Primitive::Ge,
+        &[Value::scalar_i64(3), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(eval_bool(
+        Primitive::Ge,
+        &[Value::scalar_i64(4), Value::scalar_i64(3)],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Ge,
+        &[Value::scalar_i64(2), Value::scalar_i64(3)],
+        &no_params()
+    ));
 }
 
 #[test]
@@ -204,11 +594,31 @@ fn oracle_comparison_nan_always_false() {
     // NaN comparisons: everything except != is false
     let nan = Value::scalar_f64(f64::NAN);
     let one = Value::scalar_f64(1.0);
-    assert!(!eval_bool(Primitive::Lt, &[nan.clone(), one.clone()], &no_params()));
-    assert!(!eval_bool(Primitive::Le, &[nan.clone(), one.clone()], &no_params()));
-    assert!(!eval_bool(Primitive::Gt, &[nan.clone(), one.clone()], &no_params()));
-    assert!(!eval_bool(Primitive::Ge, &[nan.clone(), one.clone()], &no_params()));
-    assert!(!eval_bool(Primitive::Eq, &[nan.clone(), one.clone()], &no_params()));
+    assert!(!eval_bool(
+        Primitive::Lt,
+        &[nan.clone(), one.clone()],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Le,
+        &[nan.clone(), one.clone()],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Gt,
+        &[nan.clone(), one.clone()],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Ge,
+        &[nan.clone(), one.clone()],
+        &no_params()
+    ));
+    assert!(!eval_bool(
+        Primitive::Eq,
+        &[nan.clone(), one.clone()],
+        &no_params()
+    ));
     assert!(eval_bool(Primitive::Ne, &[nan.clone(), one], &no_params()));
 }
 
@@ -220,7 +630,12 @@ fn oracle_reduce_sum() {
     assert_eq!(eval_i64(Primitive::ReduceSum, &[input], &no_params()), 15);
 
     let f_input = Value::vector_f64(&[1.5, 2.5, 3.0]).unwrap();
-    assert_f64_close(eval_f64(Primitive::ReduceSum, &[f_input], &no_params()), 7.0, 1e-14, "reduce_sum([1.5,2.5,3.0])");
+    assert_f64_close(
+        eval_f64(Primitive::ReduceSum, &[f_input], &no_params()),
+        7.0,
+        1e-14,
+        "reduce_sum([1.5,2.5,3.0])",
+    );
 }
 
 #[test]
@@ -267,10 +682,15 @@ fn oracle_transpose_2x3() {
         DType::I64,
         Shape { dims: vec![2, 3] },
         vec![
-            Literal::I64(1), Literal::I64(2), Literal::I64(3),
-            Literal::I64(4), Literal::I64(5), Literal::I64(6),
+            Literal::I64(1),
+            Literal::I64(2),
+            Literal::I64(3),
+            Literal::I64(4),
+            Literal::I64(5),
+            Literal::I64(6),
         ],
-    ).unwrap();
+    )
+    .unwrap();
     let out = eval_primitive(Primitive::Transpose, &[Value::Tensor(input)], &no_params()).unwrap();
     if let Value::Tensor(t) = &out {
         assert_eq!(t.shape.dims, vec![3, 2]);
@@ -341,7 +761,12 @@ fn oracle_dot_i64_vectors() {
 fn oracle_dot_f64_vectors() {
     let lhs = Value::vector_f64(&[0.1, 0.2, 0.3]).unwrap();
     let rhs = Value::vector_f64(&[4.0, 5.0, 6.0]).unwrap();
-    assert_f64_close(eval_f64(Primitive::Dot, &[lhs, rhs], &no_params()), 3.2, 1e-14, "dot([0.1,0.2,0.3],[4,5,6])");
+    assert_f64_close(
+        eval_f64(Primitive::Dot, &[lhs, rhs], &no_params()),
+        3.2,
+        1e-14,
+        "dot([0.1,0.2,0.3],[4,5,6])",
+    );
 }
 
 // ======================== Metamorphic: Identities ========================
@@ -354,7 +779,8 @@ fn metamorphic_add_identity() {
             Primitive::Add,
             &[Value::scalar_i64(x), Value::scalar_i64(0)],
             &no_params(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(out, Value::scalar_i64(x), "add({x}, 0) should be {x}");
     }
 }
@@ -367,7 +793,8 @@ fn metamorphic_mul_identity() {
             Primitive::Mul,
             &[Value::scalar_i64(x), Value::scalar_i64(1)],
             &no_params(),
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(out, Value::scalar_i64(x), "mul({x}, 1) should be {x}");
     }
 }
@@ -400,8 +827,14 @@ fn metamorphic_transpose_involution_square() {
         DType::I64,
         Shape { dims: vec![3, 3] },
         (1..=9).map(Literal::I64).collect(),
-    ).unwrap();
-    let t1 = eval_primitive(Primitive::Transpose, &[Value::Tensor(input.clone())], &no_params()).unwrap();
+    )
+    .unwrap();
+    let t1 = eval_primitive(
+        Primitive::Transpose,
+        &[Value::Tensor(input.clone())],
+        &no_params(),
+    )
+    .unwrap();
     let t2 = eval_primitive(Primitive::Transpose, &[t1], &no_params()).unwrap();
     assert_eq!(t2, Value::Tensor(input));
 }
@@ -412,7 +845,10 @@ fn metamorphic_reduce_sum_all_equals_manual() {
     let elems = vec![3i64, 7, -2, 10, 0, -5];
     let expected: i64 = elems.iter().sum();
     let input = Value::vector_i64(&elems).unwrap();
-    assert_eq!(eval_i64(Primitive::ReduceSum, &[input], &no_params()), expected);
+    assert_eq!(
+        eval_i64(Primitive::ReduceSum, &[input], &no_params()),
+        expected
+    );
 }
 
 #[test]
@@ -420,7 +856,7 @@ fn metamorphic_abs_idempotent() {
     // abs(abs(x)) == abs(x)
     for x in [-42i64, -1, 0, 1, 42] {
         let abs1 = eval_primitive(Primitive::Abs, &[Value::scalar_i64(x)], &no_params()).unwrap();
-        let abs2 = eval_primitive(Primitive::Abs, &[abs1.clone()], &no_params()).unwrap();
+        let abs2 = eval_primitive(Primitive::Abs, std::slice::from_ref(&abs1), &no_params()).unwrap();
         assert_eq!(abs1, abs2, "abs(abs({x})) should be abs({x})");
     }
 }
@@ -429,8 +865,16 @@ fn metamorphic_abs_idempotent() {
 fn metamorphic_max_min_agree_on_equal() {
     // max(x, x) == min(x, x) == x
     for x in [-5i64, 0, 42] {
-        let max_v = eval_i64(Primitive::Max, &[Value::scalar_i64(x), Value::scalar_i64(x)], &no_params());
-        let min_v = eval_i64(Primitive::Min, &[Value::scalar_i64(x), Value::scalar_i64(x)], &no_params());
+        let max_v = eval_i64(
+            Primitive::Max,
+            &[Value::scalar_i64(x), Value::scalar_i64(x)],
+            &no_params(),
+        );
+        let min_v = eval_i64(
+            Primitive::Min,
+            &[Value::scalar_i64(x), Value::scalar_i64(x)],
+            &no_params(),
+        );
         assert_eq!(max_v, x);
         assert_eq!(min_v, x);
     }
@@ -470,16 +914,35 @@ fn adversarial_dot_dimension_mismatch() {
 fn adversarial_arity_too_many_binary() {
     let err = eval_primitive(
         Primitive::Add,
-        &[Value::scalar_i64(1), Value::scalar_i64(2), Value::scalar_i64(3)],
+        &[
+            Value::scalar_i64(1),
+            Value::scalar_i64(2),
+            Value::scalar_i64(3),
+        ],
         &no_params(),
-    ).unwrap_err();
-    assert!(matches!(err, EvalError::ArityMismatch { expected: 2, actual: 3, .. }));
+    )
+    .unwrap_err();
+    assert!(matches!(
+        err,
+        EvalError::ArityMismatch {
+            expected: 2,
+            actual: 3,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn adversarial_arity_zero_unary() {
     let err = eval_primitive(Primitive::Neg, &[], &no_params()).unwrap_err();
-    assert!(matches!(err, EvalError::ArityMismatch { expected: 1, actual: 0, .. }));
+    assert!(matches!(
+        err,
+        EvalError::ArityMismatch {
+            expected: 1,
+            actual: 0,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -490,7 +953,8 @@ fn adversarial_gather_returns_unsupported() {
 
 #[test]
 fn adversarial_scatter_returns_unsupported() {
-    let err = eval_primitive(Primitive::Scatter, &[Value::scalar_i64(1)], &no_params()).unwrap_err();
+    let err =
+        eval_primitive(Primitive::Scatter, &[Value::scalar_i64(1)], &no_params()).unwrap_err();
     assert!(matches!(err, EvalError::Unsupported { .. }));
 }
 
@@ -511,7 +975,10 @@ fn adversarial_large_tensor_no_stack_overflow() {
     let input = Value::vector_i64(&big).unwrap();
     let out = eval_primitive(Primitive::ReduceSum, &[input], &no_params()).unwrap();
     // Sum of 0..10000 = 10000*9999/2 = 49995000
-    assert_eq!(eval_i64(Primitive::ReduceSum, &[Value::scalar_i64(0)], &no_params()), 0); // sanity
+    assert_eq!(
+        eval_i64(Primitive::ReduceSum, &[Value::scalar_i64(0)], &no_params()),
+        0
+    ); // sanity
     if let Value::Scalar(Literal::I64(v)) = out {
         assert_eq!(v, 49_995_000);
     } else {

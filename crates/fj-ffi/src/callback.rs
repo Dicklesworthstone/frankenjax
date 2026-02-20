@@ -7,6 +7,9 @@ use fj_core::Value;
 
 use crate::error::FfiError;
 
+/// Type alias for the boxed callback function to keep struct definitions concise.
+type CallbackFn = Box<dyn Fn(&[Value]) -> Result<Vec<Value>, FfiError> + Send + Sync>;
+
 /// Callback flavor: pure (reorderable) or IO (sequenced).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallbackFlavor {
@@ -20,7 +23,7 @@ pub enum CallbackFlavor {
 pub struct FfiCallback {
     name: String,
     flavor: CallbackFlavor,
-    func: Box<dyn Fn(&[Value]) -> Result<Vec<Value>, FfiError> + Send + Sync>,
+    func: CallbackFn,
 }
 
 impl FfiCallback {
@@ -143,8 +146,8 @@ mod tests {
 
     #[test]
     fn io_callback_invocation() {
-        use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
 
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();

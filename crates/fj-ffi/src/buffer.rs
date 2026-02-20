@@ -102,7 +102,9 @@ pub fn dtype_size_bytes(dtype: DType) -> Result<usize, FfiError> {
 /// Compute `product(shape) * dtype_size` with overflow checking.
 pub fn checked_buffer_size(shape: &[usize], dtype: DType) -> Result<usize, FfiError> {
     let elem_size = dtype_size_bytes(dtype)?;
-    let num_elements = shape.iter().try_fold(1usize, |acc, &dim| acc.checked_mul(dim));
+    let num_elements = shape
+        .iter()
+        .try_fold(1usize, |acc, &dim| acc.checked_mul(dim));
     match num_elements {
         Some(n) => n.checked_mul(elem_size).ok_or(FfiError::BufferMismatch {
             buffer_index: 0,

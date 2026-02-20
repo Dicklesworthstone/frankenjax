@@ -476,29 +476,18 @@ impl SimpleTraceContext {
                         detail: format!("expected 3 inputs, got {}", inputs.len()),
                     });
                 }
-                // Output shape is broadcast of all three inputs; dtype from on_true
-                let shape_01 =
-                    broadcast_shape(&inputs[0].shape, &inputs[1].shape).ok_or(
-                        TraceError::ShapeInferenceFailed {
-                            primitive,
-                            detail: format!(
-                                "cannot broadcast {:?} with {:?}",
-                                inputs[0].shape.dims, inputs[1].shape.dims
-                            ),
-                        },
-                    )?;
-                let shape = broadcast_shape(&shape_01, &inputs[2].shape).ok_or(
-                    TraceError::ShapeInferenceFailed {
+                if inputs[0].shape != inputs[1].shape || inputs[0].shape != inputs[2].shape {
+                    return Err(TraceError::ShapeInferenceFailed {
                         primitive,
                         detail: format!(
-                            "cannot broadcast {:?} with {:?}",
-                            shape_01.dims, inputs[2].shape.dims
+                            "select requires matching shapes, got {:?}, {:?}, {:?}",
+                            inputs[0].shape.dims, inputs[1].shape.dims, inputs[2].shape.dims
                         ),
-                    },
-                )?;
+                    });
+                }
                 Ok(vec![ShapedArray {
                     dtype: promote_dtype(inputs[1].dtype, inputs[2].dtype),
-                    shape,
+                    shape: inputs[1].shape.clone(),
                 }])
             }
             Primitive::Concatenate => infer_concatenate(inputs, params),
@@ -1363,7 +1352,7 @@ mod tests {
     use std::any::Any;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::path::{Path, PathBuf};
     use std::time::Instant;
 
@@ -1578,10 +1567,15 @@ mod tests {
                         dtype: DType::I64,
                         shape: Shape { dims: vec![2] },
                     },
+                    ShapedArray {
+                        dtype: DType::Bool,
+                        shape: Shape { dims: vec![5, 7] },
+                    },
                 ]);
 
                 let x = TracerId(1);
                 let idx = TracerId(2);
+                let cond = TracerId(3);
 
                 let mut slice_params = BTreeMap::new();
                 slice_params.insert("start_indices".to_owned(), "1,2".to_owned());
@@ -1640,6 +1634,51 @@ mod tests {
                         .shape,
                     Shape { dims: vec![10, 7] }
                 );
+
+                let selected = ctx
+                    .process_primitive(Primitive::Select, &[cond, x, x], BTreeMap::new())
+                    .expect("select inference should succeed");
+                assert_eq!(
+                    ctx.tracer_aval(selected[0]).expect("aval present").shape,
+                    Shape { dims: vec![5, 7] }
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn infer_select_rejects_shape_mismatch() {
+        run_logged_test(
+            "infer_select_rejects_shape_mismatch",
+            fj_test_utils::fixture_id_from_json(&("select-shape-mismatch", [5_u32, 7_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::Bool,
+                        shape: Shape { dims: vec![5, 7] },
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![5, 7] },
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![1, 7] },
+                    },
+                ]);
+
+                let err = ctx
+                    .process_primitive(
+                        Primitive::Select,
+                        &[TracerId(1), TracerId(2), TracerId(3)],
+                        BTreeMap::new(),
+                    )
+                    .expect_err("select mismatch should fail");
+                let detail = err.to_string();
+                assert!(detail.contains("select requires matching shapes"));
                 Ok(Vec::new())
             },
         );

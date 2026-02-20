@@ -78,10 +78,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
 fn build_ledger(jaxpr: Jaxpr, transforms: &[Transform]) -> TraceTransformLedger {
     let mut ledger = TraceTransformLedger::new(jaxpr);
     for (idx, transform) in transforms.iter().enumerate() {
-        ledger.push_transform(
-            *transform,
-            format!("fj-api-{}-{}", transform.as_str(), idx),
-        );
+        ledger.push_transform(*transform, format!("fj-api-{}-{}", transform.as_str(), idx));
     }
     ledger
 }

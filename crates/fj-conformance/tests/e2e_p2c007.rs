@@ -7,8 +7,8 @@
 
 use fj_core::{DType, Literal, Shape, TensorValue, Value};
 use fj_ffi::{
-    buffer_to_value, value_to_buffer, CallbackRegistry, FfiBuffer, FfiCall, FfiCallback, FfiError,
-    FfiRegistry,
+    CallbackRegistry, FfiBuffer, FfiCall, FfiCallback, FfiError, FfiRegistry, buffer_to_value,
+    value_to_buffer,
 };
 
 // ======================== Mock FFI functions ========================
@@ -210,8 +210,8 @@ fn e2e_ffi_adversarial_clean_errors() {
 /// E2E 6: Callback pipeline — pure callback + IO callback.
 #[test]
 fn e2e_ffi_callback_pipeline() {
-    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     let mut cb_registry = CallbackRegistry::new();
 
@@ -219,9 +219,7 @@ fn e2e_ffi_callback_pipeline() {
     cb_registry
         .register(FfiCallback::pure_callback("add_one", |args| {
             match &args[0] {
-                Value::Scalar(Literal::I64(v)) => {
-                    Ok(vec![Value::Scalar(Literal::I64(v + 1))])
-                }
+                Value::Scalar(Literal::I64(v)) => Ok(vec![Value::Scalar(Literal::I64(v + 1))]),
                 _ => Err(FfiError::CallFailed {
                     target: "add_one".to_string(),
                     code: 1,

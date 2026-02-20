@@ -6,7 +6,7 @@
 use fj_core::{
     CompatibilityMode, ProgramSpec, TraceTransformLedger, Transform, Value, build_program,
 };
-use fj_dispatch::{dispatch, DispatchRequest};
+use fj_dispatch::{DispatchRequest, dispatch};
 use serde::Serialize;
 use serde_json::{Value as JsonValue, json};
 use std::collections::BTreeMap;
@@ -154,22 +154,56 @@ fn e2e_p2c004_transform_composition_matrix() {
         CompatibilityMode::Strict,
         |states| {
             let compositions: Vec<(&str, Vec<Transform>, Vec<Value>)> = vec![
-                ("jit_only", vec![Transform::Jit], vec![Value::scalar_i64(5), Value::scalar_i64(3)]),
-                ("grad_only", vec![Transform::Grad], vec![Value::scalar_f64(4.0)]),
-                ("vmap_only", vec![Transform::Vmap], vec![Value::vector_i64(&[1,2,3]).unwrap()]),
-                ("jit_grad", vec![Transform::Jit, Transform::Grad], vec![Value::scalar_f64(2.0)]),
-                ("jit_vmap", vec![Transform::Jit, Transform::Vmap], vec![Value::vector_i64(&[1,2]).unwrap()]),
-                ("vmap_grad", vec![Transform::Vmap, Transform::Grad], vec![Value::vector_f64(&[1.0,2.0]).unwrap()]),
-                ("jit_vmap_grad", vec![Transform::Jit, Transform::Vmap, Transform::Grad], vec![Value::vector_f64(&[1.0,2.0]).unwrap()]),
+                (
+                    "jit_only",
+                    vec![Transform::Jit],
+                    vec![Value::scalar_i64(5), Value::scalar_i64(3)],
+                ),
+                (
+                    "grad_only",
+                    vec![Transform::Grad],
+                    vec![Value::scalar_f64(4.0)],
+                ),
+                (
+                    "vmap_only",
+                    vec![Transform::Vmap],
+                    vec![Value::vector_i64(&[1, 2, 3]).unwrap()],
+                ),
+                (
+                    "jit_grad",
+                    vec![Transform::Jit, Transform::Grad],
+                    vec![Value::scalar_f64(2.0)],
+                ),
+                (
+                    "jit_vmap",
+                    vec![Transform::Jit, Transform::Vmap],
+                    vec![Value::vector_i64(&[1, 2]).unwrap()],
+                ),
+                (
+                    "vmap_grad",
+                    vec![Transform::Vmap, Transform::Grad],
+                    vec![Value::vector_f64(&[1.0, 2.0]).unwrap()],
+                ),
+                (
+                    "jit_vmap_grad",
+                    vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+                    vec![Value::vector_f64(&[1.0, 2.0]).unwrap()],
+                ),
             ];
 
             let mut cache_keys = Vec::new();
 
             for (name, transforms, args) in &compositions {
-                let program = if transforms.contains(&Transform::Grad) && !transforms.contains(&Transform::Vmap) {
+                let program = if transforms.contains(&Transform::Grad)
+                    && !transforms.contains(&Transform::Vmap)
+                {
                     ProgramSpec::Square
                 } else if transforms.contains(&Transform::Vmap) {
-                    if transforms.contains(&Transform::Grad) { ProgramSpec::Square } else { ProgramSpec::AddOne }
+                    if transforms.contains(&Transform::Grad) {
+                        ProgramSpec::Square
+                    } else {
+                        ProgramSpec::AddOne
+                    }
                 } else {
                     ProgramSpec::Add2
                 };
@@ -237,7 +271,10 @@ fn e2e_p2c004_strict_hardened_divergence() {
                 "mode": "strict",
                 "result": if strict_result.is_err() { "REJECTED" } else { "ACCEPTED" },
             }));
-            assert!(strict_result.is_err(), "strict must reject unknown features");
+            assert!(
+                strict_result.is_err(),
+                "strict must reject unknown features"
+            );
 
             // Hardened mode: should succeed
             let hardened_result = dispatch(DispatchRequest {
@@ -278,11 +315,31 @@ fn e2e_p2c004_evidence_ledger_audit_trail() {
         CompatibilityMode::Strict,
         |states| {
             let programs = [
-                (ProgramSpec::Add2, &[Transform::Jit][..], vec![Value::scalar_i64(1), Value::scalar_i64(2)]),
-                (ProgramSpec::Square, &[Transform::Grad][..], vec![Value::scalar_f64(3.0)]),
-                (ProgramSpec::AddOne, &[Transform::Vmap][..], vec![Value::vector_i64(&[1,2,3]).unwrap()]),
-                (ProgramSpec::Square, &[Transform::Jit, Transform::Grad][..], vec![Value::scalar_f64(5.0)]),
-                (ProgramSpec::AddOne, &[Transform::Jit, Transform::Vmap][..], vec![Value::vector_i64(&[10,20]).unwrap()]),
+                (
+                    ProgramSpec::Add2,
+                    &[Transform::Jit][..],
+                    vec![Value::scalar_i64(1), Value::scalar_i64(2)],
+                ),
+                (
+                    ProgramSpec::Square,
+                    &[Transform::Grad][..],
+                    vec![Value::scalar_f64(3.0)],
+                ),
+                (
+                    ProgramSpec::AddOne,
+                    &[Transform::Vmap][..],
+                    vec![Value::vector_i64(&[1, 2, 3]).unwrap()],
+                ),
+                (
+                    ProgramSpec::Square,
+                    &[Transform::Jit, Transform::Grad][..],
+                    vec![Value::scalar_f64(5.0)],
+                ),
+                (
+                    ProgramSpec::AddOne,
+                    &[Transform::Jit, Transform::Vmap][..],
+                    vec![Value::vector_i64(&[10, 20]).unwrap()],
+                ),
             ];
 
             for (i, (program, transforms, args)) in programs.iter().enumerate() {
@@ -323,63 +380,59 @@ fn e2e_p2c004_evidence_ledger_audit_trail() {
 
 #[test]
 fn e2e_p2c004_dispatch_under_load() {
-    run_e2e_scenario(
-        "dispatch_under_load",
-        CompatibilityMode::Strict,
-        |states| {
-            let n = 1000;
-            let mut latencies_ns = Vec::with_capacity(n);
-            let mut last_key = String::new();
-            let mut last_output = vec![];
-            let mut drift_count = 0;
+    run_e2e_scenario("dispatch_under_load", CompatibilityMode::Strict, |states| {
+        let n = 1000;
+        let mut latencies_ns = Vec::with_capacity(n);
+        let mut last_key = String::new();
+        let mut last_output = vec![];
+        let mut drift_count = 0;
 
-            for i in 0..n {
-                let start = Instant::now();
-                let r = dispatch(DispatchRequest {
-                    mode: CompatibilityMode::Strict,
-                    ledger: ledger(ProgramSpec::Add2, &[Transform::Jit]),
-                    args: vec![Value::scalar_i64(10), Value::scalar_i64(20)],
-                    backend: "cpu".to_owned(),
-                    compile_options: BTreeMap::new(),
-                    custom_hook: None,
-                    unknown_incompatible_features: vec![],
-                })
-                .expect("dispatch should succeed");
-                latencies_ns.push(start.elapsed().as_nanos());
+        for i in 0..n {
+            let start = Instant::now();
+            let r = dispatch(DispatchRequest {
+                mode: CompatibilityMode::Strict,
+                ledger: ledger(ProgramSpec::Add2, &[Transform::Jit]),
+                args: vec![Value::scalar_i64(10), Value::scalar_i64(20)],
+                backend: "cpu".to_owned(),
+                compile_options: BTreeMap::new(),
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            })
+            .expect("dispatch should succeed");
+            latencies_ns.push(start.elapsed().as_nanos());
 
-                if i == 0 {
-                    last_key = r.cache_key.clone();
-                    last_output = r.outputs.clone();
-                } else {
-                    assert_eq!(r.cache_key, last_key, "cache key drift at i={i}");
-                    if r.outputs != last_output {
-                        drift_count += 1;
-                    }
+            if i == 0 {
+                last_key = r.cache_key.clone();
+                last_output = r.outputs.clone();
+            } else {
+                assert_eq!(r.cache_key, last_key, "cache key drift at i={i}");
+                if r.outputs != last_output {
+                    drift_count += 1;
                 }
             }
+        }
 
-            latencies_ns.sort();
-            let p50 = latencies_ns[n / 2];
-            let p95 = latencies_ns[n * 95 / 100];
-            let p99 = latencies_ns[n * 99 / 100];
+        latencies_ns.sort();
+        let p50 = latencies_ns[n / 2];
+        let p95 = latencies_ns[n * 95 / 100];
+        let p99 = latencies_ns[n * 99 / 100];
 
-            states.push(json!({
-                "iterations": n,
-                "p50_ns": p50,
-                "p95_ns": p95,
-                "p99_ns": p99,
-                "drift_count": drift_count,
-            }));
+        states.push(json!({
+            "iterations": n,
+            "p50_ns": p50,
+            "p95_ns": p95,
+            "p99_ns": p99,
+            "drift_count": drift_count,
+        }));
 
-            assert_eq!(drift_count, 0, "output drift detected");
+        assert_eq!(drift_count, 0, "output drift detected");
 
-            (
-                json!({"iterations": n}),
-                Some(json!({"p50_ns": p50, "p95_ns": p95, "p99_ns": p99, "drift_count": drift_count})),
-                "PASS".to_owned(),
-            )
-        },
-    );
+        (
+            json!({"iterations": n}),
+            Some(json!({"p50_ns": p50, "p95_ns": p95, "p99_ns": p99, "drift_count": drift_count})),
+            "PASS".to_owned(),
+        )
+    });
 }
 
 // ── Scenario 6: adversarial_dispatch_inputs ─────────────────────────
@@ -395,9 +448,7 @@ fn e2e_p2c004_adversarial_dispatch_inputs() {
             // 1. Empty transform stack — should succeed (direct eval)
             let r = dispatch(DispatchRequest {
                 mode: CompatibilityMode::Strict,
-                ledger: {
-                    TraceTransformLedger::new(build_program(ProgramSpec::Add2))
-                },
+                ledger: { TraceTransformLedger::new(build_program(ProgramSpec::Add2)) },
                 args: vec![Value::scalar_i64(1), Value::scalar_i64(2)],
                 backend: "cpu".to_owned(),
                 compile_options: BTreeMap::new(),

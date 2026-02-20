@@ -92,10 +92,12 @@ pub(crate) fn eval_reduce_axes(
             let axes: Vec<usize> = axes_str
                 .split(',')
                 .map(|s| {
-                    s.trim().parse::<usize>().map_err(|_| EvalError::Unsupported {
-                        primitive,
-                        detail: format!("invalid axis value: {}", s.trim()),
-                    })
+                    s.trim()
+                        .parse::<usize>()
+                        .map_err(|_| EvalError::Unsupported {
+                            primitive,
+                            detail: format!("invalid axis value: {}", s.trim()),
+                        })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -144,9 +146,7 @@ pub(crate) fn eval_reduce_axes(
             }
 
             // For each output element, iterate over the reduced axes and accumulate
-            let kept_axes: Vec<usize> = (0..rank)
-                .filter(|i| !axes_sorted.contains(i))
-                .collect();
+            let kept_axes: Vec<usize> = (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
 
             if is_integral {
                 let mut result = vec![int_init; out_count];
@@ -156,10 +156,13 @@ pub(crate) fn eval_reduce_axes(
                     let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
                     // Compute output flat index from kept dimensions
                     let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
-                    let val = tensor.elements[flat_idx].as_i64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected i64 tensor",
-                    })?;
+                    let val =
+                        tensor.elements[flat_idx]
+                            .as_i64()
+                            .ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected i64 tensor",
+                            })?;
                     result[out_idx] = int_op(result[out_idx], val);
                 }
                 let elements: Vec<Literal> = result.into_iter().map(Literal::I64).collect();
@@ -174,10 +177,13 @@ pub(crate) fn eval_reduce_axes(
                 for flat_idx in 0..total {
                     let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
                     let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
-                    let val = tensor.elements[flat_idx].as_f64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected numeric tensor",
-                    })?;
+                    let val =
+                        tensor.elements[flat_idx]
+                            .as_f64()
+                            .ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected numeric tensor",
+                            })?;
                     result[out_idx] = float_op(result[out_idx], val);
                 }
                 let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();

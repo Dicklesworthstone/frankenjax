@@ -1,6 +1,7 @@
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use fj_cache::{
-    build_cache_key, build_cache_key_ref, CacheKeyInput, CacheKeyInputRef, CacheManager,
+    CacheKeyInput, CacheKeyInputRef, CacheManager, build_cache_key, build_cache_key_ref,
 };
 use fj_core::{CompatibilityMode, Jaxpr, ProgramSpec, Transform, build_program};
 use std::collections::BTreeMap;

@@ -264,7 +264,10 @@ fn e2e_p2c002_user_api_grad_polynomial() {
             }));
 
             if (value - x * x).abs() > 1e-6 {
-                return Err(format!("value_and_grad value mismatch: {value} vs {}", x * x));
+                return Err(format!(
+                    "value_and_grad value mismatch: {value} vs {}",
+                    x * x
+                ));
             }
             if (vag_gradient - gradient).abs() > 1e-6 {
                 return Err(format!(
@@ -309,9 +312,7 @@ fn e2e_p2c002_user_api_vmap_batch() {
             let vmap_result = vmap(jaxpr.clone())
                 .call(vec![input])
                 .map_err(|e| format!("vmap API call failed: {e}"))?;
-            let tensor = vmap_result[0]
-                .as_tensor()
-                .ok_or("expected tensor output")?;
+            let tensor = vmap_result[0].as_tensor().ok_or("expected tensor output")?;
             let vals: Vec<i64> = tensor
                 .elements
                 .iter()
@@ -392,10 +393,9 @@ fn e2e_p2c002_user_api_stacking() {
             }));
 
             // Step 2: Call via compose() helper
-            let compose_result =
-                compose(jaxpr.clone(), vec![Transform::Jit, Transform::Grad])
-                    .call(vec![Value::scalar_f64(x)])
-                    .map_err(|e| format!("compose API call failed: {e}"))?;
+            let compose_result = compose(jaxpr.clone(), vec![Transform::Jit, Transform::Grad])
+                .call(vec![Value::scalar_f64(x)])
+                .map_err(|e| format!("compose API call failed: {e}"))?;
             let compose_val = compose_result[0]
                 .as_f64_scalar()
                 .ok_or("expected f64 scalar from compose")?;
@@ -425,9 +425,7 @@ fn e2e_p2c002_user_api_stacking() {
             ];
             for (name, val) in &paths {
                 if (val - expected).abs() > 1e-3 {
-                    return Err(format!(
-                        "{name} path: got {val}, expected {expected}"
-                    ));
+                    return Err(format!("{name} path: got {val}, expected {expected}"));
                 }
             }
 

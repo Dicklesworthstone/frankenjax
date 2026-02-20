@@ -7,8 +7,8 @@
 //! FrankenJAX adds LRU as a configurable defense against cache exhaustion DoS
 //! (threat matrix: "Cache exhaustion DoS").
 
-use crate::backend::{CacheBackend, CacheStats, CachedArtifact};
 use crate::CacheKey;
+use crate::backend::{CacheBackend, CacheStats, CachedArtifact};
 use std::collections::VecDeque;
 
 /// Configuration for LRU eviction.
@@ -162,7 +162,10 @@ mod tests {
         // Adding a third should evict "a" (oldest).
         cache.put(&test_key("c"), test_artifact(b"third"));
         assert_eq!(cache.stats().entry_count, 2);
-        assert!(cache.get(&test_key("a")).is_none(), "oldest should be evicted");
+        assert!(
+            cache.get(&test_key("a")).is_none(),
+            "oldest should be evicted"
+        );
         assert!(cache.get(&test_key("b")).is_some());
         assert!(cache.get(&test_key("c")).is_some());
     }

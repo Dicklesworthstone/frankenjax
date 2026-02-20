@@ -2,11 +2,10 @@
 
 #![allow(unsafe_code)]
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use fj_core::{DType, Literal, Shape, TensorValue, Value};
-use fj_ffi::{
-    buffer_to_value, value_to_buffer, FfiBuffer, FfiCall, FfiRegistry,
-};
+use fj_ffi::{FfiBuffer, FfiCall, FfiRegistry, buffer_to_value, value_to_buffer};
 
 unsafe extern "C" fn ffi_double(
     inputs: *const *const u8,
@@ -61,9 +60,12 @@ fn bench_ffi_scalar_roundtrip(c: &mut Criterion) {
 
     c.bench_function("ffi_roundtrip/scalar_f64", |b| {
         b.iter(|| {
-            let input =
-                FfiBuffer::new(black_box(42.0f64).to_ne_bytes().to_vec(), vec![], DType::F64)
-                    .unwrap();
+            let input = FfiBuffer::new(
+                black_box(42.0f64).to_ne_bytes().to_vec(),
+                vec![],
+                DType::F64,
+            )
+            .unwrap();
             let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
             call.invoke(&reg, &[input], &mut outputs).unwrap();
             black_box(&outputs[0]);

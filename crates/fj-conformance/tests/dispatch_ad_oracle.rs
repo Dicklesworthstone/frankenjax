@@ -15,7 +15,9 @@ use fj_core::{
     Atom, CompatibilityMode, Equation, Jaxpr, Primitive, ProgramSpec, TraceTransformLedger,
     Transform, Value, VarId, build_program,
 };
-use fj_dispatch::{dispatch, DispatchError, DispatchRequest, EffectContext, TransformExecutionError};
+use fj_dispatch::{
+    DispatchError, DispatchRequest, EffectContext, TransformExecutionError, dispatch,
+};
 use fj_interpreters::eval_jaxpr;
 use fj_test_utils::{TestLogV1, TestMode, TestResult, fixture_id_from_json, test_id};
 use std::collections::BTreeMap;
@@ -34,7 +36,10 @@ fn log_oracle(name: &str, fixture: &impl serde::Serialize) {
 fn ledger(program: ProgramSpec, transforms: &[Transform]) -> TraceTransformLedger {
     let mut ledger = TraceTransformLedger::new(build_program(program));
     for (idx, transform) in transforms.iter().enumerate() {
-        ledger.push_transform(*transform, format!("evidence-{}-{}", transform.as_str(), idx));
+        ledger.push_transform(
+            *transform,
+            format!("evidence-{}-{}", transform.as_str(), idx),
+        );
     }
     ledger
 }
@@ -181,7 +186,10 @@ fn oracle_grad_polynomial_three_way() {
 #[test]
 fn oracle_dispatch_jit_identity() {
     let programs = [
-        (ProgramSpec::Add2, vec![Value::scalar_i64(3), Value::scalar_i64(7)]),
+        (
+            ProgramSpec::Add2,
+            vec![Value::scalar_i64(3), Value::scalar_i64(7)],
+        ),
         (ProgramSpec::Square, vec![Value::scalar_f64(5.0)]),
         (ProgramSpec::AddOne, vec![Value::scalar_i64(42)]),
     ];
@@ -260,10 +268,7 @@ fn metamorphic_grad_constant_is_zero() {
         }],
     );
     let grad = grad_first(&jaxpr, &[Value::scalar_f64(2.5)]).unwrap();
-    assert!(
-        grad.abs() < 1e-10,
-        "grad(floor(x)) should be 0, got {grad}"
-    );
+    assert!(grad.abs() < 1e-10, "grad(floor(x)) should be 0, got {grad}");
 
     log_oracle("metamorphic_grad_constant_is_zero", &("constant_zero",));
 }
@@ -278,12 +283,10 @@ fn metamorphic_ad_matches_finite_diff() {
     for x in test_points {
         let ad_grad = grad_first(&jaxpr, &[Value::scalar_f64(x)]).unwrap();
 
-        let plus = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x + eps)])
-            .unwrap()[0]
+        let plus = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x + eps)]).unwrap()[0]
             .as_f64_scalar()
             .unwrap();
-        let minus = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x - eps)])
-            .unwrap()[0]
+        let minus = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x - eps)]).unwrap()[0]
             .as_f64_scalar()
             .unwrap();
         let fd_grad = (plus - minus) / (2.0 * eps);
@@ -326,7 +329,9 @@ fn metamorphic_effect_token_ordering() {
 // 3. Adversarial Cases
 // ============================================================================
 
-/// Adversarial: grad of non-scalar input rejected with clear error.
+/// Adversarial: grad of function with non-scalar output rejected.
+/// Tensor-aware AD accepts tensor inputs but requires scalar output.
+/// square([1.0, 2.0]) = [1.0, 4.0] (non-scalar), so grad correctly rejects.
 #[test]
 fn adversarial_grad_nonsalar_input() {
     let err = dispatch(DispatchRequest {
@@ -341,7 +346,7 @@ fn adversarial_grad_nonsalar_input() {
     .unwrap_err();
     assert!(matches!(
         err,
-        DispatchError::TransformExecution(TransformExecutionError::NonScalarGradientInput)
+        DispatchError::TransformExecution(TransformExecutionError::NonScalarGradientOutput)
     ));
     log_oracle("adversarial_grad_nonscalar_input", &("nonscalar_grad",));
 }

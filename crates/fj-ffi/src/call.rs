@@ -49,8 +49,7 @@ impl FfiCall {
 
         // 2. Validate input buffer sizes (redundant with construction, but defense-in-depth)
         for (i, buf) in inputs.iter().enumerate() {
-            let expected =
-                crate::buffer::checked_buffer_size(buf.shape(), buf.dtype())?;
+            let expected = crate::buffer::checked_buffer_size(buf.shape(), buf.dtype())?;
             if buf.size() != expected {
                 return Err(FfiError::BufferMismatch {
                     buffer_index: i,
@@ -62,8 +61,7 @@ impl FfiCall {
 
         // 3. Validate output buffer sizes
         for (i, buf) in outputs.iter().enumerate() {
-            let expected =
-                crate::buffer::checked_buffer_size(buf.shape(), buf.dtype())?;
+            let expected = crate::buffer::checked_buffer_size(buf.shape(), buf.dtype())?;
             if buf.size() != expected {
                 return Err(FfiError::BufferMismatch {
                     buffer_index: inputs.len() + i,
@@ -212,8 +210,7 @@ mod tests {
         let call = FfiCall::new("double");
 
         let input_val: f64 = 21.0;
-        let input =
-            FfiBuffer::new(input_val.to_ne_bytes().to_vec(), vec![], DType::F64).unwrap();
+        let input = FfiBuffer::new(input_val.to_ne_bytes().to_vec(), vec![], DType::F64).unwrap();
         let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
 
         call.invoke(&reg, &[input], &mut outputs).unwrap();

@@ -19,23 +19,48 @@ fn e2e_all_primitives_scalar() {
 
     // Binary arithmetic
     assert_eq!(
-        eval_primitive(Primitive::Add, &[Value::scalar_i64(3), Value::scalar_i64(4)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Add,
+            &[Value::scalar_i64(3), Value::scalar_i64(4)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(7)
     );
     assert_eq!(
-        eval_primitive(Primitive::Sub, &[Value::scalar_i64(10), Value::scalar_i64(3)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Sub,
+            &[Value::scalar_i64(10), Value::scalar_i64(3)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(7)
     );
     assert_eq!(
-        eval_primitive(Primitive::Mul, &[Value::scalar_i64(6), Value::scalar_i64(7)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Mul,
+            &[Value::scalar_i64(6), Value::scalar_i64(7)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(42)
     );
     assert_eq!(
-        eval_primitive(Primitive::Max, &[Value::scalar_i64(3), Value::scalar_i64(7)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Max,
+            &[Value::scalar_i64(3), Value::scalar_i64(7)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(7)
     );
     assert_eq!(
-        eval_primitive(Primitive::Min, &[Value::scalar_i64(3), Value::scalar_i64(7)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Min,
+            &[Value::scalar_i64(3), Value::scalar_i64(7)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(3)
     );
 
@@ -50,44 +75,92 @@ fn e2e_all_primitives_scalar() {
     );
 
     // Transcendental (f64)
-    let exp_1 = eval_primitive(Primitive::Exp, &[Value::scalar_f64(0.0)], &p).unwrap().as_f64_scalar().unwrap();
+    let exp_1 = eval_primitive(Primitive::Exp, &[Value::scalar_f64(0.0)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((exp_1 - 1.0).abs() < 1e-14);
 
-    let log_e = eval_primitive(Primitive::Log, &[Value::scalar_f64(std::f64::consts::E)], &p).unwrap().as_f64_scalar().unwrap();
+    let log_e = eval_primitive(
+        Primitive::Log,
+        &[Value::scalar_f64(std::f64::consts::E)],
+        &p,
+    )
+    .unwrap()
+    .as_f64_scalar()
+    .unwrap();
     assert!((log_e - 1.0).abs() < 1e-14);
 
-    let sqrt_4 = eval_primitive(Primitive::Sqrt, &[Value::scalar_f64(4.0)], &p).unwrap().as_f64_scalar().unwrap();
+    let sqrt_4 = eval_primitive(Primitive::Sqrt, &[Value::scalar_f64(4.0)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((sqrt_4 - 2.0).abs() < 1e-14);
 
-    let rsqrt_4 = eval_primitive(Primitive::Rsqrt, &[Value::scalar_f64(4.0)], &p).unwrap().as_f64_scalar().unwrap();
+    let rsqrt_4 = eval_primitive(Primitive::Rsqrt, &[Value::scalar_f64(4.0)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((rsqrt_4 - 0.5).abs() < 1e-14);
 
-    let floor_37 = eval_primitive(Primitive::Floor, &[Value::scalar_f64(3.7)], &p).unwrap().as_f64_scalar().unwrap();
+    let floor_37 = eval_primitive(Primitive::Floor, &[Value::scalar_f64(3.7)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((floor_37 - 3.0).abs() < 1e-14);
 
-    let ceil_32 = eval_primitive(Primitive::Ceil, &[Value::scalar_f64(3.2)], &p).unwrap().as_f64_scalar().unwrap();
+    let ceil_32 = eval_primitive(Primitive::Ceil, &[Value::scalar_f64(3.2)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((ceil_32 - 4.0).abs() < 1e-14);
 
-    let round_35 = eval_primitive(Primitive::Round, &[Value::scalar_f64(3.5)], &p).unwrap().as_f64_scalar().unwrap();
+    let round_35 = eval_primitive(Primitive::Round, &[Value::scalar_f64(3.5)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((round_35 - 4.0).abs() < 1e-14);
 
-    let sin_0 = eval_primitive(Primitive::Sin, &[Value::scalar_f64(0.0)], &p).unwrap().as_f64_scalar().unwrap();
+    let sin_0 = eval_primitive(Primitive::Sin, &[Value::scalar_f64(0.0)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!(sin_0.abs() < 1e-14);
 
-    let cos_0 = eval_primitive(Primitive::Cos, &[Value::scalar_f64(0.0)], &p).unwrap().as_f64_scalar().unwrap();
+    let cos_0 = eval_primitive(Primitive::Cos, &[Value::scalar_f64(0.0)], &p)
+        .unwrap()
+        .as_f64_scalar()
+        .unwrap();
     assert!((cos_0 - 1.0).abs() < 1e-14);
 
     // Pow
-    let pow_23 = eval_primitive(Primitive::Pow, &[Value::scalar_f64(2.0), Value::scalar_f64(3.0)], &p).unwrap().as_f64_scalar().unwrap();
+    let pow_23 = eval_primitive(
+        Primitive::Pow,
+        &[Value::scalar_f64(2.0), Value::scalar_f64(3.0)],
+        &p,
+    )
+    .unwrap()
+    .as_f64_scalar()
+    .unwrap();
     assert!((pow_23 - 8.0).abs() < 1e-10);
 
     // Comparison
     assert_eq!(
-        eval_primitive(Primitive::Eq, &[Value::scalar_i64(5), Value::scalar_i64(5)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Eq,
+            &[Value::scalar_i64(5), Value::scalar_i64(5)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_bool(true)
     );
     assert_eq!(
-        eval_primitive(Primitive::Lt, &[Value::scalar_i64(3), Value::scalar_i64(5)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Lt,
+            &[Value::scalar_i64(3), Value::scalar_i64(5)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_bool(true)
     );
 
@@ -99,7 +172,12 @@ fn e2e_all_primitives_scalar() {
 
     // Dot scalar
     assert_eq!(
-        eval_primitive(Primitive::Dot, &[Value::scalar_i64(3), Value::scalar_i64(7)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Dot,
+            &[Value::scalar_i64(3), Value::scalar_i64(7)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(21)
     );
 }
@@ -128,7 +206,7 @@ fn e2e_all_primitives_tensor_rank1() {
 
     // Unary
     assert_eq!(
-        eval_primitive(Primitive::Neg, &[a.clone()], &p).unwrap(),
+        eval_primitive(Primitive::Neg, std::slice::from_ref(&a), &p).unwrap(),
         Value::vector_i64(&[-1, -2, -3]).unwrap()
     );
 
@@ -140,11 +218,11 @@ fn e2e_all_primitives_tensor_rank1() {
 
     // Reduction
     assert_eq!(
-        eval_primitive(Primitive::ReduceSum, &[a.clone()], &p).unwrap(),
+        eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&a), &p).unwrap(),
         Value::scalar_i64(6)
     );
     assert_eq!(
-        eval_primitive(Primitive::ReduceMax, &[a.clone()], &p).unwrap(),
+        eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&a), &p).unwrap(),
         Value::scalar_i64(3)
     );
 
@@ -162,17 +240,23 @@ fn e2e_tensor_rank2_operations() {
         DType::I64,
         Shape { dims: vec![2, 3] },
         vec![
-            Literal::I64(1), Literal::I64(2), Literal::I64(3),
-            Literal::I64(4), Literal::I64(5), Literal::I64(6),
+            Literal::I64(1),
+            Literal::I64(2),
+            Literal::I64(3),
+            Literal::I64(4),
+            Literal::I64(5),
+            Literal::I64(6),
         ],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Transpose 2x3 -> 3x2
     let transposed = eval_primitive(
         Primitive::Transpose,
         &[Value::Tensor(mat.clone())],
         &no_params(),
-    ).unwrap();
+    )
+    .unwrap();
     if let Value::Tensor(t) = &transposed {
         assert_eq!(t.shape.dims, vec![3, 2]);
     }
@@ -257,25 +341,37 @@ fn e2e_edge_cases_nan_inf() {
         Primitive::Add,
         &[Value::scalar_f64(f64::NAN), Value::scalar_f64(1.0)],
         &p,
-    ).unwrap();
-    let nan_mul = eval_primitive(
-        Primitive::Mul,
-        &[nan_add, Value::scalar_f64(2.0)],
-        &p,
-    ).unwrap();
-    assert!(nan_mul.as_f64_scalar().unwrap().is_nan(), "NaN should propagate through add->mul");
+    )
+    .unwrap();
+    let nan_mul = eval_primitive(Primitive::Mul, &[nan_add, Value::scalar_f64(2.0)], &p).unwrap();
+    assert!(
+        nan_mul.as_f64_scalar().unwrap().is_nan(),
+        "NaN should propagate through add->mul"
+    );
 
     // Inf arithmetic
     let inf_sub = eval_primitive(
         Primitive::Sub,
-        &[Value::scalar_f64(f64::INFINITY), Value::scalar_f64(f64::INFINITY)],
+        &[
+            Value::scalar_f64(f64::INFINITY),
+            Value::scalar_f64(f64::INFINITY),
+        ],
         &p,
-    ).unwrap();
-    assert!(inf_sub.as_f64_scalar().unwrap().is_nan(), "Inf - Inf should be NaN");
+    )
+    .unwrap();
+    assert!(
+        inf_sub.as_f64_scalar().unwrap().is_nan(),
+        "Inf - Inf should be NaN"
+    );
 
     // Zero handling
     assert_eq!(
-        eval_primitive(Primitive::Mul, &[Value::scalar_i64(0), Value::scalar_i64(i64::MAX)], &p).unwrap(),
+        eval_primitive(
+            Primitive::Mul,
+            &[Value::scalar_i64(0), Value::scalar_i64(i64::MAX)],
+            &p
+        )
+        .unwrap(),
         Value::scalar_i64(0)
     );
 }
@@ -286,9 +382,20 @@ fn e2e_edge_cases_comparison_with_nan() {
     let nan = Value::scalar_f64(f64::NAN);
 
     // All comparisons with NaN should return false (except !=)
-    for prim in [Primitive::Eq, Primitive::Lt, Primitive::Le, Primitive::Gt, Primitive::Ge] {
+    for prim in [
+        Primitive::Eq,
+        Primitive::Lt,
+        Primitive::Le,
+        Primitive::Gt,
+        Primitive::Ge,
+    ] {
         let result = eval_primitive(prim, &[nan.clone(), Value::scalar_f64(1.0)], &p).unwrap();
-        assert_eq!(result, Value::scalar_bool(false), "{:?}(NaN, 1.0) should be false", prim);
+        assert_eq!(
+            result,
+            Value::scalar_bool(false),
+            "{:?}(NaN, 1.0) should be false",
+            prim
+        );
     }
     // != with NaN is true
     let ne_result = eval_primitive(Primitive::Ne, &[nan, Value::scalar_f64(1.0)], &p).unwrap();
@@ -310,7 +417,8 @@ fn e2e_error_paths() {
         Primitive::Neg,
         &[Value::scalar_i64(1), Value::scalar_i64(2)],
         &p,
-    ).unwrap_err();
+    )
+    .unwrap_err();
     assert!(matches!(err, EvalError::ArityMismatch { expected: 1, .. }));
 
     // Shape mismatch
@@ -345,7 +453,7 @@ fn e2e_broadcasting_pipeline() {
     let cmp = eval_primitive(Primitive::Gt, &[vec3, Value::scalar_i64(3)], &p).unwrap();
     if let Value::Tensor(t) = &cmp {
         assert_eq!(t.elements[0], Literal::Bool(false)); // 1 > 3
-        assert_eq!(t.elements[1], Literal::Bool(true));  // 5 > 3
+        assert_eq!(t.elements[1], Literal::Bool(true)); // 5 > 3
         assert_eq!(t.elements[2], Literal::Bool(false)); // 3 > 3
     }
 }

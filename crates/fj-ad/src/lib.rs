@@ -166,7 +166,7 @@ fn value_mul(a: &Value, b: &Value) -> Result<Value, AdError> {
 }
 
 fn value_neg(a: &Value) -> Result<Value, AdError> {
-    eval_primitive(Primitive::Neg, &[a.clone()], &BTreeMap::new())
+    eval_primitive(Primitive::Neg, std::slice::from_ref(a), &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
@@ -265,7 +265,7 @@ fn vjp(
         Primitive::Neg => Ok(vec![value_neg(g)?]),
         Primitive::Abs => {
             let x = &inputs[0];
-            let sign = eval_primitive(Primitive::Sign, &[x.clone()], &BTreeMap::new())
+            let sign = eval_primitive(Primitive::Sign, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &sign)?])
         }
@@ -312,28 +312,21 @@ fn vjp(
             let b = &inputs[1];
             // d/da(a^b) = b * a^(b-1), d/db(a^b) = a^b * ln(a)
             let b_minus_1 = value_sub(b, &ones_like(b))?;
-            let a_pow_bm1 = eval_primitive(
-                Primitive::Pow,
-                &[a.clone(), b_minus_1],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let a_pow_bm1 =
+                eval_primitive(Primitive::Pow, &[a.clone(), b_minus_1], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let da = value_mul(g, &value_mul(b, &a_pow_bm1)?)?;
 
-            let a_pow_b = eval_primitive(
-                Primitive::Pow,
-                &[a.clone(), b.clone()],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let ln_a = eval_primitive(Primitive::Log, &[a.clone()], &BTreeMap::new())
+            let a_pow_b = eval_primitive(Primitive::Pow, &[a.clone(), b.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let ln_a = eval_primitive(Primitive::Log, std::slice::from_ref(a), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let db = value_mul(g, &value_mul(&a_pow_b, &ln_a)?)?;
             Ok(vec![da, db])
         }
         Primitive::Exp => {
             let x = &inputs[0];
-            let exp_x = eval_primitive(Primitive::Exp, &[x.clone()], &BTreeMap::new())
+            let exp_x = eval_primitive(Primitive::Exp, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &exp_x)?])
         }
@@ -343,7 +336,7 @@ fn vjp(
         }
         Primitive::Sqrt => {
             let x = &inputs[0];
-            let sqrt_x = eval_primitive(Primitive::Sqrt, &[x.clone()], &BTreeMap::new())
+            let sqrt_x = eval_primitive(Primitive::Sqrt, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let two_sqrt = value_mul(&scalar_value(2.0), &sqrt_x)?;
             Ok(vec![value_div(g, &two_sqrt)?])
@@ -357,27 +350,28 @@ fn vjp(
                 &BTreeMap::new(),
             )
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            Ok(vec![value_mul(g, &value_mul(&scalar_value(-0.5), &x_pow_neg1p5)?)?])
+            Ok(vec![value_mul(
+                g,
+                &value_mul(&scalar_value(-0.5), &x_pow_neg1p5)?,
+            )?])
         }
-        Primitive::Floor | Primitive::Ceil | Primitive::Round => {
-            Ok(vec![zeros_like(&inputs[0])])
-        }
+        Primitive::Floor | Primitive::Ceil | Primitive::Round => Ok(vec![zeros_like(&inputs[0])]),
         Primitive::Sin => {
             let x = &inputs[0];
-            let cos_x = eval_primitive(Primitive::Cos, &[x.clone()], &BTreeMap::new())
+            let cos_x = eval_primitive(Primitive::Cos, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &cos_x)?])
         }
         Primitive::Cos => {
             let x = &inputs[0];
-            let sin_x = eval_primitive(Primitive::Sin, &[x.clone()], &BTreeMap::new())
+            let sin_x = eval_primitive(Primitive::Sin, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_neg(&value_mul(g, &sin_x)?)?])
         }
         Primitive::Tan => {
             // d/dx tan(x) = 1/cos²(x) = 1 + tan²(x)
             let x = &inputs[0];
-            let cos_x = eval_primitive(Primitive::Cos, &[x.clone()], &BTreeMap::new())
+            let cos_x = eval_primitive(Primitive::Cos, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let cos2 = value_mul(&cos_x, &cos_x)?;
             Ok(vec![value_div(g, &cos2)?])
@@ -410,21 +404,21 @@ fn vjp(
         Primitive::Sinh => {
             // d/dx sinh(x) = cosh(x)
             let x = &inputs[0];
-            let cosh_x = eval_primitive(Primitive::Cosh, &[x.clone()], &BTreeMap::new())
+            let cosh_x = eval_primitive(Primitive::Cosh, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &cosh_x)?])
         }
         Primitive::Cosh => {
             // d/dx cosh(x) = sinh(x)
             let x = &inputs[0];
-            let sinh_x = eval_primitive(Primitive::Sinh, &[x.clone()], &BTreeMap::new())
+            let sinh_x = eval_primitive(Primitive::Sinh, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &sinh_x)?])
         }
         Primitive::Tanh => {
             // d/dx tanh(x) = 1 - tanh²(x)
             let x = &inputs[0];
-            let tanh_x = eval_primitive(Primitive::Tanh, &[x.clone()], &BTreeMap::new())
+            let tanh_x = eval_primitive(Primitive::Tanh, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let tanh2 = value_mul(&tanh_x, &tanh_x)?;
             let one_minus = value_sub(&ones_like(x), &tanh2)?;
@@ -433,7 +427,7 @@ fn vjp(
         Primitive::Expm1 => {
             // d/dx expm1(x) = exp(x)
             let x = &inputs[0];
-            let exp_x = eval_primitive(Primitive::Exp, &[x.clone()], &BTreeMap::new())
+            let exp_x = eval_primitive(Primitive::Exp, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &exp_x)?])
         }
@@ -463,7 +457,7 @@ fn vjp(
         Primitive::Logistic => {
             // d/dx σ(x) = σ(x)(1-σ(x))
             let x = &inputs[0];
-            let sig = eval_primitive(Primitive::Logistic, &[x.clone()], &BTreeMap::new())
+            let sig = eval_primitive(Primitive::Logistic, std::slice::from_ref(x), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let one_minus_sig = value_sub(&ones_like(x), &sig)?;
             let factor = value_mul(&sig, &one_minus_sig)?;
@@ -610,9 +604,8 @@ fn vjp(
                     .collect::<Vec<_>>()
                     .join(","),
             );
-            let reshaped_g =
-                eval_primitive(Primitive::Reshape, &[g.clone()], &reshape_params)
-                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let reshaped_g = eval_primitive(Primitive::Reshape, std::slice::from_ref(g), &reshape_params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![reshaped_g])
         }
         Primitive::Transpose => {
@@ -644,7 +637,7 @@ fn vjp(
                     .collect::<Vec<_>>()
                     .join(","),
             );
-            let transposed_g = eval_primitive(Primitive::Transpose, &[g.clone()], &tp)
+            let transposed_g = eval_primitive(Primitive::Transpose, std::slice::from_ref(g), &tp)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![transposed_g])
         }
@@ -657,7 +650,7 @@ fn vjp(
             };
             // If input was scalar, sum everything
             if input_shape.rank() == 0 {
-                let reduced = eval_primitive(Primitive::ReduceSum, &[g.clone()], &BTreeMap::new())
+                let reduced = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(g), &BTreeMap::new())
                     .map_err(|e| AdError::EvalFailed(e.to_string()))?;
                 return Ok(vec![reduced]);
             }
@@ -674,9 +667,7 @@ fn vjp(
             // Simplified: return g for each input
             Ok(inputs.iter().map(|_| g.clone()).collect())
         }
-        Primitive::Gather | Primitive::Scatter => {
-            Err(AdError::UnsupportedPrimitive(primitive))
-        }
+        Primitive::Gather | Primitive::Scatter => Err(AdError::UnsupportedPrimitive(primitive)),
     }
 }
 
@@ -701,7 +692,7 @@ fn broadcast_g_to_shape(g: &Value, target_shape: &Shape) -> Result<Value, AdErro
             .collect::<Vec<_>>()
             .join(","),
     );
-    eval_primitive(Primitive::BroadcastInDim, &[g.clone()], &params)
+    eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(g), &params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
@@ -958,9 +949,7 @@ fn jvp_rule(primitive: Primitive, primals: &[Value], tangents: &[f64]) -> Result
         Primitive::Reshape | Primitive::Transpose | Primitive::BroadcastInDim => Ok(tangents[0]),
         Primitive::Slice => Ok(tangents[0]),
         Primitive::Concatenate => Ok(tangents.iter().sum()),
-        Primitive::Gather | Primitive::Scatter => {
-            Err(AdError::UnsupportedPrimitive(primitive))
-        }
+        Primitive::Gather | Primitive::Scatter => Err(AdError::UnsupportedPrimitive(primitive)),
     }
 }
 
@@ -982,12 +971,14 @@ pub fn jvp_grad_first(jaxpr: &Jaxpr, args: &[Value]) -> Result<f64, AdError> {
 pub fn grad_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, AdError> {
     let (outputs, tape, env) = forward_with_tape(jaxpr, args)?;
 
-    let output_val = outputs
-        .first()
-        .ok_or(AdError::NonScalarGradientOutput)?;
+    let output_val = outputs.first().ok_or(AdError::NonScalarGradientOutput)?;
 
-    // For scalar output, seed with 1.0; for tensor output, seed with ones
-    let seed = ones_like(output_val);
+    // JAX semantics: grad requires scalar-valued function output
+    if !matches!(output_val, Value::Scalar(_)) {
+        return Err(AdError::NonScalarGradientOutput);
+    }
+
+    let seed = Value::scalar_f64(1.0);
     let output_var = jaxpr.outvars[0];
     backward(&tape, output_var, seed, jaxpr, &env)
 }
@@ -1009,11 +1000,7 @@ mod tests {
         let jaxpr = build_program(ProgramSpec::Square);
         let grads = grad_jaxpr(&jaxpr, &[Value::scalar_f64(3.0)]).expect("grad should succeed");
         let g = to_f64(&grads[0]).unwrap();
-        assert!(
-            (g - 6.0).abs() < 1e-10,
-            "d/dx(x²) at x=3 = 6, got {}",
-            g
-        );
+        assert!((g - 6.0).abs() < 1e-10, "d/dx(x²) at x=3 = 6, got {}", g);
     }
 
     #[test]
@@ -1021,11 +1008,7 @@ mod tests {
         let jaxpr = build_program(ProgramSpec::SquarePlusLinear);
         let grads = grad_jaxpr(&jaxpr, &[Value::scalar_f64(3.0)]).expect("grad should succeed");
         let g = to_f64(&grads[0]).unwrap();
-        assert!(
-            (g - 8.0).abs() < 1e-10,
-            "d/dx(x²+2x) at x=3 = 8, got {}",
-            g
-        );
+        assert!((g - 8.0).abs() < 1e-10, "d/dx(x²+2x) at x=3 = 8, got {}", g);
     }
 
     #[test]
@@ -1218,7 +1201,10 @@ mod tests {
         let jaxpr = build_program(ProgramSpec::Square);
         let result = jvp(&jaxpr, &[Value::scalar_f64(3.0)], &[1.0]).expect("jvp should succeed");
         let primal = result.primals[0].as_f64_scalar().unwrap();
-        assert!((primal - 9.0).abs() < 1e-10, "primal should be 9, got {primal}");
+        assert!(
+            (primal - 9.0).abs() < 1e-10,
+            "primal should be 9, got {primal}"
+        );
         assert!(
             (result.tangents[0] - 6.0).abs() < 1e-10,
             "tangent should be 6, got {}",
@@ -1243,7 +1229,10 @@ mod tests {
         let jaxpr = build_program(ProgramSpec::SquarePlusLinear);
         let result = jvp(&jaxpr, &[Value::scalar_f64(3.0)], &[1.0]).expect("jvp should succeed");
         let primal = result.primals[0].as_f64_scalar().unwrap();
-        assert!((primal - 15.0).abs() < 1e-10, "primal should be 15, got {primal}");
+        assert!(
+            (primal - 15.0).abs() < 1e-10,
+            "primal should be 15, got {primal}"
+        );
         assert!(
             (result.tangents[0] - 8.0).abs() < 1e-10,
             "tangent should be 8, got {}",

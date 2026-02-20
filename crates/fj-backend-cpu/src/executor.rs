@@ -77,27 +77,25 @@ impl Backend for CpuBackend {
         _device: DeviceId,
     ) -> Result<Vec<Value>, BackendError> {
         // CPU backend ignores device ID — all execution is on the host.
-        fj_interpreters::eval_jaxpr(jaxpr, args)
-            .map_err(|e| BackendError::ExecutionFailed {
-                detail: e.to_string(),
-            })
+        fj_interpreters::eval_jaxpr(jaxpr, args).map_err(|e| BackendError::ExecutionFailed {
+            detail: e.to_string(),
+        })
     }
 
     fn allocate(&self, size_bytes: usize, device: DeviceId) -> Result<Buffer, BackendError> {
         if device.0 >= self.device_count {
             return Err(BackendError::AllocationFailed {
                 device,
-                detail: format!("device {} not available (have {})", device.0, self.device_count),
+                detail: format!(
+                    "device {} not available (have {})",
+                    device.0, self.device_count
+                ),
             });
         }
         Ok(Buffer::zeroed(size_bytes, device))
     }
 
-    fn transfer(
-        &self,
-        buffer: &Buffer,
-        target: DeviceId,
-    ) -> Result<Buffer, BackendError> {
+    fn transfer(&self, buffer: &Buffer, target: DeviceId) -> Result<Buffer, BackendError> {
         if target.0 >= self.device_count {
             return Err(BackendError::TransferFailed {
                 source: buffer.device(),
@@ -190,7 +188,9 @@ mod tests {
     #[test]
     fn cpu_backend_allocate_and_access() {
         let backend = CpuBackend::new();
-        let buf = backend.allocate(256, DeviceId(0)).expect("alloc should succeed");
+        let buf = backend
+            .allocate(256, DeviceId(0))
+            .expect("alloc should succeed");
         assert_eq!(buf.size(), 256);
         assert_eq!(buf.device(), DeviceId(0));
         assert!(buf.as_bytes().iter().all(|&b| b == 0));
@@ -207,7 +207,9 @@ mod tests {
     fn cpu_backend_transfer_same_device() {
         let backend = CpuBackend::new();
         let buf = Buffer::new(vec![1, 2, 3], DeviceId(0));
-        let transferred = backend.transfer(&buf, DeviceId(0)).expect("transfer should succeed");
+        let transferred = backend
+            .transfer(&buf, DeviceId(0))
+            .expect("transfer should succeed");
         assert_eq!(transferred.as_bytes(), &[1, 2, 3]);
         assert_eq!(transferred.device(), DeviceId(0));
     }
@@ -216,7 +218,9 @@ mod tests {
     fn cpu_backend_transfer_cross_device() {
         let backend = CpuBackend::with_device_count(2);
         let buf = Buffer::new(vec![10, 20, 30], DeviceId(0));
-        let transferred = backend.transfer(&buf, DeviceId(1)).expect("cross-device transfer");
+        let transferred = backend
+            .transfer(&buf, DeviceId(1))
+            .expect("cross-device transfer");
         assert_eq!(transferred.as_bytes(), &[10, 20, 30]);
         assert_eq!(transferred.device(), DeviceId(1));
         // Original buffer unchanged
@@ -227,7 +231,9 @@ mod tests {
     fn cpu_backend_transfer_invalid_target() {
         let backend = CpuBackend::new();
         let buf = Buffer::new(vec![1], DeviceId(0));
-        let err = backend.transfer(&buf, DeviceId(5)).expect_err("should fail");
+        let err = backend
+            .transfer(&buf, DeviceId(5))
+            .expect_err("should fail");
         assert!(matches!(err, BackendError::TransferFailed { .. }));
     }
 
@@ -430,8 +436,8 @@ mod tests {
             *byte = i as u8;
         }
         let data = buf.as_bytes();
-        for i in 0..16 {
-            assert_eq!(data[i], i as u8);
+        for (i, &byte) in data.iter().enumerate().take(16) {
+            assert_eq!(byte, i as u8);
         }
     }
 
@@ -449,10 +455,18 @@ mod tests {
         // Execution on one doesn't affect the other
         let jaxpr = build_program(ProgramSpec::Add2);
         let result_a = backend_a
-            .execute(&jaxpr, &[Value::scalar_i64(1), Value::scalar_i64(2)], DeviceId(0))
+            .execute(
+                &jaxpr,
+                &[Value::scalar_i64(1), Value::scalar_i64(2)],
+                DeviceId(0),
+            )
             .expect("backend_a");
         let result_b = backend_b
-            .execute(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(4)], DeviceId(0))
+            .execute(
+                &jaxpr,
+                &[Value::scalar_i64(3), Value::scalar_i64(4)],
+                DeviceId(0),
+            )
             .expect("backend_b");
         assert_eq!(result_a, vec![Value::scalar_i64(3)]);
         assert_eq!(result_b, vec![Value::scalar_i64(7)]);
