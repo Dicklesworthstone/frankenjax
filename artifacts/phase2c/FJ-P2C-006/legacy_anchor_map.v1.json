@@ -1,0 +1,273 @@
+{
+  "schema_version": "frankenjax.legacy-anchor-map.v1",
+  "packet_id": "FJ-P2C-006",
+  "generated_at_unix_ms": 1771589400000,
+  "generated_by": "CoralOwl (claude-code/opus-4.6)",
+  "legacy_oracle_root": "jax/_src/",
+  "anchors": [
+    {
+      "anchor_id": "P2C006-A01",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "backends",
+      "behavior_summary": "Returns dict of registered XLA backends keyed by platform name (cpu, gpu, tpu). Each backend is an xla_client.Client instance. Lazily initializes via _discover_backends() on first call. Thread-safe via global lock. Backends registered via register_backend() or auto-discovered from xla_client plugin registry.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 250, "end": 300 },
+      "confidence": "high",
+      "notes": "FrankenJAX equivalent: DispatchRequest.backend string field ('cpu'). No dynamic backend discovery — backend is a static string chosen by the caller. Future: BackendRegistry trait for pluggable backend discovery."
+    },
+    {
+      "anchor_id": "P2C006-A02",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "_discover_backends",
+      "behavior_summary": "Probes available XLA backends at process startup. Iterates xla_client._xla.discover_pjrt_plugins() for PJRT plugin backends (GPU, TPU). CPU backend always available as fallback. Catches and logs initialization failures per-backend (fail-open per backend, fail-closed only if zero backends available). Returns ordered dict with priority: TPU > GPU > CPU.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 180, "end": 250 },
+      "confidence": "high",
+      "notes": "FrankenJAX has no runtime backend probing. CPU is the only backend. Discovery is implicit: if backend='cpu', dispatch proceeds; any other value is accepted but has no effect on execution (eval_jaxpr interprets identically regardless)."
+    },
+    {
+      "anchor_id": "P2C006-A03",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "get_backend",
+      "behavior_summary": "Returns the XLA backend for a given platform string. If platform is None, returns the default backend (highest-priority available). Falls back to CPU if requested backend unavailable and JAX_PLATFORMS allows it. Raises RuntimeError if no matching backend found and no fallback permitted.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 300, "end": 350 },
+      "confidence": "high",
+      "notes": "FrankenJAX: no get_backend() equivalent. The backend string flows through DispatchRequest → CacheKeyInputRef → cache key hash, but never resolves to a runtime backend object. All execution uses eval_jaxpr (interpreter mode)."
+    },
+    {
+      "anchor_id": "P2C006-A04",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "default_backend",
+      "behavior_summary": "Returns the highest-priority available backend. Priority order: TPU > GPU > CPU. Configurable via JAX_PLATFORMS env var (comma-separated list of allowed platforms). If JAX_PLATFORMS='cpu', only CPU backend is returned even if GPU is available. Caches result after first call.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 350, "end": 380 },
+      "confidence": "high",
+      "notes": "FrankenJAX: implicit CPU default. No priority ordering needed (single backend). The RuntimeAdmissionModel.mode field provides a different kind of 'default' — strict vs hardened execution semantics."
+    },
+    {
+      "anchor_id": "P2C006-A05",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "local_devices",
+      "behavior_summary": "Returns list of Device objects for a given backend. Each Device has: id (int), platform (str), host_id (int), process_index (int). For CPU backend, returns one device per physical core (configurable via JAX_NUM_CPU_DEVICES). For GPU, returns one per visible GPU (CUDA_VISIBLE_DEVICES). Device objects are interned (same device always returns same Python object).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 380, "end": 420 },
+      "confidence": "high",
+      "notes": "FrankenJAX has no Device abstraction. Single-device execution only. Future P2C-006 work: DeviceId newtype and device enumeration for the CPU backend."
+    },
+    {
+      "anchor_id": "P2C006-A06",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "register_backend",
+      "behavior_summary": "Registers a new XLA backend at runtime. Takes platform name (str) and factory function that returns xla_client.Client. Used by plugins (e.g., jax-metal for Apple Silicon, jax-tenstorrent). Registration must happen before any compilation (backends are cached after first use). Duplicate registration raises ValueError.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 150, "end": 180 },
+      "confidence": "medium",
+      "notes": "FrankenJAX has no backend plugin system. The backend string is opaque. Future: trait BackendPlugin { fn name() -> &str; fn create_client() -> Box<dyn BackendClient>; } for extensible backend registration."
+    },
+    {
+      "anchor_id": "P2C006-A07",
+      "legacy_path": "jax/_src/interpreters/xla.py",
+      "legacy_symbol": "backend_specific_translations",
+      "behavior_summary": "Dict mapping (primitive, platform) → lowering rule. Allows backends to override default lowering for specific primitives. GPU backends override exp, log, matmul with cuBLAS/cuDNN-accelerated versions. TPU backends override reduce_sum, dot_general with TPU-specific MXU tile patterns. Falls back to default_translation if no platform-specific override exists.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 200, "end": 260 },
+      "confidence": "high",
+      "notes": "FrankenJAX: fj-lax primitives have a single eval_primitive() path. No backend-specific lowering — all primitives execute via Rust native math. The Primitive::eval() method is the universal lowering rule. Future: trait BackendLowering { fn lower(prim: Primitive) -> LoweredOp; }."
+    },
+    {
+      "anchor_id": "P2C006-A08",
+      "legacy_path": "jax/_src/interpreters/xla.py",
+      "legacy_symbol": "lower_fun",
+      "behavior_summary": "Converts a JAX function into XLA HLO computation. Steps: (1) trace to Jaxpr, (2) convert Jaxpr equations to HLO ops, (3) build XlaComputation graph. Each primitive has a translation rule (registered via register_translation). Backend-agnostic HLO is then compiled by the platform-specific XLA compiler.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 100, "end": 150 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not produce HLO. The Jaxpr → eval_jaxpr path interprets directly without lowering to an IR. This is a fundamental divergence: JAX compiles, FrankenJAX interprets. The semantic parity is preserved via identical transform/trace behavior."
+    },
+    {
+      "anchor_id": "P2C006-A09",
+      "legacy_path": "jax/_src/interpreters/xla.py",
+      "legacy_symbol": "xla_call_p",
+      "behavior_summary": "The 'xla_call' primitive (jit implementation). Handles compilation and caching of JIT-compiled functions. Invokes XLA compilation when cache misses, returning a compiled XlaExecutable. Manages compilation options: static_argnums, donate_argnums, inline. Compilation happens once per unique abstract signature.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 300, "end": 370 },
+      "confidence": "high",
+      "notes": "FrankenJAX: Transform::Jit is a no-op pass-through in dispatch (Jit transforms are skipped in execute_with_transforms). No compilation occurs — jit serves only as a semantic marker in the transform stack and cache key."
+    },
+    {
+      "anchor_id": "P2C006-A10",
+      "legacy_path": "jax/lib/xla_client.py",
+      "legacy_symbol": "Buffer",
+      "behavior_summary": "Represents a device-resident array. Wraps xla_client._xla.Buffer (C++ XLA buffer). Supports: device() → Device, copy_to_device(target) → Buffer, to_py() → numpy.ndarray. Reference-counted on device side. Deletion frees device memory. Supports zero-copy views for slicing operations.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 100, "end": 160 },
+      "confidence": "high",
+      "notes": "FrankenJAX: Value enum (Scalar/Tensor) is always host-resident. TensorValue stores Vec<Literal> in Rust heap. No device memory model. Future: trait DeviceBuffer for device-resident storage abstraction."
+    },
+    {
+      "anchor_id": "P2C006-A11",
+      "legacy_path": "jax/lib/xla_client.py",
+      "legacy_symbol": "Executable",
+      "behavior_summary": "Compiled XLA program ready for execution. Created by Client.compile(computation). execute(args) → list[Buffer]. Supports multi-device execution via execute_sharded_on_local_devices(). Holds reference to the XLA executable object and the backend that compiled it. Cannot be transferred between backends.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 160, "end": 220 },
+      "confidence": "high",
+      "notes": "FrankenJAX has no Executable concept. eval_jaxpr interprets Jaxpr directly without compilation. The CachedArtifact in fj-cache stores raw bytes but is not connected to dispatch execution."
+    },
+    {
+      "anchor_id": "P2C006-A12",
+      "legacy_path": "jax/lib/xla_client.py",
+      "legacy_symbol": "Client",
+      "behavior_summary": "Platform-specific XLA backend client. Methods: compile(computation) → Executable, device_count() → int, devices() → list[Device], platform_version() → str, transfer_to_infeed/outfeed(). Each platform (CPU, GPU, TPU) has one Client instance. GPU Client wraps CUDA/ROCm runtime. TPU Client wraps libtpu.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 50, "end": 100 },
+      "confidence": "high",
+      "notes": "FrankenJAX: no Client abstraction. All computation runs on host CPU via Rust native math. Future: trait BackendClient { fn compile(&self, jaxpr: &Jaxpr) -> CompiledFn; fn devices(&self) -> Vec<DeviceId>; }."
+    },
+    {
+      "anchor_id": "P2C006-A13",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "device_put",
+      "behavior_summary": "Transfers data from host to device. Takes numpy array or Python scalar, returns Buffer on target device. If data is already on target device, returns as-is (no-op). Cross-device transfer: host → device A or device A → device B (via host staging). Async transfer supported on GPU (returns immediately, blocks on access).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 420, "end": 460 },
+      "confidence": "high",
+      "notes": "FrankenJAX: Value is always host-resident. No device placement. Equivalent to always-on-host semantics. The dispatch() function receives Vec<Value> args directly without device transfer."
+    },
+    {
+      "anchor_id": "P2C006-A14",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "device_get",
+      "behavior_summary": "Transfers data from device to host. Takes Buffer, returns numpy array. Blocks until device computation producing the buffer is complete. For CPU backend, this is a no-op (memory is already host-accessible). For GPU/TPU, initiates DMA transfer and blocks.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 460, "end": 490 },
+      "confidence": "high",
+      "notes": "FrankenJAX: dispatch() returns Vec<Value> which is already host-resident. No device-to-host transfer needed. Equivalent to device_get being implicit and free."
+    },
+    {
+      "anchor_id": "P2C006-A15",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "process_index",
+      "behavior_summary": "Returns the index of the current process in a multi-process JAX setup. Single-process: always 0. Multi-process (e.g., multi-host TPU pods): each host gets a unique index. Used for device assignment in pmap and sharded computations. Set via JAX_PROCESS_INDEX or auto-detected by TPU runtime.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 490, "end": 510 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: single-process only. No multi-host support. Process index is implicitly 0."
+    },
+    {
+      "anchor_id": "P2C006-A16",
+      "legacy_path": "jax/_src/interpreters/xla.py",
+      "legacy_symbol": "register_translation",
+      "behavior_summary": "Registers a lowering rule for a JAX primitive to XLA HLO. Takes (primitive, rule_fn, platform=None). rule_fn: (ctx, avals_in, avals_out, *args) → list[XlaOp]. If platform is specified, the rule is backend-specific (only used when compiling for that platform). Default rules apply to all backends.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 60, "end": 100 },
+      "confidence": "high",
+      "notes": "FrankenJAX: eval_primitive() in fj-lax is the universal lowering rule. No registration system — all primitives are hardcoded in a match statement. Future: trait PrimitiveLowering { fn lower(&self, backend: &str, args: &[Value]) -> Value; }."
+    },
+    {
+      "anchor_id": "P2C006-A17",
+      "legacy_path": "jax/_src/backends/cpu_backend.py",
+      "legacy_symbol": "CpuBackend",
+      "behavior_summary": "CPU backend initialization. Creates xla_client.Client for CPU platform. Configures: number of threads (default: physical cores), memory allocator (system malloc or jemalloc), SIMD instruction set (AVX2/AVX-512 auto-detected). No special initialization required — always available as the baseline backend.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 50 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: CPU execution via Rust native math (f64 arithmetic in eval_primitive). No XLA CPU client. Threading: single-threaded interpreter. SIMD: not applicable (scalar operations only in V1)."
+    },
+    {
+      "anchor_id": "P2C006-A18",
+      "legacy_path": "jax/_src/backends/gpu_backend.py",
+      "legacy_symbol": "GpuBackend",
+      "behavior_summary": "GPU backend initialization. Discovers CUDA/ROCm devices via xla_client. Configures: memory fraction (default: 0.75 of GPU RAM), preallocate (JAX_GPU_MEMORY_FRACTION), visible devices (CUDA_VISIBLE_DEVICES). Initializes cuBLAS, cuDNN handles. Supports multi-GPU with NCCL for collective ops.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 80 },
+      "confidence": "medium",
+      "notes": "Not applicable to FrankenJAX V1 (CPU-only). Documented for forward-compatibility: a future GPU backend would need similar initialization, memory management, and multi-device collective support."
+    },
+    {
+      "anchor_id": "P2C006-A19",
+      "legacy_path": "jax/_src/interpreters/xla.py",
+      "legacy_symbol": "xla_primitive_callable",
+      "behavior_summary": "Creates a callable that executes a single primitive via XLA. Used when eager mode evaluates a primitive outside of jit. Steps: (1) create HLO for single primitive, (2) compile via backend, (3) execute with device buffers, (4) return result as Buffer. Compilation is cached per (primitive, abstract_args, backend) triple.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 370, "end": 420 },
+      "confidence": "high",
+      "notes": "FrankenJAX: eval_primitive() executes primitives directly without compilation. No eager/jit distinction — all evaluation is eager interpretation. The per-primitive cache key triple maps to FrankenJAX's CacheKeyInputRef (backend + jaxpr fingerprint + compile_options)."
+    },
+    {
+      "anchor_id": "P2C006-A20",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "backend_xla_version",
+      "behavior_summary": "Returns the XLA version string for a given backend. Used for: (1) cache key generation (ensuring compiled artifacts match XLA version), (2) feature detection (newer XLA versions support additional optimizations), (3) error messages. Format: 'PJRT C API version X.Y' or 'XLA service version Z'.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 510, "end": 530 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: no XLA version. The 'fjx-' namespace prefix in cache keys provides coarse version separation. A future fjx_version() function could return the crate version for similar cache invalidation semantics."
+    },
+    {
+      "anchor_id": "P2C006-A21",
+      "legacy_path": "jax/_src/interpreters/xla.py",
+      "legacy_symbol": "platform_specific_lowering",
+      "behavior_summary": "Dispatches to platform-specific HLO generation when available. For example, conv_general on GPU lowers to cuDNN convolution op instead of generic nested-loop HLO. Selection: (1) check backend_specific_translations for (primitive, platform), (2) fall back to default translation, (3) raise NotImplementedError if no rule found.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 260, "end": 300 },
+      "confidence": "high",
+      "notes": "FrankenJAX: eval_primitive() is platform-agnostic. All primitives evaluate via the same Rust code path regardless of backend string. The backend field only affects cache key generation, not execution semantics."
+    },
+    {
+      "anchor_id": "P2C006-A22",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "make_convolution_dimension_numbers",
+      "behavior_summary": "Helper for backend-specific convolution dimension ordering. GPU backends prefer NCHW (channels-first) for cuDNN. CPU backends prefer NHWC (channels-last) for MKL. TPU backends use custom tile formats. Returns ConvDimensionNumbers specifying input/kernel/output layouts per backend.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 530, "end": 560 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: no convolution primitives in V1. When conv is added (future packet), layout selection would be a backend bridge concern. For CPU-only, NHWC is the expected default."
+    },
+    {
+      "anchor_id": "P2C006-A23",
+      "legacy_path": "jax/lib/xla_client.py",
+      "legacy_symbol": "transfer_to_device",
+      "behavior_summary": "Cross-device buffer transfer. Copies buffer data from source device to target device. Three paths: (1) same device → no-op, (2) same backend (GPU→GPU) → peer-to-peer DMA via NVLink/PCIe, (3) cross-backend (GPU→CPU) → device→host→device staging. Returns new Buffer on target device. Source buffer remains valid.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 220, "end": 260 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: no cross-device transfer. Value is always host-resident and backend-independent. Clone semantics provide implicit 'transfer' (Rust ownership model)."
+    },
+    {
+      "anchor_id": "P2C006-A24",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "host_id",
+      "behavior_summary": "Returns the host identifier in multi-host setups. Alias for process_index() in modern JAX (deprecated name kept for backwards compatibility). Used in pmap for cross-host collective operations. Single-host: always 0.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 560, "end": 575 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: single-host only. Implicit host_id=0. No multi-host collective ops."
+    },
+    {
+      "anchor_id": "P2C006-A25",
+      "legacy_path": "jax/_src/xla_bridge.py",
+      "legacy_symbol": "memory_stats",
+      "behavior_summary": "Returns memory utilization for a specific backend. Fields: bytes_in_use, peak_bytes_in_use, num_allocs, largest_alloc_size. GPU backend: tracks CUDA memory pool. CPU backend: tracks system allocator (less precise). Used for debugging OOM errors and tuning JAX_GPU_MEMORY_FRACTION.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 575, "end": 600 },
+      "confidence": "medium",
+      "notes": "FrankenJAX: no memory tracking beyond Rust allocator. Vec<Literal> and TensorValue allocations are managed by Rust's default allocator. Future: CacheStats.total_bytes provides a rough proxy for cache memory usage."
+    }
+  ],
+  "extraction_invariants": [
+    "Backend discovery produces an ordered set of available backends; CPU is always the fallback",
+    "get_backend(platform) returns a specific backend or raises if unavailable and no fallback permitted",
+    "Device assignment maps computations to specific device instances within a backend",
+    "Backend-specific lowering overrides default HLO generation for optimized primitive execution",
+    "Buffer represents device-resident memory with explicit transfer semantics (device_put/device_get)",
+    "Executable is a compiled program bound to a specific backend; cannot cross backend boundaries",
+    "Memory management is backend-specific: GPU uses preallocated pool, CPU uses system allocator",
+    "Platform routing falls back to CPU when requested backend is unavailable (configurable via JAX_PLATFORMS)",
+    "Multi-device requires collective communication (NCCL for GPU, gRPC for TPU pods)",
+    "FrankenJAX V1 is CPU-only, single-device, interpreter-mode: backend string is opaque metadata",
+    "The DispatchRequest.backend field flows into cache key hash but does not affect execution path",
+    "All FrankenJAX crates use #![forbid(unsafe_code)] — no unsafe device memory operations"
+  ]
+}
