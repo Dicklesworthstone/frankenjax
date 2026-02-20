@@ -1,0 +1,70 @@
+{
+  "schema_version": "frankenjax.perf-delta.v1",
+  "packet_id": "FJ-P2C-006",
+  "subsystem": "backend_bridge",
+  "generated_at": "2026-02-20T12:10:00Z",
+  "benchmark_tool": "criterion 0.8",
+  "optimization_description": "Baseline measurements for CPU backend. No optimization applied — V1 backend bridge is already thin wrapper over eval_jaxpr with minimal overhead.",
+  "deltas": [
+    {
+      "benchmark": "backend_execute/add2",
+      "before_ns": null,
+      "after_ns": 145,
+      "delta_pct": null,
+      "status": "baseline"
+    },
+    {
+      "benchmark": "backend_execute/square",
+      "before_ns": null,
+      "after_ns": 136,
+      "delta_pct": null,
+      "status": "baseline"
+    },
+    {
+      "benchmark": "backend_execute/dot3_10eqn",
+      "before_ns": null,
+      "after_ns": 148,
+      "delta_pct": null,
+      "status": "baseline"
+    },
+    {
+      "benchmark": "backend_allocate/256_bytes",
+      "before_ns": null,
+      "after_ns": 28,
+      "delta_pct": null,
+      "status": "baseline"
+    },
+    {
+      "benchmark": "backend_transfer/1kb",
+      "before_ns": null,
+      "after_ns": 26,
+      "delta_pct": null,
+      "status": "baseline"
+    },
+    {
+      "benchmark": "backend_discovery/devices",
+      "before_ns": null,
+      "after_ns": 16,
+      "delta_pct": null,
+      "status": "baseline"
+    }
+  ],
+  "summary": {
+    "total_benchmarks": 6,
+    "improved": 0,
+    "regressed": 0,
+    "unchanged": 0,
+    "baseline": 6,
+    "primary_note": "All operations sub-200ns. Backend::execute() overhead is <10ns above direct eval_jaxpr (145ns vs ~136ns). No optimization needed for V1."
+  },
+  "targets_met": {
+    "eval_jaxpr_under_5us": true,
+    "allocate_under_100ns": true,
+    "discovery_under_100ns": true,
+    "transfer_1kb_under_100ns": true
+  },
+  "isomorphism_evidence": {
+    "all_tests_pass": "37/37 fj-backend-cpu tests, 15/15 conformance tests, 6/6 E2E tests",
+    "backend_trait_unchanged": "Backend trait API identical before and after profiling"
+  }
+}

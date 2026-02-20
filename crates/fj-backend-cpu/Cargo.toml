@@ -11,3 +11,8 @@ fj-interpreters = { path = "../fj-interpreters" }
 [dev-dependencies]
 fj-test-utils = { path = "../fj-test-utils" }
 proptest = { workspace = true }
+criterion = "0.8"
+
+[[bench]]
+name = "backend_baseline"
+harness = false
