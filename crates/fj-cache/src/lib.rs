@@ -187,6 +187,101 @@ fn canonical_payload(input: &CacheKeyInput) -> String {
     )
 }
 
+// ── Cache Manager ───────────────────────────────────────────────────
+
+/// Result of a cache lookup operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheLookup {
+    /// Cache hit — artifact data found and integrity verified.
+    Hit { data: Vec<u8> },
+    /// Cache miss — no entry for this key.
+    Miss,
+    /// Cache corruption — entry existed but failed integrity check (evicted).
+    Corrupted { key: String },
+}
+
+/// Unified cache manager combining key generation, backend storage, and
+/// integrity verification. Provides the single entry point for cache
+/// operations in the dispatch pipeline.
+pub struct CacheManager {
+    backend: Box<dyn backend::CacheBackend>,
+}
+
+impl CacheManager {
+    /// Create a cache manager wrapping any `CacheBackend` implementation.
+    pub fn new(backend: Box<dyn backend::CacheBackend>) -> Self {
+        Self { backend }
+    }
+
+    /// Create an in-memory cache manager (ephemeral, no persistence).
+    #[must_use]
+    pub fn in_memory() -> Self {
+        Self::new(Box::new(backend::InMemoryCache::new()))
+    }
+
+    /// Create a file-backed cache manager at the given directory.
+    #[must_use]
+    pub fn file_backed(cache_dir: std::path::PathBuf) -> Self {
+        Self::new(Box::new(backend::FileCache::new(cache_dir)))
+    }
+
+    /// Create a cache manager with LRU eviction wrapping an in-memory backend.
+    #[must_use]
+    pub fn in_memory_with_eviction(config: eviction::LruConfig) -> Self {
+        Self::new(Box::new(eviction::LruCache::new(
+            backend::InMemoryCache::new(),
+            config,
+        )))
+    }
+
+    /// Look up cached data by key. Verifies integrity on file-backed caches.
+    pub fn get(&self, key: &CacheKey) -> CacheLookup {
+        match self.backend.get(key) {
+            Some(artifact) => {
+                // Verify integrity.
+                let actual_hex = sha256_hex(&artifact.data);
+                if actual_hex == artifact.integrity_sha256_hex {
+                    CacheLookup::Hit {
+                        data: artifact.data,
+                    }
+                } else {
+                    CacheLookup::Corrupted {
+                        key: key.as_string(),
+                    }
+                }
+            }
+            None => CacheLookup::Miss,
+        }
+    }
+
+    /// Store data under the given key with automatic integrity tagging.
+    pub fn put(&mut self, key: &CacheKey, data: Vec<u8>) {
+        let integrity_sha256_hex = sha256_hex(&data);
+        self.backend.put(
+            key,
+            backend::CachedArtifact {
+                data,
+                integrity_sha256_hex,
+            },
+        );
+    }
+
+    /// Remove a single cached entry.
+    pub fn evict(&mut self, key: &CacheKey) -> bool {
+        self.backend.evict(key)
+    }
+
+    /// Return current cache statistics.
+    pub fn stats(&self) -> backend::CacheStats {
+        self.backend.stats()
+    }
+
+    /// Remove all cached entries.
+    pub fn clear(&mut self) {
+        self.backend.clear();
+    }
+}
+
 pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     const HEX_LUT: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -357,5 +452,123 @@ mod tests {
             let key_b = build_cache_key(&input).expect("key gen");
             prop_assert_eq!(key_a, key_b);
         }
+    }
+
+    // ── CacheManager integration tests ─────────────────────────────
+
+    #[test]
+    fn cache_manager_in_memory_hit_miss_cycle() {
+        use super::{CacheLookup, CacheManager};
+
+        let mut mgr = CacheManager::in_memory();
+        let key = build_cache_key(&CacheKeyInput {
+            mode: CompatibilityMode::Strict,
+            backend: "cpu".to_owned(),
+            jaxpr: empty_jaxpr(),
+            transform_stack: vec![],
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .unwrap();
+
+        // Miss on first lookup.
+        assert_eq!(mgr.get(&key), CacheLookup::Miss);
+
+        // Store and hit.
+        mgr.put(&key, b"cached_result".to_vec());
+        assert_eq!(
+            mgr.get(&key),
+            CacheLookup::Hit {
+                data: b"cached_result".to_vec()
+            }
+        );
+
+        // Evict and miss again.
+        assert!(mgr.evict(&key));
+        assert_eq!(mgr.get(&key), CacheLookup::Miss);
+    }
+
+    #[test]
+    fn cache_manager_file_backed_survives_reopen() {
+        use super::{CacheLookup, CacheManager};
+
+        let dir = std::env::temp_dir().join("fj-cache-mgr-persist-test");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let key = build_cache_key(&CacheKeyInput {
+            mode: CompatibilityMode::Hardened,
+            backend: "cpu".to_owned(),
+            jaxpr: empty_jaxpr(),
+            transform_stack: vec![Transform::Jit],
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .unwrap();
+
+        // Write with first manager instance.
+        {
+            let mut mgr = CacheManager::file_backed(dir.clone());
+            mgr.put(&key, b"persistent_data".to_vec());
+        }
+
+        // Read with second manager instance (simulates process restart).
+        {
+            let mgr = CacheManager::file_backed(dir.clone());
+            assert_eq!(
+                mgr.get(&key),
+                CacheLookup::Hit {
+                    data: b"persistent_data".to_vec()
+                }
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_manager_eviction_enforces_budget() {
+        use super::{CacheLookup, CacheManager};
+        use super::eviction::LruConfig;
+
+        let config = LruConfig {
+            max_entries: 2,
+            max_bytes: 0,
+        };
+        let mut mgr = CacheManager::in_memory_with_eviction(config);
+
+        let make_key = |s: &str| super::CacheKey {
+            namespace: "fjx",
+            digest_hex: s.to_owned(),
+        };
+
+        mgr.put(&make_key("aaa"), b"first".to_vec());
+        mgr.put(&make_key("bbb"), b"second".to_vec());
+        mgr.put(&make_key("ccc"), b"third".to_vec());
+
+        // "aaa" should have been evicted (LRU, max 2 entries).
+        assert_eq!(mgr.get(&make_key("aaa")), CacheLookup::Miss);
+        assert_eq!(mgr.stats().entry_count, 2);
+    }
+
+    #[test]
+    fn cache_manager_stats_reflect_contents() {
+        use super::CacheManager;
+
+        let mut mgr = CacheManager::in_memory();
+        assert_eq!(mgr.stats().entry_count, 0);
+        assert_eq!(mgr.stats().total_bytes, 0);
+
+        let key = super::CacheKey {
+            namespace: "fjx",
+            digest_hex: "test123".to_owned(),
+        };
+        mgr.put(&key, vec![0u8; 100]);
+        assert_eq!(mgr.stats().entry_count, 1);
+        assert_eq!(mgr.stats().total_bytes, 100);
+
+        mgr.clear();
+        assert_eq!(mgr.stats().entry_count, 0);
     }
 }
