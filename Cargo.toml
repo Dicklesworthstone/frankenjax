@@ -15,6 +15,7 @@ members = [
   "crates/fj-test-utils",
   "crates/fj-api",
   "crates/fj-backend-cpu",
+  "crates/fj-ffi",
 ]
 
 [workspace.package]
