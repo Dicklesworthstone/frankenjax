@@ -10,3 +10,4 @@ fj-interpreters = { path = "../fj-interpreters" }
 
 [dev-dependencies]
 fj-test-utils = { path = "../fj-test-utils" }
+proptest = { workspace = true }

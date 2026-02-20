@@ -373,4 +373,131 @@ mod tests {
         assert_eq!(backend.name(), "cpu");
         assert_eq!(device, DeviceId(2));
     }
+
+    // ── Category 1: All primitives execute correctly on CPU ───────
+
+    #[test]
+    fn cpu_executes_add_one() {
+        let backend = CpuBackend::new();
+        let jaxpr = build_program(ProgramSpec::AddOne);
+        let result = backend
+            .execute(&jaxpr, &[Value::scalar_i64(41)], DeviceId(0))
+            .expect("should succeed");
+        assert_eq!(result, vec![Value::scalar_i64(42)]);
+    }
+
+    #[test]
+    fn cpu_executes_sin() {
+        let backend = CpuBackend::new();
+        let jaxpr = build_program(ProgramSpec::SinX);
+        let result = backend
+            .execute(&jaxpr, &[Value::scalar_f64(0.0)], DeviceId(0))
+            .expect("should succeed");
+        let val = result[0].as_f64_scalar().expect("f64");
+        assert!(val.abs() < 1e-10, "sin(0) should be 0");
+    }
+
+    #[test]
+    fn cpu_executes_cos() {
+        let backend = CpuBackend::new();
+        let jaxpr = build_program(ProgramSpec::CosX);
+        let result = backend
+            .execute(&jaxpr, &[Value::scalar_f64(0.0)], DeviceId(0))
+            .expect("should succeed");
+        let val = result[0].as_f64_scalar().expect("f64");
+        assert!((val - 1.0).abs() < 1e-10, "cos(0) should be 1");
+    }
+
+    // ── Category 3: Backend selection correctness ─────────────────
+
+    #[test]
+    fn backend_selection_routes_to_named_backend() {
+        let registry = BackendRegistry::new(vec![Box::new(CpuBackend::new())]);
+        let (backend, _) = registry
+            .resolve_placement(&DevicePlacement::Default, Some("cpu"))
+            .expect("cpu should resolve");
+        assert_eq!(backend.name(), "cpu");
+    }
+
+    // ── Category 5: Memory layout ─────────────────────────────────
+
+    #[test]
+    fn buffer_data_is_contiguous() {
+        let backend = CpuBackend::new();
+        let mut buf = backend.allocate(16, DeviceId(0)).expect("alloc");
+        // Write pattern and verify contiguity
+        for (i, byte) in buf.as_bytes_mut().iter_mut().enumerate() {
+            *byte = i as u8;
+        }
+        let data = buf.as_bytes();
+        for i in 0..16 {
+            assert_eq!(data[i], i as u8);
+        }
+    }
+
+    // ── Category 6: Multi-backend isolation ───────────────────────
+
+    #[test]
+    fn two_cpu_backend_instances_are_independent() {
+        let backend_a = CpuBackend::new();
+        let backend_b = CpuBackend::with_device_count(2);
+
+        // They should have different device counts
+        assert_eq!(backend_a.devices().len(), 1);
+        assert_eq!(backend_b.devices().len(), 2);
+
+        // Execution on one doesn't affect the other
+        let jaxpr = build_program(ProgramSpec::Add2);
+        let result_a = backend_a
+            .execute(&jaxpr, &[Value::scalar_i64(1), Value::scalar_i64(2)], DeviceId(0))
+            .expect("backend_a");
+        let result_b = backend_b
+            .execute(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(4)], DeviceId(0))
+            .expect("backend_b");
+        assert_eq!(result_a, vec![Value::scalar_i64(3)]);
+        assert_eq!(result_b, vec![Value::scalar_i64(7)]);
+    }
+
+    // ── Structured logging contract ───────────────────────────────
+
+    #[test]
+    fn test_backend_cpu_test_log_schema_contract() {
+        let fixture_id =
+            fj_test_utils::fixture_id_from_json(&("backend-cpu", "execute")).expect("digest");
+        let log = fj_test_utils::TestLogV1::unit(
+            fj_test_utils::test_id(module_path!(), "test_backend_cpu_test_log_schema_contract"),
+            fixture_id,
+            fj_test_utils::TestMode::Strict,
+            fj_test_utils::TestResult::Pass,
+        );
+        assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
+    }
+
+    // ── Property tests ────────────────────────────────────────────
+
+    proptest::proptest! {
+        #[test]
+        fn prop_cpu_backend_allocation_size_matches(size in 0_usize..4096) {
+            let backend = CpuBackend::new();
+            let buf = backend.allocate(size, DeviceId(0)).expect("alloc");
+            proptest::prop_assert_eq!(buf.size(), size);
+        }
+
+        #[test]
+        fn prop_cpu_backend_transfer_preserves_data(
+            data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..512)
+        ) {
+            let backend = CpuBackend::with_device_count(2);
+            let buf = Buffer::new(data.clone(), DeviceId(0));
+            let transferred = backend.transfer(&buf, DeviceId(1)).expect("transfer");
+            proptest::prop_assert_eq!(transferred.as_bytes(), &data[..]);
+            proptest::prop_assert_eq!(transferred.device(), DeviceId(1));
+        }
+
+        #[test]
+        fn prop_cpu_backend_device_count_matches(count in 1_u32..16) {
+            let backend = CpuBackend::with_device_count(count);
+            proptest::prop_assert_eq!(backend.devices().len(), count as usize);
+        }
+    }
 }
