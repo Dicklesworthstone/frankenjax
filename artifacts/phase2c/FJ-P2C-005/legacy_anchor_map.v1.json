@@ -1,0 +1,203 @@
+{
+  "schema_version": "frankenjax.legacy-anchor-map.v1",
+  "packet_id": "FJ-P2C-005",
+  "generated_at_unix_ms": 1771588900000,
+  "generated_by": "CoralOwl (claude-code/opus-4.6)",
+  "legacy_oracle_root": "jax/_src/",
+  "anchors": [
+    {
+      "anchor_id": "P2C005-A01",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "get",
+      "behavior_summary": "Entry point for cache key generation. Takes a computation (ClosedJaxpr or HLO module), devices, compile_options, and backend. Returns a hex-string cache key. Calls _hash_computation() which SHA-256 hashes the serialized HLO module bytes, XLA flags, device assignments, and compression metadata.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 30, "end": 80 },
+      "confidence": "high",
+      "notes": "FrankenJAX equivalent: build_cache_key_ref() in fj-cache. Uses SHA-256 of canonical_payload (mode|backend|transforms|compile_options|hook|unknown|jaxpr_fingerprint). Hashes directly into Sha256 without intermediate allocation."
+    },
+    {
+      "anchor_id": "P2C005-A02",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_computation",
+      "behavior_summary": "Core hashing logic. Serializes HLO module to bytes via module.as_serialized_hlo_module_proto(). Includes XLA flags from xla_client._xla.hlo_module_cost_analysis. Hashes device assignment string. Includes jax version hash for invalidation across upgrades.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 80, "end": 130 },
+      "confidence": "high",
+      "notes": "FrankenJAX uses jaxpr.canonical_fingerprint() instead of HLO serialization. No XLA flags (no XLA backend). Version-based invalidation not yet implemented."
+    },
+    {
+      "anchor_id": "P2C005-A03",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "CacheKey",
+      "behavior_summary": "Dataclass holding the hex digest string. Used as the lookup key for file cache and GCS cache backends. Key is the SHA-256 hex of the concatenated hash inputs. No namespace prefix in JAX (raw hex); FrankenJAX uses 'fjx-' prefix.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 15, "end": 30 },
+      "confidence": "high",
+      "notes": "FrankenJAX CacheKey struct has namespace ('fjx') and digest_hex fields. as_string() returns 'fjx-{digest_hex}'."
+    },
+    {
+      "anchor_id": "P2C005-A04",
+      "legacy_path": "jax/_src/compiler.py",
+      "legacy_symbol": "_compile_and_write_cache",
+      "behavior_summary": "Orchestrates compilation with cache write-through. Steps: (1) generate cache key, (2) check cache for hit, (3) on miss: compile via backend.compile(), (4) serialize compiled executable, (5) write to cache backend. Returns MeshExecutable wrapping the compiled artifact.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 150, "end": 220 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not cache compiled artifacts (no XLA compilation). Cache key is generated but only used for evidence ledger decision IDs and determinism verification."
+    },
+    {
+      "anchor_id": "P2C005-A05",
+      "legacy_path": "jax/_src/compiler.py",
+      "legacy_symbol": "_read_from_cache",
+      "behavior_summary": "Cache read path. Looks up cache key in active backend (file or GCS). Deserializes cached executable if found. Returns None on miss. Validates that cached artifact is compatible with current XLA version before returning.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 100, "end": 150 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not implement cache read/write. The cache key infrastructure exists but stores no compiled artifacts."
+    },
+    {
+      "anchor_id": "P2C005-A06",
+      "legacy_path": "jax/_src/compilation_cache/compilation_cache.py",
+      "legacy_symbol": "initialize_cache",
+      "behavior_summary": "Selects and configures cache backend based on JAX config. Supports file:// and gs:// URI schemes. File cache uses local filesystem with SHA-256 key as filename. GCS cache uses Google Cloud Storage bucket. Falls back to no-op cache if initialization fails.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 20, "end": 60 },
+      "confidence": "high",
+      "notes": "FrankenJAX compilation cache is compute-only (no persistence). Future work: file-backed cache with same key scheme."
+    },
+    {
+      "anchor_id": "P2C005-A07",
+      "legacy_path": "jax/_src/compilation_cache/file_cache.py",
+      "legacy_symbol": "FileCache",
+      "behavior_summary": "Local filesystem cache backend. put(key, value) writes bytes to {cache_dir}/{key}. get(key) reads bytes from {cache_dir}/{key}. Uses atomic write-and-rename for crash safety. No eviction policy (unbounded growth). Cache directory configurable via JAX_CACHE_DIR env var.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 80 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not implement file cache storage. Key format is compatible (hex strings) for future migration."
+    },
+    {
+      "anchor_id": "P2C005-A08",
+      "legacy_path": "jax/_src/compilation_cache/gcs_cache.py",
+      "legacy_symbol": "GcsCache",
+      "behavior_summary": "Google Cloud Storage cache backend. put(key, value) uploads blob to {bucket}/{prefix}/{key}. get(key) downloads blob. Uses google-cloud-storage client library. Supports gzip compression of cached artifacts. Timeout configurable via JAX_COMPILATION_CACHE_TIMEOUT.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 90 },
+      "confidence": "medium",
+      "notes": "Not applicable to FrankenJAX. GCS backend is JAX-specific cloud infrastructure."
+    },
+    {
+      "anchor_id": "P2C005-A09",
+      "legacy_path": "jax/_src/compiler.py",
+      "legacy_symbol": "_cache_write",
+      "behavior_summary": "Serializes compiled executable to bytes for cache storage. Uses XLA's serialization format (HLO module proto + executable bytes). Includes compilation metadata: XLA flags used, target platform, compilation time. Large artifacts may be compressed before storage.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 220, "end": 260 },
+      "confidence": "medium",
+      "notes": "FrankenJAX does not serialize compiled artifacts. The fj-cache crate only computes cache keys for determinism verification."
+    },
+    {
+      "anchor_id": "P2C005-A10",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_xla_flags",
+      "behavior_summary": "Hashes XLA compiler flags that affect code generation. Includes optimization level, target features, precision settings, and any custom XLA flags. Ensures cache key changes when compiler configuration changes, preventing stale artifact reuse.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 130, "end": 160 },
+      "confidence": "medium",
+      "notes": "FrankenJAX equivalent: compile_options BTreeMap included in cache key canonical payload. No XLA flags but compile_options serves the same purpose."
+    },
+    {
+      "anchor_id": "P2C005-A11",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_devices",
+      "behavior_summary": "Hashes device assignment configuration. Includes device type (CPU/GPU/TPU), device count, and device-to-mesh mapping. Different device configurations produce different cache keys to prevent cross-device artifact reuse.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 160, "end": 190 },
+      "confidence": "high",
+      "notes": "FrankenJAX equivalent: 'backend' field in cache key (currently always 'cpu'). Multi-device not yet supported."
+    },
+    {
+      "anchor_id": "P2C005-A12",
+      "legacy_path": "jax/_src/linear_util.py",
+      "legacy_symbol": "cache",
+      "behavior_summary": "Memoization decorator for compiled functions. Uses WeakKeyDictionary keyed by wrapped function identity. Cache key includes (transforms, params, in_type, args abstract values). Weak references allow GC when function goes out of scope. Thread-safe via lock.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 200, "end": 240 },
+      "confidence": "high",
+      "notes": "FrankenJAX uses SHA-256 content-addressed keys instead of identity-based weak references. Different approach but same semantic: configuration-deterministic cache lookup."
+    },
+    {
+      "anchor_id": "P2C005-A13",
+      "legacy_path": "jax/_src/compiler.py",
+      "legacy_symbol": "get_executable",
+      "behavior_summary": "Main compilation entry point. Checks trace-level cache first (in-memory), then persistent cache. On full miss, compiles from scratch. Records compilation time metrics. Broadcasts compiled executable in multi-host settings.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 50, "end": 100 },
+      "confidence": "high",
+      "notes": "FrankenJAX dispatch() serves as the equivalent entry point but without compilation step. eval_jaxpr interprets directly."
+    },
+    {
+      "anchor_id": "P2C005-A14",
+      "legacy_path": "jax/_src/compilation_cache/compilation_cache.py",
+      "legacy_symbol": "CacheInterface",
+      "behavior_summary": "Abstract base class for cache backends. Methods: get(key) -> Optional[bytes], put(key, value: bytes), clear() -> None. All implementations must be thread-safe. Key is a hex string (SHA-256 digest).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 20 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not define a CacheInterface trait yet. Future work: trait CacheBackend { fn get(&self, key: &str) -> Option<Vec<u8>>; fn put(&mut self, key: &str, value: &[u8]); }"
+    },
+    {
+      "anchor_id": "P2C005-A15",
+      "legacy_path": "jax/_src/compiler.py",
+      "legacy_symbol": "_cache_hit_logging",
+      "behavior_summary": "Logs cache hit/miss events with cache key, compilation time saved (on hit), and cache backend type. Used for telemetry and debugging. Hit rate tracked per-process for monitoring compilation overhead.",
+      "evidence_kind": "doc_note",
+      "lines": { "start": 260, "end": 280 },
+      "confidence": "medium",
+      "notes": "FrankenJAX uses EvidenceLedger for cache-related signals. The 'eqn_count' and 'transform_depth' signals capture similar telemetry."
+    },
+    {
+      "anchor_id": "P2C005-A16",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_platform",
+      "behavior_summary": "Includes platform identifier in cache key to prevent cross-platform artifact reuse. Platform includes OS, architecture, and accelerator runtime version. Ensures compiled XLA artifacts are only reused on matching hardware.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 190, "end": 210 },
+      "confidence": "medium",
+      "notes": "FrankenJAX backend field serves as minimal platform identifier. Full platform fingerprinting not implemented."
+    },
+    {
+      "anchor_id": "P2C005-A17",
+      "legacy_path": "jax/_src/compiler.py",
+      "legacy_symbol": "_eviction_policy",
+      "behavior_summary": "JAX compilation cache has no built-in eviction. FileCache grows unbounded. GCS cache relies on bucket lifecycle policies for eviction. Users must manually prune stale entries. Size-based eviction was proposed but not implemented.",
+      "evidence_kind": "doc_note",
+      "lines": { "start": 280, "end": 300 },
+      "confidence": "medium",
+      "notes": "FrankenJAX does not implement cache eviction. Future work item for P2C-005 implementation."
+    },
+    {
+      "anchor_id": "P2C005-A18",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_version_hash",
+      "behavior_summary": "Includes JAX version string in cache key hash. Ensures cache invalidation when JAX is upgraded. Version string includes major.minor.patch and optionally git commit hash for dev builds. Prevents stale compiled artifacts from causing runtime errors.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 210, "end": 230 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not include version in cache key. The 'fjx-' namespace prefix provides coarse version separation."
+    }
+  ],
+  "extraction_invariants": [
+    "Cache key is a deterministic function of (computation, devices, compile_options, backend, version)",
+    "Same computation with same configuration always produces the same cache key (SHA-256 determinism)",
+    "Different computations produce different cache keys with overwhelming probability (2^-128 collision resistance)",
+    "Strict mode rejects unknown incompatible features at cache key generation time (fail-closed)",
+    "Hardened mode includes unknown features in the hash, allowing forward-compatible progress",
+    "Cache key includes all inputs that affect compiled output: jaxpr fingerprint, transform stack, backend, mode, compile options",
+    "Cache backends implement get/put with hex-string keys; no eviction policy in JAX",
+    "Compilation cache is optional and fail-safe: cache miss falls back to fresh compilation",
+    "Cache key format uses namespace prefix ('fjx-') for versioning and collision avoidance",
+    "Streaming SHA-256 hasher avoids intermediate String allocation in build_cache_key_ref",
+    "The owned and reference cache key builders produce identical hashes for identical inputs",
+    "All FrankenJAX crates use #![forbid(unsafe_code)] — memory safety is enforced by the type system"
+  ]
+}
