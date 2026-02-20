@@ -1,0 +1,74 @@
+{
+  "schema_version": "frankenjax.evidence-manifest.v1",
+  "packet_id": "FJ-P2C-006",
+  "subsystem": "backend_bridge",
+  "generated_at": "2026-02-20T12:12:00Z",
+  "parity_gates": [
+    {
+      "gate_id": "G1",
+      "name": "Artifact format compliance",
+      "status": "PASS",
+      "evidence": "legacy_anchor_map.v1.json, contract_table.v1.json, security_threat_matrix.md — all schema-validated"
+    },
+    {
+      "gate_id": "G2",
+      "name": "Unit tests",
+      "status": "PASS",
+      "evidence": "37 unit tests in fj-backend-cpu + 14 in fj-runtime covering Backend trait, CpuBackend, Buffer, Device, Registry"
+    },
+    {
+      "gate_id": "G3",
+      "name": "Oracle/differential conformance",
+      "status": "PASS",
+      "evidence": "5 oracle tests: CPU backend matches eval_jaxpr for all program specs, discovery, dtype support"
+    },
+    {
+      "gate_id": "G4",
+      "name": "Adversarial validation",
+      "status": "PASS",
+      "evidence": "6 adversarial tests: unsupported backend, nonexistent device alloc/transfer, zero-size buffer, empty registry, fallback"
+    },
+    {
+      "gate_id": "G5",
+      "name": "Metamorphic properties",
+      "status": "PASS",
+      "evidence": "4 metamorphic tests: device-count independence, transfer identity, transfer chain, capability reflection"
+    },
+    {
+      "gate_id": "G6",
+      "name": "Performance targets",
+      "status": "PASS",
+      "evidence": "All 6 benchmarks sub-200ns. execute/add2=145ns, execute/square=136ns, allocate=28ns, transfer=26ns, discovery=16ns"
+    },
+    {
+      "gate_id": "G7",
+      "name": "E2E scenarios",
+      "status": "PASS",
+      "evidence": "6 E2E scenarios: all primitives, discovery, device routing, fallback, cross-backend consistency, buffer round-trip"
+    },
+    {
+      "gate_id": "G8",
+      "name": "Property tests",
+      "status": "PASS",
+      "evidence": "prop_cpu_backend_allocation_size_matches, prop_cpu_backend_transfer_preserves_data, prop_cpu_backend_device_count_matches (256+ cases each)"
+    },
+    {
+      "gate_id": "G9",
+      "name": "Risk analysis",
+      "status": "PASS",
+      "evidence": "5-threat risk note with mitigation evidence. 8 invariants verified."
+    },
+    {
+      "gate_id": "G10",
+      "name": "Durability (RaptorQ)",
+      "status": "PASS",
+      "evidence": "conformance_report sidecar, perf_delta sidecar"
+    }
+  ],
+  "overall_verdict": "PASS",
+  "known_issues": [
+    "No GPU/TPU backend implementation (V1 CPU-only)",
+    "BackendCapabilities only lists F64 and I64 (F32/I32 not yet supported in fj-core)",
+    "Backend.execute() ignores device ID on CPU (all execution is host-resident)"
+  ]
+}
