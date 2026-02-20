@@ -1,0 +1,64 @@
+{
+  "schema_version": "frankenjax.perf-delta.v1",
+  "packet_id": "FJ-P2C-002",
+  "subsystem": "api_front_door",
+  "generated_at": "2026-02-20T09:55:00Z",
+  "benchmark_tool": "criterion 0.8",
+  "benchmark_binary": "crates/fj-api/benches/api_overhead.rs",
+  "baseline": "first measurement (no prior baseline — new crate)",
+  "results": [
+    {
+      "name": "api_overhead/jit/scalar_add",
+      "median_ns": 1660,
+      "target_ns": 3000,
+      "status": "PASS"
+    },
+    {
+      "name": "api_overhead/grad/scalar_square",
+      "median_ns": 1960,
+      "target_ns": 3000,
+      "status": "PASS"
+    },
+    {
+      "name": "api_overhead/vmap/vector_add_one",
+      "median_ns": 2580,
+      "target_ns": null,
+      "status": "baseline"
+    },
+    {
+      "name": "api_overhead/value_and_grad/scalar_square",
+      "median_ns": 3680,
+      "target_ns": null,
+      "status": "baseline",
+      "note": "Two dispatch calls (value + gradient)"
+    },
+    {
+      "name": "api_vs_dispatch/jit_overhead",
+      "api_ns": 1740,
+      "dispatch_ns": 1590,
+      "overhead_ns": 150,
+      "overhead_pct": 9.4,
+      "target_overhead_ns": 500,
+      "status": "PASS"
+    },
+    {
+      "name": "api_vs_dispatch/grad_overhead",
+      "api_ns": 1960,
+      "dispatch_ns": 1740,
+      "overhead_ns": 220,
+      "overhead_pct": 12.6,
+      "target_overhead_ns": 500,
+      "status": "PASS"
+    },
+    {
+      "name": "api_mode_config/strict_vs_hardened",
+      "strict_ns": 1730,
+      "hardened_ns": 1780,
+      "delta_ns": 50,
+      "status": "negligible"
+    }
+  ],
+  "regressions_detected": 0,
+  "regression_threshold_pct": 5,
+  "overall_status": "PASS"
+}

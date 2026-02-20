@@ -1,0 +1,106 @@
+{
+  "schema_version": "frankenjax.conformance-report.v1",
+  "packet_id": "FJ-P2C-002",
+  "subsystem": "api_front_door",
+  "generated_at": "2026-02-20T09:55:00Z",
+  "oracle_tests": {
+    "total": 5,
+    "passed": 5,
+    "failed": 0,
+    "source": "crates/fj-conformance/tests/api_transforms_oracle.rs",
+    "tests": [
+      "oracle_jit_output_matches_direct_eval",
+      "oracle_grad_output_matches_analytical",
+      "oracle_vmap_output_matches_elementwise",
+      "oracle_composition_jit_grad_consistent",
+      "oracle_error_behavior_vector_to_grad"
+    ]
+  },
+  "metamorphic_tests": {
+    "total": 3,
+    "passed": 3,
+    "failed": 0,
+    "source": "crates/fj-conformance/tests/api_transforms_oracle.rs",
+    "tests": [
+      "metamorphic_jit_transparent",
+      "metamorphic_grad_linear_constant",
+      "metamorphic_vmap_distributes"
+    ]
+  },
+  "adversarial_tests": {
+    "total": 7,
+    "passed": 7,
+    "failed": 0,
+    "source": "crates/fj-conformance/tests/api_transforms_oracle.rs",
+    "tests": [
+      "adversarial_empty_batch_vmap",
+      "adversarial_scalar_to_vmap",
+      "adversarial_double_jit",
+      "adversarial_grad_no_args",
+      "adversarial_grad_vmap_composition",
+      "adversarial_vmap_mismatched_dims",
+      "oracle_error_behavior_scalar_to_vmap"
+    ]
+  },
+  "cross_validation_tests": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "tests": [
+      "cross_validate_value_and_grad"
+    ]
+  },
+  "e2e_scenarios": {
+    "total": 6,
+    "passed": 6,
+    "failed": 0,
+    "source": "crates/fj-conformance/tests/e2e_p2c002.rs",
+    "tests": [
+      "e2e_p2c002_user_api_jit_basic",
+      "e2e_p2c002_user_api_grad_polynomial",
+      "e2e_p2c002_user_api_vmap_batch",
+      "e2e_p2c002_user_api_stacking",
+      "e2e_p2c002_user_api_error_messages",
+      "e2e_p2c002_user_api_mode_and_backend_configuration"
+    ]
+  },
+  "unit_tests": {
+    "total": 17,
+    "passed": 17,
+    "failed": 0,
+    "source": "crates/fj-api/src/lib.rs",
+    "tests": [
+      "jit_add_scalar",
+      "jit_is_identity",
+      "grad_square",
+      "grad_at_zero",
+      "grad_negative_input",
+      "vmap_add_one",
+      "value_and_grad_square",
+      "jit_grad_composition",
+      "jit_vmap_composition",
+      "vmap_grad_composition",
+      "compose_helper",
+      "grad_non_scalar_input_fails",
+      "grad_empty_args_fails",
+      "vmap_scalar_input_fails",
+      "grad_vmap_fails_non_scalar",
+      "with_mode_hardened",
+      "composed_with_mode"
+    ]
+  },
+  "integration_tests": {
+    "total": 24,
+    "passed": 24,
+    "failed": 0,
+    "source": "crates/fj-api/tests/api_transform_suite.rs",
+    "tests_include_property_tests": true,
+    "property_test_cases": "256+ cases each for 5 proptest functions"
+  },
+  "overall": {
+    "total_tests": 63,
+    "passed": 63,
+    "failed": 0,
+    "status": "pass"
+  }
+}

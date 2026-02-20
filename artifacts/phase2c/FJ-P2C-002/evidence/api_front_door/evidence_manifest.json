@@ -1,0 +1,129 @@
+{
+  "schema_version": "frankenjax.evidence-manifest.v1",
+  "packet_id": "FJ-P2C-002",
+  "subsystem": "api_front_door",
+  "generated_at": "2026-02-20T10:00:00Z",
+  "author": "CoralOwl",
+  "artifacts": {
+    "conformance_report": {
+      "path": "conformance_report.json",
+      "description": "63-test conformance report: oracle, metamorphic, adversarial, property, unit, integration, e2e",
+      "status": "complete"
+    },
+    "risk_note": {
+      "path": "risk_note.md",
+      "description": "5-threat risk analysis with residual risk ratings and mitigation evidence",
+      "status": "complete"
+    },
+    "invariant_checklist": {
+      "path": "invariant_checklist.md",
+      "description": "5 verified invariants with test evidence references",
+      "status": "complete"
+    },
+    "perf_delta": {
+      "path": "perf_delta.json",
+      "description": "Criterion benchmark data for API overhead vs raw dispatch",
+      "status": "complete"
+    },
+    "perf_profile": {
+      "path": "../perf/api_front_door_profile.json",
+      "description": "Full profiling evidence with optimization assessment",
+      "status": "complete"
+    },
+    "durability_sidecars": {
+      "path": "durability/",
+      "description": "RaptorQ sidecars for evidence bundle (2 sidecars generated; decode-proof blocked by known upstream issue)",
+      "status": "partial",
+      "known_issue": "Pre-existing RaptorQ decoder bug prevents scrub/proof for small files (bd-3dl.9 residual)"
+    }
+  },
+  "parity_gates": {
+    "G1_format": {
+      "status": "PASS",
+      "evidence": "cargo clippy -p fj-api -- -D warnings passes clean"
+    },
+    "G2_unit_tests": {
+      "status": "PASS",
+      "evidence": "17/17 unit tests pass (crates/fj-api/src/lib.rs)"
+    },
+    "G3_oracle": {
+      "status": "PASS",
+      "evidence": "5/5 oracle tests pass (api_transforms_oracle.rs)",
+      "tests": [
+        "oracle_jit_output_matches_direct_eval",
+        "oracle_grad_output_matches_analytical",
+        "oracle_vmap_output_matches_elementwise",
+        "oracle_composition_jit_grad_consistent",
+        "oracle_error_behavior_vector_to_grad"
+      ]
+    },
+    "G4_adversarial": {
+      "status": "PASS",
+      "evidence": "7/7 adversarial tests pass",
+      "tests": [
+        "adversarial_empty_batch_vmap",
+        "adversarial_scalar_to_vmap",
+        "adversarial_double_jit",
+        "adversarial_grad_no_args",
+        "adversarial_grad_vmap_composition",
+        "adversarial_vmap_mismatched_dims",
+        "oracle_error_behavior_scalar_to_vmap"
+      ]
+    },
+    "G5_metamorphic": {
+      "status": "PASS",
+      "evidence": "3/3 metamorphic tests pass",
+      "tests": [
+        "metamorphic_jit_transparent",
+        "metamorphic_grad_linear_constant",
+        "metamorphic_vmap_distributes"
+      ]
+    },
+    "G6_performance": {
+      "status": "PASS",
+      "evidence": "API overhead 150-220ns (<500ns target). Full round-trip <3µs for all single-transform calls.",
+      "regression_threshold": "5% p95"
+    },
+    "G7_e2e": {
+      "status": "PASS",
+      "evidence": "6/6 e2e scenarios pass with forensic logs",
+      "tests": [
+        "e2e_p2c002_user_api_jit_basic",
+        "e2e_p2c002_user_api_grad_polynomial",
+        "e2e_p2c002_user_api_vmap_batch",
+        "e2e_p2c002_user_api_stacking",
+        "e2e_p2c002_user_api_error_messages",
+        "e2e_p2c002_user_api_mode_and_backend_configuration"
+      ]
+    },
+    "G8_property_tests": {
+      "status": "PASS",
+      "evidence": "5/5 property tests pass (256+ cases each)",
+      "tests": [
+        "prop_jit_is_identity",
+        "prop_grad_square_is_2x",
+        "prop_vmap_add_one_increments",
+        "prop_value_and_grad_consistent",
+        "prop_jit_grad_consistent_with_grad"
+      ]
+    },
+    "G9_integration": {
+      "status": "PASS",
+      "evidence": "24/24 integration tests pass (api_transform_suite.rs)"
+    },
+    "G10_durability": {
+      "status": "PARTIAL",
+      "evidence": "2/2 sidecars generated; scrub/decode-proof blocked by known RaptorQ issue",
+      "known_issue": "Pre-existing upstream decoder bug (bd-3dl.9 residual)"
+    }
+  },
+  "overall_assessment": {
+    "gates_passed": 9,
+    "gates_partial": 1,
+    "gates_failed": 0,
+    "verdict": "PASS_WITH_KNOWN_ISSUES",
+    "known_issues": [
+      "G10 durability scrub blocked by pre-existing RaptorQ small-file decode bug (bd-3dl.9)"
+    ]
+  }
+}
