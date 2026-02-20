@@ -15,8 +15,10 @@ sha2 = "0.10.9"
 [dev-dependencies]
 fj-ad = { path = "../fj-ad" }
 fj-api = { path = "../fj-api" }
+fj-backend-cpu = { path = "../fj-backend-cpu" }
 fj-cache = { path = "../fj-cache" }
 fj-interpreters = { path = "../fj-interpreters" }
+fj-runtime = { path = "../fj-runtime" }
 fj-test-utils = { path = "../fj-test-utils" }
 jsonschema = "0.42"
 smallvec = { workspace = true }
