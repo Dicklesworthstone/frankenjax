@@ -1,0 +1,312 @@
+{
+  "schema_version": "frankenjax.legacy-anchor-map.v1",
+  "packet_id": "FJ-P2C-004",
+  "generated_at_unix_ms": 1771584180000,
+  "generated_by": "CoralOwl (claude-code/opus-4.6)",
+  "legacy_oracle_root": "jax/_src/",
+  "anchors": [
+    {
+      "anchor_id": "P2C004-A01",
+      "legacy_path": "jax/_src/dispatch.py",
+      "legacy_symbol": "apply_primitive",
+      "behavior_summary": "Default impl rule for primitives. Compiles single primitive through XLA via xla_primitive_callable. Sets _apply_primitive sentinel to prevent recursive JIT tracing. Swaps config.disable_jit to False to avoid infinite recursion.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 45, "end": 65 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A02",
+      "legacy_path": "jax/_src/dispatch.py",
+      "legacy_symbol": "xla_primitive_callable",
+      "behavior_summary": "Cached compilation of individual primitives. Decorated with @util.cache() for memoization. Creates wrapper prim_fun calling prim.bind() with eager folding disabled, then wraps in api.jit().",
+      "evidence_kind": "source_line",
+      "lines": { "start": 30, "end": 44 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A03",
+      "legacy_path": "jax/_src/dispatch.py",
+      "legacy_symbol": "_xla_callable_uncached",
+      "behavior_summary": "Uncached compilation workhorse (legacy <= 0.4.13). Takes WrappedFun, abstract input values, sharding specs. Delegates to sharded_lowering then .compile(). Refactored out in later versions; compilation consolidated into xla_primitive_callable.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 90, "end": 150 },
+      "confidence": "medium",
+      "notes": "Function was refactored in JAX >= 0.4.20. FrankenJAX dispatch() is the clean-room equivalent."
+    },
+    {
+      "anchor_id": "P2C004-A04",
+      "legacy_path": "jax/_src/dispatch.py",
+      "legacy_symbol": "RuntimeTokenSet",
+      "behavior_summary": "Per-effect runtime token tracking. Maintains current_tokens dict[Effect, Token] and output_runtime_tokens dict[Device, Token]. get_token_input() reshards tokens on device order changes. block_until_ready() synchronizes all tokens, registered via atexit.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 200, "end": 250 },
+      "confidence": "medium",
+      "notes": "FrankenJAX does not implement runtime token threading. Effects are modeled via EvidenceLedger instead."
+    },
+    {
+      "anchor_id": "P2C004-A05",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "Effect",
+      "behavior_summary": "Base effect class. Primitives with effects cannot be dead-code eliminated. Subclasses: OrderedEffect (requires token threading for strict ordering), UnorderedEffect (no ordering guarantee but preserved), JaxprInputEffect (effect tied to specific input index).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 1800, "end": 1850 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A06",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "OrderedEffect",
+      "behavior_summary": "Effects requiring strict sequential execution via token threading. Adds i1[0] input/output tokens to computations. Creates data dependencies preventing compiler reordering. Different effect types maintain independent token streams to avoid over-sequencing.",
+      "evidence_kind": "doc_note",
+      "lines": { "start": 1850, "end": 1870 },
+      "confidence": "high",
+      "notes": "JEP-10657 defines the dual-token system: runtime tokens (Python-level) + compiler tokens (StableHLO-level)."
+    },
+    {
+      "anchor_id": "P2C004-A07",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "AbstractToken",
+      "behavior_summary": "Abstract value type for effect tokens. str_short returns 'Tok'. Token wraps a jax.Array buffer. get_token_aval() returns ShapedArray((0,), bool). Fresh tokens created per computation, threaded as data dependencies.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 1900, "end": 1930 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A08",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "JaxprEqn.effects",
+      "behavior_summary": "Per-equation effect set. Each JaxprEqn carries an effects: Effects field populated by def_effectful_abstract_eval. Jaxpr._effects aggregates all equation effects. Effect registries (ordered_effects, lowerable_effects, etc.) control which effects are allowed in which contexts.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 500, "end": 540 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A09",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "jvp",
+      "behavior_summary": "Forward-mode AD entry point. Returns jvpfun taking (primals, tangents) -> (out_primals, out_tangents). Creates JVPTrace context. JVPTracer wraps primal-tangent pairs. process_primitive looks up primitive_jvps registry.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 50, "end": 90 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A10",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "backward_pass",
+      "behavior_summary": "Reverse-mode AD (VJP) backward pass over a jaxpr. Processes equations in reverse order applying primitive_transposes rules. Uses GradAccum subclasses (ValAccum, RefAccum, NullAccum) for gradient accumulation. primals_in may contain UndefinedPrimal for values not needed in backward pass.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 300, "end": 400 },
+      "confidence": "high",
+      "notes": "FrankenJAX fj-ad implements reverse-mode via forward_with_tape + backward. Tape records (primitive, inputs, output, values) per equation. Backward traverses tape in reverse computing VJPs."
+    },
+    {
+      "anchor_id": "P2C004-A11",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "linearize",
+      "behavior_summary": "Computes (out_primals, out_tangents_pvals, jaxpr, consts). Traces with jvp_subtrace to build tangent jaxpr. VJP = linearize + transpose composition: linearize evaluates primals eagerly, defers tangent computation to residual jaxpr, then transpose reverses dataflow.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 150, "end": 200 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A12",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "primitive_jvps",
+      "behavior_summary": "Registry dict[Primitive, Callable] for forward-mode JVP rules. defjvp() registers per-argument rules. defjvp2() for multi-argument. deflinear() registers both JVP (identity) and transpose. get_primitive_transpose() raises NotImplementedError if missing.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 20, "end": 50 },
+      "confidence": "high",
+      "notes": "FrankenJAX fj-ad hardcodes VJP rules per primitive in backward(). No JVP registry; only reverse-mode is implemented."
+    },
+    {
+      "anchor_id": "P2C004-A13",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "ad.Zero",
+      "behavior_summary": "Sentinel representing zero tangents. Avoids unnecessary computation in both forward and backward passes. UndefinedPrimal marks primals not needed during transpose. Both are critical for efficiency in sparse gradient computations.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 20 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A14",
+      "legacy_path": "jax/_src/interpreters/batching.py",
+      "legacy_symbol": "BatchTracer",
+      "behavior_summary": "Core vmap tracer. Slots: val (batched array), batch_dim (int or not_mapped), source_info. aval property accounts for mapped dimension. BatchTrace.process_primitive routes to fancy_primitive_batchers[prim] for batching rules.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 80, "end": 140 },
+      "confidence": "high",
+      "notes": "FrankenJAX vmap uses slice-stack approach instead of BatchTracer. Slices axis0, evaluates each slice, stacks results."
+    },
+    {
+      "anchor_id": "P2C004-A15",
+      "legacy_path": "jax/_src/interpreters/batching.py",
+      "legacy_symbol": "batch_jaxpr",
+      "behavior_summary": "Transforms a ClosedJaxpr for batched execution. Converts in_batched booleans to axis specifications (0 or not_mapped). Delegates to batch_jaxpr_axes. Returns (transformed_jaxpr, out_axes).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 250, "end": 280 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A16",
+      "legacy_path": "jax/_src/interpreters/batching.py",
+      "legacy_symbol": "AxisData",
+      "behavior_summary": "Frozen dataclass with name, size, spmd_name, _ema (explicit mesh axes). Tracks batch axis metadata for vmap. not_mapped sentinel (None) marks unbatched axes.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 40, "end": 60 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A17",
+      "legacy_path": "jax/_src/interpreters/batching.py",
+      "legacy_symbol": "fancy_primitive_batchers",
+      "behavior_summary": "Registry dict for per-primitive batching rules. defvectorized: elementwise ops pass batch dim through. defbroadcasting: handle mismatched batch dims. defreducer: adjust reduction axis if it is the batch dim.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 300, "end": 340 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A18",
+      "legacy_path": "jax/_src/linear_util.py",
+      "legacy_symbol": "WrappedFun",
+      "behavior_summary": "Core transformation composition. Fields: f (original), f_transformed, transforms tuple, stores tuple, params. wrap() adds transformation layer. call_wrapped() executes composed function through all transforms using generator protocol (yield args, receive results, yield transformed results).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 50, "end": 120 },
+      "confidence": "high",
+      "notes": "FrankenJAX uses ComposedTransform with Vec<Transform> instead of generator protocol. Builder pattern replaces WrappedFun."
+    },
+    {
+      "anchor_id": "P2C004-A19",
+      "legacy_path": "jax/_src/linear_util.py",
+      "legacy_symbol": "cache",
+      "behavior_summary": "Memoization decorator for functions taking WrappedFun. Uses WeakKeyDictionary keyed by wrapped function. Cache key: (transforms, params, in_type, args, enable_x64, default_device, trace_context). Weak references enable GC when function no longer referenced.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 200, "end": 240 },
+      "confidence": "high",
+      "notes": "FrankenJAX cache key uses SHA-256 of (mode, backend, transforms, jaxpr_fingerprint, compile_options, unknown_features). Different approach but same semantic: deterministic key from configuration."
+    },
+    {
+      "anchor_id": "P2C004-A20",
+      "legacy_path": "jax/_src/linear_util.py",
+      "legacy_symbol": "Store",
+      "behavior_summary": "Write-once auxiliary output store for transformation generators. store() raises StoreException on double-write. val property raises on empty read. EqualStore variant tolerates re-writes if value is identical.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 150, "end": 180 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A21",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "Primitive.bind",
+      "behavior_summary": "Main dispatch entry point. Calls find_top_trace() to locate active interpreter. Arguments boxed via full_raise() into top trace's tracer type. process_primitive() applies transformation-specific rule. Results unboxed via full_lower().",
+      "evidence_kind": "source_line",
+      "lines": { "start": 350, "end": 380 },
+      "confidence": "high",
+      "notes": "FrankenJAX dispatch routing uses explicit transform stack iteration in execute_with_transforms() instead of trace-based dispatch."
+    },
+    {
+      "anchor_id": "P2C004-A22",
+      "legacy_path": "jax/_src/dispatch.py",
+      "legacy_symbol": "sharded_lowering",
+      "behavior_summary": "Normalizes shardings and delegates to pxla.lower_sharding_computation(). Returns MeshComputation object that can be compiled. Full lowering: ClosedJaxpr -> DCE -> _cached_lowering_to_hlo -> XLA Compiler -> MeshExecutable.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 70, "end": 90 },
+      "confidence": "medium",
+      "notes": "FrankenJAX does not implement XLA lowering. Dispatch executes directly via eval_jaxpr interpreter."
+    },
+    {
+      "anchor_id": "P2C004-A23",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "JVPTrace",
+      "behavior_summary": "Trace subclass for forward-mode AD. process_primitive looks up primitive_jvps. process_call wraps with jvp_subtrace. JVPTracer has primal and tangent slots. to_primal_tangent_pair extracts both from a tracer.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 100, "end": 150 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A24",
+      "legacy_path": "jax/_src/interpreters/batching.py",
+      "legacy_symbol": "batch_subtrace",
+      "behavior_summary": "Decorated with @lu.transformation_with_aux2. Creates BatchTrace, wraps arguments as BatchTracer with specified dims. Executes f under batching trace context. Stores output batch dimensions in Store.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 160, "end": 200 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A25",
+      "legacy_path": "jax/_src/interpreters/batching.py",
+      "legacy_symbol": "matchaxis",
+      "behavior_summary": "Axis manipulation utility for vmap. Relocates batch axes via moveaxis, broadcast, or sum_axis reduction. bdim_at_front moves batch dimension to position 0 or broadcasts if not_mapped.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 350, "end": 390 },
+      "confidence": "high"
+    },
+    {
+      "anchor_id": "P2C004-A26",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "eval_jaxpr",
+      "behavior_summary": "Core jaxpr evaluation maintaining environment dict mapping variables to values. Uses bind() for each equation, making jaxpr evaluation itself traceable (enabling jaxpr-of-jaxpr transformations).",
+      "evidence_kind": "source_line",
+      "lines": { "start": 600, "end": 640 },
+      "confidence": "high",
+      "notes": "FrankenJAX eval_jaxpr in fj-interpreters follows same pattern: environment map, sequential equation evaluation, but calls fj_lax::eval_primitive directly instead of bind()."
+    },
+    {
+      "anchor_id": "P2C004-A27",
+      "legacy_path": "jax/_src/core.py",
+      "legacy_symbol": "find_top_trace",
+      "behavior_summary": "Locates highest-level active trace interpreter in the trace stack. Inner traces activate only when their tracers appear in arguments (data-dependence model). In jit(vmap(grad(f))): JIT outermost, vmap next, grad innermost.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 380, "end": 420 },
+      "confidence": "high",
+      "notes": "FrankenJAX processes transforms outside-in via recursive execute_with_transforms() instead of trace-stack dispatch."
+    },
+    {
+      "anchor_id": "P2C004-A28",
+      "legacy_path": "jax/_src/effects.py",
+      "legacy_symbol": "EffectTypeSet",
+      "behavior_summary": "Registry for categorizing effects. Instances: ordered_effects, shardable_ordered_effects, lowerable_effects, control_flow_allowed_effects, custom_derivatives_allowed_effects, remat_allowed_effects, partial_eval_kept_effects. Methods: add_type(), contains(), filter_in(), filter_not_in().",
+      "evidence_kind": "source_line",
+      "lines": { "start": 10, "end": 60 },
+      "confidence": "high",
+      "notes": "FrankenJAX does not implement effect registries. All effect-like behavior is captured in the EvidenceLedger."
+    },
+    {
+      "anchor_id": "P2C004-A29",
+      "legacy_path": "jax/_src/interpreters/ad.py",
+      "legacy_symbol": "primitive_transposes",
+      "behavior_summary": "Registry dict[Primitive, Callable] for reverse-mode transpose rules. Used by backward_pass to compute VJPs. Missing rules raise NotImplementedError. deflinear registers both JVP and transpose simultaneously.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 25, "end": 35 },
+      "confidence": "high",
+      "notes": "FrankenJAX hardcodes VJP rules in fj-ad backward() match arms per primitive. 17 binary/unary ops + 4 reductions supported."
+    },
+    {
+      "anchor_id": "P2C004-A30",
+      "legacy_path": "jax/_src/dispatch.py",
+      "legacy_symbol": "_DeferredShardArg",
+      "behavior_summary": "Batches expensive per-array sharding operations to avoid overhead. DeferredCrossHostTransferArg handles cross-host transfers. Both are performance optimizations for multi-device dispatch.",
+      "evidence_kind": "source_line",
+      "lines": { "start": 160, "end": 190 },
+      "confidence": "medium",
+      "notes": "Not applicable to FrankenJAX single-backend CPU dispatch."
+    }
+  ],
+  "extraction_invariants": [
+    "Dispatch routing is deterministic: same transform stack + same Jaxpr + same args = same execution path",
+    "Transform composition follows outside-in ordering: jit(vmap(grad(f))) processes jit first, then vmap, then grad",
+    "Grad requires scalar output from the differentiated function",
+    "Vmap requires consistent leading dimensions across all batched tensor arguments",
+    "Forward-mode (JVP) and reverse-mode (VJP) AD produce equivalent gradients for differentiable programs",
+    "VJP = linearize + transpose composition: linearize evaluates primals, transpose reverses dataflow",
+    "Effect tokens enforce sequential ordering for side-effecting operations; FrankenJAX models this via EvidenceLedger",
+    "Cache keys are deterministic functions of (mode, backend, transforms, jaxpr, compile_options, unknown_features)",
+    "WrappedFun transformation caching uses weak references for automatic garbage collection",
+    "Primitive batching rules are registered per-primitive: vectorized, broadcasting, or reducer",
+    "Zero tangent (ad.Zero) and UndefinedPrimal sentinels optimize sparse gradient computation",
+    "Transform stack depth is bounded: at most 1 Grad and at most 1 Vmap in any composition",
+    "Finite-difference fallback (epsilon=1e-6) is used when grad has tail transforms in the stack",
+    "Slice-stack vmap implementation: slice leading axis, evaluate each slice, stack results back",
+    "All FrankenJAX crates use #![forbid(unsafe_code)] — memory safety is enforced by the type system",
+    "Evidence ledger population uses Bayesian decision theory with heuristic posterior probability"
+  ]
+}
