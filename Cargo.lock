@@ -569,6 +569,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fj-api"
+version = "0.1.0"
+dependencies = [
+ "fj-core",
+ "fj-dispatch",
+ "fj-interpreters",
+ "fj-test-utils",
+ "proptest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fj-cache"
 version = "0.1.0"
 dependencies = [
@@ -584,6 +597,7 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "base64",
+ "fj-api",
  "fj-cache",
  "fj-core",
  "fj-dispatch",

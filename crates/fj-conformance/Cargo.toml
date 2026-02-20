@@ -13,6 +13,7 @@ serde_json = "1.0.149"
 sha2 = "0.10.9"
 
 [dev-dependencies]
+fj-api = { path = "../fj-api" }
 fj-cache = { path = "../fj-cache" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-test-utils = { path = "../fj-test-utils" }
