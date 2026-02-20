@@ -1,0 +1,321 @@
+{
+  "schema_version": "frankenjax.contract-table.v1",
+  "packet_id": "FJ-P2C-008",
+  "generated_at_unix_ms": 1771590120000,
+  "mode_matrix": [
+    {
+      "mode": "strict",
+      "contract_rows": [
+        {
+          "row_id": "p2c008.strict.inv001",
+          "title": "Each primitive matches JAX semantics for supported dtypes (F64, I64, Bool)",
+          "preconditions": [
+            "Inputs are valid Value::Scalar or Value::Tensor with supported dtypes",
+            "Primitive is one of the 35 defined variants"
+          ],
+          "guarantees": [
+            "eval_primitive(prim, inputs, params) produces identical output to jax.lax.prim(*inputs, **params)",
+            "Output dtype follows type promotion rules (I64+I64→I64, any float→F64)",
+            "Output shape follows primitive-specific shape rules",
+            "legacy_anchor=P2C008-A01..A27 (per-primitive semantics)"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "primitive_semantic_mismatch"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "input_dtypes", "output_dtype"]
+          },
+          "compatibility_tier": "jax-observable"
+        },
+        {
+          "row_id": "p2c008.strict.inv002",
+          "title": "Type promotion follows numpy convention",
+          "preconditions": [
+            "Binary operation receives two inputs of potentially different types"
+          ],
+          "guarantees": [
+            "I64 + I64 → I64 (integer arithmetic preserved)",
+            "I64 + F64 → F64 (int promoted to float)",
+            "F64 + F64 → F64",
+            "Bool + numeric → promoted to numeric type",
+            "infer_dtype() returns correct DType based on element inspection",
+            "legacy_anchor=P2C008-A28 (type_promotion_table)"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "type_promotion_violation"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "left_dtype", "right_dtype", "result_dtype"]
+          },
+          "compatibility_tier": "jax-observable"
+        },
+        {
+          "row_id": "p2c008.strict.inv003",
+          "title": "Shape inference is deterministic",
+          "preconditions": [
+            "Same inputs with same shapes presented to a primitive"
+          ],
+          "guarantees": [
+            "Output shape is always identical for identical input shapes",
+            "Binary ops: output shape matches input shapes (scalar broadcast or exact match)",
+            "Reductions: output shape has reduced axes removed",
+            "Reshape: output shape equals new_sizes param (with -1 inference)",
+            "Transpose: output shape is input shape permuted by permutation param",
+            "legacy_anchor=P2C008-A20..A24 (shape manipulation rules)"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "shape_inference_nondeterminism"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "input_shapes", "output_shape"]
+          },
+          "compatibility_tier": "jax-observable"
+        },
+        {
+          "row_id": "p2c008.strict.inv004",
+          "title": "NaN propagation matches IEEE 754",
+          "preconditions": [
+            "Input contains NaN value (f64::NAN)"
+          ],
+          "guarantees": [
+            "Arithmetic: NaN input → NaN output (add, sub, mul, neg, abs, pow, exp, log, sqrt, etc.)",
+            "Comparison: NaN == NaN → false, NaN < x → false, NaN != NaN → true",
+            "Reduction: NaN in reduced set → NaN result",
+            "No silent NaN suppression or replacement",
+            "legacy_anchor=P2C008-A30 (nan_inf_propagation)"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "nan_propagation_violation"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "nan_input_positions"]
+          },
+          "compatibility_tier": "jax-observable"
+        },
+        {
+          "row_id": "p2c008.strict.inv005",
+          "title": "Reduction identity elements are mathematically correct",
+          "preconditions": [
+            "Reduction over an axis of the tensor"
+          ],
+          "guarantees": [
+            "ReduceSum: identity = 0 (I64) or 0.0 (F64)",
+            "ReduceProd: identity = 1 (I64) or 1.0 (F64)",
+            "ReduceMax: identity = i64::MIN (I64) or f64::NEG_INFINITY (F64)",
+            "ReduceMin: identity = i64::MAX (I64) or f64::INFINITY (F64)",
+            "legacy_anchor=P2C008-A25..A27"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "reduction_identity_mismatch"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "reduction_op", "identity_value"]
+          },
+          "compatibility_tier": "jax-observable"
+        },
+        {
+          "row_id": "p2c008.strict.inv006",
+          "title": "Broadcasting: scalar-tensor and same-shape tensor-tensor only",
+          "preconditions": [
+            "Binary operation receives two inputs"
+          ],
+          "guarantees": [
+            "Scalar + Scalar → Scalar result",
+            "Scalar + Tensor → Tensor (scalar broadcast to all elements)",
+            "Tensor + Scalar → Tensor (scalar broadcast to all elements)",
+            "Tensor + Tensor → Tensor (shapes must match exactly; no implicit rank expansion)",
+            "Shape mismatch → EvalError::ShapeMismatch",
+            "legacy_anchor=P2C008-A29 (broadcasting_rules)"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "broadcasting_shape_mismatch"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "left_shape", "right_shape"]
+          },
+          "compatibility_tier": "jax-observable"
+        },
+        {
+          "row_id": "p2c008.strict.inv007",
+          "title": "Arity validation rejects wrong input count",
+          "preconditions": [
+            "eval_primitive() called with wrong number of inputs"
+          ],
+          "guarantees": [
+            "Binary ops expect exactly 2 inputs",
+            "Unary ops expect exactly 1 input",
+            "Dot expects exactly 2 inputs",
+            "Wrong arity → EvalError::ArityMismatch { primitive, expected, actual }",
+            "Error message includes primitive name and expected/actual counts"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "primitive_arity_mismatch"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "expected_arity", "actual_arity"]
+          },
+          "compatibility_tier": "internal-only"
+        }
+      ]
+    },
+    {
+      "mode": "hardened",
+      "contract_rows": [
+        {
+          "row_id": "p2c008.hardened.inv008",
+          "title": "Integer overflow in reduction logged (2's complement wrap)",
+          "preconditions": [
+            "mode == Hardened",
+            "ReduceSum or ReduceProd on I64 values causes overflow"
+          ],
+          "guarantees": [
+            "V1 behavior: 2's complement wrapping (same as Rust i64::wrapping_add/mul)",
+            "Hardened mode: overflow event logged to evidence ledger",
+            "Result is wrapped value (not error), consistent with JAX numpy behavior",
+            "legacy_anchor=P2C008-A28 (type_promotion_table)"
+          ],
+          "failure_behavior": {
+            "policy": "warn_and_continue",
+            "reason_code": "hardened_integer_overflow"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "overflow_detected"]
+          },
+          "compatibility_tier": "internal-only"
+        },
+        {
+          "row_id": "p2c008.hardened.inv009",
+          "title": "Transcendental edge cases logged",
+          "preconditions": [
+            "mode == Hardened",
+            "log(0), log(negative), sqrt(negative), 0/0"
+          ],
+          "guarantees": [
+            "log(0) → -Inf (standard IEEE result, logged as warning)",
+            "log(negative) → NaN (logged as warning)",
+            "sqrt(negative) → NaN (logged as warning)",
+            "0^0 → 1 (standard convention, no warning)",
+            "legacy_anchor=P2C008-A08 (log_p), P2C008-A09 (sqrt_p)"
+          ],
+          "failure_behavior": {
+            "policy": "warn_and_continue",
+            "reason_code": "hardened_transcendental_edge"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "primitive", "input_value", "result_value"]
+          },
+          "compatibility_tier": "internal-only"
+        },
+        {
+          "row_id": "p2c008.hardened.inv010",
+          "title": "Reshape to incompatible size produces actionable error",
+          "preconditions": [
+            "mode == Hardened",
+            "Reshape where product(new_shape) != product(old_shape)"
+          ],
+          "guarantees": [
+            "Returns EvalError with detail: expected total {old}, got {new}",
+            "Error includes both old and new shape in message",
+            "No partial reshape (all-or-nothing)",
+            "legacy_anchor=P2C008-A20 (reshape_p)"
+          ],
+          "failure_behavior": {
+            "policy": "fail_closed",
+            "reason_code": "hardened_reshape_size_mismatch"
+          },
+          "observability": {
+            "log_fields": ["packet_id", "mode", "invariant_id", "old_shape", "new_shape", "old_total", "new_total"]
+          },
+          "compatibility_tier": "jax-observable"
+        }
+      ]
+    }
+  ],
+  "unknown_feature_policy": {
+    "strict": "fail_closed",
+    "hardened": "warn_and_continue"
+  },
+  "invariants": [
+    {
+      "invariant_id": "p2c008.strict.inv001",
+      "statement": "Each of the 35 primitives matches JAX semantics for F64, I64, Bool dtypes.",
+      "proof_artifact_refs": [
+        "crates/fj-lax/src/lib.rs (eval_primitive match statement)",
+        "Oracle tests in fj-conformance for per-primitive verification"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.strict.inv002",
+      "statement": "Type promotion: I64+I64→I64, any float→F64, Bool promoted to partner type.",
+      "proof_artifact_refs": [
+        "crates/fj-lax/src/lib.rs:infer_dtype()",
+        "eval_binary_elementwise int/float path selection"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.strict.inv003",
+      "statement": "Shape inference is deterministic for all primitives.",
+      "proof_artifact_refs": [
+        "Shape computation is pure function of input shapes + params",
+        "No randomness or state in shape inference"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.strict.inv004",
+      "statement": "NaN propagation follows IEEE 754 for all arithmetic and transcendental ops.",
+      "proof_artifact_refs": [
+        "Rust f64 operations follow IEEE 754 by specification",
+        "No custom NaN suppression code in fj-lax"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.strict.inv005",
+      "statement": "Reduction identity elements are mathematically correct.",
+      "proof_artifact_refs": [
+        "crates/fj-lax/src/lib.rs: identity initialization in eval_reduce()"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.strict.inv006",
+      "statement": "Broadcasting supports scalar-tensor and same-shape tensor-tensor only.",
+      "proof_artifact_refs": [
+        "eval_binary_elementwise(): match on (Scalar,Scalar), (Scalar,Tensor), (Tensor,Scalar), (Tensor,Tensor)"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.strict.inv007",
+      "statement": "Wrong arity returns EvalError::ArityMismatch with expected and actual counts.",
+      "proof_artifact_refs": [
+        "Arity checks at top of each eval_* function"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.hardened.inv008",
+      "statement": "Integer overflow wraps (2's complement) with optional logging in hardened mode.",
+      "proof_artifact_refs": [
+        "Rust i64 arithmetic uses wrapping semantics in release mode"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.hardened.inv009",
+      "statement": "Transcendental edge cases (log(0), sqrt(-x)) produce IEEE results with hardened logging.",
+      "proof_artifact_refs": [
+        "Rust f64::ln(0.0) = -Inf, f64::sqrt(-1.0) = NaN per IEEE 754"
+      ]
+    },
+    {
+      "invariant_id": "p2c008.hardened.inv010",
+      "statement": "Reshape to incompatible total size returns actionable error with both shapes.",
+      "proof_artifact_refs": [
+        "eval_reshape() validates total element count before proceeding"
+      ]
+    }
+  ]
+}
