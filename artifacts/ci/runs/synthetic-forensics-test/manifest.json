@@ -27,7 +27,7 @@
       "status": "fail",
       "summary": "3 files have formatting issues",
       "test": "fmt::check_formatting",
-      "timestamp_unix_ms": 1771593127396
+      "timestamp_unix_ms": 1771593520416
     },
     {
       "detail_path": "ci-artifacts/test-run/G2/jaxpr_fingerprint_deterministic.log",
@@ -38,7 +38,7 @@
       "status": "fail",
       "summary": "fingerprint mismatch: different hashes for identical jaxpr",
       "test": "fj_core::tests::jaxpr_fingerprint_deterministic",
-      "timestamp_unix_ms": 1771593127396
+      "timestamp_unix_ms": 1771593520416
     },
     {
       "detail_path": "ci-artifacts/test-run/G4/fuzz_jaxpr_construction.log",
@@ -51,7 +51,7 @@
       "status": "error",
       "summary": "panic in equation validation with empty invars",
       "test": "fj_conformance::fuzz::fuzz_jaxpr_construction",
-      "timestamp_unix_ms": 1771593127396
+      "timestamp_unix_ms": 1771593520416
     },
     {
       "detail_path": "ci-artifacts/test-run/G6/dispatch_jit_scalar_add.log",
@@ -62,10 +62,10 @@
       "status": "fail",
       "summary": "p95 regression: 2500ns -> 3200ns (28% slower, threshold 5%)",
       "test": "benches::dispatch_jit_scalar_add",
-      "timestamp_unix_ms": 1771593127396
+      "timestamp_unix_ms": 1771593520416
     }
   ],
-  "finished_at_unix_ms": 1771593187396,
+  "finished_at_unix_ms": 1771593580416,
   "gate_results": [
     {
       "duration_ms": 2000,
@@ -102,9 +102,9 @@
       "status": "fail"
     }
   ],
-  "run_id": "synthetic-test-1771593127396",
+  "run_id": "synthetic-test-1771593520416",
   "schema_version": "frankenjax.run-manifest.v1",
-  "started_at_unix_ms": 1771593127396,
+  "started_at_unix_ms": 1771593520416,
   "summary": {
     "failed": 4,
     "flaky": 0,

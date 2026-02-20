@@ -6,7 +6,7 @@
   "fixture_id": "4efef35bd9358163b85260d1c0e263a0e2021b3db1e373c30fde46609f5ba93d",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1771593127281,
+  "ts_utc_unix_ms": 1771593520312,
   "env": {
     "arch": "x86_64",
     "os": "linux",

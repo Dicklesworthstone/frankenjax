@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_07_large_program",
   "scenario_category": "large_program",
-  "ts_utc_unix_ms": 1771593127419,
+  "ts_utc_unix_ms": 1771593520440,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_07 --exact --nocapture",
   "input_capture": {
     "equation_count": 200,
