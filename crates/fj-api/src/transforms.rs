@@ -35,6 +35,14 @@ pub struct ValueAndGradWrapped {
     mode: CompatibilityMode,
 }
 
+#[derive(Debug, Clone)]
+pub struct ComposedTransform {
+    jaxpr: Jaxpr,
+    transforms: Vec<Transform>,
+    backend: String,
+    mode: CompatibilityMode,
+}
+
 pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
     JitWrapped {
         jaxpr,
@@ -97,6 +105,16 @@ fn dispatch_with(
     Ok(response.outputs)
 }
 
+/// Compose transforms: `jit(grad(f))` becomes `jit(jaxpr).compose_grad()`.
+pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
+    ComposedTransform {
+        jaxpr,
+        transforms,
+        backend: "cpu".to_owned(),
+        mode: CompatibilityMode::Strict,
+    }
+}
+
 impl JitWrapped {
     pub fn with_backend(mut self, backend: &str) -> Self {
         self.backend = backend.to_owned();
@@ -116,6 +134,26 @@ impl JitWrapped {
             &self.backend,
             self.mode,
         )
+    }
+
+    /// Compose: `jit(grad(f))`.
+    pub fn compose_grad(self) -> ComposedTransform {
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Jit, Transform::Grad],
+            backend: self.backend,
+            mode: self.mode,
+        }
+    }
+
+    /// Compose: `jit(vmap(f))`.
+    pub fn compose_vmap(self) -> ComposedTransform {
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Jit, Transform::Vmap],
+            backend: self.backend,
+            mode: self.mode,
+        }
     }
 }
 
@@ -156,6 +194,38 @@ impl VmapWrapped {
         dispatch_with(
             self.jaxpr.clone(),
             &[Transform::Vmap],
+            args,
+            &self.backend,
+            self.mode,
+        )
+    }
+
+    /// Compose: `vmap(grad(f))`.
+    pub fn compose_grad(self) -> ComposedTransform {
+        ComposedTransform {
+            jaxpr: self.jaxpr,
+            transforms: vec![Transform::Vmap, Transform::Grad],
+            backend: self.backend,
+            mode: self.mode,
+        }
+    }
+}
+
+impl ComposedTransform {
+    pub fn with_backend(mut self, backend: &str) -> Self {
+        self.backend = backend.to_owned();
+        self
+    }
+
+    pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        dispatch_with(
+            self.jaxpr.clone(),
+            &self.transforms,
             args,
             &self.backend,
             self.mode,

@@ -11,3 +11,4 @@ fj-dispatch = { path = "../fj-dispatch" }
 
 [dev-dependencies]
 fj-test-utils = { path = "../fj-test-utils" }
+fj-interpreters = { path = "../fj-interpreters" }
