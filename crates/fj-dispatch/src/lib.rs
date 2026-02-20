@@ -11,6 +11,68 @@ use fj_ledger::{
 };
 use std::collections::BTreeMap;
 
+// ── Effect Token System ────────────────────────────────────────────
+
+/// Per-effect runtime token for ordered side-effect tracking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EffectToken {
+    pub effect_name: String,
+    pub sequence_number: u64,
+}
+
+/// Context for threading effect tokens through a dispatch execution.
+///
+/// V1 scope: tracking only — records which effects were observed and in what
+/// order. No execution ordering is enforced (effects modeled via evidence
+/// ledger signals rather than runtime token threading).
+#[derive(Debug, Clone)]
+pub struct EffectContext {
+    tokens: BTreeMap<String, EffectToken>,
+    next_sequence: u64,
+}
+
+impl EffectContext {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            tokens: BTreeMap::new(),
+            next_sequence: 0,
+        }
+    }
+
+    /// Record observation of a named effect. Returns the token with its
+    /// sequence number in the observation order.
+    pub fn thread_token(&mut self, effect_name: &str) -> EffectToken {
+        let token = EffectToken {
+            effect_name: effect_name.to_owned(),
+            sequence_number: self.next_sequence,
+        };
+        self.next_sequence += 1;
+        self.tokens.insert(effect_name.to_owned(), token.clone());
+        token
+    }
+
+    /// Finalize and return all observed effect tokens in sequence order.
+    #[must_use]
+    pub fn finalize(self) -> Vec<EffectToken> {
+        let mut tokens: Vec<EffectToken> = self.tokens.into_values().collect();
+        tokens.sort_by_key(|t| t.sequence_number);
+        tokens
+    }
+
+    /// Number of distinct effects observed.
+    #[must_use]
+    pub fn effect_count(&self) -> usize {
+        self.tokens.len()
+    }
+}
+
+impl Default for EffectContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchRequest {
     pub mode: CompatibilityMode,
@@ -145,11 +207,20 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         unknown_incompatible_features: &request.unknown_incompatible_features,
     })?;
 
+    // Thread effect context through transform execution
+    let mut effect_ctx = EffectContext::new();
+    for transform in &request.ledger.transform_stack {
+        effect_ctx.thread_token(transform.as_str());
+    }
+
     let outputs = execute_with_transforms(
         &request.ledger.root_jaxpr,
         &request.ledger.transform_stack,
         &request.args,
     )?;
+
+    let effect_tokens = effect_ctx.finalize();
+    let effect_count = effect_tokens.len();
 
     let mut evidence_ledger = EvidenceLedger::new();
     let posterior_abandoned = heuristic_posterior_abandoned(&request.ledger);
@@ -174,6 +245,11 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
                 signal_name: "transform_stack_hash".to_owned(),
                 log_likelihood_delta: (composition_proof.transform_count as f64 + 1.0).ln(),
                 detail: composition_proof.stack_hash_hex,
+            },
+            EvidenceSignal {
+                signal_name: "effect_token_count".to_owned(),
+                log_likelihood_delta: (effect_count as f64 + 1.0).ln(),
+                detail: format!("effect_tokens={effect_count}"),
             },
         ],
     });
@@ -589,5 +665,85 @@ mod tests {
             fj_test_utils::TestResult::Pass,
         );
         assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
+    }
+
+    // ── Effect token tests ─────────────────────────────────────
+
+    #[test]
+    fn effect_context_tracks_transform_tokens() {
+        use super::EffectContext;
+        let mut ctx = EffectContext::new();
+        let t1 = ctx.thread_token("jit");
+        let t2 = ctx.thread_token("grad");
+        let t3 = ctx.thread_token("vmap");
+
+        assert_eq!(t1.sequence_number, 0);
+        assert_eq!(t2.sequence_number, 1);
+        assert_eq!(t3.sequence_number, 2);
+        assert_eq!(ctx.effect_count(), 3);
+
+        let tokens = ctx.finalize();
+        assert_eq!(tokens.len(), 3);
+        assert_eq!(tokens[0].effect_name, "jit");
+        assert_eq!(tokens[1].effect_name, "grad");
+        assert_eq!(tokens[2].effect_name, "vmap");
+    }
+
+    #[test]
+    fn dispatch_includes_effect_token_signal() {
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Jit, Transform::Grad]),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch should succeed");
+
+        // Evidence ledger should have 1 entry with 4 signals (including effect_token_count)
+        assert_eq!(response.evidence_ledger.len(), 1);
+        let entry = &response.evidence_ledger.entries()[0];
+        assert_eq!(entry.signals.len(), 4);
+
+        let effect_signal = entry
+            .signals
+            .iter()
+            .find(|s| s.signal_name == "effect_token_count")
+            .expect("should have effect_token_count signal");
+        assert_eq!(effect_signal.detail, "effect_tokens=2");
+    }
+
+    #[test]
+    fn dispatch_cache_hit_miss_determinism() {
+        // Two identical requests should produce identical cache keys
+        let make_request = || DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Add2, &[Transform::Jit]),
+            args: vec![Value::scalar_i64(2), Value::scalar_i64(4)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        };
+
+        let r1 = dispatch(make_request()).expect("dispatch 1");
+        let r2 = dispatch(make_request()).expect("dispatch 2");
+        assert_eq!(r1.cache_key, r2.cache_key, "same request = same cache key");
+        assert_eq!(r1.outputs, r2.outputs, "same request = same outputs");
+
+        // Different program should produce different cache key
+        let r3 = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Jit]),
+            args: vec![Value::scalar_f64(2.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch 3");
+        assert_ne!(r1.cache_key, r3.cache_key, "different program = different key");
     }
 }

@@ -250,6 +250,207 @@ fn to_f64(value: &Value) -> Result<f64, AdError> {
         .ok_or(AdError::NonScalarGradientOutput)
 }
 
+// ── Forward-mode JVP ───────────────────────────────────────────────
+
+/// Result of forward-mode JVP computation.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JvpResult {
+    pub primals: Vec<Value>,
+    pub tangents: Vec<f64>,
+}
+
+/// Compute JVP (forward-mode AD) for a Jaxpr.
+///
+/// Given primals `x` and tangent vector `dx`, computes `(f(x), df/dx · dx)`.
+pub fn jvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[f64]) -> Result<JvpResult, AdError> {
+    if primals.len() != jaxpr.invars.len() {
+        return Err(AdError::InputArity {
+            expected: jaxpr.invars.len(),
+            actual: primals.len(),
+        });
+    }
+    if tangents.len() != primals.len() {
+        return Err(AdError::InputArity {
+            expected: primals.len(),
+            actual: tangents.len(),
+        });
+    }
+
+    let mut primal_env: BTreeMap<VarId, Value> = BTreeMap::new();
+    let mut tangent_env: BTreeMap<VarId, f64> = BTreeMap::new();
+
+    for (idx, var) in jaxpr.invars.iter().enumerate() {
+        primal_env.insert(*var, primals[idx].clone());
+        tangent_env.insert(*var, tangents[idx]);
+    }
+
+    for eqn in &jaxpr.equations {
+        let mut resolved_primals = Vec::with_capacity(eqn.inputs.len());
+        let mut resolved_tangents = Vec::with_capacity(eqn.inputs.len());
+
+        for atom in eqn.inputs.iter() {
+            match atom {
+                Atom::Var(var) => {
+                    let pval = primal_env
+                        .get(var)
+                        .cloned()
+                        .ok_or(AdError::MissingVariable(*var))?;
+                    let tval = tangent_env.get(var).copied().unwrap_or(0.0);
+                    resolved_primals.push(pval);
+                    resolved_tangents.push(tval);
+                }
+                Atom::Lit(lit) => {
+                    resolved_primals.push(Value::Scalar(*lit));
+                    resolved_tangents.push(0.0); // literals have zero tangent
+                }
+            }
+        }
+
+        let primal_out = eval_primitive(eqn.primitive, &resolved_primals, &eqn.params)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+        let tangent_out = jvp_rule(eqn.primitive, &resolved_primals, &resolved_tangents)?;
+
+        let out_var = eqn.outputs[0];
+        primal_env.insert(out_var, primal_out);
+        tangent_env.insert(out_var, tangent_out);
+    }
+
+    let out_primals = jaxpr
+        .outvars
+        .iter()
+        .map(|var| {
+            primal_env
+                .get(var)
+                .cloned()
+                .ok_or(AdError::MissingVariable(*var))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let out_tangents = jaxpr
+        .outvars
+        .iter()
+        .map(|var| tangent_env.get(var).copied().unwrap_or(0.0))
+        .collect();
+
+    Ok(JvpResult {
+        primals: out_primals,
+        tangents: out_tangents,
+    })
+}
+
+fn jvp_rule(primitive: Primitive, primals: &[Value], tangents: &[f64]) -> Result<f64, AdError> {
+    match primitive {
+        // d(a+b) = da + db
+        Primitive::Add => Ok(tangents[0] + tangents[1]),
+        // d(a-b) = da - db
+        Primitive::Sub => Ok(tangents[0] - tangents[1]),
+        // d(a*b) = da*b + a*db
+        Primitive::Mul => {
+            let a = to_f64(&primals[0])?;
+            let b = to_f64(&primals[1])?;
+            Ok(tangents[0] * b + a * tangents[1])
+        }
+        // d(-x) = -dx
+        Primitive::Neg => Ok(-tangents[0]),
+        // d(|x|) = sign(x) * dx
+        Primitive::Abs => {
+            let x = to_f64(&primals[0])?;
+            Ok(if x >= 0.0 { tangents[0] } else { -tangents[0] })
+        }
+        // d(max(a,b)) = da if a>=b, db otherwise
+        Primitive::Max => {
+            let a = to_f64(&primals[0])?;
+            let b = to_f64(&primals[1])?;
+            Ok(if a >= b { tangents[0] } else { tangents[1] })
+        }
+        // d(min(a,b)) = da if a<=b, db otherwise
+        Primitive::Min => {
+            let a = to_f64(&primals[0])?;
+            let b = to_f64(&primals[1])?;
+            Ok(if a <= b { tangents[0] } else { tangents[1] })
+        }
+        // d(a^b) = b*a^(b-1)*da + a^b*ln(a)*db
+        Primitive::Pow => {
+            let a = to_f64(&primals[0])?;
+            let b = to_f64(&primals[1])?;
+            Ok(b * a.powf(b - 1.0) * tangents[0] + a.powf(b) * a.ln() * tangents[1])
+        }
+        // d(exp(x)) = exp(x)*dx
+        Primitive::Exp => {
+            let x = to_f64(&primals[0])?;
+            Ok(x.exp() * tangents[0])
+        }
+        // d(log(x)) = dx/x
+        Primitive::Log => {
+            let x = to_f64(&primals[0])?;
+            Ok(tangents[0] / x)
+        }
+        // d(sqrt(x)) = dx/(2*sqrt(x))
+        Primitive::Sqrt => {
+            let x = to_f64(&primals[0])?;
+            Ok(tangents[0] / (2.0 * x.sqrt()))
+        }
+        // d(rsqrt(x)) = -0.5 * x^(-1.5) * dx
+        Primitive::Rsqrt => {
+            let x = to_f64(&primals[0])?;
+            Ok(-0.5 * x.powf(-1.5) * tangents[0])
+        }
+        // Piecewise constant: zero derivative
+        Primitive::Floor | Primitive::Ceil | Primitive::Round => Ok(0.0),
+        // d(sin(x)) = cos(x)*dx
+        Primitive::Sin => {
+            let x = to_f64(&primals[0])?;
+            Ok(x.cos() * tangents[0])
+        }
+        // d(cos(x)) = -sin(x)*dx
+        Primitive::Cos => {
+            let x = to_f64(&primals[0])?;
+            Ok(-x.sin() * tangents[0])
+        }
+        // d(reduce_sum(x)) = dx (scalar input)
+        Primitive::ReduceSum => Ok(tangents[0]),
+        // Subgradient for reduce_max/min
+        Primitive::ReduceMax | Primitive::ReduceMin => Ok(tangents[0]),
+        // d(reduce_prod(x)) = dx (scalar input)
+        Primitive::ReduceProd => Ok(tangents[0]),
+        // d(dot(a,b)) = dot(da,b) + dot(a,db) — scalar case: da*b + a*db
+        Primitive::Dot => {
+            let a = to_f64(&primals[0])?;
+            let b = to_f64(&primals[1])?;
+            Ok(tangents[0] * b + a * tangents[1])
+        }
+        // Comparison ops: zero derivative
+        Primitive::Eq
+        | Primitive::Ne
+        | Primitive::Lt
+        | Primitive::Le
+        | Primitive::Gt
+        | Primitive::Ge => Ok(0.0),
+        Primitive::Reshape
+        | Primitive::Slice
+        | Primitive::Gather
+        | Primitive::Scatter
+        | Primitive::Transpose
+        | Primitive::BroadcastInDim
+        | Primitive::Concatenate => Err(AdError::UnsupportedPrimitive(primitive)),
+    }
+}
+
+// ── Forward-mode gradient (convenience) ────────────────────────────
+
+/// Compute gradient via forward-mode JVP by evaluating with unit tangent.
+/// Equivalent to grad_first but using forward-mode instead of reverse-mode.
+pub fn jvp_grad_first(jaxpr: &Jaxpr, args: &[Value]) -> Result<f64, AdError> {
+    let mut tangents = vec![0.0; args.len()];
+    tangents[0] = 1.0; // unit tangent for first argument
+    let result = jvp(jaxpr, args, &tangents)?;
+    result
+        .tangents
+        .first()
+        .copied()
+        .ok_or(AdError::NonScalarGradientOutput)
+}
+
 /// Compute gradients of a Jaxpr with respect to all inputs.
 ///
 /// The Jaxpr must produce a single scalar output.
@@ -397,6 +598,83 @@ mod tests {
         assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
     }
 
+    // ── Forward-mode JVP tests ──────────────────────────────────
+
+    #[test]
+    fn jvp_x_squared_at_3() {
+        let jaxpr = build_program(ProgramSpec::Square);
+        let result = jvp(&jaxpr, &[Value::scalar_f64(3.0)], &[1.0]).expect("jvp should succeed");
+        // f(3) = 9, f'(3) = 6
+        let primal = result.primals[0].as_f64_scalar().unwrap();
+        assert!((primal - 9.0).abs() < 1e-10, "primal should be 9, got {primal}");
+        assert!(
+            (result.tangents[0] - 6.0).abs() < 1e-10,
+            "tangent should be 6, got {}",
+            result.tangents[0]
+        );
+    }
+
+    #[test]
+    fn jvp_matches_reverse_mode() {
+        let jaxpr = build_program(ProgramSpec::Square);
+        let x = 5.0;
+        let fwd = jvp_grad_first(&jaxpr, &[Value::scalar_f64(x)]).expect("jvp grad");
+        let rev = grad_first(&jaxpr, &[Value::scalar_f64(x)]).expect("vjp grad");
+        assert!(
+            (fwd - rev).abs() < 1e-10,
+            "forward {fwd} should match reverse {rev}"
+        );
+    }
+
+    #[test]
+    fn jvp_square_plus_linear() {
+        let jaxpr = build_program(ProgramSpec::SquarePlusLinear);
+        let result = jvp(&jaxpr, &[Value::scalar_f64(3.0)], &[1.0]).expect("jvp should succeed");
+        // f(x) = x² + 2x, f(3) = 15, f'(3) = 8
+        let primal = result.primals[0].as_f64_scalar().unwrap();
+        assert!((primal - 15.0).abs() < 1e-10, "primal should be 15, got {primal}");
+        assert!(
+            (result.tangents[0] - 8.0).abs() < 1e-10,
+            "tangent should be 8, got {}",
+            result.tangents[0]
+        );
+    }
+
+    #[test]
+    fn jvp_sin_at_zero() {
+        use fj_core::{Equation, Jaxpr, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+            }],
+        );
+        let result = jvp(&jaxpr, &[Value::scalar_f64(0.0)], &[1.0]).expect("jvp should succeed");
+        // sin(0) = 0, cos(0) = 1
+        assert!(result.primals[0].as_f64_scalar().unwrap().abs() < 1e-10);
+        assert!((result.tangents[0] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn jvp_scaled_tangent() {
+        let jaxpr = build_program(ProgramSpec::Square);
+        let result = jvp(&jaxpr, &[Value::scalar_f64(3.0)], &[2.0]).expect("jvp should succeed");
+        // With tangent=2.0: df = 2 * f'(3) = 2 * 6 = 12
+        assert!(
+            (result.tangents[0] - 12.0).abs() < 1e-10,
+            "scaled tangent should be 12, got {}",
+            result.tangents[0]
+        );
+    }
+
     mod proptest_tests {
         use super::*;
         use fj_interpreters::eval_jaxpr;
@@ -442,6 +720,23 @@ mod tests {
                 prop_assert!(
                     (symbolic - numerical).abs() < 1e-4,
                     "x={x}: symbolic={symbolic}, numerical={numerical}"
+                );
+            }
+
+            #[test]
+            fn prop_jvp_matches_vjp(x in prop::num::f64::NORMAL.prop_filter(
+                "finite and not too large",
+                |x| x.is_finite() && x.abs() < 1e6
+            )) {
+                let _seed = fj_test_utils::capture_proptest_seed();
+                let jaxpr = build_program(ProgramSpec::Square);
+                let fwd = jvp_grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("jvp grad");
+                let rev = grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("vjp grad");
+                prop_assert!(
+                    (fwd - rev).abs() < 1e-8,
+                    "x={x}: jvp={fwd}, vjp={rev}"
                 );
             }
         }
