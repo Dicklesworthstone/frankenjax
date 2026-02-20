@@ -572,6 +572,7 @@ dependencies = [
 name = "fj-api"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "fj-core",
  "fj-dispatch",
  "fj-interpreters",

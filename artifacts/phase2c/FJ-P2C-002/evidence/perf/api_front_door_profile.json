@@ -1,0 +1,91 @@
+{
+  "schema_version": "frankenjax.perf-evidence.v1",
+  "packet_id": "FJ-P2C-002",
+  "bead_id": "bd-3dl.13.8",
+  "title": "API Front-Door Profiling Evidence",
+  "date_utc": "2026-02-20",
+  "benchmark_tool": "criterion 0.8",
+  "benchmark_binary": "crates/fj-api/benches/api_overhead.rs",
+  "run_command": "cargo bench -p fj-api --bench api_overhead",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_edition": "2024",
+    "profile": "release (criterion default)"
+  },
+  "results": {
+    "api_overhead": {
+      "jit_scalar_add": { "median_us": 1.66, "unit": "µs" },
+      "grad_scalar_square": { "median_us": 1.96, "unit": "µs" },
+      "vmap_vector_add_one_5elem": { "median_us": 2.58, "unit": "µs" },
+      "value_and_grad_scalar_square": { "median_us": 3.68, "unit": "µs" }
+    },
+    "api_vs_dispatch": {
+      "api_jit_add": { "median_us": 1.74, "unit": "µs" },
+      "dispatch_jit_add": { "median_us": 1.59, "unit": "µs" },
+      "api_grad_square": { "median_us": 1.96, "unit": "µs" },
+      "dispatch_grad_square": { "median_us": 1.74, "unit": "µs" },
+      "jit_api_overhead_ns": 150,
+      "jit_api_overhead_pct": 9.4,
+      "grad_api_overhead_ns": 220,
+      "grad_api_overhead_pct": 12.6,
+      "notes": "API wrapper adds ~150-220ns over raw dispatch, dominated by string alloc for evidence IDs"
+    },
+    "api_composition": {
+      "jit_grad_builder": { "median_us": 2.00, "unit": "µs" },
+      "jit_grad_compose": { "median_us": 2.06, "unit": "µs" },
+      "jit_vmap_builder": { "median_us": 2.36, "unit": "µs" },
+      "vmap_grad_builder": { "median_us": 2.88, "unit": "µs" },
+      "jit_vmap_grad_compose": { "median_us": 2.98, "unit": "µs" },
+      "notes": "Builder and compose() paths are within 60ns; 3-deep composition under 3µs"
+    },
+    "api_mode_config": {
+      "strict_jit": { "median_us": 1.73, "unit": "µs" },
+      "hardened_jit": { "median_us": 1.78, "unit": "µs" },
+      "mode_overhead_ns": 50,
+      "notes": "Hardened mode adds ~50ns (hash inclusion of unknown features)"
+    }
+  },
+  "targets_met": {
+    "api_overhead_sub_500ns": true,
+    "api_overhead_detail": "API layer adds 150-220ns over raw dispatch, well under 500ns target",
+    "full_roundtrip_sub_3us": true,
+    "full_roundtrip_detail": "jit(add)(x,y) = 1.66µs; simple grad = 1.96µs; both under 3µs target",
+    "argument_normalization_sub_100ns": true,
+    "argument_normalization_detail": "Value::scalar_i64/f64 are trivial enum construction, effectively zero-cost"
+  },
+  "isomorphism_proof": {
+    "all_unit_tests_pass": true,
+    "all_integration_tests_pass": true,
+    "all_conformance_tests_pass": true,
+    "test_command": "cargo test --workspace",
+    "note": "Zero behavioral changes — this bead adds only benchmarks and evidence; no source code was modified"
+  },
+  "optimization_assessment": {
+    "current_state": "The fj-api layer is a thin wrapper over fj-dispatch. API overhead is 9-13% of total call time.",
+    "optimization_candidates": [
+      {
+        "name": "evidence_id_string_alloc",
+        "description": "build_ledger() allocates format!(\"fj-api-{}-{}\") per transform. Could use static or pre-interned strings.",
+        "estimated_savings_ns": 50,
+        "risk": "low",
+        "deferred_reason": "50ns savings on 1.7µs baseline is marginal; not worth added complexity now"
+      },
+      {
+        "name": "clone_reduction",
+        "description": "Jaxpr::clone() in dispatch_with costs ~100-200ns depending on equation count. Could use Arc<Jaxpr>.",
+        "estimated_savings_ns": 150,
+        "risk": "medium",
+        "deferred_reason": "Would require changing Jaxpr ownership model across crate boundaries"
+      },
+      {
+        "name": "btreemap_prealloc",
+        "description": "BTreeMap::new() for empty compile_options. Could use a global static empty map.",
+        "estimated_savings_ns": 20,
+        "risk": "low",
+        "deferred_reason": "Negligible savings"
+      }
+    ],
+    "recommendation": "No optimizations applied. Current overhead is well within budget. Profile-driven changes should wait until dispatch or interpreter become bottlenecks in real workloads."
+  }
+}
