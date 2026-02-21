@@ -572,48 +572,47 @@ fn vjp(
             match input {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(t) => {
-                    // Full reduction: find the extremal value, create indicator mask
                     let output_val = eval_primitive(primitive, inputs, params)
                         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-                    let extremal = output_val
-                        .as_f64_scalar()
-                        .ok_or_else(|| AdError::EvalFailed("non-scalar reduce output".into()))?;
-                    let g_scalar = g
-                        .as_f64_scalar()
-                        .ok_or_else(|| AdError::EvalFailed("non-scalar gradient".into()))?;
 
-                    // Count how many elements equal the extremal value (for tie-breaking)
-                    let count = t
-                        .elements
-                        .iter()
-                        .filter(|lit| {
-                            lit.as_f64()
-                                .is_some_and(|v| (v - extremal).abs() < f64::EPSILON)
-                        })
-                        .count();
-                    let share = if count > 0 {
-                        g_scalar / count as f64
+                    let kept_axes = if let Some(axes_str) = params.get("axes") {
+                        let reduced_axes: Vec<usize> = axes_str
+                            .split(',')
+                            .filter_map(|s| s.trim().parse().ok())
+                            .collect();
+                        let rank = t.shape.rank();
+                        (0..rank).filter(|a| !reduced_axes.contains(a)).collect::<Vec<_>>()
                     } else {
-                        0.0
+                        vec![]
                     };
 
-                    let elements: Vec<Literal> = t
-                        .elements
-                        .iter()
-                        .map(|lit| {
-                            let v = lit.as_f64().unwrap_or(0.0);
-                            if (v - extremal).abs() < f64::EPSILON {
-                                Literal::from_f64(share)
-                            } else {
-                                Literal::from_f64(0.0)
-                            }
-                        })
-                        .collect();
+                    let out_bcast = broadcast_g_to_shape_with_axes(&output_val, &t.shape, &kept_axes)?;
+                    let g_bcast = broadcast_g_to_shape_with_axes(g, &t.shape, &kept_axes)?;
 
-                    Ok(vec![Value::Tensor(
-                        TensorValue::new(DType::F64, t.shape.clone(), elements)
-                            .map_err(|e| AdError::EvalFailed(e.to_string()))?,
-                    )])
+                    // indicator mask: t == out_bcast
+                    let mask = eval_primitive(Primitive::Eq, &[Value::Tensor(t.clone()), out_bcast], &BTreeMap::new())
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+                    // convert mask (bool) to f64 mask: select(mask, 1.0, 0.0)
+                    let f64_mask = eval_primitive(Primitive::Select, &[mask, scalar_value(1.0), scalar_value(0.0)], &BTreeMap::new())
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+                    // count ties per reduction window: reduce_sum(f64_mask, axes=...)
+                    let tie_counts = eval_primitive(Primitive::ReduceSum, &[f64_mask.clone()], params)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+                    // broadcast tie_counts back
+                    let tie_counts_bcast = broadcast_g_to_shape_with_axes(&tie_counts, &t.shape, &kept_axes)?;
+
+                    // share = g_bcast / tie_counts_bcast
+                    let share = eval_primitive(Primitive::Div, &[g_bcast, tie_counts_bcast], &BTreeMap::new())
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+                    // final gradient = f64_mask * share
+                    let grad = eval_primitive(Primitive::Mul, &[f64_mask, share], &BTreeMap::new())
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+                    Ok(vec![grad])
                 }
             }
         }
@@ -623,6 +622,9 @@ fn vjp(
             match input {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(t) => {
+                    if params.contains_key("axes") {
+                        return Err(AdError::EvalFailed("partial reduce_prod VJP is unsupported in V1".to_owned()));
+                    }
                     let output_val = eval_primitive(primitive, inputs, params)
                         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
                     let prod_val = output_val

@@ -41,7 +41,7 @@ pub struct LruCache<B: CacheBackend> {
     config: LruConfig,
     /// Access-ordered queue: front = least recently used, back = most recent.
     /// Wrapped in Mutex so `get(&self)` can update recency.
-    order: Mutex<VecDeque<String>>,
+    pub(crate) order: Mutex<VecDeque<String>>,
 }
 
 impl<B: CacheBackend> std::fmt::Debug for LruCache<B> {
@@ -218,6 +218,13 @@ impl<B: CacheBackend> TtlLruCache<B> {
                 self.inner.evict(&evict_key);
             }
             self.insert_times.remove(key_str);
+        }
+
+        // Prevent memory leak by cleaning up keys silently evicted by the underlying LRU
+        if self.insert_times.len() > self.inner.config.max_entries.saturating_mul(2).max(1024) {
+            let order = self.inner.order.lock().unwrap_or_else(|e| e.into_inner());
+            let active_keys: std::collections::HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
+            self.insert_times.retain(|k, _| active_keys.contains(k.as_str()));
         }
     }
 

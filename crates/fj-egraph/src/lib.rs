@@ -752,7 +752,25 @@ pub fn egraph_to_jaxpr(
     }
 
     // Use the last node as the output variable (matches extraction behavior)
-    let outvars = if let Some(last_var) = node_to_var.get(&(expr.as_ref().len() - 1)) {
+    let last_idx = expr.as_ref().len().saturating_sub(1);
+    let outvars = if let Some(last_var) = node_to_var.get(&last_idx) {
+        if !expr.as_ref().is_empty() {
+            let last_node = &expr.as_ref()[last_idx];
+            let is_literal = match last_node {
+                FjLang::Num(_) => true,
+                FjLang::Symbol(sym) => sym.as_str().starts_with("f64:") || sym.as_str().starts_with("bool:"),
+                _ => false,
+            };
+            if is_literal {
+                let lit_atom = id_to_atom(Id::from(last_idx), &node_to_var, expr);
+                equations.push(Equation {
+                    primitive: Primitive::Select,
+                    inputs: smallvec![Atom::Lit(Literal::Bool(true)), lit_atom.clone(), lit_atom],
+                    outputs: smallvec![*last_var],
+                    params: BTreeMap::new(),
+                });
+            }
+        }
         vec![*last_var]
     } else {
         original_outvars.to_vec()
