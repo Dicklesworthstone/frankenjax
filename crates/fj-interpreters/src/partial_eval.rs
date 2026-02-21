@@ -229,6 +229,14 @@ pub fn partial_eval_jaxpr(
         }
     }
 
+    for var in &jaxpr.constvars {
+        let idx = var.0 as usize;
+        if is_unknown_input[idx] && !is_residual[idx] {
+            residual_vars.push(*var);
+            is_residual[idx] = true;
+        }
+    }
+
     // Build known Jaxpr.
     let known_invars: Vec<VarId> = jaxpr
         .invars
@@ -351,10 +359,18 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
 
     let used_inputs: Vec<bool> = jaxpr.invars.iter().map(|v| needed[v.0 as usize]).collect();
 
+    let retained_outvars: Vec<VarId> = jaxpr
+        .outvars
+        .iter()
+        .zip(used_outputs.iter())
+        .filter(|(_, &used)| used)
+        .map(|(v, _)| *v)
+        .collect();
+
     let new_jaxpr = Jaxpr::new(
         jaxpr.invars.clone(),
         jaxpr.constvars.clone(),
-        jaxpr.outvars.clone(),
+        retained_outvars,
         retained_eqns,
     );
 

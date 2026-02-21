@@ -139,7 +139,7 @@ pub fn eval_primitive(
             inputs,
             |x| x.signum(),
             |x| {
-                if x.is_nan() { f64::NAN } else { x.signum() }
+                if x.is_nan() { f64::NAN } else if x == 0.0 { x } else { x.signum() }
             },
         ),
         Primitive::Square => eval_unary_int_or_float(primitive, inputs, |x| x * x, |x| x * x),

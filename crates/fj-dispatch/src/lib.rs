@@ -59,10 +59,9 @@ impl EffectContext {
             .iter()
             .position(|t| t.effect_name == token.effect_name)
         {
-            self.tokens[pos] = token.clone();
-        } else {
-            self.tokens.push(token.clone());
+            self.tokens.remove(pos);
         }
+        self.tokens.push(token.clone());
         token
     }
 

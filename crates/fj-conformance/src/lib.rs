@@ -737,6 +737,12 @@ fn run_transform_fixture_case(case: &TransformFixtureCase) -> TransformCaseRepor
 }
 
 fn approx_equal(expected: f64, actual: f64, atol: f64, rtol: f64) -> bool {
+    if expected.is_nan() && actual.is_nan() {
+        return true;
+    }
+    if expected.is_infinite() && actual.is_infinite() && expected.signum() == actual.signum() {
+        return true;
+    }
     let tolerance = atol + rtol * expected.abs();
     (expected - actual).abs() <= tolerance
 }

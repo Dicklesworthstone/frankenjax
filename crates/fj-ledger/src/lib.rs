@@ -193,7 +193,7 @@ impl ConformalPredictor {
         let n = sorted.len();
         // Finite-sample correction: ceil((n+1) * coverage) / n
         let idx = ((n as f64 + 1.0) * self.target_coverage).ceil() as usize;
-        let idx = idx.min(n) - 1;
+        let idx = idx.min(n).saturating_sub(1);
         Some(sorted[idx])
     }
 

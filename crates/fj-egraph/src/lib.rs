@@ -170,8 +170,8 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
     let mut expr = RecExpr::default();
     let mut var_map: BTreeMap<VarId, Id> = BTreeMap::new();
 
-    // Add input variables as symbols
-    for var in &jaxpr.invars {
+    // Add input variables and constant variables as symbols
+    for var in jaxpr.invars.iter().chain(jaxpr.constvars.iter()) {
         let sym = egg::Symbol::from(format!("v{}", var.0));
         let id = expr.add(FjLang::Symbol(sym));
         var_map.insert(*var, id);
@@ -190,7 +190,10 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
                     let sym = egg::Symbol::from(format!("f64:{bits}"));
                     expr.add(FjLang::Symbol(sym))
                 }
-                Atom::Lit(Literal::Bool(b)) => expr.add(FjLang::Num(if *b { 1 } else { 0 })),
+                Atom::Lit(Literal::Bool(b)) => {
+                    let sym = egg::Symbol::from(format!("bool:{}", if *b { 1 } else { 0 }));
+                    expr.add(FjLang::Symbol(sym))
+                }
             })
             .collect();
 
@@ -273,9 +276,11 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
 pub fn egraph_to_jaxpr(
     expr: &RecExpr<FjLang>,
     invars: &[VarId],
+    constvars: &[VarId],
     original_outvars: &[VarId],
 ) -> Jaxpr {
-    let mut next_var = invars.iter().map(|v| v.0).max().unwrap_or(0) + 1;
+    let max_in_const = invars.iter().chain(constvars.iter()).map(|v| v.0).max().unwrap_or(0);
+    let mut next_var = max_in_const + 1;
     let mut equations = Vec::new();
     let mut node_to_var: BTreeMap<usize, VarId> = BTreeMap::new();
 
@@ -288,7 +293,7 @@ pub fn egraph_to_jaxpr(
             && let Ok(var_num) = rest.parse::<u32>()
         {
             let var_id = VarId(var_num);
-            if invars.contains(&var_id) {
+            if invars.contains(&var_id) || constvars.contains(&var_id) {
                 node_to_var.insert(idx, var_id);
             }
         }
@@ -753,7 +758,7 @@ pub fn egraph_to_jaxpr(
         original_outvars.to_vec()
     };
 
-    Jaxpr::new(invars.to_vec(), vec![], outvars, equations)
+    Jaxpr::new(invars.to_vec(), constvars.to_vec(), outvars, equations)
 }
 
 fn resolve_or_create(
@@ -847,6 +852,9 @@ fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLan
             {
                 return Atom::Lit(Literal::F64Bits(bits));
             }
+            if let Some(bool_str) = sym.as_str().strip_prefix("bool:") {
+                return Atom::Lit(Literal::Bool(bool_str == "1"));
+            }
             // Otherwise it's a variable reference
             node_to_var
                 .get(&idx)
@@ -887,7 +895,7 @@ pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
     let extractor = egg::Extractor::new(&runner.egraph, OpCount);
     let (_, best_expr) = extractor.find_best(root_id);
 
-    egraph_to_jaxpr(&best_expr, &jaxpr.invars, &jaxpr.outvars)
+    egraph_to_jaxpr(&best_expr, &jaxpr.invars, &jaxpr.constvars, &jaxpr.outvars)
 }
 
 fn is_egraph_supported_primitive(primitive: Primitive) -> bool {

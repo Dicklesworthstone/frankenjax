@@ -3,7 +3,7 @@
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 
 use crate::EvalError;
-use crate::type_promotion::{binary_literal_op, infer_dtype};
+use crate::type_promotion::{binary_literal_op, infer_dtype, promote_dtype};
 
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
@@ -40,7 +40,7 @@ pub(crate) fn eval_binary_elementwise(
                     })
                     .collect::<Result<Vec<_>, _>>()?;
 
-                let dtype = infer_dtype(&elements);
+                let dtype = promote_dtype(lhs.dtype, rhs.dtype);
                 Ok(Value::Tensor(TensorValue::new(
                     dtype,
                     lhs.shape.clone(),
@@ -59,7 +59,12 @@ pub(crate) fn eval_binary_elementwise(
                 .map(|right| binary_literal_op(*lhs, right, primitive, &int_op, &float_op))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let dtype = infer_dtype(&elements);
+            let lhs_dtype = match lhs {
+                Literal::I64(_) => DType::I64,
+                Literal::F64Bits(_) => DType::F64,
+                Literal::Bool(_) => DType::Bool,
+            };
+            let dtype = promote_dtype(lhs_dtype, rhs.dtype);
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 rhs.shape.clone(),
@@ -74,7 +79,12 @@ pub(crate) fn eval_binary_elementwise(
                 .map(|left| binary_literal_op(left, *rhs, primitive, &int_op, &float_op))
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let dtype = infer_dtype(&elements);
+            let rhs_dtype = match rhs {
+                Literal::I64(_) => DType::I64,
+                Literal::F64Bits(_) => DType::F64,
+                Literal::Bool(_) => DType::Bool,
+            };
+            let dtype = promote_dtype(lhs.dtype, rhs_dtype);
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 lhs.shape.clone(),
@@ -118,7 +128,7 @@ fn broadcast_binary_tensors(
         elements.push(binary_literal_op(l, r, primitive, int_op, float_op)?);
     }
 
-    let dtype = infer_dtype(&elements);
+    let dtype = promote_dtype(lhs.dtype, rhs.dtype);
     Ok(Value::Tensor(TensorValue::new(dtype, out_shape, elements)?))
 }
 
@@ -284,7 +294,7 @@ pub(crate) fn eval_unary_int_or_float(
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
-            let dtype = infer_dtype(&elements);
+            let dtype = tensor.dtype;
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 tensor.shape.clone(),
@@ -334,7 +344,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                     if flag { *t } else { *f }
                 })
                 .collect();
-            let dtype = infer_dtype(&elements);
+            let dtype = promote_dtype(on_true.dtype, on_false.dtype);
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 cond.shape.clone(),
@@ -350,6 +360,9 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
 
 /// Approximate erf using Abramowitz & Stegun formula (max error ~1.5e-7).
 pub(crate) fn erf_approx(x: f64) -> f64 {
+    if x == 0.0 {
+        return x;
+    }
     let sign = x.signum();
     let x = x.abs();
     let t = 1.0 / (1.0 + 0.3275911 * x);

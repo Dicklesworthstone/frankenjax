@@ -7,7 +7,24 @@ use crate::EvalError;
 /// Infer the DType from a slice of Literal elements.
 /// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
 #[inline]
+pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
+    use DType::{Bool, F32, F64, I32, I64};
+    match (lhs, rhs) {
+        (F64, _) | (_, F64) => F64,
+        (F32, _) | (_, F32) => F32,
+        (I64, _) | (_, I64) => I64,
+        (I32, _) | (_, I32) => I32,
+        (Bool, Bool) => Bool,
+    }
+}
+
+/// Infer the DType from a slice of Literal elements.
+/// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
+#[inline]
 pub(crate) fn infer_dtype(elements: &[Literal]) -> DType {
+    if elements.is_empty() {
+        return DType::F64;
+    }
     if elements
         .iter()
         .all(|literal| matches!(literal, Literal::I64(_)))

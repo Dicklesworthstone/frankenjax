@@ -149,9 +149,15 @@ impl CacheBackend for FileCache {
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
         let path = self.path_for(key);
         // Atomic write: write to temp file, then rename.
-        let tmp_path = path.with_extension("tmp");
+        // Use a unique temp file to avoid concurrent write races.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), id));
         if std::fs::write(&tmp_path, &artifact.data).is_ok() {
             let _ = std::fs::rename(&tmp_path, &path);
+        } else {
+            let _ = std::fs::remove_file(&tmp_path);
         }
     }
 

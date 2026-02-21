@@ -125,14 +125,14 @@ fn zeros_like(v: &Value) -> Value {
             Literal::F64Bits(_) => Value::scalar_f64(0.0),
         },
         Value::Tensor(t) => {
-            let zero_lit = match t.dtype {
-                DType::I64 | DType::I32 => Literal::I64(0),
-                DType::Bool => Literal::from_f64(0.0),
-                DType::F64 | DType::F32 => Literal::from_f64(0.0),
+            let (zero_lit, out_dtype) = match t.dtype {
+                DType::I64 | DType::I32 => (Literal::I64(0), DType::I64),
+                DType::Bool => (Literal::from_f64(0.0), DType::F64),
+                DType::F64 | DType::F32 => (Literal::from_f64(0.0), DType::F64),
             };
             let elements = vec![zero_lit; t.elements.len()];
             Value::Tensor(
-                TensorValue::new(t.dtype, t.shape.clone(), elements)
+                TensorValue::new(out_dtype, t.shape.clone(), elements)
                     .expect("zeros_like should never fail for valid tensor shape"),
             )
         }
@@ -1160,7 +1160,9 @@ fn jvp_rule(primitive: Primitive, primals: &[Value], tangents: &[f64]) -> Result
         Primitive::Pow => {
             let a = to_f64(&primals[0])?;
             let b = to_f64(&primals[1])?;
-            Ok(b * a.powf(b - 1.0) * tangents[0] + a.powf(b) * a.ln() * tangents[1])
+            let da = if tangents[0] == 0.0 { 0.0 } else { b * a.powf(b - 1.0) * tangents[0] };
+            let db = if tangents[1] == 0.0 { 0.0 } else { a.powf(b) * a.ln() * tangents[1] };
+            Ok(da + db)
         }
         Primitive::Exp => {
             let x = to_f64(&primals[0])?;

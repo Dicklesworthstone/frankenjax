@@ -127,7 +127,7 @@ pub(crate) fn eval_reshape(
             }
 
             if let Some(axis) = inferred_axis {
-                if known_product == 0 || !elem_count.is_multiple_of(known_product) {
+                if known_product == 0 || elem_count % known_product != 0 {
                     return Err(EvalError::Unsupported {
                         primitive,
                         detail: format!(
@@ -304,6 +304,12 @@ pub(crate) fn eval_broadcast_in_dim(
                 // Default: map input axes to trailing output axes.
                 let out_rank = target_dims.len();
                 let in_rank = tensor.shape.rank();
+                if in_rank > out_rank {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!("input rank {} exceeds output rank {}", in_rank, out_rank),
+                    });
+                }
                 (out_rank - in_rank..out_rank).collect()
             };
 
@@ -623,6 +629,13 @@ pub(crate) fn eval_gather(
         }
     };
 
+    if operand.shape.rank() == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "cannot gather from a rank-0 tensor".into(),
+        });
+    }
+
     let slice_sizes = parse_usize_param(primitive, "slice_sizes", params)?;
     if slice_sizes.len() != operand.shape.rank() {
         return Err(EvalError::Unsupported {
@@ -744,6 +757,13 @@ pub(crate) fn eval_scatter(
             })
         }
     };
+
+    if operand.shape.rank() == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "cannot scatter into a rank-0 tensor".into(),
+        });
+    }
 
     let index_vals: Vec<usize> = match &inputs[1] {
         Value::Scalar(lit) => vec![lit_to_usize(lit, primitive)?],

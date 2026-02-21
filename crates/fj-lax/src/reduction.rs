@@ -33,7 +33,7 @@ pub(crate) fn eval_reduce(
                 return Ok(inputs[0].clone());
             }
 
-            let is_integral = tensor.elements.iter().all(|literal| literal.is_integral());
+            let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
 
             // Full reduction: flatten to scalar
             if is_integral {
@@ -130,7 +130,7 @@ pub(crate) fn eval_reduce_axes(
                 .map(|(_, d)| *d)
                 .collect();
 
-            let is_integral = tensor.elements.iter().all(|literal| literal.is_integral());
+            let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
 
             // Compute strides for the input tensor (row-major)
             let strides = compute_strides(&tensor.shape.dims);
