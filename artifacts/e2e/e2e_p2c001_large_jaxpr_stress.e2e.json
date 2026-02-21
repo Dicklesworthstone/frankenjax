@@ -6,7 +6,7 @@
   "fixture_id": "2f28747775fe4dfe9189e50fca56c09b94a0654049b28fc52ebfd24e7316fd0f",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1771616002859,
+  "ts_utc_unix_ms": 1771627935360,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -34,7 +34,7 @@
       "step": "composition_proof_passed"
     },
     {
-      "eval_ms": 0,
+      "eval_ms": 1,
       "expected": 1000,
       "output": 1000,
       "step": "evaluation_complete"
@@ -43,7 +43,7 @@
   "output_capture": {
     "composition_valid": true,
     "equation_count": 1000,
-    "eval_ms": 0,
+    "eval_ms": 1,
     "fingerprint_ms": 0,
     "output_correct": true
   },

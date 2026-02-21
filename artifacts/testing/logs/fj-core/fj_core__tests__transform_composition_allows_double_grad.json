@@ -1,19 +1,19 @@
 {
   "schema_version": "frankenjax.test-log.v1",
-  "test_id": "fj_core::tests::shape_scalar_rank_is_zero",
-  "fixture_id": "6a29c29f82fe9fc64e64b74a8b0fa54b8395e3b32bbfe685ccfaf26aa643dee7",
+  "test_id": "fj_core::tests::transform_composition_allows_double_grad",
+  "fixture_id": "8f4790bd2d9b243832e2d0693150e34cd29858d1257dc80f7c85274eb9b0b528",
   "seed": null,
   "mode": "strict",
   "env": {
     "rust_version": "rustc 1.95.0-nightly (7f99507f5 2026-02-19)",
     "os": "linux",
     "cargo_target_dir": "/data/tmp/cargo-target",
-    "timestamp_unix_ms": 1771626720784
+    "timestamp_unix_ms": 1771626720785
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
-    "replay: cargo test -p fj-core --lib fj_core::tests::shape_scalar_rank_is_zero -- --exact --nocapture",
-    "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__shape_scalar_rank_is_zero.json"
+    "replay: cargo test -p fj-core --lib fj_core::tests::transform_composition_allows_double_grad -- --exact --nocapture",
+    "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__transform_composition_allows_double_grad.json"
   ],
   "result": "pass",
   "duration_ms": 76,
