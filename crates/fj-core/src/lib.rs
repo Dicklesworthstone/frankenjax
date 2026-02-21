@@ -303,6 +303,31 @@ impl Value {
     }
 
     #[must_use]
+    pub fn as_i64_scalar(&self) -> Option<i64> {
+        self.as_scalar_literal().and_then(Literal::as_i64)
+    }
+
+    #[must_use]
+    pub fn as_bool_scalar(&self) -> Option<bool> {
+        match self.as_scalar_literal() {
+            Some(Literal::Bool(b)) => Some(b),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn dtype(&self) -> DType {
+        match self {
+            Self::Scalar(lit) => match lit {
+                Literal::I64(_) => DType::I64,
+                Literal::Bool(_) => DType::Bool,
+                Literal::F64Bits(_) => DType::F64,
+            },
+            Self::Tensor(t) => t.dtype,
+        }
+    }
+
+    #[must_use]
     pub fn as_tensor(&self) -> Option<&TensorValue> {
         match self {
             Self::Scalar(_) => None,
@@ -453,6 +478,10 @@ impl TensorValue {
 
     pub fn to_f64_vec(&self) -> Option<Vec<f64>> {
         self.elements.iter().copied().map(Literal::as_f64).collect()
+    }
+
+    pub fn to_i64_vec(&self) -> Option<Vec<i64>> {
+        self.elements.iter().copied().map(Literal::as_i64).collect()
     }
 }
 
@@ -2195,5 +2224,58 @@ mod tests {
                 Ok(Vec::new())
             },
         );
+    }
+
+    #[test]
+    fn value_as_i64_scalar() {
+        assert_eq!(Value::scalar_i64(42).as_i64_scalar(), Some(42));
+        assert_eq!(Value::scalar_i64(-7).as_i64_scalar(), Some(-7));
+        assert_eq!(Value::scalar_f64(3.14).as_i64_scalar(), None);
+        assert_eq!(Value::scalar_bool(true).as_i64_scalar(), None);
+    }
+
+    #[test]
+    fn value_as_bool_scalar() {
+        assert_eq!(Value::scalar_bool(true).as_bool_scalar(), Some(true));
+        assert_eq!(Value::scalar_bool(false).as_bool_scalar(), Some(false));
+        assert_eq!(Value::scalar_i64(1).as_bool_scalar(), None);
+        assert_eq!(Value::scalar_f64(1.0).as_bool_scalar(), None);
+    }
+
+    #[test]
+    fn value_dtype_scalars() {
+        assert_eq!(Value::scalar_i64(0).dtype(), DType::I64);
+        assert_eq!(Value::scalar_f64(0.0).dtype(), DType::F64);
+        assert_eq!(Value::scalar_bool(false).dtype(), DType::Bool);
+    }
+
+    #[test]
+    fn value_dtype_tensors() {
+        let t = Value::vector_i64(&[1, 2, 3]).unwrap();
+        assert_eq!(t.dtype(), DType::I64);
+        let t = Value::vector_f64(&[1.0, 2.0]).unwrap();
+        assert_eq!(t.dtype(), DType::F64);
+    }
+
+    #[test]
+    fn tensor_to_i64_vec() {
+        let t = TensorValue::new(
+            DType::I64,
+            Shape::vector(3),
+            vec![Literal::I64(10), Literal::I64(20), Literal::I64(30)],
+        )
+        .unwrap();
+        assert_eq!(t.to_i64_vec(), Some(vec![10, 20, 30]));
+    }
+
+    #[test]
+    fn tensor_to_i64_vec_wrong_dtype_returns_none() {
+        let t = TensorValue::new(
+            DType::F64,
+            Shape::vector(2),
+            vec![Literal::from_f64(1.0), Literal::from_f64(2.0)],
+        )
+        .unwrap();
+        assert_eq!(t.to_i64_vec(), None);
     }
 }
