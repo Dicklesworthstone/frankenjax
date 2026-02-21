@@ -2082,6 +2082,152 @@ mod tests {
         );
     }
 
+    // ── Systematic numerical gradient verification ──────────────
+    // Compares VJP-computed gradients against central finite differences
+    // for every differentiable unary primitive at a representative point.
+
+    fn numerical_grad_unary(prim: Primitive, x: f64) -> f64 {
+        let eps = 1e-6;
+        let no_p = BTreeMap::new();
+        let f_plus = eval_primitive(prim, &[Value::scalar_f64(x + eps)], &no_p)
+            .unwrap()
+            .as_f64_scalar()
+            .unwrap();
+        let f_minus = eval_primitive(prim, &[Value::scalar_f64(x - eps)], &no_p)
+            .unwrap()
+            .as_f64_scalar()
+            .unwrap();
+        (f_plus - f_minus) / (2.0 * eps)
+    }
+
+    fn symbolic_grad_unary(prim: Primitive, x: f64) -> f64 {
+        let jaxpr = make_unary_jaxpr(prim);
+        grad_first(&jaxpr, &[Value::scalar_f64(x)]).unwrap()
+    }
+
+    fn assert_grad_matches(prim: Primitive, x: f64, tol: f64) {
+        let sym = symbolic_grad_unary(prim, x);
+        let num = numerical_grad_unary(prim, x);
+        assert!(
+            (sym - num).abs() < tol,
+            "grad({:?}) at x={x}: symbolic={sym}, numerical={num}, diff={}",
+            prim,
+            (sym - num).abs()
+        );
+    }
+
+    #[test]
+    fn vjp_vs_numerical_exp() {
+        assert_grad_matches(Primitive::Exp, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_log() {
+        assert_grad_matches(Primitive::Log, 2.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_sqrt() {
+        assert_grad_matches(Primitive::Sqrt, 4.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_rsqrt() {
+        assert_grad_matches(Primitive::Rsqrt, 4.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_sin() {
+        assert_grad_matches(Primitive::Sin, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_cos() {
+        assert_grad_matches(Primitive::Cos, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_tan() {
+        assert_grad_matches(Primitive::Tan, 0.5, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_asin() {
+        assert_grad_matches(Primitive::Asin, 0.5, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_acos() {
+        assert_grad_matches(Primitive::Acos, 0.5, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_atan() {
+        assert_grad_matches(Primitive::Atan, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_sinh() {
+        assert_grad_matches(Primitive::Sinh, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_cosh() {
+        assert_grad_matches(Primitive::Cosh, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_tanh() {
+        assert_grad_matches(Primitive::Tanh, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_expm1() {
+        assert_grad_matches(Primitive::Expm1, 0.5, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_log1p() {
+        assert_grad_matches(Primitive::Log1p, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_square() {
+        assert_grad_matches(Primitive::Square, 3.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_reciprocal() {
+        assert_grad_matches(Primitive::Reciprocal, 2.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_logistic() {
+        assert_grad_matches(Primitive::Logistic, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_erf() {
+        assert_grad_matches(Primitive::Erf, 0.5, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_erfc() {
+        assert_grad_matches(Primitive::Erfc, 0.5, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_neg() {
+        assert_grad_matches(Primitive::Neg, 3.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_abs() {
+        // Test away from zero where abs is differentiable
+        assert_grad_matches(Primitive::Abs, 2.0, 1e-4);
+        assert_grad_matches(Primitive::Abs, -2.0, 1e-4);
+    }
+
     mod proptest_tests {
         use super::*;
         use fj_interpreters::eval_jaxpr;
