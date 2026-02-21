@@ -793,7 +793,10 @@ fn oracle_div_by_zero_is_inf() {
         &no_params(),
     )
     .unwrap();
-    assert!(out.as_f64_scalar().unwrap().is_infinite(), "1/0 should be inf");
+    assert!(
+        out.as_f64_scalar().unwrap().is_infinite(),
+        "1/0 should be inf"
+    );
 }
 
 #[test]
@@ -984,11 +987,7 @@ fn oracle_sinh_cosh_tanh() {
 fn oracle_logistic() {
     // logistic(0) = 0.5
     assert_f64_close(
-        eval_f64(
-            Primitive::Logistic,
-            &[Value::scalar_f64(0.0)],
-            &no_params(),
-        ),
+        eval_f64(Primitive::Logistic, &[Value::scalar_f64(0.0)], &no_params()),
         0.5,
         1e-14,
         "logistic(0)",
@@ -1097,8 +1096,12 @@ fn oracle_select() {
 fn oracle_gather_basic() {
     let operand = Value::vector_i64(&[10, 20, 30, 40]).unwrap();
     let indices = Value::Tensor(
-        TensorValue::new(DType::I64, Shape::vector(2), vec![Literal::I64(3), Literal::I64(1)])
-            .unwrap(),
+        TensorValue::new(
+            DType::I64,
+            Shape::vector(2),
+            vec![Literal::I64(3), Literal::I64(1)],
+        )
+        .unwrap(),
     );
     let mut params = BTreeMap::new();
     params.insert("slice_sizes".into(), "1".into());
@@ -1108,7 +1111,13 @@ fn oracle_gather_basic() {
         let vals: Vec<i64> = t
             .elements
             .iter()
-            .map(|l| if let Literal::I64(n) = l { *n } else { panic!() })
+            .map(|l| {
+                if let Literal::I64(n) = l {
+                    *n
+                } else {
+                    panic!()
+                }
+            })
             .collect();
         assert_eq!(vals, vec![40, 20]);
     } else {
@@ -1120,8 +1129,12 @@ fn oracle_gather_basic() {
 fn oracle_scatter_basic() {
     let operand = Value::vector_i64(&[0, 0, 0, 0]).unwrap();
     let indices = Value::Tensor(
-        TensorValue::new(DType::I64, Shape::vector(2), vec![Literal::I64(1), Literal::I64(3)])
-            .unwrap(),
+        TensorValue::new(
+            DType::I64,
+            Shape::vector(2),
+            vec![Literal::I64(1), Literal::I64(3)],
+        )
+        .unwrap(),
     );
     let updates = Value::Tensor(
         TensorValue::new(
@@ -1131,12 +1144,23 @@ fn oracle_scatter_basic() {
         )
         .unwrap(),
     );
-    let out = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &no_params()).unwrap();
+    let out = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &no_params(),
+    )
+    .unwrap();
     if let Value::Tensor(t) = &out {
         let vals: Vec<i64> = t
             .elements
             .iter()
-            .map(|l| if let Literal::I64(n) = l { *n } else { panic!() })
+            .map(|l| {
+                if let Literal::I64(n) = l {
+                    *n
+                } else {
+                    panic!()
+                }
+            })
             .collect();
         assert_eq!(vals, vec![0, 99, 0, 77]);
     } else {
@@ -1291,7 +1315,11 @@ fn metamorphic_expm1_log1p_inverse() {
     // expm1(log1p(x)) == x for x > -1
     for x in [0.0, 0.5, 1.0, 10.0, 0.001] {
         let log1p_x = eval_f64(Primitive::Log1p, &[Value::scalar_f64(x)], &no_params());
-        let roundtrip = eval_f64(Primitive::Expm1, &[Value::scalar_f64(log1p_x)], &no_params());
+        let roundtrip = eval_f64(
+            Primitive::Expm1,
+            &[Value::scalar_f64(log1p_x)],
+            &no_params(),
+        );
         assert_f64_close(roundtrip, x, 1e-10, &format!("expm1(log1p({x}))"));
     }
 }
@@ -1312,7 +1340,12 @@ fn metamorphic_sinh_cosh_identity() {
     for x in [0.0, 1.0, -0.5, 2.0] {
         let sh = eval_f64(Primitive::Sinh, &[Value::scalar_f64(x)], &no_params());
         let ch = eval_f64(Primitive::Cosh, &[Value::scalar_f64(x)], &no_params());
-        assert_f64_close(ch * ch - sh * sh, 1.0, 1e-12, &format!("cosh²({x})-sinh²({x})"));
+        assert_f64_close(
+            ch * ch - sh * sh,
+            1.0,
+            1e-12,
+            &format!("cosh²({x})-sinh²({x})"),
+        );
     }
 }
 
@@ -1342,19 +1375,33 @@ fn metamorphic_gather_scatter_roundtrip() {
     let mut gather_params = BTreeMap::new();
     gather_params.insert("slice_sizes".into(), "1".into());
 
-    let gathered =
-        eval_primitive(Primitive::Gather, &[operand, indices.clone()], &gather_params).unwrap();
+    let gathered = eval_primitive(
+        Primitive::Gather,
+        &[operand, indices.clone()],
+        &gather_params,
+    )
+    .unwrap();
     // gathered should be [20, 40, 50]
 
     let zeros = Value::vector_i64(&[0, 0, 0, 0, 0]).unwrap();
-    let scattered =
-        eval_primitive(Primitive::Scatter, &[zeros, indices, gathered], &no_params()).unwrap();
+    let scattered = eval_primitive(
+        Primitive::Scatter,
+        &[zeros, indices, gathered],
+        &no_params(),
+    )
+    .unwrap();
     // scattered should be [0, 20, 0, 40, 50]
     if let Value::Tensor(t) = &scattered {
         let vals: Vec<i64> = t
             .elements
             .iter()
-            .map(|l| if let Literal::I64(n) = l { *n } else { panic!() })
+            .map(|l| {
+                if let Literal::I64(n) = l {
+                    *n
+                } else {
+                    panic!()
+                }
+            })
             .collect();
         assert_eq!(vals, vec![0, 20, 0, 40, 50]);
     } else {

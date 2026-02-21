@@ -139,7 +139,13 @@ pub fn eval_primitive(
             inputs,
             |x| x.signum(),
             |x| {
-                if x.is_nan() { f64::NAN } else if x == 0.0 { x } else { x.signum() }
+                if x.is_nan() {
+                    f64::NAN
+                } else if x == 0.0 {
+                    x
+                } else {
+                    x.signum()
+                }
             },
         ),
         Primitive::Square => eval_unary_int_or_float(primitive, inputs, |x| x * x, |x| x * x),
@@ -1001,8 +1007,12 @@ mod tests {
                 DType::I64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::I64(1), Literal::I64(2), Literal::I64(3),
-                    Literal::I64(4), Literal::I64(5), Literal::I64(6),
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
                 ],
             )
             .unwrap(),
@@ -1020,8 +1030,12 @@ mod tests {
                 DType::I64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::I64(1), Literal::I64(2), Literal::I64(3),
-                    Literal::I64(4), Literal::I64(5), Literal::I64(6),
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
                 ],
             )
             .unwrap(),
@@ -1039,8 +1053,12 @@ mod tests {
                 DType::I64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::I64(1), Literal::I64(2), Literal::I64(3),
-                    Literal::I64(4), Literal::I64(5), Literal::I64(6),
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
                 ],
             )
             .unwrap(),
@@ -1056,8 +1074,12 @@ mod tests {
                 DType::I64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::I64(1), Literal::I64(5), Literal::I64(3),
-                    Literal::I64(4), Literal::I64(2), Literal::I64(6),
+                    Literal::I64(1),
+                    Literal::I64(5),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(2),
+                    Literal::I64(6),
                 ],
             )
             .unwrap(),
@@ -1074,8 +1096,12 @@ mod tests {
                 DType::I64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::I64(3), Literal::I64(1), Literal::I64(5),
-                    Literal::I64(6), Literal::I64(2), Literal::I64(4),
+                    Literal::I64(3),
+                    Literal::I64(1),
+                    Literal::I64(5),
+                    Literal::I64(6),
+                    Literal::I64(2),
+                    Literal::I64(4),
                 ],
             )
             .unwrap(),
@@ -1092,8 +1118,12 @@ mod tests {
                 DType::I64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::I64(1), Literal::I64(2), Literal::I64(3),
-                    Literal::I64(4), Literal::I64(5), Literal::I64(6),
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
                 ],
             )
             .unwrap(),
@@ -1117,7 +1147,9 @@ mod tests {
         let input = Value::Tensor(
             TensorValue::new(
                 DType::I64,
-                Shape { dims: vec![2, 2, 2] },
+                Shape {
+                    dims: vec![2, 2, 2],
+                },
                 (1..=8).map(Literal::I64).collect(),
             )
             .unwrap(),
@@ -1139,8 +1171,12 @@ mod tests {
                 DType::F64,
                 Shape { dims: vec![2, 3] },
                 vec![
-                    Literal::from_f64(1.0), Literal::from_f64(2.0), Literal::from_f64(3.0),
-                    Literal::from_f64(4.0), Literal::from_f64(5.0), Literal::from_f64(6.0),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(5.0),
+                    Literal::from_f64(6.0),
                 ],
             )
             .unwrap(),
@@ -1234,9 +1270,8 @@ mod tests {
         );
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".into(), "1".into());
-        let err =
-            eval_primitive(Primitive::Gather, &[Value::scalar_i64(1), indices], &params)
-                .unwrap_err();
+        let err = eval_primitive(Primitive::Gather, &[Value::scalar_i64(1), indices], &params)
+            .unwrap_err();
         assert!(matches!(err, EvalError::Unsupported { .. }));
     }
 
@@ -1262,8 +1297,12 @@ mod tests {
             .unwrap(),
         );
         let indices = Value::Tensor(
-            TensorValue::new(DType::I64, Shape::vector(2), vec![Literal::I64(2), Literal::I64(0)])
-                .unwrap(),
+            TensorValue::new(
+                DType::I64,
+                Shape::vector(2),
+                vec![Literal::I64(2), Literal::I64(0)],
+            )
+            .unwrap(),
         );
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".into(), "1,2".into());
@@ -1274,7 +1313,13 @@ mod tests {
             let vals: Vec<i64> = t
                 .elements
                 .iter()
-                .map(|l| if let Literal::I64(n) = l { *n } else { panic!() })
+                .map(|l| {
+                    if let Literal::I64(n) = l {
+                        *n
+                    } else {
+                        panic!()
+                    }
+                })
                 .collect();
             assert_eq!(vals, vec![50, 60, 10, 20]);
         } else {
@@ -1309,8 +1354,12 @@ mod tests {
             .unwrap(),
         );
         let indices = Value::Tensor(
-            TensorValue::new(DType::I64, Shape::vector(2), vec![Literal::I64(1), Literal::I64(0)])
-                .unwrap(),
+            TensorValue::new(
+                DType::I64,
+                Shape::vector(2),
+                vec![Literal::I64(1), Literal::I64(0)],
+            )
+            .unwrap(),
         );
         let updates = Value::Tensor(
             TensorValue::new(
@@ -1326,14 +1375,24 @@ mod tests {
             .unwrap(),
         );
 
-        let out =
-            eval_primitive(Primitive::Scatter, &[operand, indices, updates], &no_params()).unwrap();
+        let out = eval_primitive(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &no_params(),
+        )
+        .unwrap();
         if let Value::Tensor(t) = &out {
             assert_eq!(t.shape.dims, vec![3, 2]);
             let vals: Vec<i64> = t
                 .elements
                 .iter()
-                .map(|l| if let Literal::I64(n) = l { *n } else { panic!() })
+                .map(|l| {
+                    if let Literal::I64(n) = l {
+                        *n
+                    } else {
+                        panic!()
+                    }
+                })
                 .collect();
             assert_eq!(vals, vec![30, 40, 10, 20, 0, 0]);
         } else {
@@ -1372,7 +1431,13 @@ mod tests {
             let vals: Vec<i64> = t
                 .elements
                 .iter()
-                .map(|l| if let Literal::I64(n) = l { *n } else { panic!() })
+                .map(|l| {
+                    if let Literal::I64(n) = l {
+                        *n
+                    } else {
+                        panic!()
+                    }
+                })
                 .collect();
             assert_eq!(vals, vec![40, 20, 50]);
         } else {
@@ -1540,6 +1605,64 @@ mod tests {
         } else {
             panic!("expected tensor");
         }
+    }
+
+    // ── Select broadcasting tests ─────────────────────────────────
+
+    #[test]
+    fn select_scalar_all_scalars() {
+        let out = eval_primitive(
+            Primitive::Select,
+            &[
+                Value::scalar_bool(true),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(0.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::Scalar(Literal::from_f64(1.0)));
+    }
+
+    #[test]
+    fn select_tensor_cond_scalar_values() {
+        let cond = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape::vector(3),
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::Select,
+            &[cond, Value::scalar_f64(10.0), Value::scalar_f64(-1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        if let Value::Tensor(t) = &out {
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![10.0, -1.0, 10.0]);
+        } else {
+            panic!("expected tensor output");
+        }
+    }
+
+    #[test]
+    fn select_scalar_cond_tensor_values() {
+        let on_true = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let on_false = Value::vector_f64(&[4.0, 5.0, 6.0]).unwrap();
+        let out = eval_primitive(
+            Primitive::Select,
+            &[Value::scalar_bool(false), on_true, on_false.clone()],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, on_false);
     }
 }
 

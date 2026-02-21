@@ -551,11 +551,15 @@ fn vjp(
                                     .filter_map(|s| s.trim().parse().ok())
                                     .collect();
                                 let rank = t.shape.rank();
-                                (0..rank).filter(|a| !reduced_axes.contains(a)).collect::<Vec<_>>()
+                                (0..rank)
+                                    .filter(|a| !reduced_axes.contains(a))
+                                    .collect::<Vec<_>>()
                             } else {
                                 vec![]
                             };
-                            return Ok(vec![broadcast_g_to_shape_with_axes(g, &t.shape, &kept_axes)?]);
+                            return Ok(vec![broadcast_g_to_shape_with_axes(
+                                g, &t.shape, &kept_axes,
+                            )?]);
                         }
                     };
                     let elements = vec![Literal::from_f64(g_scalar); t.elements.len()];
@@ -581,32 +585,53 @@ fn vjp(
                             .filter_map(|s| s.trim().parse().ok())
                             .collect();
                         let rank = t.shape.rank();
-                        (0..rank).filter(|a| !reduced_axes.contains(a)).collect::<Vec<_>>()
+                        (0..rank)
+                            .filter(|a| !reduced_axes.contains(a))
+                            .collect::<Vec<_>>()
                     } else {
                         vec![]
                     };
 
-                    let out_bcast = broadcast_g_to_shape_with_axes(&output_val, &t.shape, &kept_axes)?;
+                    let out_bcast =
+                        broadcast_g_to_shape_with_axes(&output_val, &t.shape, &kept_axes)?;
                     let g_bcast = broadcast_g_to_shape_with_axes(g, &t.shape, &kept_axes)?;
 
                     // indicator mask: t == out_bcast
-                    let mask = eval_primitive(Primitive::Eq, &[Value::Tensor(t.clone()), out_bcast], &BTreeMap::new())
-                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let mask = eval_primitive(
+                        Primitive::Eq,
+                        &[Value::Tensor(t.clone()), out_bcast],
+                        &BTreeMap::new(),
+                    )
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
                     // convert mask (bool) to f64 mask: select(mask, 1.0, 0.0)
-                    let f64_mask = eval_primitive(Primitive::Select, &[mask, scalar_value(1.0), scalar_value(0.0)], &BTreeMap::new())
-                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    // eval_select supports tensor cond + scalar values via broadcasting
+                    let f64_mask = eval_primitive(
+                        Primitive::Select,
+                        &[mask, scalar_value(1.0), scalar_value(0.0)],
+                        &BTreeMap::new(),
+                    )
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
                     // count ties per reduction window: reduce_sum(f64_mask, axes=...)
-                    let tie_counts = eval_primitive(Primitive::ReduceSum, &[f64_mask.clone()], params)
-                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let tie_counts = eval_primitive(
+                        Primitive::ReduceSum,
+                        std::slice::from_ref(&f64_mask),
+                        params,
+                    )
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
                     // broadcast tie_counts back
-                    let tie_counts_bcast = broadcast_g_to_shape_with_axes(&tie_counts, &t.shape, &kept_axes)?;
+                    let tie_counts_bcast =
+                        broadcast_g_to_shape_with_axes(&tie_counts, &t.shape, &kept_axes)?;
 
                     // share = g_bcast / tie_counts_bcast
-                    let share = eval_primitive(Primitive::Div, &[g_bcast, tie_counts_bcast], &BTreeMap::new())
-                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let share = eval_primitive(
+                        Primitive::Div,
+                        &[g_bcast, tie_counts_bcast],
+                        &BTreeMap::new(),
+                    )
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
                     // final gradient = f64_mask * share
                     let grad = eval_primitive(Primitive::Mul, &[f64_mask, share], &BTreeMap::new())
@@ -623,7 +648,9 @@ fn vjp(
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(t) => {
                     if params.contains_key("axes") {
-                        return Err(AdError::EvalFailed("partial reduce_prod VJP is unsupported in V1".to_owned()));
+                        return Err(AdError::EvalFailed(
+                            "partial reduce_prod VJP is unsupported in V1".to_owned(),
+                        ));
                     }
                     let output_val = eval_primitive(primitive, inputs, params)
                         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
@@ -637,15 +664,17 @@ fn vjp(
                     let elements: Vec<Literal> = t
                         .elements
                         .iter()
-                        .map(|lit| {
+                        .enumerate()
+                        .map(|(idx, lit)| {
                             let v = lit.as_f64().unwrap_or(1.0);
                             if v.abs() < f64::EPSILON {
                                 // Handle zero: recompute product excluding this element
                                 let partial_prod: f64 = t
                                     .elements
                                     .iter()
-                                    .filter(|l| !std::ptr::eq(*l, lit))
-                                    .map(|l| l.as_f64().unwrap_or(1.0))
+                                    .enumerate()
+                                    .filter(|(j, _)| *j != idx)
+                                    .map(|(_, l)| l.as_f64().unwrap_or(1.0))
                                     .product();
                                 Literal::from_f64(g_scalar * partial_prod)
                             } else {
@@ -705,17 +734,25 @@ fn vjp(
             };
             let perm = if let Some(raw) = params.get("permutation") {
                 raw.split(',')
-                    .map(|s| s.trim().parse::<usize>().unwrap_or(0))
-                    .collect::<Vec<_>>()
+                    .map(|s| {
+                        s.trim().parse::<usize>().map_err(|_| {
+                            AdError::EvalFailed(format!("invalid permutation index: {s:?}"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
                 (0..rank).rev().collect()
             };
-            // Compute inverse permutation
+            // Compute inverse permutation (validate bounds)
             let mut inv_perm = vec![0_usize; perm.len()];
             for (i, &p) in perm.iter().enumerate() {
-                if p < inv_perm.len() {
-                    inv_perm[p] = i;
+                if p >= inv_perm.len() {
+                    return Err(AdError::EvalFailed(format!(
+                        "transpose permutation index {p} out of bounds for rank {}",
+                        inv_perm.len()
+                    )));
                 }
+                inv_perm[p] = i;
             }
             let mut tp = BTreeMap::new();
             tp.insert(
@@ -755,18 +792,17 @@ fn vjp(
                 Value::Tensor(t) => t.shape.rank(),
             };
 
-            let broadcast_dims: Vec<usize> = if let Some(bd_str) =
-                params.get("broadcast_dimensions")
-            {
-                bd_str
-                    .split(',')
-                    .filter_map(|v| v.trim().parse().ok())
-                    .collect()
-            } else {
-                // Default: input axes map to trailing output axes
-                let in_rank = input_shape.rank();
-                (out_rank - in_rank..out_rank).collect()
-            };
+            let broadcast_dims: Vec<usize> =
+                if let Some(bd_str) = params.get("broadcast_dimensions") {
+                    bd_str
+                        .split(',')
+                        .filter_map(|v| v.trim().parse().ok())
+                        .collect()
+                } else {
+                    // Default: input axes map to trailing output axes
+                    let in_rank = input_shape.rank();
+                    (out_rank - in_rank..out_rank).collect()
+                };
 
             // Determine which output axes are "broadcast axes" that need reduction:
             // 1. Output axes not mapped from any input axis
@@ -839,11 +875,7 @@ fn vjp(
                     // Parse start indices from params
                     let starts: Vec<usize> = params
                         .get("start_indices")
-                        .map(|s| {
-                            s.split(',')
-                                .filter_map(|v| v.trim().parse().ok())
-                                .collect()
-                        })
+                        .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
                         .unwrap_or_default();
 
                     // Create zero tensor of original shape
@@ -865,7 +897,7 @@ fn vjp(
                     for i in (0..rank.saturating_sub(1)).rev() {
                         in_strides[i] = in_strides[i + 1] * t.shape.dims[i + 1] as usize;
                     }
-                    
+
                     let g_shape = match g {
                         Value::Scalar(_) => Shape::scalar(),
                         Value::Tensor(gt) => gt.shape.clone(),
@@ -882,7 +914,7 @@ fn vjp(
                         if in_flat < total {
                             result_elements[in_flat] = Literal::from_f64(gval);
                         }
-                        
+
                         if rank > 0 {
                             for ax in (0..rank).rev() {
                                 out_coords[ax] += 1;
@@ -1008,7 +1040,7 @@ fn vjp(
                 Value::Scalar(_) => {
                     return Err(AdError::EvalFailed(
                         "scatter VJP requires tensor gradient".into(),
-                    ))
+                    ));
                 }
             };
             let mut gather_params = BTreeMap::new();
@@ -1024,9 +1056,12 @@ fn vjp(
                 &gather_params,
             )
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            
+
             // Grad w.r.t. operand depends on the scatter mode.
-            let mode = params.get("mode").map(|s| s.as_str()).unwrap_or("overwrite");
+            let mode = params
+                .get("mode")
+                .map(|s| s.as_str())
+                .unwrap_or("overwrite");
             let grad_operand = if mode == "add" {
                 // If it was an add, the operand passes gradient 1.0 everywhere.
                 g.clone()
@@ -1034,7 +1069,7 @@ fn vjp(
                 // If overwrite, operand gradient at scattered positions is zero.
                 zero_scattered_positions(g, indices)?
             };
-            
+
             Ok(vec![grad_operand, grad_updates])
         }
     }
@@ -1051,10 +1086,11 @@ fn zero_scattered_positions(g: &Value, indices: &Value) -> Result<Value, AdError
 
     let index_vals: Vec<usize> = match indices {
         Value::Scalar(lit) => {
-            vec![lit
-                .as_f64()
-                .ok_or_else(|| AdError::EvalFailed("non-numeric index".into()))?
-                as usize]
+            vec![
+                lit.as_f64()
+                    .ok_or_else(|| AdError::EvalFailed("non-numeric index".into()))?
+                    as usize,
+            ]
         }
         Value::Tensor(t) => t
             .elements
@@ -1074,7 +1110,11 @@ fn zero_scattered_positions(g: &Value, indices: &Value) -> Result<Value, AdError
 
     let dims = &g_tensor.shape.dims;
     // Elements per axis-0 slice: product of dims[1..]
-    let slice_elems: usize = dims[1..].iter().map(|d| *d as usize).product::<usize>().max(1);
+    let slice_elems: usize = dims[1..]
+        .iter()
+        .map(|d| *d as usize)
+        .product::<usize>()
+        .max(1);
 
     let mut elements = g_tensor.elements.clone();
     for &idx in &index_vals {
@@ -1094,6 +1134,7 @@ fn zero_scattered_positions(g: &Value, indices: &Value) -> Result<Value, AdError
     ))
 }
 
+#[allow(dead_code)]
 fn broadcast_g_to_shape(g: &Value, target_shape: &Shape) -> Result<Value, AdError> {
     let out_rank = target_shape.rank();
     let in_rank = match g {
@@ -1108,7 +1149,11 @@ fn broadcast_g_to_shape(g: &Value, target_shape: &Shape) -> Result<Value, AdErro
     broadcast_g_to_shape_with_axes(g, target_shape, &kept_axes)
 }
 
-fn broadcast_g_to_shape_with_axes(g: &Value, target_shape: &Shape, broadcast_dimensions: &[usize]) -> Result<Value, AdError> {
+fn broadcast_g_to_shape_with_axes(
+    g: &Value,
+    target_shape: &Shape,
+    broadcast_dimensions: &[usize],
+) -> Result<Value, AdError> {
     let g_scalar = g.as_f64_scalar();
     if let Some(v) = g_scalar {
         let count = target_shape.element_count().unwrap_or(1) as usize;
@@ -1264,8 +1309,16 @@ fn jvp_rule(primitive: Primitive, primals: &[Value], tangents: &[f64]) -> Result
         Primitive::Pow => {
             let a = to_f64(&primals[0])?;
             let b = to_f64(&primals[1])?;
-            let da = if tangents[0] == 0.0 { 0.0 } else { b * a.powf(b - 1.0) * tangents[0] };
-            let db = if tangents[1] == 0.0 { 0.0 } else { a.powf(b) * a.ln() * tangents[1] };
+            let da = if tangents[0] == 0.0 {
+                0.0
+            } else {
+                b * a.powf(b - 1.0) * tangents[0]
+            };
+            let db = if tangents[1] == 0.0 {
+                0.0
+            } else {
+                a.powf(b) * a.ln() * tangents[1]
+            };
             Ok(da + db)
         }
         Primitive::Exp => {
@@ -1907,8 +1960,13 @@ mod tests {
         );
 
         let params = BTreeMap::new();
-        let grads =
-            vjp(Primitive::Scatter, &[operand, indices, updates], &g, &params).unwrap();
+        let grads = vjp(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &g,
+            &params,
+        )
+        .unwrap();
 
         // grad_operand should be [[1,1],[0,0],[1,1]] — zeroed at index 1
         if let Value::Tensor(t) = &grads[0] {

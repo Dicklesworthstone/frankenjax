@@ -127,7 +127,7 @@ pub(crate) fn eval_reshape(
             }
 
             if let Some(axis) = inferred_axis {
-                if known_product == 0 || elem_count % known_product != 0 {
+                if known_product == 0 || !elem_count.is_multiple_of(known_product) {
                     return Err(EvalError::Unsupported {
                         primitive,
                         detail: format!(
@@ -625,7 +625,7 @@ pub(crate) fn eval_gather(
             return Err(EvalError::Unsupported {
                 primitive,
                 detail: "cannot gather from a scalar".into(),
-            })
+            });
         }
     };
 
@@ -754,7 +754,7 @@ pub(crate) fn eval_scatter(
             return Err(EvalError::Unsupported {
                 primitive,
                 detail: "cannot scatter into a scalar".into(),
-            })
+            });
         }
     };
 
@@ -780,7 +780,7 @@ pub(crate) fn eval_scatter(
             return Err(EvalError::Unsupported {
                 primitive,
                 detail: "updates must be a tensor".into(),
-            })
+            });
         }
     };
 
@@ -799,7 +799,10 @@ pub(crate) fn eval_scatter(
     // Clone operand elements to create output
     let mut result_elements = operand.elements.clone();
 
-    let mode = params.get("mode").map(|s| s.as_str()).unwrap_or("overwrite");
+    let mode = params
+        .get("mode")
+        .map(|s| s.as_str())
+        .unwrap_or("overwrite");
 
     for (i, &idx) in index_vals.iter().enumerate() {
         if idx >= op_dims[0] as usize {

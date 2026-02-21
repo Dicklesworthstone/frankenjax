@@ -21,6 +21,7 @@ pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
 /// Infer the DType from a slice of Literal elements.
 /// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn infer_dtype(elements: &[Literal]) -> DType {
     if elements.is_empty() {
         return DType::F64;

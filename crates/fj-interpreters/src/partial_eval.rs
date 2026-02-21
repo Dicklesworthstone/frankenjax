@@ -363,7 +363,7 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
         .outvars
         .iter()
         .zip(used_outputs.iter())
-        .filter(|(_, &used)| used)
+        .filter(|&(_, &used)| used)
         .map(|(v, _)| *v)
         .collect();
 

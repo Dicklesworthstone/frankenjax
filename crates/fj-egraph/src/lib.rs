@@ -279,7 +279,12 @@ pub fn egraph_to_jaxpr(
     constvars: &[VarId],
     original_outvars: &[VarId],
 ) -> Jaxpr {
-    let max_in_const = invars.iter().chain(constvars.iter()).map(|v| v.0).max().unwrap_or(0);
+    let max_in_const = invars
+        .iter()
+        .chain(constvars.iter())
+        .map(|v| v.0)
+        .max()
+        .unwrap_or(0);
     let mut next_var = max_in_const + 1;
     let mut equations = Vec::new();
     let mut node_to_var: BTreeMap<usize, VarId> = BTreeMap::new();
@@ -758,7 +763,9 @@ pub fn egraph_to_jaxpr(
             let last_node = &expr.as_ref()[last_idx];
             let is_literal = match last_node {
                 FjLang::Num(_) => true,
-                FjLang::Symbol(sym) => sym.as_str().starts_with("f64:") || sym.as_str().starts_with("bool:"),
+                FjLang::Symbol(sym) => {
+                    sym.as_str().starts_with("f64:") || sym.as_str().starts_with("bool:")
+                }
                 _ => false,
             };
             if is_literal {

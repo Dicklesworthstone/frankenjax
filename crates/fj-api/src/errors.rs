@@ -51,19 +51,16 @@ impl From<DispatchError> for ApiError {
                 detail: e.to_string(),
             },
             DispatchError::TransformExecution(ref e) => match e {
-                TransformExecutionError::VmapMismatchedLeadingDimension {
-                    expected,
-                    actual,
-                } => Self::VmapDimensionMismatch {
-                    expected: *expected,
-                    actual: *actual,
-                },
-                TransformExecutionError::NonScalarGradientInput
-                | TransformExecutionError::NonScalarGradientOutput => {
-                    Self::GradRequiresScalar {
-                        detail: e.to_string(),
+                TransformExecutionError::VmapMismatchedLeadingDimension { expected, actual } => {
+                    Self::VmapDimensionMismatch {
+                        expected: *expected,
+                        actual: *actual,
                     }
                 }
+                TransformExecutionError::NonScalarGradientInput
+                | TransformExecutionError::NonScalarGradientOutput => Self::GradRequiresScalar {
+                    detail: e.to_string(),
+                },
                 _ => Self::EvalError {
                     detail: e.to_string(),
                 },

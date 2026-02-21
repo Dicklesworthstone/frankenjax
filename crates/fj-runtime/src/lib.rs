@@ -39,7 +39,11 @@ impl RuntimeAdmissionModel {
             CompatibilityMode::Hardened => LossMatrix {
                 keep_if_useful: self.loss_matrix.keep_if_useful,
                 kill_if_useful: (self.loss_matrix.kill_if_useful / 2).max(1),
-                keep_if_abandoned: self.loss_matrix.keep_if_abandoned.saturating_mul(2).min(100),
+                keep_if_abandoned: self
+                    .loss_matrix
+                    .keep_if_abandoned
+                    .saturating_mul(2)
+                    .min(100),
                 kill_if_abandoned: self.loss_matrix.kill_if_abandoned,
             },
         }

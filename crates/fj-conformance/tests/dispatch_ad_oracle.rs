@@ -519,7 +519,10 @@ fn adversarial_double_vmap_rank1_fails() {
         matches!(err, DispatchError::TransformExecution(_)),
         "double vmap with rank-1 input should fail at execution, got: {err:?}"
     );
-    log_oracle("adversarial_double_vmap_rank1_fails", &("double_vmap_rank1",));
+    log_oracle(
+        "adversarial_double_vmap_rank1_fails",
+        &("double_vmap_rank1",),
+    );
 }
 
 /// Adversarial: evidence count mismatch rejected.

@@ -3,7 +3,7 @@
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 
 use crate::EvalError;
-use crate::type_promotion::{binary_literal_op, infer_dtype, promote_dtype};
+use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
@@ -396,6 +396,75 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 cond.shape.clone(),
                 elements?,
             )?))
+        }
+        // Tensor cond + scalar on_true + scalar on_false: broadcast scalars
+        (Value::Tensor(cond), Value::Scalar(on_true), Value::Scalar(on_false)) => {
+            let dtype = promote_dtype(
+                match on_true {
+                    Literal::I64(_) => DType::I64,
+                    Literal::F64Bits(_) => DType::F64,
+                    Literal::Bool(_) => DType::Bool,
+                },
+                match on_false {
+                    Literal::I64(_) => DType::I64,
+                    Literal::F64Bits(_) => DType::F64,
+                    Literal::Bool(_) => DType::Bool,
+                },
+            );
+            let elements: Result<Vec<Literal>, EvalError> = cond
+                .elements
+                .iter()
+                .map(|c| {
+                    let flag = match c {
+                        Literal::Bool(b) => *b,
+                        Literal::I64(v) => *v != 0,
+                        Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
+                    };
+                    let val = if flag { *on_true } else { *on_false };
+                    match dtype {
+                        DType::F64 | DType::F32 => {
+                            let f_val = val.as_f64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected numeric scalar for select",
+                            })?;
+                            Ok(Literal::from_f64(f_val))
+                        }
+                        DType::I64 | DType::I32 => {
+                            let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected integer scalar for select",
+                            })?;
+                            Ok(Literal::I64(i_val))
+                        }
+                        DType::Bool => Ok(val),
+                    }
+                })
+                .collect();
+            Ok(Value::Tensor(TensorValue::new(
+                dtype,
+                cond.shape.clone(),
+                elements?,
+            )?))
+        }
+        // Scalar cond + tensor on_true + tensor on_false
+        (Value::Scalar(cond), Value::Tensor(on_true), Value::Tensor(on_false)) => {
+            if on_true.shape != on_false.shape {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "select requires on_true and on_false to have the same shape"
+                        .to_owned(),
+                });
+            }
+            let flag = match cond {
+                Literal::Bool(b) => *b,
+                Literal::I64(v) => *v != 0,
+                Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
+            };
+            if flag {
+                Ok(Value::Tensor(on_true.clone()))
+            } else {
+                Ok(Value::Tensor(on_false.clone()))
+            }
         }
         _ => Err(EvalError::Unsupported {
             primitive,

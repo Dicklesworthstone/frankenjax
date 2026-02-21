@@ -223,8 +223,10 @@ impl<B: CacheBackend> TtlLruCache<B> {
         // Prevent memory leak by cleaning up keys silently evicted by the underlying LRU
         if self.insert_times.len() > self.inner.config.max_entries.saturating_mul(2).max(1024) {
             let order = self.inner.order.lock().unwrap_or_else(|e| e.into_inner());
-            let active_keys: std::collections::HashSet<&str> = order.iter().map(|s| s.as_str()).collect();
-            self.insert_times.retain(|k, _| active_keys.contains(k.as_str()));
+            let active_keys: std::collections::HashSet<&str> =
+                order.iter().map(|s| s.as_str()).collect();
+            self.insert_times
+                .retain(|k, _| active_keys.contains(k.as_str()));
         }
     }
 
@@ -260,8 +262,7 @@ impl<B: CacheBackend> CacheBackend for TtlLruCache<B> {
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
         let key_str = key.as_string();
         if self.ttl_secs > 0 {
-            self.insert_times
-                .insert(key_str, std::time::Instant::now());
+            self.insert_times.insert(key_str, std::time::Instant::now());
         }
         self.inner.put(key, artifact);
         // Opportunistically sweep expired entries

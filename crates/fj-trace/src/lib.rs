@@ -1352,7 +1352,7 @@ mod tests {
     use std::any::Any;
     use std::collections::BTreeMap;
     use std::fs;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::{Path, PathBuf};
     use std::time::Instant;
 
