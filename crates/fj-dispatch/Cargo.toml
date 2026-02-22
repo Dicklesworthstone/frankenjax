@@ -5,10 +5,12 @@ edition = "2024"
 
 [dependencies]
 fj-ad = { path = "../fj-ad" }
+fj-backend-cpu = { path = "../fj-backend-cpu" }
 fj-cache = { path = "../fj-cache" }
 fj-core = { path = "../fj-core" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-ledger = { path = "../fj-ledger" }
+fj-runtime = { path = "../fj-runtime" }
 
 [dev-dependencies]
 criterion = "0.8"

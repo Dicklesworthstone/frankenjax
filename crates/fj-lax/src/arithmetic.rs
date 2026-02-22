@@ -473,6 +473,102 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     }
 }
 
+/// Clamp: clamp(x, lo, hi) = min(max(x, lo), hi).
+/// Supports scalar and tensor inputs with broadcasting.
+pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 3 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 3,
+            actual: inputs.len(),
+        });
+    }
+
+    fn clamp_literal(x: Literal, lo: Literal, hi: Literal) -> Result<Literal, &'static str> {
+        match (x, lo, hi) {
+            (Literal::I64(xv), Literal::I64(lov), Literal::I64(hiv)) => {
+                Ok(Literal::I64(xv.max(lov).min(hiv)))
+            }
+            (Literal::F64Bits(xb), Literal::F64Bits(lob), Literal::F64Bits(hib)) => {
+                let xf = f64::from_bits(xb);
+                let lof = f64::from_bits(lob);
+                let hif = f64::from_bits(hib);
+                Ok(Literal::from_f64(xf.max(lof).min(hif)))
+            }
+            _ => {
+                // Mixed types: promote to f64
+                let xf = match x {
+                    Literal::I64(v) => v as f64,
+                    Literal::F64Bits(b) => f64::from_bits(b),
+                    Literal::Bool(_) => return Err("clamp does not support bool"),
+                };
+                let lof = match lo {
+                    Literal::I64(v) => v as f64,
+                    Literal::F64Bits(b) => f64::from_bits(b),
+                    Literal::Bool(_) => return Err("clamp does not support bool"),
+                };
+                let hif = match hi {
+                    Literal::I64(v) => v as f64,
+                    Literal::F64Bits(b) => f64::from_bits(b),
+                    Literal::Bool(_) => return Err("clamp does not support bool"),
+                };
+                Ok(Literal::from_f64(xf.max(lof).min(hif)))
+            }
+        }
+    }
+
+    match (&inputs[0], &inputs[1], &inputs[2]) {
+        (Value::Scalar(x), Value::Scalar(lo), Value::Scalar(hi)) => {
+            let result = clamp_literal(*x, *lo, *hi)
+                .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?;
+            Ok(Value::Scalar(result))
+        }
+        (Value::Tensor(x), Value::Scalar(lo), Value::Scalar(hi)) => {
+            let elements: Result<Vec<Literal>, EvalError> = x
+                .elements
+                .iter()
+                .map(|elem| {
+                    clamp_literal(*elem, *lo, *hi)
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })
+                })
+                .collect();
+            Ok(Value::Tensor(TensorValue::new(
+                x.dtype,
+                x.shape.clone(),
+                elements?,
+            )?))
+        }
+        (Value::Tensor(x), Value::Tensor(lo), Value::Tensor(hi)) => {
+            if x.shape != lo.shape || x.shape != hi.shape {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "clamp requires all tensor inputs to have the same shape".to_owned(),
+                });
+            }
+            let elements: Result<Vec<Literal>, EvalError> = x
+                .elements
+                .iter()
+                .zip(lo.elements.iter())
+                .zip(hi.elements.iter())
+                .map(|((xv, lov), hiv)| {
+                    clamp_literal(*xv, *lov, *hiv)
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })
+                })
+                .collect();
+            Ok(Value::Tensor(TensorValue::new(
+                x.dtype,
+                x.shape.clone(),
+                elements?,
+            )?))
+        }
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: "clamp requires (tensor, scalar, scalar) or (tensor, tensor, tensor)"
+                .to_owned(),
+        }),
+    }
+}
+
 /// Approximate erf using Abramowitz & Stegun formula (max error ~1.5e-7).
 pub(crate) fn erf_approx(x: f64) -> f64 {
     if x == 0.0 {

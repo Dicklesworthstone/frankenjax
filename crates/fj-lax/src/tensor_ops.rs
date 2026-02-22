@@ -887,3 +887,200 @@ fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError>
         }),
     }
 }
+
+/// Dynamic slice: like slice but start indices are dynamic (runtime) values.
+///
+/// Inputs: [operand, start_0, start_1, ...] where start_i are scalar indices.
+/// Params: `slice_sizes` — comma-separated sizes for the output slice along each axis.
+///
+/// JAX semantics: start indices are clamped to valid range [0, dim - size].
+pub(crate) fn eval_dynamic_slice(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::DynamicSlice;
+    if inputs.is_empty() {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: 0,
+        });
+    }
+
+    let tensor = match &inputs[0] {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "cannot dynamic_slice a scalar".into(),
+            });
+        }
+    };
+
+    let rank = tensor.shape.rank();
+    let slice_sizes = parse_usize_param(primitive, "slice_sizes", params)?;
+
+    if slice_sizes.len() != rank {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "slice_sizes length {} does not match operand rank {}",
+                slice_sizes.len(),
+                rank
+            ),
+        });
+    }
+
+    // Start indices come from remaining inputs (one scalar per axis)
+    if inputs.len() != 1 + rank {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1 + rank,
+            actual: inputs.len(),
+        });
+    }
+
+    let mut starts = Vec::with_capacity(rank);
+    for ax in 0..rank {
+        let start_val = match &inputs[1 + ax] {
+            Value::Scalar(lit) => {
+                let raw = match lit {
+                    Literal::I64(v) => *v,
+                    Literal::F64Bits(b) => f64::from_bits(*b) as i64,
+                    Literal::Bool(b) => {
+                        if *b {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                };
+                // Clamp to valid range [0, dim - size]
+                let dim = tensor.shape.dims[ax] as i64;
+                let size = slice_sizes[ax] as i64;
+                let clamped = raw.max(0).min(dim - size);
+                clamped as usize
+            }
+            Value::Tensor(_) => {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("start index for axis {ax} must be a scalar"),
+                });
+            }
+        };
+        starts.push(start_val);
+    }
+
+    // Validate slice sizes
+    for ax in 0..rank {
+        if starts[ax] + slice_sizes[ax] > tensor.shape.dims[ax] as usize {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!(
+                    "dynamic_slice out of bounds on axis {ax}: start={} size={} dim={}",
+                    starts[ax], slice_sizes[ax], tensor.shape.dims[ax]
+                ),
+            });
+        }
+    }
+
+    // Compute strides
+    let mut in_strides = vec![1_usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        in_strides[i] = in_strides[i + 1] * tensor.shape.dims[i + 1] as usize;
+    }
+
+    let total: usize = slice_sizes.iter().product();
+    let mut elements = Vec::with_capacity(total);
+    let mut out_coords = vec![0_usize; rank];
+
+    for _ in 0..total {
+        let mut in_flat = 0_usize;
+        for ax in 0..rank {
+            in_flat += (out_coords[ax] + starts[ax]) * in_strides[ax];
+        }
+        elements.push(tensor.elements[in_flat]);
+
+        // Increment output coordinates
+        for ax in (0..rank).rev() {
+            out_coords[ax] += 1;
+            if out_coords[ax] < slice_sizes[ax] {
+                break;
+            }
+            out_coords[ax] = 0;
+        }
+    }
+
+    let out_dims: Vec<u32> = slice_sizes.iter().map(|&s| s as u32).collect();
+    Ok(Value::Tensor(TensorValue::new(
+        tensor.dtype,
+        Shape { dims: out_dims },
+        elements,
+    )?))
+}
+
+/// Iota: generate a 1-D index tensor of length `length` with dtype `dtype`.
+///
+/// Inputs: [] (no inputs — iota is a nullary operation)
+/// Params: `length` — number of elements, `dtype` — element type (default: I64)
+pub(crate) fn eval_iota(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::Iota;
+    if !inputs.is_empty() {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 0,
+            actual: inputs.len(),
+        });
+    }
+
+    let length_str = params.get("length").ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "missing required param 'length'".into(),
+    })?;
+    let length: u32 = length_str
+        .trim()
+        .parse()
+        .map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid length: '{length_str}'"),
+        })?;
+
+    let dtype_str = params.get("dtype").map(String::as_str).unwrap_or("I64");
+    let (dtype, elements) = match dtype_str {
+        "I64" | "i64" => {
+            let elems: Vec<Literal> = (0..length as i64).map(Literal::I64).collect();
+            (DType::I64, elems)
+        }
+        "I32" | "i32" => {
+            let elems: Vec<Literal> = (0..length as i64).map(Literal::I64).collect();
+            (DType::I32, elems)
+        }
+        "F64" | "f64" => {
+            let elems: Vec<Literal> = (0..length)
+                .map(|i| Literal::from_f64(f64::from(i)))
+                .collect();
+            (DType::F64, elems)
+        }
+        "F32" | "f32" => {
+            let elems: Vec<Literal> = (0..length)
+                .map(|i| Literal::from_f64(f64::from(i)))
+                .collect();
+            (DType::F32, elems)
+        }
+        _ => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("unsupported dtype for iota: '{dtype_str}'"),
+            });
+        }
+    };
+
+    Ok(Value::Tensor(TensorValue::new(
+        dtype,
+        Shape::vector(length),
+        elements,
+    )?))
+}

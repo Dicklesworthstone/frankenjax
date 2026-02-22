@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_08_ledger_inspection",
   "scenario_category": "ledger_inspection",
-  "ts_utc_unix_ms": 1771714744707,
+  "ts_utc_unix_ms": 1771724064428,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_08 --exact --nocapture",
   "input_capture": {
     "dispatch_count": 4,

@@ -119,11 +119,16 @@ pub enum Primitive {
     // Shape manipulation
     Reshape,
     Slice,
+    DynamicSlice,
     Gather,
     Scatter,
     Transpose,
     BroadcastInDim,
     Concatenate,
+    // Clamping
+    Clamp,
+    // Index generation
+    Iota,
 }
 
 impl Primitive {
@@ -179,11 +184,14 @@ impl Primitive {
             Self::ReduceProd => "reduce_prod",
             Self::Reshape => "reshape",
             Self::Slice => "slice",
+            Self::DynamicSlice => "dynamic_slice",
             Self::Gather => "gather",
             Self::Scatter => "scatter",
             Self::Transpose => "transpose",
             Self::BroadcastInDim => "broadcast_in_dim",
             Self::Concatenate => "concatenate",
+            Self::Clamp => "clamp",
+            Self::Iota => "iota",
         }
     }
 }

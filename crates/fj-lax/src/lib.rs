@@ -10,14 +10,15 @@ use fj_core::{Primitive, Shape, Value, ValueError};
 use std::collections::BTreeMap;
 
 use arithmetic::{
-    erf_approx, eval_binary_elementwise, eval_dot, eval_select, eval_unary_elementwise,
+    erf_approx, eval_binary_elementwise, eval_clamp, eval_dot, eval_select, eval_unary_elementwise,
     eval_unary_int_or_float,
 };
+
 use comparison::eval_comparison;
 use reduction::eval_reduce_axes;
 use tensor_ops::{
-    eval_broadcast_in_dim, eval_concatenate, eval_gather, eval_reshape, eval_scatter, eval_slice,
-    eval_transpose,
+    eval_broadcast_in_dim, eval_concatenate, eval_dynamic_slice, eval_gather, eval_iota,
+    eval_reshape, eval_scatter, eval_slice, eval_transpose,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,14 +223,19 @@ pub fn eval_primitive(
             |a, b| a * b,
             |a, b| a * b,
         ),
+        // Clamp: clamp(x, lo, hi) = min(max(x, lo), hi)
+        Primitive::Clamp => eval_clamp(primitive, inputs),
         // Shape manipulation
         Primitive::Reshape => eval_reshape(inputs, params),
         Primitive::Transpose => eval_transpose(inputs, params),
         Primitive::BroadcastInDim => eval_broadcast_in_dim(inputs, params),
         Primitive::Concatenate => eval_concatenate(inputs, params),
         Primitive::Slice => eval_slice(inputs, params),
+        Primitive::DynamicSlice => eval_dynamic_slice(inputs, params),
         Primitive::Gather => eval_gather(inputs, params),
         Primitive::Scatter => eval_scatter(inputs, params),
+        // Iota: generate index sequence
+        Primitive::Iota => eval_iota(inputs, params),
     }
 }
 
@@ -1931,6 +1937,232 @@ mod tests {
         let out = eval_primitive(Primitive::Concatenate, &[a, b, c], &no_params()).unwrap();
         let expected = Value::vector_i64(&[1, 2, 3, 4, 5, 6]).unwrap();
         assert_eq!(out, expected);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Clamp tests
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn clamp_scalar_within_range() {
+        let out = eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::scalar_f64(3.0),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(5.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(3.0));
+    }
+
+    #[test]
+    fn clamp_scalar_below_min() {
+        let out = eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::scalar_f64(-2.0),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(5.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(1.0));
+    }
+
+    #[test]
+    fn clamp_scalar_above_max() {
+        let out = eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(5.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(5.0));
+    }
+
+    #[test]
+    fn clamp_i64_scalar() {
+        let out = eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::scalar_i64(10),
+                Value::scalar_i64(0),
+                Value::scalar_i64(5),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_i64(5));
+    }
+
+    #[test]
+    fn clamp_tensor_with_scalar_bounds() {
+        let x = Value::vector_f64(&[-1.0, 2.0, 5.0, 8.0]).unwrap();
+        let out = eval_primitive(
+            Primitive::Clamp,
+            &[x, Value::scalar_f64(0.0), Value::scalar_f64(6.0)],
+            &no_params(),
+        )
+        .unwrap();
+        let expected = Value::vector_f64(&[0.0, 2.0, 5.0, 6.0]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn clamp_arity_error() {
+        let result = eval_primitive(
+            Primitive::Clamp,
+            &[Value::scalar_f64(1.0), Value::scalar_f64(0.0)],
+            &no_params(),
+        );
+        assert!(result.is_err());
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Iota tests
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn iota_i64_length_5() {
+        let mut params = BTreeMap::new();
+        params.insert("length".to_owned(), "5".to_owned());
+        let out = eval_primitive(Primitive::Iota, &[], &params).unwrap();
+        let expected = Value::vector_i64(&[0, 1, 2, 3, 4]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn iota_f64() {
+        let mut params = BTreeMap::new();
+        params.insert("length".to_owned(), "3".to_owned());
+        params.insert("dtype".to_owned(), "F64".to_owned());
+        let out = eval_primitive(Primitive::Iota, &[], &params).unwrap();
+        let expected = Value::vector_f64(&[0.0, 1.0, 2.0]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn iota_zero_length() {
+        let mut params = BTreeMap::new();
+        params.insert("length".to_owned(), "0".to_owned());
+        let out = eval_primitive(Primitive::Iota, &[], &params).unwrap();
+        match out {
+            Value::Tensor(t) => {
+                assert_eq!(t.shape, Shape::vector(0));
+                assert!(t.elements.is_empty());
+            }
+            _ => panic!("expected tensor"),
+        }
+    }
+
+    #[test]
+    fn iota_arity_error_with_input() {
+        let mut params = BTreeMap::new();
+        params.insert("length".to_owned(), "3".to_owned());
+        let result = eval_primitive(Primitive::Iota, &[Value::scalar_i64(1)], &params);
+        assert!(result.is_err());
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // DynamicSlice tests
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn dynamic_slice_1d() {
+        let x = Value::vector_i64(&[10, 20, 30, 40, 50]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "3".to_owned());
+        let out =
+            eval_primitive(Primitive::DynamicSlice, &[x, Value::scalar_i64(1)], &params).unwrap();
+        let expected = Value::vector_i64(&[20, 30, 40]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn dynamic_slice_start_clamping() {
+        // JAX clamps start indices to valid range
+        let x = Value::vector_i64(&[10, 20, 30, 40, 50]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "3".to_owned());
+        // Start index 10 should be clamped to 2 (5 - 3 = 2)
+        let out = eval_primitive(
+            Primitive::DynamicSlice,
+            &[x, Value::scalar_i64(10)],
+            &params,
+        )
+        .unwrap();
+        let expected = Value::vector_i64(&[30, 40, 50]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn dynamic_slice_negative_start_clamped() {
+        let x = Value::vector_i64(&[10, 20, 30, 40, 50]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2".to_owned());
+        // Negative start should be clamped to 0
+        let out = eval_primitive(
+            Primitive::DynamicSlice,
+            &[x, Value::scalar_i64(-5)],
+            &params,
+        )
+        .unwrap();
+        let expected = Value::vector_i64(&[10, 20]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn dynamic_slice_2d() {
+        let t = TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![3, 4] },
+            (0..12).map(Literal::I64).collect(),
+        )
+        .unwrap();
+        let x = Value::Tensor(t);
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2,2".to_owned());
+        let out = eval_primitive(
+            Primitive::DynamicSlice,
+            &[x, Value::scalar_i64(1), Value::scalar_i64(1)],
+            &params,
+        )
+        .unwrap();
+        // Extracting a 2x2 block starting at (1,1) from a 3x4 matrix
+        // Matrix: [[0,1,2,3],[4,5,6,7],[8,9,10,11]]
+        // Expected: [[5,6],[9,10]]
+        let expected = TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![2, 2] },
+            vec![
+                Literal::I64(5),
+                Literal::I64(6),
+                Literal::I64(9),
+                Literal::I64(10),
+            ],
+        )
+        .unwrap();
+        assert_eq!(out, Value::Tensor(expected));
+    }
+
+    #[test]
+    fn dynamic_slice_scalar_error() {
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "1".to_owned());
+        let result = eval_primitive(
+            Primitive::DynamicSlice,
+            &[Value::scalar_i64(42), Value::scalar_i64(0)],
+            &params,
+        );
+        assert!(result.is_err());
     }
 }
 

@@ -5,10 +5,11 @@ use fj_core::{
     CompatibilityMode, Jaxpr, TensorValue, TraceTransformLedger, Transform,
     TransformCompositionError, Value, verify_transform_composition,
 };
-use fj_interpreters::{InterpreterError, eval_jaxpr};
+use fj_interpreters::InterpreterError;
 use fj_ledger::{
     ConformalPredictor, DecisionRecord, EvidenceLedger, EvidenceSignal, LedgerEntry, LossMatrix,
 };
+use fj_runtime::backend::{Backend, BackendError};
 use std::collections::BTreeMap;
 
 // ── Effect Token System ────────────────────────────────────────────
@@ -165,6 +166,7 @@ impl std::error::Error for TransformExecutionError {}
 pub enum DispatchError {
     Cache(CacheKeyError),
     Interpreter(InterpreterError),
+    BackendExecution(BackendError),
     TransformInvariant(TransformCompositionError),
     TransformExecution(TransformExecutionError),
 }
@@ -174,6 +176,7 @@ impl std::fmt::Display for DispatchError {
         match self {
             Self::Cache(err) => write!(f, "cache key error: {err}"),
             Self::Interpreter(err) => write!(f, "interpreter error: {err}"),
+            Self::BackendExecution(err) => write!(f, "backend execution error: {err}"),
             Self::TransformInvariant(err) => write!(f, "transform invariant error: {err}"),
             Self::TransformExecution(err) => write!(f, "transform execution error: {err}"),
         }
@@ -194,6 +197,12 @@ impl From<InterpreterError> for DispatchError {
     }
 }
 
+impl From<BackendError> for DispatchError {
+    fn from(value: BackendError) -> Self {
+        Self::BackendExecution(value)
+    }
+}
+
 impl From<TransformCompositionError> for DispatchError {
     fn from(value: TransformCompositionError) -> Self {
         Self::TransformInvariant(value)
@@ -203,6 +212,14 @@ impl From<TransformCompositionError> for DispatchError {
 impl From<TransformExecutionError> for DispatchError {
     fn from(value: TransformExecutionError) -> Self {
         Self::TransformExecution(value)
+    }
+}
+
+/// Resolve the named backend, defaulting to CPU.
+fn resolve_backend(name: &str) -> Box<dyn Backend> {
+    match name {
+        "cpu" | "" => Box::new(fj_backend_cpu::CpuBackend::new()),
+        _ => Box::new(fj_backend_cpu::CpuBackend::new()),
     }
 }
 
@@ -225,10 +242,12 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         effect_ctx.thread_token(transform.as_str());
     }
 
+    let backend = resolve_backend(&request.backend);
     let outputs = execute_with_transforms(
         &request.ledger.root_jaxpr,
         &request.ledger.transform_stack,
         &request.args,
+        backend.as_ref(),
     )?;
 
     let effect_tokens = effect_ctx.finalize();
@@ -277,6 +296,7 @@ fn execute_with_transforms(
     root_jaxpr: &Jaxpr,
     transforms: &[Transform],
     args: &[Value],
+    backend: &dyn Backend,
 ) -> Result<Vec<Value>, DispatchError> {
     // Skip leading Jit transforms (no-op pass-through) to find the first
     // non-Jit transform, avoiding recursive stack frames for Jit chains.
@@ -287,13 +307,15 @@ fn execute_with_transforms(
 
     let remaining = &transforms[non_jit_start..];
     let Some((head, tail)) = remaining.split_first() else {
-        return eval_jaxpr(root_jaxpr, args).map_err(DispatchError::from);
+        return backend
+            .execute(root_jaxpr, args, backend.default_device())
+            .map_err(DispatchError::from);
     };
 
     match head {
         Transform::Jit => unreachable!("Jit transforms were skipped above"),
-        Transform::Grad => execute_grad(root_jaxpr, tail, args),
-        Transform::Vmap => execute_vmap(root_jaxpr, tail, args),
+        Transform::Grad => execute_grad(root_jaxpr, tail, args, backend),
+        Transform::Vmap => execute_vmap(root_jaxpr, tail, args, backend),
     }
 }
 
@@ -301,6 +323,7 @@ fn execute_grad(
     root_jaxpr: &Jaxpr,
     tail: &[Transform],
     args: &[Value],
+    backend: &dyn Backend,
 ) -> Result<Vec<Value>, DispatchError> {
     if args.is_empty() {
         return Err(TransformExecutionError::EmptyArgumentList {
@@ -316,7 +339,7 @@ fn execute_grad(
         args[0]
             .as_f64_scalar()
             .ok_or(TransformExecutionError::NonScalarGradientInput)?;
-        return execute_grad_finite_diff(root_jaxpr, tail, args);
+        return execute_grad_finite_diff(root_jaxpr, tail, args, backend);
     }
 
     // Tensor-aware AD: grad_jaxpr returns Value gradients for all inputs
@@ -334,6 +357,7 @@ fn execute_grad_finite_diff(
     root_jaxpr: &Jaxpr,
     tail: &[Transform],
     args: &[Value],
+    backend: &dyn Backend,
 ) -> Result<Vec<Value>, DispatchError> {
     let input_value = args[0]
         .as_f64_scalar()
@@ -345,8 +369,8 @@ fn execute_grad_finite_diff(
     plus_args[0] = Value::scalar_f64(input_value + epsilon);
     minus_args[0] = Value::scalar_f64(input_value - epsilon);
 
-    let plus_out = execute_with_transforms(root_jaxpr, tail, &plus_args)?;
-    let minus_out = execute_with_transforms(root_jaxpr, tail, &minus_args)?;
+    let plus_out = execute_with_transforms(root_jaxpr, tail, &plus_args, backend)?;
+    let minus_out = execute_with_transforms(root_jaxpr, tail, &minus_args, backend)?;
 
     let plus_value = plus_out
         .first()
@@ -365,6 +389,7 @@ fn execute_vmap(
     root_jaxpr: &Jaxpr,
     tail: &[Transform],
     args: &[Value],
+    backend: &dyn Backend,
 ) -> Result<Vec<Value>, DispatchError> {
     if args.is_empty() {
         return Err(TransformExecutionError::EmptyArgumentList {
@@ -427,7 +452,7 @@ fn execute_vmap(
             }
         }
 
-        let mapped_output = execute_with_transforms(root_jaxpr, tail, &mapped_args)?;
+        let mapped_output = execute_with_transforms(root_jaxpr, tail, &mapped_args, backend)?;
         if index == 0 {
             per_output_values = vec![Vec::with_capacity(lead_len); mapped_output.len()];
         } else if mapped_output.len() != per_output_values.len() {
@@ -903,5 +928,143 @@ mod tests {
         let result = super::heuristic_posterior_abandoned(&minimal);
         assert!(result >= 0.05, "posterior should be >= 0.05, got {result}");
         assert!(result <= 0.95, "posterior should be <= 0.95, got {result}");
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // Higher-rank tensor tests (3D+)
+    // ══════════════════════════════════════════════════════════════
+
+    #[test]
+    fn dispatch_vmap_add_one_rank3_tensor() {
+        // 3D tensor [2, 3, 2] — vmap should process each leading-axis slice
+        let tensor_3d = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![2, 3, 2],
+                },
+                (1..=12).map(fj_core::Literal::I64).collect(),
+            )
+            .expect("3d tensor should build"),
+        );
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap]),
+            args: vec![tensor_3d],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch vmap rank3 should succeed");
+
+        let output = response.outputs[0]
+            .as_tensor()
+            .expect("vmap rank3 output should be tensor");
+        assert_eq!(
+            output.shape,
+            Shape {
+                dims: vec![2, 3, 2]
+            }
+        );
+        let as_i64: Vec<i64> = output
+            .elements
+            .iter()
+            .map(|lit| lit.as_i64().expect("i64"))
+            .collect();
+        let expected: Vec<i64> = (2..=13).collect();
+        assert_eq!(as_i64, expected);
+    }
+
+    #[test]
+    fn dispatch_triple_vmap_add_one_rank3_tensor() {
+        // 3D tensor with triple vmap (vmap(vmap(vmap(f))))
+        let tensor_3d = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![2, 2, 3],
+                },
+                (0..12).map(fj_core::Literal::I64).collect(),
+            )
+            .expect("3d tensor should build"),
+        );
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(
+                ProgramSpec::AddOne,
+                &[Transform::Vmap, Transform::Vmap, Transform::Vmap],
+            ),
+            args: vec![tensor_3d],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch triple vmap should succeed");
+
+        let output = response.outputs[0]
+            .as_tensor()
+            .expect("triple vmap output should be tensor");
+        assert_eq!(
+            output.shape,
+            Shape {
+                dims: vec![2, 2, 3]
+            }
+        );
+        let as_i64: Vec<i64> = output
+            .elements
+            .iter()
+            .map(|lit| lit.as_i64().expect("i64"))
+            .collect();
+        let expected: Vec<i64> = (1..=12).collect();
+        assert_eq!(as_i64, expected);
+    }
+
+    #[test]
+    fn dispatch_grad_sin_with_jit() {
+        // grad(jit(sin(x))) = cos(x) at x=0 => 1.0
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::SinX, &[Transform::Jit, Transform::Grad]),
+            args: vec![Value::scalar_f64(0.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch grad(jit(sin)) should succeed");
+
+        let grad_val = response.outputs[0]
+            .as_f64_scalar()
+            .expect("grad should be scalar f64");
+        assert!(
+            (grad_val - 1.0).abs() < 1e-10,
+            "grad(sin)(0) should be cos(0) = 1.0, got {grad_val}"
+        );
+    }
+
+    #[test]
+    fn dispatch_vmap_sin_f64_vector() {
+        // vmap(sin)([0, pi/2, pi]) = [0, 1, ~0]
+        use std::f64::consts::PI;
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::SinX, &[Transform::Vmap]),
+            args: vec![Value::vector_f64(&[0.0, PI / 2.0, PI]).unwrap()],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch vmap(sin) should succeed");
+
+        let output = response.outputs[0]
+            .as_tensor()
+            .expect("vmap output should be tensor");
+        let vals: Vec<f64> = output.to_f64_vec().expect("should convert to f64");
+        assert!(vals[0].abs() < 1e-10, "sin(0) should be 0");
+        assert!((vals[1] - 1.0).abs() < 1e-10, "sin(pi/2) should be 1");
+        assert!(vals[2].abs() < 1e-10, "sin(pi) should be ~0");
     }
 }

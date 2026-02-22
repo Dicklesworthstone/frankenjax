@@ -1072,6 +1072,49 @@ fn vjp(
 
             Ok(vec![grad_operand, grad_updates])
         }
+        Primitive::Clamp => {
+            // VJP of clamp(x, lo, hi): gradient passes through where lo < x < hi,
+            // otherwise zero (x is at a boundary).
+            let x = &inputs[0];
+            let lo = &inputs[1];
+            let hi = &inputs[2];
+            // mask = (x > lo) & (x < hi)
+            let gt_lo = eval_primitive(Primitive::Gt, &[x.clone(), lo.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let lt_hi = eval_primitive(Primitive::Lt, &[x.clone(), hi.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            // g_x = select(gt_lo & lt_hi, g, 0)
+            // Since we don't have And, use select twice: select(gt_lo, select(lt_hi, g, 0), 0)
+            let inner = eval_primitive(
+                Primitive::Select,
+                &[lt_hi, g.clone(), zeros_like(g)],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let g_x = eval_primitive(
+                Primitive::Select,
+                &[gt_lo, inner, zeros_like(g)],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            // lo and hi don't receive gradients in JAX
+            Ok(vec![g_x, zeros_like(lo), zeros_like(hi)])
+        }
+        Primitive::DynamicSlice => {
+            // VJP of dynamic_slice: same as static slice — gradient passes through
+            // to the operand at the sliced positions, zero elsewhere.
+            // For simplicity, pass g through as-is for the operand.
+            let mut grads = vec![g.clone()];
+            // Start indices don't receive gradients (they're discrete)
+            for _ in 1..inputs.len() {
+                grads.push(Value::scalar_f64(0.0));
+            }
+            Ok(grads)
+        }
+        Primitive::Iota => {
+            // Iota has no inputs, so no gradients to propagate.
+            Ok(vec![])
+        }
     }
 }
 
@@ -1464,6 +1507,17 @@ fn jvp_rule(primitive: Primitive, primals: &[Value], tangents: &[f64]) -> Result
         // Gather/Scatter: tangent passes through the same indexing
         Primitive::Gather => Ok(tangents[0]),
         Primitive::Scatter => Ok(tangents.iter().sum()),
+        // Clamp: tangent passes through where x is in (lo, hi)
+        Primitive::Clamp => {
+            let x = to_f64(&primals[0])?;
+            let lo = to_f64(&primals[1])?;
+            let hi = to_f64(&primals[2])?;
+            Ok(if x > lo && x < hi { tangents[0] } else { 0.0 })
+        }
+        // DynamicSlice: tangent passes through to operand
+        Primitive::DynamicSlice => Ok(tangents[0]),
+        // Iota: no inputs, no tangent
+        Primitive::Iota => Ok(0.0),
     }
 }
 

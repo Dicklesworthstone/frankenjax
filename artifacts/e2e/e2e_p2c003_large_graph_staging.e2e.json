@@ -6,7 +6,7 @@
   "fixture_id": "d348b1aab3ca81e28418c82209bec7e9f8472b4b465755e2ae95b708a27d8795",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1771714744582,
+  "ts_utc_unix_ms": 1771724064111,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -42,7 +42,7 @@
       "within_budget": true
     },
     {
-      "duration_ms": 0,
+      "duration_ms": 1,
       "step": "staging_all_known",
       "within_budget": true
     },
@@ -73,9 +73,9 @@
     "output_correct": true,
     "pe_all_known_ms": 0,
     "pe_all_unknown_ms": 0,
-    "staging_ms": 0
+    "staging_ms": 1
   },
   "result": "pass",
-  "duration_ms": 4,
+  "duration_ms": 5,
   "details": null
 }
