@@ -50,6 +50,9 @@ impl From<DispatchError> for ApiError {
             DispatchError::TransformInvariant(e) => Self::InvalidComposition {
                 detail: e.to_string(),
             },
+            DispatchError::BackendExecution(e) => Self::EvalError {
+                detail: e.to_string(),
+            },
             DispatchError::TransformExecution(ref e) => match e {
                 TransformExecutionError::VmapMismatchedLeadingDimension { expected, actual } => {
                     Self::VmapDimensionMismatch {
