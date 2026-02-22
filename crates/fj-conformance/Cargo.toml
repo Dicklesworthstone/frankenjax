@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-asupersync = { version = "0.2.0", path = "/dp/asupersync" }
+asupersync = "0.2.5"
 base64 = "0.22.1"
 fj-core = { path = "../fj-core" }
 fj-dispatch = { path = "../fj-dispatch" }
