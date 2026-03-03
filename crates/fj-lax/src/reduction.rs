@@ -4,6 +4,30 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 
 use crate::EvalError;
 
+fn literal_to_complex_parts(
+    primitive: Primitive,
+    literal: Literal,
+) -> Result<(f64, f64), EvalError> {
+    match literal {
+        Literal::Complex64Bits(re, im) => {
+            Ok((f32::from_bits(re) as f64, f32::from_bits(im) as f64))
+        }
+        Literal::Complex128Bits(re, im) => Ok((f64::from_bits(re), f64::from_bits(im))),
+        _ => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected complex tensor elements",
+        }),
+    }
+}
+
+fn complex_literal_from_parts(dtype: DType, re: f64, im: f64) -> Literal {
+    match dtype {
+        DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+        DType::Complex128 => Literal::from_complex128(re, im),
+        _ => Literal::from_complex128(re, im),
+    }
+}
+
 /// Generic reduction: reduces elements of a tensor along specified axes (or all axes).
 pub(crate) fn eval_reduce(
     primitive: Primitive,
@@ -31,6 +55,29 @@ pub(crate) fn eval_reduce(
             // Full reduction (all elements to scalar)
             if rank == 0 {
                 return Ok(Value::Scalar(tensor.elements[0]));
+            }
+
+            if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
+                if primitive != Primitive::ReduceSum {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "complex reduction is currently supported only for reduce_sum"
+                            .to_owned(),
+                    });
+                }
+
+                let mut re_acc = 0.0_f64;
+                let mut im_acc = 0.0_f64;
+                for literal in &tensor.elements {
+                    let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                    re_acc += re;
+                    im_acc += im;
+                }
+                return Ok(Value::Scalar(complex_literal_from_parts(
+                    tensor.dtype,
+                    re_acc,
+                    im_acc,
+                )));
             }
 
             let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
@@ -130,6 +177,7 @@ pub(crate) fn eval_reduce_axes(
                 .map(|(_, d)| *d)
                 .collect();
 
+            let is_complex = matches!(tensor.dtype, DType::Complex64 | DType::Complex128);
             let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
 
             // Compute strides for the input tensor (row-major)
@@ -148,7 +196,38 @@ pub(crate) fn eval_reduce_axes(
             // For each output element, iterate over the reduced axes and accumulate
             let kept_axes: Vec<usize> = (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
 
-            if is_integral {
+            if is_complex {
+                if primitive != Primitive::ReduceSum {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "complex reduction is currently supported only for reduce_sum"
+                            .to_owned(),
+                    });
+                }
+
+                let mut result_re = vec![float_init; out_count];
+                let mut result_im = vec![float_init; out_count];
+                let total = tensor.elements.len();
+                for flat_idx in 0..total {
+                    let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
+                    let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
+                    let (re, im) = literal_to_complex_parts(primitive, tensor.elements[flat_idx])?;
+                    result_re[out_idx] = float_op(result_re[out_idx], re);
+                    result_im[out_idx] = float_op(result_im[out_idx], im);
+                }
+
+                let elements: Vec<Literal> = result_re
+                    .into_iter()
+                    .zip(result_im)
+                    .map(|(re, im)| complex_literal_from_parts(tensor.dtype, re, im))
+                    .collect();
+
+                Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    Shape { dims: out_dims },
+                    elements,
+                )?))
+            } else if is_integral {
                 let mut result = vec![int_init; out_count];
                 let total = tensor.elements.len();
                 for flat_idx in 0..total {

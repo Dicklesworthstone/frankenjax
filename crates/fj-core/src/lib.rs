@@ -3,6 +3,7 @@
 #[cfg(test)]
 pub mod proptest_strategies;
 
+use half::{bf16, f16};
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,10 +17,14 @@ pub enum CompatibilityMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DType {
+    BF16,
+    F16,
     F32,
     F64,
     I32,
     I64,
+    U32,
+    U64,
     Bool,
     Complex64,
     Complex128,
@@ -102,6 +107,11 @@ pub enum Primitive {
     Div,
     Rem,
     Atan2,
+    // Complex number primitives
+    Complex,
+    Conj,
+    Real,
+    Imag,
     // Selection
     Select,
     // Dot product
@@ -211,6 +221,10 @@ impl Primitive {
             Self::Div => "div",
             Self::Rem => "rem",
             Self::Atan2 => "atan2",
+            Self::Complex => "complex",
+            Self::Conj => "conj",
+            Self::Real => "real",
+            Self::Imag => "imag",
             Self::Select => "select",
             Self::Dot => "dot",
             Self::Eq => "eq",
@@ -291,13 +305,27 @@ pub struct VarId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Literal {
     I64(i64),
+    U32(u32),
+    U64(u64),
     Bool(bool),
+    BF16Bits(u16),
+    F16Bits(u16),
     F64Bits(u64),
     Complex64Bits(u32, u32),
     Complex128Bits(u64, u64),
 }
 
 impl Literal {
+    #[must_use]
+    pub fn from_bf16_f32(value: f32) -> Self {
+        Self::BF16Bits(bf16::from_f32(value).to_bits())
+    }
+
+    #[must_use]
+    pub fn from_f16_f32(value: f32) -> Self {
+        Self::F16Bits(f16::from_f32(value).to_bits())
+    }
+
     #[must_use]
     pub fn from_f64(value: f64) -> Self {
         Self::F64Bits(value.to_bits())
@@ -318,6 +346,10 @@ impl Literal {
         match self {
             Self::F64Bits(bits) => Some(f64::from_bits(bits)),
             Self::I64(value) => Some(value as f64),
+            Self::U32(value) => Some(value as f64),
+            Self::U64(value) => Some(value as f64),
+            Self::BF16Bits(bits) => Some(f64::from(f32::from(bf16::from_bits(bits)))),
+            Self::F16Bits(bits) => Some(f64::from(f32::from(f16::from_bits(bits)))),
             Self::Bool(_) | Self::Complex64Bits(..) | Self::Complex128Bits(..) => None,
         }
     }
@@ -326,10 +358,45 @@ impl Literal {
     pub fn as_i64(self) -> Option<i64> {
         match self {
             Self::I64(value) => Some(value),
+            Self::U32(value) => Some(i64::from(value)),
+            Self::U64(value) => i64::try_from(value).ok(),
             Self::Bool(_)
+            | Self::BF16Bits(_)
+            | Self::F16Bits(_)
             | Self::F64Bits(_)
             | Self::Complex64Bits(..)
             | Self::Complex128Bits(..) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_u64(self) -> Option<u64> {
+        match self {
+            Self::U32(value) => Some(u64::from(value)),
+            Self::U64(value) => Some(value),
+            Self::I64(value) => u64::try_from(value).ok(),
+            Self::Bool(_)
+            | Self::BF16Bits(_)
+            | Self::F16Bits(_)
+            | Self::F64Bits(_)
+            | Self::Complex64Bits(..)
+            | Self::Complex128Bits(..) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_bf16_f32(self) -> Option<f32> {
+        match self {
+            Self::BF16Bits(bits) => Some(f32::from(bf16::from_bits(bits))),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn as_f16_f32(self) -> Option<f32> {
+        match self {
+            Self::F16Bits(bits) => Some(f32::from(f16::from_bits(bits))),
+            _ => None,
         }
     }
 
@@ -351,7 +418,7 @@ impl Literal {
 
     #[must_use]
     pub fn is_integral(self) -> bool {
-        matches!(self, Self::I64(_))
+        matches!(self, Self::I64(_) | Self::U32(_) | Self::U64(_))
     }
 
     #[must_use]
@@ -370,6 +437,26 @@ impl Value {
     #[must_use]
     pub fn scalar_i64(value: i64) -> Self {
         Self::Scalar(Literal::I64(value))
+    }
+
+    #[must_use]
+    pub fn scalar_u32(value: u32) -> Self {
+        Self::Scalar(Literal::U32(value))
+    }
+
+    #[must_use]
+    pub fn scalar_u64(value: u64) -> Self {
+        Self::Scalar(Literal::U64(value))
+    }
+
+    #[must_use]
+    pub fn scalar_bf16(value: f32) -> Self {
+        Self::Scalar(Literal::from_bf16_f32(value))
+    }
+
+    #[must_use]
+    pub fn scalar_f16(value: f32) -> Self {
+        Self::Scalar(Literal::from_f16_f32(value))
     }
 
     #[must_use]
@@ -445,7 +532,11 @@ impl Value {
         match self {
             Self::Scalar(lit) => match lit {
                 Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
                 Literal::Bool(_) => DType::Bool,
+                Literal::BF16Bits(_) => DType::BF16,
+                Literal::F16Bits(_) => DType::F16,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Complex64Bits(..) => DType::Complex64,
                 Literal::Complex128Bits(..) => DType::Complex128,
@@ -703,9 +794,29 @@ fn infer_dtype_from_literals(elements: &[Literal]) -> DType {
         DType::I64
     } else if elements
         .iter()
+        .all(|literal| matches!(literal, Literal::U32(_)))
+    {
+        DType::U32
+    } else if elements
+        .iter()
+        .all(|literal| matches!(literal, Literal::U64(_)))
+    {
+        DType::U64
+    } else if elements
+        .iter()
         .all(|literal| matches!(literal, Literal::Bool(_)))
     {
         DType::Bool
+    } else if elements
+        .iter()
+        .all(|literal| matches!(literal, Literal::BF16Bits(_)))
+    {
+        DType::BF16
+    } else if elements
+        .iter()
+        .all(|literal| matches!(literal, Literal::F16Bits(_)))
+    {
+        DType::F16
     } else {
         DType::F64
     }
@@ -954,8 +1065,20 @@ fn write_literal(out: &mut String, lit: Literal) {
         Literal::I64(value) => {
             let _ = write!(out, "i64:{value}");
         }
+        Literal::U32(value) => {
+            let _ = write!(out, "u32:{value}");
+        }
+        Literal::U64(value) => {
+            let _ = write!(out, "u64:{value}");
+        }
         Literal::Bool(value) => {
             let _ = write!(out, "bool:{value}");
+        }
+        Literal::BF16Bits(value) => {
+            let _ = write!(out, "bf16bits:{value}");
+        }
+        Literal::F16Bits(value) => {
+            let _ = write!(out, "f16bits:{value}");
         }
         Literal::F64Bits(value) => {
             let _ = write!(out, "f64bits:{value}");
@@ -2781,6 +2904,8 @@ mod tests {
     #[test]
     fn value_dtype_scalars() {
         assert_eq!(Value::scalar_i64(0).dtype(), DType::I64);
+        assert_eq!(Value::scalar_u32(0).dtype(), DType::U32);
+        assert_eq!(Value::scalar_u64(0).dtype(), DType::U64);
         assert_eq!(Value::scalar_f64(0.0).dtype(), DType::F64);
         assert_eq!(Value::scalar_bool(false).dtype(), DType::Bool);
     }
@@ -2813,6 +2938,132 @@ mod tests {
         )
         .unwrap();
         assert_eq!(t.to_i64_vec(), None);
+    }
+
+    // ── Unsigned type tests (bd-2983) ─────────────────────────────
+
+    #[test]
+    fn test_dtype_u32_exists() {
+        let dt = DType::U32;
+        assert_ne!(dt, DType::I32);
+        assert_ne!(dt, DType::U64);
+    }
+
+    #[test]
+    fn test_dtype_u64_exists() {
+        let dt = DType::U64;
+        assert_ne!(dt, DType::I64);
+        assert_ne!(dt, DType::U32);
+    }
+
+    #[test]
+    fn test_literal_u32_max() {
+        let lit = Literal::U32(u32::MAX);
+        assert_eq!(lit.as_u64(), Some(u64::from(u32::MAX)));
+        assert_eq!(lit.as_i64(), Some(i64::from(u32::MAX)));
+    }
+
+    #[test]
+    fn test_literal_u64_max() {
+        let lit = Literal::U64(u64::MAX);
+        assert_eq!(lit.as_u64(), Some(u64::MAX));
+        assert_eq!(lit.as_i64(), None);
+    }
+
+    #[test]
+    fn test_u32_serde_roundtrip() {
+        let lit = Literal::U32(3_000_000_000);
+        let json = serde_json::to_string(&lit).unwrap();
+        let deser: Literal = serde_json::from_str(&json).unwrap();
+        assert_eq!(lit, deser);
+    }
+
+    #[test]
+    fn test_tensor_value_u32() {
+        let t = TensorValue::new(
+            DType::U32,
+            Shape::vector(3),
+            vec![Literal::U32(1), Literal::U32(2), Literal::U32(u32::MAX)],
+        )
+        .unwrap();
+        assert_eq!(t.dtype, DType::U32);
+        assert_eq!(t.shape, Shape::vector(3));
+        assert_eq!(t.elements.len(), 3);
+    }
+
+    // ── BF16/F16 tests (bd-gsad) ──────────────────────────────────
+
+    #[test]
+    fn test_dtype_bfloat16_exists() {
+        let dt = DType::BF16;
+        assert_ne!(dt, DType::F16);
+        assert_ne!(dt, DType::F64);
+    }
+
+    #[test]
+    fn test_dtype_float16_exists() {
+        let dt = DType::F16;
+        assert_ne!(dt, DType::BF16);
+        assert_ne!(dt, DType::F64);
+    }
+
+    #[test]
+    fn test_literal_bfloat16_from_f32() {
+        let lit = Literal::from_bf16_f32(1.5);
+        let roundtrip = lit.as_bf16_f32().unwrap();
+        assert_eq!(roundtrip, 1.5);
+    }
+
+    #[test]
+    fn test_literal_float16_from_f32() {
+        let lit = Literal::from_f16_f32(1.5);
+        let roundtrip = lit.as_f16_f32().unwrap();
+        assert_eq!(roundtrip, 1.5);
+    }
+
+    #[test]
+    fn test_bfloat16_precision_loss() {
+        let value = 1.0000001_f32;
+        let lit = Literal::from_bf16_f32(value);
+        let roundtrip = lit.as_bf16_f32().unwrap();
+        assert_ne!(value.to_bits(), roundtrip.to_bits());
+    }
+
+    #[test]
+    fn test_float16_range_overflow() {
+        let lit = Literal::from_f16_f32(100_000.0);
+        let roundtrip = lit.as_f16_f32().unwrap();
+        assert!(roundtrip.is_infinite());
+    }
+
+    #[test]
+    fn test_bfloat16_serde_roundtrip() {
+        let lit = Literal::from_bf16_f32(3.25);
+        let json = serde_json::to_string(&lit).unwrap();
+        let deser: Literal = serde_json::from_str(&json).unwrap();
+        assert_eq!(lit, deser);
+    }
+
+    #[test]
+    fn test_tensor_value_bfloat16() {
+        let t = TensorValue::new(
+            DType::BF16,
+            Shape::vector(2),
+            vec![Literal::from_bf16_f32(1.0), Literal::from_bf16_f32(2.0)],
+        )
+        .unwrap();
+        assert_eq!(t.dtype, DType::BF16);
+        assert_eq!(t.shape, Shape::vector(2));
+    }
+
+    #[test]
+    fn test_dtype_size_bfloat16() {
+        assert_eq!(std::mem::size_of::<u16>(), 2);
+    }
+
+    #[test]
+    fn test_dtype_size_float16() {
+        assert_eq!(std::mem::size_of::<u16>(), 2);
     }
 
     // ── Complex type tests (bd-1hx8) ────────────────────────────

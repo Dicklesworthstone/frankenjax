@@ -11,8 +11,10 @@ use fj_core::{Literal, Primitive, Shape, TensorValue, Value, ValueError};
 use std::collections::BTreeMap;
 
 use arithmetic::{
-    erf_approx, eval_binary_elementwise, eval_clamp, eval_dot, eval_integer_pow, eval_is_finite,
-    eval_nextafter, eval_select, eval_unary_elementwise, eval_unary_int_or_float,
+    erf_approx, eval_abs, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
+    eval_dot, eval_exp, eval_imag, eval_integer_pow, eval_is_finite, eval_log, eval_neg,
+    eval_nextafter, eval_real, eval_select, eval_sin, eval_unary_elementwise,
+    eval_unary_int_or_float,
 };
 
 use comparison::eval_comparison;
@@ -142,18 +144,18 @@ pub fn eval_primitive(
             f64::powf,
         ),
         // Unary arithmetic
-        Primitive::Neg => eval_unary_int_or_float(primitive, inputs, |x| -x, |x| -x),
-        Primitive::Abs => eval_unary_int_or_float(primitive, inputs, i64::abs, f64::abs),
-        Primitive::Exp => eval_unary_elementwise(primitive, inputs, f64::exp),
-        Primitive::Log => eval_unary_elementwise(primitive, inputs, f64::ln),
+        Primitive::Neg => eval_neg(primitive, inputs),
+        Primitive::Abs => eval_abs(primitive, inputs),
+        Primitive::Exp => eval_exp(primitive, inputs),
+        Primitive::Log => eval_log(primitive, inputs),
         Primitive::Sqrt => eval_unary_elementwise(primitive, inputs, f64::sqrt),
         Primitive::Rsqrt => eval_unary_elementwise(primitive, inputs, |x| 1.0 / x.sqrt()),
         Primitive::Floor => eval_unary_elementwise(primitive, inputs, f64::floor),
         Primitive::Ceil => eval_unary_elementwise(primitive, inputs, f64::ceil),
         Primitive::Round => eval_unary_elementwise(primitive, inputs, f64::round),
         // Trigonometric
-        Primitive::Sin => eval_unary_elementwise(primitive, inputs, f64::sin),
-        Primitive::Cos => eval_unary_elementwise(primitive, inputs, f64::cos),
+        Primitive::Sin => eval_sin(primitive, inputs),
+        Primitive::Cos => eval_cos(primitive, inputs),
         Primitive::Tan => eval_unary_elementwise(primitive, inputs, f64::tan),
         Primitive::Asin => eval_unary_elementwise(primitive, inputs, f64::asin),
         Primitive::Acos => eval_unary_elementwise(primitive, inputs, f64::acos),
@@ -186,6 +188,9 @@ pub fn eval_primitive(
         }
         Primitive::Erf => eval_unary_elementwise(primitive, inputs, erf_approx),
         Primitive::Erfc => eval_unary_elementwise(primitive, inputs, |x| 1.0 - erf_approx(x)),
+        Primitive::Conj => eval_conj(primitive, inputs),
+        Primitive::Real => eval_real(primitive, inputs),
+        Primitive::Imag => eval_imag(primitive, inputs),
         // Binary math
         Primitive::Div => eval_binary_elementwise(
             primitive,
@@ -205,6 +210,7 @@ pub fn eval_primitive(
             |a, b| (a as f64).atan2(b as f64) as i64,
             f64::atan2,
         ),
+        Primitive::Complex => eval_complex(primitive, inputs),
         // Selection
         Primitive::Select => eval_select(primitive, inputs),
         // Dot product
@@ -310,24 +316,17 @@ pub fn eval_primitive(
         Primitive::While => eval_while_loop(primitive, inputs, params),
         Primitive::Switch => eval_switch(primitive, inputs, params),
         // Bitwise
-        Primitive::BitwiseAnd => eval_bitwise_binary(primitive, inputs, |a, b| a & b),
-        Primitive::BitwiseOr => eval_bitwise_binary(primitive, inputs, |a, b| a | b),
-        Primitive::BitwiseXor => eval_bitwise_binary(primitive, inputs, |a, b| a ^ b),
-        Primitive::BitwiseNot => eval_bitwise_unary(primitive, inputs, |a| !a),
-        Primitive::ShiftLeft => eval_bitwise_binary(primitive, inputs, |a, b| a << b),
-        Primitive::ShiftRightArithmetic => eval_bitwise_binary(primitive, inputs, |a, b| a >> b),
-        Primitive::ShiftRightLogical => {
-            eval_bitwise_binary(primitive, inputs, |a, b| ((a as u64) >> b) as i64)
+        Primitive::BitwiseAnd
+        | Primitive::BitwiseOr
+        | Primitive::BitwiseXor
+        | Primitive::ShiftLeft
+        | Primitive::ShiftRightArithmetic
+        | Primitive::ShiftRightLogical => eval_bitwise_binary(primitive, inputs),
+        Primitive::BitwiseNot | Primitive::PopulationCount | Primitive::CountLeadingZeros => {
+            eval_bitwise_unary(primitive, inputs)
         }
         // Windowed reduction (pooling)
         Primitive::ReduceWindow => eval_reduce_window(primitive, inputs, params),
-        // Integer intrinsics
-        Primitive::PopulationCount => {
-            eval_bitwise_unary(primitive, inputs, |a| a.count_ones() as i64)
-        }
-        Primitive::CountLeadingZeros => {
-            eval_bitwise_unary(primitive, inputs, |a| a.leading_zeros() as i64)
-        }
     }
 }
 
@@ -346,6 +345,8 @@ fn eval_cond(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError>
     let pred = match &inputs[0] {
         Value::Scalar(fj_core::Literal::Bool(b)) => *b,
         Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
+        Value::Scalar(fj_core::Literal::U32(v)) => *v != 0,
+        Value::Scalar(fj_core::Literal::U64(v)) => *v != 0,
         Value::Scalar(fj_core::Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
         _ => {
             return Err(EvalError::Unsupported {
@@ -728,6 +729,8 @@ fn value_to_bool(v: &Value) -> bool {
     match v {
         Value::Scalar(fj_core::Literal::Bool(b)) => *b,
         Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
+        Value::Scalar(fj_core::Literal::U32(v)) => *v != 0,
+        Value::Scalar(fj_core::Literal::U64(v)) => *v != 0,
         Value::Scalar(fj_core::Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
         _ => false,
     }
@@ -739,6 +742,8 @@ fn value_shape_fingerprint(v: &Value) -> String {
         Value::Scalar(lit) => {
             let kind = match lit {
                 fj_core::Literal::I64(_) => "i64",
+                fj_core::Literal::U32(_) => "u32",
+                fj_core::Literal::U64(_) => "u64",
                 fj_core::Literal::Bool(_) => "bool",
                 fj_core::Literal::F64Bits(_) => "f64",
                 fj_core::Literal::Complex64Bits(_, _) => "c64",
@@ -839,11 +844,43 @@ where
 }
 
 /// Evaluate a binary bitwise operation on integer values.
-fn eval_bitwise_binary(
-    primitive: Primitive,
-    inputs: &[Value],
-    op: fn(i64, i64) -> i64,
-) -> Result<Value, EvalError> {
+fn apply_bitwise_binary_i64(primitive: Primitive, lhs: i64, rhs: i64) -> i64 {
+    match primitive {
+        Primitive::BitwiseAnd => lhs & rhs,
+        Primitive::BitwiseOr => lhs | rhs,
+        Primitive::BitwiseXor => lhs ^ rhs,
+        Primitive::ShiftLeft => lhs.wrapping_shl(rhs as u32),
+        Primitive::ShiftRightArithmetic => lhs.wrapping_shr(rhs as u32),
+        Primitive::ShiftRightLogical => ((lhs as u64).wrapping_shr(rhs as u32)) as i64,
+        _ => lhs,
+    }
+}
+
+fn apply_bitwise_binary_u32(primitive: Primitive, lhs: u32, rhs: u32) -> u32 {
+    match primitive {
+        Primitive::BitwiseAnd => lhs & rhs,
+        Primitive::BitwiseOr => lhs | rhs,
+        Primitive::BitwiseXor => lhs ^ rhs,
+        Primitive::ShiftLeft => lhs.wrapping_shl(rhs),
+        Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => lhs.wrapping_shr(rhs),
+        _ => lhs,
+    }
+}
+
+fn apply_bitwise_binary_u64(primitive: Primitive, lhs: u64, rhs: u64) -> u64 {
+    match primitive {
+        Primitive::BitwiseAnd => lhs & rhs,
+        Primitive::BitwiseOr => lhs | rhs,
+        Primitive::BitwiseXor => lhs ^ rhs,
+        Primitive::ShiftLeft => lhs.wrapping_shl(rhs as u32),
+        Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => {
+            lhs.wrapping_shr(rhs as u32)
+        }
+        _ => lhs,
+    }
+}
+
+fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 2 {
         return Err(EvalError::ArityMismatch {
             primitive,
@@ -852,9 +889,15 @@ fn eval_bitwise_binary(
         });
     }
     match (&inputs[0], &inputs[1]) {
-        (Value::Scalar(fj_core::Literal::I64(a)), Value::Scalar(fj_core::Literal::I64(b))) => {
-            Ok(Value::scalar_i64(op(*a, *b)))
-        }
+        (Value::Scalar(fj_core::Literal::I64(a)), Value::Scalar(fj_core::Literal::I64(b))) => Ok(
+            Value::scalar_i64(apply_bitwise_binary_i64(primitive, *a, *b)),
+        ),
+        (Value::Scalar(fj_core::Literal::U32(a)), Value::Scalar(fj_core::Literal::U32(b))) => Ok(
+            Value::scalar_u32(apply_bitwise_binary_u32(primitive, *a, *b)),
+        ),
+        (Value::Scalar(fj_core::Literal::U64(a)), Value::Scalar(fj_core::Literal::U64(b))) => Ok(
+            Value::scalar_u64(apply_bitwise_binary_u64(primitive, *a, *b)),
+        ),
         (Value::Tensor(a), Value::Tensor(b)) => {
             if a.shape != b.shape {
                 return Err(EvalError::ShapeMismatch {
@@ -863,24 +906,84 @@ fn eval_bitwise_binary(
                     right: b.shape.clone(),
                 });
             }
-            let elements: Result<Vec<_>, _> = a
-                .elements
-                .iter()
-                .zip(b.elements.iter())
-                .map(|(ea, eb)| match (ea, eb) {
-                    (fj_core::Literal::I64(va), fj_core::Literal::I64(vb)) => {
-                        Ok(fj_core::Literal::I64(op(*va, *vb)))
-                    }
-                    _ => Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "bitwise ops require integer types",
-                    }),
-                })
-                .collect();
-            Ok(Value::Tensor(
-                TensorValue::new(fj_core::DType::I64, a.shape.clone(), elements?)
-                    .map_err(EvalError::InvalidTensor)?,
-            ))
+            if a.dtype != b.dtype {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitwise tensor operands must share dtype",
+                });
+            }
+            match a.dtype {
+                fj_core::DType::I64 => {
+                    let elements: Result<Vec<_>, _> = a
+                        .elements
+                        .iter()
+                        .zip(b.elements.iter())
+                        .map(|(ea, eb)| match (ea, eb) {
+                            (fj_core::Literal::I64(va), fj_core::Literal::I64(vb)) => {
+                                Ok(fj_core::Literal::I64(apply_bitwise_binary_i64(
+                                    primitive, *va, *vb,
+                                )))
+                            }
+                            _ => Err(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "bitwise ops require integer tensors",
+                            }),
+                        })
+                        .collect();
+                    Ok(Value::Tensor(
+                        TensorValue::new(fj_core::DType::I64, a.shape.clone(), elements?)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ))
+                }
+                fj_core::DType::U32 => {
+                    let elements: Result<Vec<_>, _> = a
+                        .elements
+                        .iter()
+                        .zip(b.elements.iter())
+                        .map(|(ea, eb)| match (ea, eb) {
+                            (fj_core::Literal::U32(va), fj_core::Literal::U32(vb)) => {
+                                Ok(fj_core::Literal::U32(apply_bitwise_binary_u32(
+                                    primitive, *va, *vb,
+                                )))
+                            }
+                            _ => Err(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "bitwise ops require integer tensors",
+                            }),
+                        })
+                        .collect();
+                    Ok(Value::Tensor(
+                        TensorValue::new(fj_core::DType::U32, a.shape.clone(), elements?)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ))
+                }
+                fj_core::DType::U64 => {
+                    let elements: Result<Vec<_>, _> = a
+                        .elements
+                        .iter()
+                        .zip(b.elements.iter())
+                        .map(|(ea, eb)| match (ea, eb) {
+                            (fj_core::Literal::U64(va), fj_core::Literal::U64(vb)) => {
+                                Ok(fj_core::Literal::U64(apply_bitwise_binary_u64(
+                                    primitive, *va, *vb,
+                                )))
+                            }
+                            _ => Err(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "bitwise ops require integer tensors",
+                            }),
+                        })
+                        .collect();
+                    Ok(Value::Tensor(
+                        TensorValue::new(fj_core::DType::U64, a.shape.clone(), elements?)
+                            .map_err(EvalError::InvalidTensor)?,
+                    ))
+                }
+                _ => Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitwise ops require integer types",
+                }),
+            }
         }
         _ => Err(EvalError::TypeMismatch {
             primitive,
@@ -890,11 +993,51 @@ fn eval_bitwise_binary(
 }
 
 /// Evaluate a unary bitwise operation on integer values.
-fn eval_bitwise_unary(
+fn apply_bitwise_unary_literal(
     primitive: Primitive,
-    inputs: &[Value],
-    op: fn(i64) -> i64,
-) -> Result<Value, EvalError> {
+    literal: fj_core::Literal,
+) -> Option<fj_core::Literal> {
+    match (primitive, literal) {
+        (Primitive::BitwiseNot, fj_core::Literal::I64(value)) => {
+            Some(fj_core::Literal::I64(!value))
+        }
+        (Primitive::BitwiseNot, fj_core::Literal::U32(value)) => {
+            Some(fj_core::Literal::U32(!value))
+        }
+        (Primitive::BitwiseNot, fj_core::Literal::U64(value)) => {
+            Some(fj_core::Literal::U64(!value))
+        }
+        (Primitive::PopulationCount, fj_core::Literal::I64(value)) => {
+            Some(fj_core::Literal::I64(i64::from(value.count_ones())))
+        }
+        (Primitive::PopulationCount, fj_core::Literal::U32(value)) => {
+            Some(fj_core::Literal::I64(i64::from(value.count_ones())))
+        }
+        (Primitive::PopulationCount, fj_core::Literal::U64(value)) => {
+            Some(fj_core::Literal::I64(i64::from(value.count_ones())))
+        }
+        (Primitive::CountLeadingZeros, fj_core::Literal::I64(value)) => {
+            Some(fj_core::Literal::I64(i64::from(value.leading_zeros())))
+        }
+        (Primitive::CountLeadingZeros, fj_core::Literal::U32(value)) => {
+            Some(fj_core::Literal::I64(i64::from(value.leading_zeros())))
+        }
+        (Primitive::CountLeadingZeros, fj_core::Literal::U64(value)) => {
+            Some(fj_core::Literal::I64(i64::from(value.leading_zeros())))
+        }
+        _ => None,
+    }
+}
+
+fn unary_bitwise_output_dtype(primitive: Primitive, input_dtype: fj_core::DType) -> fj_core::DType {
+    match primitive {
+        Primitive::PopulationCount | Primitive::CountLeadingZeros => fj_core::DType::I64,
+        Primitive::BitwiseNot => input_dtype,
+        _ => input_dtype,
+    }
+}
+
+fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
             primitive,
@@ -903,28 +1046,32 @@ fn eval_bitwise_unary(
         });
     }
     match &inputs[0] {
-        Value::Scalar(fj_core::Literal::I64(a)) => Ok(Value::scalar_i64(op(*a))),
+        Value::Scalar(literal) => {
+            let out = apply_bitwise_unary_literal(primitive, *literal).ok_or(
+                EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitwise ops require integer types",
+                },
+            )?;
+            Ok(Value::Scalar(out))
+        }
         Value::Tensor(t) => {
+            let out_dtype = unary_bitwise_output_dtype(primitive, t.dtype);
             let elements: Result<Vec<_>, _> = t
                 .elements
                 .iter()
-                .map(|e| match e {
-                    fj_core::Literal::I64(v) => Ok(fj_core::Literal::I64(op(*v))),
-                    _ => Err(EvalError::TypeMismatch {
+                .map(|e| {
+                    apply_bitwise_unary_literal(primitive, *e).ok_or(EvalError::TypeMismatch {
                         primitive,
                         detail: "bitwise ops require integer types",
-                    }),
+                    })
                 })
                 .collect();
             Ok(Value::Tensor(
-                TensorValue::new(fj_core::DType::I64, t.shape.clone(), elements?)
+                TensorValue::new(out_dtype, t.shape.clone(), elements?)
                     .map_err(EvalError::InvalidTensor)?,
             ))
         }
-        _ => Err(EvalError::TypeMismatch {
-            primitive,
-            detail: "bitwise ops require integer types",
-        }),
     }
 }
 
@@ -4562,6 +4709,21 @@ mod tests {
     }
 
     #[test]
+    fn bitwise_and_u32_scalars() {
+        let a = Value::scalar_u32(0b1111_0000);
+        let b = Value::scalar_u32(0b1010_1010);
+        let out = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
+        assert_eq!(out, Value::scalar_u32(0b1010_0000));
+    }
+
+    #[test]
+    fn bitwise_not_u64_scalar() {
+        let a = Value::scalar_u64(0);
+        let out = eval_primitive(Primitive::BitwiseNot, &[a], &no_params()).unwrap();
+        assert_eq!(out, Value::scalar_u64(u64::MAX));
+    }
+
+    #[test]
     fn shift_left_scalar() {
         let a = Value::scalar_i64(1);
         let b = Value::scalar_i64(4);
@@ -4599,6 +4761,63 @@ mod tests {
         let b = Value::scalar_i64(2);
         let out = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
         assert_eq!(out.as_i64_scalar().unwrap(), 4_611_686_018_427_387_902);
+    }
+
+    #[test]
+    fn shift_right_logical_u32() {
+        let a = Value::scalar_u32(0b1111_0000);
+        let b = Value::scalar_u32(4);
+        let out = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
+        assert_eq!(out, Value::scalar_u32(0b0000_1111));
+    }
+
+    #[test]
+    fn unsigned_division_truncating() {
+        let out = eval_primitive(
+            Primitive::Div,
+            &[Value::scalar_u32(7), Value::scalar_u32(2)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_u32(3));
+    }
+
+    #[test]
+    fn unsigned_comparison_no_sign_extension() {
+        let out = eval_primitive(
+            Primitive::Gt,
+            &[Value::scalar_u64(u64::MAX), Value::scalar_i64(-1)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_bool(true));
+    }
+
+    #[test]
+    fn e2e_unsigned_int_ops() {
+        let add = eval_primitive(
+            Primitive::Add,
+            &[Value::scalar_u32(5), Value::scalar_u32(6)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(add, Value::scalar_u32(11));
+
+        let rem = eval_primitive(
+            Primitive::Rem,
+            &[Value::scalar_u64(17), Value::scalar_u64(5)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(rem, Value::scalar_u64(2));
+
+        let popcnt = eval_primitive(
+            Primitive::PopulationCount,
+            &[Value::scalar_u64(0b1011)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(popcnt, Value::scalar_i64(3));
     }
 
     #[test]
@@ -5137,6 +5356,32 @@ mod prop_tests {
         BTreeMap::new()
     }
 
+    fn axes_params(axes: &str) -> BTreeMap<String, String> {
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), axes.to_owned());
+        params
+    }
+
+    fn assert_complex128_close(value: &Value, expected_re: f64, expected_im: f64, tol: f64) {
+        let (re, im) = match value {
+            Value::Scalar(Literal::Complex128Bits(re, im)) => {
+                (f64::from_bits(*re), f64::from_bits(*im))
+            }
+            Value::Scalar(Literal::Complex64Bits(re, im)) => {
+                (f32::from_bits(*re) as f64, f32::from_bits(*im) as f64)
+            }
+            _ => panic!("expected complex scalar, got {value:?}"),
+        };
+        assert!(
+            (re - expected_re).abs() <= tol,
+            "real mismatch: got {re}, expected {expected_re}"
+        );
+        assert!(
+            (im - expected_im).abs() <= tol,
+            "imag mismatch: got {im}, expected {expected_im}"
+        );
+    }
+
     proptest! {
         #[test]
         fn prop_add_commutative(a in -1000i64..1000, b in -1000i64..1000) {
@@ -5293,6 +5538,355 @@ mod prop_tests {
                 &no_params(),
             ).unwrap();
             prop_assert_eq!(result, Value::scalar_i64(a));
+        }
+    }
+
+    #[test]
+    fn test_complex_constructor() {
+        let out = eval_primitive(
+            Primitive::Complex,
+            &[Value::scalar_f64(1.0), Value::scalar_f64(2.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(1.0, 2.0));
+    }
+
+    #[test]
+    fn test_complex_add() {
+        let out = eval_primitive(
+            Primitive::Add,
+            &[
+                Value::scalar_complex128(1.0, 2.0),
+                Value::scalar_complex128(3.0, 4.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(4.0, 6.0));
+    }
+
+    #[test]
+    fn test_complex_mul() {
+        let out = eval_primitive(
+            Primitive::Mul,
+            &[
+                Value::scalar_complex128(1.0, 2.0),
+                Value::scalar_complex128(3.0, 4.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(-5.0, 10.0));
+    }
+
+    #[test]
+    fn test_complex_div() {
+        let out = eval_primitive(
+            Primitive::Div,
+            &[
+                Value::scalar_complex128(1.0, 2.0),
+                Value::scalar_complex128(3.0, 4.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.44, 0.08, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_neg() {
+        let out = eval_primitive(
+            Primitive::Neg,
+            &[Value::scalar_complex128(1.0, 2.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(-1.0, -2.0));
+    }
+
+    #[test]
+    fn test_complex_abs() {
+        let out = eval_primitive(
+            Primitive::Abs,
+            &[Value::scalar_complex128(3.0, 4.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(5.0));
+    }
+
+    #[test]
+    fn test_complex_exp() {
+        let out = eval_primitive(
+            Primitive::Exp,
+            &[Value::scalar_complex128(0.0, std::f64::consts::PI)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, -1.0, 0.0, 1e-10);
+    }
+
+    #[test]
+    fn test_complex_log() {
+        let exp_out = eval_primitive(
+            Primitive::Exp,
+            &[Value::scalar_complex128(2.0, 0.0)],
+            &no_params(),
+        )
+        .unwrap();
+        let out = eval_primitive(Primitive::Log, &[exp_out], &no_params()).unwrap();
+        assert_complex128_close(&out, 2.0, 0.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_sin() {
+        let out = eval_primitive(
+            Primitive::Sin,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 1.0_f64.sinh(), 1e-12);
+    }
+
+    #[test]
+    fn test_complex_cos() {
+        let out = eval_primitive(
+            Primitive::Cos,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 1.0_f64.cosh(), 0.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_conj_through_arithmetic() {
+        let a = Value::scalar_complex128(1.0, 2.0);
+        let b = Value::scalar_complex128(3.0, -0.5);
+        let a_plus_b =
+            eval_primitive(Primitive::Add, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let lhs = eval_primitive(Primitive::Conj, &[a_plus_b], &no_params()).unwrap();
+
+        let conj_a = eval_primitive(Primitive::Conj, &[a], &no_params()).unwrap();
+        let conj_b = eval_primitive(Primitive::Conj, &[b], &no_params()).unwrap();
+        let rhs = eval_primitive(Primitive::Add, &[conj_a, conj_b], &no_params()).unwrap();
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn test_complex_batch_operations() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape::vector(2),
+                vec![
+                    Literal::from_complex128(1.0, 2.0),
+                    Literal::from_complex128(-1.0, 0.5),
+                ],
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape::vector(2),
+                vec![
+                    Literal::from_complex128(3.0, -4.0),
+                    Literal::from_complex128(2.0, 1.5),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let add =
+            eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &no_params()).unwrap();
+        let add_tensor = add.as_tensor().unwrap();
+        assert_eq!(add_tensor.elements[0].as_complex128(), Some((4.0, -2.0)));
+        assert_eq!(add_tensor.elements[1].as_complex128(), Some((1.0, 2.0)));
+
+        let mul = eval_primitive(Primitive::Mul, &[lhs, rhs], &no_params()).unwrap();
+        let mul_tensor = mul.as_tensor().unwrap();
+        assert_eq!(mul_tensor.elements[0].as_complex128(), Some((11.0, 2.0)));
+        assert_eq!(mul_tensor.elements[1].as_complex128(), Some((-2.75, -0.5)));
+    }
+
+    #[test]
+    fn test_conj_basic() {
+        let out = eval_primitive(
+            Primitive::Conj,
+            &[Value::scalar_complex128(3.0, 4.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(3.0, -4.0));
+    }
+
+    #[test]
+    fn test_conj_real() {
+        let out = eval_primitive(
+            Primitive::Conj,
+            &[Value::scalar_complex128(5.0, 0.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(5.0, -0.0));
+    }
+
+    #[test]
+    fn test_real_extraction() {
+        let out = eval_primitive(
+            Primitive::Real,
+            &[Value::scalar_complex128(3.0, 4.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(3.0));
+    }
+
+    #[test]
+    fn test_imag_extraction() {
+        let out = eval_primitive(
+            Primitive::Imag,
+            &[Value::scalar_complex128(3.0, 4.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(4.0));
+    }
+
+    #[test]
+    fn test_complex_tensor() {
+        let real = Value::vector_f64(&[1.0, -2.0, 3.5]).unwrap();
+        let imag = Value::vector_f64(&[0.5, 4.0, -1.5]).unwrap();
+
+        let z = eval_primitive(
+            Primitive::Complex,
+            &[real.clone(), imag.clone()],
+            &no_params(),
+        )
+        .expect("complex should construct tensor");
+        let z_tensor = z.as_tensor().expect("complex should return tensor");
+        assert_eq!(z_tensor.dtype, DType::Complex128);
+        assert_eq!(z_tensor.shape, Shape::vector(3));
+        assert_eq!(z_tensor.elements[0].as_complex128(), Some((1.0, 0.5)));
+        assert_eq!(z_tensor.elements[1].as_complex128(), Some((-2.0, 4.0)));
+        assert_eq!(z_tensor.elements[2].as_complex128(), Some((3.5, -1.5)));
+
+        let conj = eval_primitive(Primitive::Conj, std::slice::from_ref(&z), &no_params())
+            .expect("conj should work on complex tensor");
+        let conj_tensor = conj.as_tensor().expect("conj should return tensor");
+        assert_eq!(conj_tensor.dtype, DType::Complex128);
+        assert_eq!(conj_tensor.elements[0].as_complex128(), Some((1.0, -0.5)));
+        assert_eq!(conj_tensor.elements[1].as_complex128(), Some((-2.0, -4.0)));
+        assert_eq!(conj_tensor.elements[2].as_complex128(), Some((3.5, 1.5)));
+
+        let real_out = eval_primitive(Primitive::Real, std::slice::from_ref(&z), &no_params())
+            .expect("real extraction should work");
+        let imag_out = eval_primitive(Primitive::Imag, &[z], &no_params())
+            .expect("imag extraction should work");
+        assert_eq!(real_out, real);
+        assert_eq!(imag_out, imag);
+    }
+
+    #[test]
+    fn test_conj_involution() {
+        let z = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape::vector(3),
+                vec![
+                    Literal::from_complex128(1.0, 2.0),
+                    Literal::from_complex128(-3.5, -0.25),
+                    Literal::from_complex128(0.0, 4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let conj_once =
+            eval_primitive(Primitive::Conj, std::slice::from_ref(&z), &no_params()).unwrap();
+        let conj_twice = eval_primitive(Primitive::Conj, &[conj_once], &no_params()).unwrap();
+        assert_eq!(conj_twice, z);
+    }
+
+    #[test]
+    fn test_reduce_sum_complex_full() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape::vector(3),
+                vec![
+                    Literal::from_complex128(1.0, 2.0),
+                    Literal::from_complex128(3.0, -4.0),
+                    Literal::from_complex128(-2.0, 0.5),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(Primitive::ReduceSum, &[input], &no_params()).unwrap();
+        assert_eq!(out, Value::scalar_complex128(2.0, -1.5));
+    }
+
+    #[test]
+    fn test_reduce_sum_complex_axis0_rank2() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_complex128(1.0, 1.0),
+                    Literal::from_complex128(2.0, 2.0),
+                    Literal::from_complex128(3.0, -1.0),
+                    Literal::from_complex128(-4.0, 0.5),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(Primitive::ReduceSum, &[input], &axes_params("0")).unwrap();
+        let out_tensor = out.as_tensor().unwrap();
+        assert_eq!(out_tensor.dtype, DType::Complex128);
+        assert_eq!(out_tensor.shape, Shape::vector(2));
+        assert_eq!(out_tensor.elements[0].as_complex128(), Some((4.0, 0.0)));
+        assert_eq!(out_tensor.elements[1].as_complex128(), Some((-2.0, 2.5)));
+    }
+
+    #[test]
+    fn test_complex_comparison_errors() {
+        let err = eval_primitive(
+            Primitive::Lt,
+            &[
+                Value::scalar_complex128(1.0, 1.0),
+                Value::scalar_complex128(1.0, -1.0),
+            ],
+            &no_params(),
+        )
+        .expect_err("complex comparison should fail");
+        assert!(matches!(
+            err,
+            EvalError::TypeMismatch {
+                primitive: Primitive::Lt,
+                ..
+            }
+        ));
+    }
+
+    proptest! {
+        #[test]
+        fn prop_conj_involution(re in -1.0e6f64..1.0e6f64, im in -1.0e6f64..1.0e6f64) {
+            let z = Value::scalar_complex128(re, im);
+            let conj_once = eval_primitive(Primitive::Conj, std::slice::from_ref(&z), &no_params()).unwrap();
+            let conj_twice = eval_primitive(Primitive::Conj, &[conj_once], &no_params()).unwrap();
+            prop_assert_eq!(conj_twice, z);
+        }
+
+        #[test]
+        fn prop_real_imag_reconstruct(re in -1.0e6f64..1.0e6f64, im in -1.0e6f64..1.0e6f64) {
+            let z = Value::scalar_complex128(re, im);
+            let re_part = eval_primitive(Primitive::Real, std::slice::from_ref(&z), &no_params()).unwrap();
+            let im_part = eval_primitive(Primitive::Imag, &[z], &no_params()).unwrap();
+            let rebuilt = eval_primitive(Primitive::Complex, &[re_part, im_part], &no_params()).unwrap();
+            prop_assert_eq!(rebuilt, Value::scalar_complex128(re, im));
         }
     }
 

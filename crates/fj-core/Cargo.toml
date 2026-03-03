@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
 smallvec = { workspace = true }
+half = { workspace = true }
 
 [dev-dependencies]
 fj-test-utils = { path = "../fj-test-utils" }

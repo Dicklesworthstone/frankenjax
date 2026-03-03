@@ -575,6 +575,7 @@ name = "fj-api"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "fj-ad",
  "fj-core",
  "fj-dispatch",
  "fj-interpreters",
@@ -638,6 +639,7 @@ name = "fj-core"
 version = "0.1.0"
 dependencies = [
  "fj-test-utils",
+ "half",
  "proptest",
  "serde",
  "serde_json",

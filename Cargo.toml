@@ -28,3 +28,4 @@ smallvec = { version = "1.15", features = ["serde"] }
 rustc-hash = "2.1.1"
 proptest = "1.9"
 egg = "0.11"
+half = "2.7"

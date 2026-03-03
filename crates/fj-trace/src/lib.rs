@@ -56,6 +56,8 @@ impl ShapedArray {
             Value::Scalar(lit) => {
                 let dtype = match lit {
                     fj_core::Literal::I64(_) => DType::I64,
+                    fj_core::Literal::U32(_) => DType::U32,
+                    fj_core::Literal::U64(_) => DType::U64,
                     fj_core::Literal::Bool(_) => DType::Bool,
                     fj_core::Literal::F64Bits(_) => DType::F64,
                     fj_core::Literal::Complex64Bits(..) => DType::Complex64,
@@ -399,6 +401,40 @@ impl SimpleTraceContext {
                 let dtype = promote_dtype(inputs[0].dtype, inputs[1].dtype);
                 Ok(vec![ShapedArray { dtype, shape }])
             }
+            Primitive::Complex => {
+                if inputs.len() != 2 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 2 inputs, got {}", inputs.len()),
+                    });
+                }
+                if matches!(
+                    inputs[0].dtype,
+                    DType::Bool | DType::Complex64 | DType::Complex128
+                ) || matches!(
+                    inputs[1].dtype,
+                    DType::Bool | DType::Complex64 | DType::Complex128
+                ) {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "complex expects real-valued numeric inputs".to_owned(),
+                    });
+                }
+                let shape = broadcast_shape(&inputs[0].shape, &inputs[1].shape).ok_or(
+                    TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "cannot broadcast {:?} with {:?}",
+                            inputs[0].shape.dims, inputs[1].shape.dims
+                        ),
+                    },
+                )?;
+                let dtype = match (inputs[0].dtype, inputs[1].dtype) {
+                    (DType::F32, DType::F32) => DType::Complex64,
+                    _ => DType::Complex128,
+                };
+                Ok(vec![ShapedArray { dtype, shape }])
+            }
             // Comparison: output shape = broadcast(lhs, rhs), dtype = Bool
             Primitive::Eq
             | Primitive::Ne
@@ -463,6 +499,43 @@ impl SimpleTraceContext {
                     });
                 }
                 Ok(vec![inputs[0].clone()])
+            }
+            Primitive::Conj => {
+                if inputs.len() != 1 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 1 input, got {}", inputs.len()),
+                    });
+                }
+                if !matches!(inputs[0].dtype, DType::Complex64 | DType::Complex128) {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "conj expects complex-valued input".to_owned(),
+                    });
+                }
+                Ok(vec![inputs[0].clone()])
+            }
+            Primitive::Real | Primitive::Imag => {
+                if inputs.len() != 1 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 1 input, got {}", inputs.len()),
+                    });
+                }
+                let dtype = match inputs[0].dtype {
+                    DType::Complex64 => DType::F32,
+                    DType::Complex128 => DType::F64,
+                    _ => {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "real/imag expect complex-valued input".to_owned(),
+                        });
+                    }
+                };
+                Ok(vec![ShapedArray {
+                    dtype,
+                    shape: inputs[0].shape.clone(),
+                }])
             }
             // IsFinite: same shape, output dtype is Bool
             Primitive::IsFinite => {
@@ -669,6 +742,8 @@ impl SimpleTraceContext {
                 let dtype_str = params.get("dtype").map(String::as_str).unwrap_or("I64");
                 let dtype = match dtype_str {
                     "F64" | "f64" => DType::F64,
+                    "U32" | "u32" => DType::U32,
+                    "U64" | "u64" => DType::U64,
                     _ => DType::I64,
                 };
                 Ok(vec![ShapedArray {
@@ -695,6 +770,8 @@ impl SimpleTraceContext {
                 let dtype = match dtype_str {
                     "I64" | "i64" => DType::I64,
                     "I32" | "i32" => DType::I32,
+                    "U32" | "u32" => DType::U32,
+                    "U64" | "u64" => DType::U64,
                     _ => DType::F64,
                 };
                 let mut out_dims = inputs[0].shape.dims.clone();
@@ -1782,15 +1859,21 @@ fn broadcast_shape(lhs: &Shape, rhs: &Shape) -> Option<Shape> {
 }
 
 fn promote_dtype(lhs: DType, rhs: DType) -> DType {
-    use DType::{Bool, Complex64, Complex128, F32, F64, I32, I64};
+    use DType::{Bool, Complex64, Complex128, F32, F64, I32, I64, U32, U64};
 
     match (lhs, rhs) {
         (Complex128, _) | (_, Complex128) => Complex128,
         (Complex64, _) | (_, Complex64) => Complex64,
+        (U64, I64) | (I64, U64) => F64,
+        (U32, F32) | (F32, U32) => F64,
         (F64, _) | (_, F64) => F64,
         (F32, _) | (_, F32) => F32,
+        (I32, U32) | (U32, I32) => I64,
+        (I64, U32) | (U32, I64) => I64,
         (I64, _) | (_, I64) => I64,
         (I32, _) | (_, I32) => I32,
+        (U64, _) | (_, U64) => U64,
+        (U32, _) | (_, U32) => U32,
         (Bool, Bool) => Bool,
     }
 }
@@ -3010,6 +3093,107 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.shape, Shape { dims: vec![4, 5] });
                 assert_eq!(aval.dtype, DType::F64);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_complex_shape_and_dtype() {
+        run_logged_test(
+            "test_infer_complex_shape_and_dtype",
+            fj_test_utils::fixture_id_from_json(&("complex-shape", [3_u32, 2_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![3, 2] },
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![3, 2] },
+                    },
+                ]);
+                let out = ctx
+                    .process_primitive(
+                        Primitive::Complex,
+                        &[TracerId(1), TracerId(2)],
+                        BTreeMap::new(),
+                    )
+                    .expect("complex inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::Complex128);
+                assert_eq!(aval.shape, Shape { dims: vec![3, 2] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_conj_shape_and_dtype() {
+        run_logged_test(
+            "test_infer_conj_shape_and_dtype",
+            fj_test_utils::fixture_id_from_json(&("conj-shape", [5_u32])).expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::Complex128,
+                    shape: Shape::vector(5),
+                }]);
+                let out = ctx
+                    .process_primitive(Primitive::Conj, &[TracerId(1)], BTreeMap::new())
+                    .expect("conj inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::Complex128);
+                assert_eq!(aval.shape, Shape::vector(5));
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_real_shape_and_dtype() {
+        run_logged_test(
+            "test_infer_real_shape_and_dtype",
+            fj_test_utils::fixture_id_from_json(&("real-shape", [2_u32, 4_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::Complex128,
+                    shape: Shape { dims: vec![2, 4] },
+                }]);
+                let out = ctx
+                    .process_primitive(Primitive::Real, &[TracerId(1)], BTreeMap::new())
+                    .expect("real inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::F64);
+                assert_eq!(aval.shape, Shape { dims: vec![2, 4] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_imag_shape_and_dtype() {
+        run_logged_test(
+            "test_infer_imag_shape_and_dtype",
+            fj_test_utils::fixture_id_from_json(&("imag-shape", [2_u32, 4_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::Complex128,
+                    shape: Shape { dims: vec![2, 4] },
+                }]);
+                let out = ctx
+                    .process_primitive(Primitive::Imag, &[TracerId(1)], BTreeMap::new())
+                    .expect("imag inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::F64);
+                assert_eq!(aval.shape, Shape { dims: vec![2, 4] });
                 Ok(Vec::new())
             },
         );

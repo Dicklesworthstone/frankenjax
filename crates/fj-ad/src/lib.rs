@@ -3,6 +3,7 @@
 use fj_core::{Atom, DType, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
+use std::sync::{Arc, OnceLock, RwLock};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AdError {
@@ -30,6 +31,90 @@ impl std::fmt::Display for AdError {
 }
 
 impl std::error::Error for AdError {}
+
+type CustomVjpRule = Arc<
+    dyn Fn(&[Value], &Value, &BTreeMap<String, String>) -> Result<Vec<Value>, AdError>
+        + Send
+        + Sync,
+>;
+
+type CustomJvpRule = Arc<
+    dyn Fn(&[Value], &[Value], &BTreeMap<String, String>) -> Result<Value, AdError> + Send + Sync,
+>;
+
+#[derive(Default)]
+struct CustomDerivativeRegistry {
+    vjp_rules: BTreeMap<Primitive, CustomVjpRule>,
+    jvp_rules: BTreeMap<Primitive, CustomJvpRule>,
+}
+
+static CUSTOM_DERIVATIVE_REGISTRY: OnceLock<RwLock<CustomDerivativeRegistry>> = OnceLock::new();
+
+fn custom_derivative_registry() -> &'static RwLock<CustomDerivativeRegistry> {
+    CUSTOM_DERIVATIVE_REGISTRY.get_or_init(|| RwLock::new(CustomDerivativeRegistry::default()))
+}
+
+fn with_registry_read<R>(f: impl FnOnce(&CustomDerivativeRegistry) -> R) -> R {
+    let lock = custom_derivative_registry();
+    match lock.read() {
+        Ok(guard) => f(&guard),
+        Err(poisoned) => f(&poisoned.into_inner()),
+    }
+}
+
+fn with_registry_write<R>(f: impl FnOnce(&mut CustomDerivativeRegistry) -> R) -> R {
+    let lock = custom_derivative_registry();
+    match lock.write() {
+        Ok(mut guard) => f(&mut guard),
+        Err(poisoned) => f(&mut poisoned.into_inner()),
+    }
+}
+
+/// Register a custom VJP rule for a primitive.
+///
+/// Registered rules override built-in VJP rules for the same primitive.
+pub fn register_custom_vjp<F>(primitive: Primitive, rule: F)
+where
+    F: Fn(&[Value], &Value, &BTreeMap<String, String>) -> Result<Vec<Value>, AdError>
+        + Send
+        + Sync
+        + 'static,
+{
+    with_registry_write(|registry| {
+        registry.vjp_rules.insert(primitive, Arc::new(rule));
+    });
+}
+
+/// Register a custom JVP rule for a primitive.
+///
+/// Registered rules override built-in JVP rules for the same primitive.
+pub fn register_custom_jvp<F>(primitive: Primitive, rule: F)
+where
+    F: Fn(&[Value], &[Value], &BTreeMap<String, String>) -> Result<Value, AdError>
+        + Send
+        + Sync
+        + 'static,
+{
+    with_registry_write(|registry| {
+        registry.jvp_rules.insert(primitive, Arc::new(rule));
+    });
+}
+
+/// Remove all custom derivative rules.
+pub fn clear_custom_derivative_rules() {
+    with_registry_write(|registry| {
+        registry.vjp_rules.clear();
+        registry.jvp_rules.clear();
+    });
+}
+
+fn lookup_custom_vjp(primitive: Primitive) -> Option<CustomVjpRule> {
+    with_registry_read(|registry| registry.vjp_rules.get(&primitive).cloned())
+}
+
+fn lookup_custom_jvp(primitive: Primitive) -> Option<CustomJvpRule> {
+    with_registry_read(|registry| registry.jvp_rules.get(&primitive).cloned())
+}
 
 #[derive(Debug, Clone)]
 struct TapeEntry {
@@ -121,6 +206,7 @@ fn zeros_like(v: &Value) -> Value {
     match v {
         Value::Scalar(lit) => match lit {
             Literal::I64(_) => Value::scalar_i64(0),
+            Literal::U32(_) | Literal::U64(_) => Value::scalar_f64(0.0),
             Literal::Bool(_) => Value::scalar_f64(0.0),
             Literal::F64Bits(_) => Value::scalar_f64(0.0),
             Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Value::scalar_f64(0.0),
@@ -128,6 +214,7 @@ fn zeros_like(v: &Value) -> Value {
         Value::Tensor(t) => {
             let (zero_lit, out_dtype) = match t.dtype {
                 DType::I64 | DType::I32 => (Literal::I64(0), DType::I64),
+                DType::U32 | DType::U64 => (Literal::from_f64(0.0), DType::F64),
                 DType::Bool => (Literal::from_f64(0.0), DType::F64),
                 DType::F64 | DType::F32 => (Literal::from_f64(0.0), DType::F64),
                 DType::Complex64 | DType::Complex128 => (Literal::from_f64(0.0), DType::F64),
@@ -145,6 +232,7 @@ fn ones_like(v: &Value) -> Value {
     match v {
         Value::Scalar(lit) => match lit {
             Literal::I64(_) => Value::scalar_f64(1.0),
+            Literal::U32(_) | Literal::U64(_) => Value::scalar_f64(1.0),
             Literal::Bool(_) => Value::scalar_f64(1.0),
             Literal::F64Bits(_) => Value::scalar_f64(1.0),
             Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Value::scalar_f64(1.0),
@@ -187,6 +275,8 @@ fn is_zero_value(v: &Value) -> bool {
     match v {
         Value::Scalar(Literal::F64Bits(bits)) => f64::from_bits(*bits) == 0.0,
         Value::Scalar(Literal::I64(val)) => *val == 0,
+        Value::Scalar(Literal::U32(val)) => *val == 0,
+        Value::Scalar(Literal::U64(val)) => *val == 0,
         Value::Scalar(Literal::Bool(val)) => !val,
         Value::Scalar(Literal::Complex64Bits(re, im)) => {
             f32::from_bits(*re) == 0.0 && f32::from_bits(*im) == 0.0
@@ -197,6 +287,8 @@ fn is_zero_value(v: &Value) -> bool {
         Value::Tensor(t) => t.elements.iter().all(|e| match e {
             Literal::F64Bits(bits) => f64::from_bits(*bits) == 0.0,
             Literal::I64(v) => *v == 0,
+            Literal::U32(v) => *v == 0,
+            Literal::U64(v) => *v == 0,
             Literal::Bool(v) => !v,
             Literal::Complex64Bits(re, im) => {
                 f32::from_bits(*re) == 0.0 && f32::from_bits(*im) == 0.0
@@ -269,6 +361,10 @@ fn vjp(
     g: &Value,
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
+    if let Some(custom_rule) = lookup_custom_vjp(primitive) {
+        return custom_rule(inputs, g, params);
+    }
+
     match primitive {
         Primitive::Add => Ok(vec![g.clone(), g.clone()]),
         Primitive::Sub => Ok(vec![g.clone(), value_neg(g)?]),
@@ -533,6 +629,31 @@ fn vjp(
             let da = value_mul(g, &value_div(b, &denom)?)?;
             let db = value_neg(&value_mul(g, &value_div(a, &denom)?)?)?;
             Ok(vec![da, db])
+        }
+        Primitive::Complex => {
+            let g_real = eval_primitive(Primitive::Real, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let g_imag = eval_primitive(Primitive::Imag, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![g_real, g_imag])
+        }
+        Primitive::Conj => Ok(vec![
+            eval_primitive(Primitive::Conj, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+        ]),
+        Primitive::Real => {
+            let zero = zeros_like(g);
+            Ok(vec![
+                eval_primitive(Primitive::Complex, &[g.clone(), zero], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ])
+        }
+        Primitive::Imag => {
+            let zero = zeros_like(g);
+            Ok(vec![
+                eval_primitive(Primitive::Complex, &[zero, g.clone()], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ])
         }
         Primitive::Select => {
             // select(cond, on_true, on_false): grad to on_true where cond, else to on_false
@@ -1853,6 +1974,8 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
             Value::Scalar(lit) => {
                 let raw = match lit {
                     Literal::I64(v) => *v,
+                    Literal::U32(v) => i64::from(*v),
+                    Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
                     Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => i64::from(*b),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => 0,
@@ -2686,6 +2809,10 @@ fn jvp_rule(
     tangents: &[Value],
     params: &BTreeMap<String, String>,
 ) -> Result<Value, AdError> {
+    if let Some(custom_rule) = lookup_custom_jvp(primitive) {
+        return custom_rule(primals, tangents, params);
+    }
+
     let no_params = BTreeMap::new();
     let ep = |prim, inputs: &[Value]| -> Result<Value, AdError> {
         eval_primitive(prim, inputs, &no_params).map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -2917,6 +3044,13 @@ fn jvp_rule(
             let numer = ep(Primitive::Sub, &[b_da, a_db])?;
             ep(Primitive::Div, &[numer, denom])
         }
+        Primitive::Complex => ep(
+            Primitive::Complex,
+            &[tangents[0].clone(), tangents[1].clone()],
+        ),
+        Primitive::Conj => ep(Primitive::Conj, &[tangents[0].clone()]),
+        Primitive::Real => ep(Primitive::Real, &[tangents[0].clone()]),
+        Primitive::Imag => ep(Primitive::Imag, &[tangents[0].clone()]),
 
         // ── Comparison-like ops: max/min select tangent from winner ──
         Primitive::Max => {
@@ -3175,6 +3309,8 @@ pub fn grad_first(jaxpr: &Jaxpr, args: &[Value]) -> Result<f64, AdError> {
 mod tests {
     use super::*;
     use fj_core::{Equation, ProgramSpec, build_program};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn grad_x_squared_at_3() {
@@ -3452,6 +3588,68 @@ mod tests {
                 effects: vec![],
             }],
         )
+    }
+
+    #[test]
+    fn custom_vjp_rule_overrides_builtin_rule() {
+        clear_custom_derivative_rules();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+        register_custom_vjp(Primitive::CountLeadingZeros, move |_inputs, _g, _params| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Value::scalar_f64(42.0)])
+        });
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let grads = grad_jaxpr(&jaxpr, &[Value::scalar_i64(8)]).expect("grad should succeed");
+        let grad = grads[0]
+            .as_f64_scalar()
+            .expect("custom cotangent should be scalar f64");
+        assert!(
+            (grad - 42.0).abs() < 1e-10,
+            "custom VJP should override builtin, got {grad}"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "custom VJP rule should be invoked once"
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn custom_jvp_rule_overrides_builtin_rule() {
+        clear_custom_derivative_rules();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+        register_custom_jvp(
+            Primitive::CountLeadingZeros,
+            move |_primals, _tangents, _params| {
+                call_count_clone.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::scalar_f64(123.0))
+            },
+        );
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let result = jvp(&jaxpr, &[Value::scalar_i64(8)], &[Value::scalar_f64(1.0)])
+            .expect("jvp should succeed");
+        let tangent = result.tangents[0]
+            .as_f64_scalar()
+            .expect("custom tangent should be scalar f64");
+        assert!(
+            (tangent - 123.0).abs() < 1e-10,
+            "custom JVP should override builtin, got {tangent}"
+        );
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            1,
+            "custom JVP rule should be invoked once"
+        );
+
+        clear_custom_derivative_rules();
     }
 
     // ── Tensor VJP tests ─────────────────────────────────────────

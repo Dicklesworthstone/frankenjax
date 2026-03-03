@@ -353,6 +353,9 @@ pub fn apply_batch_rule(
         | Primitive::Logistic
         | Primitive::Erf
         | Primitive::Erfc
+        | Primitive::Conj
+        | Primitive::Real
+        | Primitive::Imag
         | Primitive::Cbrt
         | Primitive::IsFinite
         | Primitive::IntegerPow => batch_unary_elementwise(primitive, inputs, params),
@@ -367,6 +370,7 @@ pub fn apply_batch_rule(
         | Primitive::Div
         | Primitive::Rem
         | Primitive::Atan2
+        | Primitive::Complex
         | Primitive::Nextafter => batch_binary_elementwise(primitive, inputs, params),
 
         // ── Comparison ─────────────────────────────────────────

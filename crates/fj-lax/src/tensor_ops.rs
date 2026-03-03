@@ -91,6 +91,8 @@ pub(crate) fn eval_reshape(
             Ok(Value::Tensor(TensorValue::new(
                 match lit {
                     Literal::I64(_) => DType::I64,
+                    Literal::U32(_) => DType::U32,
+                    Literal::U64(_) => DType::U64,
                     Literal::F64Bits(_) => DType::F64,
                     Literal::Bool(_) => DType::Bool,
                     Literal::Complex64Bits(..) => DType::Complex64,
@@ -290,6 +292,8 @@ pub(crate) fn eval_broadcast_in_dim(
             let elements = vec![*lit; total as usize];
             let dtype = match lit {
                 Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -1024,6 +1028,11 @@ fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError>
                 })
             }
         }
+        Literal::U32(n) => Ok(*n as usize),
+        Literal::U64(n) => usize::try_from(*n).map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("index {n} exceeds usize range"),
+        }),
         Literal::Bool(b) => Ok(if *b { 1 } else { 0 }),
         Literal::F64Bits(_) => Err(EvalError::Unsupported {
             primitive,
@@ -1094,6 +1103,8 @@ pub(crate) fn eval_dynamic_slice(
             Value::Scalar(lit) => {
                 let raw = match lit {
                     Literal::I64(v) => *v,
+                    Literal::U32(v) => i64::from(*v),
+                    Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
                     Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => {
                         if *b {
@@ -1237,6 +1248,8 @@ pub(crate) fn eval_dynamic_update_slice(
             Value::Scalar(lit) => {
                 let raw = match lit {
                     Literal::I64(v) => *v,
+                    Literal::U32(v) => i64::from(*v),
+                    Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
                     Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => i64::from(*b),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
@@ -2249,6 +2262,8 @@ pub(crate) fn eval_expand_dims(
                 TensorValue::new(
                     match lit {
                         Literal::I64(_) => DType::I64,
+                        Literal::U32(_) => DType::U32,
+                        Literal::U64(_) => DType::U64,
                         Literal::Bool(_) => DType::Bool,
                         Literal::F64Bits(_) => DType::F64,
                         Literal::Complex64Bits(..) => DType::Complex64,

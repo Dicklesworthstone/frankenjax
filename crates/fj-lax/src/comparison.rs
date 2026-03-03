@@ -10,7 +10,7 @@ use crate::type_promotion::compare_literals;
 pub(crate) fn eval_comparison(
     primitive: Primitive,
     inputs: &[Value],
-    int_cmp: impl Fn(i64, i64) -> bool,
+    int_cmp: impl Fn(i128, i128) -> bool,
     float_cmp: impl Fn(f64, f64) -> bool,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 2 {

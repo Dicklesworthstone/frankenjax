@@ -6,7 +6,11 @@ use std::collections::BTreeMap;
 pub fn arb_literal() -> impl Strategy<Value = Literal> {
     prop_oneof![
         any::<i64>().prop_map(Literal::I64),
+        any::<u32>().prop_map(Literal::U32),
+        any::<u64>().prop_map(Literal::U64),
         any::<bool>().prop_map(Literal::Bool),
+        any::<u16>().prop_map(Literal::BF16Bits),
+        any::<u16>().prop_map(Literal::F16Bits),
         prop::num::f64::NORMAL.prop_map(Literal::from_f64),
         (prop::num::f32::NORMAL, prop::num::f32::NORMAL)
             .prop_map(|(re, im)| Literal::from_complex64(re, im)),
@@ -29,6 +33,10 @@ pub fn arb_atom() -> impl Strategy<Value = Atom> {
 pub fn arb_value() -> impl Strategy<Value = Value> {
     prop_oneof![
         any::<i64>().prop_map(Value::scalar_i64),
+        any::<u32>().prop_map(Value::scalar_u32),
+        any::<u64>().prop_map(Value::scalar_u64),
+        prop::num::f32::NORMAL.prop_map(Value::scalar_bf16),
+        prop::num::f32::NORMAL.prop_map(Value::scalar_f16),
         prop::num::f64::NORMAL.prop_map(Value::scalar_f64),
         any::<bool>().prop_map(Value::scalar_bool),
     ]
@@ -75,6 +83,10 @@ pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
         Just(Primitive::Div),
         Just(Primitive::Rem),
         Just(Primitive::Atan2),
+        Just(Primitive::Complex),
+        Just(Primitive::Conj),
+        Just(Primitive::Real),
+        Just(Primitive::Imag),
         Just(Primitive::Select),
         Just(Primitive::Dot),
         Just(Primitive::Eq),
@@ -114,6 +126,10 @@ pub fn arb_dtype() -> impl Strategy<Value = DType> {
         Just(DType::F64),
         Just(DType::I32),
         Just(DType::I64),
+        Just(DType::U32),
+        Just(DType::U64),
+        Just(DType::BF16),
+        Just(DType::F16),
         Just(DType::Bool),
         Just(DType::Complex64),
         Just(DType::Complex128),
@@ -210,6 +226,23 @@ mod tests {
             let json = serde_json::to_string(&lit).unwrap();
             let deser: Literal = serde_json::from_str(&json).unwrap();
             prop_assert_eq!(lit, deser);
+        }
+
+        #[test]
+        fn prop_bfloat16_roundtrip_preserves_bits(bits in any::<u16>()) {
+            let lit = Literal::BF16Bits(bits);
+            let roundtrip = match Literal::from_bf16_f32(lit.as_bf16_f32().unwrap()) {
+                Literal::BF16Bits(rt) => rt,
+                _ => unreachable!("from_bf16_f32 must produce BF16Bits"),
+            };
+            prop_assert_eq!(bits, roundtrip);
+        }
+
+        #[test]
+        fn prop_float16_finite_values_convert(value in prop::num::f32::NORMAL) {
+            let lit = Literal::from_f16_f32(value);
+            let roundtrip = lit.as_f16_f32().unwrap();
+            prop_assert!(roundtrip.is_finite());
         }
     }
 

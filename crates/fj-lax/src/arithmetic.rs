@@ -24,6 +24,10 @@ pub(crate) fn eval_binary_elementwise(
         });
     }
 
+    if inputs.iter().any(value_contains_complex) {
+        return eval_binary_elementwise_complex(primitive, inputs);
+    }
+
     match (&inputs[0], &inputs[1]) {
         (Value::Scalar(lhs), Value::Scalar(rhs)) => Ok(Value::Scalar(binary_literal_op(
             *lhs, *rhs, primitive, &int_op, &float_op,
@@ -62,6 +66,8 @@ pub(crate) fn eval_binary_elementwise(
 
             let lhs_dtype = match lhs {
                 Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -84,6 +90,8 @@ pub(crate) fn eval_binary_elementwise(
 
             let rhs_dtype = match rhs {
                 Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -92,6 +100,186 @@ pub(crate) fn eval_binary_elementwise(
             let dtype = promote_dtype(lhs.dtype, rhs_dtype);
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
+                lhs.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+fn value_contains_complex(value: &Value) -> bool {
+    match value {
+        Value::Scalar(literal) => literal.is_complex(),
+        Value::Tensor(tensor) => matches!(tensor.dtype, DType::Complex64 | DType::Complex128),
+    }
+}
+
+fn literal_to_complex_parts(
+    primitive: Primitive,
+    literal: Literal,
+) -> Result<(f64, f64), EvalError> {
+    match literal {
+        Literal::I64(v) => Ok((v as f64, 0.0)),
+        Literal::U32(v) => Ok((v as f64, 0.0)),
+        Literal::U64(v) => Ok((v as f64, 0.0)),
+        Literal::F64Bits(bits) => Ok((f64::from_bits(bits), 0.0)),
+        Literal::Complex64Bits(re, im) => {
+            Ok((f32::from_bits(re) as f64, f32::from_bits(im) as f64))
+        }
+        Literal::Complex128Bits(re, im) => Ok((f64::from_bits(re), f64::from_bits(im))),
+        Literal::Bool(_) => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected numeric value, got bool",
+        }),
+    }
+}
+
+fn complex_literal_from_f64_parts(out_dtype: DType, re: f64, im: f64) -> Literal {
+    match out_dtype {
+        DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+        DType::Complex128 => Literal::from_complex128(re, im),
+        _ => Literal::from_complex128(re, im),
+    }
+}
+
+fn complex_binary_output_dtype(lhs: DType, rhs: DType) -> DType {
+    match promote_dtype(lhs, rhs) {
+        DType::Complex64 => DType::Complex64,
+        DType::Complex128 => DType::Complex128,
+        _ => DType::Complex128,
+    }
+}
+
+fn apply_complex_binary(
+    primitive: Primitive,
+    lhs: (f64, f64),
+    rhs: (f64, f64),
+) -> Result<(f64, f64), EvalError> {
+    let (ar, ai) = lhs;
+    let (br, bi) = rhs;
+    match primitive {
+        Primitive::Add => Ok((ar + br, ai + bi)),
+        Primitive::Sub => Ok((ar - br, ai - bi)),
+        Primitive::Mul => Ok((ar * br - ai * bi, ar * bi + ai * br)),
+        Primitive::Div => {
+            let denom = br * br + bi * bi;
+            Ok(((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom))
+        }
+        _ => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "complex arithmetic not yet implemented",
+        }),
+    }
+}
+
+fn complex_binary_literal_op(
+    primitive: Primitive,
+    lhs: Literal,
+    rhs: Literal,
+    out_dtype: DType,
+) -> Result<Literal, EvalError> {
+    let lhs = literal_to_complex_parts(primitive, lhs)?;
+    let rhs = literal_to_complex_parts(primitive, rhs)?;
+    let (re, im) = apply_complex_binary(primitive, lhs, rhs)?;
+    Ok(complex_literal_from_f64_parts(out_dtype, re, im))
+}
+
+fn eval_binary_elementwise_complex(
+    primitive: Primitive,
+    inputs: &[Value],
+) -> Result<Value, EvalError> {
+    match primitive {
+        Primitive::Add | Primitive::Sub | Primitive::Mul | Primitive::Div => {}
+        _ => {
+            return Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "complex arithmetic not yet implemented",
+            });
+        }
+    }
+
+    match (&inputs[0], &inputs[1]) {
+        (Value::Scalar(lhs), Value::Scalar(rhs)) => {
+            let out_dtype = complex_binary_output_dtype(literal_dtype(*lhs), literal_dtype(*rhs));
+            Ok(Value::Scalar(complex_binary_literal_op(
+                primitive, *lhs, *rhs, out_dtype,
+            )?))
+        }
+        (Value::Tensor(lhs), Value::Tensor(rhs)) => {
+            let out_dtype = complex_binary_output_dtype(lhs.dtype, rhs.dtype);
+            if lhs.shape == rhs.shape {
+                let elements = lhs
+                    .elements
+                    .iter()
+                    .copied()
+                    .zip(rhs.elements.iter().copied())
+                    .map(|(left, right)| {
+                        complex_binary_literal_op(primitive, left, right, out_dtype)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                Ok(Value::Tensor(TensorValue::new(
+                    out_dtype,
+                    lhs.shape.clone(),
+                    elements,
+                )?))
+            } else {
+                let out_shape =
+                    broadcast_shape(&lhs.shape, &rhs.shape).ok_or(EvalError::ShapeMismatch {
+                        primitive,
+                        left: lhs.shape.clone(),
+                        right: rhs.shape.clone(),
+                    })?;
+
+                let out_count = out_shape.element_count().unwrap_or(0) as usize;
+                let out_strides = compute_strides(&out_shape.dims);
+                let lhs_strides = broadcast_strides(&lhs.shape, &out_shape);
+                let rhs_strides = broadcast_strides(&rhs.shape, &out_shape);
+
+                let mut elements = Vec::with_capacity(out_count);
+                for flat_idx in 0..out_count {
+                    let multi = flat_to_multi(flat_idx, &out_strides);
+                    let lhs_idx = broadcast_flat_index(&multi, &lhs_strides);
+                    let rhs_idx = broadcast_flat_index(&multi, &rhs_strides);
+                    elements.push(complex_binary_literal_op(
+                        primitive,
+                        lhs.elements[lhs_idx],
+                        rhs.elements[rhs_idx],
+                        out_dtype,
+                    )?);
+                }
+
+                Ok(Value::Tensor(TensorValue::new(
+                    out_dtype, out_shape, elements,
+                )?))
+            }
+        }
+        (Value::Scalar(lhs), Value::Tensor(rhs)) => {
+            let out_dtype = complex_binary_output_dtype(literal_dtype(*lhs), rhs.dtype);
+            let elements = rhs
+                .elements
+                .iter()
+                .copied()
+                .map(|right| complex_binary_literal_op(primitive, *lhs, right, out_dtype))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                rhs.shape.clone(),
+                elements,
+            )?))
+        }
+        (Value::Tensor(lhs), Value::Scalar(rhs)) => {
+            let out_dtype = complex_binary_output_dtype(lhs.dtype, literal_dtype(*rhs));
+            let elements = lhs
+                .elements
+                .iter()
+                .copied()
+                .map(|left| complex_binary_literal_op(primitive, left, *rhs, out_dtype))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
                 lhs.shape.clone(),
                 elements,
             )?))
@@ -212,6 +400,420 @@ fn broadcast_flat_index(multi: &[usize], strides: &[usize]) -> usize {
     multi.iter().zip(strides.iter()).map(|(&m, &s)| m * s).sum()
 }
 
+fn literal_dtype(literal: Literal) -> DType {
+    match literal {
+        Literal::I64(_) => DType::I64,
+        Literal::U32(_) => DType::U32,
+        Literal::U64(_) => DType::U64,
+        Literal::F64Bits(_) => DType::F64,
+        Literal::Bool(_) => DType::Bool,
+        Literal::Complex64Bits(..) => DType::Complex64,
+        Literal::Complex128Bits(..) => DType::Complex128,
+    }
+}
+
+fn literal_to_real_f64(primitive: Primitive, literal: Literal) -> Result<f64, EvalError> {
+    match literal {
+        Literal::I64(v) => Ok(v as f64),
+        Literal::U32(v) => Ok(v as f64),
+        Literal::U64(v) => Ok(v as f64),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits)),
+        Literal::Bool(_) => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected real numeric value, got bool",
+        }),
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected real numeric value, got complex",
+        }),
+    }
+}
+
+fn complex_output_dtype(lhs: DType, rhs: DType) -> DType {
+    match (lhs, rhs) {
+        (DType::F32, DType::F32) => DType::Complex64,
+        _ => DType::Complex128,
+    }
+}
+
+fn complex_literal_from_parts(
+    primitive: Primitive,
+    real: Literal,
+    imag: Literal,
+    out_dtype: DType,
+) -> Result<Literal, EvalError> {
+    let re = literal_to_real_f64(primitive, real)?;
+    let im = literal_to_real_f64(primitive, imag)?;
+    Ok(match out_dtype {
+        DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+        DType::Complex128 => Literal::from_complex128(re, im),
+        _ => Literal::from_complex128(re, im),
+    })
+}
+
+pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+
+    match (&inputs[0], &inputs[1]) {
+        (Value::Scalar(real), Value::Scalar(imag)) => {
+            let dtype = complex_output_dtype(literal_dtype(*real), literal_dtype(*imag));
+            Ok(Value::Scalar(complex_literal_from_parts(
+                primitive, *real, *imag, dtype,
+            )?))
+        }
+        (Value::Tensor(real), Value::Tensor(imag)) => {
+            let out_dtype = complex_output_dtype(real.dtype, imag.dtype);
+            if real.shape == imag.shape {
+                let elements = real
+                    .elements
+                    .iter()
+                    .copied()
+                    .zip(imag.elements.iter().copied())
+                    .map(|(re, im)| complex_literal_from_parts(primitive, re, im, out_dtype))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Value::Tensor(TensorValue::new(
+                    out_dtype,
+                    real.shape.clone(),
+                    elements,
+                )?))
+            } else {
+                let out_shape =
+                    broadcast_shape(&real.shape, &imag.shape).ok_or(EvalError::ShapeMismatch {
+                        primitive,
+                        left: real.shape.clone(),
+                        right: imag.shape.clone(),
+                    })?;
+                let out_count = out_shape.element_count().unwrap_or(0) as usize;
+                let out_strides = compute_strides(&out_shape.dims);
+                let real_strides = broadcast_strides(&real.shape, &out_shape);
+                let imag_strides = broadcast_strides(&imag.shape, &out_shape);
+
+                let mut elements = Vec::with_capacity(out_count);
+                for flat_idx in 0..out_count {
+                    let multi = flat_to_multi(flat_idx, &out_strides);
+                    let real_idx = broadcast_flat_index(&multi, &real_strides);
+                    let imag_idx = broadcast_flat_index(&multi, &imag_strides);
+                    elements.push(complex_literal_from_parts(
+                        primitive,
+                        real.elements[real_idx],
+                        imag.elements[imag_idx],
+                        out_dtype,
+                    )?);
+                }
+                Ok(Value::Tensor(TensorValue::new(
+                    out_dtype, out_shape, elements,
+                )?))
+            }
+        }
+        (Value::Scalar(real), Value::Tensor(imag)) => {
+            let out_dtype = complex_output_dtype(literal_dtype(*real), imag.dtype);
+            let elements = imag
+                .elements
+                .iter()
+                .copied()
+                .map(|im| complex_literal_from_parts(primitive, *real, im, out_dtype))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                imag.shape.clone(),
+                elements,
+            )?))
+        }
+        (Value::Tensor(real), Value::Scalar(imag)) => {
+            let out_dtype = complex_output_dtype(real.dtype, literal_dtype(*imag));
+            let elements = real
+                .elements
+                .iter()
+                .copied()
+                .map(|re| complex_literal_from_parts(primitive, re, *imag, out_dtype))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                real.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+pub(crate) fn eval_conj(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let conj_literal = |lit: Literal| -> Result<Literal, EvalError> {
+        match lit {
+            Literal::Complex64Bits(re_bits, im_bits) => {
+                let re = f32::from_bits(re_bits);
+                let im = -f32::from_bits(im_bits);
+                Ok(Literal::from_complex64(re, im))
+            }
+            Literal::Complex128Bits(re_bits, im_bits) => {
+                let re = f64::from_bits(re_bits);
+                let im = -f64::from_bits(im_bits);
+                Ok(Literal::from_complex128(re, im))
+            }
+            _ => Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "conj expects complex-valued input",
+            }),
+        }
+    };
+
+    match &inputs[0] {
+        Value::Scalar(lit) => Ok(Value::Scalar(conj_literal(*lit)?)),
+        Value::Tensor(tensor) => {
+            let elements = tensor
+                .elements
+                .iter()
+                .copied()
+                .map(conj_literal)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tensor(TensorValue::new(
+                tensor.dtype,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+fn real_dtype_from_complex(dtype: DType) -> DType {
+    match dtype {
+        DType::Complex64 => DType::F32,
+        DType::Complex128 => DType::F64,
+        _ => DType::F64,
+    }
+}
+
+pub(crate) fn eval_real(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let real_part = |lit: Literal| -> Result<Literal, EvalError> {
+        match lit {
+            Literal::Complex64Bits(re_bits, _) => {
+                Ok(Literal::from_f64(f32::from_bits(re_bits) as f64))
+            }
+            Literal::Complex128Bits(re_bits, _) => Ok(Literal::from_f64(f64::from_bits(re_bits))),
+            _ => Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "real expects complex-valued input",
+            }),
+        }
+    };
+
+    match &inputs[0] {
+        Value::Scalar(lit) => Ok(Value::Scalar(real_part(*lit)?)),
+        Value::Tensor(tensor) => {
+            let out_dtype = real_dtype_from_complex(tensor.dtype);
+            let elements = tensor
+                .elements
+                .iter()
+                .copied()
+                .map(real_part)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+pub(crate) fn eval_imag(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let imag_part = |lit: Literal| -> Result<Literal, EvalError> {
+        match lit {
+            Literal::Complex64Bits(_, im_bits) => {
+                Ok(Literal::from_f64(f32::from_bits(im_bits) as f64))
+            }
+            Literal::Complex128Bits(_, im_bits) => Ok(Literal::from_f64(f64::from_bits(im_bits))),
+            _ => Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "imag expects complex-valued input",
+            }),
+        }
+    };
+
+    match &inputs[0] {
+        Value::Scalar(lit) => Ok(Value::Scalar(imag_part(*lit)?)),
+        Value::Tensor(tensor) => {
+            let out_dtype = real_dtype_from_complex(tensor.dtype);
+            let elements = tensor
+                .elements
+                .iter()
+                .copied()
+                .map(imag_part)
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+fn eval_unary_complex_map(
+    primitive: Primitive,
+    inputs: &[Value],
+    op: impl Fn(f64, f64) -> (f64, f64),
+) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let map_literal = |lit: Literal| -> Result<Literal, EvalError> {
+        let (re, im) = literal_to_complex_parts(primitive, lit)?;
+        let (re, im) = op(re, im);
+        let out_dtype = match lit {
+            Literal::Complex64Bits(..) => DType::Complex64,
+            Literal::Complex128Bits(..) => DType::Complex128,
+            _ => DType::Complex128,
+        };
+        Ok(complex_literal_from_f64_parts(out_dtype, re, im))
+    };
+
+    match &inputs[0] {
+        Value::Scalar(lit) => Ok(Value::Scalar(map_literal(*lit)?)),
+        Value::Tensor(tensor) => {
+            let elements = tensor
+                .elements
+                .iter()
+                .copied()
+                .map(map_literal)
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Value::Tensor(TensorValue::new(
+                tensor.dtype,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+fn eval_unary_complex_to_real(
+    primitive: Primitive,
+    inputs: &[Value],
+    op: impl Fn(f64, f64) -> f64,
+) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let map_literal = |lit: Literal| -> Result<Literal, EvalError> {
+        let (re, im) = literal_to_complex_parts(primitive, lit)?;
+        Ok(Literal::from_f64(op(re, im)))
+    };
+
+    match &inputs[0] {
+        Value::Scalar(lit) => Ok(Value::Scalar(map_literal(*lit)?)),
+        Value::Tensor(tensor) => {
+            let out_dtype = real_dtype_from_complex(tensor.dtype);
+            let elements = tensor
+                .elements
+                .iter()
+                .copied()
+                .map(map_literal)
+                .collect::<Result<Vec<_>, _>>()?;
+
+            Ok(Value::Tensor(TensorValue::new(
+                out_dtype,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+pub(crate) fn eval_neg(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |re, im| (-re, -im))
+    } else {
+        eval_unary_int_or_float(primitive, inputs, |x| -x, |x| -x)
+    }
+}
+
+pub(crate) fn eval_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_to_real(primitive, inputs, f64::hypot)
+    } else {
+        eval_unary_int_or_float(primitive, inputs, i64::abs, f64::abs)
+    }
+}
+
+pub(crate) fn eval_exp(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            let exp_a = a.exp();
+            (exp_a * b.cos(), exp_a * b.sin())
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::exp)
+    }
+}
+
+pub(crate) fn eval_log(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| (a.hypot(b).ln(), b.atan2(a)))
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::ln)
+    }
+}
+
+pub(crate) fn eval_sin(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            (a.sin() * b.cosh(), a.cos() * b.sinh())
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::sin)
+    }
+}
+
+pub(crate) fn eval_cos(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            (a.cos() * b.cosh(), -a.sin() * b.sinh())
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::cos)
+    }
+}
+
 /// Unary elementwise operation that converts to f64 first (exp, log, sqrt, etc.).
 #[inline]
 pub(crate) fn eval_unary_elementwise(
@@ -278,6 +880,10 @@ pub(crate) fn eval_unary_int_or_float(
     match &inputs[0] {
         Value::Scalar(literal) => match *literal {
             Literal::I64(v) => Ok(Value::scalar_i64(int_op(v))),
+            Literal::U32(_) | Literal::U64(_) => Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "unsigned unary arithmetic not yet implemented",
+            }),
             Literal::F64Bits(bits) => Ok(Value::scalar_f64(float_op(f64::from_bits(bits)))),
             Literal::Bool(_) => Err(EvalError::TypeMismatch {
                 primitive,
@@ -297,6 +903,10 @@ pub(crate) fn eval_unary_int_or_float(
                 .copied()
                 .map(|literal| match literal {
                     Literal::I64(v) => Ok(Literal::I64(int_op(v))),
+                    Literal::U32(_) | Literal::U64(_) => Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "unsigned unary arithmetic not yet implemented",
+                    }),
                     Literal::F64Bits(bits) => Ok(Literal::from_f64(float_op(f64::from_bits(bits)))),
                     Literal::Bool(_) => Err(EvalError::TypeMismatch {
                         primitive,
@@ -336,6 +946,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             let c = match cond {
                 Literal::Bool(b) => *b,
                 Literal::I64(v) => *v != 0,
+                Literal::U32(v) => *v != 0,
+                Literal::U64(v) => *v != 0,
                 Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                 Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                     return Err(EvalError::TypeMismatch {
@@ -347,6 +959,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             let val = if c { *on_true } else { *on_false };
             let lhs_dtype = match on_true {
                 Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -354,6 +968,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             };
             let rhs_dtype = match on_false {
                 Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -374,6 +990,23 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         detail: "expected integer scalar for select",
                     })?;
                     Literal::I64(i_val)
+                }
+                DType::U32 => {
+                    let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected unsigned scalar for select",
+                    })?;
+                    Literal::U32(u32::try_from(u_val).map_err(|_| EvalError::TypeMismatch {
+                        primitive,
+                        detail: "u32 overflow in select",
+                    })?)
+                }
+                DType::U64 => {
+                    let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected unsigned scalar for select",
+                    })?;
+                    Literal::U64(u_val)
                 }
                 DType::Bool => val,
                 DType::Complex64 | DType::Complex128 => {
@@ -402,6 +1035,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                     let flag = match c {
                         Literal::Bool(b) => *b,
                         Literal::I64(v) => *v != 0,
+                        Literal::U32(v) => *v != 0,
+                        Literal::U64(v) => *v != 0,
                         Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                             return Err(EvalError::TypeMismatch {
@@ -426,6 +1061,25 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                             })?;
                             Ok(Literal::I64(i_val))
                         }
+                        DType::U32 => {
+                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected unsigned tensor elements for select",
+                            })?;
+                            Ok(Literal::U32(u32::try_from(u_val).map_err(|_| {
+                                EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "u32 overflow in select",
+                                }
+                            })?))
+                        }
+                        DType::U64 => {
+                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected unsigned tensor elements for select",
+                            })?;
+                            Ok(Literal::U64(u_val))
+                        }
                         DType::Bool => Ok(val),
                         DType::Complex64 | DType::Complex128 => Err(EvalError::TypeMismatch {
                             primitive,
@@ -445,6 +1099,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             let dtype = promote_dtype(
                 match on_true {
                     Literal::I64(_) => DType::I64,
+                    Literal::U32(_) => DType::U32,
+                    Literal::U64(_) => DType::U64,
                     Literal::F64Bits(_) => DType::F64,
                     Literal::Bool(_) => DType::Bool,
                     Literal::Complex64Bits(..) => DType::Complex64,
@@ -452,6 +1108,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 },
                 match on_false {
                     Literal::I64(_) => DType::I64,
+                    Literal::U32(_) => DType::U32,
+                    Literal::U64(_) => DType::U64,
                     Literal::F64Bits(_) => DType::F64,
                     Literal::Bool(_) => DType::Bool,
                     Literal::Complex64Bits(..) => DType::Complex64,
@@ -465,6 +1123,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                     let flag = match c {
                         Literal::Bool(b) => *b,
                         Literal::I64(v) => *v != 0,
+                        Literal::U32(v) => *v != 0,
+                        Literal::U64(v) => *v != 0,
                         Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                             return Err(EvalError::TypeMismatch {
@@ -488,6 +1148,25 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                                 detail: "expected integer scalar for select",
                             })?;
                             Ok(Literal::I64(i_val))
+                        }
+                        DType::U32 => {
+                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected unsigned scalar for select",
+                            })?;
+                            Ok(Literal::U32(u32::try_from(u_val).map_err(|_| {
+                                EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "u32 overflow in select",
+                                }
+                            })?))
+                        }
+                        DType::U64 => {
+                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
+                                primitive,
+                                detail: "expected unsigned scalar for select",
+                            })?;
+                            Ok(Literal::U64(u_val))
                         }
                         DType::Bool => Ok(val),
                         DType::Complex64 | DType::Complex128 => Err(EvalError::TypeMismatch {
@@ -515,6 +1194,8 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             let flag = match cond {
                 Literal::Bool(b) => *b,
                 Literal::I64(v) => *v != 0,
+                Literal::U32(v) => *v != 0,
+                Literal::U64(v) => *v != 0,
                 Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                 Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                     return Err(EvalError::TypeMismatch {
@@ -562,6 +1243,8 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 // Mixed types: promote to f64
                 let xf = match x {
                     Literal::I64(v) => v as f64,
+                    Literal::U32(v) => v as f64,
+                    Literal::U64(v) => v as f64,
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
@@ -570,6 +1253,8 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 };
                 let lof = match lo {
                     Literal::I64(v) => v as f64,
+                    Literal::U32(v) => v as f64,
+                    Literal::U64(v) => v as f64,
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
@@ -578,6 +1263,8 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 };
                 let hif = match hi {
                     Literal::I64(v) => v as f64,
+                    Literal::U32(v) => v as f64,
+                    Literal::U64(v) => v as f64,
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {

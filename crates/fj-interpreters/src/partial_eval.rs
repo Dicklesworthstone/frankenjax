@@ -226,6 +226,8 @@ pub fn partial_eval_jaxpr_typed(
                     Atom::Lit(lit) => Some(AbstractValue {
                         dtype: match lit {
                             fj_core::Literal::I64(_) => DType::I64,
+                            fj_core::Literal::U32(_) => DType::U32,
+                            fj_core::Literal::U64(_) => DType::U64,
                             fj_core::Literal::Bool(_) => DType::Bool,
                             fj_core::Literal::F64Bits(_) => DType::F64,
                             fj_core::Literal::Complex64Bits(..) => DType::Complex64,
@@ -688,6 +690,8 @@ fn abstract_value_of(value: &Value) -> AbstractValue {
         Value::Scalar(lit) => {
             let dtype = match lit {
                 fj_core::Literal::I64(_) => DType::I64,
+                fj_core::Literal::U32(_) => DType::U32,
+                fj_core::Literal::U64(_) => DType::U64,
                 fj_core::Literal::Bool(_) => DType::Bool,
                 fj_core::Literal::F64Bits(_) => DType::F64,
                 fj_core::Literal::Complex64Bits(..) => DType::Complex64,

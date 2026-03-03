@@ -219,6 +219,14 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
             .map(|atom| match atom {
                 Atom::Var(var) => var_map[var],
                 Atom::Lit(Literal::I64(n)) => expr.add(FjLang::Num(*n)),
+                Atom::Lit(Literal::U32(n)) => {
+                    let sym = egg::Symbol::from(format!("u32:{n}"));
+                    expr.add(FjLang::Symbol(sym))
+                }
+                Atom::Lit(Literal::U64(n)) => {
+                    let sym = egg::Symbol::from(format!("u64:{n}"));
+                    expr.add(FjLang::Symbol(sym))
+                }
                 Atom::Lit(Literal::F64Bits(bits)) => {
                     // Encode as symbol to preserve bit-exactness
                     let sym = egg::Symbol::from(format!("f64:{bits}"));
@@ -288,6 +296,12 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
             Primitive::Logistic => FjLang::Logistic([input_ids[0]]),
             Primitive::Erf => FjLang::Erf([input_ids[0]]),
             Primitive::Erfc => FjLang::Erfc([input_ids[0]]),
+            Primitive::Complex | Primitive::Conj | Primitive::Real | Primitive::Imag => {
+                panic!(
+                    "primitive {} not supported by egraph lowering",
+                    eqn.primitive.as_str()
+                )
+            }
             // Ternary
             Primitive::Select => FjLang::Select([input_ids[0], input_ids[1], input_ids[2]]),
             // Clamp (ternary)

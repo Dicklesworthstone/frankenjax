@@ -93,8 +93,10 @@ pub fn dtype_size_bytes(dtype: DType) -> Result<usize, FfiError> {
     match dtype {
         DType::F64 => Ok(8),
         DType::I64 => Ok(8),
+        DType::U64 => Ok(8),
         DType::F32 => Ok(4),
         DType::I32 => Ok(4),
+        DType::U32 => Ok(4),
         DType::Bool => Ok(1),
         DType::Complex64 => Ok(8),
         DType::Complex128 => Ok(16),
@@ -177,9 +179,13 @@ mod tests {
     fn dtype_size_bytes_all_types() {
         assert_eq!(dtype_size_bytes(DType::F64).unwrap(), 8);
         assert_eq!(dtype_size_bytes(DType::I64).unwrap(), 8);
+        assert_eq!(dtype_size_bytes(DType::U64).unwrap(), 8);
         assert_eq!(dtype_size_bytes(DType::F32).unwrap(), 4);
         assert_eq!(dtype_size_bytes(DType::I32).unwrap(), 4);
+        assert_eq!(dtype_size_bytes(DType::U32).unwrap(), 4);
         assert_eq!(dtype_size_bytes(DType::Bool).unwrap(), 1);
+        assert_eq!(dtype_size_bytes(DType::Complex64).unwrap(), 8);
+        assert_eq!(dtype_size_bytes(DType::Complex128).unwrap(), 16);
     }
 
     #[test]

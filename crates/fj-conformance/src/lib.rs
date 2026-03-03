@@ -622,7 +622,7 @@ const fn default_comparator_kind() -> ComparatorKind {
 /// Follows JAX's tolerance conventions:
 /// - F64: tight (1e-12 / 1e-10) since double-precision is highly reproducible
 /// - F32: moderate (1e-5 / 1e-5) matching JAX's default for single-precision
-/// - I32/I64/Bool: exact (0.0 / 0.0) since integer ops are deterministic
+/// - I32/I64/U32/U64/Bool: exact (0.0 / 0.0) since integer ops are deterministic
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct ToleranceTier {
     pub atol: f64,
@@ -650,7 +650,7 @@ impl ToleranceTier {
                 atol: 1e-5,
                 rtol: 1e-5,
             },
-            DType::I32 | DType::I64 | DType::Bool => Self::exact(),
+            DType::I32 | DType::I64 | DType::U32 | DType::U64 | DType::Bool => Self::exact(),
         }
     }
 
@@ -1457,6 +1457,8 @@ fn value_type_runtime(actual: &Value) -> &'static str {
     if let Some(scalar) = actual.as_scalar_literal() {
         return match scalar {
             fj_core::Literal::I64(_) => "i64",
+            fj_core::Literal::U32(_) => "u32",
+            fj_core::Literal::U64(_) => "u64",
             fj_core::Literal::F64Bits(_) => "f64",
             fj_core::Literal::Bool(_) => "bool",
             fj_core::Literal::Complex64Bits(..) => "complex64",
@@ -1467,6 +1469,8 @@ fn value_type_runtime(actual: &Value) -> &'static str {
     if let Some(tensor) = actual.as_tensor() {
         return match tensor.dtype {
             fj_core::DType::I64 | fj_core::DType::I32 => "i64",
+            fj_core::DType::U32 => "u32",
+            fj_core::DType::U64 => "u64",
             fj_core::DType::F64 | fj_core::DType::F32 => "f64",
             fj_core::DType::Bool => "bool",
             fj_core::DType::Complex64 => "complex64",
