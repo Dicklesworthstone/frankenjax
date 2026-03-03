@@ -27,11 +27,9 @@ pub struct EffectToken {
 /// Context for threading effect tokens through a dispatch execution.
 ///
 /// V1 scope: tracking only — records which effects were observed and in what
-/// order. No execution ordering is enforced (effects modeled via evidence
-/// ledger signals rather than runtime token threading).
+/// order while preserving every observation.
 ///
-/// Uses a Vec instead of BTreeMap since transform stacks are small (typically
-/// 1-3 elements) and insertion-order tracking eliminates the need for sorting.
+/// Uses a Vec to preserve insertion order for deterministic sequence threading.
 #[derive(Debug, Clone)]
 pub struct EffectContext {
     tokens: Vec<EffectToken>,
@@ -47,9 +45,7 @@ impl EffectContext {
         }
     }
 
-    /// Record observation of a named effect. Returns the token with its
-    /// sequence number in the observation order. If the same effect name
-    /// was already observed, overwrites the previous entry (BTreeMap parity).
+    /// Record observation of a named effect and return its sequence token.
     pub fn thread_token(&mut self, effect_name: &str) -> EffectToken {
         let name = effect_name.to_owned();
         let token = EffectToken {
@@ -57,14 +53,6 @@ impl EffectContext {
             sequence_number: self.next_sequence,
         };
         self.next_sequence += 1;
-        // Overwrite existing entry with same name (preserves BTreeMap semantics).
-        if let Some(pos) = self
-            .tokens
-            .iter()
-            .position(|t| t.effect_name == token.effect_name)
-        {
-            self.tokens.remove(pos);
-        }
         self.tokens.push(token.clone());
         token
     }
@@ -76,7 +64,7 @@ impl EffectContext {
         self.tokens
     }
 
-    /// Number of distinct effects observed.
+    /// Number of effect observations.
     #[must_use]
     pub fn effect_count(&self) -> usize {
         self.tokens.len()
@@ -86,6 +74,21 @@ impl EffectContext {
 impl Default for EffectContext {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn thread_jaxpr_effect_tokens(effect_ctx: &mut EffectContext, jaxpr: &Jaxpr) {
+    for effect in &jaxpr.effects {
+        effect_ctx.thread_token(effect);
+    }
+
+    for equation in &jaxpr.equations {
+        for effect in &equation.effects {
+            effect_ctx.thread_token(effect);
+        }
+        for sub_jaxpr in &equation.sub_jaxprs {
+            thread_jaxpr_effect_tokens(effect_ctx, sub_jaxpr);
+        }
     }
 }
 
@@ -343,11 +346,9 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         unknown_incompatible_features: &request.unknown_incompatible_features,
     })?;
 
-    // Thread effect context through transform execution
+    // Thread effect context through Jaxpr/equation effect ordering.
     let mut effect_ctx = EffectContext::new();
-    for transform in &request.ledger.transform_stack {
-        effect_ctx.thread_token(transform.as_str());
-    }
+    thread_jaxpr_effect_tokens(&mut effect_ctx, &request.ledger.root_jaxpr);
 
     let backend_registry = BackendRegistry::new(vec![Box::new(fj_backend_cpu::CpuBackend::new())]);
     let requested_backend = (!request.backend.is_empty()).then_some(request.backend.as_str());
@@ -364,6 +365,11 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
 
     let effect_tokens = effect_ctx.finalize();
     let effect_count = effect_tokens.len();
+    let effect_trace = effect_tokens
+        .iter()
+        .map(|token| format!("{}:{}", token.sequence_number, token.effect_name))
+        .collect::<Vec<_>>()
+        .join(",");
 
     let mut evidence_ledger = EvidenceLedger::new();
     let posterior_abandoned = heuristic_posterior_abandoned(&request.ledger);
@@ -393,6 +399,11 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
                 signal_name: "effect_token_count".to_owned(),
                 log_likelihood_delta: (effect_count as f64 + 1.0).ln(),
                 detail: format!("effect_tokens={effect_count}"),
+            },
+            EvidenceSignal {
+                signal_name: "effect_token_trace".to_owned(),
+                log_likelihood_delta: (effect_count as f64 + 1.0).ln() * 0.1,
+                detail: format!("effect_tokens=[{effect_trace}]"),
             },
         ],
     });
@@ -1108,12 +1119,12 @@ mod tests {
     // ── Effect token tests ─────────────────────────────────────
 
     #[test]
-    fn effect_context_tracks_transform_tokens() {
+    fn effect_context_preserves_observation_sequence() {
         use super::EffectContext;
         let mut ctx = EffectContext::new();
         let t1 = ctx.thread_token("jit");
-        let t2 = ctx.thread_token("grad");
-        let t3 = ctx.thread_token("vmap");
+        let t2 = ctx.thread_token("jit");
+        let t3 = ctx.thread_token("grad");
 
         assert_eq!(t1.sequence_number, 0);
         assert_eq!(t2.sequence_number, 1);
@@ -1123,12 +1134,72 @@ mod tests {
         let tokens = ctx.finalize();
         assert_eq!(tokens.len(), 3);
         assert_eq!(tokens[0].effect_name, "jit");
-        assert_eq!(tokens[1].effect_name, "grad");
-        assert_eq!(tokens[2].effect_name, "vmap");
+        assert_eq!(tokens[1].effect_name, "jit");
+        assert_eq!(tokens[2].effect_name, "grad");
     }
 
     #[test]
-    fn dispatch_includes_effect_token_signal() {
+    fn effect_threading_walks_jaxpr_and_subjaxprs_in_order() {
+        use super::{EffectContext, thread_jaxpr_effect_tokens};
+
+        let mut root = build_program(ProgramSpec::Add2);
+        root.effects = vec!["Print".to_owned()];
+        root.equations[0].effects = vec!["RngConsume".to_owned()];
+
+        let mut sub = build_program(ProgramSpec::AddOne);
+        sub.effects = vec!["SubTrace".to_owned()];
+        sub.equations[0].effects = vec!["SubPrint".to_owned()];
+        root.equations[0].sub_jaxprs.push(sub);
+
+        let mut ctx = EffectContext::new();
+        thread_jaxpr_effect_tokens(&mut ctx, &root);
+        let tokens = ctx.finalize();
+        let names = tokens
+            .iter()
+            .map(|token| token.effect_name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["Print", "RngConsume", "SubTrace", "SubPrint"]);
+    }
+
+    #[test]
+    fn dispatch_effect_signals_reflect_jaxpr_effects() {
+        let mut ttl = ledger(ProgramSpec::Square, &[Transform::Jit, Transform::Grad]);
+        ttl.root_jaxpr.effects = vec!["Print".to_owned()];
+        ttl.root_jaxpr.equations[0].effects = vec!["RngConsume".to_owned()];
+
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl,
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch should succeed");
+
+        // Evidence ledger should include count + trace for effect token observations.
+        assert_eq!(response.evidence_ledger.len(), 1);
+        let entry = &response.evidence_ledger.entries()[0];
+        assert_eq!(entry.signals.len(), 5);
+
+        let count_signal = entry
+            .signals
+            .iter()
+            .find(|s| s.signal_name == "effect_token_count")
+            .expect("should have effect_token_count signal");
+        assert_eq!(count_signal.detail, "effect_tokens=2");
+
+        let trace_signal = entry
+            .signals
+            .iter()
+            .find(|s| s.signal_name == "effect_token_trace")
+            .expect("should have effect_token_trace signal");
+        assert_eq!(trace_signal.detail, "effect_tokens=[0:Print,1:RngConsume]");
+    }
+
+    #[test]
+    fn dispatch_with_no_effects_has_zero_effect_tokens() {
         let response = dispatch(DispatchRequest {
             mode: CompatibilityMode::Strict,
             ledger: ledger(ProgramSpec::Square, &[Transform::Jit, Transform::Grad]),
@@ -1140,17 +1211,13 @@ mod tests {
         })
         .expect("dispatch should succeed");
 
-        // Evidence ledger should have 1 entry with 4 signals (including effect_token_count)
-        assert_eq!(response.evidence_ledger.len(), 1);
         let entry = &response.evidence_ledger.entries()[0];
-        assert_eq!(entry.signals.len(), 4);
-
-        let effect_signal = entry
+        let count_signal = entry
             .signals
             .iter()
             .find(|s| s.signal_name == "effect_token_count")
             .expect("should have effect_token_count signal");
-        assert_eq!(effect_signal.detail, "effect_tokens=2");
+        assert_eq!(count_signal.detail, "effect_tokens=0");
     }
 
     #[test]

@@ -418,10 +418,10 @@ pub fn apply_batch_rule(
         Primitive::Slice => batch_slice(inputs, params),
         Primitive::Concatenate => batch_concatenate(inputs, params),
         Primitive::Pad => batch_pad(inputs, params),
-        Primitive::DynamicSlice => batch_passthrough_leading(primitive, inputs, params),
-        Primitive::DynamicUpdateSlice => batch_passthrough_leading(primitive, inputs, params),
-        Primitive::Gather => batch_passthrough_leading(primitive, inputs, params),
-        Primitive::Scatter => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::DynamicSlice => batch_dynamic_slice(inputs, params),
+        Primitive::DynamicUpdateSlice => batch_dynamic_update_slice(inputs, params),
+        Primitive::Gather => batch_gather(inputs, params),
+        Primitive::Scatter => batch_scatter(inputs, params),
         Primitive::Rev => batch_passthrough_leading(primitive, inputs, params),
         Primitive::Squeeze => batch_passthrough_leading(primitive, inputs, params),
         Primitive::Split => batch_passthrough_leading(primitive, inputs, params),
@@ -443,10 +443,10 @@ pub fn apply_batch_rule(
         Primitive::Conv => batch_conv(inputs, params),
 
         // ── Control flow ───────────────────────────────────────
-        // Control flow batching is complex — fall back to loop-and-stack
-        Primitive::Cond | Primitive::Scan | Primitive::While | Primitive::Switch => {
-            batch_control_flow_fallback(primitive, inputs, params)
-        }
+        Primitive::Cond => batch_cond(inputs, params),
+        Primitive::Scan => batch_scan(inputs, params),
+        Primitive::While => batch_while(inputs, params),
+        Primitive::Switch => batch_switch(inputs, params),
 
         // ── Windowed reduction ─────────────────────────────────
         Primitive::ReduceWindow => batch_reduce_window(inputs, params),
@@ -898,6 +898,12 @@ fn batch_pad(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    // If the padding value itself is batched, fall back to per-element execution
+    // so each mapped element can carry its own scalar pad value.
+    if inputs.iter().skip(1).any(|t| t.batch_dim.is_some()) {
+        return batch_passthrough_leading(Primitive::Pad, inputs, params);
+    }
+
     let input = &inputs[0];
     let batch_dim = match input.batch_dim {
         None => {
@@ -913,16 +919,16 @@ fn batch_pad(
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
     // Parse padding config: low, high, interior per dimension
-    let low = parse_param_usize_list(params, "padding_low");
-    let high = parse_param_usize_list(params, "padding_high");
-    let interior = parse_param_usize_list(params, "padding_interior");
+    let low = parse_param_i64_list(params, "padding_low");
+    let high = parse_param_i64_list(params, "padding_high");
+    let interior = parse_param_i64_list(params, "padding_interior");
 
     // Prepend zero padding for batch dimension
-    let mut new_low = vec![0_usize];
+    let mut new_low = vec![0_i64];
     new_low.extend_from_slice(&low);
-    let mut new_high = vec![0_usize];
+    let mut new_high = vec![0_i64];
     new_high.extend_from_slice(&high);
-    let mut new_interior = vec![0_usize];
+    let mut new_interior = vec![0_i64];
     new_interior.extend_from_slice(&interior);
 
     let padding_value = if inputs.len() > 1 {
@@ -938,6 +944,129 @@ fn batch_pad(
     let result = eval_primitive(Primitive::Pad, &[value, padding_value], &new_params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
     Ok(BatchTracer::batched(result, 0))
+}
+
+fn batch_dynamic_slice(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    // Supports batched start indices and mixed batched/unbatched operands
+    // via per-element fallback semantics.
+    batch_passthrough_leading(Primitive::DynamicSlice, inputs, params)
+}
+
+fn batch_dynamic_update_slice(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    // Supports batched updates/start indices and mixed batched/unbatched operands
+    // via per-element fallback semantics.
+    batch_passthrough_leading(Primitive::DynamicUpdateSlice, inputs, params)
+}
+
+fn batch_gather(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let operand = &inputs[0];
+    let indices = &inputs[1];
+
+    // Fast-path common vmap case: unbatched operand with batched indices.
+    // Avoid broadcasting operand across the batch; instead evaluate per index slice.
+    if operand.batch_dim.is_none() {
+        if let Some(indices_bd) = indices.batch_dim {
+            let indices_value = move_batch_dim_to_front(&indices.value, indices_bd)?;
+            let batch_size = get_batch_size(&indices_value, 0)?;
+            let indices_tensor = indices_value.as_tensor().ok_or_else(|| {
+                BatchError::BatchDimMoveError("gather indices must be tensor".into())
+            })?;
+
+            let mut results = Vec::with_capacity(batch_size);
+            for i in 0..batch_size {
+                let indices_slice = indices_tensor
+                    .slice_axis0(i)
+                    .map_err(|e| BatchError::TensorError(e.to_string()))?;
+                let out = eval_primitive(
+                    Primitive::Gather,
+                    &[operand.value.clone(), indices_slice],
+                    params,
+                )
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+                results.push(out);
+            }
+
+            let stacked = TensorValue::stack_axis0(&results)
+                .map_err(|e| BatchError::TensorError(e.to_string()))?;
+            return Ok(BatchTracer::batched(Value::Tensor(stacked), 0));
+        }
+    }
+
+    batch_passthrough_leading(Primitive::Gather, inputs, params)
+}
+
+fn batch_scatter(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let operand = &inputs[0];
+    let indices = &inputs[1];
+    let updates = &inputs[2];
+
+    // Fast-path common vmap case: unbatched operand with batched indices/updates.
+    if operand.batch_dim.is_none() && (indices.batch_dim.is_some() || updates.batch_dim.is_some()) {
+        let (batch_size, batch_dim_source_value, batch_dim_source_axis) = if let Some(bd) =
+            indices.batch_dim
+        {
+            (get_batch_size(&indices.value, bd)?, &indices.value, bd)
+        } else {
+            let bd = updates.batch_dim.ok_or_else(|| {
+                BatchError::BatchDimMoveError("scatter expected batched indices or updates".into())
+            })?;
+            (get_batch_size(&updates.value, bd)?, &updates.value, bd)
+        };
+
+        let _ = batch_dim_source_value;
+        let _ = batch_dim_source_axis;
+
+        let indices_value = match indices.batch_dim {
+            Some(bd) => move_batch_dim_to_front(&indices.value, bd)?,
+            None => broadcast_unbatched(&indices.value, batch_size, 0)?,
+        };
+        let updates_value = match updates.batch_dim {
+            Some(bd) => move_batch_dim_to_front(&updates.value, bd)?,
+            None => broadcast_unbatched(&updates.value, batch_size, 0)?,
+        };
+
+        let indices_tensor = indices_value.as_tensor().ok_or_else(|| {
+            BatchError::BatchDimMoveError("scatter indices must be tensor".into())
+        })?;
+        let updates_tensor = updates_value.as_tensor().ok_or_else(|| {
+            BatchError::BatchDimMoveError("scatter updates must be tensor".into())
+        })?;
+
+        let mut results = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let indices_slice = indices_tensor
+                .slice_axis0(i)
+                .map_err(|e| BatchError::TensorError(e.to_string()))?;
+            let updates_slice = updates_tensor
+                .slice_axis0(i)
+                .map_err(|e| BatchError::TensorError(e.to_string()))?;
+            let out = eval_primitive(
+                Primitive::Scatter,
+                &[operand.value.clone(), indices_slice, updates_slice],
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            results.push(out);
+        }
+
+        let stacked = TensorValue::stack_axis0(&results)
+            .map_err(|e| BatchError::TensorError(e.to_string()))?;
+        return Ok(BatchTracer::batched(Value::Tensor(stacked), 0));
+    }
+
+    batch_passthrough_leading(Primitive::Scatter, inputs, params)
 }
 
 // ── Cumulative Batching ────────────────────────────────────────────
@@ -1160,6 +1289,72 @@ fn batch_control_flow_fallback(
     batch_passthrough_leading(primitive, inputs, params)
 }
 
+fn batch_cond(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    // Fast path: scalar predicate chooses one branch for the entire batch.
+    if inputs[0].batch_dim.is_none() {
+        let pred = scalar_to_bool(&inputs[0].value)?;
+        let selected = if pred { &inputs[1] } else { &inputs[2] };
+        let other = if pred { &inputs[2] } else { &inputs[1] };
+
+        if let Some(bd) = selected.batch_dim {
+            let moved = move_batch_dim_to_front(&selected.value, bd)?;
+            return Ok(BatchTracer::batched(moved, 0));
+        }
+
+        if let Some(other_bd) = other.batch_dim {
+            let batch_size = get_batch_size(&other.value, other_bd)?;
+            let broadcasted = broadcast_unbatched(&selected.value, batch_size, 0)?;
+            return Ok(BatchTracer::batched(broadcasted, 0));
+        }
+
+        return Ok(BatchTracer::unbatched(selected.value.clone()));
+    }
+
+    // Batched predicate: each element may select a different branch.
+    batch_control_flow_fallback(Primitive::Cond, inputs, params)
+}
+
+fn batch_scan(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    // Per-element fallback semantics currently match vmapped scan behavior:
+    // each batch element runs an independent scan with its corresponding carry/xs.
+    batch_control_flow_fallback(Primitive::Scan, inputs, params)
+}
+
+fn batch_while(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    // Per-element fallback semantics currently match vmapped while behavior:
+    // each batch element runs an independent loop until its own condition is false.
+    batch_control_flow_fallback(Primitive::While, inputs, params)
+}
+
+fn batch_switch(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    batch_control_flow_fallback(Primitive::Switch, inputs, params)
+}
+
+fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
+    match value {
+        Value::Scalar(fj_core::Literal::Bool(b)) => Ok(*b),
+        Value::Scalar(fj_core::Literal::I64(v)) => Ok(*v != 0),
+        Value::Scalar(fj_core::Literal::U32(v)) => Ok(*v != 0),
+        Value::Scalar(fj_core::Literal::U64(v)) => Ok(*v != 0),
+        Value::Scalar(fj_core::Literal::F64Bits(bits)) => Ok(f64::from_bits(*bits) != 0.0),
+        _ => Err(BatchError::EvalError(
+            "cond predicate must be scalar for unbatched fast-path".to_owned(),
+        )),
+    }
+}
+
 // ── Batch Evaluation of a Jaxpr ────────────────────────────────────
 
 /// Evaluate a Jaxpr with batched inputs, propagating batch dimensions
@@ -1283,6 +1478,13 @@ fn parse_param_usize_list(params: &BTreeMap<String, String>, key: &str) -> Vec<u
         .unwrap_or_default()
 }
 
+fn parse_param_i64_list(params: &BTreeMap<String, String>, key: &str) -> Vec<i64> {
+    params
+        .get(key)
+        .map(|s| parse_i64_list(s))
+        .unwrap_or_default()
+}
+
 fn parse_param_usize(params: &BTreeMap<String, String>, key: &str) -> Option<usize> {
     params.get(key).and_then(|s| s.trim().parse().ok())
 }
@@ -1291,6 +1493,13 @@ fn parse_usize_list(s: &str) -> Vec<usize> {
     s.trim_matches(|c| c == '[' || c == ']')
         .split(',')
         .filter_map(|x| x.trim().parse::<usize>().ok())
+        .collect()
+}
+
+fn parse_i64_list(s: &str) -> Vec<i64> {
+    s.trim_matches(|c| c == '[' || c == ']')
+        .split(',')
+        .filter_map(|x| x.trim().parse::<i64>().ok())
         .collect()
 }
 
@@ -1354,6 +1563,13 @@ mod tests {
         match value {
             Value::Tensor(t) => t.to_f64_vec().unwrap(),
             Value::Scalar(lit) => vec![lit.as_f64().unwrap()],
+        }
+    }
+
+    fn extract_i64_vec(value: &Value) -> Vec<i64> {
+        match value {
+            Value::Tensor(t) => t.elements.iter().map(|lit| lit.as_i64().unwrap()).collect(),
+            Value::Scalar(lit) => vec![lit.as_i64().unwrap()],
         }
     }
 
@@ -1555,6 +1771,93 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         let vals = extract_f64_vec(&result.value);
         assert_eq!(vals, vec![10.0, 0.0, 30.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_cond_unbatched_predicate_selects_batched_branch() {
+        let pred = BatchTracer::unbatched(Value::scalar_bool(true));
+        let on_true = BatchTracer::batched(make_i64_vector(&[7, 8, 9]), 0);
+        let on_false = BatchTracer::batched(make_i64_vector(&[70, 80, 90]), 0);
+        let result = apply_batch_rule(
+            Primitive::Cond,
+            &[pred, on_true, on_false],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![7, 8, 9]);
+    }
+
+    // ── Control Flow Batching Tests ───────────────────────────
+
+    #[test]
+    fn test_batch_trace_scan_batched_xs() {
+        // For each batch element, scan add over the row independently.
+        let init = BatchTracer::unbatched(Value::scalar_i64(0));
+        let xs = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape { dims: vec![2, 3] },
+                    vec![
+                        Literal::I64(1),
+                        Literal::I64(2),
+                        Literal::I64(3),
+                        Literal::I64(10),
+                        Literal::I64(20),
+                        Literal::I64(30),
+                    ],
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let params = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
+        let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![6, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_scan_batched_carry() {
+        // Batched carries with shared xs.
+        let init = BatchTracer::batched(make_i64_vector(&[1, 100]), 0);
+        let xs = BatchTracer::unbatched(make_i64_vector(&[1, 2, 3]));
+        let params = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
+        let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![7, 106]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_batched_init() {
+        let init = BatchTracer::batched(make_i64_vector(&[0, 10]), 0);
+        let step = BatchTracer::unbatched(Value::scalar_i64(2));
+        let threshold = BatchTracer::unbatched(Value::scalar_i64(5));
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "16".to_owned()),
+        ]);
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![6, 10]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_batched_threshold() {
+        // Each batch element has a different threshold (different iteration counts).
+        let init = BatchTracer::batched(make_i64_vector(&[0, 10]), 0);
+        let step = BatchTracer::unbatched(Value::scalar_i64(3));
+        let threshold = BatchTracer::batched(make_i64_vector(&[5, 25]), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "32".to_owned()),
+        ]);
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![6, 25]);
     }
 
     // ── Concatenate Test ───────────────────────────────────────
