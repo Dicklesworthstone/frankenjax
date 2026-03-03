@@ -1,0 +1,35 @@
+{
+  "total_cases": 242,
+  "matched": 242,
+  "mismatched": 0,
+  "pass_rate": 1.0,
+  "per_family": {
+    "grad": {
+      "total": 19,
+      "matched": 19,
+      "mismatched": 0
+    },
+    "jit": {
+      "total": 49,
+      "matched": 49,
+      "mismatched": 0
+    },
+    "lax": {
+      "total": 165,
+      "matched": 165,
+      "mismatched": 0
+    },
+    "random": {
+      "total": 0,
+      "matched": 0,
+      "mismatched": 0
+    },
+    "vmap": {
+      "total": 9,
+      "matched": 9,
+      "mismatched": 0
+    }
+  },
+  "gate_status": "pass",
+  "pass": true
+}

@@ -1,0 +1,48 @@
+{
+  "scenario": "e2e_threat_model_validation",
+  "generated_at_unix_ms": 1772498537493,
+  "checks": [
+    {
+      "area": "dtypes",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    },
+    {
+      "area": "rng",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    },
+    {
+      "area": "control_flow",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    },
+    {
+      "area": "effects",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    },
+    {
+      "area": "custom_derivatives",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    },
+    {
+      "area": "adversarial_fixtures",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    },
+    {
+      "area": "stale_entries",
+      "threats_documented": 1,
+      "mitigations_present": true,
+      "pass": true
+    }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "scenario": "e2e_readme_validation",
+  "generated_at_unix_ms": 1772497518911,
+  "checks": [
+    {
+      "section": "Workspace Crates",
+      "check": "crate_count_matches_workspace",
+      "expected": 15,
+      "actual": 15,
+      "pass": true
+    },
+    {
+      "section": "Workspace Crates",
+      "check": "no_missing_crates",
+      "expected": "",
+      "actual": "",
+      "pass": true
+    },
+    {
+      "section": "Workspace Crates",
+      "check": "no_stale_crates",
+      "expected": "",
+      "actual": "",
+      "pass": true
+    },
+    {
+      "section": "Current Status",
+      "check": "primitive_count_mentioned",
+      "expected": 87,
+      "actual": 87,
+      "pass": true
+    },
+    {
+      "section": "Current Status",
+      "check": "test_surface_mentioned",
+      "expected": "1200+",
+      "actual": "1200+",
+      "pass": true
+    }
+  ]
+}
