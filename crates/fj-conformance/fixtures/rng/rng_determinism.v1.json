@@ -1,0 +1,623 @@
+{
+  "capture_mode": "analytical_fallback",
+  "cases": [
+    {
+      "atol": 0.0,
+      "case_id": "rng_key_seed_0",
+      "comparator": "exact",
+      "expected_key_bits": [
+        0,
+        0
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "key",
+      "rtol": 0.0,
+      "seed": 0,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_split_seed_0",
+      "comparator": "exact",
+      "expected_key_bits": [],
+      "expected_split_keys": [
+        [
+          1797259609,
+          2579123966
+        ],
+        [
+          928981903,
+          3453687069
+        ]
+      ],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "split",
+      "rtol": 0.0,
+      "seed": 0,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_fold_in_seed_0",
+      "comparator": "exact",
+      "expected_key_bits": [
+        2652030227,
+        2914955526
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": 17,
+      "maxval": null,
+      "minval": null,
+      "operation": "fold_in",
+      "rtol": 0.0,
+      "seed": 0,
+      "shape": []
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_uniform_seed_0",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.41845711157657206,
+        0.600499093066901,
+        0.31468171905726194,
+        0.753391217906028,
+        0.39316027890890837,
+        0.9847091108094901,
+        0.721370984101668,
+        0.020384521689265966,
+        0.6735498148482293,
+        0.6549942351412028
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": 1.0,
+      "minval": 0.0,
+      "operation": "uniform",
+      "rtol": 1e-12,
+      "seed": 0,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_normal_seed_0",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        -1.065452423902527,
+        -0.7792129894697992,
+        0.03239910259837299,
+        -1.5203083340100043,
+        1.3601083592710417,
+        -0.13107662676497364,
+        0.8015899882180781,
+        0.10323253630499639,
+        -0.49973950771649334,
+        -0.7352870647955296
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "normal",
+      "rtol": 1e-12,
+      "seed": 0,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_key_seed_1",
+      "comparator": "exact",
+      "expected_key_bits": [
+        0,
+        1
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "key",
+      "rtol": 0.0,
+      "seed": 1,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_split_seed_1",
+      "comparator": "exact",
+      "expected_key_bits": [],
+      "expected_split_keys": [
+        [
+          507451445,
+          1853169794
+        ],
+        [
+          1948878966,
+          4237131848
+        ]
+      ],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "split",
+      "rtol": 0.0,
+      "seed": 1,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_fold_in_seed_1",
+      "comparator": "exact",
+      "expected_key_bits": [
+        3707031276,
+        1262233700
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": 17,
+      "maxval": null,
+      "minval": null,
+      "operation": "fold_in",
+      "rtol": 0.0,
+      "seed": 1,
+      "shape": []
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_uniform_seed_1",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.11815024656243622,
+        0.431474715936929,
+        0.25860382337123156,
+        0.24209019052796066,
+        0.4561121934093535,
+        0.380045274971053,
+        0.9847664495464414,
+        0.5696093053556979,
+        0.8851279995869845,
+        0.7754436831455678
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": 1.0,
+      "minval": 0.0,
+      "operation": "uniform",
+      "rtol": 1e-12,
+      "seed": 1,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_normal_seed_1",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        -1.8781556856914348,
+        0.8626283057107281,
+        0.08170412434192811,
+        1.6426321835603013,
+        -0.9136486161008424,
+        0.8574841857697942,
+        -0.15872516039964815,
+        -0.07421502150202146,
+        0.07864012923935355,
+        -0.48771072806975485
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "normal",
+      "rtol": 1e-12,
+      "seed": 1,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_key_seed_42",
+      "comparator": "exact",
+      "expected_key_bits": [
+        0,
+        42
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "key",
+      "rtol": 0.0,
+      "seed": 42,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_split_seed_42",
+      "comparator": "exact",
+      "expected_key_bits": [],
+      "expected_split_keys": [
+        [
+          1832780943,
+          270669613
+        ],
+        [
+          64467757,
+          2916123636
+        ]
+      ],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "split",
+      "rtol": 0.0,
+      "seed": 42,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_fold_in_seed_42",
+      "comparator": "exact",
+      "expected_key_bits": [
+        1135212437,
+        727083259
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": 17,
+      "maxval": null,
+      "minval": null,
+      "operation": "fold_in",
+      "rtol": 0.0,
+      "seed": 42,
+      "shape": []
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_uniform_seed_42",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.42672756663523614,
+        0.0630201802123338,
+        0.10015824041329324,
+        0.8114628775510937,
+        0.19643804151564837,
+        0.0914918351918459,
+        0.39141026325523853,
+        0.4510372371878475,
+        0.7247435813769698,
+        0.4862838741391897
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": 1.0,
+      "minval": 0.0,
+      "operation": "uniform",
+      "rtol": 1e-12,
+      "seed": 42,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_normal_seed_42",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        1.2040926795800093,
+        0.5033684451750002,
+        0.8080111611640084,
+        -1.9872407600332254,
+        1.5141332353076118,
+        0.9809265820259305,
+        -1.3053650187051282,
+        0.414753146011617,
+        -0.799440056045392,
+        0.06906758795965158
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "normal",
+      "rtol": 1e-12,
+      "seed": 42,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_key_seed_2147483647",
+      "comparator": "exact",
+      "expected_key_bits": [
+        0,
+        2147483647
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "key",
+      "rtol": 0.0,
+      "seed": 2147483647,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_split_seed_2147483647",
+      "comparator": "exact",
+      "expected_key_bits": [],
+      "expected_split_keys": [
+        [
+          3894554595,
+          3657610310
+        ],
+        [
+          2391852627,
+          3342111533
+        ]
+      ],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "split",
+      "rtol": 0.0,
+      "seed": 2147483647,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_fold_in_seed_2147483647",
+      "comparator": "exact",
+      "expected_key_bits": [
+        4238625753,
+        827330203
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": 17,
+      "maxval": null,
+      "minval": null,
+      "operation": "fold_in",
+      "rtol": 0.0,
+      "seed": 2147483647,
+      "shape": []
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_uniform_seed_2147483647",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.9067716530989856,
+        0.8516037627123296,
+        0.7003575863782316,
+        0.9864737852476537,
+        0.7561262538656592,
+        0.5731124766170979,
+        0.04293837118893862,
+        0.577393242623657,
+        0.75542619288899,
+        0.29115853225812316
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": 1.0,
+      "minval": 0.0,
+      "operation": "uniform",
+      "rtol": 1e-12,
+      "seed": 2147483647,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_normal_seed_2147483647",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.263637222357781,
+        -0.3552810962447025,
+        0.8409493226337765,
+        -0.07164293363587051,
+        -0.6702074776883927,
+        -0.33153546606161755,
+        -2.218313157070599,
+        -1.172631896974337,
+        -0.19153530683207212,
+        0.724058434313344
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "normal",
+      "rtol": 1e-12,
+      "seed": 2147483647,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_key_seed_4294967295",
+      "comparator": "exact",
+      "expected_key_bits": [
+        0,
+        4294967295
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "key",
+      "rtol": 0.0,
+      "seed": 4294967295,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_split_seed_4294967295",
+      "comparator": "exact",
+      "expected_key_bits": [],
+      "expected_split_keys": [
+        [
+          2973345818,
+          897673333
+        ],
+        [
+          3461607691,
+          1112781462
+        ]
+      ],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "split",
+      "rtol": 0.0,
+      "seed": 4294967295,
+      "shape": []
+    },
+    {
+      "atol": 0.0,
+      "case_id": "rng_fold_in_seed_4294967295",
+      "comparator": "exact",
+      "expected_key_bits": [
+        1259269141,
+        3675518304
+      ],
+      "expected_split_keys": [],
+      "expected_values": [],
+      "family": "random",
+      "fold_in_data": 17,
+      "maxval": null,
+      "minval": null,
+      "operation": "fold_in",
+      "rtol": 0.0,
+      "seed": 4294967295,
+      "shape": []
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_uniform_seed_4294967295",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.6922860206104815,
+        0.20900585991330445,
+        0.04047252470627427,
+        0.536915599135682,
+        0.19999164389446378,
+        0.6719335480593145,
+        0.028373935027047992,
+        0.13503030105493963,
+        0.14002707321196795,
+        0.0037772380746901035
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": 1.0,
+      "minval": 0.0,
+      "operation": "uniform",
+      "rtol": 1e-12,
+      "seed": 4294967295,
+      "shape": [
+        10
+      ]
+    },
+    {
+      "atol": 1e-12,
+      "case_id": "rng_normal_seed_4294967295",
+      "comparator": "approx_atol_rtol",
+      "expected_key_bits": [],
+      "expected_split_keys": [],
+      "expected_values": [
+        0.2184659493999265,
+        0.829327918920888,
+        -2.464817006830171,
+        -0.5821863847656285,
+        -0.8451723719724678,
+        -1.5826064095222523,
+        1.7647849748068183,
+        2.0025240694415722,
+        1.9823281154516517,
+        0.04705560323475899
+      ],
+      "family": "random",
+      "fold_in_data": null,
+      "maxval": null,
+      "minval": null,
+      "operation": "normal",
+      "rtol": 1e-12,
+      "seed": 4294967295,
+      "shape": [
+        10
+      ]
+    }
+  ],
+  "generated_at_unix_ms": 1772515381561,
+  "generated_by": "legacy_jax_capture_script",
+  "metadata": {
+    "hardware": "x86_64",
+    "hostname": "threadripperje",
+    "jax_version": "unavailable",
+    "platform": "Linux",
+    "python_version": "3.13.7",
+    "timestamp": "2026-03-03T05:23:01Z"
+  },
+  "oracle_root": "/data/projects/frankenjax/legacy_jax_code/jax",
+  "schema_version": "frankenjax.rng-fixtures.v1",
+  "strict_capture": false
+}

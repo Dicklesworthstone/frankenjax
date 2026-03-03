@@ -4,6 +4,7 @@ pub mod errors;
 pub mod transforms;
 
 pub use errors::ApiError;
+pub use fj_ad::{clear_custom_derivative_rules, register_custom_jvp, register_custom_vjp};
 pub use transforms::{
     ComposedTransform, GradWrapped, JitWrapped, ValueAndGradWrapped, VmapWrapped,
 };
@@ -15,7 +16,10 @@ pub use fj_trace::{TracerRef, make_jaxpr, make_jaxpr_fallible};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{ProgramSpec, Transform, Value, build_program};
+    use fj_core::{
+        Atom, Equation, Jaxpr, Primitive, ProgramSpec, Transform, Value, VarId, build_program,
+    };
+    use smallvec::smallvec;
 
     // --- Basic transform tests ---
 
@@ -249,5 +253,35 @@ mod tests {
             .expect("hardened jit(grad(f)) should succeed");
         let derivative = result[0].as_f64_scalar().expect("should be scalar");
         assert!((derivative - 4.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn api_exposes_custom_vjp_registration() {
+        clear_custom_derivative_rules();
+        register_custom_vjp(Primitive::CountLeadingZeros, |_inputs, _g, _params| {
+            Ok(vec![Value::scalar_f64(7.0)])
+        });
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::CountLeadingZeros,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+
+        let result = grad(jaxpr)
+            .call(vec![Value::scalar_i64(8)])
+            .expect("grad should use custom VJP");
+        let derivative = result[0].as_f64_scalar().expect("scalar derivative");
+        assert!((derivative - 7.0).abs() < 1e-10);
+
+        clear_custom_derivative_rules();
     }
 }

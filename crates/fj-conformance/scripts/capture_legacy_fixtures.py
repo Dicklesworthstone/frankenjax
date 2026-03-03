@@ -7,6 +7,12 @@ Usage:
       --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
       --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json
 
+  # Capture transform bundle + RNG determinism bundle:
+  python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
+      --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
+      --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json \
+      --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json
+
   # With --strict to require JAX (no fallback):
   python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
       --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
@@ -85,6 +91,24 @@ class Case:
     baseline_mismatch: bool = False
     flaky: bool = False
     simulated_delay_ms: int = 0
+
+
+@dataclass
+class RandomCase:
+    case_id: str
+    operation: str
+    seed: int
+    family: str = "random"
+    comparator: str = "exact"
+    atol: float = 0.0
+    rtol: float = 0.0
+    fold_in_data: int | None = None
+    minval: float | None = None
+    maxval: float | None = None
+    shape: list[int] = field(default_factory=list)
+    expected_key_bits: list[int] = field(default_factory=list)
+    expected_split_keys: list[list[int]] = field(default_factory=list)
+    expected_values: list[float] = field(default_factory=list)
 
 
 def fixture_value(value: Any) -> dict[str, Any]:
@@ -195,6 +219,258 @@ def _erfc_approx(x: float) -> float:
 
 def _logistic(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
+
+
+_U32_MASK = 0xFFFF_FFFF
+_THREEFRY_ROTATIONS = [13, 15, 26, 6, 17, 29, 16, 24]
+
+
+def _u32(value: int) -> int:
+    return int(value) & _U32_MASK
+
+
+def _rotl32(value: int, bits: int) -> int:
+    v = _u32(value)
+    return _u32((v << bits) | (v >> (32 - bits)))
+
+
+def _threefry2x32_py(key: tuple[int, int], data: tuple[int, int]) -> tuple[int, int]:
+    """Pure-Python ThreeFry2x32 matching crates/fj-lax/src/threefry.rs."""
+    ks_parity = 0x1BD1_1BDA
+    key0 = _u32(key[0])
+    key1 = _u32(key[1])
+    ks2 = _u32(key0 ^ key1 ^ ks_parity)
+    keys = [key0, key1, ks2]
+
+    x0 = _u32(_u32(data[0]) + key0)
+    x1 = _u32(_u32(data[1]) + key1)
+
+    for round_idx in range(20):
+        x0 = _u32(x0 + x1)
+        x1 = _u32(_rotl32(x1, _THREEFRY_ROTATIONS[round_idx % 8]) ^ x0)
+
+        if (round_idx + 1) % 4 == 0:
+            inject_idx = (round_idx + 1) // 4
+            x0 = _u32(x0 + keys[inject_idx % 3])
+            x1 = _u32(x1 + _u32(keys[(inject_idx + 1) % 3] + inject_idx))
+
+    return (x0, x1)
+
+
+def _random_key_py(seed: int) -> tuple[int, int]:
+    s = int(seed) & 0xFFFF_FFFF_FFFF_FFFF
+    return (_u32(s >> 32), _u32(s))
+
+
+def _random_split_py(key: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
+    return (
+        _threefry2x32_py(key, (0, 0)),
+        _threefry2x32_py(key, (0, 1)),
+    )
+
+
+def _random_fold_in_py(key: tuple[int, int], data: int) -> tuple[int, int]:
+    return _threefry2x32_py(key, (_u32(data), 0))
+
+
+def _generate_bits_py(key: tuple[int, int], count: int) -> list[int]:
+    bits: list[int] = []
+    pairs = (count + 1) // 2
+    for idx in range(pairs):
+        a, b = _threefry2x32_py(key, (_u32(idx), 0))
+        bits.append(a)
+        if len(bits) < count:
+            bits.append(b)
+    return bits
+
+
+def _random_uniform_py(
+    key: tuple[int, int], count: int, minval: float, maxval: float
+) -> list[float]:
+    bits = _generate_bits_py(key, count)
+    span = maxval - minval
+    denom = float(_U32_MASK) + 1.0
+    return [minval + (float(b) / denom) * span for b in bits]
+
+
+def _random_normal_py(key: tuple[int, int], count: int) -> list[float]:
+    pairs_needed = (count + 1) // 2
+    total_uniforms = pairs_needed * 2
+    bits = _generate_bits_py(key, total_uniforms)
+    denom = float(_U32_MASK) + 2.0
+
+    out: list[float] = []
+    for i in range(pairs_needed):
+        u1 = (float(bits[2 * i]) + 1.0) / denom
+        u2 = (float(bits[2 * i + 1]) + 1.0) / denom
+        r = math.sqrt(-2.0 * math.log(u1))
+        theta = 2.0 * math.pi * u2
+        out.append(r * math.cos(theta))
+        if len(out) < count:
+            out.append(r * math.sin(theta))
+    return out
+
+
+def _seed_suite() -> list[int]:
+    return [0, 1, 42, 2**31 - 1, 2**32 - 1]
+
+
+def _jax_key(jax, seed: int):
+    if hasattr(jax.random, "key"):
+        return jax.random.key(seed)
+    return jax.random.PRNGKey(seed)
+
+
+def _as_u32_list(value: Any) -> list[int]:
+    import numpy as np  # type: ignore
+
+    arr = np.asarray(value, dtype=np.uint32).reshape(-1)
+    return [int(v) for v in arr.tolist()]
+
+
+def _build_random_cases_from_oracle(jax, jnp) -> list[RandomCase]:
+    out: list[RandomCase] = []
+    seeds = _seed_suite()
+    fold_in_data = 17
+    sample_count = 10
+
+    for seed in seeds:
+        key = _jax_key(jax, seed)
+        out.append(
+            RandomCase(
+                case_id=f"rng_key_seed_{seed}",
+                operation="key",
+                seed=seed,
+                expected_key_bits=_as_u32_list(key),
+            )
+        )
+
+        split_keys = jax.random.split(key, 2)
+        split_arr = _as_u32_list(split_keys)
+        out.append(
+            RandomCase(
+                case_id=f"rng_split_seed_{seed}",
+                operation="split",
+                seed=seed,
+                expected_split_keys=[split_arr[:2], split_arr[2:4]],
+            )
+        )
+
+        folded = jax.random.fold_in(key, fold_in_data)
+        out.append(
+            RandomCase(
+                case_id=f"rng_fold_in_seed_{seed}",
+                operation="fold_in",
+                seed=seed,
+                fold_in_data=fold_in_data,
+                expected_key_bits=_as_u32_list(folded),
+            )
+        )
+
+        uniform = jax.random.uniform(
+            key, shape=(sample_count,), minval=0.0, maxval=1.0, dtype=jnp.float64
+        )
+        out.append(
+            RandomCase(
+                case_id=f"rng_uniform_seed_{seed}",
+                operation="uniform",
+                seed=seed,
+                comparator="approx_atol_rtol",
+                atol=1e-6,
+                rtol=1e-6,
+                minval=0.0,
+                maxval=1.0,
+                shape=[sample_count],
+                expected_values=[float(v) for v in uniform.tolist()],
+            )
+        )
+
+        normal = jax.random.normal(key, shape=(sample_count,), dtype=jnp.float64)
+        out.append(
+            RandomCase(
+                case_id=f"rng_normal_seed_{seed}",
+                operation="normal",
+                seed=seed,
+                comparator="approx_atol_rtol",
+                atol=1e-6,
+                rtol=1e-6,
+                shape=[sample_count],
+                expected_values=[float(v) for v in normal.tolist()],
+            )
+        )
+
+    _log("random", "all", "ok", f"cases={len(out)} source=legacy_jax")
+    return out
+
+
+def _build_random_cases_fallback() -> list[RandomCase]:
+    out: list[RandomCase] = []
+    seeds = _seed_suite()
+    fold_in_data = 17
+    sample_count = 10
+
+    for seed in seeds:
+        key = _random_key_py(seed)
+        out.append(
+            RandomCase(
+                case_id=f"rng_key_seed_{seed}",
+                operation="key",
+                seed=seed,
+                expected_key_bits=[key[0], key[1]],
+            )
+        )
+
+        split_a, split_b = _random_split_py(key)
+        out.append(
+            RandomCase(
+                case_id=f"rng_split_seed_{seed}",
+                operation="split",
+                seed=seed,
+                expected_split_keys=[[split_a[0], split_a[1]], [split_b[0], split_b[1]]],
+            )
+        )
+
+        folded = _random_fold_in_py(key, fold_in_data)
+        out.append(
+            RandomCase(
+                case_id=f"rng_fold_in_seed_{seed}",
+                operation="fold_in",
+                seed=seed,
+                fold_in_data=fold_in_data,
+                expected_key_bits=[folded[0], folded[1]],
+            )
+        )
+
+        out.append(
+            RandomCase(
+                case_id=f"rng_uniform_seed_{seed}",
+                operation="uniform",
+                seed=seed,
+                comparator="approx_atol_rtol",
+                atol=1e-12,
+                rtol=1e-12,
+                minval=0.0,
+                maxval=1.0,
+                shape=[sample_count],
+                expected_values=_random_uniform_py(key, sample_count, 0.0, 1.0),
+            )
+        )
+
+        out.append(
+            RandomCase(
+                case_id=f"rng_normal_seed_{seed}",
+                operation="normal",
+                seed=seed,
+                comparator="approx_atol_rtol",
+                atol=1e-12,
+                rtol=1e-12,
+                shape=[sample_count],
+                expected_values=_random_normal_py(key, sample_count),
+            )
+        )
+
+    _log("random", "all", "ok", f"cases={len(out)} source=analytical_fallback")
+    return out
 
 
 # ── Case builder helper ───────────────────────────────────────────
@@ -502,7 +778,19 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--legacy-root", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--rng-output",
+        type=Path,
+        default=None,
+        help="Optional output path for RNG determinism fixture bundle.",
+    )
     parser.add_argument("--skip-existing", action="store_true")
+    parser.add_argument(
+        "--force-fallback",
+        action="store_true",
+        default=False,
+        help="Force analytical fallback capture even if JAX import succeeds.",
+    )
     parser.add_argument(
         "--strict",
         action="store_true",
@@ -526,22 +814,29 @@ def main() -> int:
 
     capture_mode = "legacy_jax"
     jax_version = None
-    try:
-        jax, jnp, lax_mod = _try_import_jax(legacy_root)
-        jax_version = getattr(jax, "__version__", "unknown")
-        cases = build_cases_with_oracle(jax, jnp, lax_mod)
-    except Exception as exc:
-        if args.strict:
-            print(
-                "Failed to import/execute JAX from legacy root under --strict mode. "
-                "Ensure jax + jaxlib are installed and compatible.",
-                file=sys.stderr,
-            )
-            print(str(exc), file=sys.stderr)
-            return 3
-
+    if args.force_fallback:
         capture_mode = "analytical_fallback"
         cases = build_cases_fallback()
+        random_cases = _build_random_cases_fallback()
+    else:
+        try:
+            jax, jnp, lax_mod = _try_import_jax(legacy_root)
+            jax_version = getattr(jax, "__version__", "unknown")
+            cases = build_cases_with_oracle(jax, jnp, lax_mod)
+            random_cases = _build_random_cases_from_oracle(jax, jnp)
+        except Exception as exc:
+            if args.strict:
+                print(
+                    "Failed to import/execute JAX from legacy root under --strict mode. "
+                    "Ensure jax + jaxlib are installed and compatible.",
+                    file=sys.stderr,
+                )
+                print(str(exc), file=sys.stderr)
+                return 3
+
+            capture_mode = "analytical_fallback"
+            cases = build_cases_fallback()
+            random_cases = _build_random_cases_fallback()
 
     metadata = _get_metadata(jax_version)
 
@@ -577,6 +872,45 @@ def main() -> int:
     args.output.write_text(
         json.dumps(bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+
+    if args.rng_output is not None:
+        rng_bundle = {
+            "schema_version": "frankenjax.rng-fixtures.v1",
+            "generated_by": "legacy_jax_capture_script",
+            "generated_at_unix_ms": int(time.time() * 1000),
+            "oracle_root": str(legacy_root),
+            "capture_mode": capture_mode,
+            "strict_capture": bool(args.strict),
+            "metadata": metadata,
+            "cases": [
+                {
+                    "case_id": case.case_id,
+                    "family": case.family,
+                    "operation": case.operation,
+                    "seed": case.seed,
+                    "fold_in_data": case.fold_in_data,
+                    "minval": case.minval,
+                    "maxval": case.maxval,
+                    "shape": case.shape,
+                    "comparator": case.comparator,
+                    "atol": case.atol,
+                    "rtol": case.rtol,
+                    "expected_key_bits": case.expected_key_bits,
+                    "expected_split_keys": case.expected_split_keys,
+                    "expected_values": case.expected_values,
+                }
+                for case in random_cases
+            ],
+        }
+
+        args.rng_output.parent.mkdir(parents=True, exist_ok=True)
+        args.rng_output.write_text(
+            json.dumps(rng_bundle, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        print(
+            f"[CAPTURE] wrote {len(random_cases)} RNG cases to {args.rng_output} "
+            f"(capture_mode={capture_mode})"
+        )
 
     family_counts: dict[str, int] = {}
     for c in cases:

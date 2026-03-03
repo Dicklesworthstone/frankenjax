@@ -6,6 +6,7 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+fj-ad = { path = "../fj-ad" }
 fj-core = { path = "../fj-core" }
 fj-dispatch = { path = "../fj-dispatch" }
 fj-trace = { path = "../fj-trace" }
