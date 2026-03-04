@@ -1,19 +1,210 @@
-//! CPU execution engine wrapping eval_jaxpr.
+//! CPU execution engine with dependency-aware equation scheduling.
 //!
 //! The CpuBackend provides the Backend trait implementation for host-CPU
-//! execution. All computation runs via fj-interpreters::eval_jaxpr.
+//! execution. Pure equations whose inputs are already available are evaluated
+//! in dependency waves, with each wave evaluated in parallel.
 //!
 //! Contract: p2c006.strict.inv001 (CPU always available).
 
-use fj_core::{DType, Jaxpr, Value};
+use fj_core::{Atom, DType, Jaxpr, Value, VarId};
+use fj_interpreters::InterpreterError;
+use fj_lax::eval_primitive;
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
+use rayon::prelude::*;
+use std::collections::HashMap;
+
+fn equation_inputs_ready(equation: &fj_core::Equation, env: &HashMap<VarId, Value>) -> bool {
+    equation.inputs.iter().all(|atom| match atom {
+        Atom::Var(var) => env.contains_key(var),
+        Atom::Lit(_) => true,
+    })
+}
+
+fn first_missing_input_var(
+    equation: &fj_core::Equation,
+    env: &HashMap<VarId, Value>,
+) -> Option<VarId> {
+    equation.inputs.iter().find_map(|atom| match atom {
+        Atom::Var(var) if !env.contains_key(var) => Some(*var),
+        _ => None,
+    })
+}
+
+fn resolve_equation_inputs(
+    equation: &fj_core::Equation,
+    env: &HashMap<VarId, Value>,
+) -> Result<Vec<Value>, InterpreterError> {
+    let mut resolved = Vec::with_capacity(equation.inputs.len());
+    for atom in &equation.inputs {
+        match atom {
+            Atom::Var(var) => {
+                let value = env
+                    .get(var)
+                    .cloned()
+                    .ok_or(InterpreterError::MissingVariable(*var))?;
+                resolved.push(value);
+            }
+            Atom::Lit(lit) => resolved.push(Value::Scalar(*lit)),
+        }
+    }
+    Ok(resolved)
+}
+
+fn evaluate_equation(
+    equation: &fj_core::Equation,
+    env: &HashMap<VarId, Value>,
+) -> Result<Value, InterpreterError> {
+    if equation.outputs.len() != 1 {
+        return Err(InterpreterError::UnexpectedOutputArity {
+            primitive: equation.primitive,
+            actual: equation.outputs.len(),
+        });
+    }
+    let resolved = resolve_equation_inputs(equation, env)?;
+    let output = eval_primitive(equation.primitive, &resolved, &equation.params)?;
+    Ok(output)
+}
+
+fn evaluate_jaxpr_parallel_inner(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    max_ready_wave: &mut usize,
+) -> Result<Vec<Value>, InterpreterError> {
+    if !jaxpr.constvars.is_empty() {
+        return Err(InterpreterError::ConstArity {
+            expected: jaxpr.constvars.len(),
+            actual: 0,
+        });
+    }
+    if args.len() != jaxpr.invars.len() {
+        return Err(InterpreterError::InputArity {
+            expected: jaxpr.invars.len(),
+            actual: args.len(),
+        });
+    }
+
+    let mut env: HashMap<VarId, Value> =
+        HashMap::with_capacity(jaxpr.invars.len() + jaxpr.equations.len());
+    for (index, var) in jaxpr.invars.iter().enumerate() {
+        env.insert(*var, args[index].clone());
+    }
+
+    let mut executed = vec![false; jaxpr.equations.len()];
+    let mut remaining = jaxpr.equations.len();
+
+    while remaining > 0 {
+        let first_pending = executed
+            .iter()
+            .position(|done| !*done)
+            .expect("remaining > 0 guarantees at least one pending equation");
+        let first_eqn = &jaxpr.equations[first_pending];
+
+        if first_eqn.outputs.len() != 1 {
+            return Err(InterpreterError::UnexpectedOutputArity {
+                primitive: first_eqn.primitive,
+                actual: first_eqn.outputs.len(),
+            });
+        }
+
+        let barrier = !first_eqn.effects.is_empty() || !first_eqn.sub_jaxprs.is_empty();
+        if barrier {
+            let output = evaluate_equation(first_eqn, &env)?;
+            env.insert(first_eqn.outputs[0], output);
+            executed[first_pending] = true;
+            remaining -= 1;
+            continue;
+        }
+
+        let first_effect_barrier_index = (first_pending..jaxpr.equations.len())
+            .find(|idx| {
+                !executed[*idx]
+                    && (!jaxpr.equations[*idx].effects.is_empty()
+                        || !jaxpr.equations[*idx].sub_jaxprs.is_empty())
+            })
+            .unwrap_or(jaxpr.equations.len());
+
+        let mut ready_indices = Vec::new();
+        for (idx, done) in executed
+            .iter()
+            .enumerate()
+            .take(first_effect_barrier_index)
+            .skip(first_pending)
+        {
+            if *done {
+                continue;
+            }
+            let eqn = &jaxpr.equations[idx];
+            if eqn.outputs.len() != 1 {
+                return Err(InterpreterError::UnexpectedOutputArity {
+                    primitive: eqn.primitive,
+                    actual: eqn.outputs.len(),
+                });
+            }
+            if equation_inputs_ready(eqn, &env) {
+                ready_indices.push(idx);
+            }
+        }
+
+        if ready_indices.is_empty() {
+            if let Some(missing) = first_missing_input_var(first_eqn, &env) {
+                return Err(InterpreterError::MissingVariable(missing));
+            }
+            return Err(InterpreterError::MissingVariable(first_eqn.outputs[0]));
+        }
+
+        *max_ready_wave = (*max_ready_wave).max(ready_indices.len());
+
+        let should_parallelize = ready_indices.len() > 1 && rayon::current_num_threads() > 1;
+        if should_parallelize {
+            let env_snapshot = env.clone();
+            let mut evaluated = ready_indices
+                .par_iter()
+                .map(|idx| {
+                    let eqn = &jaxpr.equations[*idx];
+                    let output = evaluate_equation(eqn, &env_snapshot)?;
+                    Ok((*idx, eqn.outputs[0], output))
+                })
+                .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+            evaluated.sort_by_key(|(idx, _, _)| *idx);
+            for (idx, out_var, out_value) in evaluated {
+                env.insert(out_var, out_value);
+                executed[idx] = true;
+                remaining -= 1;
+            }
+        } else {
+            for idx in ready_indices {
+                let eqn = &jaxpr.equations[idx];
+                let output = evaluate_equation(eqn, &env)?;
+                env.insert(eqn.outputs[0], output);
+                executed[idx] = true;
+                remaining -= 1;
+            }
+        }
+    }
+
+    jaxpr
+        .outvars
+        .iter()
+        .map(|var| {
+            env.get(var)
+                .cloned()
+                .ok_or(InterpreterError::MissingVariable(*var))
+        })
+        .collect()
+}
+
+fn evaluate_jaxpr_parallel(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, InterpreterError> {
+    let mut ignored_max_ready_wave = 0_usize;
+    evaluate_jaxpr_parallel_inner(jaxpr, args, &mut ignored_max_ready_wave)
+}
 
 /// CPU backend: interprets Jaxpr programs on the host CPU.
 ///
-/// V1 scope: single CPU device (DeviceId(0)). All computation is
-/// synchronous and single-threaded.
+/// V1 scope: single CPU device (DeviceId(0)). Execution is synchronous and
+/// uses dependency-wave parallel scheduling for independent equations.
 pub struct CpuBackend {
     /// Number of logical CPU devices to expose.
     /// V1: always 1.
@@ -77,7 +268,7 @@ impl Backend for CpuBackend {
         _device: DeviceId,
     ) -> Result<Vec<Value>, BackendError> {
         // CPU backend ignores device ID — all execution is on the host.
-        fj_interpreters::eval_jaxpr(jaxpr, args).map_err(|e| BackendError::ExecutionFailed {
+        evaluate_jaxpr_parallel(jaxpr, args).map_err(|e| BackendError::ExecutionFailed {
             detail: e.to_string(),
         })
     }
@@ -124,7 +315,42 @@ impl Backend for CpuBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{ProgramSpec, build_program};
+    use fj_core::{Atom, Equation, Jaxpr, Primitive, ProgramSpec, VarId, build_program};
+    use std::collections::BTreeMap;
+
+    fn make_parallel_independent_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(3)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: vec![Atom::Var(VarId(2))].into(),
+                    outputs: vec![VarId(4)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(VarId(3)), Atom::Var(VarId(4))].into(),
+                    outputs: vec![VarId(5)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
 
     #[test]
     fn cpu_backend_name() {
@@ -183,6 +409,72 @@ mod tests {
             .expect("execution should succeed");
         let val = result[0].as_f64_scalar().expect("should be f64");
         assert!((val - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parallel_independent_ops() {
+        let jaxpr = make_parallel_independent_jaxpr();
+        let mut max_ready_wave = 0_usize;
+        let result = evaluate_jaxpr_parallel_inner(
+            &jaxpr,
+            &[Value::scalar_i64(3), Value::scalar_i64(4)],
+            &mut max_ready_wave,
+        )
+        .expect("parallel execution should succeed");
+
+        assert_eq!(result, vec![Value::scalar_i64(-7)]);
+        assert!(
+            max_ready_wave >= 2,
+            "expected at least one parallel-ready wave with width >=2, got {max_ready_wave}"
+        );
+    }
+
+    #[test]
+    fn test_parallel_correctness() {
+        let backend = CpuBackend::new();
+        let jaxpr = make_parallel_independent_jaxpr();
+        let args = vec![Value::scalar_i64(11), Value::scalar_i64(-6)];
+
+        let backend_outputs = backend
+            .execute(&jaxpr, &args, DeviceId(0))
+            .expect("backend execution should succeed");
+        let interpreter_outputs = fj_interpreters::eval_jaxpr(&jaxpr, &args)
+            .expect("interpreter execution should succeed");
+
+        assert_eq!(backend_outputs, interpreter_outputs);
+    }
+
+    #[test]
+    fn test_parallel_no_data_race() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let backend = Arc::new(CpuBackend::new());
+        let jaxpr = Arc::new(make_parallel_independent_jaxpr());
+
+        let mut workers = Vec::new();
+        for worker_id in 0_i64..8 {
+            let backend = Arc::clone(&backend);
+            let jaxpr = Arc::clone(&jaxpr);
+            workers.push(thread::spawn(move || {
+                for offset in 0_i64..64 {
+                    let a = worker_id * 10 + offset;
+                    let b = -offset;
+                    let outputs = backend
+                        .execute(
+                            &jaxpr,
+                            &[Value::scalar_i64(a), Value::scalar_i64(b)],
+                            DeviceId(0),
+                        )
+                        .expect("concurrent execution should succeed");
+                    assert_eq!(outputs, vec![Value::scalar_i64(-(a + b))]);
+                }
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("worker thread should complete");
+        }
     }
 
     #[test]

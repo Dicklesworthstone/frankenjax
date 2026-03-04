@@ -1,6 +1,7 @@
 //! CPU backend implementation for FrankenJAX.
 //!
-//! Wraps the existing `eval_jaxpr` interpreter as a `Backend` implementation.
+//! Provides a dependency-wave CPU scheduler over Jaxpr equations with a
+//! parallel fast path for independent operations.
 //! CPU is the baseline backend — always available, no external dependencies.
 //!
 //! Legacy anchor: P2C006-A17 (CpuBackend), P2C006-A02 (_discover_backends).
