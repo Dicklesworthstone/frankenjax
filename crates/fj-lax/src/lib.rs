@@ -23,7 +23,8 @@ use tensor_ops::{
     eval_argsort, eval_broadcast_in_dim, eval_concatenate, eval_conv, eval_dynamic_slice,
     eval_dynamic_update_slice, eval_expand_dims, eval_gather, eval_iota, eval_one_hot, eval_pad,
     eval_reshape, eval_rev, eval_scatter, eval_slice, eval_sort, eval_split, eval_squeeze,
-    eval_transpose,
+    eval_transpose, eval_bitcast_convert_type, eval_broadcasted_iota, eval_copy,
+    eval_reduce_precision,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +310,10 @@ pub fn eval_primitive(
         Primitive::Scatter => eval_scatter(inputs, params),
         // Iota: generate index sequence
         Primitive::Iota => eval_iota(inputs, params),
+        Primitive::BroadcastedIota => eval_broadcasted_iota(inputs, params),
+        Primitive::Copy => eval_copy(inputs),
+        Primitive::BitcastConvertType => eval_bitcast_convert_type(inputs, params),
+        Primitive::ReducePrecision => eval_reduce_precision(inputs, params),
         // One-hot encoding
         Primitive::OneHot => eval_one_hot(inputs, params),
         // Dynamic update slice
@@ -5558,6 +5563,124 @@ mod tests {
         let t = out.as_tensor().unwrap();
         assert_eq!(t.shape.dims, vec![4, 1, 3]);
         assert_eq!(t.elements.len(), 12);
+    }
+
+    #[test]
+    fn test_copy_is_identity_with_independent_storage() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3] },
+                vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)],
+            )
+            .unwrap(),
+        );
+
+        let input_ptr = input.as_tensor().unwrap().elements.as_ptr();
+        let copied = eval_primitive(Primitive::Copy, std::slice::from_ref(&input), &no_params())
+            .expect("copy should succeed");
+        let copied_ptr = copied.as_tensor().unwrap().elements.as_ptr();
+
+        assert_eq!(copied, input);
+        assert_ne!(input_ptr, copied_ptr, "copy should allocate independent storage");
+    }
+
+    #[test]
+    fn test_bitcast_f64_to_i64_and_back_preserves_bits() {
+        let input = Value::scalar_f64(-3.5);
+
+        let mut to_i64 = BTreeMap::new();
+        to_i64.insert("new_dtype".to_owned(), "i64".to_owned());
+        let bitcast_i64 = eval_primitive(
+            Primitive::BitcastConvertType,
+            std::slice::from_ref(&input),
+            &to_i64,
+        )
+        .expect("f64 -> i64 bitcast should succeed");
+
+        let mut to_f64 = BTreeMap::new();
+        to_f64.insert("new_dtype".to_owned(), "f64".to_owned());
+        let round_trip = eval_primitive(
+            Primitive::BitcastConvertType,
+            std::slice::from_ref(&bitcast_i64),
+            &to_f64,
+        )
+        .expect("i64 -> f64 bitcast should succeed");
+
+        match (input, round_trip) {
+            (Value::Scalar(Literal::F64Bits(expected)), Value::Scalar(Literal::F64Bits(actual))) => {
+                assert_eq!(actual, expected, "bitcast round trip must preserve exact bits");
+            }
+            other => panic!("unexpected round-trip payload: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_bitcast_rejects_mismatched_bit_widths() {
+        let input = Value::scalar_f64(1.25);
+        let mut params = BTreeMap::new();
+        params.insert("new_dtype".to_owned(), "u32".to_owned());
+        let err = eval_primitive(Primitive::BitcastConvertType, &[input], &params)
+            .expect_err("bitcast with mismatched widths should fail");
+        assert!(
+            matches!(err, EvalError::Unsupported { .. }),
+            "expected unsupported error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_broadcasted_iota_2d_axis_one() {
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), "2,3".to_owned());
+        params.insert("dimension".to_owned(), "1".to_owned());
+        params.insert("dtype".to_owned(), "i64".to_owned());
+
+        let out = eval_primitive(Primitive::BroadcastedIota, &[], &params)
+            .expect("broadcasted_iota should succeed");
+        let tensor = out.as_tensor().expect("tensor output expected");
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+
+        let values: Vec<i64> = tensor
+            .elements
+            .iter()
+            .map(|lit| lit.as_i64().expect("i64 element"))
+            .collect();
+        assert_eq!(values, vec![0, 1, 2, 0, 1, 2]);
+    }
+
+    #[test]
+    fn test_reduce_precision_identity_with_full_bits() {
+        let input = Value::scalar_f64(1.0000001);
+        let mut params = BTreeMap::new();
+        params.insert("exponent_bits".to_owned(), "11".to_owned());
+        params.insert("mantissa_bits".to_owned(), "52".to_owned());
+
+        let out = eval_primitive(
+            Primitive::ReducePrecision,
+            std::slice::from_ref(&input),
+            &params,
+        )
+        .expect("reduce_precision should succeed");
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn test_reduce_precision_truncates_mantissa_bits() {
+        let input = Value::scalar_f64(1.0000001);
+        let mut params = BTreeMap::new();
+        params.insert("exponent_bits".to_owned(), "8".to_owned());
+        params.insert("mantissa_bits".to_owned(), "7".to_owned());
+
+        let out = eval_primitive(
+            Primitive::ReducePrecision,
+            std::slice::from_ref(&input),
+            &params,
+        )
+        .expect("reduce_precision should succeed");
+
+        let input_val = input.as_f64_scalar().unwrap();
+        let out_val = out.as_f64_scalar().unwrap();
+        assert_ne!(out_val.to_bits(), input_val.to_bits());
     }
 }
 

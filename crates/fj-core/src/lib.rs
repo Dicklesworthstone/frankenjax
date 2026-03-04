@@ -155,6 +155,11 @@ pub enum Primitive {
     Clamp,
     // Index generation
     Iota,
+    BroadcastedIota,
+    // Utility operations
+    Copy,
+    BitcastConvertType,
+    ReducePrecision,
     // Encoding
     OneHot,
     // Cumulative
@@ -263,6 +268,10 @@ impl Primitive {
             Self::Nextafter => "nextafter",
             Self::Clamp => "clamp",
             Self::Iota => "iota",
+            Self::BroadcastedIota => "broadcasted_iota",
+            Self::Copy => "copy",
+            Self::BitcastConvertType => "bitcast_convert_type",
+            Self::ReducePrecision => "reduce_precision",
             Self::OneHot => "one_hot",
             Self::Cumsum => "cumsum",
             Self::Cumprod => "cumprod",

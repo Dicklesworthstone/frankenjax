@@ -47,6 +47,260 @@ pub(crate) fn parse_usize_param(
         .collect()
 }
 
+fn parse_dtype_param(
+    primitive: Primitive,
+    key: &str,
+    params: &BTreeMap<String, String>,
+) -> Result<DType, EvalError> {
+    let raw = params.get(key).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: format!("missing required param '{key}'"),
+    })?;
+    parse_dtype_name(primitive, key, raw)
+}
+
+fn parse_dtype_name(primitive: Primitive, key: &str, raw: &str) -> Result<DType, EvalError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bf16" | "bfloat16" => Ok(DType::BF16),
+        "f16" | "float16" => Ok(DType::F16),
+        "f32" | "float32" => Ok(DType::F32),
+        "f64" | "float64" => Ok(DType::F64),
+        "i32" => Ok(DType::I32),
+        "i64" => Ok(DType::I64),
+        "u32" => Ok(DType::U32),
+        "u64" => Ok(DType::U64),
+        "bool" => Ok(DType::Bool),
+        "complex64" => Ok(DType::Complex64),
+        "complex128" => Ok(DType::Complex128),
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("unsupported dtype in '{key}': '{raw}'"),
+        }),
+    }
+}
+
+const fn dtype_bit_width(dtype: DType) -> u32 {
+    match dtype {
+        DType::BF16 | DType::F16 => 16,
+        DType::F32 | DType::I32 | DType::U32 => 32,
+        DType::F64 | DType::I64 | DType::U64 | DType::Complex64 => 64,
+        DType::Complex128 => 128,
+        DType::Bool => 8,
+    }
+}
+
+fn literal_to_bytes(
+    primitive: Primitive,
+    dtype: DType,
+    literal: Literal,
+) -> Result<Vec<u8>, EvalError> {
+    let bytes = match dtype {
+        DType::I64 => literal
+            .as_i64()
+            .ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "bitcast source literal is not representable as i64",
+            })?
+            .to_le_bytes()
+            .to_vec(),
+        DType::I32 => {
+            let value = literal.as_i64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "bitcast source literal is not representable as i32",
+            })?;
+            i32::try_from(value)
+                .map_err(|_| EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is out of i32 range",
+                })?
+                .to_le_bytes()
+                .to_vec()
+        }
+        DType::U32 => u32::try_from(literal.as_u64().ok_or(EvalError::TypeMismatch {
+            primitive,
+            detail: "bitcast source literal is not representable as u32",
+        })?)
+        .map_err(|_| EvalError::TypeMismatch {
+            primitive,
+            detail: "bitcast source literal is out of u32 range",
+        })?
+        .to_le_bytes()
+        .to_vec(),
+        DType::U64 => literal
+            .as_u64()
+            .ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "bitcast source literal is not representable as u64",
+            })?
+            .to_le_bytes()
+            .to_vec(),
+        DType::Bool => match literal {
+            Literal::Bool(value) => vec![u8::from(value)],
+            _ => {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is not a bool",
+                });
+            }
+        },
+        DType::BF16 => match literal {
+            Literal::BF16Bits(bits) => bits.to_le_bytes().to_vec(),
+            _ => {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is not bf16",
+                });
+            }
+        },
+        DType::F16 => match literal {
+            Literal::F16Bits(bits) => bits.to_le_bytes().to_vec(),
+            _ => {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is not f16",
+                });
+            }
+        },
+        DType::F32 => {
+            let as_f32 = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "bitcast source literal is not representable as f32",
+            })? as f32;
+            as_f32.to_bits().to_le_bytes().to_vec()
+        }
+        DType::F64 => literal
+            .as_f64()
+            .ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "bitcast source literal is not representable as f64",
+            })?
+            .to_bits()
+            .to_le_bytes()
+            .to_vec(),
+        DType::Complex64 => match literal {
+            Literal::Complex64Bits(re, im) => {
+                let mut out = Vec::with_capacity(8);
+                out.extend_from_slice(&re.to_le_bytes());
+                out.extend_from_slice(&im.to_le_bytes());
+                out
+            }
+            _ => {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is not complex64",
+                });
+            }
+        },
+        DType::Complex128 => match literal {
+            Literal::Complex128Bits(re, im) => {
+                let mut out = Vec::with_capacity(16);
+                out.extend_from_slice(&re.to_le_bytes());
+                out.extend_from_slice(&im.to_le_bytes());
+                out
+            }
+            _ => {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is not complex128",
+                });
+            }
+        },
+    };
+    Ok(bytes)
+}
+
+fn bytes_to_literal(primitive: Primitive, dtype: DType, bytes: &[u8]) -> Result<Literal, EvalError> {
+    match dtype {
+        DType::I64 => {
+            let array = <[u8; 8]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for i64".to_owned(),
+            })?;
+            Ok(Literal::I64(i64::from_le_bytes(array)))
+        }
+        DType::I32 => {
+            let array = <[u8; 4]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for i32".to_owned(),
+            })?;
+            Ok(Literal::I64(i64::from(i32::from_le_bytes(array))))
+        }
+        DType::U32 => {
+            let array = <[u8; 4]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for u32".to_owned(),
+            })?;
+            Ok(Literal::U32(u32::from_le_bytes(array)))
+        }
+        DType::U64 => {
+            let array = <[u8; 8]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for u64".to_owned(),
+            })?;
+            Ok(Literal::U64(u64::from_le_bytes(array)))
+        }
+        DType::Bool => {
+            let array = <[u8; 1]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for bool".to_owned(),
+            })?;
+            Ok(Literal::Bool(array[0] != 0))
+        }
+        DType::BF16 => {
+            let array = <[u8; 2]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for bf16".to_owned(),
+            })?;
+            Ok(Literal::BF16Bits(u16::from_le_bytes(array)))
+        }
+        DType::F16 => {
+            let array = <[u8; 2]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for f16".to_owned(),
+            })?;
+            Ok(Literal::F16Bits(u16::from_le_bytes(array)))
+        }
+        DType::F32 => {
+            let array = <[u8; 4]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for f32".to_owned(),
+            })?;
+            let as_f32 = f32::from_bits(u32::from_le_bytes(array));
+            Ok(Literal::from_f64(f64::from(as_f32)))
+        }
+        DType::F64 => {
+            let array = <[u8; 8]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for f64".to_owned(),
+            })?;
+            Ok(Literal::F64Bits(u64::from_le_bytes(array)))
+        }
+        DType::Complex64 => {
+            let array = <[u8; 8]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for complex64".to_owned(),
+            })?;
+            let re = u32::from_le_bytes([array[0], array[1], array[2], array[3]]);
+            let im = u32::from_le_bytes([array[4], array[5], array[6], array[7]]);
+            Ok(Literal::Complex64Bits(re, im))
+        }
+        DType::Complex128 => {
+            let array = <[u8; 16]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: "bitcast internal size mismatch for complex128".to_owned(),
+            })?;
+            let re = u64::from_le_bytes([
+                array[0], array[1], array[2], array[3], array[4], array[5], array[6], array[7],
+            ]);
+            let im = u64::from_le_bytes([
+                array[8], array[9], array[10], array[11], array[12], array[13], array[14],
+                array[15],
+            ]);
+            Ok(Literal::Complex128Bits(re, im))
+        }
+    }
+}
+
 /// Reshape: change the shape of a tensor without changing its data.
 /// Params: `new_shape` (comma-separated dims, -1 for a single inferred axis).
 pub(crate) fn eval_reshape(
@@ -1330,6 +1584,74 @@ pub(crate) fn eval_dynamic_update_slice(
     )?))
 }
 
+/// Copy: explicit identity operation that returns an independent cloned value.
+pub(crate) fn eval_copy(inputs: &[Value]) -> Result<Value, EvalError> {
+    let primitive = Primitive::Copy;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+    Ok(inputs[0].clone())
+}
+
+/// BitcastConvertType: reinterpret element bit patterns as a new dtype.
+///
+/// Params:
+/// - `new_dtype`: destination dtype string (e.g. `i32`, `f32`, `i64`, `f64`)
+///
+/// Constraint:
+/// - Source and destination element widths must match.
+pub(crate) fn eval_bitcast_convert_type(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::BitcastConvertType;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let target_dtype = parse_dtype_param(primitive, "new_dtype", params)?;
+    let source_dtype = inputs[0].dtype();
+
+    if dtype_bit_width(source_dtype) != dtype_bit_width(target_dtype) {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "bitcast requires equal element widths: source={source_dtype:?}({} bits) target={target_dtype:?}({} bits)",
+                dtype_bit_width(source_dtype),
+                dtype_bit_width(target_dtype)
+            ),
+        });
+    }
+
+    match &inputs[0] {
+        Value::Scalar(literal) => {
+            let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
+            let converted = bytes_to_literal(primitive, target_dtype, &raw)?;
+            Ok(Value::Scalar(converted))
+        }
+        Value::Tensor(tensor) => {
+            let mut out = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                let raw = literal_to_bytes(primitive, source_dtype, *literal)?;
+                out.push(bytes_to_literal(primitive, target_dtype, &raw)?);
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                target_dtype,
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+    }
+}
+
 /// Iota: generate a 1-D index tensor of length `length` with dtype `dtype`.
 ///
 /// Inputs: [] (no inputs — iota is a nullary operation)
@@ -1394,6 +1716,357 @@ pub(crate) fn eval_iota(
         Shape::vector(length),
         elements,
     )?))
+}
+
+fn literal_from_index_for_dtype(
+    primitive: Primitive,
+    dtype: DType,
+    index: usize,
+) -> Result<Literal, EvalError> {
+    match dtype {
+        DType::I64 => Ok(Literal::I64(index as i64)),
+        DType::I32 => {
+            let value = i32::try_from(index).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("index {index} exceeds i32 range"),
+            })?;
+            Ok(Literal::I64(i64::from(value)))
+        }
+        DType::U32 => {
+            let value = u32::try_from(index).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("index {index} exceeds u32 range"),
+            })?;
+            Ok(Literal::U32(value))
+        }
+        DType::U64 => Ok(Literal::U64(index as u64)),
+        DType::F64 => Ok(Literal::from_f64(index as f64)),
+        DType::F32 => Ok(Literal::from_f64(f64::from(index as f32))),
+        DType::BF16 => Ok(Literal::from_bf16_f32(index as f32)),
+        DType::F16 => Ok(Literal::from_f16_f32(index as f32)),
+        DType::Bool => Ok(Literal::Bool(index != 0)),
+        DType::Complex64 | DType::Complex128 => Err(EvalError::Unsupported {
+            primitive,
+            detail: "broadcasted_iota does not support complex dtypes".to_owned(),
+        }),
+    }
+}
+
+/// BroadcastedIota: iota over `dimension` and broadcast across full `shape`.
+///
+/// Inputs: none.
+/// Params:
+/// - `shape`: comma-separated output dimensions
+/// - `dimension`: axis carrying monotonically increasing indices
+/// - `dtype`: optional output dtype (default `i64`)
+pub(crate) fn eval_broadcasted_iota(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::BroadcastedIota;
+    if !inputs.is_empty() {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 0,
+            actual: inputs.len(),
+        });
+    }
+
+    let shape_usize = parse_usize_param(primitive, "shape", params)?;
+    let dimension = params
+        .get("dimension")
+        .map(|raw| {
+            raw.trim()
+                .parse::<usize>()
+                .map_err(|_| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("invalid dimension: '{raw}'"),
+                })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let dtype = if let Some(raw) = params.get("dtype") {
+        parse_dtype_name(primitive, "dtype", raw)?
+    } else {
+        DType::I64
+    };
+
+    let shape_u32: Vec<u32> = shape_usize
+        .iter()
+        .map(|&d| {
+            u32::try_from(d).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("shape dimension {d} exceeds u32 range"),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+
+    if shape_usize.is_empty() {
+        return Ok(Value::Scalar(literal_from_index_for_dtype(
+            primitive, dtype, 0,
+        )?));
+    }
+
+    if dimension >= shape_usize.len() {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "dimension {dimension} out of bounds for rank {}",
+                shape_usize.len()
+            ),
+        });
+    }
+
+    let total = shape_usize.iter().try_fold(1_usize, |acc, dim| {
+        acc.checked_mul(*dim).ok_or(EvalError::Unsupported {
+            primitive,
+            detail: "broadcasted_iota shape overflows usize".to_owned(),
+        })
+    })?;
+    let stride = shape_usize[(dimension + 1)..]
+        .iter()
+        .fold(1_usize, |acc, dim| acc.saturating_mul(*dim));
+    let axis_extent = shape_usize[dimension];
+
+    let mut elements = Vec::with_capacity(total);
+    for flat in 0..total {
+        let axis_index = (flat / stride) % axis_extent;
+        elements.push(literal_from_index_for_dtype(
+            primitive, dtype, axis_index,
+        )?);
+    }
+
+    Ok(Value::Tensor(TensorValue::new(
+        dtype,
+        Shape { dims: shape_u32 },
+        elements,
+    )?))
+}
+
+fn quantize_f64(value: f64, exponent_bits: u32, mantissa_bits: u32) -> f64 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+
+    let exp_bits = exponent_bits.clamp(1, 11);
+    let mant_bits = mantissa_bits.min(52);
+    if exp_bits == 11 && mant_bits == 52 {
+        return value;
+    }
+
+    let bits = value.to_bits();
+    let sign = bits & (1_u64 << 63);
+    let exp = ((bits >> 52) & 0x7ff) as i32;
+    let mut mant = bits & ((1_u64 << 52) - 1);
+
+    if exp == 0 {
+        return f64::from_bits(sign);
+    }
+
+    let unbiased = exp - 1023;
+    if exp_bits < 11 {
+        let bias_new = (1_i32 << (exp_bits - 1)) - 1;
+        let min_unbiased = 1 - bias_new;
+        let max_unbiased = bias_new;
+        if unbiased > max_unbiased {
+            return f64::from_bits(sign | (0x7ff_u64 << 52));
+        }
+        if unbiased < min_unbiased {
+            return f64::from_bits(sign);
+        }
+    }
+
+    if mant_bits < 52 {
+        let drop = 52 - mant_bits;
+        mant = (mant >> drop) << drop;
+    }
+
+    f64::from_bits(sign | ((exp as u64) << 52) | mant)
+}
+
+fn quantize_f32(value: f32, exponent_bits: u32, mantissa_bits: u32) -> f32 {
+    if !value.is_finite() || value == 0.0 {
+        return value;
+    }
+
+    let exp_bits = exponent_bits.clamp(1, 8);
+    let mant_bits = mantissa_bits.min(23);
+    if exp_bits == 8 && mant_bits == 23 {
+        return value;
+    }
+
+    let bits = value.to_bits();
+    let sign = bits & (1_u32 << 31);
+    let exp = ((bits >> 23) & 0xff) as i32;
+    let mut mant = bits & ((1_u32 << 23) - 1);
+
+    if exp == 0 {
+        return f32::from_bits(sign);
+    }
+
+    let unbiased = exp - 127;
+    if exp_bits < 8 {
+        let bias_new = (1_i32 << (exp_bits - 1)) - 1;
+        let min_unbiased = 1 - bias_new;
+        let max_unbiased = bias_new;
+        if unbiased > max_unbiased {
+            return f32::from_bits(sign | (0xff_u32 << 23));
+        }
+        if unbiased < min_unbiased {
+            return f32::from_bits(sign);
+        }
+    }
+
+    if mant_bits < 23 {
+        let drop = 23 - mant_bits;
+        mant = (mant >> drop) << drop;
+    }
+
+    f32::from_bits(sign | ((exp as u32) << 23) | mant)
+}
+
+fn reduce_precision_literal(
+    primitive: Primitive,
+    dtype: DType,
+    literal: Literal,
+    exponent_bits: u32,
+    mantissa_bits: u32,
+) -> Result<Literal, EvalError> {
+    match dtype {
+        DType::F64 => {
+            let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "reduce_precision expected an f64 value",
+            })?;
+            Ok(Literal::from_f64(quantize_f64(
+                value,
+                exponent_bits,
+                mantissa_bits,
+            )))
+        }
+        DType::F32 => {
+            let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "reduce_precision expected an f32-compatible value",
+            })? as f32;
+            Ok(Literal::from_f64(f64::from(quantize_f32(
+                value,
+                exponent_bits,
+                mantissa_bits,
+            ))))
+        }
+        DType::BF16 => {
+            let value = literal.as_bf16_f32().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "reduce_precision expected bf16 literal payload",
+            })?;
+            Ok(Literal::from_bf16_f32(quantize_f32(
+                value,
+                exponent_bits.min(8),
+                mantissa_bits.min(23),
+            )))
+        }
+        DType::F16 => {
+            let value = literal.as_f16_f32().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "reduce_precision expected f16 literal payload",
+            })?;
+            Ok(Literal::from_f16_f32(quantize_f32(
+                value,
+                exponent_bits.min(8),
+                mantissa_bits.min(23),
+            )))
+        }
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: "reduce_precision supports floating-point dtypes only".to_owned(),
+        }),
+    }
+}
+
+/// ReducePrecision: simulate reduced floating-point exponent/mantissa precision.
+///
+/// Params:
+/// - `exponent_bits` (default: native exponent width)
+/// - `mantissa_bits` (default: native mantissa width)
+pub(crate) fn eval_reduce_precision(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::ReducePrecision;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let source_dtype = inputs[0].dtype();
+    let (default_exp_bits, default_mant_bits) = match source_dtype {
+        DType::F64 => (11_u32, 52_u32),
+        DType::F32 => (8_u32, 23_u32),
+        DType::BF16 => (8_u32, 7_u32),
+        DType::F16 => (5_u32, 10_u32),
+        _ => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "reduce_precision supports floating-point dtypes only".to_owned(),
+            });
+        }
+    };
+
+    let exponent_bits = params
+        .get("exponent_bits")
+        .map(|raw| {
+            raw.trim()
+                .parse::<u32>()
+                .map_err(|_| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("invalid exponent_bits: '{raw}'"),
+                })
+        })
+        .transpose()?
+        .unwrap_or(default_exp_bits);
+    let mantissa_bits = params
+        .get("mantissa_bits")
+        .map(|raw| {
+            raw.trim()
+                .parse::<u32>()
+                .map_err(|_| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("invalid mantissa_bits: '{raw}'"),
+                })
+        })
+        .transpose()?
+        .unwrap_or(default_mant_bits);
+
+    match &inputs[0] {
+        Value::Scalar(literal) => Ok(Value::Scalar(reduce_precision_literal(
+            primitive,
+            source_dtype,
+            *literal,
+            exponent_bits,
+            mantissa_bits,
+        )?)),
+        Value::Tensor(tensor) => {
+            let mut out = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                out.push(reduce_precision_literal(
+                    primitive,
+                    source_dtype,
+                    *literal,
+                    exponent_bits,
+                    mantissa_bits,
+                )?);
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                source_dtype,
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+    }
 }
 
 /// One-hot encoding: given integer indices, produces a tensor with a trailing

@@ -530,7 +530,9 @@ impl SimpleTraceContext {
             | Primitive::Erf
             | Primitive::Erfc
             | Primitive::Cbrt
-            | Primitive::IntegerPow => {
+            | Primitive::IntegerPow
+            | Primitive::Copy
+            | Primitive::ReducePrecision => {
                 if inputs.len() != 1 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
@@ -538,6 +540,25 @@ impl SimpleTraceContext {
                     });
                 }
                 Ok(vec![inputs[0].clone()])
+            }
+            Primitive::BitcastConvertType => {
+                if inputs.len() != 1 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 1 input, got {}", inputs.len()),
+                    });
+                }
+                let raw_dtype = params.get("new_dtype").ok_or_else(|| {
+                    TraceError::MissingPrimitiveParam {
+                        primitive,
+                        key: "new_dtype",
+                    }
+                })?;
+                let dtype = parse_dtype_name(primitive, "new_dtype", raw_dtype)?;
+                Ok(vec![ShapedArray {
+                    dtype,
+                    shape: inputs[0].shape.clone(),
+                }])
             }
             Primitive::Conj => {
                 if inputs.len() != 1 {
@@ -791,6 +812,41 @@ impl SimpleTraceContext {
                 Ok(vec![ShapedArray {
                     dtype,
                     shape: Shape::vector(length),
+                }])
+            }
+            Primitive::BroadcastedIota => {
+                if !inputs.is_empty() {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 0 inputs, got {}", inputs.len()),
+                    });
+                }
+                let raw_shape = params.get("shape").ok_or_else(|| {
+                    TraceError::MissingPrimitiveParam {
+                        primitive,
+                        key: "shape",
+                    }
+                })?;
+                let dims = parse_u32_list(primitive, "shape", raw_shape)?;
+                let rank = dims.len();
+                let dimension = params
+                    .get("dimension")
+                    .and_then(|raw| raw.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                if rank > 0 && dimension >= rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("dimension {dimension} out of bounds for rank {rank}"),
+                    });
+                }
+                let dtype = if let Some(raw_dtype) = params.get("dtype") {
+                    parse_dtype_name(primitive, "dtype", raw_dtype)?
+                } else {
+                    DType::I64
+                };
+                Ok(vec![ShapedArray {
+                    dtype,
+                    shape: Shape { dims },
                 }])
             }
             Primitive::OneHot => {
@@ -2001,6 +2057,31 @@ fn parse_i64_list(
                 })
         })
         .collect()
+}
+
+fn parse_dtype_name(
+    primitive: Primitive,
+    key: &'static str,
+    raw: &str,
+) -> Result<DType, TraceError> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bf16" | "bfloat16" => Ok(DType::BF16),
+        "f16" | "float16" => Ok(DType::F16),
+        "f32" | "float32" => Ok(DType::F32),
+        "f64" | "float64" => Ok(DType::F64),
+        "i32" => Ok(DType::I32),
+        "i64" => Ok(DType::I64),
+        "u32" => Ok(DType::U32),
+        "u64" => Ok(DType::U64),
+        "bool" => Ok(DType::Bool),
+        "complex64" => Ok(DType::Complex64),
+        "complex128" => Ok(DType::Complex128),
+        _ => Err(TraceError::InvalidPrimitiveParam {
+            primitive,
+            key,
+            value: raw.to_owned(),
+        }),
+    }
 }
 
 // ── make_jaxpr: Trace Rust closures into Jaxpr ────────────────────
@@ -3326,6 +3407,103 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.dtype, DType::F64);
                 assert_eq!(aval.shape, Shape { dims: vec![2, 4] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_copy_shape() {
+        run_logged_test(
+            "test_infer_copy_shape",
+            fj_test_utils::fixture_id_from_json(&("copy-shape", [3_u32, 2_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape { dims: vec![3, 2] },
+                }]);
+                let out = ctx
+                    .process_primitive(Primitive::Copy, &[TracerId(1)], BTreeMap::new())
+                    .expect("copy inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::F64);
+                assert_eq!(aval.shape, Shape { dims: vec![3, 2] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_bitcast_convert_type_shape() {
+        run_logged_test(
+            "test_infer_bitcast_convert_type_shape",
+            fj_test_utils::fixture_id_from_json(&("bitcast-shape", [4_u32])).expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(4),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("new_dtype".to_owned(), "i64".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::BitcastConvertType, &[TracerId(1)], params)
+                    .expect("bitcast inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::I64);
+                assert_eq!(aval.shape, Shape::vector(4));
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_broadcasted_iota_shape() {
+        run_logged_test(
+            "test_infer_broadcasted_iota_shape",
+            fj_test_utils::fixture_id_from_json(&("broadcasted-iota-shape", [2_u32, 3_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::new();
+                let mut params = BTreeMap::new();
+                params.insert("shape".to_owned(), "2,3".to_owned());
+                params.insert("dimension".to_owned(), "1".to_owned());
+                params.insert("dtype".to_owned(), "i64".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::BroadcastedIota, &[], params)
+                    .expect("broadcasted_iota inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::I64);
+                assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_reduce_precision_shape() {
+        run_logged_test(
+            "test_infer_reduce_precision_shape",
+            fj_test_utils::fixture_id_from_json(&("reduce-precision-shape", [5_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(5),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("exponent_bits".to_owned(), "8".to_owned());
+                params.insert("mantissa_bits".to_owned(), "7".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::ReducePrecision, &[TracerId(1)], params)
+                    .expect("reduce_precision inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::F64);
+                assert_eq!(aval.shape, Shape::vector(5));
                 Ok(Vec::new())
             },
         );
