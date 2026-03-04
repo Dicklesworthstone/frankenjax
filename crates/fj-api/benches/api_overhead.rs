@@ -1,6 +1,42 @@
 use criterion::{Criterion, criterion_group, criterion_main};
 use fj_api::{compose, grad, jit, value_and_grad, vmap};
-use fj_core::{ProgramSpec, Transform, Value, build_program};
+use fj_core::{
+    Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Transform, Value, VarId, build_program,
+};
+
+fn build_deep_value_and_grad_jaxpr(node_count: usize) -> Jaxpr {
+    let mut equations = Vec::with_capacity(node_count.saturating_mul(2));
+    let mut current = VarId(1);
+    let mut next_var_id = 2u32;
+
+    for _ in 0..node_count {
+        let squared = VarId(next_var_id);
+        next_var_id += 1;
+        equations.push(Equation {
+            primitive: Primitive::Mul,
+            inputs: vec![Atom::Var(current), Atom::Var(current)].into(),
+            outputs: vec![squared].into(),
+            params: std::collections::BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+
+        let shifted = VarId(next_var_id);
+        next_var_id += 1;
+        equations.push(Equation {
+            primitive: Primitive::Add,
+            inputs: vec![Atom::Var(squared), Atom::Lit(Literal::from_f64(1.0))].into(),
+            outputs: vec![shifted].into(),
+            params: std::collections::BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        });
+
+        current = shifted;
+    }
+
+    Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
+}
 
 // ---------------------------------------------------------------------------
 // 1. API Entry Point Overhead (individual transforms)
@@ -118,7 +154,66 @@ fn bench_api_vs_dispatch(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Transform Composition Overhead via API
+// 3. value_and_grad Runtime Efficiency (shared forward vs separate calls)
+// ---------------------------------------------------------------------------
+
+fn bench_value_and_grad_shared_vs_separate(c: &mut Criterion) {
+    let mut group = c.benchmark_group("value_and_grad_runtime");
+    let input = Value::scalar_f64(1.5);
+
+    let baseline_jaxpr = build_program(ProgramSpec::SquarePlusLinear);
+    let shared = value_and_grad(baseline_jaxpr.clone());
+    let separate_value = jit(baseline_jaxpr.clone());
+    let separate_grad = grad(baseline_jaxpr);
+
+    group.bench_function("shared/square_plus_linear", |b| {
+        b.iter(|| {
+            shared
+                .call(vec![input.clone()])
+                .expect("shared value_and_grad should succeed");
+        });
+    });
+
+    group.bench_function("separate/square_plus_linear", |b| {
+        b.iter(|| {
+            separate_value
+                .call(vec![input.clone()])
+                .expect("separate value call should succeed");
+            separate_grad
+                .call(vec![input.clone()])
+                .expect("separate grad call should succeed");
+        });
+    });
+
+    let deep_jaxpr = build_deep_value_and_grad_jaxpr(100);
+    let deep_shared = value_and_grad(deep_jaxpr.clone());
+    let deep_separate_value = jit(deep_jaxpr.clone());
+    let deep_separate_grad = grad(deep_jaxpr);
+
+    group.bench_function("shared/deep_100_nodes", |b| {
+        b.iter(|| {
+            deep_shared
+                .call(vec![input.clone()])
+                .expect("shared deep value_and_grad should succeed");
+        });
+    });
+
+    group.bench_function("separate/deep_100_nodes", |b| {
+        b.iter(|| {
+            deep_separate_value
+                .call(vec![input.clone()])
+                .expect("separate deep value call should succeed");
+            deep_separate_grad
+                .call(vec![input.clone()])
+                .expect("separate deep grad call should succeed");
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// 4. Transform Composition Overhead via API
 // ---------------------------------------------------------------------------
 
 fn bench_api_composition(c: &mut Criterion) {
@@ -182,7 +277,7 @@ fn bench_api_composition(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Mode Configuration Overhead
+// 5. Mode Configuration Overhead
 // ---------------------------------------------------------------------------
 
 fn bench_api_mode_config(c: &mut Criterion) {
@@ -218,6 +313,7 @@ criterion_group!(
     api_benches,
     bench_api_jit_scalar,
     bench_api_vs_dispatch,
+    bench_value_and_grad_shared_vs_separate,
     bench_api_composition,
     bench_api_mode_config,
 );
