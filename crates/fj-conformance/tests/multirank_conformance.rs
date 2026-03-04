@@ -3,12 +3,15 @@
 //! Tests fixture construction and structural validation for tensors of rank 0-4,
 //! covering broadcasting, reduction along axes, transpose, and edge cases.
 
+use fj_ad::grad_jaxpr;
 use fj_conformance::{
     ComparatorKind, FixtureFamily, FixtureMode, FixtureProgram, FixtureTransform, FixtureValue,
     HarnessConfig, TransformFixtureBundle, TransformFixtureCase, run_transform_fixture_bundle,
 };
+use fj_core::{DType, Literal, Primitive, ProgramSpec, Shape, TensorValue, Value, build_program};
+use fj_lax::eval_primitive;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1051,6 +1054,158 @@ fn fixture_shape(value: &FixtureValue) -> Vec<u32> {
     }
 }
 
+fn no_params() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+fn make_tensor_value(dtype: DType, shape: &[u32], elements: Vec<Literal>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            dtype,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            elements,
+        )
+        .expect("tensor should be constructible"),
+    )
+}
+
+fn tensor_i32(shape: &[u32], values: &[i64]) -> Value {
+    make_tensor_value(
+        DType::I32,
+        shape,
+        values.iter().copied().map(Literal::I64).collect(),
+    )
+}
+
+fn tensor_i64(shape: &[u32], values: &[i64]) -> Value {
+    make_tensor_value(
+        DType::I64,
+        shape,
+        values.iter().copied().map(Literal::I64).collect(),
+    )
+}
+
+fn tensor_u32(shape: &[u32], values: &[u32]) -> Value {
+    make_tensor_value(
+        DType::U32,
+        shape,
+        values.iter().copied().map(Literal::U32).collect(),
+    )
+}
+
+fn tensor_u64(shape: &[u32], values: &[u64]) -> Value {
+    make_tensor_value(
+        DType::U64,
+        shape,
+        values.iter().copied().map(Literal::U64).collect(),
+    )
+}
+
+fn tensor_f16(shape: &[u32], values: &[f32]) -> Value {
+    make_tensor_value(
+        DType::F16,
+        shape,
+        values.iter().copied().map(Literal::from_f16_f32).collect(),
+    )
+}
+
+fn tensor_bf16(shape: &[u32], values: &[f32]) -> Value {
+    make_tensor_value(
+        DType::BF16,
+        shape,
+        values.iter().copied().map(Literal::from_bf16_f32).collect(),
+    )
+}
+
+fn tensor_f32(shape: &[u32], values: &[f64]) -> Value {
+    make_tensor_value(
+        DType::F32,
+        shape,
+        values.iter().copied().map(Literal::from_f64).collect(),
+    )
+}
+
+fn tensor_f64(shape: &[u32], values: &[f64]) -> Value {
+    make_tensor_value(
+        DType::F64,
+        shape,
+        values.iter().copied().map(Literal::from_f64).collect(),
+    )
+}
+
+fn tensor_bool(shape: &[u32], values: &[bool]) -> Value {
+    make_tensor_value(
+        DType::Bool,
+        shape,
+        values.iter().copied().map(Literal::Bool).collect(),
+    )
+}
+
+fn dtype_label(dtype: DType) -> &'static str {
+    match dtype {
+        DType::BF16 => "bf16",
+        DType::F16 => "f16",
+        DType::F32 => "f32",
+        DType::F64 => "f64",
+        DType::I32 => "i32",
+        DType::I64 => "i64",
+        DType::U32 => "u32",
+        DType::U64 => "u64",
+        DType::Bool => "bool",
+        DType::Complex64 => "complex64",
+        DType::Complex128 => "complex128",
+    }
+}
+
+fn input_dtype_labels(inputs: &[Value]) -> Vec<String> {
+    inputs
+        .iter()
+        .map(|value| dtype_label(value.dtype()).to_owned())
+        .collect()
+}
+
+fn assert_tensor_dtype(value: &Value, expected_dtype: DType) {
+    let tensor = value.as_tensor().expect("expected tensor output");
+    assert_eq!(tensor.dtype, expected_dtype);
+}
+
+fn literals_match(expected: Literal, actual: Literal, dtype: DType, atol: f64) -> bool {
+    match dtype {
+        DType::Bool => matches!(actual, Literal::Bool(v) if expected == Literal::Bool(v)),
+        DType::I32 | DType::I64 => expected.as_i64() == actual.as_i64(),
+        DType::U32 | DType::U64 => expected.as_u64() == actual.as_u64(),
+        DType::BF16 | DType::F16 | DType::F32 | DType::F64 => expected
+            .as_f64()
+            .zip(actual.as_f64())
+            .is_some_and(|(e, a)| (e - a).abs() <= atol),
+        DType::Complex64 | DType::Complex128 => false,
+    }
+}
+
+fn values_match(expected: &Value, actual: &Value, atol: f64) -> bool {
+    match (expected, actual) {
+        (Value::Scalar(expected_lit), Value::Scalar(actual_lit)) => {
+            literals_match(*expected_lit, *actual_lit, expected.dtype(), atol)
+        }
+        (Value::Tensor(expected_tensor), Value::Tensor(actual_tensor)) => {
+            expected_tensor.dtype == actual_tensor.dtype
+                && expected_tensor.shape == actual_tensor.shape
+                && expected_tensor.elements.len() == actual_tensor.elements.len()
+                && expected_tensor
+                    .elements
+                    .iter()
+                    .copied()
+                    .zip(actual_tensor.elements.iter().copied())
+                    .all(|(expected_lit, actual_lit)| {
+                        literals_match(expected_lit, actual_lit, expected_tensor.dtype, atol)
+                    })
+        }
+        _ => false,
+    }
+}
+
 // ── Structural validation tests ────────────────────────────────────
 
 #[test]
@@ -1389,4 +1544,764 @@ fn e2e_multirank_fixture_sweep() {
         bundle.cases.len(),
         "report should include every multirank fixture case"
     );
+}
+
+// ── Mixed dtype + type promotion conformance (V2-CONFORM-08) ──────
+
+#[test]
+fn test_dtype_promotion_f32_f64() {
+    let out = eval_primitive(
+        Primitive::Add,
+        &[
+            tensor_f32(&[2], &[1.5, 2.25]),
+            tensor_f64(&[2], &[0.25, 0.75]),
+        ],
+        &no_params(),
+    )
+    .expect("f32 + f64 should evaluate");
+
+    assert_tensor_dtype(&out, DType::F64);
+    assert!(values_match(&tensor_f64(&[2], &[1.75, 3.0]), &out, 1e-12));
+}
+
+#[test]
+fn test_dtype_promotion_i32_f32() {
+    let out = eval_primitive(
+        Primitive::Add,
+        &[
+            tensor_i32(&[3], &[1, -2, 3]),
+            tensor_f32(&[3], &[0.5, 1.5, 2.0]),
+        ],
+        &no_params(),
+    )
+    .expect("i32 + f32 should evaluate");
+
+    assert_tensor_dtype(&out, DType::F32);
+    assert!(values_match(
+        &tensor_f32(&[3], &[1.5, -0.5, 5.0]),
+        &out,
+        1e-9
+    ));
+}
+
+#[test]
+fn test_dtype_promotion_bool_i32() {
+    let out = eval_primitive(
+        Primitive::Add,
+        &[
+            tensor_bool(&[4], &[true, false, true, false]),
+            tensor_i32(&[4], &[10, 20, -1, 0]),
+        ],
+        &no_params(),
+    )
+    .expect("bool + i32 should evaluate");
+
+    assert_tensor_dtype(&out, DType::I32);
+    assert!(values_match(&tensor_i32(&[4], &[11, 20, 0, 0]), &out, 0.0));
+}
+
+#[test]
+fn test_dtype_promotion_matrix() {
+    struct PromotionCase {
+        name: &'static str,
+        lhs: Value,
+        rhs: Value,
+        expected: DType,
+    }
+
+    let cases = vec![
+        PromotionCase {
+            name: "f32_f64",
+            lhs: tensor_f32(&[], &[1.0]),
+            rhs: tensor_f64(&[], &[2.0]),
+            expected: DType::F64,
+        },
+        PromotionCase {
+            name: "i32_f32",
+            lhs: tensor_i32(&[], &[7]),
+            rhs: tensor_f32(&[], &[0.5]),
+            expected: DType::F32,
+        },
+        PromotionCase {
+            name: "bool_i32",
+            lhs: tensor_bool(&[], &[true]),
+            rhs: tensor_i32(&[], &[3]),
+            expected: DType::I32,
+        },
+        PromotionCase {
+            name: "i64_f64",
+            lhs: tensor_i64(&[], &[8]),
+            rhs: tensor_f64(&[], &[0.25]),
+            expected: DType::F64,
+        },
+        PromotionCase {
+            name: "u32_i32",
+            lhs: tensor_u32(&[], &[8]),
+            rhs: tensor_i32(&[], &[3]),
+            expected: DType::I64,
+        },
+        PromotionCase {
+            name: "u32_f32",
+            lhs: tensor_u32(&[], &[8]),
+            rhs: tensor_f32(&[], &[3.0]),
+            expected: DType::F64,
+        },
+        PromotionCase {
+            name: "u64_i64",
+            lhs: tensor_u64(&[], &[8]),
+            rhs: tensor_i64(&[], &[3]),
+            expected: DType::F64,
+        },
+        PromotionCase {
+            name: "bf16_f16",
+            lhs: tensor_bf16(&[], &[1.0]),
+            rhs: tensor_f16(&[], &[2.0]),
+            expected: DType::F32,
+        },
+        PromotionCase {
+            name: "bf16_f64",
+            lhs: tensor_bf16(&[], &[1.0]),
+            rhs: tensor_f64(&[], &[2.0]),
+            expected: DType::F64,
+        },
+    ];
+
+    for case in cases {
+        let out = eval_primitive(Primitive::Add, &[case.lhs, case.rhs], &no_params())
+            .unwrap_or_else(|err| panic!("promotion case {} failed: {err}", case.name));
+        assert_tensor_dtype(&out, case.expected);
+    }
+}
+
+#[test]
+fn test_dtype_cast_explicit() {
+    let mut params = BTreeMap::new();
+    params.insert("new_dtype".to_owned(), "f64".to_owned());
+    let i64_bits_for_one = 4_607_182_418_800_017_408_i64;
+    let out = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[Value::scalar_i64(i64_bits_for_one)],
+        &params,
+    )
+    .expect("bitcast convert should evaluate");
+
+    assert_eq!(out.as_f64_scalar(), Some(1.0));
+}
+
+#[test]
+fn test_mixed_dtype_binary_ops() {
+    let add_out = eval_primitive(
+        Primitive::Add,
+        &[
+            tensor_i64(&[3], &[1, 2, 3]),
+            tensor_f64(&[3], &[0.5, 1.5, -1.0]),
+        ],
+        &no_params(),
+    )
+    .expect("add(i64, f64) should evaluate");
+    assert_tensor_dtype(&add_out, DType::F64);
+    assert!(values_match(
+        &tensor_f64(&[3], &[1.5, 3.5, 2.0]),
+        &add_out,
+        1e-12
+    ));
+
+    let mul_out = eval_primitive(
+        Primitive::Mul,
+        &[
+            tensor_bool(&[4], &[true, false, true, false]),
+            tensor_i64(&[4], &[10, 20, -3, 1]),
+        ],
+        &no_params(),
+    )
+    .expect("mul(bool, i64) should evaluate");
+    assert_tensor_dtype(&mul_out, DType::I64);
+    assert!(values_match(
+        &tensor_i64(&[4], &[10, 0, -3, 0]),
+        &mul_out,
+        0.0
+    ));
+
+    let div_out = eval_primitive(
+        Primitive::Div,
+        &[tensor_i64(&[3], &[9, 3, 1]), Value::scalar_f64(2.0)],
+        &no_params(),
+    )
+    .expect("div(i64, f64) should evaluate");
+    assert_tensor_dtype(&div_out, DType::F64);
+    assert!(values_match(
+        &tensor_f64(&[3], &[4.5, 1.5, 0.5]),
+        &div_out,
+        1e-12
+    ));
+}
+
+#[test]
+fn test_mixed_dtype_comparison() {
+    let lt_out = eval_primitive(
+        Primitive::Lt,
+        &[
+            tensor_f32(&[4], &[0.25, 2.0, -2.0, 9.0]),
+            tensor_i32(&[4], &[1, 1, -3, 9]),
+        ],
+        &no_params(),
+    )
+    .expect("lt(f32, i32) should evaluate");
+
+    assert_tensor_dtype(&lt_out, DType::Bool);
+    assert!(values_match(
+        &tensor_bool(&[4], &[true, false, false, false]),
+        &lt_out,
+        0.0
+    ));
+}
+
+#[test]
+fn test_dtype_preservation_unary() {
+    let sin_out = eval_primitive(
+        Primitive::Sin,
+        &[tensor_f32(&[2], &[0.0, std::f64::consts::FRAC_PI_2])],
+        &no_params(),
+    )
+    .expect("sin(f32 tensor) should evaluate");
+    assert_tensor_dtype(&sin_out, DType::F32);
+    assert!(values_match(
+        &tensor_f32(&[2], &[0.0, 1.0]),
+        &sin_out,
+        1e-12
+    ));
+
+    let neg_out = eval_primitive(
+        Primitive::Neg,
+        &[tensor_i32(&[3], &[1, -2, 3])],
+        &no_params(),
+    )
+    .expect("neg(i32 tensor) should evaluate");
+    assert_tensor_dtype(&neg_out, DType::I32);
+    assert!(values_match(&tensor_i32(&[3], &[-1, 2, -3]), &neg_out, 0.0));
+}
+
+#[test]
+fn e2e_mixed_dtype_conformance() {
+    let mut forensic_entries = Vec::<serde_json::Value>::new();
+    let mut promotion_log_entries = Vec::<serde_json::Value>::new();
+    let mut total_cases = 0_usize;
+    let mut passed_cases = 0_usize;
+
+    enum MixedExpectation<'a> {
+        Value(Value),
+        ErrorContains(&'a str),
+    }
+
+    let mut record_case = |fixture_id: &str,
+                           promotion_rule: &str,
+                           inputs: Vec<Value>,
+                           expected: MixedExpectation<'_>,
+                           actual: Result<Value, String>| {
+        total_cases += 1;
+        let input_dtypes = input_dtype_labels(&inputs);
+
+        let (expected_output_dtype, actual_output_dtype, values_match_flag, pass_flag) =
+            match expected {
+                MixedExpectation::Value(expected_value) => {
+                    let expected_dtype = dtype_label(expected_value.dtype()).to_owned();
+                    match actual {
+                        Ok(actual_value) => {
+                            let matches = values_match(&expected_value, &actual_value, 1e-9);
+                            let actual_dtype = dtype_label(actual_value.dtype()).to_owned();
+                            let pass = matches && actual_dtype == expected_dtype;
+                            (expected_dtype, actual_dtype, matches, pass)
+                        }
+                        Err(_) => (expected_dtype, "error".to_owned(), false, false),
+                    }
+                }
+                MixedExpectation::ErrorContains(expected_error_contains) => match actual {
+                    Ok(value) => (
+                        "error".to_owned(),
+                        dtype_label(value.dtype()).to_owned(),
+                        false,
+                        false,
+                    ),
+                    Err(err) => {
+                        let matched = err.contains(expected_error_contains);
+                        ("error".to_owned(), "error".to_owned(), matched, matched)
+                    }
+                },
+            };
+
+        if pass_flag {
+            passed_cases += 1;
+        }
+
+        forensic_entries.push(json!({
+            "fixture_id": fixture_id,
+            "input_dtypes": input_dtypes.clone(),
+            "expected_output_dtype": expected_output_dtype.clone(),
+            "actual_output_dtype": actual_output_dtype.clone(),
+            "values_match": values_match_flag,
+            "pass": pass_flag
+        }));
+
+        promotion_log_entries.push(json!({
+            "test_name": fixture_id,
+            "input_dtypes": input_dtypes,
+            "promotion_rule": promotion_rule,
+            "expected_dtype": expected_output_dtype,
+            "actual_dtype": actual_output_dtype,
+            "pass": pass_flag
+        }));
+    };
+
+    macro_rules! record_value_case {
+        ($fixture_id:expr, $promotion_rule:expr, $inputs:expr, $expected:expr, $actual:expr $(,)?) => {
+            record_case(
+                $fixture_id,
+                $promotion_rule,
+                $inputs,
+                MixedExpectation::Value($expected),
+                $actual,
+            )
+        };
+    }
+
+    macro_rules! record_error_case {
+        ($fixture_id:expr, $promotion_rule:expr, $inputs:expr, $expected_error_contains:expr, $actual:expr $(,)?) => {
+            record_case(
+                $fixture_id,
+                $promotion_rule,
+                $inputs,
+                MixedExpectation::ErrorContains($expected_error_contains),
+                $actual,
+            )
+        };
+    }
+
+    record_value_case!(
+        "md_add_i64_f64_scalar",
+        "i64 + f64 -> f64",
+        vec![tensor_i64(&[], &[3]), tensor_f64(&[], &[0.5])],
+        tensor_f64(&[], &[3.5]),
+        eval_primitive(
+            Primitive::Add,
+            &[tensor_i64(&[], &[3]), tensor_f64(&[], &[0.5])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_add_i64_f64_vector",
+        "i64 + f64 -> f64",
+        vec![
+            tensor_i64(&[3], &[1, 2, 3]),
+            tensor_f64(&[3], &[0.5, 1.5, -1.0])
+        ],
+        tensor_f64(&[3], &[1.5, 3.5, 2.0]),
+        eval_primitive(
+            Primitive::Add,
+            &[
+                tensor_i64(&[3], &[1, 2, 3]),
+                tensor_f64(&[3], &[0.5, 1.5, -1.0]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_add_i64_f64_matrix",
+        "i64 + f64 -> f64",
+        vec![
+            tensor_i64(&[2, 2], &[1, 2, 3, 4]),
+            tensor_f64(&[2, 2], &[0.25, -0.5, 1.0, 2.5]),
+        ],
+        tensor_f64(&[2, 2], &[1.25, 1.5, 4.0, 6.5]),
+        eval_primitive(
+            Primitive::Add,
+            &[
+                tensor_i64(&[2, 2], &[1, 2, 3, 4]),
+                tensor_f64(&[2, 2], &[0.25, -0.5, 1.0, 2.5]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_add_i64_f64_broadcast_rhs_scalar",
+        "i64 + f64 -> f64",
+        vec![tensor_i64(&[3], &[1, 2, 3]), Value::scalar_f64(2.0)],
+        tensor_f64(&[3], &[3.0, 4.0, 5.0]),
+        eval_primitive(
+            Primitive::Add,
+            &[tensor_i64(&[3], &[1, 2, 3]), Value::scalar_f64(2.0)],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_add_i64_f64_broadcast_lhs_scalar",
+        "f64 + i64 -> f64",
+        vec![Value::scalar_f64(2.0), tensor_i64(&[3], &[1, 2, 3])],
+        tensor_f64(&[3], &[3.0, 4.0, 5.0]),
+        eval_primitive(
+            Primitive::Add,
+            &[Value::scalar_f64(2.0), tensor_i64(&[3], &[1, 2, 3])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_mul_bool_i64_vector",
+        "bool * i64 -> i64",
+        vec![
+            tensor_bool(&[4], &[true, false, true, false]),
+            tensor_i64(&[4], &[10, 20, -3, 1]),
+        ],
+        tensor_i64(&[4], &[10, 0, -3, 0]),
+        eval_primitive(
+            Primitive::Mul,
+            &[
+                tensor_bool(&[4], &[true, false, true, false]),
+                tensor_i64(&[4], &[10, 20, -3, 1]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_mul_bool_i64_matrix",
+        "bool * i64 -> i64",
+        vec![
+            tensor_bool(&[2, 2], &[true, false, false, true]),
+            tensor_i64(&[2, 2], &[5, 6, 7, 8]),
+        ],
+        tensor_i64(&[2, 2], &[5, 0, 0, 8]),
+        eval_primitive(
+            Primitive::Mul,
+            &[
+                tensor_bool(&[2, 2], &[true, false, false, true]),
+                tensor_i64(&[2, 2], &[5, 6, 7, 8]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_mul_bool_i64_scalar",
+        "bool * i64 -> i64",
+        vec![tensor_bool(&[], &[true]), tensor_i64(&[], &[9])],
+        tensor_i64(&[], &[9]),
+        eval_primitive(
+            Primitive::Mul,
+            &[tensor_bool(&[], &[true]), tensor_i64(&[], &[9])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_div_i64_f64_scalar",
+        "i64 / f64 -> f64",
+        vec![tensor_i64(&[], &[9]), tensor_f64(&[], &[2.0])],
+        tensor_f64(&[], &[4.5]),
+        eval_primitive(
+            Primitive::Div,
+            &[tensor_i64(&[], &[9]), tensor_f64(&[], &[2.0])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_div_i64_f64_vector",
+        "i64 / f64 -> f64",
+        vec![tensor_i64(&[3], &[9, 3, 1]), Value::scalar_f64(2.0)],
+        tensor_f64(&[3], &[4.5, 1.5, 0.5]),
+        eval_primitive(
+            Primitive::Div,
+            &[tensor_i64(&[3], &[9, 3, 1]), Value::scalar_f64(2.0)],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_div_i64_f64_matrix",
+        "i64 / f64 -> f64",
+        vec![
+            tensor_i64(&[2, 2], &[10, 20, 30, 40]),
+            tensor_f64(&[2, 2], &[2.0, 5.0, 6.0, 8.0]),
+        ],
+        tensor_f64(&[2, 2], &[5.0, 4.0, 5.0, 5.0]),
+        eval_primitive(
+            Primitive::Div,
+            &[
+                tensor_i64(&[2, 2], &[10, 20, 30, 40]),
+                tensor_f64(&[2, 2], &[2.0, 5.0, 6.0, 8.0]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_gt_f64_i64_vector",
+        "f64 > i64 -> bool",
+        vec![
+            tensor_f64(&[4], &[0.5, 2.5, 3.0, -1.0]),
+            tensor_i64(&[4], &[0, 3, 2, 0]),
+        ],
+        tensor_bool(&[4], &[true, false, true, false]),
+        eval_primitive(
+            Primitive::Gt,
+            &[
+                tensor_f64(&[4], &[0.5, 2.5, 3.0, -1.0]),
+                tensor_i64(&[4], &[0, 3, 2, 0]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_gt_f64_i64_matrix",
+        "f64 > i64 -> bool",
+        vec![
+            tensor_f64(&[2, 2], &[1.0, 2.0, 3.0, 4.0]),
+            tensor_i64(&[2, 2], &[0, 2, 5, 3]),
+        ],
+        tensor_bool(&[2, 2], &[true, false, false, true]),
+        eval_primitive(
+            Primitive::Gt,
+            &[
+                tensor_f64(&[2, 2], &[1.0, 2.0, 3.0, 4.0]),
+                tensor_i64(&[2, 2], &[0, 2, 5, 3]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_eq_i64_f64_scalar",
+        "i64 == f64 -> bool",
+        vec![tensor_i64(&[], &[7]), tensor_f64(&[], &[7.0])],
+        tensor_bool(&[], &[true]),
+        eval_primitive(
+            Primitive::Eq,
+            &[tensor_i64(&[], &[7]), tensor_f64(&[], &[7.0])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_reduce_sum_i64",
+        "reduce_sum(i64) -> i64",
+        vec![tensor_i64(&[4], &[1, 2, 3, 4])],
+        Value::scalar_i64(10),
+        eval_primitive(
+            Primitive::ReduceSum,
+            &[tensor_i64(&[4], &[1, 2, 3, 4])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_value_case!(
+        "md_reduce_sum_f64",
+        "reduce_sum(f64) -> f64",
+        vec![tensor_f64(&[4], &[1.0, 2.0, 3.0, 4.0])],
+        Value::scalar_f64(10.0),
+        eval_primitive(
+            Primitive::ReduceSum,
+            &[tensor_f64(&[4], &[1.0, 2.0, 3.0, 4.0])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_error_case!(
+        "md_reduce_sum_bool_error",
+        "reduce_sum(bool) -> error",
+        vec![tensor_bool(&[3], &[true, false, true])],
+        "expected numeric tensor",
+        eval_primitive(
+            Primitive::ReduceSum,
+            &[tensor_bool(&[3], &[true, false, true])],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    record_error_case!(
+        "md_expr_add_then_mul_bool_vector",
+        "(i64 + f64) * bool -> error",
+        vec![
+            tensor_i64(&[3], &[1, 2, 3]),
+            tensor_f64(&[3], &[0.5, 1.5, -1.0]),
+            tensor_bool(&[3], &[true, false, true]),
+        ],
+        "expected numeric rhs",
+        eval_primitive(
+            Primitive::Add,
+            &[
+                tensor_i64(&[3], &[1, 2, 3]),
+                tensor_f64(&[3], &[0.5, 1.5, -1.0]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|sum| {
+            eval_primitive(
+                Primitive::Mul,
+                &[sum, tensor_bool(&[3], &[true, false, true])],
+                &no_params(),
+            )
+            .map_err(|e| e.to_string())
+        }),
+    );
+
+    record_error_case!(
+        "md_expr_add_then_mul_bool_matrix",
+        "(i64 + f64) * bool -> error",
+        vec![
+            tensor_i64(&[2, 2], &[1, 2, 3, 4]),
+            tensor_f64(&[2, 2], &[0.25, -0.5, 1.0, 2.5]),
+            tensor_bool(&[2, 2], &[true, false, false, true]),
+        ],
+        "expected numeric rhs",
+        eval_primitive(
+            Primitive::Add,
+            &[
+                tensor_i64(&[2, 2], &[1, 2, 3, 4]),
+                tensor_f64(&[2, 2], &[0.25, -0.5, 1.0, 2.5]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|sum| {
+            eval_primitive(
+                Primitive::Mul,
+                &[sum, tensor_bool(&[2, 2], &[true, false, false, true])],
+                &no_params(),
+            )
+            .map_err(|e| e.to_string())
+        }),
+    );
+
+    record_value_case!(
+        "md_grad_square_i64_input",
+        "grad(i64 -> f64) square",
+        vec![Value::scalar_i64(8)],
+        Value::scalar_f64(16.0),
+        grad_jaxpr(&build_program(ProgramSpec::Square), &[Value::scalar_i64(8)])
+            .map_err(|e| e.to_string())
+            .and_then(|mut grads| {
+                grads
+                    .drain(..)
+                    .next()
+                    .ok_or_else(|| "missing gradient output".to_owned())
+            }),
+    );
+
+    record_value_case!(
+        "md_grad_square_plus_linear_i64_input",
+        "grad(i64 -> f64) square_plus_linear",
+        vec![Value::scalar_i64(5)],
+        Value::scalar_f64(12.0),
+        grad_jaxpr(
+            &build_program(ProgramSpec::SquarePlusLinear),
+            &[Value::scalar_i64(5)]
+        )
+        .map_err(|e| e.to_string())
+        .and_then(|mut grads| {
+            grads
+                .drain(..)
+                .next()
+                .ok_or_else(|| "missing gradient output".to_owned())
+        }),
+    );
+
+    record_value_case!(
+        "md_lt_f32_i32_vector",
+        "f32 < i32 -> bool",
+        vec![
+            tensor_f32(&[4], &[0.25, 2.0, -2.0, 9.0]),
+            tensor_i32(&[4], &[1, 1, -3, 9]),
+        ],
+        tensor_bool(&[4], &[true, false, false, false]),
+        eval_primitive(
+            Primitive::Lt,
+            &[
+                tensor_f32(&[4], &[0.25, 2.0, -2.0, 9.0]),
+                tensor_i32(&[4], &[1, 1, -3, 9]),
+            ],
+            &no_params(),
+        )
+        .map_err(|e| e.to_string()),
+    );
+
+    assert!(
+        total_cases >= 20,
+        "expected >=20 mixed-dtype cases, got {total_cases}"
+    );
+    assert_eq!(
+        passed_cases, total_cases,
+        "all mixed-dtype conformance cases should pass"
+    );
+
+    let forensic_log = json!({
+        "scenario": "e2e_mixed_dtype_conformance",
+        "generated_at_unix_ms": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_millis(),
+        "total_cases": total_cases,
+        "passed_cases": passed_cases,
+        "failed_cases": total_cases.saturating_sub(passed_cases),
+        "entries": forensic_entries
+    });
+
+    let e2e_output_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../artifacts/e2e/e2e_mixed_dtype.e2e.json");
+    fs::create_dir_all(
+        e2e_output_path
+            .parent()
+            .expect("output parent should exist"),
+    )
+    .expect("should create artifacts/e2e");
+    fs::write(
+        &e2e_output_path,
+        serde_json::to_string_pretty(&forensic_log).expect("forensic log should serialize"),
+    )
+    .expect("should write mixed-dtype e2e forensic log");
+
+    let promotion_log = json!({
+        "test_name": "e2e_mixed_dtype_conformance",
+        "generated_at_unix_ms": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_millis(),
+        "entries": promotion_log_entries
+    });
+
+    let log_output_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/testing/logs/fj-conformance/e2e_mixed_dtype_conformance.json");
+    fs::create_dir_all(
+        log_output_path
+            .parent()
+            .expect("log output parent should exist"),
+    )
+    .expect("should create artifacts/testing/logs/fj-conformance");
+    fs::write(
+        &log_output_path,
+        serde_json::to_string_pretty(&promotion_log).expect("promotion log should serialize"),
+    )
+    .expect("should write mixed-dtype promotion log");
 }

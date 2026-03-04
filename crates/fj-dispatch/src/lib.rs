@@ -1260,7 +1260,7 @@ mod tests {
         // Evidence ledger should include count + trace for effect token observations.
         assert_eq!(response.evidence_ledger.len(), 1);
         let entry = &response.evidence_ledger.entries()[0];
-        assert_eq!(entry.signals.len(), 5);
+        assert_eq!(entry.signals.len(), 6);
 
         let count_signal = entry
             .signals

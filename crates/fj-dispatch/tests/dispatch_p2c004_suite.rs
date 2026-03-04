@@ -1272,7 +1272,7 @@ fn ledger_entry_contains_all_signals() {
     ))
     .unwrap();
     let entry = &r.evidence_ledger.entries()[0];
-    assert_eq!(entry.signals.len(), 5);
+    assert_eq!(entry.signals.len(), 6);
 
     let signal_names: Vec<&str> = entry
         .signals
@@ -1282,6 +1282,7 @@ fn ledger_entry_contains_all_signals() {
     assert!(signal_names.contains(&"eqn_count"));
     assert!(signal_names.contains(&"transform_depth"));
     assert!(signal_names.contains(&"transform_stack_hash"));
+    assert!(signal_names.contains(&"nested_trace_depth"));
     assert!(signal_names.contains(&"effect_token_count"));
     assert!(signal_names.contains(&"effect_token_trace"));
 }
@@ -1383,7 +1384,7 @@ mod proptest_tests {
                 vec![Value::scalar_i64(x), Value::scalar_i64(1)],
             )).expect("dispatch");
             prop_assert_eq!(r.evidence_ledger.len(), 1);
-            prop_assert_eq!(r.evidence_ledger.entries()[0].signals.len(), 5);
+            prop_assert_eq!(r.evidence_ledger.entries()[0].signals.len(), 6);
         }
 
         #[test]

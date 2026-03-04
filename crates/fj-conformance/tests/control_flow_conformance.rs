@@ -303,6 +303,30 @@ fn run_grad_scan_mul_case(init: f64, xs: &[f64]) -> f64 {
         .expect("grad(scan) output should be scalar f64")
 }
 
+fn run_grad_while_case(
+    init: f64,
+    step: f64,
+    threshold: f64,
+    body_op: &str,
+    cond_op: &str,
+    max_iter: usize,
+) -> f64 {
+    let response = dispatch(make_request(
+        while_jaxpr(body_op, cond_op, max_iter),
+        vec![
+            Value::scalar_f64(init),
+            Value::scalar_f64(step),
+            Value::scalar_f64(threshold),
+        ],
+        &[Transform::Grad],
+        BTreeMap::new(),
+    ))
+    .expect("grad(while) dispatch should succeed");
+    response.outputs[0]
+        .as_f64_scalar()
+        .expect("grad(while) output should be scalar f64")
+}
+
 fn run_vmap_cond_case(preds: &[i64], on_true: &[i64], on_false: &[i64]) -> Vec<i64> {
     let mut compile_options = BTreeMap::new();
     compile_options.insert("vmap_in_axes".to_owned(), "0,0,0".to_owned());
@@ -447,6 +471,133 @@ fn test_grad_through_scan() {
     // scan(mul, init, [3, 4]) = init * 3 * 4 => d/dinit = 12
     let grad = run_grad_scan_mul_case(2.0, &[3.0, 4.0]);
     assert!((grad - 12.0).abs() < 1e-6);
+}
+
+#[test]
+fn e2e_control_flow_ad_oracle() {
+    let mut cases = Vec::new();
+    let mut log_records = Vec::new();
+    let mut failures = Vec::new();
+
+    let mut push_case = |control_flow: &str,
+                         body: &str,
+                         input: JsonValue,
+                         fj_gradient: f64,
+                         jax_gradient: f64| {
+        let abs_diff = (fj_gradient - jax_gradient).abs();
+        let pass = abs_diff <= 1e-4;
+        if !pass {
+            failures.push(format!(
+                    "{control_flow}:{body} input={input} fj={fj_gradient} jax={jax_gradient} diff={abs_diff}"
+                ));
+        }
+        cases.push(json!({
+            "control_flow": control_flow,
+            "body": body,
+            "input": input,
+            "fj_gradient": fj_gradient,
+            "jax_gradient": jax_gradient,
+            "abs_diff": abs_diff,
+            "pass": pass,
+        }));
+        log_records.push(json!({
+            "test_name": "e2e_control_flow_ad_oracle",
+            "control_flow": control_flow,
+            "gradient": fj_gradient,
+            "finite_diff": jax_gradient,
+            "error": abs_diff,
+            "pass": pass,
+        }));
+    };
+
+    // cond true-branch: f(x)=x => grad=1.
+    push_case(
+        "cond",
+        "true_branch",
+        json!({"x": 3.0, "pred": true}),
+        run_grad_cond_case(3.0, true),
+        1.0,
+    );
+
+    // cond false-branch: f(x)=x*x => grad=2x=6.
+    push_case(
+        "cond",
+        "false_branch",
+        json!({"x": 3.0, "pred": false}),
+        run_grad_cond_case(3.0, false),
+        6.0,
+    );
+
+    // scan mul: f(init)=init*3*4 => grad=12.
+    push_case(
+        "scan",
+        "mul",
+        json!({"init": 2.0, "xs": [3.0, 4.0]}),
+        run_grad_scan_mul_case(2.0, &[3.0, 4.0]),
+        12.0,
+    );
+
+    // while add: 0 -> 12 via +3 with lt 10, grad wrt init remains 1.
+    push_case(
+        "while",
+        "add",
+        json!({"init": 0.0, "step": 3.0, "threshold": 10.0, "cond_op": "lt"}),
+        run_grad_while_case(0.0, 3.0, 10.0, "add", "lt", 16),
+        1.0,
+    );
+
+    // while mul: 1 -> 128 via *2 with lt 100, grad wrt init = 2^7 = 128.
+    push_case(
+        "while",
+        "mul",
+        json!({"init": 1.0, "step": 2.0, "threshold": 100.0, "cond_op": "lt"}),
+        run_grad_while_case(1.0, 2.0, 100.0, "mul", "lt", 16),
+        128.0,
+    );
+
+    let generated_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after unix epoch")
+        .as_millis();
+
+    let e2e_payload = json!({
+        "schema_version": "frankenjax.e2e.control-flow-ad.v1",
+        "test_name": "e2e_control_flow_ad_oracle",
+        "generated_at_unix_ms": generated_at_unix_ms,
+        "cases": cases,
+    });
+    write_json_artifact(
+        &repo_root().join("artifacts/e2e/e2e_control_flow_ad.e2e.json"),
+        &e2e_payload,
+    );
+
+    let log_payload = json!({
+        "schema_version": "frankenjax.testing.control-flow-ad.v1",
+        "generated_at_unix_ms": generated_at_unix_ms,
+        "records": log_records,
+    });
+    write_json_artifact(
+        &repo_root().join("artifacts/testing/logs/fj-ad/e2e_control_flow_ad_oracle.json"),
+        &log_payload,
+    );
+
+    println!("__FJ_CTRL_AD_E2E_JSON_BEGIN__");
+    println!(
+        "{}",
+        serde_json::to_string(&e2e_payload).expect("control-flow ad payload should serialize")
+    );
+    println!("__FJ_CTRL_AD_E2E_JSON_END__");
+    println!("__FJ_CTRL_AD_LOG_JSON_BEGIN__");
+    println!(
+        "{}",
+        serde_json::to_string(&log_payload).expect("control-flow ad log payload should serialize")
+    );
+    println!("__FJ_CTRL_AD_LOG_JSON_END__");
+
+    assert!(
+        failures.is_empty(),
+        "control-flow AD mismatches: {failures:?}"
+    );
 }
 
 #[test]

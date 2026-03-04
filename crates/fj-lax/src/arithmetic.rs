@@ -846,22 +846,31 @@ pub(crate) fn eval_unary_elementwise(
             Ok(Value::scalar_f64(op(value)))
         }
         Value::Tensor(tensor) => {
+            let out_dtype = match tensor.dtype {
+                DType::BF16 | DType::F16 | DType::F32 | DType::F64 => tensor.dtype,
+                _ => DType::F64,
+            };
+
             let elements = tensor
                 .elements
                 .iter()
                 .copied()
-                .map(|literal| {
-                    literal.as_f64().map(&op).map(Literal::from_f64).ok_or(
-                        EvalError::TypeMismatch {
-                            primitive,
-                            detail: "expected numeric tensor elements",
-                        },
-                    )
+                .map(|literal| -> Result<Literal, EvalError> {
+                    let mapped = literal.as_f64().map(&op).ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric tensor elements",
+                    })?;
+                    let out = match out_dtype {
+                        DType::BF16 => Literal::from_bf16_f32(mapped as f32),
+                        DType::F16 => Literal::from_f16_f32(mapped as f32),
+                        _ => Literal::from_f64(mapped),
+                    };
+                    Ok(out)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
             Ok(Value::Tensor(TensorValue::new(
-                DType::F64,
+                out_dtype,
                 tensor.shape.clone(),
                 elements,
             )?))
@@ -1377,6 +1386,181 @@ pub(crate) fn erf_approx(x: f64) -> f64 {
         * (0.254829592
             + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
     sign * (1.0 - poly * (-x * x).exp())
+}
+
+const LANCZOS_COEFFS: [f64; 9] = [
+    0.999_999_999_999_809_9,
+    676.520_368_121_885_1,
+    -1_259.139_216_722_402_8,
+    771.323_428_777_653_1,
+    -176.615_029_162_140_6,
+    12.507_343_278_686_905,
+    -0.138_571_095_265_720_12,
+    9.984_369_578_019_572e-6,
+    1.505_632_735_149_311_6e-7,
+];
+
+const LANCZOS_G: f64 = 7.0;
+
+#[inline]
+fn is_near_integer(x: f64) -> bool {
+    (x - x.round()).abs() < 1e-14
+}
+
+pub(crate) fn lgamma_approx(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return if x.is_sign_positive() {
+            f64::INFINITY
+        } else {
+            f64::NAN
+        };
+    }
+    if x <= 0.0 && is_near_integer(x) {
+        return f64::INFINITY;
+    }
+
+    if x < 0.5 {
+        let sin_term = (std::f64::consts::PI * x).sin().abs();
+        if sin_term == 0.0 {
+            return f64::INFINITY;
+        }
+        return std::f64::consts::PI.ln() - sin_term.ln() - lgamma_approx(1.0 - x);
+    }
+
+    let z = x - 1.0;
+    let mut acc = LANCZOS_COEFFS[0];
+    for (idx, coeff) in LANCZOS_COEFFS.iter().enumerate().skip(1) {
+        acc += coeff / (z + idx as f64);
+    }
+
+    let t = z + LANCZOS_G + 0.5;
+    0.5 * (2.0 * std::f64::consts::PI).ln() + (z + 0.5) * t.ln() - t + acc.ln()
+}
+
+pub(crate) fn digamma_approx(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return if x.is_sign_positive() {
+            f64::INFINITY
+        } else {
+            f64::NAN
+        };
+    }
+    if x <= 0.0 && is_near_integer(x) {
+        return f64::NEG_INFINITY;
+    }
+
+    if x < 0.5 {
+        let pi_x = std::f64::consts::PI * x;
+        return digamma_approx(1.0 - x) - std::f64::consts::PI / pi_x.tan();
+    }
+
+    let mut shifted = x;
+    let mut result = 0.0;
+    while shifted < 8.0 {
+        result -= 1.0 / shifted;
+        shifted += 1.0;
+    }
+
+    let inv = 1.0 / shifted;
+    let inv2 = inv * inv;
+    let inv4 = inv2 * inv2;
+    let inv6 = inv4 * inv2;
+    let inv8 = inv4 * inv4;
+    let inv10 = inv8 * inv2;
+
+    result + shifted.ln() - 0.5 * inv - inv2 / 12.0 + inv4 / 120.0 - inv6 / 252.0 + inv8 / 240.0
+        - 5.0 * inv10 / 660.0
+}
+
+#[cfg(test)]
+pub(crate) fn trigamma_approx(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return if x.is_sign_positive() { 0.0 } else { f64::NAN };
+    }
+    if x <= 0.0 && is_near_integer(x) {
+        return f64::INFINITY;
+    }
+
+    if x < 0.5 {
+        let sin_px = (std::f64::consts::PI * x).sin();
+        if sin_px == 0.0 {
+            return f64::INFINITY;
+        }
+        let csc2 = 1.0 / (sin_px * sin_px);
+        return std::f64::consts::PI.powi(2) * csc2 - trigamma_approx(1.0 - x);
+    }
+
+    let mut shifted = x;
+    let mut result = 0.0;
+    while shifted < 8.0 {
+        result += 1.0 / (shifted * shifted);
+        shifted += 1.0;
+    }
+
+    let inv = 1.0 / shifted;
+    let inv2 = inv * inv;
+    let inv3 = inv2 * inv;
+    let inv5 = inv3 * inv2;
+    let inv7 = inv5 * inv2;
+    let inv9 = inv7 * inv2;
+    let inv11 = inv9 * inv2;
+
+    result + inv + 0.5 * inv2 + inv3 / 6.0 - inv5 / 30.0 + inv7 / 42.0 - inv9 / 30.0
+        + 5.0 * inv11 / 66.0
+}
+
+pub(crate) fn erf_inv_approx(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x <= -1.0 {
+        return if x == -1.0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::NAN
+        };
+    }
+    if x >= 1.0 {
+        return if x == 1.0 { f64::INFINITY } else { f64::NAN };
+    }
+    if x == 0.0 {
+        return x;
+    }
+
+    // Winitzki initial approximation with Newton refinement.
+    let a = 0.147_f64;
+    let ln_term = (1.0 - x * x).ln();
+    let t = 2.0 / (std::f64::consts::PI * a) + ln_term / 2.0;
+    let mut y = x.signum() * ((t * t - ln_term / a).sqrt() - t).sqrt();
+
+    let coeff = 2.0 / std::f64::consts::PI.sqrt();
+    for _ in 0..3 {
+        let err = erf_approx(y) - x;
+        let deriv = coeff * (-y * y).exp();
+        y -= err / deriv;
+    }
+    y
+}
+
+pub(crate) fn eval_lgamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    eval_unary_elementwise(primitive, inputs, lgamma_approx)
+}
+
+pub(crate) fn eval_digamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    eval_unary_elementwise(primitive, inputs, digamma_approx)
+}
+
+pub(crate) fn eval_erf_inv(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    eval_unary_elementwise(primitive, inputs, erf_inv_approx)
 }
 
 /// Dot product: scalar-scalar, vector-vector.

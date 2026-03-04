@@ -1,0 +1,23 @@
+{
+  "test_name": "e2e_custom_derivatives_oracle",
+  "entries": [
+    {
+      "test_name": "e2e_custom_derivatives_oracle",
+      "registration_type": "custom_vjp",
+      "function": "count_leading_zeros",
+      "custom_gradient": 7.0,
+      "auto_gradient": 0.0,
+      "match": false,
+      "pass": true
+    },
+    {
+      "test_name": "e2e_custom_derivatives_oracle",
+      "registration_type": "custom_jvp",
+      "function": "count_leading_zeros",
+      "custom_gradient": 5.0,
+      "auto_gradient": 0.0,
+      "match": false,
+      "pass": true
+    }
+  ]
+}

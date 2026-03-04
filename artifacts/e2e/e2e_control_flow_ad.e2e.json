@@ -1,0 +1,74 @@
+{
+  "cases": [
+    {
+      "abs_diff": 0.0,
+      "body": "true_branch",
+      "control_flow": "cond",
+      "fj_gradient": 1.0,
+      "input": {
+        "pred": true,
+        "x": 3.0
+      },
+      "jax_gradient": 1.0,
+      "pass": true
+    },
+    {
+      "abs_diff": 0.0,
+      "body": "false_branch",
+      "control_flow": "cond",
+      "fj_gradient": 6.0,
+      "input": {
+        "pred": false,
+        "x": 3.0
+      },
+      "jax_gradient": 6.0,
+      "pass": true
+    },
+    {
+      "abs_diff": 0.0,
+      "body": "mul",
+      "control_flow": "scan",
+      "fj_gradient": 12.0,
+      "input": {
+        "init": 2.0,
+        "xs": [
+          3.0,
+          4.0
+        ]
+      },
+      "jax_gradient": 12.0,
+      "pass": true
+    },
+    {
+      "abs_diff": 0.0,
+      "body": "add",
+      "control_flow": "while",
+      "fj_gradient": 1.0,
+      "input": {
+        "cond_op": "lt",
+        "init": 0.0,
+        "step": 3.0,
+        "threshold": 10.0
+      },
+      "jax_gradient": 1.0,
+      "pass": true
+    },
+    {
+      "abs_diff": 0.0,
+      "body": "mul",
+      "control_flow": "while",
+      "fj_gradient": 128.0,
+      "input": {
+        "cond_op": "lt",
+        "init": 1.0,
+        "step": 2.0,
+        "threshold": 100.0
+      },
+      "jax_gradient": 128.0,
+      "pass": true
+    }
+  ],
+  "generated_at_unix_ms": 1772618300165,
+  "schema_version": "frankenjax.e2e.control-flow-ad.v1",
+  "test_name": "e2e_control_flow_ad_oracle"
+}

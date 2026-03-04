@@ -20,6 +20,15 @@ mod tests {
     use fj_core::{
         Atom, Equation, Jaxpr, Primitive, ProgramSpec, Transform, Value, VarId, build_program,
     };
+    use std::sync::{Mutex, OnceLock};
+
+    fn custom_rule_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("custom rule test guard lock should succeed")
+    }
 
     // --- Basic transform tests ---
 
@@ -259,6 +268,7 @@ mod tests {
 
     #[test]
     fn api_exposes_custom_vjp_registration() {
+        let _guard = custom_rule_test_guard();
         clear_custom_derivative_rules();
         register_custom_vjp(Primitive::CountLeadingZeros, |_inputs, _g, _params| {
             Ok(vec![Value::scalar_f64(7.0)])
@@ -283,6 +293,37 @@ mod tests {
             .expect("grad should use custom VJP");
         let derivative = result[0].as_f64_scalar().expect("scalar derivative");
         assert!((derivative - 7.0).abs() < 1e-10);
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn api_exposes_custom_jvp_registration() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+        register_custom_jvp(
+            Primitive::CountLeadingZeros,
+            |_primals, _tangents, _params| Ok(Value::scalar_f64(5.0)),
+        );
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::CountLeadingZeros,
+                inputs: vec![Atom::Var(VarId(1))].into(),
+                outputs: vec![VarId(2)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+
+        let result = fj_ad::jvp(&jaxpr, &[Value::scalar_i64(8)], &[Value::scalar_f64(1.0)])
+            .expect("jvp should use custom rule");
+        let tangent = result.tangents[0].as_f64_scalar().expect("scalar tangent");
+        assert!((tangent - 5.0).abs() < 1e-10);
 
         clear_custom_derivative_rules();
     }

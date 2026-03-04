@@ -1,0 +1,46 @@
+{
+  "generated_at_unix_ms": 1772618300165,
+  "records": [
+    {
+      "control_flow": "cond",
+      "error": 0.0,
+      "finite_diff": 1.0,
+      "gradient": 1.0,
+      "pass": true,
+      "test_name": "e2e_control_flow_ad_oracle"
+    },
+    {
+      "control_flow": "cond",
+      "error": 0.0,
+      "finite_diff": 6.0,
+      "gradient": 6.0,
+      "pass": true,
+      "test_name": "e2e_control_flow_ad_oracle"
+    },
+    {
+      "control_flow": "scan",
+      "error": 0.0,
+      "finite_diff": 12.0,
+      "gradient": 12.0,
+      "pass": true,
+      "test_name": "e2e_control_flow_ad_oracle"
+    },
+    {
+      "control_flow": "while",
+      "error": 0.0,
+      "finite_diff": 1.0,
+      "gradient": 1.0,
+      "pass": true,
+      "test_name": "e2e_control_flow_ad_oracle"
+    },
+    {
+      "control_flow": "while",
+      "error": 0.0,
+      "finite_diff": 128.0,
+      "gradient": 128.0,
+      "pass": true,
+      "test_name": "e2e_control_flow_ad_oracle"
+    }
+  ],
+  "schema_version": "frankenjax.testing.control-flow-ad.v1"
+}

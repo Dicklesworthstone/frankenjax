@@ -1,0 +1,208 @@
+{
+  "entries": [
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "key",
+      "key": 0,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "split",
+      "key": 0,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "fold_in",
+      "key": 0,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "uniform",
+      "key": 0,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "normal",
+      "key": 0,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "key",
+      "key": 1,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "split",
+      "key": 1,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "fold_in",
+      "key": 1,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "uniform",
+      "key": 1,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "normal",
+      "key": 1,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "key",
+      "key": 42,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "split",
+      "key": 42,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "fold_in",
+      "key": 42,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "uniform",
+      "key": 42,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "normal",
+      "key": 42,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "key",
+      "key": 2147483647,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "split",
+      "key": 2147483647,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "fold_in",
+      "key": 2147483647,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "uniform",
+      "key": 2147483647,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "normal",
+      "key": 2147483647,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "key",
+      "key": 4294967295,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "split",
+      "key": 4294967295,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": true,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "fold_in",
+      "key": 4294967295,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "uniform",
+      "key": 4294967295,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    },
+    {
+      "bitwise_match": false,
+      "fixture_source": "rng_determinism.v1.json",
+      "function": "normal",
+      "key": 4294967295,
+      "pass": true,
+      "test_name": "e2e_rng_determinism_full"
+    }
+  ],
+  "generated_at_unix_ms": 1772617777801,
+  "passed_cases": 25,
+  "test_name": "e2e_rng_determinism_full",
+  "total_cases": 25
+}

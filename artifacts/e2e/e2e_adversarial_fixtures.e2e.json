@@ -1,0 +1,337 @@
+{
+  "entries": [
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_nan_add",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_nan_sub",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_nan_mul",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_nan_div",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_inf_mul_zero",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_inf_add_finite",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_exp_inf",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_exp_neg_inf",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_log_zero",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_log_negative",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_sqrt_negative",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "nan_inf",
+      "error_type": null,
+      "fixture_id": "adversarial_reciprocal_zero",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_zero_size_reduce_sum",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_zero_size_add",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_rank8_neg",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_scalar_tensor_add",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_tensor_scalar_mul",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_large_dim_reduce_sum_1",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_large_dim_reduce_sum_8",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_large_dim_reduce_sum_64",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_large_dim_reduce_sum_256",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_large_dim_reduce_sum_4096",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "shape_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_large_dim_reduce_sum_10000",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_grad_floor_neg",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_grad_floor_zero",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_grad_floor_pos",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_vmap_mismatched_batch",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_vmap_scalar_input",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_double_grad_square",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_jit_of_jit",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "transform_edge",
+      "error_type": null,
+      "fixture_id": "adversarial_jit_grad_composition",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_add_i64_f64_scalar",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_add_i64_f64_vector",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_mul_bool_i64_vector",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_mul_bool_i64_scalar",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_div_i64_f64_scalar",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_div_i64_f64_vector",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_gt_f64_i64_vector",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_eq_i64_f64_scalar",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_shift_left_wrapping",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    },
+    {
+      "edge_case_type": "type_coercion",
+      "error_type": null,
+      "fixture_id": "adversarial_shift_right_arithmetic_wrapping",
+      "oracle_match": true,
+      "pass": true,
+      "survived": true
+    }
+  ],
+  "failed_cases": 0,
+  "generated_at_unix_ms": 1772617189999,
+  "passed_cases": 41,
+  "test_name": "e2e_adversarial_fixture_suite",
+  "total_cases": 41
+}

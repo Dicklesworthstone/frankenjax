@@ -254,6 +254,80 @@ fn scalar_value(x: f64) -> Value {
     Value::scalar_f64(x)
 }
 
+#[inline]
+fn is_near_integer(x: f64) -> bool {
+    (x - x.round()).abs() < 1e-14
+}
+
+fn trigamma_scalar(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return if x.is_sign_positive() { 0.0 } else { f64::NAN };
+    }
+    if x <= 0.0 && is_near_integer(x) {
+        return f64::INFINITY;
+    }
+    if x < 0.5 {
+        let sin_px = (std::f64::consts::PI * x).sin();
+        if sin_px == 0.0 {
+            return f64::INFINITY;
+        }
+        let csc2 = 1.0 / (sin_px * sin_px);
+        return std::f64::consts::PI.powi(2) * csc2 - trigamma_scalar(1.0 - x);
+    }
+
+    let mut shifted = x;
+    let mut result = 0.0;
+    while shifted < 8.0 {
+        result += 1.0 / (shifted * shifted);
+        shifted += 1.0;
+    }
+
+    let inv = 1.0 / shifted;
+    let inv2 = inv * inv;
+    let inv3 = inv2 * inv;
+    let inv5 = inv3 * inv2;
+    let inv7 = inv5 * inv2;
+    let inv9 = inv7 * inv2;
+    let inv11 = inv9 * inv2;
+
+    result + inv + 0.5 * inv2 + inv3 / 6.0 - inv5 / 30.0 + inv7 / 42.0 - inv9 / 30.0
+        + 5.0 * inv11 / 66.0
+}
+
+fn trigamma_value(x: &Value) -> Result<Value, AdError> {
+    match x {
+        Value::Scalar(lit) => {
+            let x_val = lit.as_f64().ok_or_else(|| {
+                AdError::EvalFailed("digamma VJP expects numeric scalar".to_owned())
+            })?;
+            Ok(Value::scalar_f64(trigamma_scalar(x_val)))
+        }
+        Value::Tensor(tensor) => {
+            let elements = tensor
+                .elements
+                .iter()
+                .map(|lit| {
+                    lit.as_f64()
+                        .map(trigamma_scalar)
+                        .map(Literal::from_f64)
+                        .ok_or_else(|| {
+                            AdError::EvalFailed(
+                                "digamma VJP expects numeric tensor elements".to_owned(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::Tensor(
+                TensorValue::new(DType::F64, tensor.shape.clone(), elements)
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ))
+        }
+    }
+}
+
 fn value_mul(a: &Value, b: &Value) -> Result<Value, AdError> {
     eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -371,7 +445,16 @@ fn vjp(
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
     if let Some(custom_rule) = lookup_custom_vjp(primitive) {
-        return custom_rule(inputs, g, params);
+        let cotangents = custom_rule(inputs, g, params)?;
+        if cotangents.len() != inputs.len() {
+            return Err(AdError::EvalFailed(format!(
+                "custom VJP cotangent arity mismatch for {}: expected {}, got {}",
+                primitive.as_str(),
+                inputs.len(),
+                cotangents.len()
+            )));
+        }
+        return Ok(cotangents);
     }
 
     match primitive {
@@ -607,6 +690,29 @@ fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let coeff = scalar_value(-2.0 / std::f64::consts::PI.sqrt());
             let factor = value_mul(&coeff, &exp_neg_x2)?;
+            Ok(vec![value_mul(g, &factor)?])
+        }
+        Primitive::Lgamma => {
+            // d/dx lgamma(x) = digamma(x)
+            let x = &inputs[0];
+            let digamma_x = eval_primitive(Primitive::Digamma, std::slice::from_ref(x), params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![value_mul(g, &digamma_x)?])
+        }
+        Primitive::Digamma => {
+            // d/dx digamma(x) = trigamma(x)
+            let trigamma_x = trigamma_value(&inputs[0])?;
+            Ok(vec![value_mul(g, &trigamma_x)?])
+        }
+        Primitive::ErfInv => {
+            // d/dx erf_inv(x) = sqrt(pi)/2 * exp(erf_inv(x)^2)
+            let erf_inv_x = eval_primitive(Primitive::ErfInv, inputs, &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let erf_inv_sq = value_mul(&erf_inv_x, &erf_inv_x)?;
+            let exp_term = eval_primitive(Primitive::Exp, &[erf_inv_sq], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let coeff = scalar_value(std::f64::consts::PI.sqrt() / 2.0);
+            let factor = value_mul(&coeff, &exp_term)?;
             Ok(vec![value_mul(g, &factor)?])
         }
         Primitive::Div => {
@@ -1365,23 +1471,7 @@ fn vjp(
             Ok(vec![Value::scalar_f64(0.0)])
         }
         Primitive::Copy => Ok(vec![g.clone()]),
-        Primitive::BitcastConvertType => {
-            if inputs.len() != 1 {
-                return Err(AdError::InputArity {
-                    expected: 1,
-                    actual: inputs.len(),
-                });
-            }
-            let mut inverse_params = BTreeMap::new();
-            inverse_params.insert("new_dtype".to_owned(), format!("{:?}", inputs[0].dtype()));
-            let grad_input = eval_primitive(
-                Primitive::BitcastConvertType,
-                std::slice::from_ref(g),
-                &inverse_params,
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            Ok(vec![grad_input])
-        }
+        Primitive::BitcastConvertType => Ok(vec![zeros_like(&inputs[0])]),
         Primitive::ReducePrecision => Ok(vec![g.clone()]),
         Primitive::DynamicUpdateSlice => {
             // VJP: g_operand = g with update region zeroed out,
@@ -1744,8 +1834,29 @@ fn vjp(
                 ])
             }
         }
-        // Split: gradient is concatenation (inverse of split)
-        Primitive::Split => Ok(vec![g.clone()]),
+        // Split: gradient reshapes back to the original input shape.
+        Primitive::Split => {
+            let shape_str = match &inputs[0] {
+                Value::Tensor(t) => t
+                    .shape
+                    .dims
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                Value::Scalar(_) => String::new(),
+            };
+            if shape_str.is_empty() {
+                Ok(vec![g.clone()])
+            } else {
+                let mut p = BTreeMap::new();
+                p.insert("new_shape".into(), shape_str);
+                Ok(vec![
+                    eval_primitive(Primitive::Reshape, std::slice::from_ref(g), &p)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+                ])
+            }
+        }
         // ExpandDims: gradient is squeeze (inverse of expand_dims)
         Primitive::ExpandDims => {
             let axis: usize = params
@@ -1803,6 +1914,15 @@ fn vjp(
         }
         // Nextafter: non-differentiable — gradient is zero.
         Primitive::Nextafter => Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])]),
+        Primitive::Cholesky
+        | Primitive::Qr
+        | Primitive::Svd
+        | Primitive::TriangularSolve
+        | Primitive::Eigh
+        | Primitive::Fft
+        | Primitive::Ifft
+        | Primitive::Rfft
+        | Primitive::Irfft => Err(AdError::UnsupportedPrimitive(primitive)),
     }
 }
 
@@ -3040,6 +3160,25 @@ fn jvp_rule(
             let c_exp = ep(Primitive::Mul, &[coeff, exp_neg])?;
             ep(Primitive::Mul, &[c_exp, tangents[0].clone()])
         }
+        Primitive::Lgamma => {
+            // digamma(x) * dx
+            let digamma_x = ep(Primitive::Digamma, &[primals[0].clone()])?;
+            ep(Primitive::Mul, &[digamma_x, tangents[0].clone()])
+        }
+        Primitive::Digamma => {
+            // trigamma(x) * dx
+            let trigamma_x = trigamma_value(&primals[0])?;
+            ep(Primitive::Mul, &[trigamma_x, tangents[0].clone()])
+        }
+        Primitive::ErfInv => {
+            // sqrt(pi)/2 * exp(erf_inv(x)^2) * dx
+            let erf_inv_x = ep(Primitive::ErfInv, &[primals[0].clone()])?;
+            let erf_inv_sq = ep(Primitive::Mul, &[erf_inv_x.clone(), erf_inv_x])?;
+            let exp_term = ep(Primitive::Exp, &[erf_inv_sq])?;
+            let coeff = Value::scalar_f64(std::f64::consts::PI.sqrt() / 2.0);
+            let factor = ep(Primitive::Mul, &[coeff, exp_term])?;
+            ep(Primitive::Mul, &[factor, tangents[0].clone()])
+        }
 
         // ── Binary ops with quotient rule ──
         Primitive::Div => {
@@ -3195,15 +3334,15 @@ fn jvp_rule(
             Value::Scalar(_) => Ok(tangents[0].clone()),
             _ => ep_p(Primitive::Pad, tangents, params),
         },
-        Primitive::Iota => Ok(Value::scalar_f64(0.0)),
-        Primitive::BroadcastedIota => Ok(Value::scalar_f64(0.0)),
-        Primitive::OneHot => Ok(Value::scalar_f64(0.0)),
+        Primitive::Iota | Primitive::BroadcastedIota | Primitive::OneHot => {
+            let primal_out = ep_p(primitive, primals, params)?;
+            Ok(zeros_like(&primal_out))
+        }
         Primitive::Copy => Ok(tangents[0].clone()),
-        Primitive::BitcastConvertType => ep_p(
-            Primitive::BitcastConvertType,
-            &[tangents[0].clone()],
-            params,
-        ),
+        Primitive::BitcastConvertType => {
+            let primal_out = ep_p(Primitive::BitcastConvertType, primals, params)?;
+            Ok(zeros_like(&primal_out))
+        }
         Primitive::ReducePrecision => Ok(tangents[0].clone()),
         Primitive::DynamicUpdateSlice => ep_p(Primitive::DynamicUpdateSlice, tangents, params),
         Primitive::Cumsum => ep_p(Primitive::Cumsum, &[tangents[0].clone()], params),
@@ -3298,6 +3437,15 @@ fn jvp_rule(
             let n_x_nm1 = ep(Primitive::Mul, &[n_val, x_nm1])?;
             ep(Primitive::Mul, &[tangents[0].clone(), n_x_nm1])
         }
+        Primitive::Cholesky
+        | Primitive::Qr
+        | Primitive::Svd
+        | Primitive::TriangularSolve
+        | Primitive::Eigh
+        | Primitive::Fft
+        | Primitive::Ifft
+        | Primitive::Rfft
+        | Primitive::Irfft => Err(AdError::UnsupportedPrimitive(primitive)),
     }
 }
 
@@ -3609,6 +3757,15 @@ mod tests {
     use fj_core::{Equation, ProgramSpec, build_program};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, OnceLock};
+
+    fn custom_rule_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+        GUARD
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("custom derivative test guard lock should succeed")
+    }
 
     #[test]
     fn grad_x_squared_at_3() {
@@ -3890,6 +4047,7 @@ mod tests {
 
     #[test]
     fn custom_vjp_rule_overrides_builtin_rule() {
+        let _guard = custom_rule_test_guard();
         clear_custom_derivative_rules();
 
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -3919,6 +4077,7 @@ mod tests {
 
     #[test]
     fn custom_jvp_rule_overrides_builtin_rule() {
+        let _guard = custom_rule_test_guard();
         clear_custom_derivative_rules();
 
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -3948,6 +4107,972 @@ mod tests {
         );
 
         clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_vjp_simple() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        register_custom_vjp(Primitive::CountLeadingZeros, |_inputs, _g, _params| {
+            Ok(vec![Value::scalar_f64(2.5)])
+        });
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let grads = grad_jaxpr(&jaxpr, &[Value::scalar_i64(8)]).expect("grad should succeed");
+        let grad = to_f64(&grads[0]).expect("custom gradient should be scalar");
+        assert!(
+            (grad - 2.5).abs() < 1e-10,
+            "expected custom gradient 2.5, got {grad}"
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_vjp_overrides_default() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let auto_grad = to_f64(
+            &grad_jaxpr(&jaxpr, &[Value::scalar_i64(16)]).expect("auto grad should succeed")[0],
+        )
+        .expect("auto grad should be scalar");
+        assert!(
+            auto_grad.abs() < 1e-10,
+            "expected default grad 0, got {auto_grad}"
+        );
+
+        register_custom_vjp(Primitive::CountLeadingZeros, |_inputs, _g, _params| {
+            Ok(vec![Value::scalar_f64(11.0)])
+        });
+
+        let custom_grad = to_f64(
+            &grad_jaxpr(&jaxpr, &[Value::scalar_i64(16)]).expect("custom grad should succeed")[0],
+        )
+        .expect("custom grad should be scalar");
+        assert!(
+            (custom_grad - 11.0).abs() < 1e-10,
+            "expected overridden gradient 11.0, got {custom_grad}"
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_vjp_multiple_args() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        register_custom_vjp(Primitive::BitwiseAnd, |_inputs, _g, _params| {
+            Ok(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)])
+        });
+
+        let jaxpr = make_binary_jaxpr(Primitive::BitwiseAnd);
+        let grads = grad_jaxpr(&jaxpr, &[Value::scalar_i64(7), Value::scalar_i64(3)])
+            .expect("custom grad for binary primitive should succeed");
+        let g0 = to_f64(&grads[0]).expect("first gradient should be scalar");
+        let g1 = to_f64(&grads[1]).expect("second gradient should be scalar");
+        assert!((g0 - 3.0).abs() < 1e-10, "first custom gradient = {g0}");
+        assert!((g1 - 4.0).abs() < 1e-10, "second custom gradient = {g1}");
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_jvp_simple() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        register_custom_jvp(
+            Primitive::CountLeadingZeros,
+            |_primals, _tangents, _params| Ok(Value::scalar_f64(9.0)),
+        );
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let result = jvp(&jaxpr, &[Value::scalar_i64(32)], &[Value::scalar_f64(1.0)])
+            .expect("jvp should succeed");
+        let tangent = to_f64(&result.tangents[0]).expect("custom tangent should be scalar");
+        assert!(
+            (tangent - 9.0).abs() < 1e-10,
+            "expected custom tangent 9.0, got {tangent}"
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_jvp_overrides_default() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let auto = jvp(&jaxpr, &[Value::scalar_i64(4)], &[Value::scalar_f64(1.0)])
+            .expect("default jvp should succeed");
+        let auto_tangent = to_f64(&auto.tangents[0]).expect("default tangent should be scalar");
+        assert!(
+            auto_tangent.abs() < 1e-10,
+            "expected default tangent 0, got {auto_tangent}"
+        );
+
+        register_custom_jvp(
+            Primitive::CountLeadingZeros,
+            |_primals, _tangents, _params| Ok(Value::scalar_f64(-7.0)),
+        );
+        let custom = jvp(&jaxpr, &[Value::scalar_i64(4)], &[Value::scalar_f64(1.0)])
+            .expect("custom jvp should succeed");
+        let custom_tangent = to_f64(&custom.tangents[0]).expect("custom tangent should be scalar");
+        assert!(
+            (custom_tangent - (-7.0)).abs() < 1e-10,
+            "expected overridden tangent -7.0, got {custom_tangent}"
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_vjp_nested_grad() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let call_count_clone = Arc::clone(&call_count);
+        register_custom_vjp(Primitive::CountLeadingZeros, move |inputs, _g, _params| {
+            call_count_clone.fetch_add(1, Ordering::SeqCst);
+            let x = inputs
+                .first()
+                .and_then(Value::as_i64_scalar)
+                .ok_or_else(|| AdError::EvalFailed("expected scalar i64 primal".to_owned()))?;
+            Ok(vec![Value::scalar_f64(x as f64)])
+        });
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let inner_grad =
+            |x: i64| grad_first(&jaxpr, &[Value::scalar_i64(x)]).expect("grad evaluation");
+        let second_derivative_estimate = (inner_grad(10) - inner_grad(8)) / 2.0;
+        assert!(
+            (second_derivative_estimate - 1.0).abs() < 1e-10,
+            "expected nested grad estimate 1.0, got {second_derivative_estimate}"
+        );
+        assert!(
+            call_count.load(Ordering::SeqCst) >= 2,
+            "custom VJP should be used for both inner gradient evaluations"
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_vjp_registration_error() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        register_custom_vjp(Primitive::BitwiseAnd, |_inputs, _g, _params| {
+            // Invalid cotangent arity: primitive has two inputs.
+            Ok(vec![Value::scalar_f64(1.0)])
+        });
+
+        let jaxpr = make_binary_jaxpr(Primitive::BitwiseAnd);
+        let err = grad_jaxpr(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(1)])
+            .expect_err("invalid custom VJP arity should fail");
+        match err {
+            AdError::EvalFailed(message) => {
+                assert!(
+                    message.contains("cotangent arity mismatch"),
+                    "expected cotangent arity mismatch error, got: {message}"
+                );
+            }
+            other => panic!("expected EvalFailed, got: {other:?}"),
+        }
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn test_custom_vjp_with_residuals() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let residuals: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
+        let residuals_clone = Arc::clone(&residuals);
+        register_custom_vjp(Primitive::CountLeadingZeros, move |inputs, g, _params| {
+            let x = inputs
+                .first()
+                .and_then(Value::as_i64_scalar)
+                .ok_or_else(|| AdError::EvalFailed("expected scalar i64 primal".to_owned()))?;
+            residuals_clone
+                .lock()
+                .expect("residual lock should succeed")
+                .push(x);
+            let upstream = g.as_f64_scalar().ok_or_else(|| {
+                AdError::EvalFailed("expected scalar upstream cotangent".to_owned())
+            })?;
+            Ok(vec![Value::scalar_f64((x as f64) + upstream)])
+        });
+
+        let jaxpr = make_unary_jaxpr(Primitive::CountLeadingZeros);
+        let grads = grad_jaxpr(&jaxpr, &[Value::scalar_i64(12)]).expect("grad should succeed");
+        let grad = to_f64(&grads[0]).expect("custom gradient should be scalar");
+        assert!(
+            (grad - 13.0).abs() < 1e-10,
+            "expected custom residual grad 13, got {grad}"
+        );
+
+        let stored = residuals
+            .lock()
+            .expect("residual lock should succeed")
+            .clone();
+        assert_eq!(stored, vec![12], "expected one stored residual input");
+
+        clear_custom_derivative_rules();
+    }
+
+    fn tensor_f64_values(value: &Value) -> Vec<f64> {
+        value
+            .as_tensor()
+            .expect("expected tensor value")
+            .elements
+            .iter()
+            .map(|lit| lit.as_f64().expect("expected numeric literal"))
+            .collect()
+    }
+
+    fn scalar_complex128(value: &Value) -> (f64, f64) {
+        value
+            .as_scalar_literal()
+            .and_then(Literal::as_complex128)
+            .expect("expected complex128 scalar literal")
+    }
+
+    // ── V2 primitive VJP/JVP coverage (bd-2u82) ────────────────
+
+    #[test]
+    fn test_rev_vjp() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
+        let g = Value::vector_f64(&[10.0, 20.0, 30.0]).expect("vector");
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+
+        let grads = vjp(Primitive::Rev, &[input], &g, &params).expect("vjp");
+        assert_eq!(tensor_f64_values(&grads[0]), vec![30.0, 20.0, 10.0]);
+    }
+
+    #[test]
+    fn test_squeeze_vjp() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let g = Value::vector_f64(&[7.0, 8.0, 9.0]).expect("vector");
+        let mut params = BTreeMap::new();
+        params.insert("dimensions".into(), "0,2".into());
+
+        let grads = vjp(Primitive::Squeeze, &[input], &g, &params).expect("vjp");
+        let out = grads[0].as_tensor().expect("tensor");
+        assert_eq!(out.shape.dims, vec![1, 3, 1]);
+        assert_eq!(tensor_f64_values(&grads[0]), vec![7.0, 8.0, 9.0]);
+    }
+
+    #[test]
+    fn test_split_vjp() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).expect("vector");
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3, 2] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(5.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+        params.insert("num_sections".into(), "3".into());
+
+        let grads = vjp(Primitive::Split, &[input], &g, &params).expect("vjp");
+        let out = grads[0].as_tensor().expect("tensor");
+        assert_eq!(out.shape.dims, vec![6]);
+        assert_eq!(
+            tensor_f64_values(&grads[0]),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn test_expand_dims_vjp() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![1, 3] },
+                vec![
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+
+        let grads = vjp(Primitive::ExpandDims, &[input], &g, &params).expect("vjp");
+        let out = grads[0].as_tensor().expect("tensor");
+        assert_eq!(out.shape.dims, vec![3]);
+        assert_eq!(tensor_f64_values(&grads[0]), vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_cbrt_vjp() {
+        let input = Value::scalar_f64(8.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp(Primitive::Cbrt, &[input], &g, &BTreeMap::new()).expect("vjp");
+        let grad = grads[0].as_f64_scalar().expect("scalar");
+        assert!((grad - (1.0 / 12.0)).abs() < 1e-10, "got {grad}");
+    }
+
+    #[test]
+    fn test_integer_pow_vjp() {
+        let input = Value::scalar_f64(3.0);
+        let g = Value::scalar_f64(1.0);
+        let mut params = BTreeMap::new();
+        params.insert("exponent".into(), "4".into());
+
+        let grads = vjp(Primitive::IntegerPow, &[input], &g, &params).expect("vjp");
+        let grad = grads[0].as_f64_scalar().expect("scalar");
+        assert!((grad - 108.0).abs() < 1e-10, "got {grad}");
+    }
+
+    #[test]
+    fn test_shift_right_arithmetic_no_grad() {
+        let grads = vjp(
+            Primitive::ShiftRightArithmetic,
+            &[Value::scalar_i64(8), Value::scalar_i64(1)],
+            &Value::scalar_i64(1),
+            &BTreeMap::new(),
+        )
+        .expect("vjp");
+        assert_eq!(grads[0].as_i64_scalar(), Some(0));
+        assert_eq!(grads[1].as_i64_scalar(), Some(0));
+    }
+
+    #[test]
+    fn test_reduce_and_no_grad() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+        let grads = vjp(
+            Primitive::ReduceAnd,
+            &[input],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        assert_eq!(tensor_f64_values(&grads[0]), vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_reduce_or_no_grad() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+        let grads = vjp(
+            Primitive::ReduceOr,
+            &[input],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        assert_eq!(tensor_f64_values(&grads[0]), vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_conj_vjp() {
+        let input = Value::scalar_complex128(1.0, -2.0);
+        let g = Value::scalar_complex128(3.0, -4.0);
+        let grads = vjp(Primitive::Conj, &[input], &g, &BTreeMap::new()).expect("vjp");
+        let (re, im) = scalar_complex128(&grads[0]);
+        assert!((re - 3.0).abs() < 1e-10);
+        assert!((im - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_real_vjp() {
+        let input = Value::scalar_complex128(2.0, -3.0);
+        let grads = vjp(
+            Primitive::Real,
+            &[input],
+            &Value::scalar_f64(5.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp");
+        let (re, im) = scalar_complex128(&grads[0]);
+        assert!((re - 5.0).abs() < 1e-10);
+        assert!(im.abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_imag_vjp() {
+        let input = Value::scalar_complex128(2.0, -3.0);
+        let grads = vjp(
+            Primitive::Imag,
+            &[input],
+            &Value::scalar_f64(5.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp");
+        let (re, im) = scalar_complex128(&grads[0]);
+        assert!(re.abs() < 1e-10);
+        assert!((im - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_complex_constructor_vjp() {
+        let grads = vjp(
+            Primitive::Complex,
+            &[Value::scalar_f64(1.0), Value::scalar_f64(2.0)],
+            &Value::scalar_complex128(7.0, -11.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp");
+        assert!((grads[0].as_f64_scalar().expect("scalar") - 7.0).abs() < 1e-10);
+        assert!((grads[1].as_f64_scalar().expect("scalar") + 11.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_copy_vjp() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
+        let g = Value::vector_f64(&[0.5, 1.0, 1.5]).expect("vector");
+        let grads = vjp(Primitive::Copy, &[input], &g, &BTreeMap::new()).expect("vjp");
+        assert_eq!(tensor_f64_values(&grads[0]), vec![0.5, 1.0, 1.5]);
+    }
+
+    #[test]
+    fn test_bitcast_no_grad() {
+        let mut params = BTreeMap::new();
+        params.insert("new_dtype".into(), "f64".into());
+        let grads = vjp(
+            Primitive::BitcastConvertType,
+            &[Value::scalar_i64(123)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        assert_eq!(grads[0].as_i64_scalar(), Some(0));
+    }
+
+    #[test]
+    fn test_broadcasted_iota_no_grad() {
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let grads = vjp(Primitive::BroadcastedIota, &[], &g, &BTreeMap::new()).expect("vjp");
+        assert!(grads.is_empty());
+    }
+
+    #[test]
+    fn test_reduce_precision_vjp() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent_bits".into(), "5".into());
+        params.insert("mantissa_bits".into(), "3".into());
+        let grads = vjp(
+            Primitive::ReducePrecision,
+            &[Value::scalar_f64(1.125)],
+            &Value::scalar_f64(0.75),
+            &params,
+        )
+        .expect("vjp");
+        let grad = grads[0].as_f64_scalar().expect("scalar");
+        assert!((grad - 0.75).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_rev_jvp() {
+        let primals = vec![Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector")];
+        let tangents = vec![Value::vector_f64(&[0.1, 0.2, 0.3]).expect("vector")];
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+        let tangent = jvp_rule(Primitive::Rev, &primals, &tangents, &params).expect("jvp");
+        assert_eq!(tensor_f64_values(&tangent), vec![0.3, 0.2, 0.1]);
+    }
+
+    #[test]
+    fn test_squeeze_jvp() {
+        let primal = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let tangent = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                vec![
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(5.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("dimensions".into(), "0,2".into());
+        let out = jvp_rule(Primitive::Squeeze, &[primal], &[tangent], &params).expect("jvp");
+        assert_eq!(out.as_tensor().expect("tensor").shape.dims, vec![3]);
+        assert_eq!(tensor_f64_values(&out), vec![4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_split_jvp() {
+        let primal = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).expect("vector");
+        let tangent = Value::vector_f64(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6]).expect("vector");
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+        params.insert("num_sections".into(), "3".into());
+        let out = jvp_rule(Primitive::Split, &[primal], &[tangent], &params).expect("jvp");
+        assert_eq!(out.as_tensor().expect("tensor").shape.dims, vec![3, 2]);
+        assert_eq!(tensor_f64_values(&out), vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    }
+
+    #[test]
+    fn test_expand_dims_jvp() {
+        let primal = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
+        let tangent = Value::vector_f64(&[0.5, 1.0, 1.5]).expect("vector");
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+        let out = jvp_rule(Primitive::ExpandDims, &[primal], &[tangent], &params).expect("jvp");
+        assert_eq!(out.as_tensor().expect("tensor").shape.dims, vec![1, 3]);
+        assert_eq!(tensor_f64_values(&out), vec![0.5, 1.0, 1.5]);
+    }
+
+    #[test]
+    fn test_cbrt_jvp() {
+        let out = jvp_rule(
+            Primitive::Cbrt,
+            &[Value::scalar_f64(8.0)],
+            &[Value::scalar_f64(1.0)],
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        let tangent = out.as_f64_scalar().expect("scalar");
+        assert!((tangent - (1.0 / 12.0)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_integer_pow_jvp() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".into(), "4".into());
+        let out = jvp_rule(
+            Primitive::IntegerPow,
+            &[Value::scalar_f64(3.0)],
+            &[Value::scalar_f64(1.0)],
+            &params,
+        )
+        .expect("jvp");
+        let tangent = out.as_f64_scalar().expect("scalar");
+        assert!((tangent - 108.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_shift_right_arithmetic_no_grad_jvp() {
+        let out = jvp_rule(
+            Primitive::ShiftRightArithmetic,
+            &[Value::scalar_i64(8), Value::scalar_i64(1)],
+            &[Value::scalar_i64(0), Value::scalar_i64(0)],
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        assert_eq!(out.as_i64_scalar(), Some(0));
+    }
+
+    #[test]
+    fn test_reduce_and_no_grad_jvp() {
+        let primal = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+        let out = jvp_rule(
+            Primitive::ReduceAnd,
+            std::slice::from_ref(&primal),
+            &[zeros_like(&primal)],
+            &params,
+        )
+        .expect("jvp");
+        assert!((out.as_f64_scalar().expect("scalar") - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_reduce_or_no_grad_jvp() {
+        let primal = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+        let out = jvp_rule(
+            Primitive::ReduceOr,
+            std::slice::from_ref(&primal),
+            &[zeros_like(&primal)],
+            &params,
+        )
+        .expect("jvp");
+        assert!((out.as_f64_scalar().expect("scalar") - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_conj_jvp() {
+        let out = jvp_rule(
+            Primitive::Conj,
+            &[Value::scalar_complex128(0.0, 0.0)],
+            &[Value::scalar_complex128(2.0, -5.0)],
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        let (re, im) = scalar_complex128(&out);
+        assert!((re - 2.0).abs() < 1e-10);
+        assert!((im - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_real_jvp() {
+        let out = jvp_rule(
+            Primitive::Real,
+            &[Value::scalar_complex128(1.0, 2.0)],
+            &[Value::scalar_complex128(3.0, -4.0)],
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        assert!((out.as_f64_scalar().expect("scalar") - 3.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_imag_jvp() {
+        let out = jvp_rule(
+            Primitive::Imag,
+            &[Value::scalar_complex128(1.0, 2.0)],
+            &[Value::scalar_complex128(3.0, -4.0)],
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        assert!((out.as_f64_scalar().expect("scalar") + 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_complex_constructor_jvp() {
+        let out = jvp_rule(
+            Primitive::Complex,
+            &[Value::scalar_f64(1.0), Value::scalar_f64(2.0)],
+            &[Value::scalar_f64(0.1), Value::scalar_f64(0.2)],
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        let (re, im) = scalar_complex128(&out);
+        assert!((re - 0.1).abs() < 1e-10);
+        assert!((im - 0.2).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_copy_jvp() {
+        let tangent = Value::vector_f64(&[0.2, 0.4, 0.6]).expect("vector");
+        let out = jvp_rule(
+            Primitive::Copy,
+            &[Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector")],
+            std::slice::from_ref(&tangent),
+            &BTreeMap::new(),
+        )
+        .expect("jvp");
+        assert_eq!(tensor_f64_values(&out), vec![0.2, 0.4, 0.6]);
+    }
+
+    #[test]
+    fn test_bitcast_no_grad_jvp() {
+        let mut params = BTreeMap::new();
+        params.insert("new_dtype".into(), "f64".into());
+        let out = jvp_rule(
+            Primitive::BitcastConvertType,
+            &[Value::scalar_i64(42)],
+            &[Value::scalar_i64(1)],
+            &params,
+        )
+        .expect("jvp");
+        assert!((out.as_f64_scalar().expect("scalar") - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_broadcasted_iota_no_grad_jvp() {
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "2,3".into());
+        params.insert("dimension".into(), "1".into());
+        params.insert("dtype".into(), "i64".into());
+        let out = jvp_rule(Primitive::BroadcastedIota, &[], &[], &params).expect("jvp");
+        let tensor = out.as_tensor().expect("tensor");
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        for lit in &tensor.elements {
+            assert_eq!(lit.as_i64(), Some(0));
+        }
+    }
+
+    #[test]
+    fn test_reduce_precision_jvp() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent_bits".into(), "5".into());
+        params.insert("mantissa_bits".into(), "3".into());
+        let out = jvp_rule(
+            Primitive::ReducePrecision,
+            &[Value::scalar_f64(1.125)],
+            &[Value::scalar_f64(0.25)],
+            &params,
+        )
+        .expect("jvp");
+        assert!((out.as_f64_scalar().expect("scalar") - 0.25).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_cbrt_vjp_finite_diff() {
+        let x = 2.5;
+        let eps = 1e-6;
+        let sym = vjp(
+            Primitive::Cbrt,
+            &[Value::scalar_f64(x)],
+            &Value::scalar_f64(1.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp")[0]
+            .as_f64_scalar()
+            .expect("scalar");
+
+        let plus = eval_primitive(
+            Primitive::Cbrt,
+            &[Value::scalar_f64(x + eps)],
+            &BTreeMap::new(),
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let minus = eval_primitive(
+            Primitive::Cbrt,
+            &[Value::scalar_f64(x - eps)],
+            &BTreeMap::new(),
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let num = (plus - minus) / (2.0 * eps);
+        assert!((sym - num).abs() < 1e-4, "sym={sym}, num={num}");
+    }
+
+    #[test]
+    fn test_integer_pow_vjp_finite_diff() {
+        let x = 1.3;
+        let eps = 1e-6;
+        let mut params = BTreeMap::new();
+        params.insert("exponent".into(), "5".into());
+
+        let sym = vjp(
+            Primitive::IntegerPow,
+            &[Value::scalar_f64(x)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp")[0]
+            .as_f64_scalar()
+            .expect("scalar");
+
+        let plus = eval_primitive(
+            Primitive::IntegerPow,
+            &[Value::scalar_f64(x + eps)],
+            &params,
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let minus = eval_primitive(
+            Primitive::IntegerPow,
+            &[Value::scalar_f64(x - eps)],
+            &params,
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let num = (plus - minus) / (2.0 * eps);
+        assert!((sym - num).abs() < 1e-4, "sym={sym}, num={num}");
+    }
+
+    #[test]
+    fn test_lgamma_vjp_finite_diff() {
+        let x = 2.4_f64;
+        let eps = 1e-6_f64;
+
+        let sym = vjp(
+            Primitive::Lgamma,
+            &[Value::scalar_f64(x)],
+            &Value::scalar_f64(1.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp")[0]
+            .as_f64_scalar()
+            .expect("scalar");
+
+        let plus = eval_primitive(
+            Primitive::Lgamma,
+            &[Value::scalar_f64(x + eps)],
+            &BTreeMap::new(),
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let minus = eval_primitive(
+            Primitive::Lgamma,
+            &[Value::scalar_f64(x - eps)],
+            &BTreeMap::new(),
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let num = (plus - minus) / (2.0 * eps);
+
+        assert!((sym - num).abs() < 1e-5, "sym={sym}, num={num}");
+    }
+
+    #[test]
+    fn test_digamma_vjp_finite_diff() {
+        let x = 1.7_f64;
+        let eps = 1e-6_f64;
+
+        let sym = vjp(
+            Primitive::Digamma,
+            &[Value::scalar_f64(x)],
+            &Value::scalar_f64(1.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp")[0]
+            .as_f64_scalar()
+            .expect("scalar");
+
+        let plus = eval_primitive(
+            Primitive::Digamma,
+            &[Value::scalar_f64(x + eps)],
+            &BTreeMap::new(),
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let minus = eval_primitive(
+            Primitive::Digamma,
+            &[Value::scalar_f64(x - eps)],
+            &BTreeMap::new(),
+        )
+        .expect("eval")
+        .as_f64_scalar()
+        .expect("scalar");
+        let num = (plus - minus) / (2.0 * eps);
+
+        assert!((sym - num).abs() < 1e-4, "sym={sym}, num={num}");
+    }
+
+    #[test]
+    fn test_erf_inv_vjp() {
+        let x = 0.4_f64;
+        let grad = vjp(
+            Primitive::ErfInv,
+            &[Value::scalar_f64(x)],
+            &Value::scalar_f64(1.0),
+            &BTreeMap::new(),
+        )
+        .expect("vjp")[0]
+            .as_f64_scalar()
+            .expect("scalar");
+
+        let y = eval_primitive(Primitive::ErfInv, &[Value::scalar_f64(x)], &BTreeMap::new())
+            .expect("eval")
+            .as_f64_scalar()
+            .expect("scalar");
+        let expected = std::f64::consts::PI.sqrt() / 2.0 * (y * y).exp();
+
+        assert!(
+            (grad - expected).abs() < 1e-8,
+            "grad={grad}, expected={expected}"
+        );
     }
 
     // ── Tensor VJP tests ─────────────────────────────────────────
@@ -5887,6 +7012,15 @@ mod tests {
         p
     }
 
+    fn finite_diff_derivative<F>(f: F, x: f64, eps: f64) -> f64
+    where
+        F: Fn(f64) -> f64,
+    {
+        let plus = f(x + eps);
+        let minus = f(x - eps);
+        (plus - minus) / (2.0 * eps)
+    }
+
     #[test]
     fn while_vjp_add_loop() {
         // while carry < 10: carry += 3 => 0, 3, 6, 9, 12 (4 iterations)
@@ -5952,6 +7086,233 @@ mod tests {
         // Each iteration i: d(final)/d(step_at_i) = init * step^(n-1) = 128/2 = 64 each
         // 7 iterations * 64 = 448
         assert_eq!(grads[1].as_f64_scalar().unwrap(), 448.0);
+    }
+
+    // ── Task-specified control-flow AD coverage ───────────────────────
+
+    #[test]
+    fn test_grad_through_scan_sum() {
+        let init = Value::scalar_f64(0.0);
+        let xs = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector should be valid");
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("add"))
+            .expect("scan VJP should succeed");
+        assert_eq!(
+            grads[0]
+                .as_f64_scalar()
+                .expect("init gradient should be scalar"),
+            1.0
+        );
+    }
+
+    #[test]
+    fn test_grad_through_scan_rnn() {
+        // RNN-like multiplicative carry update: carry_{t+1} = carry_t * x_t.
+        let init = Value::scalar_f64(1.0);
+        let xs = Value::vector_f64(&[2.0, 3.0, 4.0]).expect("vector should be valid");
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("mul"))
+            .expect("scan VJP should succeed");
+        assert_eq!(
+            grads[0]
+                .as_f64_scalar()
+                .expect("init gradient should be scalar"),
+            24.0
+        );
+    }
+
+    #[test]
+    fn test_grad_through_while_countdown() {
+        // while carry > 0: carry -= 1 (starting at 5) => 5 iterations.
+        let init = Value::scalar_f64(5.0);
+        let step = Value::scalar_f64(1.0);
+        let threshold = Value::scalar_f64(0.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp(
+            Primitive::While,
+            &[init, step, threshold],
+            &g,
+            &while_params("sub", "gt"),
+        )
+        .expect("while VJP should succeed");
+        assert_eq!(
+            grads[0]
+                .as_f64_scalar()
+                .expect("init gradient should be scalar"),
+            1.0
+        );
+        assert_eq!(
+            grads[1]
+                .as_f64_scalar()
+                .expect("step gradient should be scalar"),
+            -5.0
+        );
+    }
+
+    #[test]
+    fn test_grad_through_while_convergence() {
+        // while carry > 0.25: carry *= 0.5 (starting at 8) => 5 iterations.
+        let init = Value::scalar_f64(8.0);
+        let step = Value::scalar_f64(0.5);
+        let threshold = Value::scalar_f64(0.25);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp(
+            Primitive::While,
+            &[init, step, threshold],
+            &g,
+            &while_params("mul", "gt"),
+        )
+        .expect("while VJP should succeed");
+        let grad_init = grads[0]
+            .as_f64_scalar()
+            .expect("init gradient should be scalar");
+        let grad_step = grads[1]
+            .as_f64_scalar()
+            .expect("step gradient should be scalar");
+        assert!((grad_init - 0.03125).abs() < 1e-12);
+        assert!((grad_step - 2.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_grad_through_cond_true_branch() {
+        let pred = Value::scalar_bool(true);
+        let true_val = Value::scalar_f64(5.0);
+        let false_val = Value::scalar_f64(10.0);
+        let g = Value::scalar_f64(3.0);
+        let grads = vjp(
+            Primitive::Cond,
+            &[pred, true_val, false_val],
+            &g,
+            &BTreeMap::new(),
+        )
+        .expect("cond VJP should succeed");
+        assert_eq!(
+            grads[1]
+                .as_f64_scalar()
+                .expect("true-branch gradient should be scalar"),
+            3.0
+        );
+        assert_eq!(
+            grads[2]
+                .as_f64_scalar()
+                .expect("false-branch gradient should be scalar"),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_grad_through_cond_false_branch() {
+        let pred = Value::scalar_bool(false);
+        let true_val = Value::scalar_f64(5.0);
+        let false_val = Value::scalar_f64(10.0);
+        let g = Value::scalar_f64(7.0);
+        let grads = vjp(
+            Primitive::Cond,
+            &[pred, true_val, false_val],
+            &g,
+            &BTreeMap::new(),
+        )
+        .expect("cond VJP should succeed");
+        assert_eq!(
+            grads[1]
+                .as_f64_scalar()
+                .expect("true-branch gradient should be scalar"),
+            0.0
+        );
+        assert_eq!(
+            grads[2]
+                .as_f64_scalar()
+                .expect("false-branch gradient should be scalar"),
+            7.0
+        );
+    }
+
+    #[test]
+    fn test_grad_through_cond_predicate() {
+        let pred = Value::scalar_bool(true);
+        let true_val = Value::scalar_f64(2.0);
+        let false_val = Value::scalar_f64(3.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp(
+            Primitive::Cond,
+            &[pred, true_val, false_val],
+            &g,
+            &BTreeMap::new(),
+        )
+        .expect("cond VJP should succeed");
+        assert_eq!(
+            grads[0]
+                .as_f64_scalar()
+                .expect("predicate gradient should be scalar"),
+            0.0
+        );
+    }
+
+    #[test]
+    fn test_grad_scan_finite_diff() {
+        let xs = Value::vector_f64(&[2.0, 3.0, 4.0]).expect("vector should be valid");
+        let params = scan_params("mul");
+        let init = 1.0;
+        let eps = 1e-5;
+        let numerical = finite_diff_derivative(
+            |x| {
+                eval_primitive(
+                    Primitive::Scan,
+                    &[Value::scalar_f64(x), xs.clone()],
+                    &params,
+                )
+                .expect("scan eval should succeed")
+                .as_f64_scalar()
+                .expect("scan output should be scalar")
+            },
+            init,
+            eps,
+        );
+        let grads = vjp(
+            Primitive::Scan,
+            &[Value::scalar_f64(init), xs],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("scan VJP should succeed");
+        let analytic = grads[0]
+            .as_f64_scalar()
+            .expect("analytic gradient should be scalar");
+        assert!((analytic - numerical).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_grad_while_finite_diff() {
+        let params = while_params("add", "lt");
+        let step = Value::scalar_f64(3.0);
+        let threshold = Value::scalar_f64(10.0);
+        let init = 0.0;
+        let eps = 1e-5;
+        let numerical = finite_diff_derivative(
+            |x| {
+                eval_primitive(
+                    Primitive::While,
+                    &[Value::scalar_f64(x), step.clone(), threshold.clone()],
+                    &params,
+                )
+                .expect("while eval should succeed")
+                .as_f64_scalar()
+                .expect("while output should be scalar")
+            },
+            init,
+            eps,
+        );
+        let grads = vjp(
+            Primitive::While,
+            &[Value::scalar_f64(init), step, threshold],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("while VJP should succeed");
+        let analytic = grads[0]
+            .as_f64_scalar()
+            .expect("analytic gradient should be scalar");
+        assert!((analytic - numerical).abs() < 1e-4);
     }
 
     // ── ReduceWindow VJP tests ───────────────────────────────────────

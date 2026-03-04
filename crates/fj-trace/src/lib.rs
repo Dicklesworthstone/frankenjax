@@ -529,6 +529,9 @@ impl SimpleTraceContext {
             | Primitive::Logistic
             | Primitive::Erf
             | Primitive::Erfc
+            | Primitive::Lgamma
+            | Primitive::Digamma
+            | Primitive::ErfInv
             | Primitive::Cbrt
             | Primitive::IntegerPow
             | Primitive::Copy
@@ -621,6 +624,15 @@ impl SimpleTraceContext {
                 }
                 Ok(vec![inputs[0].clone()])
             }
+            Primitive::Cholesky => infer_cholesky(inputs),
+            Primitive::Qr => infer_qr(inputs, params),
+            Primitive::Svd => infer_svd(inputs, params),
+            Primitive::TriangularSolve => infer_triangular_solve(inputs),
+            Primitive::Eigh => infer_eigh(inputs),
+            Primitive::Fft => infer_fft(inputs),
+            Primitive::Ifft => infer_ifft(inputs),
+            Primitive::Rfft => infer_rfft(inputs, params),
+            Primitive::Irfft => infer_irfft(inputs, params),
             // Reductions: all use the same reduce shape inference
             Primitive::ReduceSum
             | Primitive::ReduceMax
@@ -1451,6 +1463,405 @@ fn infer_reduce_sum(
 
     Ok(vec![ShapedArray {
         dtype: input.dtype,
+        shape: Shape { dims: out_dims },
+    }])
+}
+
+fn expect_single_matrix_input(
+    primitive: Primitive,
+    inputs: &[ShapedArray],
+) -> Result<&ShapedArray, TraceError> {
+    if inputs.len() != 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected 1 input, got {}", inputs.len()),
+        });
+    }
+    let input = &inputs[0];
+    if input.shape.rank() < 2 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "expected rank >= 2 matrix input, got rank {}",
+                input.shape.rank()
+            ),
+        });
+    }
+    Ok(input)
+}
+
+fn expect_square_trailing_dims(
+    primitive: Primitive,
+    input: &ShapedArray,
+) -> Result<u32, TraceError> {
+    let rank = input.shape.rank();
+    let rows = input.shape.dims[rank - 2];
+    let cols = input.shape.dims[rank - 1];
+    if rows != cols {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected square trailing dims, got ({rows}, {cols})"),
+        });
+    }
+    Ok(rows)
+}
+
+fn parse_bool_param(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    key: &'static str,
+    default: bool,
+) -> Result<bool, TraceError> {
+    let Some(raw) = params.get(key) else {
+        return Ok(default);
+    };
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        _ => Err(TraceError::InvalidPrimitiveParam {
+            primitive,
+            key,
+            value: raw.clone(),
+        }),
+    }
+}
+
+fn parse_optional_fft_length(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    default: u32,
+) -> Result<u32, TraceError> {
+    if let Some(raw) = params.get("fft_length") {
+        let len = raw
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| TraceError::InvalidPrimitiveParam {
+                primitive,
+                key: "fft_length",
+                value: raw.clone(),
+            })?;
+        return Ok(len);
+    }
+    if let Some(raw) = params.get("fft_lengths") {
+        let lengths = parse_u32_list(primitive, "fft_lengths", raw)?;
+        let len = *lengths.last().ok_or(TraceError::InvalidPrimitiveParam {
+            primitive,
+            key: "fft_lengths",
+            value: raw.clone(),
+        })?;
+        return Ok(len);
+    }
+    Ok(default)
+}
+
+fn to_complex_dtype(dtype: DType) -> DType {
+    match dtype {
+        DType::Complex64 | DType::Complex128 => dtype,
+        DType::BF16 | DType::F16 | DType::F32 => DType::Complex64,
+        _ => DType::Complex128,
+    }
+}
+
+fn to_real_dtype(dtype: DType) -> DType {
+    match dtype {
+        DType::Complex64 => DType::F32,
+        DType::Complex128 => DType::F64,
+        other => other,
+    }
+}
+
+fn infer_cholesky(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Cholesky;
+    let input = expect_single_matrix_input(primitive, inputs)?;
+    let _ = expect_square_trailing_dims(primitive, input)?;
+    Ok(vec![input.clone()])
+}
+
+fn infer_qr(
+    inputs: &[ShapedArray],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Qr;
+    let input = expect_single_matrix_input(primitive, inputs)?;
+    let full_matrices = parse_bool_param(primitive, params, "full_matrices", false)?;
+
+    let rank = input.shape.rank();
+    let m = input.shape.dims[rank - 2];
+    let n = input.shape.dims[rank - 1];
+    let k = m.min(n);
+    let batch_dims = &input.shape.dims[..rank - 2];
+
+    let mut q_dims = batch_dims.to_vec();
+    let mut r_dims = batch_dims.to_vec();
+    if full_matrices {
+        q_dims.extend([m, m]);
+        r_dims.extend([m, n]);
+    } else {
+        q_dims.extend([m, k]);
+        r_dims.extend([k, n]);
+    }
+
+    Ok(vec![
+        ShapedArray {
+            dtype: input.dtype,
+            shape: Shape { dims: q_dims },
+        },
+        ShapedArray {
+            dtype: input.dtype,
+            shape: Shape { dims: r_dims },
+        },
+    ])
+}
+
+fn infer_svd(
+    inputs: &[ShapedArray],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Svd;
+    let input = expect_single_matrix_input(primitive, inputs)?;
+    let full_matrices = parse_bool_param(primitive, params, "full_matrices", false)?;
+
+    let rank = input.shape.rank();
+    let m = input.shape.dims[rank - 2];
+    let n = input.shape.dims[rank - 1];
+    let k = m.min(n);
+    let batch_dims = &input.shape.dims[..rank - 2];
+
+    let mut u_dims = batch_dims.to_vec();
+    let mut s_dims = batch_dims.to_vec();
+    let mut vt_dims = batch_dims.to_vec();
+
+    if full_matrices {
+        u_dims.extend([m, m]);
+        vt_dims.extend([n, n]);
+    } else {
+        u_dims.extend([m, k]);
+        vt_dims.extend([k, n]);
+    }
+    s_dims.push(k);
+
+    Ok(vec![
+        ShapedArray {
+            dtype: input.dtype,
+            shape: Shape { dims: u_dims },
+        },
+        ShapedArray {
+            dtype: to_real_dtype(input.dtype),
+            shape: Shape { dims: s_dims },
+        },
+        ShapedArray {
+            dtype: input.dtype,
+            shape: Shape { dims: vt_dims },
+        },
+    ])
+}
+
+fn infer_triangular_solve(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::TriangularSolve;
+    if inputs.len() != 2 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected 2 inputs, got {}", inputs.len()),
+        });
+    }
+
+    let lhs = &inputs[0];
+    let rhs = &inputs[1];
+    if lhs.shape.rank() < 2 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("lhs must be rank >= 2, got {}", lhs.shape.rank()),
+        });
+    }
+    let lhs_batch_rank = lhs.shape.rank() - 2;
+    if rhs.shape.rank() < lhs_batch_rank + 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "rhs rank {} is incompatible with lhs batch rank {}",
+                rhs.shape.rank(),
+                lhs_batch_rank
+            ),
+        });
+    }
+
+    let lhs_batch_dims = &lhs.shape.dims[..lhs_batch_rank];
+    let rhs_batch_dims = &rhs.shape.dims[..lhs_batch_rank];
+    if lhs_batch_dims != rhs_batch_dims {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "lhs/rhs batch dims mismatch: lhs={:?}, rhs={:?}",
+                lhs_batch_dims, rhs_batch_dims
+            ),
+        });
+    }
+
+    let n = expect_square_trailing_dims(primitive, lhs)?;
+    let rhs_contract_dim = rhs.shape.dims[lhs_batch_rank];
+    if rhs_contract_dim != n {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "rhs leading matrix dim {} must match lhs size {}",
+                rhs_contract_dim, n
+            ),
+        });
+    }
+
+    let trailing = rhs.shape.rank() - lhs_batch_rank;
+    if trailing != 1 && trailing != 2 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "rhs must be batched vector or matrix (trailing dims 1 or 2), got {}",
+                trailing
+            ),
+        });
+    }
+
+    Ok(vec![ShapedArray {
+        dtype: promote_dtype(lhs.dtype, rhs.dtype),
+        shape: rhs.shape.clone(),
+    }])
+}
+
+fn infer_eigh(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Eigh;
+    let input = expect_single_matrix_input(primitive, inputs)?;
+    let n = expect_square_trailing_dims(primitive, input)?;
+
+    let rank = input.shape.rank();
+    let batch_dims = &input.shape.dims[..rank - 2];
+
+    let mut eigenvalues_dims = batch_dims.to_vec();
+    eigenvalues_dims.push(n);
+
+    Ok(vec![
+        ShapedArray {
+            dtype: to_real_dtype(input.dtype),
+            shape: Shape {
+                dims: eigenvalues_dims,
+            },
+        },
+        input.clone(),
+    ])
+}
+
+fn infer_fft(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Fft;
+    if inputs.len() != 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected 1 input, got {}", inputs.len()),
+        });
+    }
+    let input = &inputs[0];
+    Ok(vec![ShapedArray {
+        dtype: to_complex_dtype(input.dtype),
+        shape: input.shape.clone(),
+    }])
+}
+
+fn infer_ifft(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Ifft;
+    if inputs.len() != 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected 1 input, got {}", inputs.len()),
+        });
+    }
+    let input = &inputs[0];
+    Ok(vec![ShapedArray {
+        dtype: to_complex_dtype(input.dtype),
+        shape: input.shape.clone(),
+    }])
+}
+
+fn infer_rfft(
+    inputs: &[ShapedArray],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Rfft;
+    if inputs.len() != 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected 1 input, got {}", inputs.len()),
+        });
+    }
+
+    let input = &inputs[0];
+    if input.shape.rank() == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "rfft expects rank >= 1 input".to_owned(),
+        });
+    }
+    if matches!(input.dtype, DType::Complex64 | DType::Complex128) {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "rfft expects real-valued input".to_owned(),
+        });
+    }
+
+    let mut out_dims = input.shape.dims.clone();
+    let last_axis = out_dims.len() - 1;
+    let input_last = out_dims[last_axis];
+    let fft_len = parse_optional_fft_length(primitive, params, input_last)?;
+    if fft_len == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "rfft fft_length must be > 0".to_owned(),
+        });
+    }
+    out_dims[last_axis] = fft_len / 2 + 1;
+
+    Ok(vec![ShapedArray {
+        dtype: to_complex_dtype(input.dtype),
+        shape: Shape { dims: out_dims },
+    }])
+}
+
+fn infer_irfft(
+    inputs: &[ShapedArray],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<ShapedArray>, TraceError> {
+    let primitive = Primitive::Irfft;
+    if inputs.len() != 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!("expected 1 input, got {}", inputs.len()),
+        });
+    }
+
+    let input = &inputs[0];
+    if input.shape.rank() == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "irfft expects rank >= 1 input".to_owned(),
+        });
+    }
+    if !matches!(input.dtype, DType::Complex64 | DType::Complex128) {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "irfft expects complex-valued input".to_owned(),
+        });
+    }
+
+    let mut out_dims = input.shape.dims.clone();
+    let last_axis = out_dims.len() - 1;
+    let inferred_len = out_dims[last_axis].saturating_sub(1).saturating_mul(2);
+    let fft_len = parse_optional_fft_length(primitive, params, inferred_len)?;
+    if fft_len == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "irfft fft_length must be > 0".to_owned(),
+        });
+    }
+    out_dims[last_axis] = fft_len;
+
+    Ok(vec![ShapedArray {
+        dtype: to_real_dtype(input.dtype),
         shape: Shape { dims: out_dims },
     }])
 }
@@ -3332,6 +3743,105 @@ mod tests {
                         BTreeMap::new(),
                     ),
                     (
+                        Primitive::Cholesky,
+                        vec![ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape { dims: vec![4, 4] },
+                        }],
+                        vec![TracerId(1)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::Qr,
+                        vec![ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape { dims: vec![5, 3] },
+                        }],
+                        vec![TracerId(1)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::Svd,
+                        vec![ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape { dims: vec![5, 3] },
+                        }],
+                        vec![TracerId(1)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::TriangularSolve,
+                        vec![
+                            ShapedArray {
+                                dtype: DType::F64,
+                                shape: Shape {
+                                    dims: vec![2, 4, 4],
+                                },
+                            },
+                            ShapedArray {
+                                dtype: DType::F64,
+                                shape: Shape {
+                                    dims: vec![2, 4, 3],
+                                },
+                            },
+                        ],
+                        vec![TracerId(1), TracerId(2)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::Eigh,
+                        vec![ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape { dims: vec![4, 4] },
+                        }],
+                        vec![TracerId(1)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::Fft,
+                        vec![ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape::vector(8),
+                        }],
+                        vec![TracerId(1)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::Ifft,
+                        vec![ShapedArray {
+                            dtype: DType::Complex128,
+                            shape: Shape::vector(8),
+                        }],
+                        vec![TracerId(1)],
+                        BTreeMap::new(),
+                    ),
+                    (
+                        Primitive::Rfft,
+                        vec![ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape::vector(8),
+                        }],
+                        vec![TracerId(1)],
+                        {
+                            let mut p = BTreeMap::new();
+                            p.insert("fft_length".to_owned(), "8".to_owned());
+                            p
+                        },
+                    ),
+                    (
+                        Primitive::Irfft,
+                        vec![ShapedArray {
+                            dtype: DType::Complex128,
+                            shape: Shape::vector(5),
+                        }],
+                        vec![TracerId(1)],
+                        {
+                            let mut p = BTreeMap::new();
+                            p.insert("fft_length".to_owned(), "8".to_owned());
+                            p
+                        },
+                    ),
+                    (
                         Primitive::ShiftRightArithmetic,
                         vec![
                             ShapedArray {
@@ -3509,6 +4019,231 @@ mod tests {
                         .map_err(|err| format!("missing output aval for {:?}: {err}", primitive))?;
                 }
                 Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn v2_stub_linalg_fft_shape_contracts() {
+        run_logged_test(
+            "v2_stub_linalg_fft_shape_contracts",
+            fj_test_utils::fixture_id_from_json(&("v2-stub-shapes", 1_u32))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut artifacts = Vec::new();
+
+                {
+                    let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![4, 4] },
+                    }]);
+                    let out = ctx
+                        .process_primitive(Primitive::Cholesky, &[TracerId(1)], BTreeMap::new())
+                        .map_err(|err| err.to_string())?;
+                    if out.len() != 1 {
+                        return Err(format!("cholesky output arity mismatch: {}", out.len()));
+                    }
+                    let aval = ctx.tracer_aval(out[0]).map_err(|err| err.to_string())?;
+                    if aval.shape != (Shape { dims: vec![4, 4] }) {
+                        return Err(format!("cholesky shape mismatch: {:?}", aval.shape.dims));
+                    }
+                    artifacts.push(format!("cholesky:{:?}", aval.shape.dims));
+                }
+
+                {
+                    let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![5, 3] },
+                    }]);
+                    let out = ctx
+                        .process_primitive(Primitive::Qr, &[TracerId(1)], BTreeMap::new())
+                        .map_err(|err| err.to_string())?;
+                    if out.len() != 2 {
+                        return Err(format!("qr output arity mismatch: {}", out.len()));
+                    }
+                    let q = ctx.tracer_aval(out[0]).map_err(|err| err.to_string())?;
+                    let r = ctx.tracer_aval(out[1]).map_err(|err| err.to_string())?;
+                    if q.shape != (Shape { dims: vec![5, 3] }) {
+                        return Err(format!("qr q-shape mismatch: {:?}", q.shape.dims));
+                    }
+                    if r.shape != (Shape { dims: vec![3, 3] }) {
+                        return Err(format!("qr r-shape mismatch: {:?}", r.shape.dims));
+                    }
+                    artifacts.push(format!("qr_q:{:?}", q.shape.dims));
+                    artifacts.push(format!("qr_r:{:?}", r.shape.dims));
+                }
+
+                {
+                    let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![5, 3] },
+                    }]);
+                    let out = ctx
+                        .process_primitive(Primitive::Svd, &[TracerId(1)], BTreeMap::new())
+                        .map_err(|err| err.to_string())?;
+                    if out.len() != 3 {
+                        return Err(format!("svd output arity mismatch: {}", out.len()));
+                    }
+                    let u = ctx.tracer_aval(out[0]).map_err(|err| err.to_string())?;
+                    let s = ctx.tracer_aval(out[1]).map_err(|err| err.to_string())?;
+                    let vt = ctx.tracer_aval(out[2]).map_err(|err| err.to_string())?;
+                    if u.shape != (Shape { dims: vec![5, 3] }) {
+                        return Err(format!("svd u-shape mismatch: {:?}", u.shape.dims));
+                    }
+                    if s.shape != (Shape { dims: vec![3] }) {
+                        return Err(format!("svd s-shape mismatch: {:?}", s.shape.dims));
+                    }
+                    if vt.shape != (Shape { dims: vec![3, 3] }) {
+                        return Err(format!("svd vt-shape mismatch: {:?}", vt.shape.dims));
+                    }
+                    artifacts.push(format!("svd_u:{:?}", u.shape.dims));
+                    artifacts.push(format!("svd_s:{:?}", s.shape.dims));
+                    artifacts.push(format!("svd_vt:{:?}", vt.shape.dims));
+                }
+
+                {
+                    let mut ctx = SimpleTraceContext::with_inputs(vec![
+                        ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape {
+                                dims: vec![2, 4, 4],
+                            },
+                        },
+                        ShapedArray {
+                            dtype: DType::F64,
+                            shape: Shape {
+                                dims: vec![2, 4, 3],
+                            },
+                        },
+                    ]);
+                    let out = ctx
+                        .process_primitive(
+                            Primitive::TriangularSolve,
+                            &[TracerId(1), TracerId(2)],
+                            BTreeMap::new(),
+                        )
+                        .map_err(|err| err.to_string())?;
+                    if out.len() != 1 {
+                        return Err(format!(
+                            "triangular_solve output arity mismatch: {}",
+                            out.len()
+                        ));
+                    }
+                    let solved = ctx.tracer_aval(out[0]).map_err(|err| err.to_string())?;
+                    if solved.shape
+                        != (Shape {
+                            dims: vec![2, 4, 3],
+                        })
+                    {
+                        return Err(format!(
+                            "triangular_solve shape mismatch: {:?}",
+                            solved.shape.dims
+                        ));
+                    }
+                    artifacts.push(format!("triangular_solve:{:?}", solved.shape.dims));
+                }
+
+                {
+                    let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![4, 4] },
+                    }]);
+                    let out = ctx
+                        .process_primitive(Primitive::Eigh, &[TracerId(1)], BTreeMap::new())
+                        .map_err(|err| err.to_string())?;
+                    if out.len() != 2 {
+                        return Err(format!("eigh output arity mismatch: {}", out.len()));
+                    }
+                    let evals = ctx.tracer_aval(out[0]).map_err(|err| err.to_string())?;
+                    let evecs = ctx.tracer_aval(out[1]).map_err(|err| err.to_string())?;
+                    if evals.shape != (Shape { dims: vec![4] }) {
+                        return Err(format!(
+                            "eigh eigenvalue shape mismatch: {:?}",
+                            evals.shape.dims
+                        ));
+                    }
+                    if evecs.shape != (Shape { dims: vec![4, 4] }) {
+                        return Err(format!(
+                            "eigh eigenvector shape mismatch: {:?}",
+                            evecs.shape.dims
+                        ));
+                    }
+                    artifacts.push(format!("eigh_vals:{:?}", evals.shape.dims));
+                    artifacts.push(format!("eigh_vecs:{:?}", evecs.shape.dims));
+                }
+
+                {
+                    let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::vector(8),
+                    }]);
+                    let fft = ctx
+                        .process_primitive(Primitive::Fft, &[TracerId(1)], BTreeMap::new())
+                        .map_err(|err| err.to_string())?;
+                    let (fft_shape, fft_dtype) = {
+                        let fft_aval = ctx.tracer_aval(fft[0]).map_err(|err| err.to_string())?;
+                        (fft_aval.shape.clone(), fft_aval.dtype)
+                    };
+                    if fft_shape != Shape::vector(8) || fft_dtype != DType::Complex128 {
+                        return Err(format!(
+                            "fft mismatch shape={:?} dtype={:?}",
+                            fft_shape.dims, fft_dtype
+                        ));
+                    }
+
+                    let ifft = ctx
+                        .process_primitive(Primitive::Ifft, &[fft[0]], BTreeMap::new())
+                        .map_err(|err| err.to_string())?;
+                    let (ifft_shape, ifft_dtype) = {
+                        let ifft_aval = ctx.tracer_aval(ifft[0]).map_err(|err| err.to_string())?;
+                        (ifft_aval.shape.clone(), ifft_aval.dtype)
+                    };
+                    if ifft_shape != Shape::vector(8) || ifft_dtype != DType::Complex128 {
+                        return Err(format!(
+                            "ifft mismatch shape={:?} dtype={:?}",
+                            ifft_shape.dims, ifft_dtype
+                        ));
+                    }
+
+                    let mut rfft_params = BTreeMap::new();
+                    rfft_params.insert("fft_length".to_owned(), "8".to_owned());
+                    let rfft = ctx
+                        .process_primitive(Primitive::Rfft, &[TracerId(1)], rfft_params)
+                        .map_err(|err| err.to_string())?;
+                    let (rfft_shape, rfft_dtype) = {
+                        let rfft_aval = ctx.tracer_aval(rfft[0]).map_err(|err| err.to_string())?;
+                        (rfft_aval.shape.clone(), rfft_aval.dtype)
+                    };
+                    if rfft_shape != Shape::vector(5) || rfft_dtype != DType::Complex128 {
+                        return Err(format!(
+                            "rfft mismatch shape={:?} dtype={:?}",
+                            rfft_shape.dims, rfft_dtype
+                        ));
+                    }
+
+                    let mut irfft_params = BTreeMap::new();
+                    irfft_params.insert("fft_length".to_owned(), "8".to_owned());
+                    let irfft = ctx
+                        .process_primitive(Primitive::Irfft, &[rfft[0]], irfft_params)
+                        .map_err(|err| err.to_string())?;
+                    let (irfft_shape, irfft_dtype) = {
+                        let irfft_aval =
+                            ctx.tracer_aval(irfft[0]).map_err(|err| err.to_string())?;
+                        (irfft_aval.shape.clone(), irfft_aval.dtype)
+                    };
+                    if irfft_shape != Shape::vector(8) || irfft_dtype != DType::F64 {
+                        return Err(format!(
+                            "irfft mismatch shape={:?} dtype={:?}",
+                            irfft_shape.dims, irfft_dtype
+                        ));
+                    }
+                    artifacts.push(format!("fft:{:?}", fft_shape.dims));
+                    artifacts.push(format!("rfft:{:?}", rfft_shape.dims));
+                    artifacts.push(format!("irfft:{:?}", irfft_shape.dims));
+                }
+
+                Ok(artifacts)
             },
         );
     }

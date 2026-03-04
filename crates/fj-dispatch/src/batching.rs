@@ -353,6 +353,9 @@ pub fn apply_batch_rule(
         | Primitive::Logistic
         | Primitive::Erf
         | Primitive::Erfc
+        | Primitive::Lgamma
+        | Primitive::Digamma
+        | Primitive::ErfInv
         | Primitive::Conj
         | Primitive::Real
         | Primitive::Imag
@@ -432,6 +435,15 @@ pub fn apply_batch_rule(
         Primitive::Squeeze => batch_passthrough_leading(primitive, inputs, params),
         Primitive::Split => batch_passthrough_leading(primitive, inputs, params),
         Primitive::ExpandDims => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Cholesky
+        | Primitive::Qr
+        | Primitive::Svd
+        | Primitive::TriangularSolve
+        | Primitive::Eigh
+        | Primitive::Fft
+        | Primitive::Ifft
+        | Primitive::Rfft
+        | Primitive::Irfft => batch_passthrough_leading(primitive, inputs, params),
 
         // ── Index generation ───────────────────────────────────
         Primitive::Iota => batch_iota(inputs, params),

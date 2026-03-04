@@ -1,0 +1,245 @@
+{
+  "entries": [
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 + f64 -> f64",
+      "test_name": "md_add_i64_f64_scalar"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 + f64 -> f64",
+      "test_name": "md_add_i64_f64_vector"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 + f64 -> f64",
+      "test_name": "md_add_i64_f64_matrix"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 + f64 -> f64",
+      "test_name": "md_add_i64_f64_broadcast_rhs_scalar"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "f64",
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "f64 + i64 -> f64",
+      "test_name": "md_add_i64_f64_broadcast_lhs_scalar"
+    },
+    {
+      "actual_dtype": "i64",
+      "expected_dtype": "i64",
+      "input_dtypes": [
+        "bool",
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "bool * i64 -> i64",
+      "test_name": "md_mul_bool_i64_vector"
+    },
+    {
+      "actual_dtype": "i64",
+      "expected_dtype": "i64",
+      "input_dtypes": [
+        "bool",
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "bool * i64 -> i64",
+      "test_name": "md_mul_bool_i64_matrix"
+    },
+    {
+      "actual_dtype": "i64",
+      "expected_dtype": "i64",
+      "input_dtypes": [
+        "bool",
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "bool * i64 -> i64",
+      "test_name": "md_mul_bool_i64_scalar"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 / f64 -> f64",
+      "test_name": "md_div_i64_f64_scalar"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 / f64 -> f64",
+      "test_name": "md_div_i64_f64_vector"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 / f64 -> f64",
+      "test_name": "md_div_i64_f64_matrix"
+    },
+    {
+      "actual_dtype": "bool",
+      "expected_dtype": "bool",
+      "input_dtypes": [
+        "f64",
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "f64 > i64 -> bool",
+      "test_name": "md_gt_f64_i64_vector"
+    },
+    {
+      "actual_dtype": "bool",
+      "expected_dtype": "bool",
+      "input_dtypes": [
+        "f64",
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "f64 > i64 -> bool",
+      "test_name": "md_gt_f64_i64_matrix"
+    },
+    {
+      "actual_dtype": "bool",
+      "expected_dtype": "bool",
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "i64 == f64 -> bool",
+      "test_name": "md_eq_i64_f64_scalar"
+    },
+    {
+      "actual_dtype": "i64",
+      "expected_dtype": "i64",
+      "input_dtypes": [
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "reduce_sum(i64) -> i64",
+      "test_name": "md_reduce_sum_i64"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "f64"
+      ],
+      "pass": true,
+      "promotion_rule": "reduce_sum(f64) -> f64",
+      "test_name": "md_reduce_sum_f64"
+    },
+    {
+      "actual_dtype": "error",
+      "expected_dtype": "error",
+      "input_dtypes": [
+        "bool"
+      ],
+      "pass": true,
+      "promotion_rule": "reduce_sum(bool) -> error",
+      "test_name": "md_reduce_sum_bool_error"
+    },
+    {
+      "actual_dtype": "error",
+      "expected_dtype": "error",
+      "input_dtypes": [
+        "i64",
+        "f64",
+        "bool"
+      ],
+      "pass": true,
+      "promotion_rule": "(i64 + f64) * bool -> error",
+      "test_name": "md_expr_add_then_mul_bool_vector"
+    },
+    {
+      "actual_dtype": "error",
+      "expected_dtype": "error",
+      "input_dtypes": [
+        "i64",
+        "f64",
+        "bool"
+      ],
+      "pass": true,
+      "promotion_rule": "(i64 + f64) * bool -> error",
+      "test_name": "md_expr_add_then_mul_bool_matrix"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "grad(i64 -> f64) square",
+      "test_name": "md_grad_square_i64_input"
+    },
+    {
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
+      "input_dtypes": [
+        "i64"
+      ],
+      "pass": true,
+      "promotion_rule": "grad(i64 -> f64) square_plus_linear",
+      "test_name": "md_grad_square_plus_linear_i64_input"
+    },
+    {
+      "actual_dtype": "bool",
+      "expected_dtype": "bool",
+      "input_dtypes": [
+        "f32",
+        "i32"
+      ],
+      "pass": true,
+      "promotion_rule": "f32 < i32 -> bool",
+      "test_name": "md_lt_f32_i32_vector"
+    }
+  ],
+  "generated_at_unix_ms": 1772614683322,
+  "test_name": "e2e_mixed_dtype_conformance"
+}

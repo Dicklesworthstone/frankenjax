@@ -235,14 +235,18 @@ mod tests {
                 Literal::BF16Bits(rt) => rt,
                 _ => unreachable!("from_bf16_f32 must produce BF16Bits"),
             };
-            prop_assert_eq!(bits, roundtrip);
+            let expected = half::bf16::from_f32(f32::from(half::bf16::from_bits(bits))).to_bits();
+            prop_assert_eq!(expected, roundtrip);
         }
 
         #[test]
-        fn prop_float16_finite_values_convert(value in prop::num::f32::NORMAL) {
+        fn prop_float16_finite_values_convert(value in any::<f32>()) {
+            prop_assume!(value.is_finite() && value.abs() <= 65_504.0);
             let lit = Literal::from_f16_f32(value);
             let roundtrip = lit.as_f16_f32().unwrap();
+            let expected = f32::from(half::f16::from_f32(value));
             prop_assert!(roundtrip.is_finite());
+            prop_assert_eq!(roundtrip.to_bits(), expected.to_bits());
         }
     }
 

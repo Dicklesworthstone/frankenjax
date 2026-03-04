@@ -148,6 +148,9 @@ pub enum Primitive {
     ExpandDims,
     // Special math
     Cbrt,
+    Lgamma,
+    Digamma,
+    ErfInv,
     IsFinite,
     IntegerPow,
     Nextafter,
@@ -160,6 +163,17 @@ pub enum Primitive {
     Copy,
     BitcastConvertType,
     ReducePrecision,
+    // Linear algebra stubs
+    Cholesky,
+    Qr,
+    Svd,
+    TriangularSolve,
+    Eigh,
+    // FFT stubs
+    Fft,
+    Ifft,
+    Rfft,
+    Irfft,
     // Encoding
     OneHot,
     // Cumulative
@@ -263,6 +277,9 @@ impl Primitive {
             Self::Split => "split",
             Self::ExpandDims => "expand_dims",
             Self::Cbrt => "cbrt",
+            Self::Lgamma => "lgamma",
+            Self::Digamma => "digamma",
+            Self::ErfInv => "erf_inv",
             Self::IsFinite => "is_finite",
             Self::IntegerPow => "integer_pow",
             Self::Nextafter => "nextafter",
@@ -272,6 +289,15 @@ impl Primitive {
             Self::Copy => "copy",
             Self::BitcastConvertType => "bitcast_convert_type",
             Self::ReducePrecision => "reduce_precision",
+            Self::Cholesky => "cholesky",
+            Self::Qr => "qr",
+            Self::Svd => "svd",
+            Self::TriangularSolve => "triangular_solve",
+            Self::Eigh => "eigh",
+            Self::Fft => "fft",
+            Self::Ifft => "ifft",
+            Self::Rfft => "rfft",
+            Self::Irfft => "irfft",
             Self::OneHot => "one_hot",
             Self::Cumsum => "cumsum",
             Self::Cumprod => "cumprod",
@@ -1504,6 +1530,7 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
     use serde::Serialize;
+    use serde_json::json;
     use smallvec::smallvec;
     use std::any::Any;
     use std::collections::BTreeMap;
@@ -3072,6 +3099,18 @@ mod tests {
     }
 
     #[test]
+    fn test_tensor_value_float16() {
+        let t = TensorValue::new(
+            DType::F16,
+            Shape::vector(2),
+            vec![Literal::from_f16_f32(1.0), Literal::from_f16_f32(2.0)],
+        )
+        .unwrap();
+        assert_eq!(t.dtype, DType::F16);
+        assert_eq!(t.shape, Shape::vector(2));
+    }
+
+    #[test]
     fn test_dtype_size_bfloat16() {
         assert_eq!(std::mem::size_of::<u16>(), 2);
     }
@@ -3079,6 +3118,223 @@ mod tests {
     #[test]
     fn test_dtype_size_float16() {
         assert_eq!(std::mem::size_of::<u16>(), 2);
+    }
+
+    #[test]
+    fn prop_bfloat16_roundtrip_preserves_bits() {
+        run_logged_test(
+            "prop_bfloat16_roundtrip_preserves_bits",
+            &(
+                "prop-bfloat16-roundtrip-preserves-bits",
+                fj_test_utils::property_test_case_count(),
+            ),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut runner = TestRunner::new(ProptestConfig::with_cases(
+                    fj_test_utils::property_test_case_count(),
+                ));
+                runner
+                    .run(&any::<u16>(), |bits| {
+                        let literal = Literal::BF16Bits(bits);
+                        let serialized = serde_json::to_string(&literal)
+                            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+                        let decoded: Literal = serde_json::from_str(&serialized)
+                            .map_err(|err| TestCaseError::fail(err.to_string()))?;
+                        let recovered = match decoded {
+                            Literal::BF16Bits(value) => value,
+                            other => {
+                                return Err(TestCaseError::fail(format!(
+                                    "expected BF16Bits after roundtrip, got {other:?}"
+                                )));
+                            }
+                        };
+                        prop_assert_eq!(recovered, bits);
+                        Ok(())
+                    })
+                    .map_err(|err| err.to_string())?;
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn prop_float16_finite_values_convert() {
+        run_logged_test(
+            "prop_float16_finite_values_convert",
+            &(
+                "prop-float16-finite-values-convert",
+                fj_test_utils::property_test_case_count(),
+            ),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut runner = TestRunner::new(ProptestConfig::with_cases(
+                    fj_test_utils::property_test_case_count(),
+                ));
+                let strategy = any::<f32>().prop_filter("finite float16 domain", |value| {
+                    value.is_finite() && value.abs() <= 65_504.0
+                });
+                runner
+                    .run(&strategy, |value| {
+                        let expected = f32::from(half::f16::from_f32(value));
+                        let roundtrip = Literal::from_f16_f32(value)
+                            .as_f16_f32()
+                            .ok_or_else(|| TestCaseError::fail("expected f16 literal"))?;
+                        prop_assert!(roundtrip.is_finite());
+                        prop_assert_eq!(roundtrip.to_bits(), expected.to_bits());
+                        Ok(())
+                    })
+                    .map_err(|err| err.to_string())?;
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn e2e_bfloat16_computation() {
+        run_logged_test(
+            "e2e_bfloat16_computation",
+            &(
+                "e2e-bfloat16-computation",
+                [1.000_000_1_f32, 2.000_000_2_f32],
+            ),
+            fj_test_utils::TestMode::Hardened,
+            || {
+                let input_a = 1.000_000_1_f32;
+                let input_b = 2.000_000_2_f32;
+
+                let quantized_a = Literal::from_bf16_f32(input_a)
+                    .as_bf16_f32()
+                    .ok_or_else(|| "expected BF16 scalar A roundtrip".to_owned())?;
+                let quantized_b = Literal::from_bf16_f32(input_b)
+                    .as_bf16_f32()
+                    .ok_or_else(|| "expected BF16 scalar B roundtrip".to_owned())?;
+
+                let bits_of = |value: f32| -> Result<u16, String> {
+                    match Literal::from_bf16_f32(value) {
+                        Literal::BF16Bits(bits) => Ok(bits),
+                        other => Err(format!("expected BF16Bits, got {other:?}")),
+                    }
+                };
+                let input_a_bits = bits_of(input_a)?;
+                let input_b_bits = bits_of(input_b)?;
+
+                let sum_expected = input_a + input_b;
+                let product_expected = input_a * input_b;
+                let sum_roundtrip = Literal::from_bf16_f32(quantized_a + quantized_b)
+                    .as_bf16_f32()
+                    .ok_or_else(|| "expected BF16 sum roundtrip".to_owned())?;
+                let product_roundtrip = Literal::from_bf16_f32(quantized_a * quantized_b)
+                    .as_bf16_f32()
+                    .ok_or_else(|| "expected BF16 product roundtrip".to_owned())?;
+
+                let input_a_loss = f64::from((input_a - quantized_a).abs());
+                let input_b_loss = f64::from((input_b - quantized_b).abs());
+                let sum_loss = f64::from((sum_expected - sum_roundtrip).abs());
+                let product_loss = f64::from((product_expected - product_roundtrip).abs());
+                assert!(
+                    input_a_loss > 0.0 || input_b_loss > 0.0,
+                    "expected BF16 quantization to lose precision"
+                );
+
+                let records = vec![
+                    json!({
+                        "test_name": "e2e_bfloat16_computation.input_a",
+                        "dtype": "BF16",
+                        "bit_pattern": format!("0x{input_a_bits:04x}"),
+                        "f32_value": input_a,
+                        "roundtrip_value": quantized_a,
+                        "precision_loss": input_a_loss,
+                        "pass": quantized_a.is_finite()
+                    }),
+                    json!({
+                        "test_name": "e2e_bfloat16_computation.input_b",
+                        "dtype": "BF16",
+                        "bit_pattern": format!("0x{input_b_bits:04x}"),
+                        "f32_value": input_b,
+                        "roundtrip_value": quantized_b,
+                        "precision_loss": input_b_loss,
+                        "pass": quantized_b.is_finite()
+                    }),
+                    json!({
+                        "test_name": "e2e_bfloat16_computation.sum",
+                        "dtype": "BF16",
+                        "bit_pattern": null,
+                        "f32_value": sum_expected,
+                        "roundtrip_value": sum_roundtrip,
+                        "precision_loss": sum_loss,
+                        "pass": sum_roundtrip.is_finite() && sum_loss <= 5e-3
+                    }),
+                    json!({
+                        "test_name": "e2e_bfloat16_computation.mul",
+                        "dtype": "BF16",
+                        "bit_pattern": null,
+                        "f32_value": product_expected,
+                        "roundtrip_value": product_roundtrip,
+                        "precision_loss": product_loss,
+                        "pass": product_roundtrip.is_finite() && product_loss <= 5e-3
+                    }),
+                ];
+                let pass = records
+                    .iter()
+                    .all(|record| record["pass"].as_bool().unwrap_or(false));
+
+                let e2e_payload = json!({
+                    "schema_version": "frankenjax.e2e-forensic-log.v1",
+                    "test_name": "e2e_bfloat16_computation",
+                    "records": records,
+                    "pass": pass
+                });
+                let test_log_payload = json!({
+                    "test_name": "e2e_bfloat16_computation",
+                    "dtype": "BF16",
+                    "records": e2e_payload["records"].clone(),
+                    "pass": pass
+                });
+
+                let e2e_path = repo_root()
+                    .join("artifacts")
+                    .join("e2e")
+                    .join("e2e_bfloat16.e2e.json");
+                let test_log_path = repo_root()
+                    .join("artifacts")
+                    .join("testing")
+                    .join("logs")
+                    .join("fj-core")
+                    .join("e2e_bfloat16_computation.json");
+
+                for artifact_path in [&e2e_path, &test_log_path] {
+                    if let Some(parent) = artifact_path.parent() {
+                        fs::create_dir_all(parent).map_err(|err| {
+                            format!(
+                                "failed creating artifact directory {}: {err}",
+                                parent.display()
+                            )
+                        })?;
+                    }
+                }
+                fs::write(
+                    &e2e_path,
+                    serde_json::to_string_pretty(&e2e_payload)
+                        .map_err(|err| format!("failed serializing e2e payload: {err}"))?,
+                )
+                .map_err(|err| format!("failed writing {}: {err}", e2e_path.display()))?;
+                fs::write(
+                    &test_log_path,
+                    serde_json::to_string_pretty(&test_log_payload)
+                        .map_err(|err| format!("failed serializing test log payload: {err}"))?,
+                )
+                .map_err(|err| format!("failed writing {}: {err}", test_log_path.display()))?;
+
+                if !pass {
+                    return Err("bf16 e2e forensic checks did not pass".to_owned());
+                }
+
+                Ok(vec![
+                    e2e_path.display().to_string(),
+                    test_log_path.display().to_string(),
+                ])
+            },
+        );
     }
 
     // ── Complex type tests (bd-1hx8) ────────────────────────────

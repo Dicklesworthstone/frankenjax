@@ -354,13 +354,25 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
             | Primitive::PopulationCount
             | Primitive::CountLeadingZeros
             | Primitive::Cbrt
+            | Primitive::Lgamma
+            | Primitive::Digamma
+            | Primitive::ErfInv
             | Primitive::IsFinite
             | Primitive::IntegerPow
             | Primitive::Nextafter
             | Primitive::BroadcastedIota
             | Primitive::Copy
             | Primitive::BitcastConvertType
-            | Primitive::ReducePrecision => {
+            | Primitive::ReducePrecision
+            | Primitive::Cholesky
+            | Primitive::Qr
+            | Primitive::Svd
+            | Primitive::TriangularSolve
+            | Primitive::Eigh
+            | Primitive::Fft
+            | Primitive::Ifft
+            | Primitive::Rfft
+            | Primitive::Irfft => {
                 panic!(
                     "primitive {} not supported by egraph lowering",
                     eqn.primitive.as_str()
@@ -1071,6 +1083,9 @@ fn is_egraph_supported_primitive(primitive: Primitive) -> bool {
             | Primitive::ExpandDims
             | Primitive::Iota
             | Primitive::Cbrt
+            | Primitive::Lgamma
+            | Primitive::Digamma
+            | Primitive::ErfInv
             | Primitive::IsFinite
             | Primitive::IntegerPow
             | Primitive::Nextafter

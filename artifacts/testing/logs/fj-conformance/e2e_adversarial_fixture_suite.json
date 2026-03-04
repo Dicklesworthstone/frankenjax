@@ -1,0 +1,334 @@
+{
+  "entries": [
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "binary op with NaN and finite operand",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "binary op with NaN and finite operand",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "binary op with NaN and finite operand",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "binary op with NaN and finite operand",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "mul(Inf, 0.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should remain +Inf",
+      "input_description": "add(Inf, 1.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be +Inf",
+      "input_description": "exp(Inf)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be +0.0",
+      "input_description": "exp(-Inf)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be -Inf",
+      "input_description": "log(0.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "log(-1.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be NaN",
+      "input_description": "sqrt(-1.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "nan_inf",
+      "expected_behavior": "result should be +Inf",
+      "input_description": "reciprocal(0.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "result should be scalar zero",
+      "input_description": "reduce_sum on tensor shape [0]",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "result should preserve empty shape",
+      "input_description": "add two tensors shape [0]",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "rank and element count should remain stable",
+      "input_description": "neg on rank-8 tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "broadcasted add should match expected values",
+      "input_description": "scalar + tensor broadcast",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "broadcasted mul should match expected values",
+      "input_description": "tensor * scalar broadcast",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "sum should equal tensor length for all-ones input",
+      "input_description": "reduce_sum on large 1D tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "sum should equal tensor length for all-ones input",
+      "input_description": "reduce_sum on large 1D tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "sum should equal tensor length for all-ones input",
+      "input_description": "reduce_sum on large 1D tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "sum should equal tensor length for all-ones input",
+      "input_description": "reduce_sum on large 1D tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "sum should equal tensor length for all-ones input",
+      "input_description": "reduce_sum on large 1D tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "shape_edge",
+      "expected_behavior": "sum should equal tensor length for all-ones input",
+      "input_description": "reduce_sum on large 1D tensor",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "gradient should be zero for non-differentiable floor primitive",
+      "input_description": "grad(floor(x))",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "gradient should be zero for non-differentiable floor primitive",
+      "input_description": "grad(floor(x))",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "gradient should be zero for non-differentiable floor primitive",
+      "input_description": "grad(floor(x))",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "transform execution should return mismatched-dimension error",
+      "input_description": "vmap(add2) with mismatched leading dims",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "transform execution should reject rank-0 mapped input",
+      "input_description": "vmap(add_one) with scalar argument",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "second derivative should be approximately 2.0",
+      "input_description": "grad(grad(square))(3.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "double jit should preserve semantics",
+      "input_description": "jit(jit(add_one))(41)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "transform_edge",
+      "expected_behavior": "composition should produce derivative 8.0",
+      "input_description": "jit(grad(square))(4.0)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "result should promote to f64 with correct value",
+      "input_description": "add(i64, f64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "result should promote to f64 vector",
+      "input_description": "add(vector_i64, vector_f64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "bool should coerce through multiplication semantics",
+      "input_description": "mul(vector_bool, vector_i64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "bool scalar should coerce as expected",
+      "input_description": "mul(bool, i64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "result should promote to f64",
+      "input_description": "div(i64, f64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "result should promote to f64 vector",
+      "input_description": "div(vector_i64, scalar_f64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "comparison should produce bool tensor",
+      "input_description": "gt(vector_f64, vector_i64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "comparison should succeed across numeric dtypes",
+      "input_description": "eq(i64, f64)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "operation should use wrapping semantics at integer boundary",
+      "input_description": "shift_left(i64::MAX, 1)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    },
+    {
+      "actual_behavior": "matched expected behavior",
+      "edge_case_type": "type_coercion",
+      "expected_behavior": "operation should preserve arithmetic/right-shift semantics at boundary",
+      "input_description": "shift_right_arithmetic(i64::MIN, 1)",
+      "pass": true,
+      "test_name": "e2e_adversarial_fixture_suite"
+    }
+  ],
+  "generated_at_unix_ms": 1772617190000,
+  "test_name": "e2e_adversarial_fixture_suite"
+}

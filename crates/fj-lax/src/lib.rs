@@ -12,9 +12,9 @@ use std::collections::BTreeMap;
 
 use arithmetic::{
     erf_approx, eval_abs, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
-    eval_dot, eval_exp, eval_imag, eval_integer_pow, eval_is_finite, eval_log, eval_neg,
-    eval_nextafter, eval_real, eval_select, eval_sin, eval_unary_elementwise,
-    eval_unary_int_or_float,
+    eval_digamma, eval_dot, eval_erf_inv, eval_exp, eval_imag, eval_integer_pow, eval_is_finite,
+    eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_real, eval_select, eval_sin,
+    eval_unary_elementwise, eval_unary_int_or_float,
 };
 
 use comparison::eval_comparison;
@@ -125,6 +125,15 @@ impl From<ValueError> for EvalError {
     }
 }
 
+fn unsupported_v1_stub(primitive: Primitive) -> Result<Value, EvalError> {
+    Err(EvalError::Unsupported {
+        primitive,
+        detail: format!(
+            "Primitive::{primitive:?} is not yet implemented in FrankenJAX V1. This is a planned V2 feature. Workaround: use supported V1 primitives or precompute this operation outside FrankenJAX."
+        ),
+    })
+}
+
 #[inline]
 pub fn eval_primitive(
     primitive: Primitive,
@@ -189,6 +198,9 @@ pub fn eval_primitive(
         }
         Primitive::Erf => eval_unary_elementwise(primitive, inputs, erf_approx),
         Primitive::Erfc => eval_unary_elementwise(primitive, inputs, |x| 1.0 - erf_approx(x)),
+        Primitive::Lgamma => eval_lgamma(primitive, inputs),
+        Primitive::Digamma => eval_digamma(primitive, inputs),
+        Primitive::ErfInv => eval_erf_inv(primitive, inputs),
         Primitive::Conj => eval_conj(primitive, inputs),
         Primitive::Real => eval_real(primitive, inputs),
         Primitive::Imag => eval_imag(primitive, inputs),
@@ -314,6 +326,15 @@ pub fn eval_primitive(
         Primitive::Copy => eval_copy(inputs),
         Primitive::BitcastConvertType => eval_bitcast_convert_type(inputs, params),
         Primitive::ReducePrecision => eval_reduce_precision(inputs, params),
+        Primitive::Cholesky
+        | Primitive::Qr
+        | Primitive::Svd
+        | Primitive::TriangularSolve
+        | Primitive::Eigh
+        | Primitive::Fft
+        | Primitive::Ifft
+        | Primitive::Rfft
+        | Primitive::Irfft => unsupported_v1_stub(primitive),
         // One-hot encoding
         Primitive::OneHot => eval_one_hot(inputs, params),
         // Dynamic update slice
@@ -1311,6 +1332,75 @@ mod tests {
         params.insert("padding_high".to_owned(), high.to_owned());
         params.insert("padding_interior".to_owned(), interior.to_owned());
         params
+    }
+
+    fn assert_stub_error(primitive: Primitive) -> String {
+        let err = eval_primitive(primitive, &[Value::scalar_f64(1.0)], &no_params())
+            .expect_err("stub primitive should return unsupported error");
+        match err {
+            EvalError::Unsupported { detail, .. } => detail,
+            other => panic!("expected unsupported error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_linalg_stub_cholesky_error() {
+        let detail = assert_stub_error(Primitive::Cholesky);
+        assert!(detail.contains("Primitive::Cholesky"));
+        assert!(detail.contains("planned V2 feature"));
+    }
+
+    #[test]
+    fn test_linalg_stub_svd_error() {
+        let detail = assert_stub_error(Primitive::Svd);
+        assert!(detail.contains("Primitive::Svd"));
+        assert!(detail.contains("planned V2 feature"));
+    }
+
+    #[test]
+    fn test_linalg_stub_eigh_error() {
+        let detail = assert_stub_error(Primitive::Eigh);
+        assert!(detail.contains("Primitive::Eigh"));
+        assert!(detail.contains("planned V2 feature"));
+    }
+
+    #[test]
+    fn test_fft_stub_fft_error() {
+        let detail = assert_stub_error(Primitive::Fft);
+        assert!(detail.contains("Primitive::Fft"));
+        assert!(detail.contains("planned V2 feature"));
+    }
+
+    #[test]
+    fn test_fft_stub_ifft_error() {
+        let detail = assert_stub_error(Primitive::Ifft);
+        assert!(detail.contains("Primitive::Ifft"));
+        assert!(detail.contains("planned V2 feature"));
+    }
+
+    #[test]
+    fn test_stub_error_messages_actionable() {
+        for primitive in [
+            Primitive::Cholesky,
+            Primitive::Qr,
+            Primitive::Svd,
+            Primitive::TriangularSolve,
+            Primitive::Eigh,
+            Primitive::Fft,
+            Primitive::Ifft,
+            Primitive::Rfft,
+            Primitive::Irfft,
+        ] {
+            let detail = assert_stub_error(primitive);
+            assert!(
+                detail.contains("not yet implemented in FrankenJAX V1"),
+                "expected actionable compatibility message for {primitive:?}, detail={detail}"
+            );
+            assert!(
+                detail.contains("Workaround"),
+                "expected workaround guidance for {primitive:?}, detail={detail}"
+            );
+        }
     }
 
     #[test]
@@ -5695,6 +5785,7 @@ mod tests {
 
 #[cfg(test)]
 mod prop_tests {
+    use super::arithmetic::trigamma_approx;
     use super::{EvalError, eval_fori_loop, eval_primitive};
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
     use proptest::prelude::*;
@@ -6576,6 +6667,331 @@ mod prop_tests {
         let result =
             eval_primitive(Primitive::IntegerPow, &[Value::scalar_f64(2.0)], &params).unwrap();
         assert!((result.as_f64_scalar().unwrap() - 0.125).abs() < 1e-10);
+    }
+
+    // ── Special function tests ────────────────────────────────
+
+    #[test]
+    fn test_lgamma_positive_int() {
+        let out = eval_primitive(Primitive::Lgamma, &[Value::scalar_f64(5.0)], &no_params())
+            .expect("lgamma should succeed");
+        let actual = out.as_f64_scalar().expect("scalar");
+        let expected = 24.0_f64.ln();
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn test_lgamma_half_int() {
+        let out = eval_primitive(Primitive::Lgamma, &[Value::scalar_f64(0.5)], &no_params())
+            .expect("lgamma should succeed");
+        let actual = out.as_f64_scalar().expect("scalar");
+        let expected = std::f64::consts::PI.sqrt().ln();
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn test_lgamma_negative() {
+        let out = eval_primitive(Primitive::Lgamma, &[Value::scalar_f64(-0.5)], &no_params())
+            .expect("lgamma should succeed");
+        let actual = out.as_f64_scalar().expect("scalar");
+        let expected = (2.0 * std::f64::consts::PI.sqrt()).ln();
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn test_digamma_positive_int() {
+        let out = eval_primitive(Primitive::Digamma, &[Value::scalar_f64(1.0)], &no_params())
+            .expect("digamma should succeed");
+        let actual = out.as_f64_scalar().expect("scalar");
+        let expected = -0.577_215_664_901_532_9_f64;
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn test_digamma_large() {
+        let out = eval_primitive(
+            Primitive::Digamma,
+            &[Value::scalar_f64(100.0)],
+            &no_params(),
+        )
+        .expect("digamma should succeed");
+        let actual = out.as_f64_scalar().expect("scalar");
+        let expected = 100.0_f64.ln() - 1.0 / (2.0 * 100.0);
+        assert!(
+            (actual - expected).abs() < 2e-5,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn test_erf_inv_roundtrip() {
+        for x in [-2.5_f64, -1.0, -0.1, 0.0, 0.1, 0.9, 2.5] {
+            let erf_x = eval_primitive(Primitive::Erf, &[Value::scalar_f64(x)], &no_params())
+                .expect("erf should succeed")
+                .as_f64_scalar()
+                .expect("scalar");
+            let roundtrip =
+                eval_primitive(Primitive::ErfInv, &[Value::scalar_f64(erf_x)], &no_params())
+                    .expect("erf_inv should succeed")
+                    .as_f64_scalar()
+                    .expect("scalar");
+            assert!(
+                (roundtrip - x).abs() < 2e-3,
+                "x={x}, erf(x)={erf_x}, erf_inv(erf(x))={roundtrip}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_erf_inv_boundaries() {
+        let at_zero = eval_primitive(Primitive::ErfInv, &[Value::scalar_f64(0.0)], &no_params())
+            .expect("erf_inv should succeed");
+        assert_eq!(at_zero.as_f64_scalar().expect("scalar"), 0.0);
+
+        let at_pos_one = eval_primitive(Primitive::ErfInv, &[Value::scalar_f64(1.0)], &no_params())
+            .expect("erf_inv should succeed")
+            .as_f64_scalar()
+            .expect("scalar");
+        assert!(at_pos_one.is_infinite() && at_pos_one.is_sign_positive());
+
+        let at_neg_one =
+            eval_primitive(Primitive::ErfInv, &[Value::scalar_f64(-1.0)], &no_params())
+                .expect("erf_inv should succeed")
+                .as_f64_scalar()
+                .expect("scalar");
+        assert!(at_neg_one.is_infinite() && at_neg_one.is_sign_negative());
+    }
+
+    #[test]
+    fn test_trigamma_positive() {
+        let actual = trigamma_approx(1.0);
+        let expected = std::f64::consts::PI * std::f64::consts::PI / 6.0;
+        assert!(
+            (actual - expected).abs() < 1e-9,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn test_trigamma_large() {
+        let actual = trigamma_approx(100.0);
+        let expected = 1.0 / 100.0 + 1.0 / (2.0 * 100.0_f64.powi(2));
+        assert!(
+            (actual - expected).abs() < 5e-7,
+            "actual={actual}, expected={expected}"
+        );
+    }
+
+    #[test]
+    fn e2e_special_functions_oracle() {
+        let cases = [
+            ("lgamma", 0.5_f64, 0.572_364_942_924_700_1_f64),
+            ("lgamma", 5.0_f64, 3.178_053_830_347_945_8_f64),
+            ("digamma", 1.0_f64, -0.577_215_664_901_532_9_f64),
+            ("digamma", 5.0_f64, 1.506_117_668_431_800_3_f64),
+            ("erf_inv", 0.5_f64, 0.476_936_276_204_469_9_f64),
+            ("erf_inv", -0.9_f64, -1.163_087_153_676_674_3_f64),
+        ];
+
+        let atol = 1e-6_f64;
+        let mut rows = Vec::with_capacity(cases.len());
+        let mut all_passed = true;
+
+        for (function, input, expected) in cases {
+            let primitive = match function {
+                "lgamma" => Primitive::Lgamma,
+                "digamma" => Primitive::Digamma,
+                "erf_inv" => Primitive::ErfInv,
+                _ => unreachable!("unknown function"),
+            };
+
+            let actual = eval_primitive(primitive, &[Value::scalar_f64(input)], &no_params())
+                .expect("oracle eval should succeed")
+                .as_f64_scalar()
+                .expect("scalar");
+            let abs_error = (actual - expected).abs();
+            let pass = abs_error <= atol;
+            all_passed &= pass;
+            rows.push((function, input, expected, actual, abs_error, pass));
+        }
+
+        let case_logs = format!(
+            "[{}]",
+            rows.iter()
+                .map(
+                    |(function, input, expected, actual, abs_error, pass)| format!(
+                        "{{\"test_name\":\"e2e_special_functions_oracle\",\"function\":\"{}\",\"input\":{},\"expected\":{},\"actual\":{},\"error\":{},\"pass\":{}}}",
+                        function, input, expected, actual, abs_error, pass
+                    )
+                )
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let forensic_log = format!(
+            concat!(
+                "{{",
+                "\"scenario\":\"e2e_special_functions_oracle\",",
+                "\"all_passed\":{},",
+                "\"cases\":[{}]",
+                "}}"
+            ),
+            all_passed,
+            rows.iter()
+                .map(
+                    |(function, input, expected, actual, abs_error, pass)| format!(
+                        "{{\"function\":\"{}\",\"input\":{},\"expected\":{},\"actual\":{},\"abs_error\":{},\"pass\":{}}}",
+                        function, input, expected, actual, abs_error, pass
+                    )
+                )
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts");
+        let e2e_path = root.join("e2e/e2e_special_functions.e2e.json");
+        let test_log_path = root.join("testing/logs/fj-lax/e2e_special_functions_oracle.json");
+
+        if let Some(parent) = e2e_path.parent() {
+            std::fs::create_dir_all(parent).expect("create e2e artifact dir");
+        }
+        if let Some(parent) = test_log_path.parent() {
+            std::fs::create_dir_all(parent).expect("create test log dir");
+        }
+
+        std::fs::write(&e2e_path, forensic_log).expect("write special e2e forensic log");
+        std::fs::write(&test_log_path, case_logs).expect("write special test logs");
+
+        assert!(all_passed, "special function oracle mismatch");
+    }
+
+    #[test]
+    fn e2e_stub_errors_graceful() {
+        let cases = [
+            ("cholesky", Primitive::Cholesky),
+            ("qr", Primitive::Qr),
+            ("svd", Primitive::Svd),
+            ("triangular_solve", Primitive::TriangularSolve),
+            ("eigh", Primitive::Eigh),
+            ("fft", Primitive::Fft),
+            ("ifft", Primitive::Ifft),
+            ("rfft", Primitive::Rfft),
+            ("irfft", Primitive::Irfft),
+        ];
+
+        let mut rows: Vec<(&str, String, String, bool, bool, bool)> =
+            Vec::with_capacity(cases.len());
+        let mut all_passed = true;
+
+        for (function, primitive) in cases {
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                eval_primitive(primitive, &[Value::scalar_f64(1.0)], &no_params())
+            }));
+
+            let (error_type, error_message, is_actionable, is_panic, pass) = match outcome {
+                Ok(Err(EvalError::Unsupported { detail, .. })) => {
+                    let actionable = detail.contains("not yet implemented in FrankenJAX V1")
+                        && detail.contains("Workaround");
+                    (
+                        "unsupported".to_owned(),
+                        detail,
+                        actionable,
+                        false,
+                        actionable,
+                    )
+                }
+                Ok(Err(other)) => (
+                    "non_unsupported_error".to_owned(),
+                    other.to_string(),
+                    false,
+                    false,
+                    false,
+                ),
+                Ok(Ok(value)) => (
+                    "unexpected_success".to_owned(),
+                    format!("stub returned value: {value:?}"),
+                    false,
+                    false,
+                    false,
+                ),
+                Err(_) => (
+                    "panic".to_owned(),
+                    "panic during eval_primitive".to_owned(),
+                    false,
+                    true,
+                    false,
+                ),
+            };
+
+            all_passed &= pass;
+            rows.push((
+                function,
+                error_type,
+                error_message,
+                is_actionable,
+                is_panic,
+                pass,
+            ));
+        }
+
+        let case_logs = format!(
+            "[{}]",
+            rows.iter()
+                .map(|(function, error_type, error_message, _, _, pass)| format!(
+                    "{{\"test_name\":\"e2e_stub_errors_graceful\",\"stub_function\":{:?},\"error_type\":{:?},\"error_message\":{:?},\"pass\":{}}}",
+                    function, error_type, error_message, pass
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let forensic_log = format!(
+            concat!(
+                "{{",
+                "\"scenario\":\"e2e_stub_errors_graceful\",",
+                "\"all_passed\":{},",
+                "\"cases\":[{}]",
+                "}}"
+            ),
+            all_passed,
+            rows.iter()
+                .map(
+                    |(function, _, error_message, is_actionable, is_panic, pass)| format!(
+                        "{{\"function\":{:?},\"error_message\":{:?},\"is_actionable\":{},\"is_panic\":{},\"pass\":{}}}",
+                        function, error_message, is_actionable, is_panic, pass
+                    )
+                )
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts");
+        let e2e_path = root.join("e2e/e2e_stub_errors.e2e.json");
+        let test_log_path = root.join("testing/logs/fj-lax/e2e_stub_errors_graceful.json");
+
+        if let Some(parent) = e2e_path.parent() {
+            std::fs::create_dir_all(parent).expect("create e2e artifact dir");
+        }
+        if let Some(parent) = test_log_path.parent() {
+            std::fs::create_dir_all(parent).expect("create test log dir");
+        }
+
+        std::fs::write(&e2e_path, forensic_log).expect("write stub e2e forensic log");
+        std::fs::write(&test_log_path, case_logs).expect("write stub test logs");
+
+        assert!(all_passed, "stub error handling mismatch");
     }
 
     // ── Nextafter tests ────────────────────────────────────────

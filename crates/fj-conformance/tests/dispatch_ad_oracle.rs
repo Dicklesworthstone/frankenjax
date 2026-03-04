@@ -10,7 +10,10 @@
 //! - Metamorphic: linearity of differentiation, grad of constant, AD/finite-diff cross-check
 //! - Adversarial: non-scalar grad, empty args, mismatched vmap dims, composition violations
 
-use fj_ad::{grad_first, jvp_grad_first};
+use fj_ad::{
+    clear_custom_derivative_rules, grad_first, jvp, jvp_grad_first, register_custom_jvp,
+    register_custom_vjp,
+};
 use fj_core::{
     Atom, CompatibilityMode, DType, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Shape,
     TensorValue, TraceTransformLedger, Transform, Value, VarId, build_program,
@@ -20,7 +23,11 @@ use fj_dispatch::{
 };
 use fj_interpreters::eval_jaxpr;
 use fj_test_utils::{TestLogV1, TestMode, TestResult, fixture_id_from_json, test_id};
+use serde_json::json;
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 
 fn log_oracle(name: &str, fixture: &impl serde::Serialize) {
     let fid = fixture_id_from_json(fixture).expect("fixture digest");
@@ -74,6 +81,30 @@ fn make_exp_jaxpr() -> Jaxpr {
             effects: vec![],
         }],
     )
+}
+
+fn make_count_leading_zeros_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::CountLeadingZeros,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
+fn custom_derivative_e2e_guard() -> std::sync::MutexGuard<'static, ()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("custom derivative e2e guard lock should succeed")
 }
 
 // ============================================================================
@@ -554,4 +585,120 @@ fn adversarial_evidence_mismatch() {
         "evidence mismatch should fail composition proof, got: {err:?}"
     );
     log_oracle("adversarial_evidence_mismatch", &("evidence_mismatch",));
+}
+
+#[test]
+fn e2e_custom_derivatives_oracle() {
+    let _guard = custom_derivative_e2e_guard();
+    clear_custom_derivative_rules();
+
+    let jaxpr = make_count_leading_zeros_jaxpr();
+    let args = [Value::scalar_i64(16)];
+    let tangents = [Value::scalar_f64(1.0)];
+
+    let auto_grad = grad_first(&jaxpr, &args).expect("default grad should succeed");
+    let auto_jvp = jvp(&jaxpr, &args, &tangents)
+        .expect("default jvp should succeed")
+        .tangents[0]
+        .as_f64_scalar()
+        .expect("default tangent should be scalar");
+
+    register_custom_vjp(Primitive::CountLeadingZeros, |_inputs, _g, _params| {
+        Ok(vec![Value::scalar_f64(7.0)])
+    });
+    let custom_vjp_grad = grad_first(&jaxpr, &args).expect("custom VJP grad should succeed");
+    clear_custom_derivative_rules();
+
+    register_custom_jvp(
+        Primitive::CountLeadingZeros,
+        |_primals, _tangents, _params| Ok(Value::scalar_f64(5.0)),
+    );
+    let custom_jvp_tangent = jvp(&jaxpr, &args, &tangents)
+        .expect("custom JVP evaluation should succeed")
+        .tangents[0]
+        .as_f64_scalar()
+        .expect("custom tangent should be scalar");
+    clear_custom_derivative_rules();
+
+    let e2e_entries = vec![
+        json!({
+            "registration_type": "custom_vjp",
+            "function": "count_leading_zeros",
+            "custom_rule_used": true,
+            "gradient": custom_vjp_grad,
+            "oracle_gradient": auto_grad,
+            "pass": (custom_vjp_grad - auto_grad).abs() > 1e-12
+        }),
+        json!({
+            "registration_type": "custom_jvp",
+            "function": "count_leading_zeros",
+            "custom_rule_used": true,
+            "gradient": custom_jvp_tangent,
+            "oracle_gradient": auto_jvp,
+            "pass": (custom_jvp_tangent - auto_jvp).abs() > 1e-12
+        }),
+    ];
+    assert!(
+        e2e_entries
+            .iter()
+            .all(|entry| entry.get("pass").and_then(serde_json::Value::as_bool) == Some(true)),
+        "custom derivative e2e entries did not all pass: {e2e_entries:?}"
+    );
+
+    let e2e_payload = json!({
+        "test_name": "e2e_custom_derivatives_oracle",
+        "entries": e2e_entries,
+        "pass": true
+    });
+    let e2e_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/e2e/e2e_custom_derivatives.e2e.json");
+    fs::create_dir_all(
+        e2e_path
+            .parent()
+            .expect("e2e custom derivatives artifact parent should exist"),
+    )
+    .expect("should create artifacts/e2e");
+    fs::write(
+        &e2e_path,
+        serde_json::to_string_pretty(&e2e_payload).expect("serialize e2e payload"),
+    )
+    .expect("write e2e custom derivatives artifact");
+
+    let log_entries = vec![
+        json!({
+            "test_name": "e2e_custom_derivatives_oracle",
+            "registration_type": "custom_vjp",
+            "function": "count_leading_zeros",
+            "custom_gradient": custom_vjp_grad,
+            "auto_gradient": auto_grad,
+            "match": (custom_vjp_grad - auto_grad).abs() <= 1e-12,
+            "pass": (custom_vjp_grad - auto_grad).abs() > 1e-12
+        }),
+        json!({
+            "test_name": "e2e_custom_derivatives_oracle",
+            "registration_type": "custom_jvp",
+            "function": "count_leading_zeros",
+            "custom_gradient": custom_jvp_tangent,
+            "auto_gradient": auto_jvp,
+            "match": (custom_jvp_tangent - auto_jvp).abs() <= 1e-12,
+            "pass": (custom_jvp_tangent - auto_jvp).abs() > 1e-12
+        }),
+    ];
+    let log_payload = json!({
+        "test_name": "e2e_custom_derivatives_oracle",
+        "entries": log_entries
+    });
+    let log_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../artifacts/testing/logs/fj-ad/e2e_custom_derivatives_oracle.json");
+    fs::create_dir_all(
+        log_path
+            .parent()
+            .expect("ad custom derivative log parent should exist"),
+    )
+    .expect("should create artifacts/testing/logs/fj-ad");
+    fs::write(
+        &log_path,
+        serde_json::to_string_pretty(&log_payload).expect("serialize custom derivative log"),
+    )
+    .expect("write custom derivative test log");
 }
