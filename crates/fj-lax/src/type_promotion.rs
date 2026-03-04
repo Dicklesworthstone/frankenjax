@@ -11,6 +11,8 @@ fn literal_dtype(literal: Literal) -> DType {
         Literal::U32(_) => DType::U32,
         Literal::U64(_) => DType::U64,
         Literal::Bool(_) => DType::Bool,
+        Literal::BF16Bits(_) => DType::BF16,
+        Literal::F16Bits(_) => DType::F16,
         Literal::F64Bits(_) => DType::F64,
         Literal::Complex64Bits(..) => DType::Complex64,
         Literal::Complex128Bits(..) => DType::Complex128,
@@ -43,14 +45,17 @@ fn literal_to_i128(literal: Literal) -> Option<i128> {
 /// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
 #[inline]
 pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
-    use DType::{Bool, Complex64, Complex128, F32, F64, I32, I64, U32, U64};
+    use DType::{BF16, Bool, Complex64, Complex128, F16, F32, F64, I32, I64, U32, U64};
     match (lhs, rhs) {
         (Complex128, _) | (_, Complex128) => Complex128,
         (Complex64, _) | (_, Complex64) => Complex64,
         (U64, I64) | (I64, U64) => F64,
         (U32, F32) | (F32, U32) => F64,
+        (U32, BF16 | F16) | (BF16 | F16, U32) => F64,
         (F64, _) | (_, F64) => F64,
         (F32, _) | (_, F32) => F32,
+        (BF16, _) | (_, BF16) => F32,
+        (F16, _) | (_, F16) => F32,
         (I32, U32) | (U32, I32) => I64,
         (I64, U32) | (U32, I64) => I64,
         (I64, _) | (_, I64) => I64,

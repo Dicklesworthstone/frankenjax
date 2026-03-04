@@ -758,6 +758,12 @@ fn value_to_bool(v: &Value) -> bool {
         Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
         Value::Scalar(fj_core::Literal::U32(v)) => *v != 0,
         Value::Scalar(fj_core::Literal::U64(v)) => *v != 0,
+        Value::Scalar(fj_core::Literal::BF16Bits(bits)) => fj_core::Literal::BF16Bits(*bits)
+            .as_f64()
+            .is_some_and(|v| v != 0.0),
+        Value::Scalar(fj_core::Literal::F16Bits(bits)) => fj_core::Literal::F16Bits(*bits)
+            .as_f64()
+            .is_some_and(|v| v != 0.0),
         Value::Scalar(fj_core::Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
         _ => false,
     }
@@ -772,6 +778,8 @@ fn value_shape_fingerprint(v: &Value) -> String {
                 fj_core::Literal::U32(_) => "u32",
                 fj_core::Literal::U64(_) => "u64",
                 fj_core::Literal::Bool(_) => "bool",
+                fj_core::Literal::BF16Bits(_) => "bf16",
+                fj_core::Literal::F16Bits(_) => "f16",
                 fj_core::Literal::F64Bits(_) => "f64",
                 fj_core::Literal::Complex64Bits(_, _) => "c64",
                 fj_core::Literal::Complex128Bits(_, _) => "c128",

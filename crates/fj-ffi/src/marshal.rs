@@ -48,6 +48,8 @@ pub fn buffer_to_value(buffer: &FfiBuffer) -> Result<Value, FfiError> {
 
 fn scalar_to_buffer(lit: &Literal) -> Result<FfiBuffer, FfiError> {
     match lit {
+        Literal::BF16Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::BF16),
+        Literal::F16Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::F16),
         Literal::F64Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::F64),
         Literal::I64(v) => FfiBuffer::new(v.to_ne_bytes().to_vec(), vec![], DType::I64),
         Literal::U32(v) => FfiBuffer::new(v.to_ne_bytes().to_vec(), vec![], DType::U32),
@@ -67,6 +69,8 @@ fn tensor_to_buffer(tv: &TensorValue) -> Result<FfiBuffer, FfiError> {
     let mut data = Vec::with_capacity(tv.elements.len() * elem_size);
     for lit in &tv.elements {
         match lit {
+            Literal::BF16Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
+            Literal::F16Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
             Literal::F64Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
             Literal::I64(v) => data.extend_from_slice(&v.to_ne_bytes()),
             Literal::U32(v) => data.extend_from_slice(&v.to_ne_bytes()),
@@ -90,6 +94,22 @@ fn tensor_to_buffer(tv: &TensorValue) -> Result<FfiBuffer, FfiError> {
 
 fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
     match dtype {
+        DType::BF16 => {
+            let arr: [u8; 2] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: 2,
+                actual_bytes: bytes.len(),
+            })?;
+            Ok(Literal::BF16Bits(u16::from_ne_bytes(arr)))
+        }
+        DType::F16 => {
+            let arr: [u8; 2] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: 2,
+                actual_bytes: bytes.len(),
+            })?;
+            Ok(Literal::F16Bits(u16::from_ne_bytes(arr)))
+        }
         DType::F64 => {
             let arr: [u8; 8] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
                 buffer_index: 0,

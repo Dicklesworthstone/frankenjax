@@ -646,7 +646,7 @@ impl ToleranceTier {
                 atol: 1e-12,
                 rtol: 1e-10,
             },
-            DType::F32 | DType::Complex64 => Self {
+            DType::F32 | DType::BF16 | DType::F16 | DType::Complex64 => Self {
                 atol: 1e-5,
                 rtol: 1e-5,
             },
@@ -1459,6 +1459,8 @@ fn value_type_runtime(actual: &Value) -> &'static str {
             fj_core::Literal::I64(_) => "i64",
             fj_core::Literal::U32(_) => "u32",
             fj_core::Literal::U64(_) => "u64",
+            fj_core::Literal::BF16Bits(_) => "bf16",
+            fj_core::Literal::F16Bits(_) => "f16",
             fj_core::Literal::F64Bits(_) => "f64",
             fj_core::Literal::Bool(_) => "bool",
             fj_core::Literal::Complex64Bits(..) => "complex64",
@@ -1471,6 +1473,8 @@ fn value_type_runtime(actual: &Value) -> &'static str {
             fj_core::DType::I64 | fj_core::DType::I32 => "i64",
             fj_core::DType::U32 => "u32",
             fj_core::DType::U64 => "u64",
+            fj_core::DType::BF16 => "bf16",
+            fj_core::DType::F16 => "f16",
             fj_core::DType::F64 | fj_core::DType::F32 => "f64",
             fj_core::DType::Bool => "bool",
             fj_core::DType::Complex64 => "complex64",

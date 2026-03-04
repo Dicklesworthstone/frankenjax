@@ -236,6 +236,14 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
                     let sym = egg::Symbol::from(format!("bool:{}", if *b { 1 } else { 0 }));
                     expr.add(FjLang::Symbol(sym))
                 }
+                Atom::Lit(Literal::BF16Bits(bits)) => {
+                    let sym = egg::Symbol::from(format!("bf16:{bits}"));
+                    expr.add(FjLang::Symbol(sym))
+                }
+                Atom::Lit(Literal::F16Bits(bits)) => {
+                    let sym = egg::Symbol::from(format!("f16:{bits}"));
+                    expr.add(FjLang::Symbol(sym))
+                }
                 Atom::Lit(Literal::Complex64Bits(re, im)) => {
                     let sym = egg::Symbol::from(format!("c64:{re}:{im}"));
                     expr.add(FjLang::Symbol(sym))

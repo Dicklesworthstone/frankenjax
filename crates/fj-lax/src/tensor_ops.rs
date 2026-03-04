@@ -93,6 +93,8 @@ pub(crate) fn eval_reshape(
                     Literal::I64(_) => DType::I64,
                     Literal::U32(_) => DType::U32,
                     Literal::U64(_) => DType::U64,
+                    Literal::BF16Bits(_) => DType::BF16,
+                    Literal::F16Bits(_) => DType::F16,
                     Literal::F64Bits(_) => DType::F64,
                     Literal::Bool(_) => DType::Bool,
                     Literal::Complex64Bits(..) => DType::Complex64,
@@ -294,6 +296,8 @@ pub(crate) fn eval_broadcast_in_dim(
                 Literal::I64(_) => DType::I64,
                 Literal::U32(_) => DType::U32,
                 Literal::U64(_) => DType::U64,
+                Literal::BF16Bits(_) => DType::BF16,
+                Literal::F16Bits(_) => DType::F16,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -1034,6 +1038,10 @@ fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError>
             detail: format!("index {n} exceeds usize range"),
         }),
         Literal::Bool(b) => Ok(if *b { 1 } else { 0 }),
+        Literal::BF16Bits(_) | Literal::F16Bits(_) => Err(EvalError::Unsupported {
+            primitive,
+            detail: "float indices not supported".into(),
+        }),
         Literal::F64Bits(_) => Err(EvalError::Unsupported {
             primitive,
             detail: "float indices not supported".into(),
@@ -1105,6 +1113,12 @@ pub(crate) fn eval_dynamic_slice(
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
+                    Literal::BF16Bits(bits) => {
+                        Literal::BF16Bits(*bits).as_f64().unwrap_or_default() as i64
+                    }
+                    Literal::F16Bits(bits) => {
+                        Literal::F16Bits(*bits).as_f64().unwrap_or_default() as i64
+                    }
                     Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => {
                         if *b {
@@ -1250,6 +1264,12 @@ pub(crate) fn eval_dynamic_update_slice(
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
+                    Literal::BF16Bits(bits) => {
+                        Literal::BF16Bits(*bits).as_f64().unwrap_or_default() as i64
+                    }
+                    Literal::F16Bits(bits) => {
+                        Literal::F16Bits(*bits).as_f64().unwrap_or_default() as i64
+                    }
                     Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => i64::from(*b),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
@@ -2265,6 +2285,8 @@ pub(crate) fn eval_expand_dims(
                         Literal::U32(_) => DType::U32,
                         Literal::U64(_) => DType::U64,
                         Literal::Bool(_) => DType::Bool,
+                        Literal::BF16Bits(_) => DType::BF16,
+                        Literal::F16Bits(_) => DType::F16,
                         Literal::F64Bits(_) => DType::F64,
                         Literal::Complex64Bits(..) => DType::Complex64,
                         Literal::Complex128Bits(..) => DType::Complex128,

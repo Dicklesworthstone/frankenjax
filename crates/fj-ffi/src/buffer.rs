@@ -91,6 +91,8 @@ impl FfiBuffer {
 /// Returns the byte size for a single element of the given dtype.
 pub fn dtype_size_bytes(dtype: DType) -> Result<usize, FfiError> {
     match dtype {
+        DType::BF16 => Ok(2),
+        DType::F16 => Ok(2),
         DType::F64 => Ok(8),
         DType::I64 => Ok(8),
         DType::U64 => Ok(8),
