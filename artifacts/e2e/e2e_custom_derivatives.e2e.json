@@ -1,22 +1,22 @@
 {
-  "test_name": "e2e_custom_derivatives_oracle",
   "entries": [
     {
-      "registration_type": "custom_vjp",
-      "function": "count_leading_zeros",
       "custom_rule_used": true,
+      "function": "count_leading_zeros",
       "gradient": 7.0,
       "oracle_gradient": 0.0,
-      "pass": true
+      "pass": true,
+      "registration_type": "custom_vjp"
     },
     {
-      "registration_type": "custom_jvp",
-      "function": "count_leading_zeros",
       "custom_rule_used": true,
+      "function": "count_leading_zeros",
       "gradient": 5.0,
       "oracle_gradient": 0.0,
-      "pass": true
+      "pass": true,
+      "registration_type": "custom_jvp"
     }
   ],
-  "pass": true
+  "pass": true,
+  "test_name": "e2e_custom_derivatives_oracle"
 }

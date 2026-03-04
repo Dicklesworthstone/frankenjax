@@ -1,0 +1,296 @@
+{
+  "generated_at_unix_ms": 1772651285263,
+  "records": [
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "scan",
+      "iterations": 4,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "scan",
+      "iterations": 3,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "scan",
+      "iterations": 5,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "scan",
+      "iterations": 3,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "scan",
+      "iterations": 3,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "while",
+      "iterations": 5,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "while",
+      "iterations": 4,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "while",
+      "iterations": 0,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "while",
+      "iterations": 7,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "fori",
+      "iterations": 5,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "fori",
+      "iterations": 5,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "fori",
+      "iterations": 0,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "grad+cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "grad+cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "grad+scan",
+      "iterations": 2,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        [
+          3
+        ]
+      ],
+      "control_flow_type": "vmap+cond",
+      "iterations": 3,
+      "oracle_match": true,
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    }
+  ],
+  "schema_version": "frankenjax.testing.control-flow.v1"
+}
