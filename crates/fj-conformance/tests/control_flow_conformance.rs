@@ -75,6 +75,7 @@ fn cond_jaxpr() -> Jaxpr {
     )
 }
 
+#[allow(dead_code)]
 fn cond_add_mul_jaxpr() -> Jaxpr {
     Jaxpr::new(
         vec![VarId(1), VarId(2), VarId(3)],
@@ -113,6 +114,7 @@ fn cond_add_mul_jaxpr() -> Jaxpr {
     )
 }
 
+#[allow(dead_code)]
 fn nested_cond_jaxpr() -> Jaxpr {
     Jaxpr::new(
         vec![VarId(1), VarId(2), VarId(3), VarId(4)],

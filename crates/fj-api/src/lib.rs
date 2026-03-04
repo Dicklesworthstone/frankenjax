@@ -19,7 +19,6 @@ mod tests {
     use fj_core::{
         Atom, Equation, Jaxpr, Primitive, ProgramSpec, Transform, Value, VarId, build_program,
     };
-    use smallvec::smallvec;
 
     // --- Basic transform tests ---
 
@@ -270,8 +269,8 @@ mod tests {
             vec![VarId(2)],
             vec![Equation {
                 primitive: Primitive::CountLeadingZeros,
-                inputs: smallvec![Atom::Var(VarId(1))],
-                outputs: smallvec![VarId(2)],
+                inputs: vec![Atom::Var(VarId(1))].into(),
+                outputs: vec![VarId(2)].into(),
                 params: std::collections::BTreeMap::new(),
                 sub_jaxprs: vec![],
                 effects: vec![],

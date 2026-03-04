@@ -976,32 +976,32 @@ fn batch_gather(
 
     // Fast-path common vmap case: unbatched operand with batched indices.
     // Avoid broadcasting operand across the batch; instead evaluate per index slice.
-    if operand.batch_dim.is_none() {
-        if let Some(indices_bd) = indices.batch_dim {
-            let indices_value = move_batch_dim_to_front(&indices.value, indices_bd)?;
-            let batch_size = get_batch_size(&indices_value, 0)?;
-            let indices_tensor = indices_value.as_tensor().ok_or_else(|| {
-                BatchError::BatchDimMoveError("gather indices must be tensor".into())
-            })?;
+    if operand.batch_dim.is_none()
+        && let Some(indices_bd) = indices.batch_dim
+    {
+        let indices_value = move_batch_dim_to_front(&indices.value, indices_bd)?;
+        let batch_size = get_batch_size(&indices_value, 0)?;
+        let indices_tensor = indices_value
+            .as_tensor()
+            .ok_or_else(|| BatchError::BatchDimMoveError("gather indices must be tensor".into()))?;
 
-            let mut results = Vec::with_capacity(batch_size);
-            for i in 0..batch_size {
-                let indices_slice = indices_tensor
-                    .slice_axis0(i)
-                    .map_err(|e| BatchError::TensorError(e.to_string()))?;
-                let out = eval_primitive(
-                    Primitive::Gather,
-                    &[operand.value.clone(), indices_slice],
-                    params,
-                )
-                .map_err(|e| BatchError::EvalError(e.to_string()))?;
-                results.push(out);
-            }
-
-            let stacked = TensorValue::stack_axis0(&results)
+        let mut results = Vec::with_capacity(batch_size);
+        for i in 0..batch_size {
+            let indices_slice = indices_tensor
+                .slice_axis0(i)
                 .map_err(|e| BatchError::TensorError(e.to_string()))?;
-            return Ok(BatchTracer::batched(Value::Tensor(stacked), 0));
+            let out = eval_primitive(
+                Primitive::Gather,
+                &[operand.value.clone(), indices_slice],
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            results.push(out);
         }
+
+        let stacked = TensorValue::stack_axis0(&results)
+            .map_err(|e| BatchError::TensorError(e.to_string()))?;
+        return Ok(BatchTracer::batched(Value::Tensor(stacked), 0));
     }
 
     batch_passthrough_leading(Primitive::Gather, inputs, params)
