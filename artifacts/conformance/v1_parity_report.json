@@ -1,11 +1,11 @@
 {
   "version": "frankenjax.v1-comprehensive-parity.v1",
-  "timestamp": "1773337036",
+  "timestamp": "1773345517",
   "fj_version": "0.1.0",
   "jax_version": "jax-0.9.0.1",
   "mode": "strict",
   "summary": {
-    "total": 457,
+    "total": 546,
     "pass_rate": 1.0,
     "gate": "pass"
   },
@@ -732,8 +732,8 @@
       ]
     },
     "lax": {
-      "total": 204,
-      "matched": 204,
+      "total": 293,
+      "matched": 293,
       "mismatched": 0,
       "cases": [
         {
@@ -1551,6 +1551,362 @@
         {
           "case_id": "lax_reduce_prod_f64_2",
           "matched": true
+        },
+        {
+          "case_id": "lax_cbrt_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cbrt_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cbrt_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cbrt_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cbrt_f64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cbrt_f64_5",
+          "matched": true
+        },
+        {
+          "case_id": "lax_lgamma_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_lgamma_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_lgamma_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_lgamma_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_lgamma_f64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_lgamma_f64_5",
+          "matched": true
+        },
+        {
+          "case_id": "lax_digamma_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_digamma_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_digamma_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_digamma_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_digamma_f64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_digamma_f64_5",
+          "matched": true
+        },
+        {
+          "case_id": "lax_erf_inv_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_erf_inv_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_erf_inv_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_erf_inv_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_erf_inv_f64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_is_finite_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_is_finite_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_is_finite_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_is_finite_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_is_finite_f64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_is_finite_f64_5",
+          "matched": true
+        },
+        {
+          "case_id": "lax_nextafter_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_nextafter_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_nextafter_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_nextafter_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cumsum_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cumsum_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cumsum_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cumprod_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cumprod_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_cumprod_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_and_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_or_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_xor_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_and_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_or_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_xor_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_and_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_or_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_xor_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_and_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_or_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_xor_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_not_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_not_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_not_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_not_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitwise_not_i64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_population_count_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_population_count_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_population_count_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_population_count_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_population_count_i64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_population_count_i64_5",
+          "matched": true
+        },
+        {
+          "case_id": "lax_count_leading_zeros_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_count_leading_zeros_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_count_leading_zeros_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_count_leading_zeros_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_count_leading_zeros_i64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_count_leading_zeros_i64_5",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_xor_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_xor_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_xor_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_xor_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_sort_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_sort_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_sort_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_sort_i64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow2_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow2_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow2_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow2_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow2_f64_4",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow3_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow3_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow3_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow3_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow_neg1_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow_neg1_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow_neg1_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_integer_pow_neg1_f64_3",
+          "matched": true
         }
       ]
     },
@@ -2055,6 +2411,64 @@
         "lax_atan2_f64_3"
       ]
     },
+    "LaxBitwiseAnd": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_bitwise_and_i64_0",
+        "lax_bitwise_and_i64_1",
+        "lax_bitwise_and_i64_2",
+        "lax_bitwise_and_i64_3"
+      ]
+    },
+    "LaxBitwiseNot": {
+      "total": 5,
+      "matched": 5,
+      "mismatched": 0,
+      "cases": [
+        "lax_bitwise_not_i64_0",
+        "lax_bitwise_not_i64_1",
+        "lax_bitwise_not_i64_2",
+        "lax_bitwise_not_i64_3",
+        "lax_bitwise_not_i64_4"
+      ]
+    },
+    "LaxBitwiseOr": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_bitwise_or_i64_0",
+        "lax_bitwise_or_i64_1",
+        "lax_bitwise_or_i64_2",
+        "lax_bitwise_or_i64_3"
+      ]
+    },
+    "LaxBitwiseXor": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_bitwise_xor_i64_0",
+        "lax_bitwise_xor_i64_1",
+        "lax_bitwise_xor_i64_2",
+        "lax_bitwise_xor_i64_3"
+      ]
+    },
+    "LaxCbrt": {
+      "total": 6,
+      "matched": 6,
+      "mismatched": 0,
+      "cases": [
+        "lax_cbrt_f64_0",
+        "lax_cbrt_f64_1",
+        "lax_cbrt_f64_2",
+        "lax_cbrt_f64_3",
+        "lax_cbrt_f64_4",
+        "lax_cbrt_f64_5"
+      ]
+    },
     "LaxCeil": {
       "total": 5,
       "matched": 5,
@@ -2090,6 +2504,52 @@
         "lax_cosh_f64_1",
         "lax_cosh_f64_2",
         "lax_cosh_f64_3"
+      ]
+    },
+    "LaxCountLeadingZeros": {
+      "total": 6,
+      "matched": 6,
+      "mismatched": 0,
+      "cases": [
+        "lax_count_leading_zeros_i64_0",
+        "lax_count_leading_zeros_i64_1",
+        "lax_count_leading_zeros_i64_2",
+        "lax_count_leading_zeros_i64_3",
+        "lax_count_leading_zeros_i64_4",
+        "lax_count_leading_zeros_i64_5"
+      ]
+    },
+    "LaxCumprod": {
+      "total": 3,
+      "matched": 3,
+      "mismatched": 0,
+      "cases": [
+        "lax_cumprod_f64_0",
+        "lax_cumprod_f64_1",
+        "lax_cumprod_f64_2"
+      ]
+    },
+    "LaxCumsum": {
+      "total": 3,
+      "matched": 3,
+      "mismatched": 0,
+      "cases": [
+        "lax_cumsum_f64_0",
+        "lax_cumsum_f64_1",
+        "lax_cumsum_f64_2"
+      ]
+    },
+    "LaxDigamma": {
+      "total": 6,
+      "matched": 6,
+      "mismatched": 0,
+      "cases": [
+        "lax_digamma_f64_0",
+        "lax_digamma_f64_1",
+        "lax_digamma_f64_2",
+        "lax_digamma_f64_3",
+        "lax_digamma_f64_4",
+        "lax_digamma_f64_5"
       ]
     },
     "LaxDiv": {
@@ -2131,6 +2591,18 @@
         "lax_erf_f64_2",
         "lax_erf_f64_3",
         "lax_erf_f64_4"
+      ]
+    },
+    "LaxErfInv": {
+      "total": 5,
+      "matched": 5,
+      "mismatched": 0,
+      "cases": [
+        "lax_erf_inv_f64_0",
+        "lax_erf_inv_f64_1",
+        "lax_erf_inv_f64_2",
+        "lax_erf_inv_f64_3",
+        "lax_erf_inv_f64_4"
       ]
     },
     "LaxErfc": {
@@ -2227,6 +2699,53 @@
         "jit_mixed_gt_f64_i64_0"
       ]
     },
+    "LaxIntegerPow2": {
+      "total": 5,
+      "matched": 5,
+      "mismatched": 0,
+      "cases": [
+        "lax_integer_pow2_f64_0",
+        "lax_integer_pow2_f64_1",
+        "lax_integer_pow2_f64_2",
+        "lax_integer_pow2_f64_3",
+        "lax_integer_pow2_f64_4"
+      ]
+    },
+    "LaxIntegerPow3": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_integer_pow3_f64_0",
+        "lax_integer_pow3_f64_1",
+        "lax_integer_pow3_f64_2",
+        "lax_integer_pow3_f64_3"
+      ]
+    },
+    "LaxIntegerPowNeg1": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_integer_pow_neg1_f64_0",
+        "lax_integer_pow_neg1_f64_1",
+        "lax_integer_pow_neg1_f64_2",
+        "lax_integer_pow_neg1_f64_3"
+      ]
+    },
+    "LaxIsFinite": {
+      "total": 6,
+      "matched": 6,
+      "mismatched": 0,
+      "cases": [
+        "lax_is_finite_f64_0",
+        "lax_is_finite_f64_1",
+        "lax_is_finite_f64_2",
+        "lax_is_finite_f64_3",
+        "lax_is_finite_f64_4",
+        "lax_is_finite_f64_5"
+      ]
+    },
     "LaxLe": {
       "total": 4,
       "matched": 4,
@@ -2236,6 +2755,19 @@
         "lax_le_f64_1",
         "lax_le_f64_2",
         "lax_le_f64_3"
+      ]
+    },
+    "LaxLgamma": {
+      "total": 6,
+      "matched": 6,
+      "mismatched": 0,
+      "cases": [
+        "lax_lgamma_f64_0",
+        "lax_lgamma_f64_1",
+        "lax_lgamma_f64_2",
+        "lax_lgamma_f64_3",
+        "lax_lgamma_f64_4",
+        "lax_lgamma_f64_5"
       ]
     },
     "LaxLog": {
@@ -2377,6 +2909,30 @@
         "lax_neg_tensor2x3_f64_0"
       ]
     },
+    "LaxNextafter": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_nextafter_f64_0",
+        "lax_nextafter_f64_1",
+        "lax_nextafter_f64_2",
+        "lax_nextafter_f64_3"
+      ]
+    },
+    "LaxPopulationCount": {
+      "total": 6,
+      "matched": 6,
+      "mismatched": 0,
+      "cases": [
+        "lax_population_count_i64_0",
+        "lax_population_count_i64_1",
+        "lax_population_count_i64_2",
+        "lax_population_count_i64_3",
+        "lax_population_count_i64_4",
+        "lax_population_count_i64_5"
+      ]
+    },
     "LaxPow": {
       "total": 6,
       "matched": 6,
@@ -2433,6 +2989,17 @@
         "lax_reduce_prod_f64_0",
         "lax_reduce_prod_f64_1",
         "lax_reduce_prod_f64_2"
+      ]
+    },
+    "LaxReduceXor": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_reduce_xor_i64_0",
+        "lax_reduce_xor_i64_1",
+        "lax_reduce_xor_i64_2",
+        "lax_reduce_xor_i64_3"
       ]
     },
     "LaxRem": {
@@ -2508,6 +3075,17 @@
         "lax_sinh_f64_1",
         "lax_sinh_f64_2",
         "lax_sinh_f64_3"
+      ]
+    },
+    "LaxSort": {
+      "total": 4,
+      "matched": 4,
+      "mismatched": 0,
+      "cases": [
+        "lax_sort_i64_0",
+        "lax_sort_i64_1",
+        "lax_sort_i64_2",
+        "lax_sort_i64_3"
       ]
     },
     "LaxSqrt": {
