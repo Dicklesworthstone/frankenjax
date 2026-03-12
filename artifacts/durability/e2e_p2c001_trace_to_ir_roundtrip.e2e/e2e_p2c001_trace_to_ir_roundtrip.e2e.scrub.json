@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_trace_to_ir_roundtrip.e2e/e2e_p2c001_trace_to_ir_roundtrip.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_trace_to_ir_roundtrip.e2e.json",
-  "expected_sha256_hex": "c733562ebcd2f2f1790464ac58d22815b33abc62fe96b512f6689bdb54c64ba1",
-  "decoded_sha256_hex": "c733562ebcd2f2f1790464ac58d22815b33abc62fe96b512f6689bdb54c64ba1",
+  "expected_sha256_hex": "ab5ed2a853a1a07ee80b13030efe3236ed421b0ddb9024a192abb73b8d5cecad",
+  "decoded_sha256_hex": "ab5ed2a853a1a07ee80b13030efe3236ed421b0ddb9024a192abb73b8d5cecad",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057768
+  "generated_at_unix_ms": 1773316179112
 }

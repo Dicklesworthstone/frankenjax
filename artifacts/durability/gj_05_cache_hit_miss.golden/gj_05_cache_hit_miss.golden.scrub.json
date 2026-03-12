@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_05_cache_hit_miss.golden/gj_05_cache_hit_miss.golden.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_05_cache_hit_miss.golden.json",
-  "expected_sha256_hex": "fc7a9ab358f3cf5c250c97f1069143042a07007340ca9971972553f1743f88b9",
-  "decoded_sha256_hex": "fc7a9ab358f3cf5c250c97f1069143042a07007340ca9971972553f1743f88b9",
+  "expected_sha256_hex": "19f5acd78c616df6e97894099bfe658cc2b43c55d5f6614d3b550a5b3c7bd8de",
+  "decoded_sha256_hex": "19f5acd78c616df6e97894099bfe658cc2b43c55d5f6614d3b550a5b3c7bd8de",
   "decoded_matches_expected": true,
   "total_symbols": 6,
   "source_symbols": 5,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314058762
+  "generated_at_unix_ms": 1773316180381
 }

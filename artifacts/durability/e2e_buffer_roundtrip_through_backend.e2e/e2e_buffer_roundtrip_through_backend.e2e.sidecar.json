@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_buffer_roundtrip_through_backend.e2e.json",
   "artifact_sha256_hex": "1867b55694d2e444c8eea90e961661aea8616c066d32b68e6d7daa3912ed6157",
   "artifact_size": 486,
-  "generated_at_unix_ms": 1773313803282,
+  "generated_at_unix_ms": 1773316179868,
   "object_id_high": 1758573562980131908,
   "object_id_low": 14478695732155408814,
   "symbol_size": 256,

@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.parity-report.v1",
-  "timestamp": "1773313790",
+  "timestamp": "1773316135",
   "fj_version": "0.1.0",
   "oracle_version": "jax-0.9.0.1",
   "mode": "strict",
@@ -57,8 +57,8 @@
       ]
     },
     "grad": {
-      "total": 83,
-      "matched": 83,
+      "total": 106,
+      "matched": 106,
       "mismatched": 0,
       "cases": [
         {
@@ -382,6 +382,66 @@
           "matched": true
         },
         {
+          "case_id": "grad_lax_mul_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_mul_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_mul_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_sub_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_sub_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_sub_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_div_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_div_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_div_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_pow_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_pow_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_pow_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_atan2_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_atan2_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_atan2_f64_2",
+          "matched": true
+        },
+        {
           "case_id": "grad_nested_square_f64_0",
           "matched": true
         },
@@ -392,12 +452,44 @@
         {
           "case_id": "grad_nested_square_f64_2",
           "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_3",
+          "matched": true
         }
       ]
     },
     "jit": {
-      "total": 55,
-      "matched": 55,
+      "total": 58,
+      "matched": 58,
       "mismatched": 0,
       "cases": [
         {
@@ -605,6 +697,10 @@
           "matched": true
         },
         {
+          "case_id": "jit_vmap_grad_exp_f64_0",
+          "matched": true
+        },
+        {
           "case_id": "jit_vmap_grad_square_f64_1",
           "matched": true
         },
@@ -613,11 +709,19 @@
           "matched": true
         },
         {
+          "case_id": "jit_vmap_grad_exp_f64_1",
+          "matched": true
+        },
+        {
           "case_id": "jit_vmap_grad_square_f64_2",
           "matched": true
         },
         {
           "case_id": "jit_vmap_grad_sin_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_exp_f64_2",
           "matched": true
         }
       ]
@@ -1553,8 +1657,8 @@
       ]
     },
     "vmap": {
-      "total": 24,
-      "matched": 24,
+      "total": 30,
+      "matched": 30,
       "mismatched": 0,
       "cases": [
         {
@@ -1652,12 +1756,36 @@
         {
           "case_id": "vmap_lax_tanh_f64_2",
           "matched": true
+        },
+        {
+          "case_id": "vmap_grad_cos_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_cos_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_cos_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_exp_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_exp_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_exp_f64_2",
+          "matched": true
         }
       ]
     }
   },
   "summary": {
-    "total": 402,
+    "total": 434,
     "pass_rate": 1.0,
     "gate": "pass"
   }

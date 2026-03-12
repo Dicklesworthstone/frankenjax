@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_nested_traces.e2e/e2e_nested_traces.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_nested_traces.e2e.json",
-  "expected_sha256_hex": "a3c8f60da69c8d5b57fb0f0d9c44adad6ea1780990fca66f3987bf94d0342554",
-  "decoded_sha256_hex": "a3c8f60da69c8d5b57fb0f0d9c44adad6ea1780990fca66f3987bf94d0342554",
+  "expected_sha256_hex": "3dcc1f7d3e47dfb60169b27cdef60f9e1299e332f7521c59758745428e7f6377",
+  "decoded_sha256_hex": "3dcc1f7d3e47dfb60169b27cdef60f9e1299e332f7521c59758745428e7f6377",
   "decoded_matches_expected": true,
   "total_symbols": 5,
   "source_symbols": 4,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314058140
+  "generated_at_unix_ms": 1773316179554
 }

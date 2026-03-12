@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-61c27e4943b68045",
+  "proof_id": "decode-proof-e87365f34c9e76e5",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_nested_traces.e2e/e2e_nested_traces.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_nested_traces.e2e.json",
-  "expected_sha256_hex": "a3c8f60da69c8d5b57fb0f0d9c44adad6ea1780990fca66f3987bf94d0342554",
-  "decoded_sha256_hex": "a3c8f60da69c8d5b57fb0f0d9c44adad6ea1780990fca66f3987bf94d0342554",
+  "expected_sha256_hex": "3dcc1f7d3e47dfb60169b27cdef60f9e1299e332f7521c59758745428e7f6377",
+  "decoded_sha256_hex": "3dcc1f7d3e47dfb60169b27cdef60f9e1299e332f7521c59758745428e7f6377",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:4"
   ],
   "attempted_symbol_count": 4,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313802950
+  "generated_at_unix_ms": 1773316179555
 }

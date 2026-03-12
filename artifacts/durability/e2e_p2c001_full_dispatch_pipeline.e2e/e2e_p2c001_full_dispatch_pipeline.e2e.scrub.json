@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_full_dispatch_pipeline.e2e/e2e_p2c001_full_dispatch_pipeline.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json",
-  "expected_sha256_hex": "c2b4668330d0b641944a0baa2459a73652628df24b18b6f31682e4bdea117f5c",
-  "decoded_sha256_hex": "c2b4668330d0b641944a0baa2459a73652628df24b18b6f31682e4bdea117f5c",
+  "expected_sha256_hex": "c4923b5107aca27cbf175ed460a13b8d2e321e8de6f022830bc5f2968be38b28",
+  "decoded_sha256_hex": "c4923b5107aca27cbf175ed460a13b8d2e321e8de6f022830bc5f2968be38b28",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057701
+  "generated_at_unix_ms": 1773316178990
 }

@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_custom_op_dispatch.e2e.json",
   "artifact_sha256_hex": "65422073bc817fc2d7947f68a8d76bf14f4fe01f5d1fddccf8d65a2f1ed6e8f2",
   "artifact_size": 456,
-  "generated_at_unix_ms": 1773313803412,
+  "generated_at_unix_ms": 1773316179998,
   "object_id_high": 7296430027749556162,
   "object_id_low": 15534181102193699825,
   "symbol_size": 256,

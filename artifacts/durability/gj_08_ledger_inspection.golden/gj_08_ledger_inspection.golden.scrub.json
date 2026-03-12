@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_08_ledger_inspection.golden/gj_08_ledger_inspection.golden.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_08_ledger_inspection.golden.json",
-  "expected_sha256_hex": "a336c3cb22ca7623c1ef1538e14b086b88233b25d88245bda9e4cb4e47f83410",
-  "decoded_sha256_hex": "a336c3cb22ca7623c1ef1538e14b086b88233b25d88245bda9e4cb4e47f83410",
+  "expected_sha256_hex": "06ddc9052526473d5d88e4a7553c7f5fdac2a17d34212ee5a1540c458cea8886",
+  "decoded_sha256_hex": "06ddc9052526473d5d88e4a7553c7f5fdac2a17d34212ee5a1540c458cea8886",
   "decoded_matches_expected": true,
   "total_symbols": 13,
   "source_symbols": 11,
   "repair_symbols": 2,
-  "generated_at_unix_ms": 1773314058806
+  "generated_at_unix_ms": 1773316180431
 }

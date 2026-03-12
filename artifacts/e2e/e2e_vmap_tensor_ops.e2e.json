@@ -1,0 +1,104 @@
+{
+  "cases": [
+    {
+      "batch_dims": [
+        "none",
+        "0"
+      ],
+      "batch_size": 2,
+      "input_shapes": [
+        [
+          4
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "oracle_match": true,
+      "output_shape": [
+        2,
+        2
+      ],
+      "pass": true,
+      "primitive": "gather"
+    },
+    {
+      "batch_dims": [
+        "none",
+        "none",
+        "0"
+      ],
+      "batch_size": 2,
+      "input_shapes": [
+        [
+          4
+        ],
+        [
+          2
+        ],
+        [
+          2,
+          2
+        ]
+      ],
+      "oracle_match": true,
+      "output_shape": [
+        2,
+        4
+      ],
+      "pass": true,
+      "primitive": "scatter"
+    },
+    {
+      "batch_dims": [
+        "none",
+        "0"
+      ],
+      "batch_size": 2,
+      "input_shapes": [
+        [
+          1,
+          4,
+          1
+        ],
+        [
+          2,
+          2,
+          1,
+          1
+        ]
+      ],
+      "oracle_match": true,
+      "output_shape": [
+        2,
+        1,
+        3,
+        1
+      ],
+      "pass": true,
+      "primitive": "conv"
+    },
+    {
+      "batch_dims": [
+        "0",
+        "none"
+      ],
+      "batch_size": 2,
+      "input_shapes": [
+        [
+          2,
+          3
+        ],
+        []
+      ],
+      "oracle_match": true,
+      "output_shape": [],
+      "pass": true,
+      "primitive": "pad"
+    }
+  ],
+  "generated_at_unix_ms": 1773316216336,
+  "scenario": "e2e_vmap_tensor_ops_oracle",
+  "schema_version": "frankenjax.e2e.vmap_tensor_ops.v1"
+}

@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_v2_shape_inference.e2e/e2e_v2_shape_inference.e2e.sidecar.json",
+  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_v2_shape_inference.e2e.json",
+  "expected_sha256_hex": "6cd176302a75b7c6744a9c3ea9816bd3ce49805650c5c5fb214cd14c6f3831d0",
+  "decoded_sha256_hex": "6cd176302a75b7c6744a9c3ea9816bd3ce49805650c5c5fb214cd14c6f3831d0",
+  "decoded_matches_expected": true,
+  "total_symbols": 4,
+  "source_symbols": 3,
+  "repair_symbols": 1,
+  "generated_at_unix_ms": 1773316180300
+}

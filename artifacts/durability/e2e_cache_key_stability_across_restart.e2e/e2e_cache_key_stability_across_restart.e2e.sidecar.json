@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_cache_key_stability_across_restart.e2e.json",
   "artifact_sha256_hex": "e5b430da2599f273ce0145505d911dfe97a9cb6753ad1b9859e89b732c36aeb9",
   "artifact_size": 492,
-  "generated_at_unix_ms": 1773313803202,
+  "generated_at_unix_ms": 1773316179788,
   "object_id_high": 16551908243985265267,
   "object_id_low": 14844222058259357182,
   "symbol_size": 256,

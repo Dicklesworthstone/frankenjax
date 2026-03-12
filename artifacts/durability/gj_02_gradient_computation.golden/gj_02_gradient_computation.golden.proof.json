@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-5b481e55c1c9c001",
+  "proof_id": "decode-proof-d13cea0285af405f",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_02_gradient_computation.golden/gj_02_gradient_computation.golden.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_02_gradient_computation.golden.json",
-  "expected_sha256_hex": "556bc0c2092da42ab65d373028f9120750ff30d09c7a4c871812033c0e217622",
-  "decoded_sha256_hex": "556bc0c2092da42ab65d373028f9120750ff30d09c7a4c871812033c0e217622",
+  "expected_sha256_hex": "dbd1195ec100a5237e8cc63643bce07176130dad10d5fdc96b3b56d32b21747b",
+  "decoded_sha256_hex": "dbd1195ec100a5237e8cc63643bce07176130dad10d5fdc96b3b56d32b21747b",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:5"
   ],
   "attempted_symbol_count": 5,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313803677
+  "generated_at_unix_ms": 1773316180334
 }

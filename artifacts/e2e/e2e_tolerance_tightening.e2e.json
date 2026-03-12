@@ -1,8 +1,8 @@
 {
   "failed": 0,
   "fixture_family": "transforms",
-  "passed": 377,
+  "passed": 409,
   "scenario": "e2e_tolerance_tightening",
-  "timestamp": 1773313664,
-  "total_cases": 377
+  "timestamp": 1773316215,
+  "total_cases": 409
 }

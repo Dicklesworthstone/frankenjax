@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c003_jit_constant_folding.e2e/e2e_p2c003_jit_constant_folding.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c003_jit_constant_folding.e2e.json",
-  "expected_sha256_hex": "9bdd6e1e3389181e4263a85fcaf5d43cff0bcbf55a3dd16f0054b052895047ed",
-  "decoded_sha256_hex": "9bdd6e1e3389181e4263a85fcaf5d43cff0bcbf55a3dd16f0054b052895047ed",
+  "expected_sha256_hex": "d8d85203425c01887b0385eb7bd83b376885ea539e26109836357378ba7231a4",
+  "decoded_sha256_hex": "d8d85203425c01887b0385eb7bd83b376885ea539e26109836357378ba7231a4",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057908
+  "generated_at_unix_ms": 1773316179286
 }

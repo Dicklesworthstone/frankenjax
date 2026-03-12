@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_adversarial_fixtures.e2e/e2e_adversarial_fixtures.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_adversarial_fixtures.e2e.json",
-  "expected_sha256_hex": "4add9c057c5df51025dc738f2bc83603c2242c2df4552ee78a8bc940d4cf264f",
-  "decoded_sha256_hex": "4add9c057c5df51025dc738f2bc83603c2242c2df4552ee78a8bc940d4cf264f",
+  "expected_sha256_hex": "7128d76c94a2868ea852c3f811c29dacedbfeaab5fccaeb8602a951f95c1215f",
+  "decoded_sha256_hex": "7128d76c94a2868ea852c3f811c29dacedbfeaab5fccaeb8602a951f95c1215f",
   "decoded_matches_expected": true,
   "total_symbols": 37,
   "source_symbols": 33,
   "repair_symbols": 4,
-  "generated_at_unix_ms": 1773314058203
+  "generated_at_unix_ms": 1773316179631
 }

@@ -1,0 +1,48 @@
+[
+  {
+    "expected_shape": [
+      2,
+      3
+    ],
+    "inferred_output_shape": [
+      2,
+      3
+    ],
+    "input_shapes": [
+      [
+        2,
+        3
+      ]
+    ],
+    "match": true,
+    "primitive": "rev"
+  },
+  {
+    "expected_shape": [
+      4
+    ],
+    "inferred_output_shape": [
+      4
+    ],
+    "input_shapes": [
+      [
+        4
+      ]
+    ],
+    "match": true,
+    "primitive": "bitcast_convert_type"
+  },
+  {
+    "expected_shape": [
+      2,
+      3
+    ],
+    "inferred_output_shape": [
+      2,
+      3
+    ],
+    "input_shapes": [],
+    "match": true,
+    "primitive": "broadcasted_iota"
+  }
+]

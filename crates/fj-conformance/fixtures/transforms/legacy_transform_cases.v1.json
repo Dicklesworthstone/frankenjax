@@ -3503,6 +3503,471 @@
       "args": [
         {
           "kind": "scalar_f64",
+          "value": 1.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_mul_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.5
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_mul_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_mul_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_sub_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_sub",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.5
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_sub_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_sub",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_sub_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_sub",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_div_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_div",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.5
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_div_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_div",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_div_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_div",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_pow_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 12.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_pow",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_pow_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_pow",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 4.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_pow_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.25
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_pow",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_atan2_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.4
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_atan2",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.5
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_atan2_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.2
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_atan2",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_lax_atan2_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -0.1
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_atan2",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
           "value": -3.0
         }
       ],
@@ -3576,6 +4041,230 @@
       "flaky": false,
       "mode": "strict",
       "program": "square",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_sin_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.8414709848078965
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "sin_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_sin_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -0.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "sin_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_sin_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -0.479425538604203
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "sin_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_sin_f64_3",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -0.8414709848078965
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "sin_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_exp_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.36787944117144233
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_exp_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_exp_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.6487212707001282
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "grad",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "grad_nested_exp_f64_3",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.718281828459045
+        }
+      ],
+      "family": "grad",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
       "rtol": 1e-06,
       "simulated_delay_ms": 0,
       "transforms": [
@@ -4547,6 +5236,222 @@
       ],
       "atol": 1e-06,
       "baseline_mismatch": false,
+      "case_id": "vmap_grad_cos_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            -0.8414709848078965,
+            -0.9092974268256817,
+            -0.1411200080598672
+          ]
+        }
+      ],
+      "family": "vmap",
+      "flaky": false,
+      "mode": "strict",
+      "program": "cos_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            -1.5,
+            0.0,
+            1.5
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "vmap_grad_cos_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            0.9974949866040544,
+            -0.0,
+            -0.9974949866040544
+          ]
+        }
+      ],
+      "family": "vmap",
+      "flaky": false,
+      "mode": "strict",
+      "program": "cos_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            0.25,
+            0.5,
+            0.75
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "vmap_grad_cos_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            -0.24740395925452294,
+            -0.479425538604203,
+            -0.6816387600233341
+          ]
+        }
+      ],
+      "family": "vmap",
+      "flaky": false,
+      "mode": "strict",
+      "program": "cos_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "vmap_grad_exp_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            2.718281828459045,
+            7.38905609893065,
+            20.085536923187668
+          ]
+        }
+      ],
+      "family": "vmap",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            -1.5,
+            0.0,
+            1.5
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "vmap_grad_exp_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            0.22313016014842982,
+            1.0,
+            4.4816890703380645
+          ]
+        }
+      ],
+      "family": "vmap",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            0.25,
+            0.5,
+            0.75
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "vmap_grad_exp_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            1.2840254166877414,
+            1.6487212707001282,
+            2.117000016612675
+          ]
+        }
+      ],
+      "family": "vmap",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
       "case_id": "jit_vmap_grad_square_f64_0",
       "comparator": "approx_atol_rtol",
       "expected": [
@@ -4600,6 +5505,43 @@
       "flaky": false,
       "mode": "strict",
       "program": "sin_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit",
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "jit_vmap_grad_exp_f64_0",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            2.718281828459045,
+            7.38905609893065,
+            20.085536923187668
+          ]
+        }
+      ],
+      "family": "jit",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
       "rtol": 1e-06,
       "simulated_delay_ms": 0,
       "transforms": [
@@ -4687,6 +5629,43 @@
         {
           "kind": "vector_f64",
           "values": [
+            -1.5,
+            0.0,
+            1.5
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "jit_vmap_grad_exp_f64_1",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            0.22313016014842982,
+            1.0,
+            4.4816890703380645
+          ]
+        }
+      ],
+      "family": "jit",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit",
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
             0.25,
             0.5,
             0.75
@@ -4748,6 +5727,43 @@
       "flaky": false,
       "mode": "strict",
       "program": "sin_x",
+      "rtol": 1e-06,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit",
+        "vmap",
+        "grad"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            0.25,
+            0.5,
+            0.75
+          ]
+        }
+      ],
+      "atol": 1e-06,
+      "baseline_mismatch": false,
+      "case_id": "jit_vmap_grad_exp_f64_2",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "values": [
+            1.2840254166877414,
+            1.6487212707001282,
+            2.117000016612675
+          ]
+        }
+      ],
+      "family": "jit",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_exp",
       "rtol": 1e-06,
       "simulated_delay_ms": 0,
       "transforms": [
@@ -11288,7 +12304,7 @@
       ]
     }
   ],
-  "generated_at_unix_ms": 1773313600772,
+  "generated_at_unix_ms": 1773315891766,
   "generated_by": "legacy_jax_capture_script",
   "metadata": {
     "hardware": "x86_64",
@@ -11296,7 +12312,7 @@
     "jax_version": "unavailable",
     "platform": "Linux",
     "python_version": "3.13.7",
-    "timestamp": "2026-03-12T11:06:40Z"
+    "timestamp": "2026-03-12T11:44:51Z"
   },
   "oracle_root": "/data/projects/frankenjax/legacy_jax_code/jax",
   "schema_version": "frankenjax.transform-fixtures.v1",

@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_large_jaxpr_stress.e2e/e2e_p2c001_large_jaxpr_stress.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_large_jaxpr_stress.e2e.json",
-  "expected_sha256_hex": "da12fd808c74a7146e829d69818568a9f11fd71aa6b55e53e68fe484f0ab4614",
-  "decoded_sha256_hex": "da12fd808c74a7146e829d69818568a9f11fd71aa6b55e53e68fe484f0ab4614",
+  "expected_sha256_hex": "de1681db77d976ef7c7f7c3a4d3f6f878e67dc72df949dbd3e117aea341ab03b",
+  "decoded_sha256_hex": "de1681db77d976ef7c7f7c3a4d3f6f878e67dc72df949dbd3e117aea341ab03b",
   "decoded_matches_expected": true,
   "total_symbols": 136,
   "source_symbols": 123,
   "repair_symbols": 13,
-  "generated_at_unix_ms": 1773314057738
+  "generated_at_unix_ms": 1773316179062
 }

@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_cpu_backend_all_primitives.e2e.json",
   "artifact_sha256_hex": "0b6c5320f908437f56c255c16ed04107567108f4f110dfbb5606e6d9ec8205b8",
   "artifact_size": 468,
-  "generated_at_unix_ms": 1773313803298,
+  "generated_at_unix_ms": 1773316179884,
   "object_id_high": 823124232984085375,
   "object_id_low": 6251653522019860743,
   "symbol_size": 256,

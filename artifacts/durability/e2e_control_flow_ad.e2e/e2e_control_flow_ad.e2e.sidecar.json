@@ -1,11 +1,11 @@
 {
   "schema_version": "frankenjax.sidecar.v1",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_control_flow_ad.e2e.json",
-  "artifact_sha256_hex": "2a7bb864feb9ce12f9001dfafbe731fc6a7b2e504e38a237455b4031db49012b",
+  "artifact_sha256_hex": "c0d06a0dccbcd89d7238c6517c26fc8ece5d0197c9ccacf80da826197f19c188",
   "artifact_size": 1454,
-  "generated_at_unix_ms": 1773313803085,
-  "object_id_high": 3061243115638214162,
-  "object_id_low": 17942373879249318396,
+  "generated_at_unix_ms": 1773316179675,
+  "object_id_high": 13893721457940027549,
+  "object_id_low": 8230546372297161870,
   "symbol_size": 256,
   "max_block_size": 1048576,
   "repair_overhead": 1.1,
@@ -49,13 +49,13 @@
       "sbn": 0,
       "esi": 5,
       "kind": "source",
-      "data_b64": "CiAgICAgICJwYXNzIjogdHJ1ZQogICAgfQogIF0sCiAgImdlbmVyYXRlZF9hdF91bml4X21zIjogMTc3MzMxMzY2NDU5OSwKICAic2NoZW1hX3ZlcnNpb24iOiAiZnJhbmtlbmpheC5lMmUuY29udHJvbC1mbG93LWFkLnYxIiwKICAidGVzdF9uYW1lIjogImUyZV9jb250cm9sX2Zsb3dfYWRfb3JhY2xlIgp9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+      "data_b64": "CiAgICAgICJwYXNzIjogdHJ1ZQogICAgfQogIF0sCiAgImdlbmVyYXRlZF9hdF91bml4X21zIjogMTc3MzMxNTk2NDc2MSwKICAic2NoZW1hX3ZlcnNpb24iOiAiZnJhbmtlbmpheC5lMmUuY29udHJvbC1mbG93LWFkLnYxIiwKICAidGVzdF9uYW1lIjogImUyZV9jb250cm9sX2Zsb3dfYWRfb3JhY2xlIgp9AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
     },
     {
       "sbn": 0,
       "esi": 6,
       "kind": "repair",
-      "data_b64": "s4oS7MHAOUxsRnqVkL+UTljfvFWj80RpPkKSrfGiIKxnGP67PJUk/aJFt8CEdEcMEyKeJZkfVl94EsazRbBMyYWyN/rOO0qDWeX4GWg029GYVZ6QRb5IXez49AmtvGVNkBwp0+n/HqcsssXsS/uhqYNWm205oUVkktxnrPbNeUi9tO/WqlpcwZg1+oFs5mjy87tzO1ITT74xLQEn5dkSu452JQAA6wvtluqhFYAbpNix/MTKPszAj4AZ9La3jqThgzE+2mxZARzN69YePbHOLP9E02IrEdNewl4cXJXb0rkZraT8Rbxy2xAz9Pi7JIZQngOi7AKrL7xZzhq5w9eVWQ=="
+      "data_b64": "s4oS7MHAOUxsRnqVkL+UTljfvFWj80RpPkKSrfGiIKxnGP67PJUk/aJFt8CEdEcMEyKeJZkfVl94EsazRbBM1bOyNwX44EqDWeX4GWg029GYVZ6QRb5IXez49AmtvGVNkBwp0+n/HqcsssXsS/uhqYNWm205oUVkktxnrPbNeUi9tO/WqlpcwZg1+oFs5mjy87tzO1ITT74xLQEn5dkSu452JQAA6wvtluqhFYAbpNix/MTKPszAj4AZ9La3jqThgzE+2mxZARzN69YePbHOLP9E02IrEdNewl4cXJXb0rkZraT8Rbxy2xAz9Pi7JIZQngOi7AKrL7xZzhq5w9eVWQ=="
     }
   ]
 }

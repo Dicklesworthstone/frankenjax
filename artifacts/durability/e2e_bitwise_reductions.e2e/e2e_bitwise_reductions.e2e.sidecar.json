@@ -1,49 +1,43 @@
 {
   "schema_version": "frankenjax.sidecar.v1",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_bitwise_reductions.e2e.json",
-  "artifact_sha256_hex": "38b7e0cb57bfcf54daf81bf0c07bea6424925623c07cfebf3284c4e30978c797",
-  "artifact_size": 813,
-  "generated_at_unix_ms": 1773313802963,
-  "object_id_high": 4086982350817185620,
-  "object_id_low": 15778392015327980132,
+  "artifact_sha256_hex": "a64ca7663ad71a6a5d0f111019582cbbaba3bbfae8bc907e86f62741a4890a0e",
+  "artifact_size": 570,
+  "generated_at_unix_ms": 1773316179568,
+  "object_id_high": 11983136766041725546,
+  "object_id_low": 6705597131020315835,
   "symbol_size": 256,
   "max_block_size": 1048576,
   "repair_overhead": 1.1,
   "source_blocks": 1,
-  "symbols_per_block": 4,
-  "total_symbols": 5,
-  "source_symbols": 4,
+  "symbols_per_block": 3,
+  "total_symbols": 4,
+  "source_symbols": 3,
   "repair_symbols": 1,
   "symbols": [
     {
       "sbn": 0,
       "esi": 0,
       "kind": "source",
-      "data_b64": "ewogICJzY2VuYXJpbyI6ICJlMmVfYml0d2lzZV9yZWR1Y3Rpb25zX29yYWNsZSIsCiAgImdlbmVyYXRlZF9hdF91bml4IjogMTc3MjU3NjkxOSwKICAiYWxsX3Bhc3NlZCI6IHRydWUsCiAgImNhc2VzIjogWwogICAgewogICAgICAidGVzdF9uYW1lIjogInRlc3RfcmVkdWNlX2FuZF9hbGxfdHJ1ZSIsCiAgICAgICJyZWR1Y3Rpb24iOiAicmVkdWNlX2FuZCIsCiAgICAgICJpbnB1dF9kdHlwZSI6ICJCb29sIiwKICAgICAgImlucHV0X3NoYXBlIjogWw=="
+      "data_b64": "eyJzY2VuYXJpbyI6ImUyZV9iaXR3aXNlX3JlZHVjdGlvbnNfb3JhY2xlIiwiZ2VuZXJhdGVkX2F0X3VuaXgiOjE3NzMzMTQ0MzcsImFsbF9wYXNzZWQiOnRydWUsImNhc2VzIjpbeyJ0ZXN0X25hbWUiOiJ0ZXN0X3JlZHVjZV9hbmRfYWxsX3RydWUiLCJyZWR1Y3Rpb24iOiJyZWR1Y2VfYW5kIiwiaW5wdXRfZHR5cGUiOiJCb29sIiwiaW5wdXRfc2hhcGUiOlszXSwiYXhpcyI6bnVsbCwiZXhwZWN0ZWQiOnRydWUsImFjdHVhbCI6dHJ1ZSwicGFzcyI6dA=="
     },
     {
       "sbn": 0,
       "esi": 1,
       "kind": "source",
-      "data_b64": "M10sCiAgICAgICJheGlzIjogbnVsbCwKICAgICAgImV4cGVjdGVkIjogdHJ1ZSwKICAgICAgImFjdHVhbCI6IHRydWUsCiAgICAgICJwYXNzIjogdHJ1ZQogICAgfSwKICAgIHsKICAgICAgInRlc3RfbmFtZSI6ICJ0ZXN0X3JlZHVjZV9vcl9vbmVfdHJ1ZSIsCiAgICAgICJyZWR1Y3Rpb24iOiAicmVkdWNlX29yIiwKICAgICAgImlucHV0X2R0eXBlIjogIkJvb2wiLAogICAgICAiaW5wdXRfc2hhcGUiOiBbM10sCiAgICAgICJheGlzIjogbnVsbCwKIA=="
+      "data_b64": "cnVlfSx7InRlc3RfbmFtZSI6InRlc3RfcmVkdWNlX29yX29uZV90cnVlIiwicmVkdWN0aW9uIjoicmVkdWNlX29yIiwiaW5wdXRfZHR5cGUiOiJCb29sIiwiaW5wdXRfc2hhcGUiOlszXSwiYXhpcyI6bnVsbCwiZXhwZWN0ZWQiOnRydWUsImFjdHVhbCI6dHJ1ZSwicGFzcyI6dHJ1ZX0seyJ0ZXN0X25hbWUiOiJ0ZXN0X3JlZHVjZV94b3JfaW50ZWdlciIsInJlZHVjdGlvbiI6InJlZHVjZV94b3IiLCJpbnB1dF9kdHlwZSI6Ikk2NCIsImlucHV0X3NoYQ=="
     },
     {
       "sbn": 0,
       "esi": 2,
       "kind": "source",
-      "data_b64": "ICAgICAiZXhwZWN0ZWQiOiB0cnVlLAogICAgICAiYWN0dWFsIjogdHJ1ZSwKICAgICAgInBhc3MiOiB0cnVlCiAgICB9LAogICAgewogICAgICAidGVzdF9uYW1lIjogInRlc3RfcmVkdWNlX3hvcl9pbnRlZ2VyIiwKICAgICAgInJlZHVjdGlvbiI6ICJyZWR1Y2VfeG9yIiwKICAgICAgImlucHV0X2R0eXBlIjogIkk2NCIsCiAgICAgICJpbnB1dF9zaGFwZSI6IFszXSwKICAgICAgImF4aXMiOiBudWxsLAogICAgICAiZXhwZWN0ZWQiOiAwLAogICAgIA=="
+      "data_b64": "cGUiOlszXSwiYXhpcyI6bnVsbCwiZXhwZWN0ZWQiOjAsImFjdHVhbCI6MCwicGFzcyI6dHJ1ZX1dfQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
     },
     {
       "sbn": 0,
       "esi": 3,
-      "kind": "source",
-      "data_b64": "ICJhY3R1YWwiOiAwLAogICAgICAicGFzcyI6IHRydWUKICAgIH0KICBdCn0KAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
-    },
-    {
-      "sbn": 0,
-      "esi": 4,
       "kind": "repair",
-      "data_b64": "ozfB50l5U5xARegllBeFIjvFOC9UrLHmFso/+aP9JmXVrIaLxawjXaM2coXGxpUcslFRY7Fjo4EnBDc5OaNYlGOsdalULA1RizIyX1+1KVAaLmEcKUv03wNdFF8H9RBysPFh1bxkFyIb2cwjV1K9P2FT33ouSC/d/30LoSMVzjnHkD8FOaQC3gl0ZyL6idU/KUBjwvhSzA7NasUmsRp1pGO7GP7BqFgXTX5tp5a1YIY5EBbnCLAH94o/aQbWlEI4pUIxHRtCLhm1g3bpUJFe0rBPUc0/yK8r6g9mhmue9PpPvfzaGpgI8E7qc1H/I64sv02hwS+1/SJorQykOUtzAg=="
+      "data_b64": "Q4RWAPtrURb+24bB+Qnhy1V1zKiCcgX3/sKX+8ohc13oqQip49Cm5H3t7202VbsjAL7w2dQUCbrHjNXjoVzo9rpqnaVJZ/B+yLc/Q7/nfeTXxojZ2O1yye+9cnO8itWq1K79tyrTbqLKNWQDcibRqEFY+4p6OGQD5DD9lwjVok+V+F7wFCItB3aDHMB+eQvua4O3HO8gIt5XlQvua4O3HPHr+Kte6FwhH5mi5OAHJwN9NB0h9vzH1h//6D+GuVzocjEta712IEHnySSqJYE1vya5uguaq8EiiYE1ol1a2AgDrXRP+788HH5IIbND4DbGwYs9vL3aQUQ5axSit1cmdg=="
     }
   ]
 }

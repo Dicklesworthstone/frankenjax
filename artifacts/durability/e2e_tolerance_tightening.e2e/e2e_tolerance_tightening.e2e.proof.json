@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-9b6ff3589c180253",
+  "proof_id": "decode-proof-00df494c2883475b",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_tolerance_tightening.e2e/e2e_tolerance_tightening.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_tolerance_tightening.e2e.json",
-  "expected_sha256_hex": "e2de9cad52fc7b54fe9030f0b78179c789577ab1caaf136d25e4f1bf401a7319",
-  "decoded_sha256_hex": "e2de9cad52fc7b54fe9030f0b78179c789577ab1caaf136d25e4f1bf401a7319",
+  "expected_sha256_hex": "1a6e5510ae266a493fb5662dd1ff633805cbbc15d16fbb23ba2089f862fcc89e",
+  "decoded_sha256_hex": "1a6e5510ae266a493fb5662dd1ff633805cbbc15d16fbb23ba2089f862fcc89e",
   "dropped_symbols": [
     "kind:source:sbn:0:esi:0"
   ],
   "attempted_symbol_count": 1,
   "recovered": true,
   "details": "drop-kind=source count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313803103
+  "generated_at_unix_ms": 1773316179692
 }

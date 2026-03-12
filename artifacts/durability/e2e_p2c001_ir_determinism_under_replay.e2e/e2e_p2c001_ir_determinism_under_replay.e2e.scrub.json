@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_ir_determinism_under_replay.e2e/e2e_p2c001_ir_determinism_under_replay.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_ir_determinism_under_replay.e2e.json",
-  "expected_sha256_hex": "5e210834c8fa6cd8dcb441ce5935b536cfe09f3ee397ed3ec98613fd0f2c9981",
-  "decoded_sha256_hex": "5e210834c8fa6cd8dcb441ce5935b536cfe09f3ee397ed3ec98613fd0f2c9981",
+  "expected_sha256_hex": "30309a306ffd11784ca63a44c2d8178333893548fe592d19842e88fce7561a03",
+  "decoded_sha256_hex": "30309a306ffd11784ca63a44c2d8178333893548fe592d19842e88fce7561a03",
   "decoded_matches_expected": true,
   "total_symbols": 8,
   "source_symbols": 7,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057714
+  "generated_at_unix_ms": 1773316179007
 }

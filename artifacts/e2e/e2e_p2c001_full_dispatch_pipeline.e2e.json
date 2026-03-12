@@ -6,7 +6,7 @@
   "fixture_id": "2e57fb0b2c791d7076717759bd4eb0eb9caf13f788ab5afd9c0d1f3fae2d57f8",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1773313665899,
+  "ts_utc_unix_ms": 1773316215730,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -26,22 +26,22 @@
       "step": "fixture_exists"
     },
     {
-      "case_count": 377,
+      "case_count": 409,
       "schema_version": "frankenjax.transform-fixtures.v1",
       "step": "bundle_loaded"
     },
     {
-      "matched_cases": 377,
+      "matched_cases": 409,
       "mismatched_cases": 0,
       "step": "parity_run_complete"
     }
   ],
   "output_capture": {
-    "matched_cases": 377,
+    "matched_cases": 409,
     "mismatched_cases": 0,
-    "total_cases": 377
+    "total_cases": 409
   },
   "result": "pass",
-  "duration_ms": 38,
+  "duration_ms": 39,
   "details": null
 }

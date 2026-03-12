@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-ae8e9463996d6b88",
+  "proof_id": "decode-proof-e9b118312813e532",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c004_strict_hardened_divergence.e2e/e2e_p2c004_strict_hardened_divergence.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c004_strict_hardened_divergence.e2e.json",
-  "expected_sha256_hex": "a92d31f1620c3a9f751ca83966800011cd3356f3d7bbbe37bc169004f7db9f47",
-  "decoded_sha256_hex": "a92d31f1620c3a9f751ca83966800011cd3356f3d7bbbe37bc169004f7db9f47",
+  "expected_sha256_hex": "1d3b196902410bcbe8a0838a1795febf12a485848b7b1300a7db1b9a8582dbb5",
+  "decoded_sha256_hex": "1d3b196902410bcbe8a0838a1795febf12a485848b7b1300a7db1b9a8582dbb5",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:5"
   ],
   "attempted_symbol_count": 5,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313802846
+  "generated_at_unix_ms": 1773316179454
 }

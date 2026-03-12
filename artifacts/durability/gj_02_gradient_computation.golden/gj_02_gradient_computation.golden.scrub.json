@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/gj_02_gradient_computation.golden/gj_02_gradient_computation.golden.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/golden_journeys/gj_02_gradient_computation.golden.json",
-  "expected_sha256_hex": "556bc0c2092da42ab65d373028f9120750ff30d09c7a4c871812033c0e217622",
-  "decoded_sha256_hex": "556bc0c2092da42ab65d373028f9120750ff30d09c7a4c871812033c0e217622",
+  "expected_sha256_hex": "dbd1195ec100a5237e8cc63643bce07176130dad10d5fdc96b3b56d32b21747b",
+  "decoded_sha256_hex": "dbd1195ec100a5237e8cc63643bce07176130dad10d5fdc96b3b56d32b21747b",
   "decoded_matches_expected": true,
   "total_symbols": 6,
   "source_symbols": 5,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314058721
+  "generated_at_unix_ms": 1773316180333
 }

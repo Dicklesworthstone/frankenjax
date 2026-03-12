@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_cache_hit_avoids_recompute.e2e.json",
   "artifact_sha256_hex": "1f8790fb16ba7448254bb814a0c4a8f84789fe77b1679ff758003dac3592dc6d",
   "artifact_size": 468,
-  "generated_at_unix_ms": 1773313803171,
+  "generated_at_unix_ms": 1773316179755,
   "object_id_high": 2271943945124213832,
   "object_id_low": 2687444001392732408,
   "symbol_size": 256,

@@ -1,11 +1,11 @@
 {
   "version": "frankenjax.v1-comprehensive-parity.v1",
-  "timestamp": "1773313790",
+  "timestamp": "1773316135",
   "fj_version": "0.1.0",
   "jax_version": "jax-0.9.0.1",
   "mode": "strict",
   "summary": {
-    "total": 402,
+    "total": 434,
     "pass_rate": 1.0,
     "gate": "pass"
   },
@@ -62,8 +62,8 @@
       ]
     },
     "grad": {
-      "total": 83,
-      "matched": 83,
+      "total": 106,
+      "matched": 106,
       "mismatched": 0,
       "cases": [
         {
@@ -387,6 +387,66 @@
           "matched": true
         },
         {
+          "case_id": "grad_lax_mul_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_mul_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_mul_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_sub_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_sub_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_sub_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_div_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_div_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_div_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_pow_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_pow_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_pow_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_atan2_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_atan2_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_lax_atan2_f64_2",
+          "matched": true
+        },
+        {
           "case_id": "grad_nested_square_f64_0",
           "matched": true
         },
@@ -397,12 +457,44 @@
         {
           "case_id": "grad_nested_square_f64_2",
           "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_sin_f64_3",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "grad_nested_exp_f64_3",
+          "matched": true
         }
       ]
     },
     "jit": {
-      "total": 55,
-      "matched": 55,
+      "total": 58,
+      "matched": 58,
       "mismatched": 0,
       "cases": [
         {
@@ -610,6 +702,10 @@
           "matched": true
         },
         {
+          "case_id": "jit_vmap_grad_exp_f64_0",
+          "matched": true
+        },
+        {
           "case_id": "jit_vmap_grad_square_f64_1",
           "matched": true
         },
@@ -618,11 +714,19 @@
           "matched": true
         },
         {
+          "case_id": "jit_vmap_grad_exp_f64_1",
+          "matched": true
+        },
+        {
           "case_id": "jit_vmap_grad_square_f64_2",
           "matched": true
         },
         {
           "case_id": "jit_vmap_grad_sin_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_exp_f64_2",
           "matched": true
         }
       ]
@@ -1558,8 +1662,8 @@
       ]
     },
     "vmap": {
-      "total": 24,
-      "matched": 24,
+      "total": 30,
+      "matched": 30,
       "mismatched": 0,
       "cases": [
         {
@@ -1657,6 +1761,30 @@
         {
           "case_id": "vmap_lax_tanh_f64_2",
           "matched": true
+        },
+        {
+          "case_id": "vmap_grad_cos_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_cos_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_cos_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_exp_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_exp_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "vmap_grad_exp_f64_2",
+          "matched": true
         }
       ]
     }
@@ -1710,8 +1838,8 @@
       ]
     },
     "CosX": {
-      "total": 10,
-      "matched": 10,
+      "total": 13,
+      "matched": 13,
       "mismatched": 0,
       "cases": [
         "jit_cos_x_f64_0",
@@ -1723,7 +1851,10 @@
         "grad_cos_x_f64_0",
         "grad_cos_x_f64_1",
         "grad_cos_x_f64_2",
-        "grad_cos_x_f64_3"
+        "grad_cos_x_f64_3",
+        "vmap_grad_cos_f64_0",
+        "vmap_grad_cos_f64_1",
+        "vmap_grad_cos_f64_2"
       ]
     },
     "Dot3": {
@@ -1806,10 +1937,13 @@
       ]
     },
     "LaxAtan2": {
-      "total": 4,
-      "matched": 4,
+      "total": 7,
+      "matched": 7,
       "mismatched": 0,
       "cases": [
+        "grad_lax_atan2_f64_0",
+        "grad_lax_atan2_f64_1",
+        "grad_lax_atan2_f64_2",
         "lax_atan2_f64_0",
         "lax_atan2_f64_1",
         "lax_atan2_f64_2",
@@ -1854,10 +1988,13 @@
       ]
     },
     "LaxDiv": {
-      "total": 4,
-      "matched": 4,
+      "total": 7,
+      "matched": 7,
       "mismatched": 0,
       "cases": [
+        "grad_lax_div_f64_0",
+        "grad_lax_div_f64_1",
+        "grad_lax_div_f64_2",
         "lax_div_f64_0",
         "lax_div_f64_1",
         "lax_div_f64_2",
@@ -1901,17 +2038,27 @@
       ]
     },
     "LaxExp": {
-      "total": 12,
-      "matched": 12,
+      "total": 22,
+      "matched": 22,
       "mismatched": 0,
       "cases": [
         "grad_lax_exp_f64_0",
         "grad_lax_exp_f64_1",
         "grad_lax_exp_f64_2",
         "grad_lax_exp_f64_3",
+        "grad_nested_exp_f64_0",
+        "grad_nested_exp_f64_1",
+        "grad_nested_exp_f64_2",
+        "grad_nested_exp_f64_3",
         "vmap_lax_exp_f64_0",
         "vmap_lax_exp_f64_1",
         "vmap_lax_exp_f64_2",
+        "vmap_grad_exp_f64_0",
+        "vmap_grad_exp_f64_1",
+        "vmap_grad_exp_f64_2",
+        "jit_vmap_grad_exp_f64_0",
+        "jit_vmap_grad_exp_f64_1",
+        "jit_vmap_grad_exp_f64_2",
         "lax_exp_f64_0",
         "lax_exp_f64_1",
         "lax_exp_f64_2",
@@ -2065,10 +2212,13 @@
       ]
     },
     "LaxMul": {
-      "total": 5,
-      "matched": 5,
+      "total": 8,
+      "matched": 8,
       "mismatched": 0,
       "cases": [
+        "grad_lax_mul_f64_0",
+        "grad_lax_mul_f64_1",
+        "grad_lax_mul_f64_2",
         "lax_mul_f64_0",
         "lax_mul_f64_1",
         "lax_mul_f64_2",
@@ -2108,10 +2258,13 @@
       ]
     },
     "LaxPow": {
-      "total": 3,
-      "matched": 3,
+      "total": 6,
+      "matched": 6,
       "mismatched": 0,
       "cases": [
+        "grad_lax_pow_f64_0",
+        "grad_lax_pow_f64_1",
+        "grad_lax_pow_f64_2",
         "lax_pow_f64_0",
         "lax_pow_f64_2",
         "lax_pow_f64_3"
@@ -2275,10 +2428,13 @@
       ]
     },
     "LaxSub": {
-      "total": 5,
-      "matched": 5,
+      "total": 8,
+      "matched": 8,
       "mismatched": 0,
       "cases": [
+        "grad_lax_sub_f64_0",
+        "grad_lax_sub_f64_1",
+        "grad_lax_sub_f64_2",
         "lax_sub_f64_0",
         "lax_sub_f64_1",
         "lax_sub_f64_2",
@@ -2345,8 +2501,8 @@
       ]
     },
     "SinX": {
-      "total": 16,
-      "matched": 16,
+      "total": 20,
+      "matched": 20,
       "mismatched": 0,
       "cases": [
         "jit_sin_x_f64_0",
@@ -2359,6 +2515,10 @@
         "grad_sin_x_f64_1",
         "grad_sin_x_f64_2",
         "grad_sin_x_f64_3",
+        "grad_nested_sin_f64_0",
+        "grad_nested_sin_f64_1",
+        "grad_nested_sin_f64_2",
+        "grad_nested_sin_f64_3",
         "vmap_sin_x_f64_0",
         "vmap_sin_x_f64_1",
         "vmap_sin_x_f64_2",

@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_backend_fallback_to_cpu.e2e.json",
   "artifact_sha256_hex": "d5d4b790daa679158b3fcf206865be5c756cfd1f00aafc54d755f2d8fc788d44",
   "artifact_size": 459,
-  "generated_at_unix_ms": 1773313803266,
+  "generated_at_unix_ms": 1773316179852,
   "object_id_high": 15408142057912826133,
   "object_id_low": 10033966232902155868,
   "symbol_size": 256,

@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c003_jit_mixed_known_unknown.e2e/e2e_p2c003_jit_mixed_known_unknown.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c003_jit_mixed_known_unknown.e2e.json",
-  "expected_sha256_hex": "5b2bd97e0c6935ac583477acbe403e0fcd9ffbe49f2e9bdcb29a6ef3f2ec4b88",
-  "decoded_sha256_hex": "5b2bd97e0c6935ac583477acbe403e0fcd9ffbe49f2e9bdcb29a6ef3f2ec4b88",
+  "expected_sha256_hex": "de9def70548040d3f175e4e0ce09df159caa42607e1f00dec58db342574d7865",
+  "decoded_sha256_hex": "de9def70548040d3f175e4e0ce09df159caa42607e1f00dec58db342574d7865",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057922
+  "generated_at_unix_ms": 1773316179303
 }

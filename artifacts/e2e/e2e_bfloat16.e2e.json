@@ -1,0 +1,43 @@
+{
+  "pass": true,
+  "records": [
+    {
+      "bit_pattern": "0x3f80",
+      "dtype": "BF16",
+      "f32_value": 1.0000001192092896,
+      "pass": true,
+      "precision_loss": 1.1920928955078125e-7,
+      "roundtrip_value": 1.0,
+      "test_name": "e2e_bfloat16_computation.input_a"
+    },
+    {
+      "bit_pattern": "0x4000",
+      "dtype": "BF16",
+      "f32_value": 2.000000238418579,
+      "pass": true,
+      "precision_loss": 2.384185791015625e-7,
+      "roundtrip_value": 2.0,
+      "test_name": "e2e_bfloat16_computation.input_b"
+    },
+    {
+      "bit_pattern": null,
+      "dtype": "BF16",
+      "f32_value": 3.000000476837158,
+      "pass": true,
+      "precision_loss": 4.76837158203125e-7,
+      "roundtrip_value": 3.0,
+      "test_name": "e2e_bfloat16_computation.sum"
+    },
+    {
+      "bit_pattern": null,
+      "dtype": "BF16",
+      "f32_value": 2.000000476837158,
+      "pass": true,
+      "precision_loss": 4.76837158203125e-7,
+      "roundtrip_value": 2.0,
+      "test_name": "e2e_bfloat16_computation.mul"
+    }
+  ],
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "test_name": "e2e_bfloat16_computation"
+}

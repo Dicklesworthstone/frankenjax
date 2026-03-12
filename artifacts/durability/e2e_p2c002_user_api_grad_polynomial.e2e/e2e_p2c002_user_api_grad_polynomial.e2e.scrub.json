@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c002_user_api_grad_polynomial.e2e/e2e_p2c002_user_api_grad_polynomial.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c002_user_api_grad_polynomial.e2e.json",
-  "expected_sha256_hex": "d896b707bd995f326a8a8b6749452f551e4b964f1492451dc1df662c9ff4a736",
-  "decoded_sha256_hex": "d896b707bd995f326a8a8b6749452f551e4b964f1492451dc1df662c9ff4a736",
+  "expected_sha256_hex": "3def6153edfd1e7613fae160361605ba371027e45d0d317fa33bf4c0e9d2933e",
+  "decoded_sha256_hex": "3def6153edfd1e7613fae160361605ba371027e45d0d317fa33bf4c0e9d2933e",
   "decoded_matches_expected": true,
   "total_symbols": 7,
   "source_symbols": 6,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057835
+  "generated_at_unix_ms": 1773316179203
 }

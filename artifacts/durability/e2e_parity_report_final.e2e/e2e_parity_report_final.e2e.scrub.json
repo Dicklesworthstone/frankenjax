@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_parity_report_final.e2e/e2e_parity_report_final.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_parity_report_final.e2e.json",
-  "expected_sha256_hex": "005cc8d15846e05494b2be2b14f2cf3e926bdb38bd125ad6c297f9321ce085a4",
-  "decoded_sha256_hex": "005cc8d15846e05494b2be2b14f2cf3e926bdb38bd125ad6c297f9321ce085a4",
+  "expected_sha256_hex": "a76cbe08973246d02ed7126e8da1cae659cc2f7cdce5c6fa1eccded814f6aefe",
+  "decoded_sha256_hex": "a76cbe08973246d02ed7126e8da1cae659cc2f7cdce5c6fa1eccded814f6aefe",
   "decoded_matches_expected": true,
   "total_symbols": 4,
   "source_symbols": 3,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314058125
+  "generated_at_unix_ms": 1773316179537
 }

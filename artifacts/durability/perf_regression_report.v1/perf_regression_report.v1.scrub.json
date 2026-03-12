@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/perf_regression_report.v1/perf_regression_report.v1.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/ci/perf_regression_report.v1.json",
-  "expected_sha256_hex": "1c6367cf58d3af2ad7318787bcb5b6cb32717b9c1e4b61ecc88c44ef4b79f9a5",
-  "decoded_sha256_hex": "dd5f5ab436605df44d0a17987623ffde250894edcf00400a3347b5f1ba3d0872",
-  "decoded_matches_expected": false,
-  "total_symbols": 38,
-  "source_symbols": 34,
+  "expected_sha256_hex": "2ca142acacc9d6fa08f8fdc256dd4c1c7055992124b20d19dbb3fb5b7824f320",
+  "decoded_sha256_hex": "2ca142acacc9d6fa08f8fdc256dd4c1c7055992124b20d19dbb3fb5b7824f320",
+  "decoded_matches_expected": true,
+  "total_symbols": 44,
+  "source_symbols": 40,
   "repair_symbols": 4,
-  "generated_at_unix_ms": 1773314059012
+  "generated_at_unix_ms": 1773316181455
 }

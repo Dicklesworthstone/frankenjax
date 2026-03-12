@@ -607,7 +607,7 @@
       ]
     }
   ],
-  "generated_at_unix_ms": 1773313600775,
+  "generated_at_unix_ms": 1773315891770,
   "generated_by": "legacy_jax_capture_script",
   "metadata": {
     "hardware": "x86_64",
@@ -615,7 +615,7 @@
     "jax_version": "unavailable",
     "platform": "Linux",
     "python_version": "3.13.7",
-    "timestamp": "2026-03-12T11:06:40Z"
+    "timestamp": "2026-03-12T11:44:51Z"
   },
   "oracle_root": "/data/projects/frankenjax/legacy_jax_code/jax",
   "schema_version": "frankenjax.rng-fixtures.v1",

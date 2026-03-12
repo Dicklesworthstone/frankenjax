@@ -1,10 +1,10 @@
 {
   "schema_version": "frankenjax.reliability-gate-report.v1",
-  "generated_at_unix_ms": 1773314059076,
-  "run_id": "20260312-070252-7026442",
+  "generated_at_unix_ms": 1773315712205,
+  "run_id": "20260312-072245-1b44822",
   "budgets_path": "/data/projects/frankenjax/artifacts/ci/reliability_budgets.v1.json",
   "artifact_root": "/data/projects/frankenjax/ci-artifacts",
-  "full_pipeline_duration_ms": 686393,
+  "full_pipeline_duration_ms": 1146915,
   "gate_summary": {
     "passed": 7,
     "failed": 1,
@@ -15,21 +15,21 @@
       "gate_id": "G1",
       "name": "fmt_lint",
       "status": "pass",
-      "duration_ms": 75595,
+      "duration_ms": 202008,
       "failure_count": 0
     },
     {
       "gate_id": "G2",
       "name": "unit_property_tests",
       "status": "pass",
-      "duration_ms": 131062,
+      "duration_ms": 208763,
       "failure_count": 0
     },
     {
       "gate_id": "G3",
       "name": "differential_conformance",
       "status": "pass",
-      "duration_ms": 42303,
+      "duration_ms": 41973,
       "failure_count": 0
     },
     {
@@ -43,28 +43,28 @@
       "gate_id": "G5",
       "name": "e2e_scenarios",
       "status": "pass",
-      "duration_ms": 56405,
+      "duration_ms": 234319,
       "failure_count": 0
     },
     {
       "gate_id": "G6",
       "name": "performance_regression",
       "status": "pass",
-      "duration_ms": 296876,
+      "duration_ms": 300200,
       "failure_count": 0
     },
     {
       "gate_id": "G7",
       "name": "artifact_schema_validation",
       "status": "pass",
-      "duration_ms": 48726,
+      "duration_ms": 110531,
       "failure_count": 0
     },
     {
       "gate_id": "G8",
       "name": "durability_decode_proof",
       "status": "fail",
-      "duration_ms": 35253,
+      "duration_ms": 48596,
       "failure_count": 1
     }
   ],
@@ -75,11 +75,11 @@
       "test": "durability_decode_proof",
       "status": "fail",
       "summary": "scrub report: /data/projects/frankenjax/artifacts/durability/gj_05_cache_hit_miss.golden/gj_05_cache_hit_miss.golden.scrub.json (match=true) PASS (verify): /data/projects/frankenjax/artifacts/e2e/gold",
-      "detail_path": "ci-artifacts/20260312-070252-7026442/G8/durability_decode_proof.log",
+      "detail_path": "ci-artifacts/20260312-072245-1b44822/G8/durability_decode_proof.log",
       "replay_cmd": "./scripts/durability_ci_gate.sh --skip-generate",
       "related_fixtures": [],
-      "timestamp_unix_ms": 1773314059018,
-      "error_output": "ts.v1.scrub.json (match=true)\n  PASS (verify): /data/projects/frankenjax/artifacts/ci/reliability_budgets.v1.json\n  FAIL (verify): /data/projects/frankenjax/artifacts/ci/perf_regression_report.v1.json\n[durability] scanning /data/projects/frankenjax/artifacts/performance/evidence...\n\n[durability] ============================================\n[durability] Results: 85 passed, 1 failed, 0 skipped\n[durability] Drop-source resilience: 2 symbols\n[durability] ============================================",
+      "timestamp_unix_ms": 1773315712152,
+      "error_output": "s.v1.scrub.json (match=true)\n  PASS (verify): /data/projects/frankenjax/artifacts/ci/reliability_budgets.v1.json\n  FAIL (verify): /data/projects/frankenjax/artifacts/ci/perf_regression_report.v1.json\n[durability] scanning /data/projects/frankenjax/artifacts/performance/evidence...\n\n[durability] ============================================\n[durability] Results: 63 passed, 28 failed, 0 skipped\n[durability] Drop-source resilience: 2 symbols\n[durability] ============================================",
       "root_cause_hint": "dependency_error"
     }
   ],

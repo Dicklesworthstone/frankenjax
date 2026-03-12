@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/ci/flake_report.v1.json",
   "artifact_sha256_hex": "99c064d077711618f2196610f23abf603c682da2a7d4b5d37d3b6375bb4dfc13",
   "artifact_size": 476,
-  "generated_at_unix_ms": 1773313803789,
+  "generated_at_unix_ms": 1773316180448,
   "object_id_high": 11078965929851295256,
   "object_id_low": 17445086854565773152,
   "symbol_size": 256,

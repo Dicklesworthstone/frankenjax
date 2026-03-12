@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_adversarial_clean_errors.e2e.json",
   "artifact_sha256_hex": "03c33198c5469675b59e7e97052d07a385a8b1e3ed8e54ba27b5f9923a1358a0",
   "artifact_size": 474,
-  "generated_at_unix_ms": 1773313803346,
+  "generated_at_unix_ms": 1773316179930,
   "object_id_high": 271114934786889333,
   "object_id_low": 13087036754277238691,
   "symbol_size": 256,

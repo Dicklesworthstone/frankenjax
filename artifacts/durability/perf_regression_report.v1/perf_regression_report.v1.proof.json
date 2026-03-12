@@ -1,15 +1,15 @@
 {
-  "proof_id": "decode-proof-9da973d11a81ae36",
+  "proof_id": "decode-proof-71d24a000d384f3e",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/perf_regression_report.v1/perf_regression_report.v1.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/ci/perf_regression_report.v1.json",
-  "expected_sha256_hex": "dd5f5ab436605df44d0a17987623ffde250894edcf00400a3347b5f1ba3d0872",
-  "decoded_sha256_hex": "dd5f5ab436605df44d0a17987623ffde250894edcf00400a3347b5f1ba3d0872",
+  "expected_sha256_hex": "2ca142acacc9d6fa08f8fdc256dd4c1c7055992124b20d19dbb3fb5b7824f320",
+  "decoded_sha256_hex": "2ca142acacc9d6fa08f8fdc256dd4c1c7055992124b20d19dbb3fb5b7824f320",
   "dropped_symbols": [
     "kind:source:sbn:0:esi:0",
     "kind:source:sbn:0:esi:1"
   ],
-  "attempted_symbol_count": 36,
+  "attempted_symbol_count": 42,
   "recovered": true,
   "details": "drop-kind=source count=2; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313804807
+  "generated_at_unix_ms": 1773316181459
 }

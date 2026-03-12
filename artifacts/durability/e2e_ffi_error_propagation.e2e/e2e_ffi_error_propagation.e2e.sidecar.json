@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_error_propagation.e2e.json",
   "artifact_sha256_hex": "46be6f4c5e7f284d7d3cddb2f3361c59434c892152441fdf80bb3dfc0b38885d",
   "artifact_size": 453,
-  "generated_at_unix_ms": 1773313803428,
+  "generated_at_unix_ms": 1773316180014,
   "object_id_high": 5097634202023569485,
   "object_id_low": 9024331513997958233,
   "symbol_size": 256,

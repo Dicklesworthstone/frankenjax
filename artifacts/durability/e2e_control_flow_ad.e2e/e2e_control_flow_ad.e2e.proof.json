@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-3cd219bf92d1c543",
+  "proof_id": "decode-proof-ec61f0c1b3ebc4e2",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_control_flow_ad.e2e/e2e_control_flow_ad.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_control_flow_ad.e2e.json",
-  "expected_sha256_hex": "2a7bb864feb9ce12f9001dfafbe731fc6a7b2e504e38a237455b4031db49012b",
-  "decoded_sha256_hex": "2a7bb864feb9ce12f9001dfafbe731fc6a7b2e504e38a237455b4031db49012b",
+  "expected_sha256_hex": "c0d06a0dccbcd89d7238c6517c26fc8ece5d0197c9ccacf80da826197f19c188",
+  "decoded_sha256_hex": "c0d06a0dccbcd89d7238c6517c26fc8ece5d0197c9ccacf80da826197f19c188",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:6"
   ],
   "attempted_symbol_count": 6,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313803088
+  "generated_at_unix_ms": 1773316179677
 }

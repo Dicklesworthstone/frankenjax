@@ -1,11 +1,11 @@
 {
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c001_transform_stack_composition.e2e/e2e_p2c001_transform_stack_composition.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c001_transform_stack_composition.e2e.json",
-  "expected_sha256_hex": "e369eace6536825dc316222e4db168a4941ea7c38ca3bd882f8bbdcdbeea59ce",
-  "decoded_sha256_hex": "e369eace6536825dc316222e4db168a4941ea7c38ca3bd882f8bbdcdbeea59ce",
+  "expected_sha256_hex": "582d699c0e0f3565583c4617cee44275cacd91b0f39fbd936a958bba3ea93ee2",
+  "decoded_sha256_hex": "582d699c0e0f3565583c4617cee44275cacd91b0f39fbd936a958bba3ea93ee2",
   "decoded_matches_expected": true,
   "total_symbols": 8,
   "source_symbols": 7,
   "repair_symbols": 1,
-  "generated_at_unix_ms": 1773314057794
+  "generated_at_unix_ms": 1773316179149
 }

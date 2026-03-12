@@ -1,14 +1,14 @@
 {
-  "proof_id": "decode-proof-b63e6c1ae8a03deb",
+  "proof_id": "decode-proof-e53428d68d4275e8",
   "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_p2c002_user_api_grad_polynomial.e2e/e2e_p2c002_user_api_grad_polynomial.e2e.sidecar.json",
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_p2c002_user_api_grad_polynomial.e2e.json",
-  "expected_sha256_hex": "d896b707bd995f326a8a8b6749452f551e4b964f1492451dc1df662c9ff4a736",
-  "decoded_sha256_hex": "d896b707bd995f326a8a8b6749452f551e4b964f1492451dc1df662c9ff4a736",
+  "expected_sha256_hex": "3def6153edfd1e7613fae160361605ba371027e45d0d317fa33bf4c0e9d2933e",
+  "decoded_sha256_hex": "3def6153edfd1e7613fae160361605ba371027e45d0d317fa33bf4c0e9d2933e",
   "dropped_symbols": [
     "kind:repair:sbn:0:esi:6"
   ],
   "attempted_symbol_count": 6,
   "recovered": true,
   "details": "drop-kind=repair count=1; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1773313802586
+  "generated_at_unix_ms": 1773316179204
 }

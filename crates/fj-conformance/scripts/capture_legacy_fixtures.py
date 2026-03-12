@@ -771,12 +771,66 @@ def build_grad_cases(cb: CaseBuilder) -> None:
             [x], [-1.0 / math.sqrt(1.0 - x * x)], atol=1e-6, rtol=1e-6,
         )
 
-    # nested grad: grad(grad(x^3)) = 6x, but we approximate via grad(square) = 2x
-    # which for grad(grad(square)) = grad(2*x) = 2 — the second derivative of x^2 is 2
+    # --- Grad of binary ops (w.r.t. first arg) ---
+
+    # grad(mul(x,y)) w.r.t. x = y
+    binary_pairs = [(1.0, 2.0), (-1.5, 0.5), (3.0, -1.0)]
+    for idx, (x, y) in enumerate(binary_pairs):
+        cb.add(
+            f"grad_lax_mul_f64_{idx}", "grad", "lax_mul", ["grad"],
+            [x, y], [y], atol=1e-6, rtol=1e-6,
+        )
+
+    # grad(sub(x,y)) w.r.t. x = 1
+    for idx, (x, y) in enumerate(binary_pairs):
+        cb.add(
+            f"grad_lax_sub_f64_{idx}", "grad", "lax_sub", ["grad"],
+            [x, y], [1.0], atol=1e-6, rtol=1e-6,
+        )
+
+    # grad(div(x,y)) w.r.t. x = 1/y
+    for idx, (x, y) in enumerate(binary_pairs):
+        cb.add(
+            f"grad_lax_div_f64_{idx}", "grad", "lax_div", ["grad"],
+            [x, y], [1.0 / y], atol=1e-6, rtol=1e-6,
+        )
+
+    # grad(pow(x,y)) w.r.t. x = y * x^(y-1)
+    pow_pairs = [(2.0, 3.0), (1.0, 2.0), (4.0, 0.5)]
+    for idx, (x, y) in enumerate(pow_pairs):
+        cb.add(
+            f"grad_lax_pow_f64_{idx}", "grad", "lax_pow", ["grad"],
+            [x, y], [y * x ** (y - 1.0)], atol=1e-6, rtol=1e-6,
+        )
+
+    # grad(atan2(x,y)) w.r.t. x = y/(x^2+y^2)
+    for idx, (x, y) in enumerate(binary_pairs):
+        cb.add(
+            f"grad_lax_atan2_f64_{idx}", "grad", "lax_atan2", ["grad"],
+            [x, y], [y / (x * x + y * y)], atol=1e-6, rtol=1e-6,
+        )
+
+    # --- Higher-order gradient compositions ---
+
+    # nested grad: grad(grad(square)) = 2 (second derivative of x^2 is constant 2)
     for idx, x in enumerate(_scalar_samples()[:3]):
         cb.add(
             f"grad_nested_square_f64_{idx}", "grad", "square", ["grad", "grad"],
             [x], [2.0], atol=1e-6, rtol=1e-6,
+        )
+
+    # grad(grad(sin(x))) = -sin(x)
+    for idx, x in enumerate([-1.0, 0.0, 0.5, 1.0]):
+        cb.add(
+            f"grad_nested_sin_f64_{idx}", "grad", "sin_x", ["grad", "grad"],
+            [x], [-math.sin(x)], atol=1e-6, rtol=1e-6,
+        )
+
+    # grad(grad(exp(x))) = exp(x)
+    for idx, x in enumerate([-1.0, 0.0, 0.5, 1.0]):
+        cb.add(
+            f"grad_nested_exp_f64_{idx}", "grad", "lax_exp", ["grad", "grad"],
+            [x], [math.exp(x)], atol=1e-6, rtol=1e-6,
         )
 
 
@@ -825,6 +879,20 @@ def build_vmap_cases(cb: CaseBuilder) -> None:
             [vec], [[math.tanh(v) for v in vec]], atol=1e-6, rtol=1e-6,
         )
 
+    # vmap(grad(cos)) = vmap(-sin)
+    for idx, vec in enumerate(_vmap_vectors_f64()):
+        cb.add(
+            f"vmap_grad_cos_f64_{idx}", "vmap", "cos_x", ["vmap", "grad"],
+            [vec], [[-math.sin(v) for v in vec]], atol=1e-6, rtol=1e-6,
+        )
+
+    # vmap(grad(exp)) = vmap(exp)
+    for idx, vec in enumerate(_vmap_vectors_f64()):
+        cb.add(
+            f"vmap_grad_exp_f64_{idx}", "vmap", "lax_exp", ["vmap", "grad"],
+            [vec], [[math.exp(v) for v in vec]], atol=1e-6, rtol=1e-6,
+        )
+
     # Depth-3 transform compositions
     for idx, vec in enumerate(_vmap_vectors_f64()):
         # jit(vmap(grad(square))): grad(x^2) = 2x, vectorized, then JIT
@@ -836,6 +904,11 @@ def build_vmap_cases(cb: CaseBuilder) -> None:
         cb.add(
             f"jit_vmap_grad_sin_f64_{idx}", "jit", "sin_x", ["jit", "vmap", "grad"],
             [vec], [[math.cos(v) for v in vec]], atol=1e-6, rtol=1e-6,
+        )
+        # jit(vmap(grad(exp))): grad(exp(x)) = exp(x), vectorized, then JIT
+        cb.add(
+            f"jit_vmap_grad_exp_f64_{idx}", "jit", "lax_exp", ["jit", "vmap", "grad"],
+            [vec], [[math.exp(v) for v in vec]], atol=1e-6, rtol=1e-6,
         )
 
 

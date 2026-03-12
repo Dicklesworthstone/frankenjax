@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/e2e_vmap_tensor_ops.e2e/e2e_vmap_tensor_ops.e2e.sidecar.json",
+  "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_vmap_tensor_ops.e2e.json",
+  "expected_sha256_hex": "2ecd4b121632264716a8f9cf8557c05493b11d397ed18fe1478fdbc75cdfb4e8",
+  "decoded_sha256_hex": "2ecd4b121632264716a8f9cf8557c05493b11d397ed18fe1478fdbc75cdfb4e8",
+  "decoded_matches_expected": true,
+  "total_symbols": 8,
+  "source_symbols": 7,
+  "repair_symbols": 1,
+  "generated_at_unix_ms": 1773316180252
+}

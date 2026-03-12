@@ -1,4 +1,4 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
      Running tests/e2e_p2c003.rs (/data/tmp/cargo-target/debug/deps/e2e_p2c003-a951be5e17682569)
 
 running 1 test

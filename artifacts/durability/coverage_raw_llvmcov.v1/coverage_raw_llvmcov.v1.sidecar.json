@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/ci/coverage_raw_llvmcov.v1.json",
   "artifact_sha256_hex": "67c5b60094716acb11e9382a20bc5f856e46fb6cbe569c473f0349549df2d278",
   "artifact_size": 182161,
-  "generated_at_unix_ms": 1773313804419,
+  "generated_at_unix_ms": 1773316181064,
   "object_id_high": 7477582869925292747,
   "object_id_low": 1290624521807355781,
   "symbol_size": 256,

@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_callback_pipeline.e2e.json",
   "artifact_sha256_hex": "3ee62ed78288ba6ef8ab0b7bc7f8c6b1d41952717e26d799ba758eab01f44ca1",
   "artifact_size": 453,
-  "generated_at_unix_ms": 1773313803395,
+  "generated_at_unix_ms": 1773316179981,
   "object_id_high": 4532361578137827950,
   "object_id_low": 17918428168687503025,
   "symbol_size": 256,

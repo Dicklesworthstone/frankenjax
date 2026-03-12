@@ -1,39 +1,51 @@
 {
-  "schema_version": "frankenjax.e2e.nested_traces.v1",
-  "scenario": "e2e_nested_traces_oracle",
-  "generated_at_unix_ms": 0,
   "cases": [
     {
-      "transform_stack": ["jit", "grad"],
-      "nesting_depth": 3,
       "inner_jaxpr_eqns": 0,
-      "outer_jaxpr_eqns": 0,
+      "nesting_depth": 3,
       "oracle_match": true,
-      "pass": true
+      "outer_jaxpr_eqns": 0,
+      "pass": true,
+      "transform_stack": [
+        "jit",
+        "grad"
+      ]
     },
     {
-      "transform_stack": ["vmap", "grad"],
-      "nesting_depth": 3,
       "inner_jaxpr_eqns": 0,
-      "outer_jaxpr_eqns": 0,
+      "nesting_depth": 3,
       "oracle_match": true,
-      "pass": true
+      "outer_jaxpr_eqns": 0,
+      "pass": true,
+      "transform_stack": [
+        "vmap",
+        "grad"
+      ]
     },
     {
-      "transform_stack": ["grad", "grad"],
-      "nesting_depth": 3,
       "inner_jaxpr_eqns": 0,
-      "outer_jaxpr_eqns": 0,
+      "nesting_depth": 3,
       "oracle_match": true,
-      "pass": true
+      "outer_jaxpr_eqns": 0,
+      "pass": true,
+      "transform_stack": [
+        "grad",
+        "grad"
+      ]
     },
     {
-      "transform_stack": ["vmap", "jit"],
-      "nesting_depth": 3,
       "inner_jaxpr_eqns": 0,
-      "outer_jaxpr_eqns": 0,
+      "nesting_depth": 3,
       "oracle_match": true,
-      "pass": true
+      "outer_jaxpr_eqns": 0,
+      "pass": true,
+      "transform_stack": [
+        "vmap",
+        "jit"
+      ]
     }
-  ]
+  ],
+  "generated_at_unix_ms": 1773316217960,
+  "scenario": "e2e_nested_traces_oracle",
+  "schema_version": "frankenjax.e2e.nested_traces.v1"
 }

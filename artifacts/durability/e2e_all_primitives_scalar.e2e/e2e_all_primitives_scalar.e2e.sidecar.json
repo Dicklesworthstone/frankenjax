@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/e2e/e2e_all_primitives_scalar.e2e.json",
   "artifact_sha256_hex": "3431e0227893b40f1a5d77eebdb226cf4376e7833cdd1c8e53bc5185f5a7283b",
   "artifact_size": 453,
-  "generated_at_unix_ms": 1773313803458,
+  "generated_at_unix_ms": 1773316180044,
   "object_id_high": 3761033602487530511,
   "object_id_low": 1899806485088708303,
   "symbol_size": 256,
