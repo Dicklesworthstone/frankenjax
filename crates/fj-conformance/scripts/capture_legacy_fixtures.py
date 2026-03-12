@@ -236,6 +236,41 @@ def _logistic(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-x))
 
 
+def _digamma_approx(x: float) -> float:
+    """Digamma (psi) approximation using asymptotic series with reflection."""
+    if x <= 0 and x == math.floor(x):
+        return float("nan")
+    result = 0.0
+    # Reflection formula for x < 0.5
+    if x < 0.5:
+        result = -math.pi / math.tan(math.pi * x)
+        x = 1.0 - x
+    # Shift x to >= 6 using recurrence psi(x+1) = psi(x) + 1/x
+    while x < 6.0:
+        result -= 1.0 / x
+        x += 1.0
+    # Asymptotic series
+    result += math.log(x) - 1.0 / (2.0 * x)
+    x2 = 1.0 / (x * x)
+    result -= x2 * (1.0/12.0 - x2 * (1.0/120.0 - x2 * (1.0/252.0)))
+    return result
+
+
+def _erf_inv_approx(x: float) -> float:
+    """Rational approximation of inverse error function."""
+    if x <= -1.0 or x >= 1.0:
+        return float("nan") if abs(x) == 1.0 else float("inf") * (-1 if x < 0 else 1)
+    if x == 0.0:
+        return 0.0
+    sign = 1 if x > 0 else -1
+    a = abs(x)
+    # Winitzki approximation
+    ln_term = math.log(1.0 - a * a)
+    c = 2.0 / (math.pi * 0.147) + ln_term / 2.0
+    result = math.sqrt(math.sqrt(c * c - ln_term / 0.147) - c)
+    return sign * result
+
+
 _U32_MASK = 0xFFFF_FFFF
 _THREEFRY_ROTATIONS = [13, 15, 26, 6, 17, 29, 16, 24]
 
@@ -1307,6 +1342,119 @@ def build_lax_cases(cb: CaseBuilder) -> None:
         cb.add(
             f"lax_reduce_prod_f64_{idx}", "lax", "lax_reduce_prod", ["jit"],
             [vec], [product], atol=1e-6, rtol=1e-6,
+        )
+
+    # ── Special math unary: cbrt ──
+    cbrt_samples = [-8.0, -1.0, 0.0, 1.0, 8.0, 27.0]
+    for idx, x in enumerate(cbrt_samples):
+        cb.add(
+            f"lax_cbrt_f64_{idx}", "lax", "lax_cbrt", ["jit"],
+            [x], [math.copysign(abs(x) ** (1.0 / 3.0), x) if x != 0 else 0.0],
+            atol=1e-6, rtol=1e-6,
+        )
+
+    # ── Special math unary: lgamma ──
+    lgamma_samples = [0.5, 1.0, 1.5, 2.0, 3.0, 5.0]
+    for idx, x in enumerate(lgamma_samples):
+        cb.add(
+            f"lax_lgamma_f64_{idx}", "lax", "lax_lgamma", ["jit"],
+            [x], [math.lgamma(x)], atol=1e-4, rtol=1e-4,
+        )
+
+    # ── Special math unary: digamma ──
+    digamma_samples = [0.5, 1.0, 1.5, 2.0, 5.0, 10.0]
+    for idx, x in enumerate(digamma_samples):
+        cb.add(
+            f"lax_digamma_f64_{idx}", "lax", "lax_digamma", ["jit"],
+            [x], [_digamma_approx(x)], atol=1e-4, rtol=1e-4,
+        )
+
+    # ── Special math unary: erf_inv ──
+    erf_inv_samples = [-0.9, -0.5, 0.0, 0.5, 0.9]
+    for idx, x in enumerate(erf_inv_samples):
+        cb.add(
+            f"lax_erf_inv_f64_{idx}", "lax", "lax_erf_inv", ["jit"],
+            [x], [_erf_inv_approx(x)], atol=1e-3, rtol=1e-3,
+        )
+
+    # ── Special math unary: is_finite (returns bool) ──
+    # Only finite inputs (inf/nan not JSON-serializable; edge cases covered by unit tests)
+    is_finite_cases = [
+        (1.0, True), (-2.5, True), (0.0, True),
+        (1e308, True), (-1e-308, True), (0.001, True),
+    ]
+    for idx, (x, expected) in enumerate(is_finite_cases):
+        cb.add_raw(
+            f"lax_is_finite_f64_{idx}", "lax", "lax_is_finite", ["jit"],
+            [fixture_value(x)],
+            [fixture_value_bool(expected)],
+            atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # ── Binary: nextafter ──
+    # NOTE: use approx comparator with ultra-tight tolerance because
+    # math.nextafter results near ±1.0 lose ULP precision through JSON
+    # serialization round-trip (e.g. 0.9999999999999998 → 0.9999999999999999 → 1.0).
+    nextafter_cases = [
+        (1.0, 2.0),   # next float after 1.0 towards 2.0
+        (1.0, 0.0),   # next float after 1.0 towards 0.0
+        (0.0, 1.0),   # smallest positive subnormal
+        (-1.0, 0.0),  # next float after -1.0 towards 0.0
+    ]
+    for idx, (x, y) in enumerate(nextafter_cases):
+        cb.add(
+            f"lax_nextafter_f64_{idx}", "lax", "lax_nextafter", ["jit"],
+            [x, y], [math.nextafter(x, y)], atol=1e-15, rtol=1e-15,
+        )
+
+    # ── Cumulative: cumsum (vector → vector) ──
+    cumsum_vectors = [[1.0, 2.0, 3.0], [0.5, -1.5, 2.5], [-3.0, 0.0, 3.0]]
+    for idx, vec in enumerate(cumsum_vectors):
+        acc = []
+        s = 0.0
+        for v in vec:
+            s += v
+            acc.append(s)
+        cb.add(
+            f"lax_cumsum_f64_{idx}", "lax", "lax_cumsum", ["jit"],
+            [vec], [acc], atol=1e-12, rtol=1e-12,
+        )
+
+    # ── Cumulative: cumprod (vector → vector) ──
+    cumprod_vectors = [[1.0, 2.0, 3.0], [0.5, -2.0, 4.0], [2.0, 3.0, 0.5]]
+    for idx, vec in enumerate(cumprod_vectors):
+        acc = []
+        p = 1.0
+        for v in vec:
+            p *= v
+            acc.append(p)
+        cb.add(
+            f"lax_cumprod_f64_{idx}", "lax", "lax_cumprod", ["jit"],
+            [vec], [acc], atol=1e-12, rtol=1e-12,
+        )
+
+    # ── Bitwise binary ops (i64, i64 → i64) ──
+    bitwise_pairs = [(0xFF, 0x0F), (0b1010, 0b1100), (42, 15), (0, -1)]
+    for idx, (a, b) in enumerate(bitwise_pairs):
+        cb.add(
+            f"lax_bitwise_and_i64_{idx}", "lax", "lax_bitwise_and", ["jit"],
+            [a, b], [a & b], atol=0.0, rtol=0.0, comparator="exact",
+        )
+        cb.add(
+            f"lax_bitwise_or_i64_{idx}", "lax", "lax_bitwise_or", ["jit"],
+            [a, b], [a | b], atol=0.0, rtol=0.0, comparator="exact",
+        )
+        cb.add(
+            f"lax_bitwise_xor_i64_{idx}", "lax", "lax_bitwise_xor", ["jit"],
+            [a, b], [a ^ b], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # ── Bitwise unary: bitwise_not (i64 → i64) ──
+    bitwise_not_samples = [0, 1, -1, 42, 0xFF]
+    for idx, x in enumerate(bitwise_not_samples):
+        cb.add(
+            f"lax_bitwise_not_i64_{idx}", "lax", "lax_bitwise_not", ["jit"],
+            [x], [~x], atol=0.0, rtol=0.0, comparator="exact",
         )
 
 

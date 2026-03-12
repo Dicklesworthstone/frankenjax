@@ -1190,6 +1190,25 @@ pub enum ProgramSpec {
     LaxReduceMax,
     LaxReduceMin,
     LaxReduceProd,
+    // Lax special math unary primitives
+    LaxCbrt,
+    LaxLgamma,
+    LaxDigamma,
+    LaxErfInv,
+    LaxIsFinite,
+    LaxNextafter,
+    // Lax cumulative primitives (vector → vector)
+    LaxCumsum,
+    LaxCumprod,
+    // Lax boolean reduction primitives (vector → scalar)
+    LaxReduceAnd,
+    LaxReduceOr,
+    // Lax bitwise binary primitives (i64, i64 → i64)
+    LaxBitwiseAnd,
+    LaxBitwiseOr,
+    LaxBitwiseXor,
+    // Lax bitwise unary primitive (i64 → i64)
+    LaxBitwiseNot,
     // Utility programs for testing
     Identity,
     AddOneMulTwo,
@@ -1322,6 +1341,25 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
         ProgramSpec::LaxReduceMax => unary_program(Primitive::ReduceMax),
         ProgramSpec::LaxReduceMin => unary_program(Primitive::ReduceMin),
         ProgramSpec::LaxReduceProd => unary_program(Primitive::ReduceProd),
+        // Lax special math unary
+        ProgramSpec::LaxCbrt => unary_program(Primitive::Cbrt),
+        ProgramSpec::LaxLgamma => unary_program(Primitive::Lgamma),
+        ProgramSpec::LaxDigamma => unary_program(Primitive::Digamma),
+        ProgramSpec::LaxErfInv => unary_program(Primitive::ErfInv),
+        ProgramSpec::LaxIsFinite => unary_program(Primitive::IsFinite),
+        ProgramSpec::LaxNextafter => binary_program(Primitive::Nextafter),
+        // Lax cumulative (vector → vector)
+        ProgramSpec::LaxCumsum => unary_program(Primitive::Cumsum),
+        ProgramSpec::LaxCumprod => unary_program(Primitive::Cumprod),
+        // Lax boolean reduction (vector → scalar)
+        ProgramSpec::LaxReduceAnd => unary_program(Primitive::ReduceAnd),
+        ProgramSpec::LaxReduceOr => unary_program(Primitive::ReduceOr),
+        // Lax bitwise binary (i64, i64 → i64)
+        ProgramSpec::LaxBitwiseAnd => binary_program(Primitive::BitwiseAnd),
+        ProgramSpec::LaxBitwiseOr => binary_program(Primitive::BitwiseOr),
+        ProgramSpec::LaxBitwiseXor => binary_program(Primitive::BitwiseXor),
+        // Lax bitwise unary (i64 → i64)
+        ProgramSpec::LaxBitwiseNot => unary_program(Primitive::BitwiseNot),
         // Utility programs
         ProgramSpec::Identity => Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![]),
         ProgramSpec::AddOneMulTwo => Jaxpr::new(
