@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.parity-report.v1",
-  "timestamp": "1773316135",
+  "timestamp": "1773337036",
   "fj_version": "0.1.0",
   "oracle_version": "jax-0.9.0.1",
   "mode": "strict",
@@ -1549,6 +1549,105 @@
         }
       ]
     },
+    "mixed_dtype": {
+      "total": 23,
+      "matched": 23,
+      "mismatched": 0,
+      "cases": [
+        {
+          "case_id": "mixed_add_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_i64_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_f64_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_sub_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_sub_f64_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_mul_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_mul_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_mul_i64_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_div_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_div_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_max_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_max_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_min_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_gt_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_gt_f64_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_lt_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_eq_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_ne_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_mixed_add_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_mixed_mul_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_mixed_gt_f64_i64_0",
+          "matched": true
+        }
+      ]
+    },
     "random": {
       "total": 25,
       "matched": 25,
@@ -1785,7 +1884,7 @@
     }
   },
   "summary": {
-    "total": 434,
+    "total": 457,
     "pass_rate": 1.0,
     "gate": "pass"
   }

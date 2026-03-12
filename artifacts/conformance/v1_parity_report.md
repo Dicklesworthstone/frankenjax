@@ -8,8 +8,8 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 
 | Metric | Value |
 |---|---|
-| Total Cases | 434 |
-| Matched | 434 |
+| Total Cases | 457 |
+| Matched | 457 |
 | Mismatched | 0 |
 | Pass Rate | 100.00% |
 | Gate | **pass** |
@@ -24,12 +24,13 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | lax | 204 | 204 | 0 |
 | random | 25 | 25 | 0 |
 | control_flow | 11 | 11 | 0 |
+| mixed_dtype | 23 | 23 | 0 |
 
 ## Per-Primitive Breakdown
 
 | Primitive | Total | Matched | Mismatched |
 |---|---|---|---|
-| Add2 | 8 | 8 | 0 |
+| Add2 | 14 | 14 | 0 |
 | AddOne | 12 | 12 | 0 |
 | CondSelect | 6 | 6 | 0 |
 | CosX | 13 | 13 | 0 |
@@ -42,24 +43,24 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxCeil | 5 | 5 | 0 |
 | LaxClamp | 4 | 4 | 0 |
 | LaxCosh | 7 | 7 | 0 |
-| LaxDiv | 7 | 7 | 0 |
-| LaxEq | 5 | 5 | 0 |
+| LaxDiv | 9 | 9 | 0 |
+| LaxEq | 6 | 6 | 0 |
 | LaxErf | 5 | 5 | 0 |
 | LaxErfc | 5 | 5 | 0 |
 | LaxExp | 22 | 22 | 0 |
 | LaxExpm1 | 9 | 9 | 0 |
 | LaxFloor | 5 | 5 | 0 |
 | LaxGe | 4 | 4 | 0 |
-| LaxGt | 4 | 4 | 0 |
+| LaxGt | 7 | 7 | 0 |
 | LaxLe | 4 | 4 | 0 |
 | LaxLog | 9 | 9 | 0 |
 | LaxLog1p | 9 | 9 | 0 |
 | LaxLogistic | 9 | 9 | 0 |
-| LaxLt | 5 | 5 | 0 |
-| LaxMax | 5 | 5 | 0 |
-| LaxMin | 5 | 5 | 0 |
-| LaxMul | 8 | 8 | 0 |
-| LaxNe | 4 | 4 | 0 |
+| LaxLt | 6 | 6 | 0 |
+| LaxMax | 7 | 7 | 0 |
+| LaxMin | 6 | 6 | 0 |
+| LaxMul | 12 | 12 | 0 |
+| LaxNe | 5 | 5 | 0 |
 | LaxNeg | 13 | 13 | 0 |
 | LaxPow | 6 | 6 | 0 |
 | LaxReciprocal | 8 | 8 | 0 |
@@ -74,7 +75,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxSinh | 7 | 7 | 0 |
 | LaxSqrt | 9 | 9 | 0 |
 | LaxSquare | 14 | 14 | 0 |
-| LaxSub | 8 | 8 | 0 |
+| LaxSub | 10 | 10 | 0 |
 | LaxTan | 9 | 9 | 0 |
 | LaxTanh | 12 | 12 | 0 |
 | ReduceSumVec | 4 | 4 | 0 |

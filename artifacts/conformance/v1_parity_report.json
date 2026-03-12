@@ -1,11 +1,11 @@
 {
   "version": "frankenjax.v1-comprehensive-parity.v1",
-  "timestamp": "1773316135",
+  "timestamp": "1773337036",
   "fj_version": "0.1.0",
   "jax_version": "jax-0.9.0.1",
   "mode": "strict",
   "summary": {
-    "total": 434,
+    "total": 457,
     "pass_rate": 1.0,
     "gate": "pass"
   },
@@ -1554,6 +1554,105 @@
         }
       ]
     },
+    "mixed_dtype": {
+      "total": 23,
+      "matched": 23,
+      "mismatched": 0,
+      "cases": [
+        {
+          "case_id": "mixed_add_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_i64_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_add_f64_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_sub_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_sub_f64_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_mul_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_mul_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_mul_i64_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_div_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_div_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_max_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_max_i64_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_min_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_gt_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_gt_f64_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_lt_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_eq_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "mixed_ne_f64_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_mixed_add_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_mixed_mul_i64_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_mixed_gt_f64_i64_0",
+          "matched": true
+        }
+      ]
+    },
     "random": {
       "total": 25,
       "matched": 25,
@@ -1791,8 +1890,8 @@
   },
   "per_primitive": {
     "Add2": {
-      "total": 8,
-      "matched": 8,
+      "total": 14,
+      "matched": 14,
       "mismatched": 0,
       "cases": [
         "jit_add2_i64_0",
@@ -1802,7 +1901,13 @@
         "jit_add2_i64_4",
         "jit_add2_i64_5",
         "jit_add2_i64_6",
-        "jit_add2_i64_7"
+        "jit_add2_i64_7",
+        "mixed_add_i64_f64_0",
+        "mixed_add_i64_f64_1",
+        "mixed_add_i64_f64_2",
+        "mixed_add_f64_i64_0",
+        "mixed_add_f64_i64_1",
+        "jit_mixed_add_i64_f64_0"
       ]
     },
     "AddOne": {
@@ -1988,8 +2093,8 @@
       ]
     },
     "LaxDiv": {
-      "total": 7,
-      "matched": 7,
+      "total": 9,
+      "matched": 9,
       "mismatched": 0,
       "cases": [
         "grad_lax_div_f64_0",
@@ -1998,19 +2103,22 @@
         "lax_div_f64_0",
         "lax_div_f64_1",
         "lax_div_f64_2",
-        "lax_div_f64_3"
+        "lax_div_f64_3",
+        "mixed_div_i64_f64_0",
+        "mixed_div_i64_f64_1"
       ]
     },
     "LaxEq": {
-      "total": 5,
-      "matched": 5,
+      "total": 6,
+      "matched": 6,
       "mismatched": 0,
       "cases": [
         "lax_eq_tensor2x3_f64_0",
         "lax_eq_f64_0",
         "lax_eq_f64_1",
         "lax_eq_f64_2",
-        "lax_eq_f64_3"
+        "lax_eq_f64_3",
+        "mixed_eq_f64_i64_0"
       ]
     },
     "LaxErf": {
@@ -2106,14 +2214,17 @@
       ]
     },
     "LaxGt": {
-      "total": 4,
-      "matched": 4,
+      "total": 7,
+      "matched": 7,
       "mismatched": 0,
       "cases": [
         "lax_gt_f64_0",
         "lax_gt_f64_1",
         "lax_gt_f64_2",
-        "lax_gt_f64_3"
+        "lax_gt_f64_3",
+        "mixed_gt_f64_i64_0",
+        "mixed_gt_f64_i64_1",
+        "jit_mixed_gt_f64_i64_0"
       ]
     },
     "LaxLe": {
@@ -2176,44 +2287,48 @@
       ]
     },
     "LaxLt": {
-      "total": 5,
-      "matched": 5,
+      "total": 6,
+      "matched": 6,
       "mismatched": 0,
       "cases": [
         "lax_lt_tensor2x3_f64_0",
         "lax_lt_f64_0",
         "lax_lt_f64_1",
         "lax_lt_f64_2",
-        "lax_lt_f64_3"
+        "lax_lt_f64_3",
+        "mixed_lt_i64_f64_0"
       ]
     },
     "LaxMax": {
-      "total": 5,
-      "matched": 5,
+      "total": 7,
+      "matched": 7,
       "mismatched": 0,
       "cases": [
         "lax_max_f64_0",
         "lax_max_f64_1",
         "lax_max_f64_2",
         "lax_max_f64_3",
-        "lax_max_tensor2x3_f64_0"
+        "lax_max_tensor2x3_f64_0",
+        "mixed_max_i64_f64_0",
+        "mixed_max_i64_f64_1"
       ]
     },
     "LaxMin": {
-      "total": 5,
-      "matched": 5,
+      "total": 6,
+      "matched": 6,
       "mismatched": 0,
       "cases": [
         "lax_min_f64_0",
         "lax_min_f64_1",
         "lax_min_f64_2",
         "lax_min_f64_3",
-        "lax_min_tensor2x3_f64_0"
+        "lax_min_tensor2x3_f64_0",
+        "mixed_min_i64_f64_0"
       ]
     },
     "LaxMul": {
-      "total": 8,
-      "matched": 8,
+      "total": 12,
+      "matched": 12,
       "mismatched": 0,
       "cases": [
         "grad_lax_mul_f64_0",
@@ -2223,18 +2338,23 @@
         "lax_mul_f64_1",
         "lax_mul_f64_2",
         "lax_mul_f64_3",
-        "lax_mul_tensor2x3_f64_0"
+        "lax_mul_tensor2x3_f64_0",
+        "mixed_mul_i64_f64_0",
+        "mixed_mul_i64_f64_1",
+        "mixed_mul_i64_f64_2",
+        "jit_mixed_mul_i64_f64_0"
       ]
     },
     "LaxNe": {
-      "total": 4,
-      "matched": 4,
+      "total": 5,
+      "matched": 5,
       "mismatched": 0,
       "cases": [
         "lax_ne_f64_0",
         "lax_ne_f64_1",
         "lax_ne_f64_2",
-        "lax_ne_f64_3"
+        "lax_ne_f64_3",
+        "mixed_ne_f64_i64_0"
       ]
     },
     "LaxNeg": {
@@ -2428,8 +2548,8 @@
       ]
     },
     "LaxSub": {
-      "total": 8,
-      "matched": 8,
+      "total": 10,
+      "matched": 10,
       "mismatched": 0,
       "cases": [
         "grad_lax_sub_f64_0",
@@ -2439,7 +2559,9 @@
         "lax_sub_f64_1",
         "lax_sub_f64_2",
         "lax_sub_f64_3",
-        "lax_sub_tensor2x3_f64_0"
+        "lax_sub_tensor2x3_f64_0",
+        "mixed_sub_f64_i64_0",
+        "mixed_sub_f64_i64_1"
       ]
     },
     "LaxTan": {
