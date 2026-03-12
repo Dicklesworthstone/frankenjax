@@ -56,6 +56,7 @@ pub enum FixtureFamily {
     Lax,
     Random,
     ControlFlow,
+    MixedDtype,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1067,6 +1068,7 @@ impl ParityReportV1 {
                 FixtureFamily::Lax => "lax",
                 FixtureFamily::Random => "random",
                 FixtureFamily::ControlFlow => "control_flow",
+                FixtureFamily::MixedDtype => "mixed_dtype",
             };
             families
                 .entry(family_name.to_owned())

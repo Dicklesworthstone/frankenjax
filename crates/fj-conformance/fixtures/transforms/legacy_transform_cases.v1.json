@@ -12302,9 +12302,682 @@
       "transforms": [
         "jit"
       ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 2
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_add_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "add2",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": -3
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 1.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_add_i64_f64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "add2",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.0
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_add_i64_f64_2",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "add2",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.5
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_add_f64_i64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 4.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "add2",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -0.5
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 10
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_add_f64_i64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 9.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "add2",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 10.0
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_sub_f64_i64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 7.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_sub",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 1
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_sub_f64_i64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -0.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_sub",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_mul_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 6.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": -2
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_mul_i64_f64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 99.9
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_mul_i64_f64_2",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 9
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_div_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 4.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_div",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 1
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 4.0
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_div_i64_f64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.25
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_div",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_max_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_max",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 1
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_max_i64_f64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_max",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 5
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_min_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_min",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 2
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_gt_f64_i64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_bool",
+          "value": true
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_gt",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.5
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 2
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_gt_f64_i64_1",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_bool",
+          "value": false
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_gt",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 1
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 1.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_lt_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_bool",
+          "value": true
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_lt",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_eq_f64_i64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_bool",
+          "value": true
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_eq",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "mixed_ne_f64_i64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_bool",
+          "value": true
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_ne",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": []
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 7
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 0.25
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "jit_mixed_add_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 7.25
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "add2",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_i64",
+          "value": 4
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 2.5
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "jit_mixed_mul_i64_f64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 10.0
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_mul",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit"
+      ]
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 5.0
+        },
+        {
+          "kind": "scalar_i64",
+          "value": 3
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "jit_mixed_gt_f64_i64_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "kind": "scalar_bool",
+          "value": true
+        }
+      ],
+      "family": "mixed_dtype",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_gt",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit"
+      ]
     }
   ],
-  "generated_at_unix_ms": 1773315891766,
+  "generated_at_unix_ms": 1773336918358,
   "generated_by": "legacy_jax_capture_script",
   "metadata": {
     "hardware": "x86_64",
@@ -12312,7 +12985,7 @@
     "jax_version": "unavailable",
     "platform": "Linux",
     "python_version": "3.13.7",
-    "timestamp": "2026-03-12T11:44:51Z"
+    "timestamp": "2026-03-12T17:35:18Z"
   },
   "oracle_root": "/data/projects/frankenjax/legacy_jax_code/jax",
   "schema_version": "frankenjax.transform-fixtures.v1",

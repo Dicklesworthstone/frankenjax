@@ -963,6 +963,154 @@ def build_control_flow_cases(cb: CaseBuilder) -> None:
     )
 
 
+# ── Mixed-dtype family builder ───────────────────────────────────
+
+
+def build_mixed_dtype_cases(cb: CaseBuilder) -> None:
+    """mixed_dtype family: type promotion for cross-dtype binary ops."""
+    fam = "mixed_dtype"
+
+    # --- Scalar i64 + f64 arithmetic ---
+
+    # add(i64, f64) → f64  (I64 + F64 → F64 promotion)
+    for idx, (a, b, exp) in enumerate([
+        (2, 0.5, 2.5),
+        (-3, 1.5, -1.5),
+        (0, 0.0, 0.0),
+    ]):
+        cb.add_raw(
+            f"mixed_add_i64_f64_{idx}", fam, "add2", [],
+            [{"kind": "scalar_i64", "value": a}, {"kind": "scalar_f64", "value": b}],
+            [{"kind": "scalar_f64", "value": exp}],
+            atol=0.0, rtol=0.0,
+        )
+
+    # add(f64, i64) → f64  (reversed operand order)
+    for idx, (a, b, exp) in enumerate([
+        (1.5, 3, 4.5),
+        (-0.5, 10, 9.5),
+    ]):
+        cb.add_raw(
+            f"mixed_add_f64_i64_{idx}", fam, "add2", [],
+            [{"kind": "scalar_f64", "value": a}, {"kind": "scalar_i64", "value": b}],
+            [{"kind": "scalar_f64", "value": exp}],
+            atol=0.0, rtol=0.0,
+        )
+
+    # sub(f64, i64) → f64
+    for idx, (a, b, exp) in enumerate([
+        (10.0, 3, 7.0),
+        (0.5, 1, -0.5),
+    ]):
+        cb.add_raw(
+            f"mixed_sub_f64_i64_{idx}", fam, "lax_sub", [],
+            [{"kind": "scalar_f64", "value": a}, {"kind": "scalar_i64", "value": b}],
+            [{"kind": "scalar_f64", "value": exp}],
+            atol=0.0, rtol=0.0,
+        )
+
+    # mul(i64, f64) → f64
+    for idx, (a, b, exp) in enumerate([
+        (3, 2.0, 6.0),
+        (-2, 0.5, -1.0),
+        (0, 99.9, 0.0),
+    ]):
+        cb.add_raw(
+            f"mixed_mul_i64_f64_{idx}", fam, "lax_mul", [],
+            [{"kind": "scalar_i64", "value": a}, {"kind": "scalar_f64", "value": b}],
+            [{"kind": "scalar_f64", "value": exp}],
+            atol=0.0, rtol=0.0,
+        )
+
+    # div(i64, f64) → f64
+    for idx, (a, b, exp) in enumerate([
+        (9, 2.0, 4.5),
+        (1, 4.0, 0.25),
+    ]):
+        cb.add_raw(
+            f"mixed_div_i64_f64_{idx}", fam, "lax_div", [],
+            [{"kind": "scalar_i64", "value": a}, {"kind": "scalar_f64", "value": b}],
+            [{"kind": "scalar_f64", "value": exp}],
+            atol=0.0, rtol=0.0,
+        )
+
+    # max(i64, f64) → f64
+    cb.add_raw(
+        "mixed_max_i64_f64_0", fam, "lax_max", [],
+        [{"kind": "scalar_i64", "value": 3}, {"kind": "scalar_f64", "value": 2.5}],
+        [{"kind": "scalar_f64", "value": 3.0}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "mixed_max_i64_f64_1", fam, "lax_max", [],
+        [{"kind": "scalar_i64", "value": 1}, {"kind": "scalar_f64", "value": 2.5}],
+        [{"kind": "scalar_f64", "value": 2.5}],
+        atol=0.0, rtol=0.0,
+    )
+
+    # min(i64, f64) → f64
+    cb.add_raw(
+        "mixed_min_i64_f64_0", fam, "lax_min", [],
+        [{"kind": "scalar_i64", "value": 5}, {"kind": "scalar_f64", "value": 2.5}],
+        [{"kind": "scalar_f64", "value": 2.5}],
+        atol=0.0, rtol=0.0,
+    )
+
+    # --- Mixed-dtype comparisons (result is always bool) ---
+
+    cb.add_raw(
+        "mixed_gt_f64_i64_0", fam, "lax_gt", [],
+        [{"kind": "scalar_f64", "value": 2.5}, {"kind": "scalar_i64", "value": 2}],
+        [{"kind": "scalar_bool", "value": True}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "mixed_gt_f64_i64_1", fam, "lax_gt", [],
+        [{"kind": "scalar_f64", "value": 1.5}, {"kind": "scalar_i64", "value": 2}],
+        [{"kind": "scalar_bool", "value": False}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "mixed_lt_i64_f64_0", fam, "lax_lt", [],
+        [{"kind": "scalar_i64", "value": 1}, {"kind": "scalar_f64", "value": 1.5}],
+        [{"kind": "scalar_bool", "value": True}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "mixed_eq_f64_i64_0", fam, "lax_eq", [],
+        [{"kind": "scalar_f64", "value": 3.0}, {"kind": "scalar_i64", "value": 3}],
+        [{"kind": "scalar_bool", "value": True}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "mixed_ne_f64_i64_0", fam, "lax_ne", [],
+        [{"kind": "scalar_f64", "value": 2.5}, {"kind": "scalar_i64", "value": 3}],
+        [{"kind": "scalar_bool", "value": True}],
+        atol=0.0, rtol=0.0,
+    )
+
+    # --- JIT of mixed-dtype ops ---
+
+    cb.add_raw(
+        "jit_mixed_add_i64_f64_0", fam, "add2", ["jit"],
+        [{"kind": "scalar_i64", "value": 7}, {"kind": "scalar_f64", "value": 0.25}],
+        [{"kind": "scalar_f64", "value": 7.25}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "jit_mixed_mul_i64_f64_0", fam, "lax_mul", ["jit"],
+        [{"kind": "scalar_i64", "value": 4}, {"kind": "scalar_f64", "value": 2.5}],
+        [{"kind": "scalar_f64", "value": 10.0}],
+        atol=0.0, rtol=0.0,
+    )
+    cb.add_raw(
+        "jit_mixed_gt_f64_i64_0", fam, "lax_gt", ["jit"],
+        [{"kind": "scalar_f64", "value": 5.0}, {"kind": "scalar_i64", "value": 3}],
+        [{"kind": "scalar_bool", "value": True}],
+        atol=0.0, rtol=0.0,
+    )
+
+
 # ── Lax primitive family builder ─────────────────────────────────
 
 
@@ -1182,6 +1330,9 @@ def build_cases_with_oracle(jax, jnp, lax_mod) -> list[Case]:
     # Control flow: cond, scan
     build_control_flow_cases(cb)
 
+    # Mixed-dtype type promotion
+    build_mixed_dtype_cases(cb)
+
     return cb.cases
 
 
@@ -1196,6 +1347,7 @@ def build_cases_fallback() -> list[Case]:
     build_vmap_cases(cb)
     build_lax_cases(cb)
     build_control_flow_cases(cb)
+    build_mixed_dtype_cases(cb)
     _log("summary", "all", "ok", f"counts={cb.summary()}")
     return cb.cases
 

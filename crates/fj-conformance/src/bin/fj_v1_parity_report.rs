@@ -359,7 +359,15 @@ fn to_markdown(
     out.push_str("## Per-Family Breakdown\n\n");
     out.push_str("| Family | Total | Matched | Mismatched |\n");
     out.push_str("|---|---|---|---|\n");
-    for family in ["jit", "grad", "vmap", "lax", "random", "control_flow"] {
+    for family in [
+        "jit",
+        "grad",
+        "vmap",
+        "lax",
+        "random",
+        "control_flow",
+        "mixed_dtype",
+    ] {
         let stats = v1.families.get(family).cloned().unwrap_or(FamilyReport {
             total: 0,
             matched: 0,
@@ -500,7 +508,15 @@ fn main() -> Result<(), String> {
         };
     }
 
-    for family in ["jit", "grad", "vmap", "lax", "random", "control_flow"] {
+    for family in [
+        "jit",
+        "grad",
+        "vmap",
+        "lax",
+        "random",
+        "control_flow",
+        "mixed_dtype",
+    ] {
         v1.families
             .entry(family_name(family))
             .or_insert_with(|| FamilyReport {
@@ -561,7 +577,15 @@ fn main() -> Result<(), String> {
         }
     }
 
-    for family in ["jit", "grad", "vmap", "lax", "random", "control_flow"] {
+    for family in [
+        "jit",
+        "grad",
+        "vmap",
+        "lax",
+        "random",
+        "control_flow",
+        "mixed_dtype",
+    ] {
         if let Some(stats) = v1.families.get(family)
             && stats.total == 0
         {
