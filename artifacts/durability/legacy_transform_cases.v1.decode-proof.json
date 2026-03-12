@@ -1,15 +1,14 @@
 {
-  "proof_id": "decode-proof-459e7282c6ede7a8",
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/legacy_transform_cases.v1.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
-  "expected_sha256_hex": "07af34b4422e1e26893ffd70928b9fc06c8bad80320c64516503099f1856512e",
-  "decoded_sha256_hex": "07af34b4422e1e26893ffd70928b9fc06c8bad80320c64516503099f1856512e",
+  "proof_id": "decode-proof-c750fa79975f6714",
+  "sidecar_path": "artifacts/durability/legacy_transform_cases.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
+  "expected_sha256_hex": "bdc5551e37ffbcacee2c22aaa3aa34b0ac80aa3259f43344a80dbd7858f5d639",
+  "decoded_sha256_hex": "bdc5551e37ffbcacee2c22aaa3aa34b0ac80aa3259f43344a80dbd7858f5d639",
   "dropped_symbols": [
-    "kind:source:sbn:0:esi:0",
-    "kind:source:sbn:0:esi:1"
+    "kind:source:sbn:0:esi:0"
   ],
-  "attempted_symbol_count": 38,
+  "attempted_symbol_count": 619,
   "recovered": true,
-  "details": "drop-kind=source count=2; recovered successfully from retained symbols",
-  "generated_at_unix_ms": 1770973937467
+  "details": "drop-kind=source count=1; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1773293149107
 }

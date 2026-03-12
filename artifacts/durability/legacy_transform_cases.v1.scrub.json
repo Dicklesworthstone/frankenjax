@@ -1,11 +1,11 @@
 {
-  "sidecar_path": "/data/projects/frankenjax/artifacts/durability/legacy_transform_cases.v1.sidecar.json",
-  "artifact_path": "/data/projects/frankenjax/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
-  "expected_sha256_hex": "07af34b4422e1e26893ffd70928b9fc06c8bad80320c64516503099f1856512e",
-  "decoded_sha256_hex": "07af34b4422e1e26893ffd70928b9fc06c8bad80320c64516503099f1856512e",
+  "sidecar_path": "artifacts/durability/legacy_transform_cases.v1.sidecar.json",
+  "artifact_path": "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
+  "expected_sha256_hex": "bdc5551e37ffbcacee2c22aaa3aa34b0ac80aa3259f43344a80dbd7858f5d639",
+  "decoded_sha256_hex": "bdc5551e37ffbcacee2c22aaa3aa34b0ac80aa3259f43344a80dbd7858f5d639",
   "decoded_matches_expected": true,
-  "total_symbols": 40,
-  "source_symbols": 33,
-  "repair_symbols": 7,
-  "generated_at_unix_ms": 1770973937465
+  "total_symbols": 620,
+  "source_symbols": 563,
+  "repair_symbols": 57,
+  "generated_at_unix_ms": 1773293149006
 }

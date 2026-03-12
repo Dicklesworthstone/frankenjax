@@ -1,0 +1,14 @@
+{
+  "proof_id": "decode-proof-e6b62e9139887e74",
+  "sidecar_path": "artifacts/durability/benchmark_baselines_v2_md.sidecar.json",
+  "artifact_path": "artifacts/performance/benchmark_baselines_v2_2026-03-12.md",
+  "expected_sha256_hex": "225d3aa82e25afb42c1554ac40a27f8edc4a5ba79e16c92a3058f885a92d0fac",
+  "decoded_sha256_hex": "225d3aa82e25afb42c1554ac40a27f8edc4a5ba79e16c92a3058f885a92d0fac",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0"
+  ],
+  "attempted_symbol_count": 42,
+  "recovered": true,
+  "details": "drop-kind=source count=1; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1773291415938
+}

@@ -1,11 +1,11 @@
 {
   "version": "frankenjax.v1-comprehensive-parity.v1",
-  "timestamp": "1772498910",
+  "timestamp": "1773293074",
   "fj_version": "0.1.0",
   "jax_version": "jax-0.9.0.1",
   "mode": "strict",
   "summary": {
-    "total": 242,
+    "total": 273,
     "pass_rate": 1.0,
     "gate": "pass"
   },
@@ -94,8 +94,8 @@
       ]
     },
     "jit": {
-      "total": 49,
-      "matched": 49,
+      "total": 55,
+      "matched": 55,
       "mismatched": 0,
       "cases": [
         {
@@ -292,6 +292,30 @@
         },
         {
           "case_id": "jit_vmap_add_one_i64_2",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_square_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_sin_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_square_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_sin_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_square_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "jit_vmap_grad_sin_f64_2",
           "matched": true
         }
       ]
@@ -964,10 +988,111 @@
       ]
     },
     "random": {
-      "total": 0,
-      "matched": 0,
+      "total": 25,
+      "matched": 25,
       "mismatched": 0,
-      "cases": []
+      "cases": [
+        {
+          "case_id": "rng_key_seed_0",
+          "matched": true
+        },
+        {
+          "case_id": "rng_split_seed_0",
+          "matched": true
+        },
+        {
+          "case_id": "rng_fold_in_seed_0",
+          "matched": true
+        },
+        {
+          "case_id": "rng_uniform_seed_0",
+          "matched": true
+        },
+        {
+          "case_id": "rng_normal_seed_0",
+          "matched": true
+        },
+        {
+          "case_id": "rng_key_seed_1",
+          "matched": true
+        },
+        {
+          "case_id": "rng_split_seed_1",
+          "matched": true
+        },
+        {
+          "case_id": "rng_fold_in_seed_1",
+          "matched": true
+        },
+        {
+          "case_id": "rng_uniform_seed_1",
+          "matched": true
+        },
+        {
+          "case_id": "rng_normal_seed_1",
+          "matched": true
+        },
+        {
+          "case_id": "rng_key_seed_42",
+          "matched": true
+        },
+        {
+          "case_id": "rng_split_seed_42",
+          "matched": true
+        },
+        {
+          "case_id": "rng_fold_in_seed_42",
+          "matched": true
+        },
+        {
+          "case_id": "rng_uniform_seed_42",
+          "matched": true
+        },
+        {
+          "case_id": "rng_normal_seed_42",
+          "matched": true
+        },
+        {
+          "case_id": "rng_key_seed_2147483647",
+          "matched": true
+        },
+        {
+          "case_id": "rng_split_seed_2147483647",
+          "matched": true
+        },
+        {
+          "case_id": "rng_fold_in_seed_2147483647",
+          "matched": true
+        },
+        {
+          "case_id": "rng_uniform_seed_2147483647",
+          "matched": true
+        },
+        {
+          "case_id": "rng_normal_seed_2147483647",
+          "matched": true
+        },
+        {
+          "case_id": "rng_key_seed_4294967295",
+          "matched": true
+        },
+        {
+          "case_id": "rng_split_seed_4294967295",
+          "matched": true
+        },
+        {
+          "case_id": "rng_fold_in_seed_4294967295",
+          "matched": true
+        },
+        {
+          "case_id": "rng_uniform_seed_4294967295",
+          "matched": true
+        },
+        {
+          "case_id": "rng_normal_seed_4294967295",
+          "matched": true
+        }
+      ]
     },
     "vmap": {
       "total": 9,
@@ -1505,8 +1630,8 @@
       ]
     },
     "SinX": {
-      "total": 13,
-      "matched": 13,
+      "total": 16,
+      "matched": 16,
       "mismatched": 0,
       "cases": [
         "jit_sin_x_f64_0",
@@ -1521,12 +1646,15 @@
         "grad_sin_x_f64_3",
         "vmap_sin_x_f64_0",
         "vmap_sin_x_f64_1",
-        "vmap_sin_x_f64_2"
+        "vmap_sin_x_f64_2",
+        "jit_vmap_grad_sin_f64_0",
+        "jit_vmap_grad_sin_f64_1",
+        "jit_vmap_grad_sin_f64_2"
       ]
     },
     "Square": {
-      "total": 16,
-      "matched": 16,
+      "total": 19,
+      "matched": 19,
       "mismatched": 0,
       "cases": [
         "jit_square_f64_0",
@@ -1544,7 +1672,10 @@
         "grad_nested_square_f64_2",
         "vmap_grad_square_f64_0",
         "vmap_grad_square_f64_1",
-        "vmap_grad_square_f64_2"
+        "vmap_grad_square_f64_2",
+        "jit_vmap_grad_square_f64_0",
+        "jit_vmap_grad_square_f64_1",
+        "jit_vmap_grad_square_f64_2"
       ]
     },
     "SquarePlusLinear": {
@@ -1565,13 +1696,7 @@
       ]
     }
   },
-  "coverage_exceptions": [
-    {
-      "family": "random",
-      "reason": "no fixture cases captured for this family",
-      "justification": "tracked as known conformance gap pending fixture expansion"
-    }
-  ],
   "parity_exceptions": [],
+  "coverage_exceptions": [],
   "gate_status": "pass"
 }

@@ -55,6 +55,7 @@ pub enum FixtureFamily {
     Vmap,
     Lax,
     Random,
+    ControlFlow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -266,6 +267,9 @@ pub enum FixtureProgram {
     // Utility programs
     Identity,
     AddOneMulTwo,
+    // Control flow programs
+    CondSelect,
+    ScanAdd,
 }
 
 impl FixtureProgram {
@@ -325,6 +329,8 @@ impl FixtureProgram {
             Self::LaxReduceProd => ProgramSpec::LaxReduceProd,
             Self::Identity => ProgramSpec::Identity,
             Self::AddOneMulTwo => ProgramSpec::AddOneMulTwo,
+            Self::CondSelect => ProgramSpec::CondSelect,
+            Self::ScanAdd => ProgramSpec::ScanAdd,
         }
     }
 }
@@ -1055,6 +1061,7 @@ impl ParityReportV1 {
                 FixtureFamily::Vmap => "vmap",
                 FixtureFamily::Lax => "lax",
                 FixtureFamily::Random => "random",
+                FixtureFamily::ControlFlow => "control_flow",
             };
             families
                 .entry(family_name.to_owned())

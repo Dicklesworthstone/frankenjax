@@ -390,9 +390,7 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
             Primitive::ShiftRightArithmetic => {
                 FjLang::ShiftRightArithmetic([input_ids[0], input_ids[1]])
             }
-            Primitive::ShiftRightLogical => {
-                FjLang::ShiftRightLogical([input_ids[0], input_ids[1]])
-            }
+            Primitive::ShiftRightLogical => FjLang::ShiftRightLogical([input_ids[0], input_ids[1]]),
             // Shape ops require params – not yet supported
             Primitive::Reshape
             | Primitive::Slice

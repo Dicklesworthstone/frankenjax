@@ -626,6 +626,70 @@ def build_vmap_cases(cb: CaseBuilder) -> None:
             [vec], [[math.sin(v) for v in vec]], atol=1e-6, rtol=1e-6,
         )
 
+    # Depth-3 transform compositions
+    for idx, vec in enumerate(_vmap_vectors_f64()):
+        # jit(vmap(grad(square))): grad(x^2) = 2x, vectorized, then JIT
+        cb.add(
+            f"jit_vmap_grad_square_f64_{idx}", "jit", "square", ["jit", "vmap", "grad"],
+            [vec], [[2.0 * v for v in vec]], atol=1e-6, rtol=1e-6,
+        )
+        # jit(vmap(grad(sin))): grad(sin(x)) = cos(x), vectorized, then JIT
+        cb.add(
+            f"jit_vmap_grad_sin_f64_{idx}", "jit", "sin_x", ["jit", "vmap", "grad"],
+            [vec], [[math.cos(v) for v in vec]], atol=1e-6, rtol=1e-6,
+        )
+
+
+# ── Control flow family builder ──────────────────────────────────
+
+
+def build_control_flow_cases(cb: CaseBuilder) -> None:
+    """control_flow family: cond, scan with representative inputs."""
+    # cond(pred=true, on_true, on_false) => on_true
+    for idx, (pred, a, b) in enumerate([
+        (True, 7, 99),
+        (False, 7, 99),
+        (True, 0, -1),
+        (False, 42, 0),
+    ]):
+        expected = a if pred else b
+        pred_int = 1 if pred else 0
+        cb.add(
+            f"cond_select_i64_{idx}", "control_flow", "cond_select", [],
+            [pred_int, a, b], [expected], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # scan(add, init=0, xs=[1,2,3,4]) => 10
+    scan_cases = [
+        (0, [1, 2, 3, 4], 10),
+        (5, [1, 1, 1], 8),
+        (0, [10], 10),
+        (100, [1, 2, 3, 4, 5], 115),
+    ]
+    for idx, (init, xs, expected) in enumerate(scan_cases):
+        cb.add(
+            f"scan_add_i64_{idx}", "control_flow", "scan_add", [],
+            [init, xs], [expected], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # jit(cond)
+    for idx, (pred, a, b) in enumerate([
+        (True, 10, 20),
+        (False, 10, 20),
+    ]):
+        expected = a if pred else b
+        pred_int = 1 if pred else 0
+        cb.add(
+            f"jit_cond_select_i64_{idx}", "control_flow", "cond_select", ["jit"],
+            [pred_int, a, b], [expected], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # jit(scan)
+    cb.add(
+        "jit_scan_add_i64_0", "control_flow", "scan_add", ["jit"],
+        [0, [1, 2, 3, 4]], [10], atol=0.0, rtol=0.0, comparator="exact",
+    )
+
 
 # ── Lax primitive family builder ─────────────────────────────────
 
@@ -754,6 +818,9 @@ def build_cases_with_oracle(jax, jnp, lax_mod) -> list[Case]:
     # (analytical fallback covers the same primitives)
     build_lax_cases(cb)
 
+    # Control flow: cond, scan
+    build_control_flow_cases(cb)
+
     return cb.cases
 
 
@@ -767,6 +834,7 @@ def build_cases_fallback() -> list[Case]:
     build_grad_cases(cb)
     build_vmap_cases(cb)
     build_lax_cases(cb)
+    build_control_flow_cases(cb)
     _log("summary", "all", "ok", f"counts={cb.summary()}")
     return cb.cases
 

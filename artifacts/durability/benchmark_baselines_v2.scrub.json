@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/durability/benchmark_baselines_v2.sidecar.json",
+  "artifact_path": "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
+  "expected_sha256_hex": "6a756e630e35d7ce058013cbd7e20d4a10e43201600adef02d503def10bcd0b3",
+  "decoded_sha256_hex": "6a756e630e35d7ce058013cbd7e20d4a10e43201600adef02d503def10bcd0b3",
+  "decoded_matches_expected": true,
+  "total_symbols": 42,
+  "source_symbols": 38,
+  "repair_symbols": 4,
+  "generated_at_unix_ms": 1773291409115
+}

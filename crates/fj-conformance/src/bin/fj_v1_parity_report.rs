@@ -1,10 +1,10 @@
 #![forbid(unsafe_code)]
 
 use fj_conformance::{
-    FamilyReport, HarnessConfig, ParityReportSummary, ParityReportV1,
+    FamilyCaseEntry, FamilyReport, HarnessConfig, ParityReportSummary, ParityReportV1,
     read_transform_fixture_bundle, run_transform_fixture_bundle,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 struct Args {
     fixtures: PathBuf,
+    rng_fixtures: PathBuf,
     output_json: PathBuf,
     output_markdown: PathBuf,
     ci_json: PathBuf,
@@ -81,6 +82,156 @@ struct E2EFinalParityLog {
     pass: bool,
 }
 
+// ── RNG fixture types ────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct RngFixtureBundle {
+    #[allow(dead_code)]
+    schema_version: String,
+    cases: Vec<RngFixtureCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RngFixtureCase {
+    case_id: String,
+    operation: String,
+    seed: u64,
+    fold_in_data: Option<u32>,
+    #[serde(default)]
+    shape: Vec<usize>,
+    #[serde(default)]
+    expected_key_bits: Vec<u32>,
+    #[serde(default)]
+    expected_split_keys: Vec<Vec<u32>>,
+    #[serde(default)]
+    expected_values: Vec<f64>,
+    #[serde(default)]
+    minval: Option<f64>,
+    #[serde(default)]
+    maxval: Option<f64>,
+    atol: f64,
+    rtol: f64,
+}
+
+fn verify_rng_case(case: &RngFixtureCase) -> (bool, Option<String>) {
+    use fj_lax::threefry::{
+        random_fold_in, random_key, random_normal, random_split, random_uniform,
+    };
+
+    match case.operation.as_str() {
+        "key" => {
+            let actual = random_key(case.seed).0.to_vec();
+            if actual == case.expected_key_bits {
+                (true, None)
+            } else {
+                (
+                    false,
+                    Some(format!(
+                        "key mismatch: expected {:?}, got {:?}",
+                        case.expected_key_bits, actual
+                    )),
+                )
+            }
+        }
+        "split" => {
+            let (left, right) = random_split(random_key(case.seed));
+            let actual = vec![left.0.to_vec(), right.0.to_vec()];
+            if actual == case.expected_split_keys {
+                (true, None)
+            } else {
+                (
+                    false,
+                    Some(format!(
+                        "split mismatch: expected {:?}, got {:?}",
+                        case.expected_split_keys, actual
+                    )),
+                )
+            }
+        }
+        "fold_in" => {
+            let data = case.fold_in_data.unwrap_or(0);
+            let actual = random_fold_in(random_key(case.seed), data).0.to_vec();
+            if actual == case.expected_key_bits {
+                (true, None)
+            } else {
+                (
+                    false,
+                    Some(format!(
+                        "fold_in mismatch: expected {:?}, got {:?}",
+                        case.expected_key_bits, actual
+                    )),
+                )
+            }
+        }
+        "uniform" => {
+            let count = if case.shape.is_empty() {
+                1
+            } else {
+                case.shape.iter().product()
+            };
+            let actual = random_uniform(
+                random_key(case.seed),
+                count,
+                case.minval.unwrap_or(0.0),
+                case.maxval.unwrap_or(1.0),
+            );
+            if actual.len() != case.expected_values.len() {
+                return (
+                    false,
+                    Some(format!(
+                        "uniform length mismatch: expected {}, got {}",
+                        case.expected_values.len(),
+                        actual.len()
+                    )),
+                );
+            }
+            for (i, (e, a)) in case.expected_values.iter().zip(actual.iter()).enumerate() {
+                let diff = (e - a).abs();
+                if diff > case.atol + case.rtol * e.abs() {
+                    return (
+                        false,
+                        Some(format!(
+                            "uniform[{i}] mismatch: expected {e}, got {a}, diff {diff}"
+                        )),
+                    );
+                }
+            }
+            (true, None)
+        }
+        "normal" => {
+            let count = if case.shape.is_empty() {
+                1
+            } else {
+                case.shape.iter().product()
+            };
+            let actual = random_normal(random_key(case.seed), count);
+            if actual.len() != case.expected_values.len() {
+                return (
+                    false,
+                    Some(format!(
+                        "normal length mismatch: expected {}, got {}",
+                        case.expected_values.len(),
+                        actual.len()
+                    )),
+                );
+            }
+            for (i, (e, a)) in case.expected_values.iter().zip(actual.iter()).enumerate() {
+                let diff = (e - a).abs();
+                if diff > case.atol + case.rtol * e.abs() {
+                    return (
+                        false,
+                        Some(format!(
+                            "normal[{i}] mismatch: expected {e}, got {a}, diff {diff}"
+                        )),
+                    );
+                }
+            }
+            (true, None)
+        }
+        op => (false, Some(format!("unknown RNG operation: {op}"))),
+    }
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -97,6 +248,7 @@ fn default_paths(root: &Path) -> Args {
     Args {
         fixtures: root
             .join("crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json"),
+        rng_fixtures: root.join("crates/fj-conformance/fixtures/rng/rng_determinism.v1.json"),
         output_json: root.join("artifacts/conformance/v1_parity_report.json"),
         output_markdown: root.join("artifacts/conformance/v1_parity_report.md"),
         ci_json: root.join("artifacts/ci/runs/v1-parity-report/parity_report.v1.json"),
@@ -113,6 +265,7 @@ fn usage() -> &'static str {
 
 Options:
   --fixtures <path>        Input transform fixture bundle JSON
+  --rng-fixtures <path>    Input RNG determinism fixture bundle JSON
   --output-json <path>     Comprehensive parity JSON output
   --output-md <path>       Comprehensive parity markdown output
   --ci-json <path>         Spec Section 8.3 parity-report JSON output
@@ -137,6 +290,9 @@ fn parse_args(root: &Path) -> Result<Args, String> {
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--fixtures" => parsed.fixtures = PathBuf::from(next_value(&mut it, "--fixtures")?),
+            "--rng-fixtures" => {
+                parsed.rng_fixtures = PathBuf::from(next_value(&mut it, "--rng-fixtures")?);
+            }
             "--output-json" => {
                 parsed.output_json = PathBuf::from(next_value(&mut it, "--output-json")?);
             }
@@ -203,7 +359,7 @@ fn to_markdown(
     out.push_str("## Per-Family Breakdown\n\n");
     out.push_str("| Family | Total | Matched | Mismatched |\n");
     out.push_str("|---|---|---|---|\n");
-    for family in ["jit", "grad", "vmap", "lax", "random"] {
+    for family in ["jit", "grad", "vmap", "lax", "random", "control_flow"] {
         let stats = v1.families.get(family).cloned().unwrap_or(FamilyReport {
             total: 0,
             matched: 0,
@@ -288,7 +444,63 @@ fn main() -> Result<(), String> {
         &args.oracle_version,
     );
 
-    for family in ["jit", "grad", "vmap", "lax", "random"] {
+    // Load and verify RNG fixtures
+    let rng_results = if args.rng_fixtures.exists() {
+        let rng_raw = fs::read_to_string(&args.rng_fixtures).map_err(|err| {
+            format!(
+                "failed reading RNG fixture bundle {}: {err}",
+                args.rng_fixtures.display()
+            )
+        })?;
+        let rng_bundle: RngFixtureBundle = serde_json::from_str(&rng_raw)
+            .map_err(|err| format!("failed parsing RNG fixture bundle: {err}"))?;
+
+        let mut rng_cases = Vec::new();
+        for case in &rng_bundle.cases {
+            let (matched, error) = verify_rng_case(case);
+            rng_cases.push((case.case_id.clone(), matched, error));
+        }
+        rng_cases
+    } else {
+        Vec::new()
+    };
+
+    // Add RNG family to the report
+    let rng_matched = rng_results.iter().filter(|(_, m, _)| *m).count();
+    let rng_total = rng_results.len();
+    let rng_family = FamilyReport {
+        total: rng_total,
+        matched: rng_matched,
+        mismatched: rng_total - rng_matched,
+        cases: rng_results
+            .iter()
+            .map(|(case_id, matched, error)| FamilyCaseEntry {
+                case_id: case_id.clone(),
+                matched: *matched,
+                expected: None,
+                actual: None,
+                error: error.clone(),
+            })
+            .collect(),
+    };
+    if rng_total > 0 {
+        v1.families.insert("random".to_owned(), rng_family);
+        // Update summary totals to include RNG
+        v1.summary.total += rng_total;
+        let total_matched = v1.families.values().map(|f| f.matched).sum::<usize>();
+        v1.summary.pass_rate = if v1.summary.total == 0 {
+            1.0
+        } else {
+            total_matched as f64 / v1.summary.total as f64
+        };
+        v1.summary.gate = if v1.summary.pass_rate >= 1.0 {
+            "pass".to_owned()
+        } else {
+            "fail".to_owned()
+        };
+    }
+
+    for family in ["jit", "grad", "vmap", "lax", "random", "control_flow"] {
         v1.families
             .entry(family_name(family))
             .or_insert_with(|| FamilyReport {
@@ -334,7 +546,22 @@ fn main() -> Result<(), String> {
         stats.cases.push(case.case_id.clone());
     }
 
-    for family in ["jit", "grad", "vmap", "lax", "random"] {
+    // Add RNG parity exceptions if any
+    for (case_id, matched, error) in &rng_results {
+        if !matched {
+            parity_exceptions.push(ParityException {
+                case_id: case_id.clone(),
+                family: "random".to_owned(),
+                primitive: "rng".to_owned(),
+                drift: "Regression".to_owned(),
+                expected: String::new(),
+                actual: None,
+                error: error.clone(),
+            });
+        }
+    }
+
+    for family in ["jit", "grad", "vmap", "lax", "random", "control_flow"] {
         if let Some(stats) = v1.families.get(family)
             && stats.total == 0
         {
@@ -368,7 +595,7 @@ fn main() -> Result<(), String> {
         &coverage_exceptions,
     );
 
-    let per_family = ["jit", "grad", "vmap", "lax", "random"]
+    let per_family = ["jit", "grad", "vmap", "lax", "random", "control_flow"]
         .into_iter()
         .map(|name| {
             let family = v1.families.get(name).cloned().unwrap_or(FamilyReport {
@@ -388,10 +615,12 @@ fn main() -> Result<(), String> {
         })
         .collect::<BTreeMap<_, _>>();
 
+    let e2e_matched: usize = v1.families.values().map(|f| f.matched).sum();
+    let e2e_mismatched: usize = v1.families.values().map(|f| f.mismatched).sum();
     let e2e_log = E2EFinalParityLog {
         total_cases: v1.summary.total,
-        matched: transform_report.matched_cases,
-        mismatched: transform_report.mismatched_cases,
+        matched: e2e_matched,
+        mismatched: e2e_mismatched,
         pass_rate: v1.summary.pass_rate,
         per_family,
         gate_status: v1.summary.gate.clone(),
@@ -416,12 +645,11 @@ fn main() -> Result<(), String> {
     println!("  {}", args.output_markdown.display());
     println!("  {}", args.ci_json.display());
     println!("  {}", args.e2e_json.display());
+    let total_matched: usize = v1.families.values().map(|f| f.matched).sum();
+    let total_mismatched: usize = v1.families.values().map(|f| f.mismatched).sum();
     println!(
         "gate={} total={} matched={} mismatched={}",
-        v1.summary.gate,
-        transform_report.total_cases,
-        transform_report.matched_cases,
-        transform_report.mismatched_cases
+        v1.summary.gate, v1.summary.total, total_matched, total_mismatched,
     );
     Ok(())
 }

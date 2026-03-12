@@ -1,6 +1,6 @@
 {
-  "total_cases": 242,
-  "matched": 242,
+  "total_cases": 273,
+  "matched": 273,
   "mismatched": 0,
   "pass_rate": 1.0,
   "per_family": {
@@ -10,8 +10,8 @@
       "mismatched": 0
     },
     "jit": {
-      "total": 49,
-      "matched": 49,
+      "total": 55,
+      "matched": 55,
       "mismatched": 0
     },
     "lax": {
@@ -20,8 +20,8 @@
       "mismatched": 0
     },
     "random": {
-      "total": 0,
-      "matched": 0,
+      "total": 25,
+      "matched": 25,
       "mismatched": 0
     },
     "vmap": {

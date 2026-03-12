@@ -1193,6 +1193,9 @@ pub enum ProgramSpec {
     // Utility programs for testing
     Identity,
     AddOneMulTwo,
+    // Control flow programs
+    CondSelect,
+    ScanAdd,
 }
 
 #[must_use]
@@ -1343,6 +1346,38 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
                     sub_jaxprs: vec![],
                 },
             ],
+        ),
+        // cond(pred, on_true, on_false) -> selected
+        ProgramSpec::CondSelect => Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4)],
+            vec![Equation {
+                primitive: Primitive::Cond,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        ),
+        // scan(add, init, xs) -> carry (cumulative sum)
+        ProgramSpec::ScanAdd => Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::from([("body_op".to_owned(), "add".to_owned())]),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
         ),
     }
 }
