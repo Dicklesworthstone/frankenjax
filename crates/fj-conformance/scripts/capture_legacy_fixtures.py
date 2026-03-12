@@ -1457,6 +1457,86 @@ def build_lax_cases(cb: CaseBuilder) -> None:
             [x], [~x], atol=0.0, rtol=0.0, comparator="exact",
         )
 
+    # ── Integer intrinsic: population_count (i64 → i64) ──
+    popcnt_samples = [0, 1, 0b1010_1100, -1, 42, 0xFF]
+    for idx, x in enumerate(popcnt_samples):
+        # Python's bin(x).count('1') doesn't work for negative i64;
+        # for negative values, population_count counts bits in the two's complement
+        # representation. For signed i64, -1 has all 64 bits set.
+        if x >= 0:
+            expected = bin(x).count("1")
+        else:
+            # Two's complement for 64-bit signed integer
+            expected = bin(x & 0xFFFFFFFFFFFFFFFF).count("1")
+        cb.add(
+            f"lax_population_count_i64_{idx}", "lax", "lax_population_count", ["jit"],
+            [x], [expected], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # ── Integer intrinsic: count_leading_zeros (i64 → i64) ──
+    clz_samples = [0, 1, 2, 127, -1, 0x0100_0000_0000_0000]
+    for idx, x in enumerate(clz_samples):
+        if x == 0:
+            expected = 64
+        elif x < 0:
+            expected = 0  # Negative i64 always has MSB set
+        else:
+            expected = 64 - x.bit_length()
+        cb.add(
+            f"lax_count_leading_zeros_i64_{idx}", "lax", "lax_count_leading_zeros", ["jit"],
+            [x], [expected], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # ── Boolean reduction: reduce_xor (vector<i64> → scalar) ──
+    reduce_xor_cases = [
+        ([1, 3, 2], 1 ^ 3 ^ 2),       # = 0
+        ([5, 10, 15], 5 ^ 10 ^ 15),    # = 0
+        ([7, 3, 1], 7 ^ 3 ^ 1),        # = 5
+        ([0, 0, 0], 0),
+    ]
+    for idx, (vec, expected) in enumerate(reduce_xor_cases):
+        cb.add(
+            f"lax_reduce_xor_i64_{idx}", "lax", "lax_reduce_xor", ["jit"],
+            [vec], [expected], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # ── Sorting: sort (vector → vector) ──
+    sort_cases = [
+        ([3, 1, 4, 1, 5], [1, 1, 3, 4, 5]),
+        ([5, 4, 3, 2, 1], [1, 2, 3, 4, 5]),
+        ([1, 2, 3, 4, 5], [1, 2, 3, 4, 5]),  # already sorted
+        ([42], [42]),                           # single element
+    ]
+    for idx, (input_vec, expected_vec) in enumerate(sort_cases):
+        cb.add(
+            f"lax_sort_i64_{idx}", "lax", "lax_sort", ["jit"],
+            [input_vec], [expected_vec], atol=0.0, rtol=0.0, comparator="exact",
+        )
+
+    # ── Integer power: integer_pow with exponent=2 ──
+    ipow2_cases = [(2.0, 4.0), (3.0, 9.0), (-2.0, 4.0), (0.5, 0.25), (0.0, 0.0)]
+    for idx, (x, expected) in enumerate(ipow2_cases):
+        cb.add(
+            f"lax_integer_pow2_f64_{idx}", "lax", "lax_integer_pow2", ["jit"],
+            [x], [expected], atol=1e-12, rtol=1e-12,
+        )
+
+    # ── Integer power: integer_pow with exponent=3 ──
+    ipow3_cases = [(2.0, 8.0), (3.0, 27.0), (-2.0, -8.0), (0.5, 0.125)]
+    for idx, (x, expected) in enumerate(ipow3_cases):
+        cb.add(
+            f"lax_integer_pow3_f64_{idx}", "lax", "lax_integer_pow3", ["jit"],
+            [x], [expected], atol=1e-12, rtol=1e-12,
+        )
+
+    # ── Integer power: integer_pow with exponent=-1 (reciprocal) ──
+    ipow_neg1_cases = [(2.0, 0.5), (4.0, 0.25), (-2.0, -0.5), (0.5, 2.0)]
+    for idx, (x, expected) in enumerate(ipow_neg1_cases):
+        cb.add(
+            f"lax_integer_pow_neg1_f64_{idx}", "lax", "lax_integer_pow_neg1", ["jit"],
+            [x], [expected], atol=1e-12, rtol=1e-12,
+        )
+
 
 # ── Oracle-based capture (with real JAX) ─────────────────────────
 

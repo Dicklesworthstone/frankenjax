@@ -1209,6 +1209,17 @@ pub enum ProgramSpec {
     LaxBitwiseXor,
     // Lax bitwise unary primitive (i64 → i64)
     LaxBitwiseNot,
+    // Lax integer intrinsics (i64 → i64)
+    LaxPopulationCount,
+    LaxCountLeadingZeros,
+    // Lax boolean reduction: XOR (vector → scalar)
+    LaxReduceXor,
+    // Lax sorting (vector → vector)
+    LaxSort,
+    // Integer power (scalar → scalar, exponent in params)
+    LaxIntegerPow2,
+    LaxIntegerPow3,
+    LaxIntegerPowNeg1,
     // Utility programs for testing
     Identity,
     AddOneMulTwo,
@@ -1360,6 +1371,61 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
         ProgramSpec::LaxBitwiseXor => binary_program(Primitive::BitwiseXor),
         // Lax bitwise unary (i64 → i64)
         ProgramSpec::LaxBitwiseNot => unary_program(Primitive::BitwiseNot),
+        ProgramSpec::LaxPopulationCount => unary_program(Primitive::PopulationCount),
+        ProgramSpec::LaxCountLeadingZeros => unary_program(Primitive::CountLeadingZeros),
+        ProgramSpec::LaxReduceXor => unary_program(Primitive::ReduceXor),
+        ProgramSpec::LaxSort => unary_program(Primitive::Sort),
+        ProgramSpec::LaxIntegerPow2 => {
+            let mut params = BTreeMap::new();
+            params.insert("exponent".to_owned(), "2".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::IntegerPow,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        ProgramSpec::LaxIntegerPow3 => {
+            let mut params = BTreeMap::new();
+            params.insert("exponent".to_owned(), "3".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::IntegerPow,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        ProgramSpec::LaxIntegerPowNeg1 => {
+            let mut params = BTreeMap::new();
+            params.insert("exponent".to_owned(), "-1".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::IntegerPow,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
         // Utility programs
         ProgramSpec::Identity => Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![]),
         ProgramSpec::AddOneMulTwo => Jaxpr::new(
