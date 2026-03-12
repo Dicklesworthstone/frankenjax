@@ -8,8 +8,8 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 
 | Metric | Value |
 |---|---|
-| Total Cases | 568 |
-| Matched | 568 |
+| Total Cases | 596 |
+| Matched | 596 |
 | Mismatched | 0 |
 | Pass Rate | 100.00% |
 | Gate | **pass** |
@@ -21,7 +21,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | jit | 58 | 58 | 0 |
 | grad | 106 | 106 | 0 |
 | vmap | 30 | 30 | 0 |
-| lax | 315 | 315 | 0 |
+| lax | 343 | 343 | 0 |
 | random | 25 | 25 | 0 |
 | control_flow | 11 | 11 | 0 |
 | mixed_dtype | 23 | 23 | 0 |
@@ -37,14 +37,17 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | Dot3 | 4 | 4 | 0 |
 | LaxAbs | 14 | 14 | 0 |
 | LaxAcos | 8 | 8 | 0 |
+| LaxArgsort | 2 | 2 | 0 |
 | LaxAsin | 8 | 8 | 0 |
 | LaxAtan | 10 | 10 | 0 |
 | LaxAtan2 | 7 | 7 | 0 |
+| LaxBitcastF64ToI64 | 2 | 2 | 0 |
 | LaxBitwiseAnd | 4 | 4 | 0 |
 | LaxBitwiseNot | 5 | 5 | 0 |
 | LaxBitwiseOr | 4 | 4 | 0 |
 | LaxBitwiseXor | 4 | 4 | 0 |
 | LaxBroadcastInDimScalar3 | 2 | 2 | 0 |
+| LaxBroadcastedIota2x3 | 1 | 1 | 0 |
 | LaxCbrt | 6 | 6 | 0 |
 | LaxCeil | 5 | 5 | 0 |
 | LaxClamp | 4 | 4 | 0 |
@@ -56,6 +59,8 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxCumsum | 3 | 3 | 0 |
 | LaxDigamma | 6 | 6 | 0 |
 | LaxDiv | 9 | 9 | 0 |
+| LaxDynamicSlice | 2 | 2 | 0 |
+| LaxDynamicUpdateSlice | 2 | 2 | 0 |
 | LaxEq | 6 | 6 | 0 |
 | LaxErf | 5 | 5 | 0 |
 | LaxErfInv | 5 | 5 | 0 |
@@ -64,6 +69,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxExpandDimsAxis0 | 2 | 2 | 0 |
 | LaxExpm1 | 9 | 9 | 0 |
 | LaxFloor | 5 | 5 | 0 |
+| LaxGather1d | 2 | 2 | 0 |
 | LaxGe | 4 | 4 | 0 |
 | LaxGt | 7 | 7 | 0 |
 | LaxIntegerPow2 | 5 | 5 | 0 |
@@ -83,13 +89,16 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxNe | 5 | 5 | 0 |
 | LaxNeg | 13 | 13 | 0 |
 | LaxNextafter | 4 | 4 | 0 |
+| LaxOneHot4 | 2 | 2 | 0 |
 | LaxPadLow1High2 | 2 | 2 | 0 |
 | LaxPopulationCount | 6 | 6 | 0 |
 | LaxPow | 6 | 6 | 0 |
 | LaxReciprocal | 8 | 8 | 0 |
 | LaxReduceMax | 3 | 3 | 0 |
 | LaxReduceMin | 3 | 3 | 0 |
+| LaxReducePrecisionF64 | 2 | 2 | 0 |
 | LaxReduceProd | 3 | 3 | 0 |
+| LaxReduceWindowSum | 2 | 2 | 0 |
 | LaxReduceXor | 4 | 4 | 0 |
 | LaxRem | 4 | 4 | 0 |
 | LaxReshape6To2x3 | 2 | 2 | 0 |
@@ -98,17 +107,23 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxRound | 5 | 5 | 0 |
 | LaxRsqrt | 8 | 8 | 0 |
 | LaxSelect | 4 | 4 | 0 |
+| LaxShiftLeft | 2 | 2 | 0 |
+| LaxShiftRightArithmetic | 2 | 2 | 0 |
+| LaxShiftRightLogical | 2 | 2 | 0 |
 | LaxSign | 5 | 5 | 0 |
 | LaxSinh | 7 | 7 | 0 |
 | LaxSlice1To4 | 2 | 2 | 0 |
 | LaxSort | 4 | 4 | 0 |
+| LaxSplit2 | 1 | 1 | 0 |
 | LaxSqrt | 9 | 9 | 0 |
 | LaxSquare | 14 | 14 | 0 |
 | LaxSqueeze | 2 | 2 | 0 |
 | LaxSub | 10 | 10 | 0 |
+| LaxSwitch3 | 2 | 2 | 0 |
 | LaxTan | 9 | 9 | 0 |
 | LaxTanh | 12 | 12 | 0 |
 | LaxTranspose2x3 | 2 | 2 | 0 |
+| LaxWhileAddLt | 2 | 2 | 0 |
 | ReduceSumVec | 4 | 4 | 0 |
 | ScanAdd | 5 | 5 | 0 |
 | SinX | 20 | 20 | 0 |

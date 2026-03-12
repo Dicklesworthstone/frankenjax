@@ -1633,6 +1633,168 @@ def build_lax_cases(cb: CaseBuilder) -> None:
         atol=0.0, rtol=0.0, comparator="exact",
     )
 
+    # ── BitcastConvertType: f64 → i64 (reinterpret bits) ──
+    import struct
+    # 1.0_f64 → bit pattern as i64
+    bits_1_0 = struct.unpack('<q', struct.pack('<d', 1.0))[0]  # 4607182418800017408
+    cb.add("lax_bitcast_f64_to_i64_0", "lax", "lax_bitcast_f64_to_i64", ["jit"],
+           [1.0], [bits_1_0], atol=0.0, rtol=0.0, comparator="exact")
+    bits_0_0 = struct.unpack('<q', struct.pack('<d', 0.0))[0]  # 0
+    cb.add("lax_bitcast_f64_to_i64_1", "lax", "lax_bitcast_f64_to_i64", ["jit"],
+           [0.0], [bits_0_0], atol=0.0, rtol=0.0, comparator="exact")
+
+    # ── ReducePrecision: f64 with 8 mantissa bits ──
+    # Powers of 2 are always exact under any mantissa truncation
+    cb.add("lax_reduce_precision_f64_0", "lax", "lax_reduce_precision_f64", ["jit"],
+           [1.0], [1.0], atol=0.0, rtol=0.0, comparator="exact")
+    cb.add("lax_reduce_precision_f64_1", "lax", "lax_reduce_precision_f64", ["jit"],
+           [0.5], [0.5], atol=0.0, rtol=0.0, comparator="exact")
+
+    # ── Gather: [operand, indices] → gathered elements ──
+    # operand=[10,20,30,40,50], indices=[1,3] → [20,40]
+    cb.add_raw(
+        "lax_gather1d_i64_0", "lax", "lax_gather1d", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "vector_i64", "values": [1, 3]}],
+        [{"kind": "vector_i64", "values": [20, 40]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_gather1d_i64_1", "lax", "lax_gather1d", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "vector_i64", "values": [0, 4]}],
+        [{"kind": "vector_i64", "values": [10, 50]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── While loop: init=0 step=1 threshold=5 → 5 (add while lt) ──
+    cb.add("lax_while_add_lt_i64_0", "lax", "lax_while_add_lt", ["jit"],
+           [0, 1, 5], [5], atol=0.0, rtol=0.0, comparator="exact")
+    cb.add("lax_while_add_lt_i64_1", "lax", "lax_while_add_lt", ["jit"],
+           [0, 2, 10], [10], atol=0.0, rtol=0.0, comparator="exact")
+
+    # ── Switch: index selects among 3 branch values ──
+    # switch(0, [10, 20, 30]) → 10; switch(2, [10, 20, 30]) → 30
+    cb.add("lax_switch3_i64_0", "lax", "lax_switch3", ["jit"],
+           [0, 10, 20, 30], [10], atol=0.0, rtol=0.0, comparator="exact")
+    cb.add("lax_switch3_i64_1", "lax", "lax_switch3", ["jit"],
+           [2, 10, 20, 30], [30], atol=0.0, rtol=0.0, comparator="exact")
+
+    # ── Argsort: vector → sorted indices ──
+    cb.add_raw(
+        "lax_argsort_i64_0", "lax", "lax_argsort", ["jit"],
+        [{"kind": "vector_i64", "values": [30, 10, 20]}],
+        [{"kind": "vector_i64", "values": [1, 2, 0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_argsort_f64_0", "lax", "lax_argsort", ["jit"],
+        [{"kind": "vector_f64", "values": [3.0, 1.0, 2.0]}],
+        [{"kind": "vector_i64", "values": [1, 2, 0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── OneHot: scalar index → one-hot vector of length 4 ──
+    # one_hot(2, 4) → [0.0, 0.0, 1.0, 0.0]
+    cb.add_raw(
+        "lax_one_hot4_i64_0", "lax", "lax_one_hot4", ["jit"],
+        [{"kind": "scalar_i64", "value": 2}],
+        [{"kind": "vector_f64", "values": [0.0, 0.0, 1.0, 0.0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_one_hot4_i64_1", "lax", "lax_one_hot4", ["jit"],
+        [{"kind": "scalar_i64", "value": 0}],
+        [{"kind": "vector_f64", "values": [1.0, 0.0, 0.0, 0.0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── ReduceWindow: sum with window_dimensions=3, stride=1, valid padding ──
+    # Note: ReduceWindow always outputs F64 regardless of input dtype
+    # [1,2,3,4,5] → [1+2+3, 2+3+4, 3+4+5] = [6, 9, 12]
+    cb.add_raw(
+        "lax_reduce_window_sum_i64_0", "lax", "lax_reduce_window_sum", ["jit"],
+        [{"kind": "vector_i64", "values": [1, 2, 3, 4, 5]}],
+        [{"kind": "vector_f64", "values": [6.0, 9.0, 12.0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_reduce_window_sum_f64_0", "lax", "lax_reduce_window_sum", ["jit"],
+        [{"kind": "vector_f64", "values": [1.0, 2.0, 3.0, 4.0, 5.0]}],
+        [{"kind": "vector_f64", "values": [6.0, 9.0, 12.0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── DynamicSlice: [vector, start] → slice of length 3 ──
+    # [10,20,30,40,50] start=1 → [20,30,40]
+    cb.add_raw(
+        "lax_dynamic_slice_i64_0", "lax", "lax_dynamic_slice", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "scalar_i64", "value": 1}],
+        [{"kind": "vector_i64", "values": [20, 30, 40]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_dynamic_slice_i64_1", "lax", "lax_dynamic_slice", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "scalar_i64", "value": 0}],
+        [{"kind": "vector_i64", "values": [10, 20, 30]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── DynamicUpdateSlice: [operand, update, start] → updated vector ──
+    # [10,20,30,40,50] update=[99,88] at start=1 → [10,99,88,40,50]
+    cb.add_raw(
+        "lax_dynamic_update_slice_i64_0", "lax", "lax_dynamic_update_slice", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "vector_i64", "values": [99, 88]},
+         {"kind": "scalar_i64", "value": 1}],
+        [{"kind": "vector_i64", "values": [10, 99, 88, 40, 50]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_dynamic_update_slice_i64_1", "lax", "lax_dynamic_update_slice", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "vector_i64", "values": [99, 88, 77]},
+         {"kind": "scalar_i64", "value": 0}],
+        [{"kind": "vector_i64", "values": [99, 88, 77, 40, 50]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Split: vector of 6 into 2 equal sections → reshaped [2,3] ──
+    cb.add_raw(
+        "lax_split2_i64_0", "lax", "lax_split2", ["jit"],
+        [{"kind": "vector_i64", "values": [1, 2, 3, 4, 5, 6]}],
+        [fixture_value_tensor_i64([2, 3], [1, 2, 3, 4, 5, 6])],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── BroadcastedIota: 2x3 tensor with iota along dimension 1 ──
+    # [[0,1,2],[0,1,2]]
+    cb.add_raw(
+        "lax_broadcasted_iota_2x3_i64_0", "lax", "lax_broadcasted_iota2x3", ["jit"],
+        [],
+        [fixture_value_tensor_i64([2, 3], [0, 1, 2, 0, 1, 2])],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Bitwise shifts (binary i64 → i64) ──
+    # ShiftLeft: 1 << 4 = 16
+    cb.add("lax_shift_left_i64_0", "lax", "lax_shift_left", ["jit"],
+           [1, 4], [16], atol=0.0, rtol=0.0, comparator="exact")
+    cb.add("lax_shift_left_i64_1", "lax", "lax_shift_left", ["jit"],
+           [3, 2], [12], atol=0.0, rtol=0.0, comparator="exact")
+    # ShiftRightArithmetic: 16 >> 2 = 4; -8 >> 2 = -2 (sign-extending)
+    cb.add("lax_shift_right_arithmetic_i64_0", "lax", "lax_shift_right_arithmetic", ["jit"],
+           [16, 2], [4], atol=0.0, rtol=0.0, comparator="exact")
+    cb.add("lax_shift_right_arithmetic_i64_1", "lax", "lax_shift_right_arithmetic", ["jit"],
+           [-8, 2], [-2], atol=0.0, rtol=0.0, comparator="exact")
+    # ShiftRightLogical: 16 >> 2 = 4; -8 >> 2 = 4611686018427387902 (zero-fill)
+    cb.add("lax_shift_right_logical_i64_0", "lax", "lax_shift_right_logical", ["jit"],
+           [16, 2], [4], atol=0.0, rtol=0.0, comparator="exact")
+    cb.add("lax_shift_right_logical_i64_1", "lax", "lax_shift_right_logical", ["jit"],
+           [-8, 2], [4611686018427387902], atol=0.0, rtol=0.0, comparator="exact")
+
     # ── Structural: Iota (no inputs, generates index sequence) ──
     cb.add_raw(
         "lax_iota5_i64_0", "lax", "lax_iota5", ["jit"],

@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.parity-report.v1",
-  "timestamp": "1773349257",
+  "timestamp": "1773351778",
   "fj_version": "0.1.0",
   "oracle_version": "jax-0.9.0.1",
   "mode": "strict",
@@ -727,8 +727,8 @@
       ]
     },
     "lax": {
-      "total": 315,
-      "matched": 315,
+      "total": 343,
+      "matched": 343,
       "mismatched": 0,
       "cases": [
         {
@@ -1956,6 +1956,118 @@
           "matched": true
         },
         {
+          "case_id": "lax_bitcast_f64_to_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitcast_f64_to_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_precision_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_precision_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_gather1d_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_gather1d_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_while_add_lt_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_while_add_lt_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_switch3_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_switch3_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_argsort_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_argsort_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_one_hot4_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_one_hot4_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_window_sum_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_window_sum_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_slice_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_slice_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_update_slice_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_update_slice_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_split2_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_broadcasted_iota_2x3_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_left_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_left_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_arithmetic_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_arithmetic_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_logical_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_logical_i64_1",
+          "matched": true
+        },
+        {
           "case_id": "lax_iota5_i64_0",
           "matched": true
         },
@@ -2328,7 +2440,7 @@
     }
   },
   "summary": {
-    "total": 568,
+    "total": 596,
     "pass_rate": 1.0,
     "gate": "pass"
   }

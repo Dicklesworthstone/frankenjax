@@ -1,11 +1,11 @@
 {
   "version": "frankenjax.v1-comprehensive-parity.v1",
-  "timestamp": "1773349257",
+  "timestamp": "1773351778",
   "fj_version": "0.1.0",
   "jax_version": "jax-0.9.0.1",
   "mode": "strict",
   "summary": {
-    "total": 568,
+    "total": 596,
     "pass_rate": 1.0,
     "gate": "pass"
   },
@@ -732,8 +732,8 @@
       ]
     },
     "lax": {
-      "total": 315,
-      "matched": 315,
+      "total": 343,
+      "matched": 343,
       "mismatched": 0,
       "cases": [
         {
@@ -1961,6 +1961,118 @@
           "matched": true
         },
         {
+          "case_id": "lax_bitcast_f64_to_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_bitcast_f64_to_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_precision_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_precision_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_gather1d_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_gather1d_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_while_add_lt_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_while_add_lt_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_switch3_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_switch3_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_argsort_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_argsort_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_one_hot4_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_one_hot4_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_window_sum_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_reduce_window_sum_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_slice_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_slice_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_update_slice_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_dynamic_update_slice_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_split2_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_broadcasted_iota_2x3_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_left_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_left_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_arithmetic_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_arithmetic_i64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_logical_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_shift_right_logical_i64_1",
+          "matched": true
+        },
+        {
           "case_id": "lax_iota5_i64_0",
           "matched": true
         },
@@ -2453,6 +2565,15 @@
         "lax_acos_f64_4"
       ]
     },
+    "LaxArgsort": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_argsort_i64_0",
+        "lax_argsort_f64_0"
+      ]
+    },
     "LaxAsin": {
       "total": 8,
       "matched": 8,
@@ -2497,6 +2618,15 @@
         "lax_atan2_f64_1",
         "lax_atan2_f64_2",
         "lax_atan2_f64_3"
+      ]
+    },
+    "LaxBitcastF64ToI64": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_bitcast_f64_to_i64_0",
+        "lax_bitcast_f64_to_i64_1"
       ]
     },
     "LaxBitwiseAnd": {
@@ -2551,6 +2681,14 @@
       "cases": [
         "lax_broadcast_in_dim_scalar3_i64_0",
         "lax_broadcast_in_dim_scalar3_f64_0"
+      ]
+    },
+    "LaxBroadcastedIota2x3": {
+      "total": 1,
+      "matched": 1,
+      "mismatched": 0,
+      "cases": [
+        "lax_broadcasted_iota_2x3_i64_0"
       ]
     },
     "LaxCbrt": {
@@ -2683,6 +2821,24 @@
         "mixed_div_i64_f64_1"
       ]
     },
+    "LaxDynamicSlice": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_dynamic_slice_i64_0",
+        "lax_dynamic_slice_i64_1"
+      ]
+    },
+    "LaxDynamicUpdateSlice": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_dynamic_update_slice_i64_0",
+        "lax_dynamic_update_slice_i64_1"
+      ]
+    },
     "LaxEq": {
       "total": 6,
       "matched": 6,
@@ -2796,6 +2952,15 @@
         "lax_floor_f64_2",
         "lax_floor_f64_3",
         "lax_floor_f64_4"
+      ]
+    },
+    "LaxGather1d": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_gather1d_i64_0",
+        "lax_gather1d_i64_1"
       ]
     },
     "LaxGe": {
@@ -3052,6 +3217,15 @@
         "lax_nextafter_f64_3"
       ]
     },
+    "LaxOneHot4": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_one_hot4_i64_0",
+        "lax_one_hot4_i64_1"
+      ]
+    },
     "LaxPadLow1High2": {
       "total": 2,
       "matched": 2,
@@ -3122,6 +3296,15 @@
         "lax_reduce_min_f64_2"
       ]
     },
+    "LaxReducePrecisionF64": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_reduce_precision_f64_0",
+        "lax_reduce_precision_f64_1"
+      ]
+    },
     "LaxReduceProd": {
       "total": 3,
       "matched": 3,
@@ -3130,6 +3313,15 @@
         "lax_reduce_prod_f64_0",
         "lax_reduce_prod_f64_1",
         "lax_reduce_prod_f64_2"
+      ]
+    },
+    "LaxReduceWindowSum": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_reduce_window_sum_i64_0",
+        "lax_reduce_window_sum_f64_0"
       ]
     },
     "LaxReduceXor": {
@@ -3218,6 +3410,33 @@
         "lax_select_f64_3"
       ]
     },
+    "LaxShiftLeft": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_shift_left_i64_0",
+        "lax_shift_left_i64_1"
+      ]
+    },
+    "LaxShiftRightArithmetic": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_shift_right_arithmetic_i64_0",
+        "lax_shift_right_arithmetic_i64_1"
+      ]
+    },
+    "LaxShiftRightLogical": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_shift_right_logical_i64_0",
+        "lax_shift_right_logical_i64_1"
+      ]
+    },
     "LaxSign": {
       "total": 5,
       "matched": 5,
@@ -3262,6 +3481,14 @@
         "lax_sort_i64_1",
         "lax_sort_i64_2",
         "lax_sort_i64_3"
+      ]
+    },
+    "LaxSplit2": {
+      "total": 1,
+      "matched": 1,
+      "mismatched": 0,
+      "cases": [
+        "lax_split2_i64_0"
       ]
     },
     "LaxSqrt": {
@@ -3327,6 +3554,15 @@
         "mixed_sub_f64_i64_1"
       ]
     },
+    "LaxSwitch3": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_switch3_i64_0",
+        "lax_switch3_i64_1"
+      ]
+    },
     "LaxTan": {
       "total": 9,
       "matched": 9,
@@ -3369,6 +3605,15 @@
       "cases": [
         "lax_transpose_2x3_i64_0",
         "lax_transpose_2x3_f64_0"
+      ]
+    },
+    "LaxWhileAddLt": {
+      "total": 2,
+      "matched": 2,
+      "mismatched": 0,
+      "cases": [
+        "lax_while_add_lt_i64_0",
+        "lax_while_add_lt_i64_1"
       ]
     },
     "ReduceSumVec": {

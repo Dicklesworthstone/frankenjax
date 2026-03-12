@@ -1234,6 +1234,25 @@ pub enum ProgramSpec {
     LaxExpandDimsAxis0,
     LaxPadLow1High2,
     LaxBroadcastInDimScalar3,
+    // Lax bitwise shift primitives (i64, i64 → i64)
+    LaxShiftLeft,
+    LaxShiftRightArithmetic,
+    LaxShiftRightLogical,
+    // Lax advanced shape/index primitives
+    LaxDynamicSlice,
+    LaxDynamicUpdateSlice,
+    LaxSplit2,
+    LaxBroadcastedIota2x3,
+    // Lax advanced primitives
+    LaxWhileAddLt,
+    LaxSwitch3,
+    LaxArgsort,
+    LaxOneHot4,
+    LaxReduceWindowSum,
+    // Lax utility/data primitives
+    LaxBitcastF64ToI64,
+    LaxReducePrecisionF64,
+    LaxGather1d,
     // Utility programs for testing
     Identity,
     AddOneMulTwo,
@@ -1558,6 +1577,228 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
                 }],
             )
         }
+        // While loop: init=0, step=1, threshold=5, body_op=add, cond_op=lt → 5
+        ProgramSpec::LaxWhileAddLt => {
+            let mut params = BTreeMap::new();
+            params.insert("body_op".to_owned(), "add".to_owned());
+            params.insert("cond_op".to_owned(), "lt".to_owned());
+            params.insert("max_iter".to_owned(), "100".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2), VarId(3)],
+                vec![],
+                vec![VarId(4)],
+                vec![Equation {
+                    primitive: Primitive::While,
+                    inputs: smallvec![
+                        Atom::Var(VarId(1)),
+                        Atom::Var(VarId(2)),
+                        Atom::Var(VarId(3))
+                    ],
+                    outputs: smallvec![VarId(4)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Switch: index selects among branch values
+        ProgramSpec::LaxSwitch3 => {
+            let mut params = BTreeMap::new();
+            params.insert("num_branches".to_owned(), "3".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2), VarId(3), VarId(4)],
+                vec![],
+                vec![VarId(5)],
+                vec![Equation {
+                    primitive: Primitive::Switch,
+                    inputs: smallvec![
+                        Atom::Var(VarId(1)),
+                        Atom::Var(VarId(2)),
+                        Atom::Var(VarId(3)),
+                        Atom::Var(VarId(4))
+                    ],
+                    outputs: smallvec![VarId(5)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Argsort: vector → indices
+        ProgramSpec::LaxArgsort => unary_program(Primitive::Argsort),
+        // OneHot: scalar index → vector of length num_classes
+        ProgramSpec::LaxOneHot4 => {
+            let mut params = BTreeMap::new();
+            params.insert("num_classes".to_owned(), "4".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::OneHot,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // ReduceWindow: vector with window_dimensions=3, reduce_op=sum, stride=1
+        ProgramSpec::LaxReduceWindowSum => {
+            let mut params = BTreeMap::new();
+            params.insert("window_dimensions".to_owned(), "3".to_owned());
+            params.insert("reduce_op".to_owned(), "sum".to_owned());
+            params.insert("window_strides".to_owned(), "1".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::ReduceWindow,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // BitcastConvertType: f64 → i64 (reinterpret bits)
+        ProgramSpec::LaxBitcastF64ToI64 => {
+            let mut params = BTreeMap::new();
+            params.insert("new_dtype".to_owned(), "i64".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::BitcastConvertType,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // ReducePrecision: f64 with reduced mantissa (8 bits)
+        ProgramSpec::LaxReducePrecisionF64 => {
+            let mut params = BTreeMap::new();
+            params.insert("exponent_bits".to_owned(), "11".to_owned());
+            params.insert("mantissa_bits".to_owned(), "8".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::ReducePrecision,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Gather: [operand, indices] with slice_sizes=1
+        ProgramSpec::LaxGather1d => {
+            let mut params = BTreeMap::new();
+            params.insert("slice_sizes".to_owned(), "1".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2)],
+                vec![],
+                vec![VarId(3)],
+                vec![Equation {
+                    primitive: Primitive::Gather,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // DynamicSlice: [vector, start_idx] → slice of length 3
+        ProgramSpec::LaxDynamicSlice => {
+            let mut params = BTreeMap::new();
+            params.insert("slice_sizes".to_owned(), "3".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2)],
+                vec![],
+                vec![VarId(3)],
+                vec![Equation {
+                    primitive: Primitive::DynamicSlice,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // DynamicUpdateSlice: [operand, update, start_idx] → updated tensor
+        ProgramSpec::LaxDynamicUpdateSlice => Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4)],
+            vec![Equation {
+                primitive: Primitive::DynamicUpdateSlice,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        ),
+        // Split: vector of 6 into 2 equal sections → reshaped [2,3]
+        ProgramSpec::LaxSplit2 => {
+            let mut params = BTreeMap::new();
+            params.insert("axis".to_owned(), "0".to_owned());
+            params.insert("num_sections".to_owned(), "2".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::Split,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // BroadcastedIota: no inputs → 2x3 tensor with iota along dimension 1
+        ProgramSpec::LaxBroadcastedIota2x3 => {
+            let mut params = BTreeMap::new();
+            params.insert("shape".to_owned(), "2,3".to_owned());
+            params.insert("dimension".to_owned(), "1".to_owned());
+            Jaxpr::new(
+                vec![],
+                vec![],
+                vec![VarId(1)],
+                vec![Equation {
+                    primitive: Primitive::BroadcastedIota,
+                    inputs: smallvec![],
+                    outputs: smallvec![VarId(1)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Bitwise shifts: binary i64 operations
+        ProgramSpec::LaxShiftLeft => binary_program(Primitive::ShiftLeft),
+        ProgramSpec::LaxShiftRightArithmetic => {
+            binary_program(Primitive::ShiftRightArithmetic)
+        }
+        ProgramSpec::LaxShiftRightLogical => binary_program(Primitive::ShiftRightLogical),
         // Iota: no inputs, length=5 → [0,1,2,3,4]
         ProgramSpec::LaxIota5 => {
             let mut params = BTreeMap::new();
