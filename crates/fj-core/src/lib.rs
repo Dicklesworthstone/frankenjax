@@ -1228,6 +1228,12 @@ pub enum ProgramSpec {
     LaxRev,
     LaxSqueeze,
     LaxConcatenate,
+    // Lax structural primitives
+    LaxIota5,
+    LaxCopy,
+    LaxExpandDimsAxis0,
+    LaxPadLow1High2,
+    LaxBroadcastInDimScalar3,
     // Utility programs for testing
     Identity,
     AddOneMulTwo,
@@ -1547,6 +1553,82 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
                     inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
                     outputs: smallvec![VarId(3)],
                     params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Iota: no inputs, length=5 → [0,1,2,3,4]
+        ProgramSpec::LaxIota5 => {
+            let mut params = BTreeMap::new();
+            params.insert("length".to_owned(), "5".to_owned());
+            Jaxpr::new(
+                vec![],
+                vec![],
+                vec![VarId(1)],
+                vec![Equation {
+                    primitive: Primitive::Iota,
+                    inputs: smallvec![],
+                    outputs: smallvec![VarId(1)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Copy: 1 input, no params, returns clone
+        ProgramSpec::LaxCopy => unary_program(Primitive::Copy),
+        // ExpandDims: 1 input, axis=0 → inserts leading size-1 dim
+        ProgramSpec::LaxExpandDimsAxis0 => {
+            let mut params = BTreeMap::new();
+            params.insert("axis".to_owned(), "0".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::ExpandDims,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Pad: 2 inputs (tensor + pad_value), low=1 high=2 interior=0
+        ProgramSpec::LaxPadLow1High2 => {
+            let mut params = BTreeMap::new();
+            params.insert("padding_low".to_owned(), "1".to_owned());
+            params.insert("padding_high".to_owned(), "2".to_owned());
+            params.insert("padding_interior".to_owned(), "0".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2)],
+                vec![],
+                vec![VarId(3)],
+                vec![Equation {
+                    primitive: Primitive::Pad,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // BroadcastInDim: scalar → vector of length 3
+        ProgramSpec::LaxBroadcastInDimScalar3 => {
+            let mut params = BTreeMap::new();
+            params.insert("shape".to_owned(), "3".to_owned());
+            Jaxpr::new(
+                vec![VarId(1)],
+                vec![],
+                vec![VarId(2)],
+                vec![Equation {
+                    primitive: Primitive::BroadcastInDim,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params,
                     effects: vec![],
                     sub_jaxprs: vec![],
                 }],

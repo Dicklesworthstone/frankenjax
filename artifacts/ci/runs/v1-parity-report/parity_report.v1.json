@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.parity-report.v1",
-  "timestamp": "1773346260",
+  "timestamp": "1773349257",
   "fj_version": "0.1.0",
   "oracle_version": "jax-0.9.0.1",
   "mode": "strict",
@@ -727,8 +727,8 @@
       ]
     },
     "lax": {
-      "total": 306,
-      "matched": 306,
+      "total": 315,
+      "matched": 315,
       "mismatched": 0,
       "cases": [
         {
@@ -1954,6 +1954,42 @@
         {
           "case_id": "lax_concatenate_f64_0",
           "matched": true
+        },
+        {
+          "case_id": "lax_iota5_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_copy_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_copy_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_expand_dims_axis0_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_expand_dims_axis0_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_pad_low1_high2_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_pad_low1_high2_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_broadcast_in_dim_scalar3_i64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_broadcast_in_dim_scalar3_f64_0",
+          "matched": true
         }
       ]
     },
@@ -2292,7 +2328,7 @@
     }
   },
   "summary": {
-    "total": 559,
+    "total": 568,
     "pass_rate": 1.0,
     "gate": "pass"
   }

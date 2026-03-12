@@ -1,6 +1,6 @@
 {
-  "total_cases": 559,
-  "matched": 559,
+  "total_cases": 568,
+  "matched": 568,
   "mismatched": 0,
   "pass_rate": 1.0,
   "per_family": {
@@ -20,8 +20,8 @@
       "mismatched": 0
     },
     "lax": {
-      "total": 306,
-      "matched": 306,
+      "total": 315,
+      "matched": 315,
       "mismatched": 0
     },
     "random": {

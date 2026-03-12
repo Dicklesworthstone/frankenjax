@@ -8,8 +8,8 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 
 | Metric | Value |
 |---|---|
-| Total Cases | 559 |
-| Matched | 559 |
+| Total Cases | 568 |
+| Matched | 568 |
 | Mismatched | 0 |
 | Pass Rate | 100.00% |
 | Gate | **pass** |
@@ -21,7 +21,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | jit | 58 | 58 | 0 |
 | grad | 106 | 106 | 0 |
 | vmap | 30 | 30 | 0 |
-| lax | 306 | 306 | 0 |
+| lax | 315 | 315 | 0 |
 | random | 25 | 25 | 0 |
 | control_flow | 11 | 11 | 0 |
 | mixed_dtype | 23 | 23 | 0 |
@@ -44,10 +44,12 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxBitwiseNot | 5 | 5 | 0 |
 | LaxBitwiseOr | 4 | 4 | 0 |
 | LaxBitwiseXor | 4 | 4 | 0 |
+| LaxBroadcastInDimScalar3 | 2 | 2 | 0 |
 | LaxCbrt | 6 | 6 | 0 |
 | LaxCeil | 5 | 5 | 0 |
 | LaxClamp | 4 | 4 | 0 |
 | LaxConcatenate | 2 | 2 | 0 |
+| LaxCopy | 2 | 2 | 0 |
 | LaxCosh | 7 | 7 | 0 |
 | LaxCountLeadingZeros | 6 | 6 | 0 |
 | LaxCumprod | 3 | 3 | 0 |
@@ -59,6 +61,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxErfInv | 5 | 5 | 0 |
 | LaxErfc | 5 | 5 | 0 |
 | LaxExp | 22 | 22 | 0 |
+| LaxExpandDimsAxis0 | 2 | 2 | 0 |
 | LaxExpm1 | 9 | 9 | 0 |
 | LaxFloor | 5 | 5 | 0 |
 | LaxGe | 4 | 4 | 0 |
@@ -66,6 +69,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxIntegerPow2 | 5 | 5 | 0 |
 | LaxIntegerPow3 | 4 | 4 | 0 |
 | LaxIntegerPowNeg1 | 4 | 4 | 0 |
+| LaxIota5 | 1 | 1 | 0 |
 | LaxIsFinite | 6 | 6 | 0 |
 | LaxLe | 4 | 4 | 0 |
 | LaxLgamma | 6 | 6 | 0 |
@@ -79,6 +83,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxNe | 5 | 5 | 0 |
 | LaxNeg | 13 | 13 | 0 |
 | LaxNextafter | 4 | 4 | 0 |
+| LaxPadLow1High2 | 2 | 2 | 0 |
 | LaxPopulationCount | 6 | 6 | 0 |
 | LaxPow | 6 | 6 | 0 |
 | LaxReciprocal | 8 | 8 | 0 |

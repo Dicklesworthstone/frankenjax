@@ -1633,6 +1633,74 @@ def build_lax_cases(cb: CaseBuilder) -> None:
         atol=0.0, rtol=0.0, comparator="exact",
     )
 
+    # ── Structural: Iota (no inputs, generates index sequence) ──
+    cb.add_raw(
+        "lax_iota5_i64_0", "lax", "lax_iota5", ["jit"],
+        [],
+        [{"kind": "vector_i64", "values": [0, 1, 2, 3, 4]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Structural: Copy (identity clone) ──
+    cb.add_raw(
+        "lax_copy_i64_0", "lax", "lax_copy", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30]}],
+        [{"kind": "vector_i64", "values": [10, 20, 30]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_copy_f64_0", "lax", "lax_copy", ["jit"],
+        [{"kind": "vector_f64", "values": [1.5, 2.5, 3.5]}],
+        [{"kind": "vector_f64", "values": [1.5, 2.5, 3.5]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Structural: ExpandDims axis=0 (vector → rank-2 with leading 1) ──
+    # [3] → [1, 3]
+    cb.add_raw(
+        "lax_expand_dims_axis0_i64_0", "lax", "lax_expand_dims_axis0", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30]}],
+        [fixture_value_tensor_i64([1, 3], [10, 20, 30])],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_expand_dims_axis0_f64_0", "lax", "lax_expand_dims_axis0", ["jit"],
+        [{"kind": "vector_f64", "values": [1.0, 2.0, 3.0]}],
+        [fixture_value_tensor_f64([1, 3], [1.0, 2.0, 3.0])],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Structural: Pad low=1 high=2 interior=0 ──
+    # [1,2,3] padded with 0 → [0, 1, 2, 3, 0, 0]
+    cb.add_raw(
+        "lax_pad_low1_high2_i64_0", "lax", "lax_pad_low1_high2", ["jit"],
+        [{"kind": "vector_i64", "values": [1, 2, 3]},
+         {"kind": "scalar_i64", "value": 0}],
+        [{"kind": "vector_i64", "values": [0, 1, 2, 3, 0, 0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_pad_low1_high2_f64_0", "lax", "lax_pad_low1_high2", ["jit"],
+        [{"kind": "vector_f64", "values": [1.0, 2.0, 3.0]},
+         {"kind": "scalar_f64", "value": 0.0}],
+        [{"kind": "vector_f64", "values": [0.0, 1.0, 2.0, 3.0, 0.0, 0.0]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Structural: BroadcastInDim scalar → vector of length 3 ──
+    cb.add_raw(
+        "lax_broadcast_in_dim_scalar3_i64_0", "lax", "lax_broadcast_in_dim_scalar3", ["jit"],
+        [{"kind": "scalar_i64", "value": 7}],
+        [{"kind": "vector_i64", "values": [7, 7, 7]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    cb.add_raw(
+        "lax_broadcast_in_dim_scalar3_f64_0", "lax", "lax_broadcast_in_dim_scalar3", ["jit"],
+        [{"kind": "scalar_f64", "value": 2.5}],
+        [{"kind": "vector_f64", "values": [2.5, 2.5, 2.5]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
 
 # ── Oracle-based capture (with real JAX) ─────────────────────────
 
