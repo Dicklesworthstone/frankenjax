@@ -1047,7 +1047,8 @@ fn fixture_shape(value: &FixtureValue) -> Vec<u32> {
     match value {
         FixtureValue::ScalarF64 { .. }
         | FixtureValue::ScalarI64 { .. }
-        | FixtureValue::ScalarBool { .. } => Vec::new(),
+        | FixtureValue::ScalarBool { .. }
+        | FixtureValue::ScalarComplex128 { .. } => Vec::new(),
         FixtureValue::VectorF64 { values } => vec![values.len() as u32],
         FixtureValue::VectorI64 { values } => vec![values.len() as u32],
         FixtureValue::TensorF64 { shape, .. }

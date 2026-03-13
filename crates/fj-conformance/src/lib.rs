@@ -2119,11 +2119,26 @@ mod tests {
             super::read_transform_fixture_bundle(&fixture_path).expect("bundle should load");
         let report = run_transform_fixture_bundle(&cfg, &bundle);
 
-        assert_eq!(
-            report.mismatched_cases, 0,
-            "all fixtures should pass with tightened tolerances (got {} mismatches out of {})",
-            report.mismatched_cases, report.total_cases
-        );
+        let failing: Vec<String> = report
+            .reports
+            .iter()
+            .filter(|r| !r.matched)
+            .map(|r| {
+                format!(
+                    "CASE={} ERR={:?} EXPECTED={} ACTUAL={:?}",
+                    r.case_id,
+                    r.error,
+                    r.expected_json,
+                    r.actual_json,
+                )
+            })
+            .collect();
+        if !failing.is_empty() {
+            panic!(
+                "FAILING: {}",
+                failing.join("\n")
+            );
+        }
     }
 
     #[test]
