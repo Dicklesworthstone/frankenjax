@@ -1,0 +1,313 @@
+    Finished `bench` profile [optimized] target(s) in 0.14s
+     Running benches/dispatch_baseline.rs (/data/tmp/cargo-target/release/deps/dispatch_baseline-77b4a32874891847)
+Benchmarking dispatch_latency/jit/scalar_add
+Benchmarking dispatch_latency/jit/scalar_add: Warming up for 3.0000 s
+Benchmarking dispatch_latency/jit/scalar_add: Collecting 100 samples in estimated 5.0060 s (1.8M iterations)
+Benchmarking dispatch_latency/jit/scalar_add: Analyzing
+dispatch_latency/jit/scalar_add
+                        time:   [2.6910 µs 2.7099 µs 2.7305 µs]
+                        change: [+4.6186% +5.7766% +6.8839%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking dispatch_latency/jit/scalar_square_plus_linear
+Benchmarking dispatch_latency/jit/scalar_square_plus_linear: Warming up for 3.0000 s
+Benchmarking dispatch_latency/jit/scalar_square_plus_linear: Collecting 100 samples in estimated 5.1440 s (106k iterations)
+Benchmarking dispatch_latency/jit/scalar_square_plus_linear: Analyzing
+dispatch_latency/jit/scalar_square_plus_linear
+                        time:   [47.862 µs 48.281 µs 48.735 µs]
+                        change: [+34.619% +36.027% +37.529%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+Benchmarking dispatch_latency/jit/vector_add_one
+Benchmarking dispatch_latency/jit/vector_add_one: Warming up for 3.0000 s
+Benchmarking dispatch_latency/jit/vector_add_one: Collecting 100 samples in estimated 5.0014 s (1.5M iterations)
+Benchmarking dispatch_latency/jit/vector_add_one: Analyzing
+dispatch_latency/jit/vector_add_one
+                        time:   [3.3422 µs 3.3719 µs 3.4004 µs]
+                        change: [+1.8423% +3.0927% +4.2774%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+Benchmarking dispatch_latency/grad/scalar_square
+Benchmarking dispatch_latency/grad/scalar_square: Warming up for 3.0000 s
+Benchmarking dispatch_latency/grad/scalar_square: Collecting 100 samples in estimated 5.0082 s (1.6M iterations)
+Benchmarking dispatch_latency/grad/scalar_square: Analyzing
+dispatch_latency/grad/scalar_square
+                        time:   [2.9834 µs 3.0058 µs 3.0292 µs]
+                        change: [+3.5222% +4.3795% +5.2313%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  3 (3.00%) high mild
+Benchmarking dispatch_latency/vmap/vector_add_one
+Benchmarking dispatch_latency/vmap/vector_add_one: Warming up for 3.0000 s
+Benchmarking dispatch_latency/vmap/vector_add_one: Collecting 100 samples in estimated 5.0073 s (1.5M iterations)
+Benchmarking dispatch_latency/vmap/vector_add_one: Analyzing
+dispatch_latency/vmap/vector_add_one
+                        time:   [3.3208 µs 3.3508 µs 3.3812 µs]
+                        change: [−0.5775% +0.4089% +1.4110%] (p = 0.43 > 0.05)
+                        No change in performance detected.
+Found 6 outliers among 100 measurements (6.00%)
+  5 (5.00%) high mild
+  1 (1.00%) high severe
+Benchmarking dispatch_latency/vmap/rank2_add_one
+Benchmarking dispatch_latency/vmap/rank2_add_one: Warming up for 3.0000 s
+Benchmarking dispatch_latency/vmap/rank2_add_one: Collecting 100 samples in estimated 5.0170 s (1.3M iterations)
+Benchmarking dispatch_latency/vmap/rank2_add_one: Analyzing
+dispatch_latency/vmap/rank2_add_one
+                        time:   [3.7996 µs 3.8313 µs 3.8630 µs]
+                        change: [+5.5022% +6.5949% +7.6759%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high severe
+Benchmarking dispatch_latency/jit_grad/scalar_square
+Benchmarking dispatch_latency/jit_grad/scalar_square: Warming up for 3.0000 s
+Benchmarking dispatch_latency/jit_grad/scalar_square: Collecting 100 samples in estimated 5.0031 s (1.5M iterations)
+Benchmarking dispatch_latency/jit_grad/scalar_square: Analyzing
+dispatch_latency/jit_grad/scalar_square
+                        time:   [3.4366 µs 3.4589 µs 3.4813 µs]
+                        change: [+2.8613% +3.9004% +4.9485%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking dispatch_latency/vmap_grad/vector_square
+Benchmarking dispatch_latency/vmap_grad/vector_square: Warming up for 3.0000 s
+Benchmarking dispatch_latency/vmap_grad/vector_square: Collecting 100 samples in estimated 5.0240 s (1.0M iterations)
+Benchmarking dispatch_latency/vmap_grad/vector_square: Analyzing
+dispatch_latency/vmap_grad/vector_square
+                        time:   [5.0144 µs 5.0548 µs 5.0954 µs]
+                        change: [+7.2260% +8.4448% +9.5309%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking eval_jaxpr_throughput/chain_add/10
+Benchmarking eval_jaxpr_throughput/chain_add/10: Warming up for 3.0000 s
+Benchmarking eval_jaxpr_throughput/chain_add/10: Collecting 100 samples in estimated 5.0015 s (7.7M iterations)
+Benchmarking eval_jaxpr_throughput/chain_add/10: Analyzing
+eval_jaxpr_throughput/chain_add/10
+                        time:   [665.29 ns 671.25 ns 676.86 ns]
+                        change: [+3.3518% +4.3558% +5.4504%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high severe
+Benchmarking eval_jaxpr_throughput/chain_add/100
+Benchmarking eval_jaxpr_throughput/chain_add/100: Warming up for 3.0000 s
+Benchmarking eval_jaxpr_throughput/chain_add/100: Collecting 100 samples in estimated 5.0042 s (879k iterations)
+Benchmarking eval_jaxpr_throughput/chain_add/100: Analyzing
+eval_jaxpr_throughput/chain_add/100
+                        time:   [5.6992 µs 5.7542 µs 5.8096 µs]
+                        change: [+4.7719% +5.8633% +6.9631%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking eval_jaxpr_throughput/chain_add/1000
+Benchmarking eval_jaxpr_throughput/chain_add/1000: Warming up for 3.0000 s
+Benchmarking eval_jaxpr_throughput/chain_add/1000: Collecting 100 samples in estimated 5.1252 s (91k iterations)
+Benchmarking eval_jaxpr_throughput/chain_add/1000: Analyzing
+eval_jaxpr_throughput/chain_add/1000
+                        time:   [57.637 µs 58.281 µs 58.889 µs]
+                        change: [+4.6111% +5.8069% +7.0281%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+
+Benchmarking transform_composition/single/jit
+Benchmarking transform_composition/single/jit: Warming up for 3.0000 s
+Benchmarking transform_composition/single/jit: Collecting 100 samples in estimated 5.0004 s (22M iterations)
+Benchmarking transform_composition/single/jit: Analyzing
+transform_composition/single/jit
+                        time:   [224.12 ns 226.03 ns 227.95 ns]
+                        change: [+4.7485% +5.9046% +7.0942%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+Benchmarking transform_composition/single/grad
+Benchmarking transform_composition/single/grad: Warming up for 3.0000 s
+Benchmarking transform_composition/single/grad: Collecting 100 samples in estimated 5.0006 s (22M iterations)
+Benchmarking transform_composition/single/grad: Analyzing
+transform_composition/single/grad
+                        time:   [222.92 ns 224.37 ns 225.93 ns]
+                        change: [+4.6804% +5.6954% +6.8080%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) high mild
+  1 (1.00%) high severe
+Benchmarking transform_composition/single/vmap
+Benchmarking transform_composition/single/vmap: Warming up for 3.0000 s
+Benchmarking transform_composition/single/vmap: Collecting 100 samples in estimated 5.0011 s (22M iterations)
+Benchmarking transform_composition/single/vmap: Analyzing
+transform_composition/single/vmap
+                        time:   [224.21 ns 226.01 ns 227.88 ns]
+                        change: [+5.4970% +6.5348% +7.8420%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+Benchmarking transform_composition/depth2/jit_grad
+Benchmarking transform_composition/depth2/jit_grad: Warming up for 3.0000 s
+Benchmarking transform_composition/depth2/jit_grad: Collecting 100 samples in estimated 5.0006 s (20M iterations)
+Benchmarking transform_composition/depth2/jit_grad: Analyzing
+transform_composition/depth2/jit_grad
+                        time:   [247.06 ns 248.90 ns 250.78 ns]
+                        change: [+1.4398% +2.3024% +3.3297%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+Benchmarking transform_composition/depth3/jit_vmap_grad
+Benchmarking transform_composition/depth3/jit_vmap_grad: Warming up for 3.0000 s
+Benchmarking transform_composition/depth3/jit_vmap_grad: Collecting 100 samples in estimated 5.0009 s (18M iterations)
+Benchmarking transform_composition/depth3/jit_vmap_grad: Analyzing
+transform_composition/depth3/jit_vmap_grad
+                        time:   [269.75 ns 271.12 ns 272.61 ns]
+                        change: [+1.0433% +1.6731% +2.3492%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking transform_composition/empty_stack
+Benchmarking transform_composition/empty_stack: Warming up for 3.0000 s
+Benchmarking transform_composition/empty_stack: Collecting 100 samples in estimated 5.0002 s (29M iterations)
+Benchmarking transform_composition/empty_stack: Analyzing
+transform_composition/empty_stack
+                        time:   [171.33 ns 172.47 ns 173.60 ns]
+                        change: [+3.0927% +3.8094% +4.5589%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking cache_key_generation/simple/1eq_1t
+Benchmarking cache_key_generation/simple/1eq_1t: Warming up for 3.0000 s
+Benchmarking cache_key_generation/simple/1eq_1t: Collecting 100 samples in estimated 5.0005 s (22M iterations)
+Benchmarking cache_key_generation/simple/1eq_1t: Analyzing
+cache_key_generation/simple/1eq_1t
+                        time:   [232.20 ns 233.30 ns 234.45 ns]
+                        change: [+1.9408% +2.8206% +3.6940%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+Benchmarking cache_key_generation/medium/3eq_2t
+Benchmarking cache_key_generation/medium/3eq_2t: Warming up for 3.0000 s
+Benchmarking cache_key_generation/medium/3eq_2t: Collecting 100 samples in estimated 5.0011 s (21M iterations)
+Benchmarking cache_key_generation/medium/3eq_2t: Analyzing
+cache_key_generation/medium/3eq_2t
+                        time:   [236.41 ns 237.44 ns 238.43 ns]
+                        change: [+2.8864% +3.3954% +3.8956%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Benchmarking cache_key_generation/large/100eq_1t
+Benchmarking cache_key_generation/large/100eq_1t: Warming up for 3.0000 s
+Benchmarking cache_key_generation/large/100eq_1t: Collecting 100 samples in estimated 5.0049 s (2.9M iterations)
+Benchmarking cache_key_generation/large/100eq_1t: Analyzing
+cache_key_generation/large/100eq_1t
+                        time:   [1.7270 µs 1.7584 µs 1.7907 µs]
+                        change: [+4.0752% +5.0888% +6.2935%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 9 outliers among 100 measurements (9.00%)
+  6 (6.00%) high mild
+  3 (3.00%) high severe
+Benchmarking cache_key_generation/hardened/unknown_features
+Benchmarking cache_key_generation/hardened/unknown_features: Warming up for 3.0000 s
+Benchmarking cache_key_generation/hardened/unknown_features: Collecting 100 samples in estimated 5.0007 s (18M iterations)
+Benchmarking cache_key_generation/hardened/unknown_features: Analyzing
+cache_key_generation/hardened/unknown_features
+                        time:   [270.02 ns 276.97 ns 284.03 ns]
+                        change: [+18.335% +20.238% +22.046%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+
+Benchmarking ledger_append/single_append
+Benchmarking ledger_append/single_append: Warming up for 3.0000 s
+Benchmarking ledger_append/single_append: Collecting 100 samples in estimated 5.0004 s (64M iterations)
+Benchmarking ledger_append/single_append: Analyzing
+ledger_append/single_append
+                        time:   [74.744 ns 75.203 ns 75.655 ns]
+                        change: [−1.4956% −0.8465% −0.1976%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+Benchmarking ledger_append/burst_100_appends
+Benchmarking ledger_append/burst_100_appends: Warming up for 3.0000 s
+Benchmarking ledger_append/burst_100_appends: Collecting 100 samples in estimated 5.0824 s (217k iterations)
+Benchmarking ledger_append/burst_100_appends: Analyzing
+ledger_append/burst_100_appends
+                        time:   [20.714 µs 20.863 µs 21.012 µs]
+                        change: [+32.384% +33.553% +34.681%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 4 outliers among 100 measurements (4.00%)
+  3 (3.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/1
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/1: Warming up for 3.0000 s
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/1: Collecting 100 samples in estimated 5.0004 s (14M iterations)
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/1: Analyzing
+jaxpr_fingerprint/canonical_fingerprint/1
+                        time:   [361.91 ns 378.28 ns 400.59 ns]
+                        change: [+2.8884% +4.6858% +7.0319%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 5 outliers among 100 measurements (5.00%)
+  2 (2.00%) high mild
+  3 (3.00%) high severe
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/10
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/10: Warming up for 3.0000 s
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/10: Collecting 100 samples in estimated 5.0047 s (2.9M iterations)
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/10: Analyzing
+jaxpr_fingerprint/canonical_fingerprint/10
+                        time:   [1.9290 µs 1.9989 µs 2.0654 µs]
+                        change: [+6.6718% +9.1469% +11.705%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 12 outliers among 100 measurements (12.00%)
+  12 (12.00%) high mild
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/100
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/100: Warming up for 3.0000 s
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/100: Collecting 100 samples in estimated 5.0327 s (359k iterations)
+Benchmarking jaxpr_fingerprint/canonical_fingerprint/100: Analyzing
+jaxpr_fingerprint/canonical_fingerprint/100
+                        time:   [13.967 µs 14.072 µs 14.185 µs]
+                        change: [+2.7299% +3.7512% +4.7459%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 1 outliers among 100 measurements (1.00%)
+  1 (1.00%) high mild
+Benchmarking jaxpr_fingerprint/cached_fingerprint/10eq
+Benchmarking jaxpr_fingerprint/cached_fingerprint/10eq: Warming up for 3.0000 s
+Benchmarking jaxpr_fingerprint/cached_fingerprint/10eq: Collecting 100 samples in estimated 5.0000 s (3.8B iterations)
+Benchmarking jaxpr_fingerprint/cached_fingerprint/10eq: Analyzing
+jaxpr_fingerprint/cached_fingerprint/10eq
+                        time:   [1.3272 ns 1.3373 ns 1.3480 ns]
+                        change: [+2.6166% +4.6955% +6.8241%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 5 outliers among 100 measurements (5.00%)
+  2 (2.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking jaxpr_validation/validate_well_formed/1
+Benchmarking jaxpr_validation/validate_well_formed/1: Warming up for 3.0000 s
+Benchmarking jaxpr_validation/validate_well_formed/1: Collecting 100 samples in estimated 5.0000 s (133M iterations)
+Benchmarking jaxpr_validation/validate_well_formed/1: Analyzing
+jaxpr_validation/validate_well_formed/1
+                        time:   [37.600 ns 37.817 ns 38.035 ns]
+                        change: [+2.0350% +2.8123% +3.6563%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 2 outliers among 100 measurements (2.00%)
+  1 (1.00%) high mild
+  1 (1.00%) high severe
+Benchmarking jaxpr_validation/validate_well_formed/10
+Benchmarking jaxpr_validation/validate_well_formed/10: Warming up for 3.0000 s
+Benchmarking jaxpr_validation/validate_well_formed/10: Collecting 100 samples in estimated 5.0009 s (27M iterations)
+Benchmarking jaxpr_validation/validate_well_formed/10: Analyzing
+jaxpr_validation/validate_well_formed/10
+                        time:   [185.52 ns 186.86 ns 188.27 ns]
+                        change: [+5.0056% +6.0885% +7.1294%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 3 outliers among 100 measurements (3.00%)
+  2 (2.00%) high mild
+  1 (1.00%) high severe
+Benchmarking jaxpr_validation/validate_well_formed/100
+Benchmarking jaxpr_validation/validate_well_formed/100: Warming up for 3.0000 s
+Benchmarking jaxpr_validation/validate_well_formed/100: Collecting 100 samples in estimated 5.0001 s (1.7M iterations)
+Benchmarking jaxpr_validation/validate_well_formed/100: Analyzing
+jaxpr_validation/validate_well_formed/100
+                        time:   [3.1431 µs 3.3272 µs 3.5527 µs]
+                        change: [+6.4940% +11.031% +15.891%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+Found 11 outliers among 100 measurements (11.00%)
+  5 (5.00%) high mild
+  6 (6.00%) high severe
+

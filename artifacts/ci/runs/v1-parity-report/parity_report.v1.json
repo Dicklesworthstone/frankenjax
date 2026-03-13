@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.parity-report.v1",
-  "timestamp": "1773351778",
+  "timestamp": "1773376276",
   "fj_version": "0.1.0",
   "oracle_version": "jax-0.9.0.1",
   "mode": "strict",
@@ -727,8 +727,8 @@
       ]
     },
     "lax": {
-      "total": 343,
-      "matched": 343,
+      "total": 358,
+      "matched": 358,
       "mismatched": 0,
       "cases": [
         {
@@ -2102,6 +2102,66 @@
         {
           "case_id": "lax_broadcast_in_dim_scalar3_f64_0",
           "matched": true
+        },
+        {
+          "case_id": "lax_complex_f64_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_complex_f64_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_complex_f64_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_conj_complex128_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_conj_complex128_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_conj_complex128_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_real_complex128_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_real_complex128_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_imag_complex128_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_imag_complex128_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_conv1d_valid_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_conv1d_valid_1",
+          "matched": true
+        },
+        {
+          "case_id": "lax_conv1d_valid_2",
+          "matched": true
+        },
+        {
+          "case_id": "lax_scatter_overwrite_0",
+          "matched": true
+        },
+        {
+          "case_id": "lax_scatter_overwrite_1",
+          "matched": true
         }
       ]
     },
@@ -2440,7 +2500,7 @@
     }
   },
   "summary": {
-    "total": 596,
+    "total": 611,
     "pass_rate": 1.0,
     "gate": "pass"
   }

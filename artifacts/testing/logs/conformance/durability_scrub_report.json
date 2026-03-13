@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json.raptorq",
+  "artifact_path": "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
+  "expected_sha256_hex": "38e685aab51ad7b5ef8e0422984c0e889bf7a5d55707bb328e9de9b6acf76c86",
+  "decoded_sha256_hex": "38e685aab51ad7b5ef8e0422984c0e889bf7a5d55707bb328e9de9b6acf76c86",
+  "decoded_matches_expected": true,
+  "total_symbols": 1492,
+  "source_symbols": 1356,
+  "repair_symbols": 136,
+  "generated_at_unix_ms": 1773351787111
+}

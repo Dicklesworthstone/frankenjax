@@ -8,8 +8,8 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 
 | Metric | Value |
 |---|---|
-| Total Cases | 596 |
-| Matched | 596 |
+| Total Cases | 611 |
+| Matched | 611 |
 | Mismatched | 0 |
 | Pass Rate | 100.00% |
 | Gate | **pass** |
@@ -21,7 +21,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | jit | 58 | 58 | 0 |
 | grad | 106 | 106 | 0 |
 | vmap | 30 | 30 | 0 |
-| lax | 343 | 343 | 0 |
+| lax | 358 | 358 | 0 |
 | random | 25 | 25 | 0 |
 | control_flow | 11 | 11 | 0 |
 | mixed_dtype | 23 | 23 | 0 |
@@ -51,7 +51,10 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxCbrt | 6 | 6 | 0 |
 | LaxCeil | 5 | 5 | 0 |
 | LaxClamp | 4 | 4 | 0 |
+| LaxComplex | 3 | 3 | 0 |
 | LaxConcatenate | 2 | 2 | 0 |
+| LaxConj | 3 | 3 | 0 |
+| LaxConv1dValid | 3 | 3 | 0 |
 | LaxCopy | 2 | 2 | 0 |
 | LaxCosh | 7 | 7 | 0 |
 | LaxCountLeadingZeros | 6 | 6 | 0 |
@@ -72,6 +75,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxGather1d | 2 | 2 | 0 |
 | LaxGe | 4 | 4 | 0 |
 | LaxGt | 7 | 7 | 0 |
+| LaxImag | 2 | 2 | 0 |
 | LaxIntegerPow2 | 5 | 5 | 0 |
 | LaxIntegerPow3 | 4 | 4 | 0 |
 | LaxIntegerPowNeg1 | 4 | 4 | 0 |
@@ -93,6 +97,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxPadLow1High2 | 2 | 2 | 0 |
 | LaxPopulationCount | 6 | 6 | 0 |
 | LaxPow | 6 | 6 | 0 |
+| LaxReal | 2 | 2 | 0 |
 | LaxReciprocal | 8 | 8 | 0 |
 | LaxReduceMax | 3 | 3 | 0 |
 | LaxReduceMin | 3 | 3 | 0 |
@@ -106,6 +111,7 @@ FrankenJAX: `0.1.0` | Oracle: `jax-0.9.0.1`
 | LaxRev | 2 | 2 | 0 |
 | LaxRound | 5 | 5 | 0 |
 | LaxRsqrt | 8 | 8 | 0 |
+| LaxScatterOverwrite | 2 | 2 | 0 |
 | LaxSelect | 4 | 4 | 0 |
 | LaxShiftLeft | 2 | 2 | 0 |
 | LaxShiftRightArithmetic | 2 | 2 | 0 |
