@@ -1795,9 +1795,7 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
         }
         // Bitwise shifts: binary i64 operations
         ProgramSpec::LaxShiftLeft => binary_program(Primitive::ShiftLeft),
-        ProgramSpec::LaxShiftRightArithmetic => {
-            binary_program(Primitive::ShiftRightArithmetic)
-        }
+        ProgramSpec::LaxShiftRightArithmetic => binary_program(Primitive::ShiftRightArithmetic),
         ProgramSpec::LaxShiftRightLogical => binary_program(Primitive::ShiftRightLogical),
         // Iota: no inputs, length=5 → [0,1,2,3,4]
         ProgramSpec::LaxIota5 => {
