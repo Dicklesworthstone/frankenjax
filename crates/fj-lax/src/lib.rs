@@ -2,6 +2,7 @@
 
 mod arithmetic;
 mod comparison;
+mod linalg;
 mod reduction;
 mod tensor_ops;
 pub mod threefry;
@@ -18,6 +19,7 @@ use arithmetic::{
 };
 
 use comparison::eval_comparison;
+use linalg::{eval_cholesky, eval_eigh, eval_qr, eval_svd, eval_triangular_solve};
 use reduction::{eval_cumulative, eval_reduce_axes, eval_reduce_bitwise_axes};
 use tensor_ops::{
     eval_argsort, eval_bitcast_convert_type, eval_broadcast_in_dim, eval_broadcasted_iota,
@@ -326,15 +328,27 @@ pub fn eval_primitive(
         Primitive::Copy => eval_copy(inputs),
         Primitive::BitcastConvertType => eval_bitcast_convert_type(inputs, params),
         Primitive::ReducePrecision => eval_reduce_precision(inputs, params),
-        Primitive::Cholesky
-        | Primitive::Qr
-        | Primitive::Svd
-        | Primitive::TriangularSolve
-        | Primitive::Eigh
-        | Primitive::Fft
-        | Primitive::Ifft
-        | Primitive::Rfft
-        | Primitive::Irfft => unsupported_v1_stub(primitive),
+        Primitive::Cholesky => eval_cholesky(inputs, params),
+        Primitive::TriangularSolve => eval_triangular_solve(inputs, params),
+        Primitive::Qr => {
+            // QR is multi-output; return first output (Q) for single-value API.
+            // Use eval_primitive_multi for both Q and R.
+            let mut outputs = eval_qr(inputs, params)?;
+            Ok(outputs.remove(0))
+        }
+        Primitive::Svd => {
+            // SVD is multi-output; return first output (U) for single-value API.
+            let mut outputs = eval_svd(inputs, params)?;
+            Ok(outputs.remove(0))
+        }
+        Primitive::Eigh => {
+            // Eigh is multi-output; return first output (W) for single-value API.
+            let mut outputs = eval_eigh(inputs, params)?;
+            Ok(outputs.remove(0))
+        }
+        Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
+            unsupported_v1_stub(primitive)
+        }
         // One-hot encoding
         Primitive::OneHot => eval_one_hot(inputs, params),
         // Dynamic update slice
@@ -380,6 +394,23 @@ pub fn eval_primitive(
         }
         // Windowed reduction (pooling)
         Primitive::ReduceWindow => eval_reduce_window(primitive, inputs, params),
+    }
+}
+
+/// Evaluate a primitive that may produce multiple outputs.
+///
+/// Multi-output primitives (Qr, Svd, Eigh) return `Vec<Value>` directly.
+/// Single-output primitives delegate to `eval_primitive` and wrap the result.
+pub fn eval_primitive_multi(
+    primitive: Primitive,
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, EvalError> {
+    match primitive {
+        Primitive::Qr => eval_qr(inputs, params),
+        Primitive::Svd => eval_svd(inputs, params),
+        Primitive::Eigh => eval_eigh(inputs, params),
+        _ => eval_primitive(primitive, inputs, params).map(|v| vec![v]),
     }
 }
 
@@ -1344,24 +1375,27 @@ mod tests {
     }
 
     #[test]
-    fn test_linalg_stub_cholesky_error() {
-        let detail = assert_stub_error(Primitive::Cholesky);
-        assert!(detail.contains("Primitive::Cholesky"));
-        assert!(detail.contains("planned V2 feature"));
+    fn test_cholesky_rejects_scalar_input() {
+        let err = eval_primitive(Primitive::Cholesky, &[Value::scalar_f64(1.0)], &no_params())
+            .expect_err("cholesky should reject scalar input");
+        match err {
+            EvalError::Unsupported { detail, .. } => {
+                assert!(detail.contains("scalar"), "detail: {detail}");
+            }
+            other => panic!("expected unsupported error, got {other:?}"),
+        }
     }
 
     #[test]
-    fn test_linalg_stub_svd_error() {
-        let detail = assert_stub_error(Primitive::Svd);
-        assert!(detail.contains("Primitive::Svd"));
-        assert!(detail.contains("planned V2 feature"));
+    fn test_svd_rejects_scalar_input() {
+        let result = eval_primitive(Primitive::Svd, &[Value::scalar_f64(1.0)], &no_params());
+        assert!(result.is_err(), "Svd should reject scalar input");
     }
 
     #[test]
-    fn test_linalg_stub_eigh_error() {
-        let detail = assert_stub_error(Primitive::Eigh);
-        assert!(detail.contains("Primitive::Eigh"));
-        assert!(detail.contains("planned V2 feature"));
+    fn test_eigh_rejects_scalar_input() {
+        let result = eval_primitive(Primitive::Eigh, &[Value::scalar_f64(1.0)], &no_params());
+        assert!(result.is_err(), "Eigh should reject scalar input");
     }
 
     #[test]
@@ -1380,12 +1414,8 @@ mod tests {
 
     #[test]
     fn test_stub_error_messages_actionable() {
+        // Cholesky, TriangularSolve, Qr, Svd, Eigh are now implemented — only FFT stubs remain
         for primitive in [
-            Primitive::Cholesky,
-            Primitive::Qr,
-            Primitive::Svd,
-            Primitive::TriangularSolve,
-            Primitive::Eigh,
             Primitive::Fft,
             Primitive::Ifft,
             Primitive::Rfft,
@@ -6879,12 +6909,21 @@ mod prop_tests {
 
     #[test]
     fn e2e_stub_errors_graceful() {
-        let cases = [
+        // Implemented primitives: verify they reject invalid (scalar) input gracefully
+        let implemented = [
             ("cholesky", Primitive::Cholesky),
+            ("triangular_solve", Primitive::TriangularSolve),
             ("qr", Primitive::Qr),
             ("svd", Primitive::Svd),
-            ("triangular_solve", Primitive::TriangularSolve),
             ("eigh", Primitive::Eigh),
+        ];
+        for (function, primitive) in implemented {
+            let result = eval_primitive(primitive, &[Value::scalar_f64(1.0)], &no_params());
+            assert!(result.is_err(), "{function} should reject scalar input");
+        }
+
+        // Remaining stub primitives: verify they return actionable V1-stub errors
+        let cases = [
             ("fft", Primitive::Fft),
             ("ifft", Primitive::Ifft),
             ("rfft", Primitive::Rfft),

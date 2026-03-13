@@ -8,7 +8,7 @@
 
 use fj_core::{Atom, DType, Jaxpr, Value, VarId};
 use fj_interpreters::InterpreterError;
-use fj_lax::eval_primitive;
+use fj_lax::{eval_primitive, eval_primitive_multi};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
@@ -50,6 +50,21 @@ fn resolve_equation_inputs(
         }
     }
     Ok(resolved)
+}
+
+fn evaluate_equation_multi(
+    equation: &fj_core::Equation,
+    env: &HashMap<VarId, Value>,
+) -> Result<Vec<Value>, InterpreterError> {
+    let resolved = resolve_equation_inputs(equation, env)?;
+    let outputs = eval_primitive_multi(equation.primitive, &resolved, &equation.params)?;
+    if outputs.len() != equation.outputs.len() {
+        return Err(InterpreterError::UnexpectedOutputArity {
+            primitive: equation.primitive,
+            actual: outputs.len(),
+        });
+    }
+    Ok(outputs)
 }
 
 fn evaluate_equation(
@@ -101,17 +116,14 @@ fn evaluate_jaxpr_parallel_inner(
             .expect("remaining > 0 guarantees at least one pending equation");
         let first_eqn = &jaxpr.equations[first_pending];
 
-        if first_eqn.outputs.len() != 1 {
-            return Err(InterpreterError::UnexpectedOutputArity {
-                primitive: first_eqn.primitive,
-                actual: first_eqn.outputs.len(),
-            });
-        }
-
-        let barrier = !first_eqn.effects.is_empty() || !first_eqn.sub_jaxprs.is_empty();
+        let is_multi_output = first_eqn.outputs.len() > 1;
+        let barrier =
+            !first_eqn.effects.is_empty() || !first_eqn.sub_jaxprs.is_empty() || is_multi_output;
         if barrier {
-            let output = evaluate_equation(first_eqn, &env)?;
-            env.insert(first_eqn.outputs[0], output);
+            let outputs = evaluate_equation_multi(first_eqn, &env)?;
+            for (out_var, out_val) in first_eqn.outputs.iter().zip(outputs) {
+                env.insert(*out_var, out_val);
+            }
             executed[first_pending] = true;
             remaining -= 1;
             continue;
@@ -121,7 +133,8 @@ fn evaluate_jaxpr_parallel_inner(
             .find(|idx| {
                 !executed[*idx]
                     && (!jaxpr.equations[*idx].effects.is_empty()
-                        || !jaxpr.equations[*idx].sub_jaxprs.is_empty())
+                        || !jaxpr.equations[*idx].sub_jaxprs.is_empty()
+                        || jaxpr.equations[*idx].outputs.len() > 1)
             })
             .unwrap_or(jaxpr.equations.len());
 
@@ -136,12 +149,6 @@ fn evaluate_jaxpr_parallel_inner(
                 continue;
             }
             let eqn = &jaxpr.equations[idx];
-            if eqn.outputs.len() != 1 {
-                return Err(InterpreterError::UnexpectedOutputArity {
-                    primitive: eqn.primitive,
-                    actual: eqn.outputs.len(),
-                });
-            }
             if equation_inputs_ready(eqn, &env) {
                 ready_indices.push(idx);
             }

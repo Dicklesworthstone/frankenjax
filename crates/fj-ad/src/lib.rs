@@ -1914,10 +1914,18 @@ fn vjp(
         }
         // Nextafter: non-differentiable — gradient is zero.
         Primitive::Nextafter => Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])]),
-        Primitive::Cholesky
-        | Primitive::Qr
+        // ── Cholesky VJP ──
+        // A = L L^T, where L is lower-triangular.
+        // dA = L^{-T} tril(L^T G) L^{-1}, symmetrized.
+        // We compute via triangular solves to avoid explicit inverse.
+        Primitive::Cholesky => cholesky_vjp(inputs, g),
+        // ── TriangularSolve VJP ──
+        // A X = B => X = A^{-1} B
+        // dA = -(A^{-T} G) X^T  (for lower, left_side)
+        // dB = A^{-T} G
+        Primitive::TriangularSolve => triangular_solve_vjp(inputs, g, params),
+        Primitive::Qr
         | Primitive::Svd
-        | Primitive::TriangularSolve
         | Primitive::Eigh
         | Primitive::Fft
         | Primitive::Ifft
@@ -2855,6 +2863,324 @@ fn to_f64(value: &Value) -> Result<f64, AdError> {
         .ok_or(AdError::NonScalarGradientOutput)
 }
 
+// ── Linear algebra matrix helpers ──────────────────────────────────
+
+/// Extract row-major f64 matrix data from a rank-2 tensor Value.
+fn extract_matrix_f64(v: &Value) -> Result<(usize, usize, Vec<f64>), AdError> {
+    let t = v
+        .as_tensor()
+        .ok_or_else(|| AdError::EvalFailed("expected matrix tensor, got scalar".to_owned()))?;
+    if t.rank() != 2 {
+        return Err(AdError::EvalFailed(format!(
+            "expected rank-2 tensor, got rank-{}",
+            t.rank()
+        )));
+    }
+    let m = t.shape.dims[0] as usize;
+    let n = t.shape.dims[1] as usize;
+    let data: Vec<f64> = t
+        .elements
+        .iter()
+        .map(|lit| {
+            lit.as_f64()
+                .ok_or_else(|| AdError::EvalFailed("non-numeric matrix element".to_owned()))
+        })
+        .collect::<Result<_, _>>()?;
+    Ok((m, n, data))
+}
+
+/// Build a rank-2 f64 tensor Value from row-major data.
+fn build_matrix_f64(m: usize, n: usize, data: &[f64]) -> Result<Value, AdError> {
+    let elements: Vec<Literal> = data.iter().map(|&v| Literal::from_f64(v)).collect();
+    let shape = Shape {
+        dims: vec![m as u32, n as u32],
+    };
+    let tensor = TensorValue::new(DType::F64, shape, elements)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    Ok(Value::Tensor(tensor))
+}
+
+/// Multiply two row-major matrices: C = A @ B (m×k, k×n → m×n).
+fn matmul_f64(m: usize, k: usize, n: usize, a: &[f64], b: &[f64]) -> Vec<f64> {
+    let mut c = vec![0.0_f64; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for p in 0..k {
+                sum += a[i * k + p] * b[p * n + j];
+            }
+            c[i * n + j] = sum;
+        }
+    }
+    c
+}
+
+/// Transpose a row-major matrix: (m×n) → (n×m).
+fn transpose_f64(m: usize, n: usize, a: &[f64]) -> Vec<f64> {
+    let mut t = vec![0.0_f64; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            t[j * m + i] = a[i * n + j];
+        }
+    }
+    t
+}
+
+/// Extract lower triangular part (including diagonal) of square matrix.
+fn tril_f64(n: usize, a: &[f64]) -> Vec<f64> {
+    let mut t = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            t[i * n + j] = a[i * n + j];
+        }
+    }
+    t
+}
+
+/// Symmetrize: A → (A + A^T) / 2.
+fn symmetrize_f64(n: usize, a: &[f64]) -> Vec<f64> {
+    let mut s = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            s[i * n + j] = (a[i * n + j] + a[j * n + i]) * 0.5;
+        }
+    }
+    s
+}
+
+// ── Cholesky VJP ───────────────────────────────────────────────────
+
+/// Cholesky VJP: given A = L L^T and cotangent G (for L),
+/// compute dA = sym(L^{-T} tril(L^T G) L^{-1}).
+///
+/// Following JAX's implementation in jax._src.linalg.
+fn cholesky_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
+    // L is the output of cholesky(A), but we also have A as input.
+    // We recompute L = cholesky(A) to get the factor.
+    let l_result = eval_primitive(Primitive::Cholesky, inputs, &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let (n, n2, l) = extract_matrix_f64(&l_result)?;
+    assert_eq!(n, n2);
+    let (gm, gn, g_data) = extract_matrix_f64(g)?;
+    if gm != n || gn != n {
+        return Err(AdError::EvalFailed(
+            "gradient shape doesn't match Cholesky factor".to_owned(),
+        ));
+    }
+
+    // Step 1: L^T @ G
+    let lt = transpose_f64(n, n, &l);
+    let lt_g = matmul_f64(n, n, n, &lt, &g_data);
+
+    // Step 2: tril(L^T @ G)
+    let lt_g_tril = tril_f64(n, &lt_g);
+
+    // Step 3: Solve L^T S = tril(L^T G) for S using triangular solve
+    // Then solve L^T R = S^T for R
+    // More directly: dA = L^{-T} tril(L^T G) L^{-1}
+    // = (L^{-T}) @ tril(L^T G) @ (L^{-T})^T
+    // We use forward/back substitution instead of explicit inverse.
+
+    // Solve L^T X = tril(L^T G): back substitution column by column
+    let mut x = vec![0.0_f64; n * n];
+    for col in 0..n {
+        for i in (0..n).rev() {
+            let mut sum = lt_g_tril[i * n + col];
+            for k in (i + 1)..n {
+                sum -= lt[i * n + k] * x[k * n + col];
+            }
+            x[i * n + col] = sum / lt[i * n + i];
+        }
+    }
+
+    // Now compute X @ L^{-1} = X @ (L^T)^{-T}
+    // Solve L Y^T = X^T: forward substitution
+    let xt = transpose_f64(n, n, &x);
+    let mut yt = vec![0.0_f64; n * n];
+    for col in 0..n {
+        for i in 0..n {
+            let mut sum = xt[i * n + col];
+            for k in 0..i {
+                sum -= l[i * n + k] * yt[k * n + col];
+            }
+            yt[i * n + col] = sum / l[i * n + i];
+        }
+    }
+    let result = transpose_f64(n, n, &yt);
+
+    // Step 4: Symmetrize
+    let da = symmetrize_f64(n, &result);
+
+    Ok(vec![build_matrix_f64(n, n, &da)?])
+}
+
+// ── TriangularSolve VJP ────────────────────────────────────────────
+
+/// TriangularSolve VJP: for A X = B (A lower/upper triangular),
+/// dA = -(A^{-T} G) X^T, dB = A^{-T} G.
+fn triangular_solve_vjp(
+    inputs: &[Value],
+    g: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, AdError> {
+    // Recompute X = A\B
+    let x = eval_primitive(Primitive::TriangularSolve, inputs, params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let (n, nx, x_data) = extract_matrix_f64(&x)?;
+    let (gm, gn, _) = extract_matrix_f64(g)?;
+    if gm != n || gn != nx {
+        return Err(AdError::EvalFailed(
+            "gradient shape doesn't match triangular solve output".to_owned(),
+        ));
+    }
+
+    let lower = params.get("lower").is_none_or(|v| v.trim() != "false");
+
+    // Solve A^T Z = G for Z (this gives dB = Z)
+    let mut transpose_params = params.clone();
+    // Toggle transpose: if was transposed, un-transpose; if not, transpose
+    let was_transposed = params
+        .get("transpose_a")
+        .is_some_and(|v| v.trim() == "true");
+    transpose_params.insert(
+        "transpose_a".to_owned(),
+        if was_transposed {
+            "false".to_owned()
+        } else {
+            "true".to_owned()
+        },
+    );
+    // When transposing, swap lower/upper
+    if !was_transposed {
+        transpose_params.insert(
+            "lower".to_owned(),
+            if lower {
+                "true".to_owned()
+            } else {
+                "false".to_owned()
+            },
+        );
+    }
+
+    let z = eval_primitive(
+        Primitive::TriangularSolve,
+        &[inputs[0].clone(), g.clone()],
+        &transpose_params,
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let (_, _, z_data) = extract_matrix_f64(&z)?;
+
+    // dA = -Z @ X^T
+    let xt = transpose_f64(n, nx, &x_data);
+    let neg_z_xt = matmul_f64(n, nx, n, &z_data, &xt);
+    let da: Vec<f64> = neg_z_xt.iter().map(|&v| -v).collect();
+
+    // Mask dA to match triangularity: if lower, keep lower triangle; if upper, keep upper
+    let mut da_masked = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            if (lower && j <= i) || (!lower && j >= i) {
+                da_masked[i * n + j] = da[i * n + j];
+            }
+        }
+    }
+
+    Ok(vec![build_matrix_f64(n, n, &da_masked)?, z])
+}
+
+// ── Cholesky JVP ───────────────────────────────────────────────────
+
+/// Cholesky JVP: given A = L L^T and tangent dA,
+/// dL = L phi(L^{-1} dA_sym L^{-T}) where phi extracts the lower triangle
+/// with diagonal halved.
+fn cholesky_jvp(primals: &[Value], tangents: &[Value]) -> Result<Value, AdError> {
+    let l_result = eval_primitive(Primitive::Cholesky, primals, &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let (n, _, l) = extract_matrix_f64(&l_result)?;
+    let (_, _, da) = extract_matrix_f64(&tangents[0])?;
+
+    // Symmetrize dA
+    let da_sym = symmetrize_f64(n, &da);
+
+    // Solve L^{-1} dA_sym via forward substitution (row by row)
+    let mut linv_da = vec![0.0_f64; n * n];
+    for col in 0..n {
+        for i in 0..n {
+            let mut sum = da_sym[i * n + col];
+            for k in 0..i {
+                sum -= l[i * n + k] * linv_da[k * n + col];
+            }
+            linv_da[i * n + col] = sum / l[i * n + i];
+        }
+    }
+
+    // Compute linv_da @ L^{-T} via back substitution on the right
+    let lt = transpose_f64(n, n, &l);
+    let mut middle = vec![0.0_f64; n * n];
+    for row in 0..n {
+        for j in (0..n).rev() {
+            let mut sum = linv_da[row * n + j];
+            for k in (j + 1)..n {
+                sum -= lt[j * n + k] * middle[row * n + k];
+            }
+            middle[row * n + j] = sum / lt[j * n + j];
+        }
+    }
+
+    // phi: extract lower triangle with diagonal halved
+    let mut phi = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in 0..i {
+            phi[i * n + j] = middle[i * n + j];
+        }
+        phi[i * n + i] = middle[i * n + i] * 0.5;
+    }
+
+    // dL = L @ phi
+    let dl = matmul_f64(n, n, n, &l, &phi);
+
+    build_matrix_f64(n, n, &dl)
+}
+
+// ── TriangularSolve JVP ────────────────────────────────────────────
+
+/// TriangularSolve JVP: for X = A\B,
+/// dX = A \ (dB - dA @ X)
+fn triangular_solve_jvp(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    // X = A\B
+    let x = eval_primitive(Primitive::TriangularSolve, primals, params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+    let (_, _, da_data) = extract_matrix_f64(&tangents[0])?;
+    let (_, _, x_data) = extract_matrix_f64(&x)?;
+    let (n, nx, _) = extract_matrix_f64(&primals[1])?;
+    let (_, _, db_data) = extract_matrix_f64(&tangents[1])?;
+
+    // dA @ X
+    let da_x = matmul_f64(n, n, nx, &da_data, &x_data);
+
+    // rhs = dB - dA @ X
+    let rhs: Vec<f64> = db_data
+        .iter()
+        .zip(da_x.iter())
+        .map(|(&db, &dax)| db - dax)
+        .collect();
+
+    let rhs_val = build_matrix_f64(n, nx, &rhs)?;
+
+    // dX = A \ rhs
+    eval_primitive(
+        Primitive::TriangularSolve,
+        &[primals[0].clone(), rhs_val],
+        params,
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 // ── Forward-mode JVP ───────────────────────────────────────────────
 
 /// Result of forward-mode JVP computation.
@@ -3437,10 +3763,15 @@ fn jvp_rule(
             let n_x_nm1 = ep(Primitive::Mul, &[n_val, x_nm1])?;
             ep(Primitive::Mul, &[tangents[0].clone(), n_x_nm1])
         }
-        Primitive::Cholesky
-        | Primitive::Qr
+        // ── Cholesky JVP ──
+        // dL = L phi(L^{-1} dA L^{-T}) where phi extracts the lower triangle
+        // with diagonal halved.
+        Primitive::Cholesky => cholesky_jvp(primals, tangents),
+        // ── TriangularSolve JVP ──
+        // d(A\B) = A \ (dB - dA X) where X = A\B
+        Primitive::TriangularSolve => triangular_solve_jvp(primals, tangents, params),
+        Primitive::Qr
         | Primitive::Svd
-        | Primitive::TriangularSolve
         | Primitive::Eigh
         | Primitive::Fft
         | Primitive::Ifft

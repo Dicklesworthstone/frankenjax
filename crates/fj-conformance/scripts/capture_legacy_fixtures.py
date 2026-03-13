@@ -1944,6 +1944,171 @@ def build_lax_cases(cb: CaseBuilder) -> None:
         atol=0.0, rtol=0.0, comparator="exact",
     )
 
+    # ── Conv 1D (valid padding): [lhs=[N,W,C_in], rhs=[K,C_in,C_out]] → [N,out_W,C_out] ──
+    # lhs=[1,4,1] vals=[1,2,3,4], rhs=[2,1,1] vals=[1,1] → [1,3,1] vals=[3,5,7]
+    cb.add_raw(
+        "lax_conv1d_valid_0", "lax", "lax_conv1d_valid", ["jit"],
+        [{"kind": "tensor_f64", "shape": [1, 4, 1], "values": [1.0, 2.0, 3.0, 4.0]},
+         {"kind": "tensor_f64", "shape": [2, 1, 1], "values": [1.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [1, 3, 1], "values": [3.0, 5.0, 7.0]}],
+        atol=1e-12, rtol=1e-12, comparator="approx_atol_rtol",
+    )
+    # lhs=[1,5,1] vals=[1,0,2,0,3], rhs=[3,1,1] vals=[1,2,1] → [1,3,1] vals=[1+0+2,0+4+0,2+0+3]=[3,4,5]
+    cb.add_raw(
+        "lax_conv1d_valid_1", "lax", "lax_conv1d_valid", ["jit"],
+        [{"kind": "tensor_f64", "shape": [1, 5, 1], "values": [1.0, 0.0, 2.0, 0.0, 3.0]},
+         {"kind": "tensor_f64", "shape": [3, 1, 1], "values": [1.0, 2.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [1, 3, 1], "values": [3.0, 4.0, 5.0]}],
+        atol=1e-12, rtol=1e-12, comparator="approx_atol_rtol",
+    )
+    # 2 channels: lhs=[1,3,2] vals=[1,2,3,4,5,6], rhs=[2,2,1] vals=[1,1,1,1] → [1,2,1] vals=[1+2+3+4,3+4+5+6]=[10,18]
+    cb.add_raw(
+        "lax_conv1d_valid_2", "lax", "lax_conv1d_valid", ["jit"],
+        [{"kind": "tensor_f64", "shape": [1, 3, 2], "values": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]},
+         {"kind": "tensor_f64", "shape": [2, 2, 1], "values": [1.0, 1.0, 1.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [1, 2, 1], "values": [10.0, 18.0]}],
+        atol=1e-12, rtol=1e-12, comparator="approx_atol_rtol",
+    )
+
+    # ── Scatter (overwrite mode): [operand, indices, updates] → scattered tensor ──
+    # operand=[10,20,30,40,50] scatter indices=[1,3] updates=[99,88] → [10,99,30,88,50]
+    cb.add_raw(
+        "lax_scatter_overwrite_0", "lax", "lax_scatter_overwrite", ["jit"],
+        [{"kind": "vector_i64", "values": [10, 20, 30, 40, 50]},
+         {"kind": "vector_i64", "values": [1, 3]},
+         {"kind": "vector_i64", "values": [99, 88]}],
+        [{"kind": "vector_i64", "values": [10, 99, 30, 88, 50]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+    # operand=[1,2,3,4] scatter index=[0] update=[42] → [42,2,3,4]
+    cb.add_raw(
+        "lax_scatter_overwrite_1", "lax", "lax_scatter_overwrite", ["jit"],
+        [{"kind": "vector_i64", "values": [1, 2, 3, 4]},
+         {"kind": "vector_i64", "values": [0]},
+         {"kind": "vector_i64", "values": [42]}],
+        [{"kind": "vector_i64", "values": [42, 2, 3, 4]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
+
+    # ── Cholesky decomposition ──────────────────────────────────────
+    # 2x2 identity
+    cb.add_raw(
+        "lax_cholesky_2x2_0", "lax", "lax_cholesky", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        atol=1e-12, rtol=1e-12, comparator="approx_atol_rtol",
+    )
+    # 2x2 SPD: [[4, 2], [2, 3]] → L = [[2, 0], [1, sqrt(2)]]
+    cb.add_raw(
+        "lax_cholesky_2x2_1", "lax", "lax_cholesky", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [4.0, 2.0, 2.0, 3.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [2.0, 0.0, 1.0, math.sqrt(2.0)]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # 3x3 SPD: [[4, 12, -16], [12, 37, -43], [-16, -43, 98]]
+    # L = [[2, 0, 0], [6, 1, 0], [-8, 5, 3]]
+    cb.add_raw(
+        "lax_cholesky_3x3_0", "lax", "lax_cholesky", ["jit"],
+        [{"kind": "tensor_f64", "shape": [3, 3],
+          "values": [4.0, 12.0, -16.0, 12.0, 37.0, -43.0, -16.0, -43.0, 98.0]}],
+        [{"kind": "tensor_f64", "shape": [3, 3],
+          "values": [2.0, 0.0, 0.0, 6.0, 1.0, 0.0, -8.0, 5.0, 3.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+
+    # ── TriangularSolve ─────────────────────────────────────────────
+    # Lower triangular solve: L = [[2, 0], [1, 3]], B = [[4], [7]]
+    # x0 = 4/2 = 2, x1 = (7 - 1*2)/3 = 5/3
+    cb.add_raw(
+        "lax_triangular_solve_2x2_0", "lax", "lax_triangular_solve", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [2.0, 0.0, 1.0, 3.0]},
+         {"kind": "tensor_f64", "shape": [2, 1], "values": [4.0, 7.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 1], "values": [2.0, 5.0 / 3.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # Cholesky roundtrip: L = [[2, 0], [1, sqrt(2)]], b = [[1], [2]]
+    # Forward substitution: x1 = 1/2 = 0.5, x2 = (2 - 1*0.5)/sqrt(2) = 1.5/sqrt(2)
+    cb.add_raw(
+        "lax_triangular_solve_cholesky_roundtrip", "lax", "lax_triangular_solve", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [2.0, 0.0, 1.0, math.sqrt(2.0)]},
+         {"kind": "tensor_f64", "shape": [2, 1], "values": [1.0, 2.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 1], "values": [0.5, 1.5 / math.sqrt(2.0)]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # ── QR decomposition ──────────────────────────────────────────
+    # QR of 2x2 identity: Q=I, R=I (trivial)
+    cb.add_raw(
+        "lax_qr_2x2_identity", "lax", "lax_qr", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # QR of A = [[1, -1], [1, 1]] with non-negative R diagonal convention
+    s2 = math.sqrt(2.0)
+    q_22 = [ 1.0/s2, -1.0/s2,
+             1.0/s2,  1.0/s2]
+    r_22 = [s2, 0.0,
+            0.0, s2]
+    cb.add_raw(
+        "lax_qr_2x2_0", "lax", "lax_qr", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, -1.0, 1.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": q_22},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": r_22}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # QR of 3x2 matrix A = [[1, 1], [0, 1], [1, 0]] (thin QR: Q 3x2, R 2x2)
+    # Sign-corrected (R diagonal non-negative)
+    s6 = math.sqrt(6.0)
+    q_32 = [ 1.0/s2,  1.0/s6,
+             0.0,     2.0/s6,
+             1.0/s2, -1.0/s6]
+    r_32 = [s2, 1.0/s2,
+            0.0, s6/2.0]
+    cb.add_raw(
+        "lax_qr_3x2_0", "lax", "lax_qr", ["jit"],
+        [{"kind": "tensor_f64", "shape": [3, 2], "values": [1.0, 1.0, 0.0, 1.0, 1.0, 0.0]}],
+        [{"kind": "tensor_f64", "shape": [3, 2], "values": q_32},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": r_32}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # ── SVD decomposition ─────────────────────────────────────────
+    # SVD of 2x2 identity: U=I, S=[1,1], Vt=I
+    cb.add_raw(
+        "lax_svd_2x2_identity", "lax", "lax_svd", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]},
+         {"kind": "tensor_f64", "shape": [2], "values": [1.0, 1.0]},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # SVD of diagonal [[3, 0], [0, -2]]: U=[[1,0],[0,-1]], S=[3,2], Vt=I
+    cb.add_raw(
+        "lax_svd_2x2_diagonal", "lax", "lax_svd", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [3.0, 0.0, 0.0, -2.0]}],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, -1.0]},
+         {"kind": "tensor_f64", "shape": [2], "values": [3.0, 2.0]},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # ── Eigh (symmetric eigendecomposition) ───────────────────────
+    # Eigh of 2x2 identity: W=[1,1], V=I
+    cb.add_raw(
+        "lax_eigh_2x2_identity", "lax", "lax_eigh", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [2], "values": [1.0, 1.0]},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": [1.0, 0.0, 0.0, 1.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+    # Eigh of diagonal [[5, 0], [0, 3]]: W=[3, 5], V=[[0,1],[1,0]] (ascending)
+    cb.add_raw(
+        "lax_eigh_2x2_diagonal", "lax", "lax_eigh", ["jit"],
+        [{"kind": "tensor_f64", "shape": [2, 2], "values": [5.0, 0.0, 0.0, 3.0]}],
+        [{"kind": "tensor_f64", "shape": [2], "values": [3.0, 5.0]},
+         {"kind": "tensor_f64", "shape": [2, 2], "values": [0.0, 1.0, 1.0, 0.0]}],
+        atol=1e-10, rtol=1e-10, comparator="approx_atol_rtol",
+    )
+
 
 # ── Oracle-based capture (with real JAX) ─────────────────────────
 

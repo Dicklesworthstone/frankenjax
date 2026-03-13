@@ -1253,11 +1253,21 @@ pub enum ProgramSpec {
     LaxBitcastF64ToI64,
     LaxReducePrecisionF64,
     LaxGather1d,
+    // Lax convolution (1D valid padding)
+    LaxConv1dValid,
+    // Lax scatter (overwrite mode)
+    LaxScatterOverwrite,
     // Lax complex number primitives
     LaxComplex,
     LaxConj,
     LaxReal,
     LaxImag,
+    // Linalg primitives
+    LaxCholesky,
+    LaxTriangularSolve,
+    LaxQr,
+    LaxSvd,
+    LaxEigh,
     // Utility programs for testing
     Identity,
     AddOneMulTwo,
@@ -1706,6 +1716,46 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
                 }],
             )
         }
+        // Conv 1D (valid padding): [lhs=[N,W,C_in], rhs=[K,C_in,C_out]] → [N,out_W,C_out]
+        ProgramSpec::LaxConv1dValid => {
+            let mut params = BTreeMap::new();
+            params.insert("padding".to_owned(), "valid".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2)],
+                vec![],
+                vec![VarId(3)],
+                vec![Equation {
+                    primitive: Primitive::Conv,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
+        // Scatter (overwrite): [operand, indices, updates] → scattered tensor
+        ProgramSpec::LaxScatterOverwrite => {
+            let mut params = BTreeMap::new();
+            params.insert("mode".to_owned(), "overwrite".to_owned());
+            Jaxpr::new(
+                vec![VarId(1), VarId(2), VarId(3)],
+                vec![],
+                vec![VarId(4)],
+                vec![Equation {
+                    primitive: Primitive::Scatter,
+                    inputs: smallvec![
+                        Atom::Var(VarId(1)),
+                        Atom::Var(VarId(2)),
+                        Atom::Var(VarId(3))
+                    ],
+                    outputs: smallvec![VarId(4)],
+                    params,
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                }],
+            )
+        }
         // Gather: [operand, indices] with slice_sizes=1
         ProgramSpec::LaxGather1d => {
             let mut params = BTreeMap::new();
@@ -1886,6 +1936,64 @@ pub fn build_program(spec: ProgramSpec) -> Jaxpr {
         ProgramSpec::LaxReal => unary_program(Primitive::Real),
         // Imag: complex → f64 (extract imaginary part)
         ProgramSpec::LaxImag => unary_program(Primitive::Imag),
+        // Linalg: Cholesky — single matrix input → lower-triangular factor
+        ProgramSpec::LaxCholesky => unary_program(Primitive::Cholesky),
+        // Linalg: TriangularSolve — [A, B] → X where A X = B, A lower-triangular
+        ProgramSpec::LaxTriangularSolve => Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::TriangularSolve,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        ),
+        // Linalg: QR — A → [Q, R] where A = Q R
+        ProgramSpec::LaxQr => Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2), VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Qr,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2), VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        ),
+        // Linalg: SVD — A → [U, S, Vt] where A = U diag(S) Vt
+        ProgramSpec::LaxSvd => Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2), VarId(3), VarId(4)],
+            vec![Equation {
+                primitive: Primitive::Svd,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2), VarId(3), VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        ),
+        // Linalg: Eigh — A → [W, V] where A = V diag(W) V^T
+        ProgramSpec::LaxEigh => Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2), VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Eigh,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2), VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        ),
         // Utility programs
         ProgramSpec::Identity => Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![]),
         ProgramSpec::AddOneMulTwo => Jaxpr::new(

@@ -322,11 +322,20 @@ pub enum FixtureProgram {
     LaxBitcastF64ToI64,
     LaxReducePrecisionF64,
     LaxGather1d,
+    // Lax convolution and scatter
+    LaxConv1dValid,
+    LaxScatterOverwrite,
     // Lax complex number primitives
     LaxComplex,
     LaxConj,
     LaxReal,
     LaxImag,
+    // Linalg primitives
+    LaxCholesky,
+    LaxTriangularSolve,
+    LaxQr,
+    LaxSvd,
+    LaxEigh,
     // Utility programs
     Identity,
     AddOneMulTwo,
@@ -438,10 +447,17 @@ impl FixtureProgram {
             Self::LaxBitcastF64ToI64 => ProgramSpec::LaxBitcastF64ToI64,
             Self::LaxReducePrecisionF64 => ProgramSpec::LaxReducePrecisionF64,
             Self::LaxGather1d => ProgramSpec::LaxGather1d,
+            Self::LaxConv1dValid => ProgramSpec::LaxConv1dValid,
+            Self::LaxScatterOverwrite => ProgramSpec::LaxScatterOverwrite,
             Self::LaxComplex => ProgramSpec::LaxComplex,
             Self::LaxConj => ProgramSpec::LaxConj,
             Self::LaxReal => ProgramSpec::LaxReal,
             Self::LaxImag => ProgramSpec::LaxImag,
+            Self::LaxCholesky => ProgramSpec::LaxCholesky,
+            Self::LaxTriangularSolve => ProgramSpec::LaxTriangularSolve,
+            Self::LaxQr => ProgramSpec::LaxQr,
+            Self::LaxSvd => ProgramSpec::LaxSvd,
+            Self::LaxEigh => ProgramSpec::LaxEigh,
             Self::Identity => ProgramSpec::Identity,
             Self::AddOneMulTwo => ProgramSpec::AddOneMulTwo,
             Self::CondSelect => ProgramSpec::CondSelect,
@@ -2119,26 +2135,11 @@ mod tests {
             super::read_transform_fixture_bundle(&fixture_path).expect("bundle should load");
         let report = run_transform_fixture_bundle(&cfg, &bundle);
 
-        let failing: Vec<String> = report
-            .reports
-            .iter()
-            .filter(|r| !r.matched)
-            .map(|r| {
-                format!(
-                    "CASE={} ERR={:?} EXPECTED={} ACTUAL={:?}",
-                    r.case_id,
-                    r.error,
-                    r.expected_json,
-                    r.actual_json,
-                )
-            })
-            .collect();
-        if !failing.is_empty() {
-            panic!(
-                "FAILING: {}",
-                failing.join("\n")
-            );
-        }
+        assert_eq!(
+            report.mismatched_cases, 0,
+            "all fixtures should pass with tightened tolerances (got {} mismatches out of {})",
+            report.mismatched_cases, report.total_cases
+        );
     }
 
     #[test]
