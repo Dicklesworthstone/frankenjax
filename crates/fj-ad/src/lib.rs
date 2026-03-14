@@ -120,8 +120,11 @@ fn lookup_custom_jvp(primitive: Primitive) -> Option<CustomJvpRule> {
 struct TapeEntry {
     primitive: Primitive,
     inputs: Vec<VarId>,
-    output: VarId,
+    /// All output VarIds (single-output primitives have exactly one).
+    outputs: Vec<VarId>,
     input_values: Vec<Value>,
+    /// Primal output values — needed by multi-output VJP rules (QR, SVD, Eigh).
+    output_values: Vec<Value>,
     params: BTreeMap<String, String>,
 }
 
@@ -171,17 +174,20 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
             }
         }
 
-        let output = eval_primitive(eqn.primitive, &resolved, &eqn.params)
+        let output_values = fj_lax::eval_primitive_multi(eqn.primitive, &resolved, &eqn.params)
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
-        let out_var = eqn.outputs[0];
-        env.insert(out_var, output);
+        let out_var_ids: Vec<VarId> = eqn.outputs.iter().copied().collect();
+        for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
+            env.insert(*var, val.clone());
+        }
 
         tape.entries.push(TapeEntry {
             primitive: eqn.primitive,
             inputs: input_var_ids,
-            output: out_var,
+            outputs: out_var_ids,
             input_values: resolved,
+            output_values: output_values.clone(),
             params: eqn.params.clone(),
         });
     }
@@ -378,9 +384,7 @@ fn take_real_part(value: &Value) -> Result<Value, AdError> {
                 .iter()
                 .map(|lit| match lit {
                     Literal::Complex128Bits(re, _) => Literal::from_f64(f64::from_bits(*re)),
-                    Literal::Complex64Bits(re, _) => {
-                        Literal::from_f64(f32::from_bits(*re) as f64)
-                    }
+                    Literal::Complex64Bits(re, _) => Literal::from_f64(f32::from_bits(*re) as f64),
                     other => Literal::from_f64(other.as_f64().unwrap_or(0.0)),
                 })
                 .collect();
@@ -427,24 +431,25 @@ fn scale_hermitian_adjoint(tensor: &TensorValue, fft_length: usize) -> Result<Va
         )));
     }
     let batch_size = tensor.elements.len() / cur_len;
-    let nyquist_idx = fft_length / 2;
     let mut elements = tensor.elements.clone();
     for batch in 0..batch_size {
         let start = batch * cur_len;
-        // Interior bins: indices 1..nyquist_idx (exclusive of 0 and nyquist)
-        for k in 1..nyquist_idx {
-            if k < cur_len {
-                let idx = start + k;
-                match &elements[idx] {
-                    Literal::Complex128Bits(re, im) => {
-                        let r = f64::from_bits(*re) * 2.0;
-                        let i = f64::from_bits(*im) * 2.0;
-                        elements[idx] = Literal::from_complex128(r, i);
-                    }
-                    other => {
-                        let v = other.as_f64().unwrap_or(0.0) * 2.0;
-                        elements[idx] = Literal::from_f64(v);
-                    }
+        // Interior bins: everything except DC (index 0) and Nyquist (index n/2, even n only).
+        // For odd fft_length there is no Nyquist bin, so all non-DC bins are interior.
+        for k in 1..cur_len {
+            if fft_length % 2 == 0 && k == fft_length / 2 {
+                continue; // Skip Nyquist for even fft_length
+            }
+            let idx = start + k;
+            match &elements[idx] {
+                Literal::Complex128Bits(re, im) => {
+                    let r = f64::from_bits(*re) * 2.0;
+                    let i = f64::from_bits(*im) * 2.0;
+                    elements[idx] = Literal::from_complex128(r, i);
+                }
+                other => {
+                    let v = other.as_f64().unwrap_or(0.0) * 2.0;
+                    elements[idx] = Literal::from_f64(v);
                 }
             }
         }
@@ -452,6 +457,124 @@ fn scale_hermitian_adjoint(tensor: &TensorValue, fft_length: usize) -> Result<Va
     TensorValue::new(tensor.dtype, tensor.shape.clone(), elements)
         .map(Value::Tensor)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+// ── Matrix operation helpers for multi-output VJP ───────────────
+
+/// Matrix multiply: C = A[m×k] @ B[k×n] → C[m×n].
+/// Both inputs must be rank-2 tensors stored as flat row-major.
+fn matmul_2d(a: &TensorValue, b: &TensorValue) -> Result<Value, AdError> {
+    if a.shape.rank() != 2 || b.shape.rank() != 2 {
+        return Err(AdError::EvalFailed(
+            "matmul: inputs must be rank-2".to_owned(),
+        ));
+    }
+    let m = a.shape.dims[0] as usize;
+    let k = a.shape.dims[1] as usize;
+    let k2 = b.shape.dims[0] as usize;
+    let n = b.shape.dims[1] as usize;
+    if k != k2 {
+        return Err(AdError::EvalFailed(format!(
+            "matmul: inner dims mismatch: {k} vs {k2}"
+        )));
+    }
+    let a_vals: Vec<f64> = a
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect();
+    let b_vals: Vec<f64> = b
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect();
+    let mut c_vals = vec![0.0; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut sum = 0.0;
+            for p in 0..k {
+                sum += a_vals[i * k + p] * b_vals[p * n + j];
+            }
+            c_vals[i * n + j] = sum;
+        }
+    }
+    let elements: Vec<Literal> = c_vals.into_iter().map(Literal::from_f64).collect();
+    TensorValue::new(
+        DType::F64,
+        Shape {
+            dims: vec![m as u32, n as u32],
+        },
+        elements,
+    )
+    .map(Value::Tensor)
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Transpose a rank-2 tensor: A[m×n] → A^T[n×m].
+fn transpose_2d(a: &TensorValue) -> Result<Value, AdError> {
+    if a.shape.rank() != 2 {
+        return Err(AdError::EvalFailed(
+            "transpose: input must be rank-2".to_owned(),
+        ));
+    }
+    let m = a.shape.dims[0] as usize;
+    let n = a.shape.dims[1] as usize;
+    let a_vals: Vec<f64> = a
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect();
+    let mut t_vals = vec![0.0; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            t_vals[j * m + i] = a_vals[i * n + j];
+        }
+    }
+    let elements: Vec<Literal> = t_vals.into_iter().map(Literal::from_f64).collect();
+    TensorValue::new(
+        DType::F64,
+        Shape {
+            dims: vec![n as u32, m as u32],
+        },
+        elements,
+    )
+    .map(Value::Tensor)
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Extract the lower triangle (including diagonal) of a square matrix.
+/// Zeroes out the strict upper triangle.
+fn tril(a: &TensorValue) -> Result<TensorValue, AdError> {
+    if a.shape.rank() != 2 || a.shape.dims[0] != a.shape.dims[1] {
+        return Err(AdError::EvalFailed(
+            "tril: input must be square rank-2".to_owned(),
+        ));
+    }
+    let n = a.shape.dims[0] as usize;
+    let a_vals: Vec<f64> = a
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect();
+    let mut result = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..=i {
+            result[i * n + j] = a_vals[i * n + j];
+        }
+    }
+    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+    TensorValue::new(DType::F64, a.shape.clone(), elements)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Add two tensors element-wise.
+fn tensor_add(a: &TensorValue, b: &TensorValue) -> Result<Value, AdError> {
+    value_add(&Value::Tensor(a.clone()), &Value::Tensor(b.clone()))
+}
+
+/// Subtract two tensors element-wise: a - b.
+fn tensor_sub(a: &TensorValue, b: &TensorValue) -> Result<Value, AdError> {
+    value_sub(&Value::Tensor(a.clone()), &Value::Tensor(b.clone()))
 }
 
 fn is_zero_value(v: &Value) -> bool {
@@ -502,15 +625,30 @@ fn backward(
     adjoints.insert(output_var, output_cotangent);
 
     for entry in tape.entries.iter().rev() {
-        let g = match adjoints.get(&entry.output) {
-            Some(v) => v.clone(),
-            None => continue,
-        };
-        if is_zero_value(&g) {
+        // Gather gradients for all outputs of this equation.
+        let gs: Vec<Value> = entry
+            .outputs
+            .iter()
+            .enumerate()
+            .map(|(i, var)| {
+                adjoints
+                    .get(var)
+                    .cloned()
+                    .unwrap_or_else(|| zeros_like(&entry.output_values[i]))
+            })
+            .collect();
+        // Skip if all output gradients are zero.
+        if gs.iter().all(|g| is_zero_value(g)) {
             continue;
         }
 
-        let cotangents = vjp(entry.primitive, &entry.input_values, &g, &entry.params)?;
+        let cotangents = vjp(
+            entry.primitive,
+            &entry.input_values,
+            &gs,
+            &entry.output_values,
+            &entry.params,
+        )?;
 
         for (var_id, cot) in entry.inputs.iter().zip(cotangents.into_iter()) {
             if var_id.0 == u32::MAX {
@@ -544,12 +682,26 @@ fn backward(
 
 // ── VJP rules (tensor-aware) ──────────────────────────────────────
 
-fn vjp(
+/// Convenience wrapper for single-output VJP calls (used by tests and internal code).
+#[cfg(test)]
+fn vjp_single(
     primitive: Primitive,
     inputs: &[Value],
     g: &Value,
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
+    vjp(primitive, inputs, &[g.clone()], &[], params)
+}
+
+fn vjp(
+    primitive: Primitive,
+    inputs: &[Value],
+    gs: &[Value],
+    output_values: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, AdError> {
+    // For single-output primitives (the common case), use gs[0] as the gradient.
+    let g = &gs[0];
     if let Some(custom_rule) = lookup_custom_vjp(primitive) {
         let cotangents = custom_rule(inputs, g, params)?;
         if cotangents.len() != inputs.len() {
@@ -2076,15 +2228,18 @@ fn vjp(
                 _ => {
                     return Err(AdError::EvalFailed(
                         "RFFT VJP: gradient must be tensor".to_owned(),
-                    ))
+                    ));
                 }
             };
             // Step 1: Zero-pad g from n/2+1 to fft_length
             let padded = zero_pad_last_axis_complex(g_tensor, fft_length)?;
             // Step 2: IFFT of zero-padded g
-            let ifft_result =
-                eval_primitive(Primitive::Ifft, std::slice::from_ref(&padded), &BTreeMap::new())
-                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let ifft_result = eval_primitive(
+                Primitive::Ifft,
+                std::slice::from_ref(&padded),
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             // Step 3: Scale by n
             let n = fft_length as f64;
             let scale = Value::Scalar(Literal::from_f64(n));
@@ -2118,9 +2273,8 @@ fn vjp(
                     Value::Scalar(_) => 1,
                 });
             // Step 1: FFT(g_real)
-            let fft_g =
-                eval_primitive(Primitive::Fft, std::slice::from_ref(g), &BTreeMap::new())
-                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let fft_g = eval_primitive(Primitive::Fft, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             // Step 2: Scale by 1/n
             let inv_n = Value::Scalar(Literal::from_f64(1.0 / fft_length as f64));
             let scaled = value_mul(&fft_g, &inv_n)?;
@@ -2137,9 +2291,89 @@ fn vjp(
             };
             Ok(vec![result])
         }
-        Primitive::Qr | Primitive::Svd | Primitive::Eigh => {
-            Err(AdError::UnsupportedPrimitive(primitive))
+        // ── QR VJP ──
+        // A = QR. Given cotangents g_Q (m×n) and g_R (n×n):
+        // M = R g_R^T - g_Q^T Q
+        // M_sym = tril(M) + tril(M)^T - diag(diag(M))   [copyltu]
+        // dA = (g_Q + Q M_sym) R^{-T}
+        Primitive::Qr => {
+            let g_q = &gs[0];
+            let g_r = if gs.len() > 1 {
+                &gs[1]
+            } else {
+                &zeros_like(&output_values[1])
+            };
+
+            let q_val = &output_values[0];
+            let r_val = &output_values[1];
+            let q = q_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("QR VJP: Q must be tensor".to_owned()))?;
+            let r = r_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("QR VJP: R must be tensor".to_owned()))?;
+            let gq = g_q
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("QR VJP: g_Q must be tensor".to_owned()))?;
+            let gr = g_r
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("QR VJP: g_R must be tensor".to_owned()))?;
+
+            // M = R @ g_R^T - g_Q^T @ Q  (n×n)
+            let gr_t_val = transpose_2d(gr)?;
+            let gr_t = gr_t_val.as_tensor().unwrap();
+            let r_gr_t = matmul_2d(r, gr_t)?;
+
+            let gq_t_val = transpose_2d(gq)?;
+            let gq_t = gq_t_val.as_tensor().unwrap();
+            let gq_t_q = matmul_2d(gq_t, q)?;
+
+            let m_val = tensor_sub(r_gr_t.as_tensor().unwrap(), gq_t_q.as_tensor().unwrap())?;
+            let m = m_val.as_tensor().unwrap();
+
+            // M_sym = tril(M) + tril(M)^T - diag(diag(M))  [copyltu]
+            let m_lower = tril(m)?;
+            let m_lower_t_val = transpose_2d(&m_lower)?;
+            let m_lower_t = m_lower_t_val.as_tensor().unwrap();
+            let m_plus_mt = tensor_add(&m_lower, m_lower_t)?;
+            // Subtract diagonal (it was counted twice)
+            let n_dim = m.shape.dims[0] as usize;
+            let m_lower_vals: Vec<f64> = m_lower
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+            let mut diag_elements = vec![Literal::from_f64(0.0); n_dim * n_dim];
+            for i in 0..n_dim {
+                diag_elements[i * n_dim + i] = Literal::from_f64(m_lower_vals[i * n_dim + i]);
+            }
+            let diag_tensor = TensorValue::new(DType::F64, m.shape.clone(), diag_elements)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let m_sym = tensor_sub(m_plus_mt.as_tensor().unwrap(), &diag_tensor)?;
+            let m_sym_t = m_sym.as_tensor().unwrap();
+
+            // rhs = g_Q + Q @ M_sym  (m×n)
+            let q_msym = matmul_2d(q, m_sym_t)?;
+            let rhs = tensor_add(gq, q_msym.as_tensor().unwrap())?;
+            let rhs_t = rhs.as_tensor().unwrap();
+
+            // dA = solve(R^T, rhs^T)^T
+            // R^T x = rhs^T => triangular_solve(R, rhs^T, lower=false, transpose_a=true)
+            let rhs_t_val = transpose_2d(rhs_t)?;
+            let mut tri_params = BTreeMap::new();
+            tri_params.insert("lower".to_owned(), "false".to_owned());
+            tri_params.insert("transpose_a".to_owned(), "true".to_owned());
+            let solve_result = eval_primitive(
+                Primitive::TriangularSolve,
+                &[r_val.clone(), rhs_t_val],
+                &tri_params,
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let da = transpose_2d(solve_result.as_tensor().unwrap())?;
+
+            Ok(vec![da])
         }
+        Primitive::Svd | Primitive::Eigh => Err(AdError::UnsupportedPrimitive(primitive)),
     }
 }
 
@@ -2518,7 +2752,8 @@ fn scan_vjp(
             let step_grads = vjp(
                 body_op,
                 &[init_carry.clone(), xs.clone()],
-                g,
+                &[g.clone()],
+                &[],
                 &BTreeMap::new(),
             )?;
             return Ok(vec![step_grads[0].clone(), step_grads[1].clone()]);
@@ -2586,7 +2821,8 @@ fn scan_vjp(
         let step_grads = vjp(
             body_op,
             &[carry_at_step.clone(), x_at_step.clone()],
-            &g_carry,
+            &[g_carry.clone()],
+            &[],
             &BTreeMap::new(),
         )?;
         g_carry = step_grads[0].clone();
@@ -2692,7 +2928,8 @@ fn while_vjp(
         let step_grads = vjp(
             body_op,
             &[carry_at_step.clone(), step_value.clone()],
-            &g_carry,
+            &[g_carry.clone()],
+            &[],
             &BTreeMap::new(),
         )?;
         g_carry = step_grads[0].clone();
@@ -3451,18 +3688,27 @@ pub fn jvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<JvpRe
             }
         }
 
-        let primal_out = eval_primitive(eqn.primitive, &resolved_primals, &eqn.params)
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-        let tangent_out = jvp_rule(
-            eqn.primitive,
-            &resolved_primals,
-            &resolved_tangents,
-            &eqn.params,
-        )?;
+        let primal_outs =
+            fj_lax::eval_primitive_multi(eqn.primitive, &resolved_primals, &eqn.params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
-        let out_var = eqn.outputs[0];
-        primal_env.insert(out_var, primal_out);
-        tangent_env.insert(out_var, tangent_out);
+        if eqn.outputs.len() > 1 {
+            // Multi-output equation: store all primals, JVP not yet supported
+            for (var, val) in eqn.outputs.iter().zip(primal_outs.iter()) {
+                primal_env.insert(*var, val.clone());
+                tangent_env.insert(*var, zeros_like(val));
+            }
+        } else {
+            let tangent_out = jvp_rule(
+                eqn.primitive,
+                &resolved_primals,
+                &resolved_tangents,
+                &eqn.params,
+            )?;
+            let out_var = eqn.outputs[0];
+            primal_env.insert(out_var, primal_outs.into_iter().next().unwrap());
+            tangent_env.insert(out_var, tangent_out);
+        }
     }
 
     let out_primals = jaxpr
@@ -4896,18 +5142,18 @@ mod tests {
     // ── V2 primitive VJP/JVP coverage (bd-2u82) ────────────────
 
     #[test]
-    fn test_rev_vjp() {
+    fn test_rev_vjp_single() {
         let input = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
         let g = Value::vector_f64(&[10.0, 20.0, 30.0]).expect("vector");
         let mut params = BTreeMap::new();
         params.insert("axes".into(), "0".into());
 
-        let grads = vjp(Primitive::Rev, &[input], &g, &params).expect("vjp");
+        let grads = vjp_single(Primitive::Rev, &[input], &g, &params).expect("vjp");
         assert_eq!(tensor_f64_values(&grads[0]), vec![30.0, 20.0, 10.0]);
     }
 
     #[test]
-    fn test_squeeze_vjp() {
+    fn test_squeeze_vjp_single() {
         let input = Value::Tensor(
             TensorValue::new(
                 DType::F64,
@@ -4926,14 +5172,14 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("dimensions".into(), "0,2".into());
 
-        let grads = vjp(Primitive::Squeeze, &[input], &g, &params).expect("vjp");
+        let grads = vjp_single(Primitive::Squeeze, &[input], &g, &params).expect("vjp");
         let out = grads[0].as_tensor().expect("tensor");
         assert_eq!(out.shape.dims, vec![1, 3, 1]);
         assert_eq!(tensor_f64_values(&grads[0]), vec![7.0, 8.0, 9.0]);
     }
 
     #[test]
-    fn test_split_vjp() {
+    fn test_split_vjp_single() {
         let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]).expect("vector");
         let g = Value::Tensor(
             TensorValue::new(
@@ -4954,7 +5200,7 @@ mod tests {
         params.insert("axis".into(), "0".into());
         params.insert("num_sections".into(), "3".into());
 
-        let grads = vjp(Primitive::Split, &[input], &g, &params).expect("vjp");
+        let grads = vjp_single(Primitive::Split, &[input], &g, &params).expect("vjp");
         let out = grads[0].as_tensor().expect("tensor");
         assert_eq!(out.shape.dims, vec![6]);
         assert_eq!(
@@ -4964,7 +5210,7 @@ mod tests {
     }
 
     #[test]
-    fn test_expand_dims_vjp() {
+    fn test_expand_dims_vjp_single() {
         let input = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
         let g = Value::Tensor(
             TensorValue::new(
@@ -4981,36 +5227,36 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("axis".into(), "0".into());
 
-        let grads = vjp(Primitive::ExpandDims, &[input], &g, &params).expect("vjp");
+        let grads = vjp_single(Primitive::ExpandDims, &[input], &g, &params).expect("vjp");
         let out = grads[0].as_tensor().expect("tensor");
         assert_eq!(out.shape.dims, vec![3]);
         assert_eq!(tensor_f64_values(&grads[0]), vec![2.0, 4.0, 6.0]);
     }
 
     #[test]
-    fn test_cbrt_vjp() {
+    fn test_cbrt_vjp_single() {
         let input = Value::scalar_f64(8.0);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(Primitive::Cbrt, &[input], &g, &BTreeMap::new()).expect("vjp");
+        let grads = vjp_single(Primitive::Cbrt, &[input], &g, &BTreeMap::new()).expect("vjp");
         let grad = grads[0].as_f64_scalar().expect("scalar");
         assert!((grad - (1.0 / 12.0)).abs() < 1e-10, "got {grad}");
     }
 
     #[test]
-    fn test_integer_pow_vjp() {
+    fn test_integer_pow_vjp_single() {
         let input = Value::scalar_f64(3.0);
         let g = Value::scalar_f64(1.0);
         let mut params = BTreeMap::new();
         params.insert("exponent".into(), "4".into());
 
-        let grads = vjp(Primitive::IntegerPow, &[input], &g, &params).expect("vjp");
+        let grads = vjp_single(Primitive::IntegerPow, &[input], &g, &params).expect("vjp");
         let grad = grads[0].as_f64_scalar().expect("scalar");
         assert!((grad - 108.0).abs() < 1e-10, "got {grad}");
     }
 
     #[test]
     fn test_shift_right_arithmetic_no_grad() {
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::ShiftRightArithmetic,
             &[Value::scalar_i64(8), Value::scalar_i64(1)],
             &Value::scalar_i64(1),
@@ -5037,7 +5283,7 @@ mod tests {
         );
         let mut params = BTreeMap::new();
         params.insert("axes".into(), "0".into());
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::ReduceAnd,
             &[input],
             &Value::scalar_f64(1.0),
@@ -5063,7 +5309,7 @@ mod tests {
         );
         let mut params = BTreeMap::new();
         params.insert("axes".into(), "0".into());
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::ReduceOr,
             &[input],
             &Value::scalar_f64(1.0),
@@ -5074,19 +5320,19 @@ mod tests {
     }
 
     #[test]
-    fn test_conj_vjp() {
+    fn test_conj_vjp_single() {
         let input = Value::scalar_complex128(1.0, -2.0);
         let g = Value::scalar_complex128(3.0, -4.0);
-        let grads = vjp(Primitive::Conj, &[input], &g, &BTreeMap::new()).expect("vjp");
+        let grads = vjp_single(Primitive::Conj, &[input], &g, &BTreeMap::new()).expect("vjp");
         let (re, im) = scalar_complex128(&grads[0]);
         assert!((re - 3.0).abs() < 1e-10);
         assert!((im - 4.0).abs() < 1e-10);
     }
 
     #[test]
-    fn test_real_vjp() {
+    fn test_real_vjp_single() {
         let input = Value::scalar_complex128(2.0, -3.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Real,
             &[input],
             &Value::scalar_f64(5.0),
@@ -5099,9 +5345,9 @@ mod tests {
     }
 
     #[test]
-    fn test_imag_vjp() {
+    fn test_imag_vjp_single() {
         let input = Value::scalar_complex128(2.0, -3.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Imag,
             &[input],
             &Value::scalar_f64(5.0),
@@ -5114,8 +5360,8 @@ mod tests {
     }
 
     #[test]
-    fn test_complex_constructor_vjp() {
-        let grads = vjp(
+    fn test_complex_constructor_vjp_single() {
+        let grads = vjp_single(
             Primitive::Complex,
             &[Value::scalar_f64(1.0), Value::scalar_f64(2.0)],
             &Value::scalar_complex128(7.0, -11.0),
@@ -5127,10 +5373,10 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_vjp() {
+    fn test_copy_vjp_single() {
         let input = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
         let g = Value::vector_f64(&[0.5, 1.0, 1.5]).expect("vector");
-        let grads = vjp(Primitive::Copy, &[input], &g, &BTreeMap::new()).expect("vjp");
+        let grads = vjp_single(Primitive::Copy, &[input], &g, &BTreeMap::new()).expect("vjp");
         assert_eq!(tensor_f64_values(&grads[0]), vec![0.5, 1.0, 1.5]);
     }
 
@@ -5138,7 +5384,7 @@ mod tests {
     fn test_bitcast_no_grad() {
         let mut params = BTreeMap::new();
         params.insert("new_dtype".into(), "f64".into());
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::BitcastConvertType,
             &[Value::scalar_i64(123)],
             &Value::scalar_f64(1.0),
@@ -5165,16 +5411,16 @@ mod tests {
             )
             .expect("tensor"),
         );
-        let grads = vjp(Primitive::BroadcastedIota, &[], &g, &BTreeMap::new()).expect("vjp");
+        let grads = vjp_single(Primitive::BroadcastedIota, &[], &g, &BTreeMap::new()).expect("vjp");
         assert!(grads.is_empty());
     }
 
     #[test]
-    fn test_reduce_precision_vjp() {
+    fn test_reduce_precision_vjp_single() {
         let mut params = BTreeMap::new();
         params.insert("exponent_bits".into(), "5".into());
         params.insert("mantissa_bits".into(), "3".into());
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::ReducePrecision,
             &[Value::scalar_f64(1.125)],
             &Value::scalar_f64(0.75),
@@ -5459,7 +5705,7 @@ mod tests {
     fn test_cbrt_vjp_finite_diff() {
         let x = 2.5;
         let eps = 1e-6;
-        let sym = vjp(
+        let sym = vjp_single(
             Primitive::Cbrt,
             &[Value::scalar_f64(x)],
             &Value::scalar_f64(1.0),
@@ -5496,7 +5742,7 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("exponent".into(), "5".into());
 
-        let sym = vjp(
+        let sym = vjp_single(
             Primitive::IntegerPow,
             &[Value::scalar_f64(x)],
             &Value::scalar_f64(1.0),
@@ -5531,7 +5777,7 @@ mod tests {
         let x = 2.4_f64;
         let eps = 1e-6_f64;
 
-        let sym = vjp(
+        let sym = vjp_single(
             Primitive::Lgamma,
             &[Value::scalar_f64(x)],
             &Value::scalar_f64(1.0),
@@ -5567,7 +5813,7 @@ mod tests {
         let x = 1.7_f64;
         let eps = 1e-6_f64;
 
-        let sym = vjp(
+        let sym = vjp_single(
             Primitive::Digamma,
             &[Value::scalar_f64(x)],
             &Value::scalar_f64(1.0),
@@ -5599,9 +5845,9 @@ mod tests {
     }
 
     #[test]
-    fn test_erf_inv_vjp() {
+    fn test_erf_inv_vjp_single() {
         let x = 0.4_f64;
-        let grad = vjp(
+        let grad = vjp_single(
             Primitive::ErfInv,
             &[Value::scalar_f64(x)],
             &Value::scalar_f64(1.0),
@@ -5640,7 +5886,7 @@ mod tests {
         );
         let g = Value::scalar_f64(1.0);
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::ReduceMax, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceMax, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert!((vals[0] - 0.0).abs() < 1e-10, "non-max should be 0");
@@ -5667,7 +5913,7 @@ mod tests {
         );
         let g = Value::scalar_f64(1.0);
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::ReduceProd, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceProd, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert!((vals[0] - 12.0).abs() < 1e-10, "got {}", vals[0]);
@@ -5692,7 +5938,7 @@ mod tests {
         );
         let g = Value::scalar_f64(2.0);
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::ReduceMin, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceMin, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert!((vals[0] - 0.0).abs() < 1e-10);
@@ -5728,7 +5974,7 @@ mod tests {
             .unwrap(),
         );
 
-        let grads = vjp(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
         let grad_val = grads[0].as_f64_scalar().unwrap();
         assert!(
             (grad_val - 6.0).abs() < 1e-10,
@@ -5778,7 +6024,7 @@ mod tests {
             .unwrap(),
         );
 
-        let grads = vjp(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
         // Sum along axis 0: [1+4, 2+5, 3+6] = [5, 7, 9]
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
@@ -5827,7 +6073,7 @@ mod tests {
             .unwrap(),
         );
 
-        let grads = vjp(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert!((vals[0] - 10.0).abs() < 1e-10);
@@ -5885,7 +6131,7 @@ mod tests {
         );
 
         let params = BTreeMap::new();
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Scatter,
             &[operand, indices, updates],
             &g,
@@ -6655,7 +6901,7 @@ mod tests {
             }
 
             #[test]
-            fn prop_jvp_matches_vjp(x in prop::num::f64::NORMAL.prop_filter(
+            fn prop_jvp_matches_vjp_single(x in prop::num::f64::NORMAL.prop_filter(
                 "finite and not too large",
                 |x| x.is_finite() && x.abs() < 1e6
             )) {
@@ -6710,7 +6956,7 @@ mod tests {
         params.insert("padding_low".into(), "1".into());
         params.insert("padding_high".into(), "1".into());
 
-        let grads = vjp(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
         assert_eq!(grads.len(), 2);
 
         // Operand gradient: elements at positions 1, 2, 3 of g -> [20, 30, 40]
@@ -6763,7 +7009,7 @@ mod tests {
         params.insert("padding_high".into(), "0".into());
         params.insert("padding_interior".into(), "1".into());
 
-        let grads = vjp(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
 
         // Operand gradient: positions 0, 2, 4 of g -> [10, 30, 50]
         if let Value::Tensor(t) = &grads[0] {
@@ -6806,7 +7052,7 @@ mod tests {
         params.insert("padding_low".into(), "1,1".into());
         params.insert("padding_high".into(), "1,1".into());
 
-        let grads = vjp(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
 
         // Interior of 4x4 at offset (1,1) with shape 2x2:
         // row 1: g[1][1]=6, g[1][2]=7
@@ -6887,7 +7133,7 @@ mod tests {
         );
 
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::Conv, &[lhs.clone(), rhs.clone()], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Conv, &[lhs.clone(), rhs.clone()], &g, &params).unwrap();
 
         // grad_lhs[0,0,0] = g[0,0,0]*rhs[0,0,0] + g[0,1,0]*rhs[1,0,0] (if w_out=1 maps to w=0 via k=1)
         // Let's verify: for w=0: w_out=0,k=0 => g[0]*0.5 = 0.5
@@ -6996,7 +7242,7 @@ mod tests {
             .unwrap(),
         );
 
-        let grads = vjp(Primitive::Conv, &[lhs, rhs], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Conv, &[lhs, rhs], &g, &params).unwrap();
         // Verify grad_lhs has correct shape
         match &grads[0] {
             Value::Tensor(t) => assert_eq!(t.shape.dims, vec![1, 4, 1]),
@@ -7104,7 +7350,7 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("axis".to_string(), "0".to_string());
 
-        let grads = vjp(Primitive::Cumsum, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Cumsum, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7146,7 +7392,7 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("axis".to_string(), "0".to_string());
 
-        let grads = vjp(Primitive::Cumsum, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Cumsum, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7194,7 +7440,7 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("axis".to_string(), "0".to_string());
 
-        let grads = vjp(Primitive::Cumprod, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Cumprod, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7238,7 +7484,7 @@ mod tests {
         );
 
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::Sort, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7279,7 +7525,7 @@ mod tests {
         );
 
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::Sort, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7321,7 +7567,7 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("descending".to_string(), "true".to_string());
 
-        let grads = vjp(Primitive::Sort, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7360,7 +7606,7 @@ mod tests {
             .unwrap(),
         );
 
-        let grads = vjp(Primitive::Sort, &[x], &g, &BTreeMap::new()).unwrap();
+        let grads = vjp_single(Primitive::Sort, &[x], &g, &BTreeMap::new()).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7407,7 +7653,7 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("axis".to_string(), "0".to_string());
 
-        let grads = vjp(Primitive::Sort, &[x], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
         let result: Vec<f64> = match &grads[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -7424,7 +7670,7 @@ mod tests {
         let false_val = Value::scalar_f64(10.0);
         let g = Value::scalar_f64(3.0);
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
         assert_eq!(grads.len(), 3);
         // pred gradient is zero
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
@@ -7443,7 +7689,7 @@ mod tests {
         let false_val = Value::scalar_f64(10.0);
         let g = Value::scalar_f64(7.0);
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
         assert_eq!(grads.len(), 3);
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
         assert_eq!(grads[1].as_f64_scalar().unwrap(), 0.0);
@@ -7459,7 +7705,7 @@ mod tests {
         let false_val = Value::vector_f64(&[3.0, 4.0]).unwrap();
         let g = Value::vector_f64(&[10.0, 20.0]).unwrap();
         let params = BTreeMap::new();
-        let grads = vjp(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
         // true_val gets [10, 20]
         if let Value::Tensor(t) = &grads[1] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
@@ -7492,7 +7738,7 @@ mod tests {
         let init = Value::scalar_f64(0.0);
         let xs = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
         if let Value::Tensor(t) = &grads[1] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
@@ -7513,7 +7759,7 @@ mod tests {
         let init = Value::scalar_f64(1.0);
         let xs = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("mul")).unwrap();
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("mul")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 24.0);
         if let Value::Tensor(t) = &grads[1] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
@@ -7530,7 +7776,7 @@ mod tests {
         let init = Value::scalar_f64(0.0);
         let xs = Value::vector_f64(&[1.0, 2.0]).unwrap();
         let g = Value::scalar_f64(5.0);
-        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 5.0);
         if let Value::Tensor(t) = &grads[1] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
@@ -7547,7 +7793,7 @@ mod tests {
         let xs =
             Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
     }
 
@@ -7577,7 +7823,7 @@ mod tests {
         let step = Value::scalar_f64(3.0);
         let threshold = Value::scalar_f64(10.0);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::While,
             &[init, step, threshold],
             &g,
@@ -7599,7 +7845,7 @@ mod tests {
         let step = Value::scalar_f64(1.0);
         let threshold = Value::scalar_f64(5.0);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::While,
             &[init, step, threshold],
             &g,
@@ -7621,7 +7867,7 @@ mod tests {
         let step = Value::scalar_f64(2.0);
         let threshold = Value::scalar_f64(100.0);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::While,
             &[init, step, threshold],
             &g,
@@ -7643,7 +7889,7 @@ mod tests {
         let init = Value::scalar_f64(0.0);
         let xs = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector should be valid");
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("add"))
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add"))
             .expect("scan VJP should succeed");
         assert_eq!(
             grads[0]
@@ -7659,7 +7905,7 @@ mod tests {
         let init = Value::scalar_f64(1.0);
         let xs = Value::vector_f64(&[2.0, 3.0, 4.0]).expect("vector should be valid");
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(Primitive::Scan, &[init, xs], &g, &scan_params("mul"))
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("mul"))
             .expect("scan VJP should succeed");
         assert_eq!(
             grads[0]
@@ -7676,7 +7922,7 @@ mod tests {
         let step = Value::scalar_f64(1.0);
         let threshold = Value::scalar_f64(0.0);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::While,
             &[init, step, threshold],
             &g,
@@ -7704,7 +7950,7 @@ mod tests {
         let step = Value::scalar_f64(0.5);
         let threshold = Value::scalar_f64(0.25);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::While,
             &[init, step, threshold],
             &g,
@@ -7727,7 +7973,7 @@ mod tests {
         let true_val = Value::scalar_f64(5.0);
         let false_val = Value::scalar_f64(10.0);
         let g = Value::scalar_f64(3.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Cond,
             &[pred, true_val, false_val],
             &g,
@@ -7754,7 +8000,7 @@ mod tests {
         let true_val = Value::scalar_f64(5.0);
         let false_val = Value::scalar_f64(10.0);
         let g = Value::scalar_f64(7.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Cond,
             &[pred, true_val, false_val],
             &g,
@@ -7781,7 +8027,7 @@ mod tests {
         let true_val = Value::scalar_f64(2.0);
         let false_val = Value::scalar_f64(3.0);
         let g = Value::scalar_f64(1.0);
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Cond,
             &[pred, true_val, false_val],
             &g,
@@ -7816,7 +8062,7 @@ mod tests {
             init,
             eps,
         );
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::Scan,
             &[Value::scalar_f64(init), xs],
             &Value::scalar_f64(1.0),
@@ -7850,7 +8096,7 @@ mod tests {
             init,
             eps,
         );
-        let grads = vjp(
+        let grads = vjp_single(
             Primitive::While,
             &[Value::scalar_f64(init), step, threshold],
             &Value::scalar_f64(1.0),
@@ -7906,7 +8152,7 @@ mod tests {
         params.insert("window_strides".into(), "1".into());
         params.insert("reduce_op".into(), "sum".into());
 
-        let grads = vjp(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![1.0, 2.0, 3.0, 2.0, 1.0]);
@@ -7954,7 +8200,7 @@ mod tests {
         params.insert("window_strides".into(), "1".into());
         params.insert("reduce_op".into(), "max".into());
 
-        let grads = vjp(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![0.0, 30.0, 30.0, 0.0]);
@@ -8002,7 +8248,7 @@ mod tests {
         params.insert("window_strides".into(), "1".into());
         params.insert("reduce_op".into(), "min".into());
 
-        let grads = vjp(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![0.0, 30.0, 0.0, 30.0]);
@@ -8052,7 +8298,7 @@ mod tests {
         params.insert("window_strides".into(), "2".into());
         params.insert("reduce_op".into(), "sum".into());
 
-        let grads = vjp(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
         if let Value::Tensor(t) = &grads[0] {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![1.0, 1.0, 10.0, 10.0, 100.0, 100.0]);
@@ -8097,7 +8343,7 @@ mod tests {
             )
             .unwrap(),
         );
-        let analytical = vjp(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        let analytical = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
         let analytical_vals: Vec<f64> = match &analytical[0] {
             Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             _ => panic!("expected tensor"),
@@ -8620,11 +8866,7 @@ mod tests {
 
     fn extract_f64_vec(v: &Value) -> Vec<f64> {
         match v {
-            Value::Tensor(t) => t
-                .elements
-                .iter()
-                .map(|l| l.as_f64().unwrap())
-                .collect(),
+            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
             Value::Scalar(l) => vec![l.as_f64().unwrap()],
         }
     }
@@ -8634,10 +8876,16 @@ mod tests {
             Value::Tensor(t) => t
                 .elements
                 .iter()
-                .map(|l| l.as_complex128().unwrap_or((l.as_f64().unwrap_or(0.0), 0.0)))
+                .map(|l| {
+                    l.as_complex128()
+                        .unwrap_or((l.as_f64().unwrap_or(0.0), 0.0))
+                })
                 .collect(),
             Value::Scalar(l) => {
-                vec![l.as_complex128().unwrap_or((l.as_f64().unwrap_or(0.0), 0.0))]
+                vec![
+                    l.as_complex128()
+                        .unwrap_or((l.as_f64().unwrap_or(0.0), 0.0)),
+                ]
             }
         }
     }
@@ -8702,9 +8950,13 @@ mod tests {
         let y = eval_primitive(Primitive::Rfft, &[x.clone()], &params).unwrap();
 
         let g = make_complex_tensor(&vec![(1.0, 0.0); half_len]);
-        let vjp_result = vjp(Primitive::Rfft, &[x.clone()], &g, &params).unwrap();
+        let vjp_result = vjp_single(Primitive::Rfft, &[x.clone()], &g, &params).unwrap();
         let result = extract_f64_vec(&vjp_result[0]);
-        assert_eq!(result.len(), 4, "RFFT VJP should return tensor of input length");
+        assert_eq!(
+            result.len(),
+            4,
+            "RFFT VJP should return tensor of input length"
+        );
 
         let y_complex = extract_complex_vec(&y);
         let g_complex = extract_complex_vec(&g);
@@ -8735,7 +8987,7 @@ mod tests {
         let x = eval_primitive(Primitive::Irfft, &[y.clone()], &params).unwrap();
 
         let g = make_real_tensor(&vec![1.0; fft_length]);
-        let vjp_result = vjp(Primitive::Irfft, &[y.clone()], &g, &params).unwrap();
+        let vjp_result = vjp_single(Primitive::Irfft, &[y.clone()], &g, &params).unwrap();
         let result = extract_complex_vec(&vjp_result[0]);
         assert_eq!(
             result.len(),
@@ -8758,5 +9010,158 @@ mod tests {
             (lhs - rhs).abs() < 1e-8,
             "adjoint identity failed: <IRFFT(y),g> = {lhs}, <y,VJP(g)> = {rhs}"
         );
+    }
+
+    // ── QR VJP test ──
+
+    #[test]
+    fn test_qr_vjp_identity_matrix() {
+        // QR of 2×2 identity: Q=I, R=I
+        // VJP should produce correct dA
+        let a_data = vec![1.0, 0.0, 0.0, 1.0];
+        let a_elements: Vec<Literal> = a_data.iter().map(|&v| Literal::from_f64(v)).collect();
+        let a = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![2, 2] }, a_elements).unwrap(),
+        );
+
+        // Forward: QR(A) = (Q, R) = (I, I) for identity
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Qr, &[a.clone()], &BTreeMap::new()).unwrap();
+        assert_eq!(outputs.len(), 2);
+        let q = &outputs[0];
+        let r = &outputs[1];
+
+        // VJP with g_Q = ones(2,2), g_R = zeros(2,2)
+        let g_q_elements: Vec<Literal> = vec![1.0, 1.0, 1.0, 1.0]
+            .into_iter()
+            .map(Literal::from_f64)
+            .collect();
+        let g_q = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![2, 2] }, g_q_elements).unwrap(),
+        );
+        let g_r = zeros_like(r);
+
+        let vjp_result = vjp(
+            Primitive::Qr,
+            &[a],
+            &[g_q, g_r],
+            &[q.clone(), r.clone()],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            vjp_result.len(),
+            1,
+            "QR VJP should return 1 gradient (for A)"
+        );
+
+        // Result should be a 2×2 tensor
+        let da = vjp_result[0].as_tensor().unwrap();
+        assert_eq!(da.shape.dims, vec![2, 2]);
+
+        // Verify finite values (no NaN/Inf)
+        let vals: Vec<f64> = da.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+        for (i, v) in vals.iter().enumerate() {
+            assert!(v.is_finite(), "QR VJP element {i} is not finite: {v}");
+        }
+    }
+
+    #[test]
+    fn test_qr_vjp_numerical_check() {
+        // QR of [[1, -1], [1, 1]]: verify VJP via finite differences
+        let a_data = vec![1.0, -1.0, 1.0, 1.0];
+        let a_elements: Vec<Literal> = a_data.iter().map(|&v| Literal::from_f64(v)).collect();
+        let a = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![2, 2] }, a_elements).unwrap(),
+        );
+
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Qr, &[a.clone()], &BTreeMap::new()).unwrap();
+        let q = &outputs[0];
+        let r = &outputs[1];
+
+        // Use gradient g_R = ones, g_Q = zeros
+        let g_q = zeros_like(q);
+        let g_r_elements: Vec<Literal> = vec![1.0, 1.0, 1.0, 1.0]
+            .into_iter()
+            .map(Literal::from_f64)
+            .collect();
+        let g_r = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![2, 2] }, g_r_elements).unwrap(),
+        );
+
+        let vjp_result = vjp(
+            Primitive::Qr,
+            &[a.clone()],
+            &[g_q, g_r],
+            &[q.clone(), r.clone()],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let da = vjp_result[0].as_tensor().unwrap();
+        let da_vals: Vec<f64> = da.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+
+        // Numerical VJP check via finite differences
+        let eps = 1e-6;
+        let a_vals = vec![1.0, -1.0, 1.0, 1.0];
+        for idx in 0..4 {
+            let mut a_plus = a_vals.clone();
+            a_plus[idx] += eps;
+            let a_plus_val = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: vec![2, 2] },
+                    a_plus.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            );
+
+            let mut a_minus = a_vals.clone();
+            a_minus[idx] -= eps;
+            let a_minus_val = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: vec![2, 2] },
+                    a_minus.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            );
+
+            let out_plus =
+                fj_lax::eval_primitive_multi(Primitive::Qr, &[a_plus_val], &BTreeMap::new())
+                    .unwrap();
+            let out_minus =
+                fj_lax::eval_primitive_multi(Primitive::Qr, &[a_minus_val], &BTreeMap::new())
+                    .unwrap();
+
+            // We used g_R = ones, g_Q = zeros, so the directional derivative is
+            // sum(R_plus - R_minus) / (2*eps) for the R output
+            let r_plus: Vec<f64> = out_plus[1]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap())
+                .collect();
+            let r_minus: Vec<f64> = out_minus[1]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap())
+                .collect();
+            let numerical: f64 = r_plus
+                .iter()
+                .zip(r_minus.iter())
+                .map(|(p, m)| (p - m) / (2.0 * eps))
+                .sum();
+
+            assert!(
+                (da_vals[idx] - numerical).abs() < 1e-4,
+                "QR VJP element {idx}: analytical={}, numerical={}",
+                da_vals[idx],
+                numerical,
+            );
+        }
     }
 }

@@ -497,15 +497,37 @@ impl FixtureTransform {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FixtureValue {
-    ScalarF64 { value: f64 },
-    ScalarI64 { value: i64 },
-    ScalarBool { value: bool },
-    ScalarComplex128 { real: f64, imag: f64 },
-    VectorF64 { values: Vec<f64> },
-    VectorI64 { values: Vec<i64> },
-    TensorF64 { shape: Vec<u32>, values: Vec<f64> },
-    TensorI64 { shape: Vec<u32>, values: Vec<i64> },
-    TensorBool { shape: Vec<u32>, values: Vec<bool> },
+    ScalarF64 {
+        value: f64,
+    },
+    ScalarI64 {
+        value: i64,
+    },
+    ScalarBool {
+        value: bool,
+    },
+    ScalarComplex128 {
+        real: f64,
+        imag: f64,
+    },
+    VectorF64 {
+        values: Vec<f64>,
+    },
+    VectorI64 {
+        values: Vec<i64>,
+    },
+    TensorF64 {
+        shape: Vec<u32>,
+        values: Vec<f64>,
+    },
+    TensorI64 {
+        shape: Vec<u32>,
+        values: Vec<i64>,
+    },
+    TensorBool {
+        shape: Vec<u32>,
+        values: Vec<bool>,
+    },
     TensorComplex128 {
         shape: Vec<u32>,
         reals: Vec<f64>,
@@ -657,14 +679,16 @@ impl FixtureValue {
             } => actual.as_tensor().is_some_and(|tensor| {
                 tensor.shape.dims == *shape
                     && tensor.elements.len() == reals.len()
-                    && tensor.elements.iter().zip(reals.iter().zip(imags.iter())).all(
-                        |(a, (&exp_re, &exp_im))| {
+                    && tensor
+                        .elements
+                        .iter()
+                        .zip(reals.iter().zip(imags.iter()))
+                        .all(|(a, (&exp_re, &exp_im))| {
                             a.as_complex128().is_some_and(|(act_re, act_im)| {
                                 approx_equal(exp_re, act_re, atol, rtol)
                                     && approx_equal(exp_im, act_im, atol, rtol)
                             })
-                        },
-                    )
+                        })
             }),
         }
     }
@@ -1630,9 +1654,7 @@ fn record_fixture_comparison(
                 report.record(case_id, output_idx, 1, *imag, act_im, tolerance);
             }
         }
-        FixtureValue::TensorComplex128 {
-            reals, imags, ..
-        } => {
+        FixtureValue::TensorComplex128 { reals, imags, .. } => {
             if let Some(tensor) = actual.as_tensor() {
                 for (elem_idx, ((&exp_re, &exp_im), lit)) in reals
                     .iter()
@@ -1641,14 +1663,7 @@ fn record_fixture_comparison(
                     .enumerate()
                 {
                     if let Some((act_re, act_im)) = lit.as_complex128() {
-                        report.record(
-                            case_id,
-                            output_idx,
-                            elem_idx * 2,
-                            exp_re,
-                            act_re,
-                            tolerance,
-                        );
+                        report.record(case_id, output_idx, elem_idx * 2, exp_re, act_re, tolerance);
                         report.record(
                             case_id,
                             output_idx,
