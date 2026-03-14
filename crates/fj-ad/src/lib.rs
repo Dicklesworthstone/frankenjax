@@ -2373,7 +2373,339 @@ fn vjp(
 
             Ok(vec![da])
         }
-        Primitive::Svd | Primitive::Eigh => Err(AdError::UnsupportedPrimitive(primitive)),
+        // ── SVD VJP ──
+        // A = U diag(s) V^T. Given cotangents g_U, g_s, g_Vt:
+        // G[i,j] = [s_j(D_U[i,j]-D_U[j,i]) + s_i(D_V[i,j]-D_V[j,i])] / (s_j²-s_i²)
+        // G[i,i] = g_s[i]
+        // dA = U G V^T + (I-UU^T) g_U Σ^{-1} V^T + U Σ^{-1} g_V^T (I-VV^T)
+        Primitive::Svd => {
+            let g_u = &gs[0];
+            let g_s_val = if gs.len() > 1 {
+                &gs[1]
+            } else {
+                &zeros_like(&output_values[1])
+            };
+            let g_vt = if gs.len() > 2 {
+                &gs[2]
+            } else {
+                &zeros_like(&output_values[2])
+            };
+
+            let u_val = &output_values[0];
+            let s_val = &output_values[1];
+            let vt_val = &output_values[2];
+
+            let u_t = u_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("SVD VJP: U must be tensor".to_owned()))?;
+            let vt_t = vt_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("SVD VJP: Vt must be tensor".to_owned()))?;
+            let gu_t = g_u
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("SVD VJP: g_U must be tensor".to_owned()))?;
+            let gvt_t = g_vt
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("SVD VJP: g_Vt must be tensor".to_owned()))?;
+
+            let s_vec: Vec<f64> = s_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("SVD VJP: S must be tensor".to_owned()))?
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+            let gs_vec: Vec<f64> = g_s_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("SVD VJP: g_S must be tensor".to_owned()))?
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            let m = u_t.shape.dims[0] as usize;
+            let k = s_vec.len();
+            let n = vt_t.shape.dims[1] as usize;
+
+            // V = Vt^T, g_V = g_Vt^T
+            let v_val = transpose_2d(vt_t)?;
+            let v_t = v_val.as_tensor().unwrap();
+            let gv_val = transpose_2d(gvt_t)?;
+            let gv_t = gv_val.as_tensor().unwrap();
+
+            // D_U = U^T g_U [k×k], D_V = V^T g_V [k×k]
+            let ut_val = transpose_2d(u_t)?;
+            let ut = ut_val.as_tensor().unwrap();
+            let d_u_val = matmul_2d(ut, gu_t)?;
+            let d_u = d_u_val.as_tensor().unwrap();
+            let vt_for_dv = vt_t; // V^T = Vt
+            let d_v_val = matmul_2d(vt_for_dv, gv_t)?;
+            let d_v = d_v_val.as_tensor().unwrap();
+
+            let du_vals: Vec<f64> = d_u
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+            let dv_vals: Vec<f64> = d_v
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            // Build G[k×k]
+            let mut g_mat = vec![0.0f64; k * k];
+            for i in 0..k {
+                g_mat[i * k + i] = gs_vec[i]; // diagonal
+                for j in 0..k {
+                    if i != j {
+                        let si = s_vec[i];
+                        let sj = s_vec[j];
+                        let denom = sj * sj - si * si;
+                        if denom.abs() > 1e-20 {
+                            let du_ij = du_vals[i * k + j];
+                            let du_ji = du_vals[j * k + i];
+                            let dv_ij = dv_vals[i * k + j];
+                            let dv_ji = dv_vals[j * k + i];
+                            g_mat[i * k + j] =
+                                (sj * (du_ij - du_ji) + si * (dv_ij - dv_ji)) / denom;
+                        }
+                        // else: degenerate singular values, G[i,j] = 0
+                    }
+                }
+            }
+            let g_tensor = TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![k as u32, k as u32],
+                },
+                g_mat.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+            // dA_core = U G V^T [m×n]
+            let ug = matmul_2d(u_t, &g_tensor)?;
+            let da_core = matmul_2d(ug.as_tensor().unwrap(), vt_t)?;
+
+            let mut da_vals: Vec<f64> = da_core
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            // Extra term for m > k: (I_m - UU^T) g_U Σ^{-1} V^T
+            if m > k {
+                let u_vals: Vec<f64> = u_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                let gu_vals: Vec<f64> = gu_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                let v_vals: Vec<f64> = v_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                // proj_gu = g_U - U(U^T g_U) = g_U - U D_U [m×k]
+                let u_du = matmul_f64(m, k, k, &u_vals, &du_vals);
+                let proj_gu: Vec<f64> = gu_vals
+                    .iter()
+                    .zip(u_du.iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
+                // proj_gu @ Σ^{-1} [m×k]
+                let mut proj_sinv = vec![0.0; m * k];
+                for i in 0..m {
+                    for j in 0..k {
+                        let sinv = if s_vec[j].abs() > 1e-20 {
+                            1.0 / s_vec[j]
+                        } else {
+                            0.0
+                        };
+                        proj_sinv[i * k + j] = proj_gu[i * k + j] * sinv;
+                    }
+                }
+                // ... @ V^T [m×n] (V^T = Vt)
+                let vt_vals: Vec<f64> = vt_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                let extra = matmul_f64(m, k, n, &proj_sinv, &vt_vals);
+                for i in 0..m * n {
+                    da_vals[i] += extra[i];
+                }
+            }
+            // Extra term for n > k: U Σ^{-1} g_V^T (I_n - VV^T)
+            if n > k {
+                let u_vals: Vec<f64> = u_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                let gv_vals: Vec<f64> = gv_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                let v_vals: Vec<f64> = v_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                // g_V^T - V^T(V g_V^T) = g_Vt - Vt (Vt^T g_Vt)^T ... complex
+                // proj_gvt = g_V^T (I - VV^T) = g_Vt - (Vt^T Vt) g_Vt... no
+                // g_V^T (I-VV^T) where g_V = g_Vt^T, V = Vt^T
+                // = g_Vt (I - Vt^T Vt)
+                // D_V = Vt g_Vt^T [k×k], so Vt^T Vt g_Vt^T = Vt^T D_V^T ... hmm
+                // Simpler: proj = g_Vt - D_V Vt where D_V = Vt g_Vt^T
+                // Actually: g_V^T (I-VV^T) = g_Vt - g_Vt V V^T = g_Vt - g_Vt Vt^T Vt
+                // = g_Vt (I_n - Vt^T Vt)
+                let gvt_vals: Vec<f64> = gvt_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                let vt_vals: Vec<f64> = vt_t
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap_or(0.0))
+                    .collect();
+                // Vt^T [n×k] @ Vt [k×n] = VV^T [n×n]
+                let vt_trans = transpose_f64(k, n, &vt_vals);
+                let vvt = matmul_f64(n, k, n, &vt_trans, &vt_vals);
+                // g_Vt (I - VV^T) [k×n]
+                let gvt_vvt = matmul_f64(k, n, n, &gvt_vals, &vvt);
+                let proj_gvt: Vec<f64> = gvt_vals
+                    .iter()
+                    .zip(gvt_vvt.iter())
+                    .map(|(a, b)| a - b)
+                    .collect();
+                // U Σ^{-1} [m×k] @ proj_gvt [k×n]
+                let mut u_sinv = vec![0.0; m * k];
+                for i in 0..m {
+                    for j in 0..k {
+                        let sinv = if s_vec[j].abs() > 1e-20 {
+                            1.0 / s_vec[j]
+                        } else {
+                            0.0
+                        };
+                        u_sinv[i * k + j] = u_vals[i * k + j] * sinv;
+                    }
+                }
+                let extra = matmul_f64(m, k, n, &u_sinv, &proj_gvt);
+                for i in 0..m * n {
+                    da_vals[i] += extra[i];
+                }
+            }
+
+            let da = build_matrix_f64(m, n, &da_vals)?;
+            Ok(vec![da])
+        }
+        // ── Eigh VJP ──
+        // A = V diag(w) V^T. Given cotangents g_w, g_V:
+        // middle = diag(g_w) + F ⊙ (V^T g_V)
+        // dA = V middle V^T, symmetrized
+        Primitive::Eigh => {
+            let g_w = &gs[0];
+            let g_v = if gs.len() > 1 {
+                &gs[1]
+            } else {
+                &zeros_like(&output_values[1])
+            };
+
+            let w_val = &output_values[0];
+            let v_val = &output_values[1];
+
+            let v_t = v_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("Eigh VJP: V must be tensor".to_owned()))?;
+            let gv_t = g_v
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("Eigh VJP: g_V must be tensor".to_owned()))?;
+
+            let w_vec: Vec<f64> = w_val
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("Eigh VJP: W must be tensor".to_owned()))?
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+            let gw_vec: Vec<f64> = g_w
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("Eigh VJP: g_W must be tensor".to_owned()))?
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            let nn = w_vec.len();
+
+            // D = V^T g_V [n×n]
+            let vt_val = transpose_2d(v_t)?;
+            let vt = vt_val.as_tensor().unwrap();
+            let d_val = matmul_2d(vt, gv_t)?;
+            let d_t = d_val.as_tensor().unwrap();
+            let d_vals: Vec<f64> = d_t
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            // Build middle = diag(g_w) + F ⊙ D [n×n]
+            let mut middle = vec![0.0f64; nn * nn];
+            for i in 0..nn {
+                middle[i * nn + i] = gw_vec[i]; // diagonal from g_w
+                for j in 0..nn {
+                    if i != j {
+                        let denom = w_vec[j] - w_vec[i];
+                        let f_ij = if denom.abs() > 1e-20 {
+                            1.0 / denom
+                        } else {
+                            0.0
+                        };
+                        middle[i * nn + j] += f_ij * d_vals[i * nn + j];
+                    }
+                }
+            }
+
+            let mid_tensor = TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![nn as u32, nn as u32],
+                },
+                middle.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+            // dA = V middle V^T
+            let v_mid = matmul_2d(v_t, &mid_tensor)?;
+            let da_unsym = matmul_2d(v_mid.as_tensor().unwrap(), vt)?;
+            let da_vals: Vec<f64> = da_unsym
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            // Symmetrize: dA = (dA + dA^T) / 2
+            let mut sym_vals = vec![0.0f64; nn * nn];
+            for i in 0..nn {
+                for j in 0..nn {
+                    sym_vals[i * nn + j] = (da_vals[i * nn + j] + da_vals[j * nn + i]) * 0.5;
+                }
+            }
+
+            let da = build_matrix_f64(nn, nn, &sym_vals)?;
+            Ok(vec![da])
+        }
     }
 }
 
