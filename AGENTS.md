@@ -369,7 +369,7 @@ Required evidence for substantive changes:
 |------|---------|
 | IR nodes | Canonical JAXPR-like intermediate representation |
 | Shape types | Tensor shape and dtype definitions |
-| Primitives | `add`, `mul`, `dot`, `sin`, `cos`, `reduce_sum` (expanding) |
+| Primitives | `add`, `mul`, `dot`, `sin`, `cos`, `reduce_sum`, etc. (110 ops) |
 | Cache keys | SHA-256 deterministic keys with strict/hardened gate behavior |
 | Evidence entries | Transform composition proofs and decision audit trail |
 | Loss-matrix actions | Decision-theoretic runtime contracts |

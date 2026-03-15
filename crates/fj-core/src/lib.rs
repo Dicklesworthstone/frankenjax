@@ -163,13 +163,13 @@ pub enum Primitive {
     Copy,
     BitcastConvertType,
     ReducePrecision,
-    // Linear algebra stubs
+    // Linear algebra
     Cholesky,
     Qr,
     Svd,
     TriangularSolve,
     Eigh,
-    // FFT stubs
+    // FFT
     Fft,
     Ifft,
     Rfft,
