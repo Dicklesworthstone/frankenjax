@@ -3001,3 +3001,259 @@ pub(crate) fn eval_expand_dims(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn v_f64(data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn mat_f64(rows: u32, cols: u32, data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![rows, cols],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn extract_f64_vec(val: &Value) -> Vec<f64> {
+        val.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect()
+    }
+    fn extract_shape(val: &Value) -> Vec<u32> {
+        val.as_tensor().unwrap().shape.dims.clone()
+    }
+    fn params(entries: &[(&str, &str)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|&(k, v)| (k.to_owned(), v.to_owned()))
+            .collect()
+    }
+
+    // ── Reshape ──
+
+    #[test]
+    fn reshape_1d_to_2d() {
+        let x = v_f64(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let p = params(&[("new_shape", "2,3")]);
+        let result = eval_reshape(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![2, 3]);
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn reshape_2d_to_1d() {
+        let x = mat_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let p = params(&[("new_shape", "6")]);
+        let result = eval_reshape(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![6]);
+    }
+
+    // ── Transpose ──
+
+    #[test]
+    fn transpose_2x3() {
+        // [[1,2,3],[4,5,6]] → [[1,4],[2,5],[3,6]]
+        let x = mat_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let p = params(&[("permutation", "1,0")]);
+        let result = eval_transpose(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![3, 2]);
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
+    }
+
+    #[test]
+    fn transpose_identity() {
+        let x = mat_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let p = params(&[("permutation", "0,1")]);
+        let result = eval_transpose(&[x.clone()], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), extract_f64_vec(&x));
+    }
+
+    // ── Slice ──
+
+    #[test]
+    fn slice_1d() {
+        let x = v_f64(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+        let p = params(&[("start_indices", "1"), ("limit_indices", "4")]);
+        let result = eval_slice(&[x], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![20.0, 30.0, 40.0]);
+    }
+
+    #[test]
+    fn slice_1d_from_start() {
+        let x = v_f64(&[10.0, 20.0, 30.0, 40.0, 50.0]);
+        let p = params(&[("start_indices", "0"), ("limit_indices", "2")]);
+        let result = eval_slice(&[x], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![10.0, 20.0]);
+    }
+
+    // ── Concatenate ──
+
+    #[test]
+    fn concatenate_1d() {
+        let a = v_f64(&[1.0, 2.0]);
+        let b = v_f64(&[3.0, 4.0, 5.0]);
+        let p = params(&[("dimension", "0")]);
+        let result = eval_concatenate(&[a, b], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    // ── Reverse ──
+
+    #[test]
+    fn rev_1d() {
+        let x = v_f64(&[1.0, 2.0, 3.0, 4.0]);
+        let p = params(&[("axes", "0")]);
+        let result = eval_rev(&[x], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![4.0, 3.0, 2.0, 1.0]);
+    }
+
+    // ── Iota ──
+
+    #[test]
+    fn iota_1d() {
+        let p = params(&[("length", "5"), ("dtype", "F64")]);
+        let result = eval_iota(&[], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![0.0, 1.0, 2.0, 3.0, 4.0]);
+    }
+
+    // ── One-hot ──
+
+    #[test]
+    fn one_hot_basic() {
+        let indices = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3] },
+                vec![Literal::I64(0), Literal::I64(1), Literal::I64(2)],
+            )
+            .unwrap(),
+        );
+        let p = params(&[("num_classes", "4"), ("dtype", "f64")]);
+        let result = eval_one_hot(&[indices], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![3, 4]);
+        let vals = extract_f64_vec(&result);
+        // Row 0: [1,0,0,0], Row 1: [0,1,0,0], Row 2: [0,0,1,0]
+        assert_eq!(vals[0], 1.0);
+        assert_eq!(vals[1], 0.0);
+        assert_eq!(vals[4], 0.0);
+        assert_eq!(vals[5], 1.0);
+        assert_eq!(vals[10], 1.0);
+    }
+
+    // ── Sort ──
+
+    #[test]
+    fn sort_1d_ascending() {
+        let x = v_f64(&[3.0, 1.0, 4.0, 1.0, 5.0]);
+        let p = params(&[
+            ("dimension", "0"),
+            ("is_stable", "true"),
+            ("descending", "false"),
+        ]);
+        let result = eval_sort(Primitive::Sort, &[x], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 1.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn sort_1d_descending() {
+        let x = v_f64(&[3.0, 1.0, 4.0]);
+        let p = params(&[
+            ("dimension", "0"),
+            ("is_stable", "true"),
+            ("descending", "true"),
+        ]);
+        let result = eval_sort(Primitive::Sort, &[x], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![4.0, 3.0, 1.0]);
+    }
+
+    // ── Argsort ──
+
+    #[test]
+    fn argsort_1d() {
+        let x = v_f64(&[30.0, 10.0, 20.0]);
+        let p = params(&[
+            ("dimension", "0"),
+            ("is_stable", "true"),
+            ("descending", "false"),
+        ]);
+        let result = eval_argsort(Primitive::Argsort, &[x], &p).unwrap();
+        let indices: Vec<i64> = result
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_i64().expect("expected integer index"))
+            .collect();
+        assert_eq!(indices, vec![1, 2, 0]);
+    }
+
+    // ── Copy ──
+
+    #[test]
+    fn copy_preserves_value() {
+        let x = v_f64(&[1.0, 2.0, 3.0]);
+        let result = eval_copy(&[x.clone()]).unwrap();
+        assert_eq!(extract_f64_vec(&result), extract_f64_vec(&x));
+    }
+
+    // ── Squeeze ──
+
+    #[test]
+    fn squeeze_removes_unit_dim() {
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![1, 3] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let p = params(&[("dimensions", "0")]);
+        let result = eval_squeeze(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![3]);
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0]);
+    }
+
+    // ── ExpandDims ──
+
+    #[test]
+    fn expand_dims_adds_unit_dim() {
+        let x = v_f64(&[1.0, 2.0, 3.0]);
+        let p = params(&[("axis", "0")]);
+        let result = eval_expand_dims(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![1, 3]);
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn expand_dims_trailing() {
+        let x = v_f64(&[1.0, 2.0]);
+        let p = params(&[("axis", "1")]);
+        let result = eval_expand_dims(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![2, 1]);
+    }
+}
