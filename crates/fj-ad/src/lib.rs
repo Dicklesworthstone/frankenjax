@@ -2427,8 +2427,7 @@ fn vjp(
             let k = s_vec.len();
             let n = vt_t.shape.dims[1] as usize;
 
-            // V = Vt^T, g_V = g_Vt^T
-            let _v_val = transpose_2d(vt_t)?;
+            // g_V = g_Vt^T (V = Vt^T is used implicitly via Vt throughout)
             let gv_val = transpose_2d(gvt_t)?;
             let gv_t = gv_val.as_tensor().unwrap();
 
