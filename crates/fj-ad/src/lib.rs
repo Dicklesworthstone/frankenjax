@@ -437,7 +437,7 @@ fn scale_hermitian_adjoint(tensor: &TensorValue, fft_length: usize) -> Result<Va
         // Interior bins: everything except DC (index 0) and Nyquist (index n/2, even n only).
         // For odd fft_length there is no Nyquist bin, so all non-DC bins are interior.
         for k in 1..cur_len {
-            if fft_length % 2 == 0 && k == fft_length / 2 {
+            if fft_length.is_multiple_of(2) && k == fft_length / 2 {
                 continue; // Skip Nyquist for even fft_length
             }
             let idx = start + k;
@@ -638,7 +638,7 @@ fn backward(
             })
             .collect();
         // Skip if all output gradients are zero.
-        if gs.iter().all(|g| is_zero_value(g)) {
+        if gs.iter().all(is_zero_value) {
             continue;
         }
 
@@ -690,7 +690,7 @@ fn vjp_single(
     g: &Value,
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
-    vjp(primitive, inputs, &[g.clone()], &[], params)
+    vjp(primitive, inputs, std::slice::from_ref(g), &[], params)
 }
 
 fn vjp(
@@ -2428,8 +2428,7 @@ fn vjp(
             let n = vt_t.shape.dims[1] as usize;
 
             // V = Vt^T, g_V = g_Vt^T
-            let v_val = transpose_2d(vt_t)?;
-            let v_t = v_val.as_tensor().unwrap();
+            let _v_val = transpose_2d(vt_t)?;
             let gv_val = transpose_2d(gvt_t)?;
             let gv_t = gv_val.as_tensor().unwrap();
 
@@ -2507,11 +2506,6 @@ fn vjp(
                     .iter()
                     .map(|l| l.as_f64().unwrap_or(0.0))
                     .collect();
-                let v_vals: Vec<f64> = v_t
-                    .elements
-                    .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0))
-                    .collect();
                 // proj_gu = g_U - U(U^T g_U) = g_U - U D_U [m×k]
                 let u_du = matmul_f64(m, k, k, &u_vals, &du_vals);
                 let proj_gu: Vec<f64> = gu_vals
@@ -2545,16 +2539,6 @@ fn vjp(
             // Extra term for n > k: U Σ^{-1} g_V^T (I_n - VV^T)
             if n > k {
                 let u_vals: Vec<f64> = u_t
-                    .elements
-                    .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0))
-                    .collect();
-                let gv_vals: Vec<f64> = gv_t
-                    .elements
-                    .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0))
-                    .collect();
-                let v_vals: Vec<f64> = v_t
                     .elements
                     .iter()
                     .map(|l| l.as_f64().unwrap_or(0.0))
@@ -3084,7 +3068,7 @@ fn scan_vjp(
             let step_grads = vjp(
                 body_op,
                 &[init_carry.clone(), xs.clone()],
-                &[g.clone()],
+                std::slice::from_ref(g),
                 &[],
                 &BTreeMap::new(),
             )?;
@@ -4592,10 +4576,10 @@ fn jvp_rule(
 /// Given primals, tangents, and primal output values, computes output tangents.
 fn jvp_rule_multi(
     primitive: Primitive,
-    primals: &[Value],
+    _primals: &[Value],
     tangents: &[Value],
     primal_outputs: &[Value],
-    params: &BTreeMap<String, String>,
+    _params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
     match primitive {
         // ── Eigh JVP ──
@@ -4944,17 +4928,7 @@ fn jvp_rule_multi(
             }
 
             if n > k {
-                let u_vals: Vec<f64> = u_t
-                    .elements
-                    .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0))
-                    .collect();
                 let vt_vals: Vec<f64> = vt_t
-                    .elements
-                    .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0))
-                    .collect();
-                let da_vals: Vec<f64> = da_t
                     .elements
                     .iter()
                     .map(|l| l.as_f64().unwrap_or(0.0))
@@ -4969,11 +4943,6 @@ fn jvp_rule_multi(
                     .collect();
                 // U^T dA [k×n] @ V [n×k] = M [k×k] — already have. Then V^T [k×n]
                 // (I_n - VV^T) = I - Vt^T Vt
-                let v_vals: Vec<f64> = v_t
-                    .elements
-                    .iter()
-                    .map(|l| l.as_f64().unwrap_or(0.0))
-                    .collect();
                 let vt_trans = transpose_f64(k, n, &vt_vals);
                 let vvt = matmul_f64(n, k, n, &vt_trans, &vt_vals);
                 // U^T dA (I-VV^T) [k×n]
@@ -9558,6 +9527,7 @@ mod tests {
 
     // ── FFT AD tests ──
 
+    #[allow(dead_code)]
     fn make_fft_jaxpr(prim: Primitive) -> Jaxpr {
         Jaxpr::new(
             vec![VarId(1)],
@@ -9662,12 +9632,13 @@ mod tests {
         let x = make_real_tensor(&[1.0, 2.0, 3.0, 4.0]);
         let dx = make_real_tensor(&[0.1, 0.2, 0.3, 0.4]);
 
-        let jvp_result = jvp(&jaxpr, &[x], &[dx.clone()]).unwrap();
+        let jvp_result = jvp(&jaxpr, &[x], std::slice::from_ref(&dx)).unwrap();
         let tangent_out = extract_complex_vec(&jvp_result.tangents[0]);
 
         let mut rfft_params = BTreeMap::new();
         rfft_params.insert("fft_length".to_owned(), "4".to_owned());
-        let rfft_dx = eval_primitive(Primitive::Rfft, &[dx], &rfft_params).unwrap();
+        let rfft_dx =
+            eval_primitive(Primitive::Rfft, std::slice::from_ref(&dx), &rfft_params).unwrap();
         let expected = extract_complex_vec(&rfft_dx);
 
         assert_eq!(tangent_out.len(), expected.len());
@@ -9686,12 +9657,13 @@ mod tests {
         let g_in = make_complex_tensor(&[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)]);
         let dg = make_complex_tensor(&[(1.0, 0.0), (0.5, -0.5), (0.0, 0.0)]);
 
-        let jvp_result = jvp(&jaxpr, &[g_in], &[dg.clone()]).unwrap();
+        let jvp_result = jvp(&jaxpr, &[g_in], std::slice::from_ref(&dg)).unwrap();
         let tangent_out = extract_f64_vec(&jvp_result.tangents[0]);
 
         let mut irfft_params = BTreeMap::new();
         irfft_params.insert("fft_length".to_owned(), "4".to_owned());
-        let irfft_dg = eval_primitive(Primitive::Irfft, &[dg], &irfft_params).unwrap();
+        let irfft_dg =
+            eval_primitive(Primitive::Irfft, std::slice::from_ref(&dg), &irfft_params).unwrap();
         let expected = extract_f64_vec(&irfft_dg);
 
         assert_eq!(tangent_out.len(), expected.len());
@@ -9712,10 +9684,11 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("fft_length".to_owned(), "4".to_owned());
 
-        let y = eval_primitive(Primitive::Rfft, &[x.clone()], &params).unwrap();
+        let y = eval_primitive(Primitive::Rfft, std::slice::from_ref(&x), &params).unwrap();
 
         let g = make_complex_tensor(&vec![(1.0, 0.0); half_len]);
-        let vjp_result = vjp_single(Primitive::Rfft, &[x.clone()], &g, &params).unwrap();
+        let vjp_result =
+            vjp_single(Primitive::Rfft, std::slice::from_ref(&x), &g, &params).unwrap();
         let result = extract_f64_vec(&vjp_result[0]);
         assert_eq!(
             result.len(),
@@ -9749,10 +9722,11 @@ mod tests {
         params.insert("fft_length".to_owned(), "4".to_owned());
 
         let y = make_complex_tensor(&[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)]);
-        let x = eval_primitive(Primitive::Irfft, &[y.clone()], &params).unwrap();
+        let x = eval_primitive(Primitive::Irfft, std::slice::from_ref(&y), &params).unwrap();
 
         let g = make_real_tensor(&vec![1.0; fft_length]);
-        let vjp_result = vjp_single(Primitive::Irfft, &[y.clone()], &g, &params).unwrap();
+        let vjp_result =
+            vjp_single(Primitive::Irfft, std::slice::from_ref(&y), &g, &params).unwrap();
         let result = extract_complex_vec(&vjp_result[0]);
         assert_eq!(
             result.len(),
@@ -9783,7 +9757,7 @@ mod tests {
     fn test_qr_vjp_identity_matrix() {
         // QR of 2×2 identity: Q=I, R=I
         // VJP should produce correct dA
-        let a_data = vec![1.0, 0.0, 0.0, 1.0];
+        let a_data = [1.0, 0.0, 0.0, 1.0];
         let a_elements: Vec<Literal> = a_data.iter().map(|&v| Literal::from_f64(v)).collect();
         let a = Value::Tensor(
             TensorValue::new(DType::F64, Shape { dims: vec![2, 2] }, a_elements).unwrap(),
@@ -9791,7 +9765,8 @@ mod tests {
 
         // Forward: QR(A) = (Q, R) = (I, I) for identity
         let outputs =
-            fj_lax::eval_primitive_multi(Primitive::Qr, &[a.clone()], &BTreeMap::new()).unwrap();
+            fj_lax::eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
         assert_eq!(outputs.len(), 2);
         let q = &outputs[0];
         let r = &outputs[1];
@@ -9834,14 +9809,15 @@ mod tests {
     #[test]
     fn test_qr_vjp_numerical_check() {
         // QR of [[1, -1], [1, 1]]: verify VJP via finite differences
-        let a_data = vec![1.0, -1.0, 1.0, 1.0];
+        let a_data = [1.0, -1.0, 1.0, 1.0];
         let a_elements: Vec<Literal> = a_data.iter().map(|&v| Literal::from_f64(v)).collect();
         let a = Value::Tensor(
             TensorValue::new(DType::F64, Shape { dims: vec![2, 2] }, a_elements).unwrap(),
         );
 
         let outputs =
-            fj_lax::eval_primitive_multi(Primitive::Qr, &[a.clone()], &BTreeMap::new()).unwrap();
+            fj_lax::eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
         let q = &outputs[0];
         let r = &outputs[1];
 
@@ -9857,7 +9833,7 @@ mod tests {
 
         let vjp_result = vjp(
             Primitive::Qr,
-            &[a.clone()],
+            std::slice::from_ref(&a),
             &[g_q, g_r],
             &[q.clone(), r.clone()],
             &BTreeMap::new(),
@@ -9945,8 +9921,12 @@ mod tests {
             .unwrap(),
         );
 
-        let outputs =
-            fj_lax::eval_primitive_multi(Primitive::Eigh, &[a.clone()], &BTreeMap::new()).unwrap();
+        let outputs = fj_lax::eval_primitive_multi(
+            Primitive::Eigh,
+            std::slice::from_ref(&a),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let w = &outputs[0];
         let v = &outputs[1];
 
@@ -9963,7 +9943,7 @@ mod tests {
 
         let vjp_result = vjp(
             Primitive::Eigh,
-            &[a.clone()],
+            std::slice::from_ref(&a),
             &[g_w, g_v],
             &[w.clone(), v.clone()],
             &BTreeMap::new(),
@@ -10065,8 +10045,12 @@ mod tests {
             .unwrap(),
         );
 
-        let outputs =
-            fj_lax::eval_primitive_multi(Primitive::Svd, &[a.clone()], &BTreeMap::new()).unwrap();
+        let outputs = fj_lax::eval_primitive_multi(
+            Primitive::Svd,
+            std::slice::from_ref(&a),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let u = &outputs[0];
         let s = &outputs[1];
         let vt = &outputs[2];
@@ -10085,7 +10069,7 @@ mod tests {
 
         let vjp_result = vjp(
             Primitive::Svd,
-            &[a.clone()],
+            std::slice::from_ref(&a),
             &[g_u, g_s, g_vt],
             &[u.clone(), s.clone(), vt.clone()],
             &BTreeMap::new(),
@@ -10199,7 +10183,7 @@ mod tests {
             }],
         );
 
-        let jvp_result = jvp(&jaxpr, &[a.clone()], &[da]).unwrap();
+        let jvp_result = jvp(&jaxpr, std::slice::from_ref(&a), &[da]).unwrap();
         let dw = &jvp_result.tangents[0];
         let dw_vals: Vec<f64> = dw
             .as_tensor()
