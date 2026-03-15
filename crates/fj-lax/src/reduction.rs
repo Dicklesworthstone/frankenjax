@@ -595,3 +595,262 @@ pub(crate) fn eval_cumulative(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn s_f64(v: f64) -> Value {
+        Value::Scalar(Literal::from_f64(v))
+    }
+    fn v_f64(data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn v_i64(data: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn mat_f64(rows: u32, cols: u32, data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![rows, cols],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn extract_f64(val: &Value) -> f64 {
+        val.as_f64_scalar().unwrap()
+    }
+    fn extract_i64(val: &Value) -> i64 {
+        match val {
+            Value::Scalar(Literal::I64(v)) => *v,
+            _ => panic!("expected i64 scalar"),
+        }
+    }
+    fn extract_f64_vec(val: &Value) -> Vec<f64> {
+        val.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect()
+    }
+
+    // ── Reduce all axes ──
+
+    #[test]
+    fn reduce_sum_scalar() {
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[s_f64(42.0)],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 42.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_sum_vector() {
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[v_f64(&[1.0, 2.0, 3.0, 4.0])],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_max_vector() {
+        let result = eval_reduce(
+            Primitive::ReduceMax,
+            &[v_f64(&[3.0, 1.0, 4.0, 1.0, 5.0])],
+            i64::MIN,
+            f64::NEG_INFINITY,
+            |a, b| a.max(b),
+            |a, b| a.max(b),
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_min_vector() {
+        let result = eval_reduce(
+            Primitive::ReduceMin,
+            &[v_f64(&[3.0, 1.0, 4.0, 1.0, 5.0])],
+            i64::MAX,
+            f64::INFINITY,
+            |a, b| a.min(b),
+            |a, b| a.min(b),
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_prod_vector() {
+        let result = eval_reduce(
+            Primitive::ReduceProd,
+            &[v_f64(&[2.0, 3.0, 4.0])],
+            1,
+            1.0,
+            |a, b| a * b,
+            |a, b| a * b,
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 24.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_sum_integer() {
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[v_i64(&[10, 20, 30])],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        assert_eq!(extract_i64(&result), 60);
+    }
+
+    #[test]
+    fn reduce_arity_error() {
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        );
+        assert!(result.is_err());
+    }
+
+    // ── Reduce along axes ──
+
+    #[test]
+    fn reduce_axes_sum_rows() {
+        // [[1, 2], [3, 4]] reduced along axis 0 (rows) → [4, 6]
+        let m = mat_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+        let result = eval_reduce_axes(
+            Primitive::ReduceSum,
+            &[m],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals.len(), 2);
+        assert!((vals[0] - 4.0).abs() < 1e-12);
+        assert!((vals[1] - 6.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_axes_sum_cols() {
+        // [[1, 2], [3, 4]] reduced along axis 1 (cols) → [3, 7]
+        let m = mat_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1".to_owned());
+        let result = eval_reduce_axes(
+            Primitive::ReduceSum,
+            &[m],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals.len(), 2);
+        assert!((vals[0] - 3.0).abs() < 1e-12);
+        assert!((vals[1] - 7.0).abs() < 1e-12);
+    }
+
+    // ── Cumulative ──
+
+    #[test]
+    fn cumsum_vector() {
+        // cumsum([1, 2, 3, 4]) = [1, 3, 6, 10]
+        let result = eval_cumulative(
+            Primitive::Cumsum,
+            &[v_f64(&[1.0, 2.0, 3.0, 4.0])],
+            &BTreeMap::new(),
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![1.0, 3.0, 6.0, 10.0]);
+    }
+
+    #[test]
+    fn cumprod_vector() {
+        // cumprod([1, 2, 3, 4]) = [1, 2, 6, 24]
+        let result = eval_cumulative(
+            Primitive::Cumprod,
+            &[v_f64(&[1.0, 2.0, 3.0, 4.0])],
+            &BTreeMap::new(),
+            1,
+            1.0,
+            |a, b| a * b,
+            |a, b| a * b,
+        )
+        .unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 6.0, 24.0]);
+    }
+
+    #[test]
+    fn cumsum_scalar() {
+        let result = eval_cumulative(
+            Primitive::Cumsum,
+            &[s_f64(7.0)],
+            &BTreeMap::new(),
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 7.0).abs() < 1e-12);
+    }
+}

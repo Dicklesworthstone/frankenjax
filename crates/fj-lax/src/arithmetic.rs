@@ -1814,3 +1814,384 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
         }),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::PI;
+
+    fn s_f64(v: f64) -> Value {
+        Value::Scalar(Literal::from_f64(v))
+    }
+    fn s_i64(v: i64) -> Value {
+        Value::Scalar(Literal::I64(v))
+    }
+    fn v_f64(data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn extract_f64(val: &Value) -> f64 {
+        val.as_f64_scalar().unwrap()
+    }
+    fn extract_f64_vec(val: &Value) -> Vec<f64> {
+        val.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect()
+    }
+    // ── Binary elementwise: scalar-scalar ──
+
+    #[test]
+    fn binary_add_scalars() {
+        let result = eval_binary_elementwise(
+            Primitive::Add,
+            &[s_f64(2.0), s_f64(3.0)],
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn binary_mul_int_scalars() {
+        let result = eval_binary_elementwise(
+            Primitive::Mul,
+            &[s_i64(7), s_i64(6)],
+            |a, b| a * b,
+            |a, b| a * b,
+        )
+        .unwrap();
+        match result {
+            Value::Scalar(Literal::I64(v)) => assert_eq!(v, 42),
+            _ => panic!("expected i64 scalar"),
+        }
+    }
+
+    #[test]
+    fn binary_arity_mismatch() {
+        let result =
+            eval_binary_elementwise(Primitive::Add, &[s_f64(1.0)], |a, b| a + b, |a, b| a + b);
+        assert!(result.is_err());
+    }
+
+    // ── Binary elementwise: tensor-tensor same shape ──
+
+    #[test]
+    fn binary_add_tensors_same_shape() {
+        let a = v_f64(&[1.0, 2.0, 3.0]);
+        let b = v_f64(&[4.0, 5.0, 6.0]);
+        let result =
+            eval_binary_elementwise(Primitive::Add, &[a, b], |a, b| a + b, |a, b| a + b).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![5.0, 7.0, 9.0]);
+    }
+
+    // ── Binary elementwise: scalar-tensor broadcasting ──
+
+    #[test]
+    fn binary_mul_scalar_tensor() {
+        let a = s_f64(2.0);
+        let b = v_f64(&[1.0, 2.0, 3.0]);
+        let result =
+            eval_binary_elementwise(Primitive::Mul, &[a, b], |a, b| a * b, |a, b| a * b).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn binary_mul_tensor_scalar() {
+        let a = v_f64(&[1.0, 2.0, 3.0]);
+        let b = s_f64(10.0);
+        let result =
+            eval_binary_elementwise(Primitive::Mul, &[a, b], |a, b| a * b, |a, b| a * b).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ── Unary elementwise ──
+
+    #[test]
+    fn unary_neg_scalar() {
+        let result = eval_neg(Primitive::Neg, &[s_f64(3.0)]).unwrap();
+        assert!((extract_f64(&result) + 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unary_neg_tensor() {
+        let result = eval_neg(Primitive::Neg, &[v_f64(&[1.0, -2.0, 0.0])]).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![-1.0, 2.0, 0.0]);
+    }
+
+    #[test]
+    fn unary_abs_scalar() {
+        let result = eval_abs(Primitive::Abs, &[s_f64(-5.0)]).unwrap();
+        assert!((extract_f64(&result) - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unary_abs_tensor() {
+        let result = eval_abs(Primitive::Abs, &[v_f64(&[-1.0, 2.0, -3.0])]).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn unary_exp_scalar() {
+        let result = eval_exp(Primitive::Exp, &[s_f64(0.0)]).unwrap();
+        assert!((extract_f64(&result) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unary_log_scalar() {
+        let result = eval_log(Primitive::Log, &[s_f64(1.0)]).unwrap();
+        assert!(extract_f64(&result).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unary_sin_cos_identity() {
+        let x = 0.7;
+        let sin_val = extract_f64(&eval_sin(Primitive::Sin, &[s_f64(x)]).unwrap());
+        let cos_val = extract_f64(&eval_cos(Primitive::Cos, &[s_f64(x)]).unwrap());
+        assert!((sin_val * sin_val + cos_val * cos_val - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unary_exp_log_roundtrip() {
+        let x = 2.5;
+        let exp_val = eval_exp(Primitive::Exp, &[s_f64(x)]).unwrap();
+        let roundtrip = eval_log(Primitive::Log, &[exp_val]).unwrap();
+        assert!((extract_f64(&roundtrip) - x).abs() < 1e-12);
+    }
+
+    // ── Complex operations ──
+
+    #[test]
+    fn complex_construction() {
+        let result = eval_complex(Primitive::Complex, &[s_f64(3.0), s_f64(4.0)]).unwrap();
+        match result {
+            Value::Scalar(Literal::Complex128Bits(re, im)) => {
+                assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
+                assert!((f64::from_bits(im) - 4.0).abs() < 1e-12);
+            }
+            _ => panic!("expected complex scalar"),
+        }
+    }
+
+    #[test]
+    fn complex_conj() {
+        let z = Value::Scalar(Literal::from_complex128(3.0, 4.0));
+        let result = eval_conj(Primitive::Conj, &[z]).unwrap();
+        match result {
+            Value::Scalar(Literal::Complex128Bits(re, im)) => {
+                assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
+                assert!((f64::from_bits(im) + 4.0).abs() < 1e-12);
+            }
+            _ => panic!("expected complex scalar"),
+        }
+    }
+
+    #[test]
+    fn complex_real_imag() {
+        let z = Value::Scalar(Literal::from_complex128(3.0, 4.0));
+        let re = eval_real(Primitive::Real, std::slice::from_ref(&z)).unwrap();
+        let im = eval_imag(Primitive::Imag, std::slice::from_ref(&z)).unwrap();
+        assert!((extract_f64(&re) - 3.0).abs() < 1e-12);
+        assert!((extract_f64(&im) - 4.0).abs() < 1e-12);
+    }
+
+    // ── Special math functions ──
+
+    #[test]
+    fn erf_at_zero() {
+        assert!(erf_approx(0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn erf_symmetry() {
+        let x = 1.5;
+        assert!((erf_approx(x) + erf_approx(-x)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn erf_saturation() {
+        assert!((erf_approx(5.0) - 1.0).abs() < 1e-6);
+        assert!((erf_approx(-5.0) + 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lgamma_at_known_values() {
+        // lgamma(1) = 0, lgamma(2) = 0 (since Gamma(1) = Gamma(2) = 1)
+        assert!(lgamma_approx(1.0).abs() < 1e-6);
+        assert!(lgamma_approx(2.0).abs() < 1e-6);
+        // lgamma(0.5) = ln(sqrt(pi)) ≈ 0.5723649...
+        assert!((lgamma_approx(0.5) - 0.5 * PI.ln()).abs() < 1e-4);
+    }
+
+    #[test]
+    fn digamma_at_one() {
+        // ψ(1) = -γ ≈ -0.5772156649
+        let euler_gamma = 0.5772156649;
+        assert!((digamma_approx(1.0) + euler_gamma).abs() < 1e-4);
+    }
+
+    #[test]
+    fn erf_inv_roundtrip() {
+        let x = 0.5;
+        let y = erf_approx(x);
+        let x_recovered = erf_inv_approx(y);
+        assert!((x_recovered - x).abs() < 1e-4);
+    }
+
+    // ── Select ──
+
+    #[test]
+    fn select_scalar_true() {
+        let result = eval_select(
+            Primitive::Select,
+            &[Value::Scalar(Literal::Bool(true)), s_f64(10.0), s_f64(20.0)],
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn select_scalar_false() {
+        let result = eval_select(
+            Primitive::Select,
+            &[
+                Value::Scalar(Literal::Bool(false)),
+                s_f64(10.0),
+                s_f64(20.0),
+            ],
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 20.0).abs() < 1e-12);
+    }
+
+    // ── Clamp ──
+
+    #[test]
+    fn clamp_scalar_within_bounds() {
+        let result = eval_clamp(Primitive::Clamp, &[s_f64(5.0), s_f64(0.0), s_f64(10.0)]).unwrap();
+        assert!((extract_f64(&result) - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn clamp_scalar_below_min() {
+        let result = eval_clamp(Primitive::Clamp, &[s_f64(-5.0), s_f64(0.0), s_f64(10.0)]).unwrap();
+        assert!((extract_f64(&result) - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn clamp_scalar_above_max() {
+        let result = eval_clamp(Primitive::Clamp, &[s_f64(15.0), s_f64(0.0), s_f64(10.0)]).unwrap();
+        assert!((extract_f64(&result) - 10.0).abs() < 1e-12);
+    }
+
+    // ── Dot product ──
+
+    #[test]
+    fn dot_scalar_scalar() {
+        let result = eval_dot(&[s_f64(3.0), s_f64(4.0)]).unwrap();
+        assert!((extract_f64(&result) - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dot_vector_vector() {
+        // [1, 2, 3] · [4, 5, 6] = 4 + 10 + 18 = 32
+        let result = eval_dot(&[v_f64(&[1.0, 2.0, 3.0]), v_f64(&[4.0, 5.0, 6.0])]).unwrap();
+        assert!((extract_f64(&result) - 32.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dot_orthogonal_vectors() {
+        // [1, 0] · [0, 1] = 0
+        let result = eval_dot(&[v_f64(&[1.0, 0.0]), v_f64(&[0.0, 1.0])]).unwrap();
+        assert!(extract_f64(&result).abs() < 1e-12);
+    }
+
+    // ── IsFinite ──
+
+    #[test]
+    fn is_finite_normal() {
+        let result = eval_is_finite(Primitive::IsFinite, &[s_f64(42.0)]).unwrap();
+        match result {
+            Value::Scalar(Literal::Bool(v)) => assert!(v),
+            _ => panic!("expected bool"),
+        }
+    }
+
+    #[test]
+    fn is_finite_nan() {
+        let result = eval_is_finite(Primitive::IsFinite, &[s_f64(f64::NAN)]).unwrap();
+        match result {
+            Value::Scalar(Literal::Bool(v)) => assert!(!v),
+            _ => panic!("expected bool"),
+        }
+    }
+
+    #[test]
+    fn is_finite_inf() {
+        let result = eval_is_finite(Primitive::IsFinite, &[s_f64(f64::INFINITY)]).unwrap();
+        match result {
+            Value::Scalar(Literal::Bool(v)) => assert!(!v),
+            _ => panic!("expected bool"),
+        }
+    }
+
+    // ── IntegerPow ──
+
+    #[test]
+    fn integer_pow_positive() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".to_owned(), "3".to_owned());
+        let result = eval_integer_pow(Primitive::IntegerPow, &[s_f64(2.0)], &params).unwrap();
+        assert!((extract_f64(&result) - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integer_pow_zero() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".to_owned(), "0".to_owned());
+        let result = eval_integer_pow(Primitive::IntegerPow, &[s_f64(5.0)], &params).unwrap();
+        assert!((extract_f64(&result) - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integer_pow_negative() {
+        let mut params = BTreeMap::new();
+        params.insert("exponent".to_owned(), "-2".to_owned());
+        let result = eval_integer_pow(Primitive::IntegerPow, &[s_f64(2.0)], &params).unwrap();
+        assert!((extract_f64(&result) - 0.25).abs() < 1e-12);
+    }
+
+    // ── Nextafter ──
+
+    #[test]
+    fn nextafter_upward() {
+        let result = eval_nextafter(Primitive::Nextafter, &[s_f64(1.0), s_f64(2.0)]).unwrap();
+        let val = extract_f64(&result);
+        assert!(val > 1.0);
+        assert!(val < 1.0 + 1e-10);
+    }
+
+    #[test]
+    fn nextafter_downward() {
+        let result = eval_nextafter(Primitive::Nextafter, &[s_f64(1.0), s_f64(0.0)]).unwrap();
+        let val = extract_f64(&result);
+        assert!(val < 1.0);
+        assert!(val > 1.0 - 1e-10);
+    }
+}
