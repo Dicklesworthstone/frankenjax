@@ -374,7 +374,14 @@ def _jax_key(jax, seed: int):
 def _as_u32_list(value: Any) -> list[int]:
     import numpy as np  # type: ignore
 
-    arr = np.asarray(value, dtype=np.uint32).reshape(-1)
+    # JAX 0.9+ uses typed PRNG keys that can't be directly converted to numpy.
+    # Use jax.random.key_data() to extract the underlying integer array.
+    try:
+        arr = np.asarray(value, dtype=np.uint32).reshape(-1)
+    except TypeError:
+        import jax  # type: ignore
+
+        arr = np.asarray(jax.random.key_data(value), dtype=np.uint32).reshape(-1)
     return [int(v) for v in arr.tolist()]
 
 
