@@ -362,3 +362,179 @@ impl HessianWrapped {
         fj_ad::hessian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fj_core::{Atom, Equation, Primitive, VarId};
+    use smallvec::smallvec;
+
+    fn make_add_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_mul_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    // ── Constructor defaults ──
+
+    #[test]
+    fn jit_defaults() {
+        let wrapped = jit(make_add_jaxpr());
+        assert_eq!(wrapped.backend, "cpu");
+        assert_eq!(wrapped.mode, CompatibilityMode::Strict);
+    }
+
+    #[test]
+    fn grad_defaults() {
+        let wrapped = grad(make_add_jaxpr());
+        assert_eq!(wrapped.backend, "cpu");
+        assert_eq!(wrapped.mode, CompatibilityMode::Strict);
+    }
+
+    #[test]
+    fn vmap_defaults() {
+        let wrapped = vmap(make_add_jaxpr());
+        assert_eq!(wrapped.backend, "cpu");
+        assert_eq!(wrapped.mode, CompatibilityMode::Strict);
+        assert_eq!(wrapped.in_axes, None);
+        assert_eq!(wrapped.out_axes, None);
+    }
+
+    #[test]
+    fn value_and_grad_defaults() {
+        let wrapped = value_and_grad(make_add_jaxpr());
+        assert_eq!(wrapped.backend, "cpu");
+        assert_eq!(wrapped.mode, CompatibilityMode::Strict);
+    }
+
+    // ── Builder methods ──
+
+    #[test]
+    fn jit_with_backend() {
+        let wrapped = jit(make_add_jaxpr()).with_backend("gpu");
+        assert_eq!(wrapped.backend, "gpu");
+    }
+
+    #[test]
+    fn jit_with_mode() {
+        let wrapped = jit(make_add_jaxpr()).with_mode(CompatibilityMode::Hardened);
+        assert_eq!(wrapped.mode, CompatibilityMode::Hardened);
+    }
+
+    #[test]
+    fn vmap_with_axes() {
+        let wrapped = vmap(make_add_jaxpr())
+            .with_in_axes("0,none")
+            .with_out_axes("0");
+        assert_eq!(wrapped.in_axes, Some("0,none".to_owned()));
+        assert_eq!(wrapped.out_axes, Some("0".to_owned()));
+    }
+
+    // ── Composition ──
+
+    #[test]
+    fn jit_compose_grad() {
+        let composed = jit(make_mul_jaxpr()).compose_grad();
+        assert_eq!(composed.transforms, vec![Transform::Jit, Transform::Grad]);
+        assert_eq!(composed.backend, "cpu");
+    }
+
+    #[test]
+    fn jit_compose_vmap() {
+        let composed = jit(make_mul_jaxpr()).compose_vmap();
+        assert_eq!(composed.transforms, vec![Transform::Jit, Transform::Vmap]);
+    }
+
+    #[test]
+    fn vmap_compose_grad() {
+        let composed = vmap(make_mul_jaxpr()).compose_grad();
+        assert_eq!(composed.transforms, vec![Transform::Vmap, Transform::Grad]);
+    }
+
+    #[test]
+    fn compose_arbitrary() {
+        let composed = compose(
+            make_mul_jaxpr(),
+            vec![Transform::Jit, Transform::Grad, Transform::Vmap],
+        );
+        assert_eq!(
+            composed.transforms,
+            vec![Transform::Jit, Transform::Grad, Transform::Vmap]
+        );
+    }
+
+    #[test]
+    fn composed_with_backend_and_mode() {
+        let composed = compose(make_mul_jaxpr(), vec![Transform::Jit])
+            .with_backend("tpu")
+            .with_mode(CompatibilityMode::Hardened);
+        assert_eq!(composed.backend, "tpu");
+        assert_eq!(composed.mode, CompatibilityMode::Hardened);
+    }
+
+    // ── Execution ──
+
+    #[test]
+    fn jit_call_add() {
+        let wrapped = jit(make_add_jaxpr());
+        let result = wrapped
+            .call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)])
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert!((result[0].as_f64_scalar().unwrap() - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn jit_call_mul() {
+        let wrapped = jit(make_mul_jaxpr());
+        let result = wrapped
+            .call(vec![Value::scalar_f64(5.0), Value::scalar_f64(6.0)])
+            .unwrap();
+        assert!((result[0].as_f64_scalar().unwrap() - 30.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn grad_call_mul() {
+        // grad(x*y) w.r.t. x at x=3, y=4 should give y=4
+        let wrapped = grad(make_mul_jaxpr());
+        let result = wrapped
+            .call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)])
+            .unwrap();
+        assert!(!result.is_empty());
+    }
+
+    #[test]
+    fn build_ledger_tracks_transforms() {
+        let jaxpr = make_add_jaxpr();
+        let ledger = build_ledger(jaxpr, &[Transform::Jit, Transform::Grad]);
+        let sig = ledger.composition_signature();
+        assert!(sig.contains("jit"), "signature should contain jit");
+        assert!(sig.contains("grad"), "signature should contain grad");
+    }
+}
