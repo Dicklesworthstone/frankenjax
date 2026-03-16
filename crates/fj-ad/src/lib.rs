@@ -3741,13 +3741,10 @@ fn cholesky_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
         lt_g_tril[i * n + i] *= 0.5;
     }
 
-    // Step 3: Solve L^T S = tril(L^T G) for S using triangular solve
-    // Then solve L^T R = S^T for R
-    // More directly: dA = L^{-T} tril(L^T G) L^{-1}
-    // = (L^{-T}) @ tril(L^T G) @ (L^{-T})^T
-    // We use forward/back substitution instead of explicit inverse.
+    // Step 3: Compute L^{-T} Φ L^{-1} via triangular solves.
+    // First solve L^T X = Φ to get X = L^{-T} Φ, then compute X L^{-1}.
 
-    // Solve L^T X = tril(L^T G): back substitution column by column
+    // Solve L^T X = Φ: back substitution column by column
     let mut x = vec![0.0_f64; n * n];
     for col in 0..n {
         for i in (0..n).rev() {
