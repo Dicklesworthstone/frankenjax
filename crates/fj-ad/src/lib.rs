@@ -3877,18 +3877,20 @@ fn cholesky_jvp(primals: &[Value], tangents: &[Value]) -> Result<Value, AdError>
         }
     }
 
-    // Compute linv_da @ L^{-T} via back substitution on the right
-    let lt = transpose_f64(n, n, &l);
-    let mut middle = vec![0.0_f64; n * n];
-    for row in 0..n {
-        for j in (0..n).rev() {
-            let mut sum = linv_da[row * n + j];
-            for k in (j + 1)..n {
-                sum -= lt[j * n + k] * middle[row * n + k];
+    // Compute linv_da @ L^{-T}: solve middle @ L^T = linv_da
+    // Equivalently: L @ middle^T = linv_da^T (forward substitution)
+    let linv_da_t = transpose_f64(n, n, &linv_da);
+    let mut middle_t = vec![0.0_f64; n * n];
+    for col in 0..n {
+        for i in 0..n {
+            let mut sum = linv_da_t[i * n + col];
+            for k in 0..i {
+                sum -= l[i * n + k] * middle_t[k * n + col];
             }
-            middle[row * n + j] = sum / lt[j * n + j];
+            middle_t[i * n + col] = sum / l[i * n + i];
         }
     }
+    let middle = transpose_f64(n, n, &middle_t);
 
     // phi: extract lower triangle with diagonal halved
     let mut phi = vec![0.0_f64; n * n];
