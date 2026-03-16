@@ -75,12 +75,7 @@ fn assert_gradients_close(analytical: &[f64], numerical: &[f64], tol: f64, conte
 
 // ======================== Cholesky VJP ========================
 
-/// Cholesky VJP numerical check — currently shows a discrepancy between analytical
-/// and numerical gradients. The numerical value matches hand computation, suggesting
-/// the Cholesky VJP formula may have a symmetrization convention issue.
-/// Filed as bead frankenjax-cix for investigation.
 #[test]
-#[ignore]
 #[allow(clippy::needless_range_loop)]
 fn cholesky_vjp_numerical_2x2() {
     let a_data = [4.0, 2.0, 2.0, 3.0];
@@ -149,7 +144,13 @@ fn cholesky_vjp_numerical_2x2() {
             std::slice::from_ref(&g_l),
             &BTreeMap::new(),
         );
-        numerical[idx] = (l_plus - l_minus) / (2.0 * eps);
+        let mut grad = (l_plus - l_minus) / (2.0 * eps);
+        // Off-diagonal: we perturbed both A[i,j] and A[j,i], so the numerical
+        // gradient is 2x the per-element gradient. Divide by 2 to get bar_A[i,j].
+        if row != col {
+            grad *= 0.5;
+        }
+        numerical[idx] = grad;
     }
 
     assert_gradients_close(&analytical, &numerical, 1e-4, "Cholesky VJP");

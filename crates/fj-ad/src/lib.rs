@@ -3733,8 +3733,13 @@ fn cholesky_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
     let lt = transpose_f64(n, n, &l);
     let lt_g = matmul_f64(n, n, n, &lt, &g_data);
 
-    // Step 2: tril(L^T @ G)
-    let lt_g_tril = tril_f64(n, &lt_g);
+    // Step 2: Φ(L^T @ G) where Φ keeps lower triangle and halves diagonal
+    // (Murray 2016: the diagonal factor of 1/2 accounts for L appearing in both
+    // L and L^T of A = LL^T)
+    let mut lt_g_tril = tril_f64(n, &lt_g);
+    for i in 0..n {
+        lt_g_tril[i * n + i] *= 0.5;
+    }
 
     // Step 3: Solve L^T S = tril(L^T G) for S using triangular solve
     // Then solve L^T R = S^T for R
@@ -3754,20 +3759,20 @@ fn cholesky_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
         }
     }
 
-    // Now compute X @ L^{-1} = X @ (L^T)^{-T}
-    // Solve L Y^T = X^T: forward substitution
+    // Now compute X @ L^{-1}: solve Z L = X, equivalently L^T Z^T = X^T
+    // Back substitution with L^T
     let xt = transpose_f64(n, n, &x);
-    let mut yt = vec![0.0_f64; n * n];
+    let mut zt = vec![0.0_f64; n * n];
     for col in 0..n {
-        for i in 0..n {
+        for i in (0..n).rev() {
             let mut sum = xt[i * n + col];
-            for k in 0..i {
-                sum -= l[i * n + k] * yt[k * n + col];
+            for k in (i + 1)..n {
+                sum -= lt[i * n + k] * zt[k * n + col];
             }
-            yt[i * n + col] = sum / l[i * n + i];
+            zt[i * n + col] = sum / lt[i * n + i];
         }
     }
-    let result = transpose_f64(n, n, &yt);
+    let result = transpose_f64(n, n, &zt);
 
     // Step 4: Symmetrize
     let da = symmetrize_f64(n, &result);
