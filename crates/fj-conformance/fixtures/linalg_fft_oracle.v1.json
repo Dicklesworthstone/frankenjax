@@ -1,0 +1,1025 @@
+{
+  "cases": [
+    {
+      "case_id": "cholesky_2x2_identity",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "operation": "cholesky"
+    },
+    {
+      "case_id": "cholesky_2x2_spd",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            2.0,
+            0.0,
+            1.0,
+            1.4142135623730951
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            4.0,
+            2.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "operation": "cholesky"
+    },
+    {
+      "case_id": "cholesky_3x3_spd",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            3
+          ],
+          "values": [
+            5.0,
+            0.0,
+            0.0,
+            3.0,
+            3.0,
+            0.0,
+            -1.0,
+            1.0,
+            3.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            3
+          ],
+          "values": [
+            25.0,
+            15.0,
+            -5.0,
+            15.0,
+            18.0,
+            0.0,
+            -5.0,
+            0.0,
+            11.0
+          ]
+        }
+      ],
+      "operation": "cholesky"
+    },
+    {
+      "case_id": "qr_2x2_identity",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            -0.0,
+            1.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "operation": "qr"
+    },
+    {
+      "case_id": "qr_2x2_general",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            -0.7071067811865472,
+            -0.7071067811865475,
+            -0.7071067811865475,
+            0.7071067811865476
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            -1.4142135623730951,
+            -3.3182225032319984e-16,
+            0.0,
+            1.414213562373095
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            -1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "operation": "qr"
+    },
+    {
+      "case_id": "qr_3x2_tall",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            -0.16903085094570325,
+            0.8970852271450607,
+            -0.50709255283711,
+            0.27602622373694136,
+            -0.8451542547285166,
+            -0.34503277967117685
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            -5.916079783099616,
+            -7.4373574416109465,
+            0.0,
+            0.8280786712108258
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            4.0,
+            5.0,
+            6.0
+          ]
+        }
+      ],
+      "operation": "qr"
+    },
+    {
+      "case_id": "svd_2x2_identity",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "operation": "svd"
+    },
+    {
+      "case_id": "svd_2x2_diag",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            3.0,
+            2.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            -0.0,
+            -1.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            3.0,
+            0.0,
+            0.0,
+            -2.0
+          ]
+        }
+      ],
+      "operation": "svd"
+    },
+    {
+      "case_id": "svd_2x2_symmetric",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            -0.8506508083520399,
+            -0.5257311121191336,
+            -0.5257311121191335,
+            0.8506508083520398
+          ]
+        },
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            3.6180339887498953,
+            1.381966011250105
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            -0.8506508083520399,
+            -0.5257311121191336,
+            -0.5257311121191336,
+            0.8506508083520399
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            3.0,
+            1.0,
+            1.0,
+            2.0
+          ]
+        }
+      ],
+      "operation": "svd"
+    },
+    {
+      "case_id": "eigh_2x2_identity",
+      "expected_outputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            1.0,
+            1.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        }
+      ],
+      "operation": "eigh"
+    },
+    {
+      "case_id": "eigh_2x2_symmetric",
+      "expected_outputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            1.0,
+            3.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            -0.7071067811865475,
+            0.7071067811865475,
+            0.7071067811865475,
+            0.7071067811865475
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            2.0,
+            1.0,
+            1.0,
+            2.0
+          ]
+        }
+      ],
+      "operation": "eigh"
+    },
+    {
+      "case_id": "eigh_3x3_symmetric",
+      "expected_outputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.9213469419616902,
+            3.7301591236882596,
+            9.348493934350051
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            3
+          ],
+          "values": [
+            -0.5145402984640697,
+            0.7758758589993786,
+            -0.36505469820080766,
+            0.7460845086298187,
+            0.19527094728559458,
+            -0.6365745542580132,
+            -0.422618252373354,
+            -0.5999049162727068,
+            -0.6793437305169814
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            3
+          ],
+          "values": [
+            4.0,
+            2.0,
+            1.0,
+            2.0,
+            5.0,
+            3.0,
+            1.0,
+            3.0,
+            6.0
+          ]
+        }
+      ],
+      "operation": "eigh"
+    },
+    {
+      "case_id": "tsolve_lower_identity",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            3.0,
+            5.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            1.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            3.0,
+            5.0
+          ]
+        }
+      ],
+      "operation": "triangular_solve",
+      "params": {
+        "lower": "true"
+      }
+    },
+    {
+      "case_id": "tsolve_lower_2x2",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            2.0,
+            1.6666666666666665
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            2.0,
+            0.0,
+            1.0,
+            3.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            4.0,
+            7.0
+          ]
+        }
+      ],
+      "operation": "triangular_solve",
+      "params": {
+        "lower": "true"
+      }
+    },
+    {
+      "case_id": "fft_dc",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              4.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "fft"
+    },
+    {
+      "case_id": "fft_impulse",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "fft"
+    },
+    {
+      "case_id": "fft_general",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              10.0,
+              0.0
+            ],
+            [
+              -2.0,
+              2.0
+            ],
+            [
+              -2.0,
+              0.0
+            ],
+            [
+              -2.0,
+              -2.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              2.0,
+              0.0
+            ],
+            [
+              3.0,
+              0.0
+            ],
+            [
+              4.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "fft"
+    },
+    {
+      "case_id": "ifft_dc",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              4.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "ifft"
+    },
+    {
+      "case_id": "rfft_dc",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            3
+          ],
+          "values": [
+            [
+              4.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "operation": "rfft",
+      "params": {
+        "fft_length": "4"
+      }
+    },
+    {
+      "case_id": "rfft_ramp",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            3
+          ],
+          "values": [
+            [
+              10.0,
+              0.0
+            ],
+            [
+              -2.0,
+              2.0
+            ],
+            [
+              -2.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            4.0
+          ]
+        }
+      ],
+      "operation": "rfft",
+      "params": {
+        "fft_length": "4"
+      }
+    },
+    {
+      "case_id": "irfft_known",
+      "expected_outputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            4.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            3
+          ],
+          "values": [
+            [
+              10.0,
+              0.0
+            ],
+            [
+              -2.0,
+              2.0
+            ],
+            [
+              -2.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "irfft",
+      "params": {
+        "fft_length": "4"
+      }
+    }
+  ],
+  "generated_at_unix_ms": 1773707457981,
+  "generated_by": "jax_linalg_fft_oracle_capture",
+  "jax_version": "0.9.1",
+  "schema_version": "frankenjax.linalg-fft-oracle.v1",
+  "x64_enabled": true
+}
