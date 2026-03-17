@@ -1,0 +1,376 @@
+{
+  "cases": [
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 0.0
+        }
+      ],
+      "case_id": "jit_grad_poly_x0.0",
+      "composition": "jit(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        }
+      ],
+      "program": "x^2+3x"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "case_id": "jit_grad_poly_x1.0",
+      "composition": "jit(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 5.0
+        }
+      ],
+      "program": "x^2+3x"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -2.0
+        }
+      ],
+      "case_id": "jit_grad_poly_x-2.0",
+      "composition": "jit(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "program": "x^2+3x"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 5.0
+        }
+      ],
+      "case_id": "jit_grad_poly_x5.0",
+      "composition": "jit(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 13.0
+        }
+      ],
+      "program": "x^2+3x"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 1.0
+        }
+      ],
+      "case_id": "grad_grad_cubic_x1.0",
+      "composition": "grad(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 6.0
+        }
+      ],
+      "program": "x^3"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 2.0
+        }
+      ],
+      "case_id": "grad_grad_cubic_x2.0",
+      "composition": "grad(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 12.0
+        }
+      ],
+      "program": "x^3"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": -1.0
+        }
+      ],
+      "case_id": "grad_grad_cubic_x-1.0",
+      "composition": "grad(grad)",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": -6.0
+        }
+      ],
+      "program": "x^3"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            0.0,
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "case_id": "vmap_grad_sin",
+      "composition": "vmap(grad)",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            0.5403023058681398,
+            -0.4161468365471424,
+            -0.9899924966004454
+          ]
+        }
+      ],
+      "program": "sin(x)"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            4.0
+          ]
+        }
+      ],
+      "case_id": "vmap_square",
+      "composition": "vmap",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            4.0,
+            9.0,
+            16.0
+          ]
+        }
+      ],
+      "program": "x^2"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0,
+            4.0
+          ]
+        }
+      ],
+      "case_id": "jit_vmap_square",
+      "composition": "jit(vmap)",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            4.0,
+            9.0,
+            16.0
+          ]
+        }
+      ],
+      "program": "x^2"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            3
+          ],
+          "values": [
+            4.0,
+            5.0,
+            6.0
+          ]
+        }
+      ],
+      "case_id": "grad_dot_product",
+      "composition": "grad",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "program": "dot(x, [1,2,3])"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "case_id": "grad_sum_squares",
+      "composition": "grad",
+      "expected": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            3
+          ],
+          "values": [
+            2.0,
+            4.0,
+            6.0
+          ]
+        }
+      ],
+      "program": "sum(x^2)"
+    },
+    {
+      "args": [
+        {
+          "kind": "scalar_f64",
+          "value": 3.0
+        }
+      ],
+      "case_id": "value_and_grad_poly",
+      "composition": "value_and_grad",
+      "expected": [
+        {
+          "kind": "scalar_f64",
+          "value": 18.0
+        },
+        {
+          "kind": "scalar_f64",
+          "value": 9.0
+        }
+      ],
+      "program": "x^2+3x"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "case_id": "jacobian_quadratic",
+      "composition": "jacobian",
+      "expected": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            3,
+            2
+          ],
+          "values": [
+            4.0,
+            0.0,
+            3.0,
+            2.0,
+            0.0,
+            6.0
+          ]
+        }
+      ],
+      "program": "[x0^2, x0*x1, x1^2]"
+    },
+    {
+      "args": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            2
+          ],
+          "values": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "case_id": "hessian_quadratic",
+      "composition": "hessian",
+      "expected": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            2.0,
+            1.0,
+            1.0,
+            2.0
+          ]
+        }
+      ],
+      "program": "x0^2+x0*x1+x1^2"
+    }
+  ],
+  "generated_at_unix_ms": 1773715320917,
+  "generated_by": "jax_composition_oracle",
+  "jax_version": "0.9.1",
+  "schema_version": "frankenjax.composition-oracle.v1",
+  "x64_enabled": true
+}
