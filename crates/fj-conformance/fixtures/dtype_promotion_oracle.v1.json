@@ -1,0 +1,1305 @@
+{
+  "cases": [
+    {
+      "case_id": "add_bool_bool",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "bool",
+      "result_value": true,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_bool_i32",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "int32",
+      "result_value": 8.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_bool_i64",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 8.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_bool_u32",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "uint32",
+      "result_value": 8.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_bool_u64",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "uint64",
+      "result_value": 8.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_bool_f32",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 3.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_bool_f64",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 3.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_bool_bf16",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 3.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_bool_f16",
+      "lhs_dtype": "bool",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 3.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_i32_bool",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "int32",
+      "result_value": 8.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_i32_i32",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "int32",
+      "result_value": 14.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_i32_i64",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_i32_u32",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_i32_u64",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 14.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_i32_f32",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_i32_f64",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_i32_bf16",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_i32_f16",
+      "lhs_dtype": "i32",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_i64_bool",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 8.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_i64_i32",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_i64_i64",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_i64_u32",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_i64_u64",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 14.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_i64_f32",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_i64_f64",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_i64_bf16",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_i64_f16",
+      "lhs_dtype": "i64",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_u32_bool",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "uint32",
+      "result_value": 8.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_u32_i32",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_u32_i64",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "int64",
+      "result_value": 14.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_u32_u32",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "uint32",
+      "result_value": 14.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_u32_u64",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "uint64",
+      "result_value": 14.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_u32_f32",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_u32_f64",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_u32_bf16",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_u32_f16",
+      "lhs_dtype": "u32",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_u64_bool",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "uint64",
+      "result_value": 8.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_u64_i32",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 14.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_u64_i64",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 14.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_u64_u32",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "uint64",
+      "result_value": 14.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_u64_u64",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "uint64",
+      "result_value": 14.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_u64_f32",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_u64_f64",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_u64_bf16",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_u64_f16",
+      "lhs_dtype": "u64",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_f32_bool",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 3.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_f32_i32",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_f32_i64",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_f32_u32",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_f32_u64",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 9.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_f32_f32",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_f32_f64",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_f32_bf16",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_f32_f16",
+      "lhs_dtype": "f32",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_f64_bool",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 3.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_f64_i32",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_f64_i64",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_f64_u32",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_f64_u64",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 9.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_f64_f32",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_f64_f64",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_f64_bf16",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_f64_f16",
+      "lhs_dtype": "f64",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_bf16_bool",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 3.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_bf16_i32",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_bf16_i64",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_bf16_u32",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_bf16_u64",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 9.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_bf16_f32",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_bf16_f64",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_bf16_bf16",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "bfloat16",
+      "result_value": 5.0,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_bf16_f16",
+      "lhs_dtype": "bf16",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "add_f16_bool",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 3.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "add_f16_i32",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "add_f16_i64",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "add_f16_u32",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "add_f16_u64",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 9.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "add_f16_f32",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "add_f16_f64",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float64",
+      "result_value": 5.0,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "add_f16_bf16",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float32",
+      "result_value": 5.0,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "add_f16_f16",
+      "lhs_dtype": "f16",
+      "operation": "add",
+      "result_dtype": "float16",
+      "result_value": 5.0,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_bool_bool",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "bool",
+      "result_value": true,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_bool_i32",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "int32",
+      "result_value": 7.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_bool_i64",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 7.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_bool_u32",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "uint32",
+      "result_value": 7.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_bool_u64",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "uint64",
+      "result_value": 7.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_bool_f32",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 2.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_bool_f64",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 2.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_bool_bf16",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 2.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_bool_f16",
+      "lhs_dtype": "bool",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 2.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_i32_bool",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "int32",
+      "result_value": 7.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_i32_i32",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "int32",
+      "result_value": 49.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_i32_i64",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_i32_u32",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_i32_u64",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 49.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_i32_f32",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_i32_f64",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_i32_bf16",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_i32_f16",
+      "lhs_dtype": "i32",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_i64_bool",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 7.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_i64_i32",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_i64_i64",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_i64_u32",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_i64_u64",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 49.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_i64_f32",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_i64_f64",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_i64_bf16",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_i64_f16",
+      "lhs_dtype": "i64",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_u32_bool",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "uint32",
+      "result_value": 7.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_u32_i32",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_u32_i64",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "int64",
+      "result_value": 49.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_u32_u32",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "uint32",
+      "result_value": 49.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_u32_u64",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "uint64",
+      "result_value": 49.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_u32_f32",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_u32_f64",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_u32_bf16",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_u32_f16",
+      "lhs_dtype": "u32",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_u64_bool",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "uint64",
+      "result_value": 7.0,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_u64_i32",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 49.0,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_u64_i64",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 49.0,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_u64_u32",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "uint64",
+      "result_value": 49.0,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_u64_u64",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "uint64",
+      "result_value": 49.0,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_u64_f32",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_u64_f64",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_u64_bf16",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_u64_f16",
+      "lhs_dtype": "u64",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_f32_bool",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 2.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_f32_i32",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_f32_i64",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_f32_u32",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_f32_u64",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 17.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_f32_f32",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_f32_f64",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_f32_bf16",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_f32_f16",
+      "lhs_dtype": "f32",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_f64_bool",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 2.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_f64_i32",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_f64_i64",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_f64_u32",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_f64_u64",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 17.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_f64_f32",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_f64_f64",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_f64_bf16",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_f64_f16",
+      "lhs_dtype": "f64",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_bf16_bool",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 2.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_bf16_i32",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_bf16_i64",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_bf16_u32",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_bf16_u64",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 17.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_bf16_f32",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_bf16_f64",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_bf16_bf16",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "bfloat16",
+      "result_value": 6.25,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_bf16_f16",
+      "lhs_dtype": "bf16",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "f16"
+    },
+    {
+      "case_id": "mul_f16_bool",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 2.5,
+      "rhs_dtype": "bool"
+    },
+    {
+      "case_id": "mul_f16_i32",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "i32"
+    },
+    {
+      "case_id": "mul_f16_i64",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "i64"
+    },
+    {
+      "case_id": "mul_f16_u32",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "u32"
+    },
+    {
+      "case_id": "mul_f16_u64",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 17.5,
+      "rhs_dtype": "u64"
+    },
+    {
+      "case_id": "mul_f16_f32",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "f32"
+    },
+    {
+      "case_id": "mul_f16_f64",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float64",
+      "result_value": 6.25,
+      "rhs_dtype": "f64"
+    },
+    {
+      "case_id": "mul_f16_bf16",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float32",
+      "result_value": 6.25,
+      "rhs_dtype": "bf16"
+    },
+    {
+      "case_id": "mul_f16_f16",
+      "lhs_dtype": "f16",
+      "operation": "mul",
+      "result_dtype": "float16",
+      "result_value": 6.25,
+      "rhs_dtype": "f16"
+    }
+  ],
+  "generated_at_unix_ms": 1773726283855,
+  "generated_by": "jax_dtype_promotion_oracle",
+  "jax_version": "0.9.1",
+  "schema_version": "frankenjax.dtype-promotion-oracle.v1",
+  "x64_enabled": true
+}
