@@ -103,11 +103,11 @@ v4 = add(9.0, 9.0) = 18.0      tape: [add, inputs=[9.0, 9.0], output=18.0]
 
 **Step 4: Backward pass.** Walk the tape in reverse with output cotangent = 1.0:
 ```
-ḡ_v4 = 1.0                          (seed)
-add_vjp:  ḡ_v2 += 1.0, ḡ_v3 += 1.0 (add gradient = pass-through)
-mul_vjp for v3:  ḡ_v1 += 3.0 * 1.0 = 3.0   (d(3x)/dx = 3)
-mul_vjp for v2:  ḡ_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
-                 ḡ_v1 total = 3.0 + 6.0 = 9.0
+g_v4 = 1.0                          (seed)
+add_vjp:  g_v2 += 1.0, g_v3 += 1.0 (add gradient = pass-through)
+mul_vjp for v3:  g_v1 += 3.0 * 1.0 = 3.0   (d(3x)/dx = 3)
+mul_vjp for v2:  g_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
+                 g_v1 total = 3.0 + 6.0 = 9.0
 ```
 
 **Result:** gradient = 9.0, which matches d/dx(x^2 + 3x)|_{x=3} = 2(3) + 3 = 9. Confirmed against JAX oracle.
@@ -418,7 +418,7 @@ The RNG implements the ThreeFry2x32 counter-based PRNG from Salmon et al. (SC'11
 - **Core cipher**: 20 rounds of rotation + XOR + key injection on 2-word (64-bit) state, using Skein rotation constants [13, 15, 26, 6, 17, 29, 16, 24]
 - **Key splitting**: `split(key) = [threefry(key, [0,0]), threefry(key, [0,1])]`, producing two statistically independent child keys
 - **Fold-in**: `fold_in(key, data) = threefry(key, [data, 0])`, mixing external data into the key
-- **Sampling**: counter-based generation → uniform via division by 2^32 → normal via Box-Muller → bernoulli via threshold → categorical via Gumbel-max trick
+- **Sampling**: counter-based bit generation, then uniform (divide by 2^32), normal (Box-Muller), bernoulli (threshold), or categorical (Gumbel-max trick)
 
 The deterministic design means `random_key(42)` always produces the same sequence, matching JAX's ThreeFry implementation. This is verified against 25 JAX oracle fixtures covering key generation, splitting, fold-in, uniform, and normal distributions.
 
@@ -427,9 +427,9 @@ The deterministic design means `random_key(42)` always produces the same sequenc
 The CPU backend parallelizes Jaxpr execution via **dependency-wave scheduling**:
 
 ```
-Wave 1:  a = f(x)    b = g(x)    ← parallel (both depend only on input)
-Wave 2:  c = h(a, b)              ← sequential (depends on wave 1)
-Wave 3:  d = k(c)                 ← sequential
+Wave 1:  a = f(x)    b = g(x)    <-- parallel (both depend only on input)
+Wave 2:  c = h(a, b)              <-- sequential (depends on wave 1)
+Wave 3:  d = k(c)                 <-- sequential
 ```
 
 The algorithm:
@@ -458,7 +458,7 @@ The Jaxpr fingerprint recursively hashes the equation structure (primitives, ari
 
 Long-lived artifacts (conformance fixtures, benchmark baselines, evidence ledgers) are protected against bit rot using RaptorQ erasure coding:
 
-1. **Encode**: artifact → source symbols (256-byte chunks) + 10% repair symbols
+1. **Encode**: split artifact into source symbols (256-byte chunks), generate 10% repair symbols
 2. **Sidecar**: JSON manifest with all symbols (Base64-encoded), SHA-256 hash, generation metadata
 3. **Scrub**: decode from sidecar symbols, verify SHA-256 match against original artifact
 4. **Decode proof**: intentionally drop N source symbols, verify recovery from remaining symbols + repair symbols
@@ -472,9 +472,9 @@ Five primitives produce multiple outputs: Cholesky (1 output but via multi-outpu
 | Layer | Single-output | Multi-output |
 |-------|--------------|--------------|
 | **IR** | `outputs: [VarId(2)]` | `outputs: [VarId(2), VarId(3)]` or `[VarId(2), VarId(3), VarId(4)]` |
-| **Eval** | `eval_primitive() → Value` | `eval_primitive_multi() → Vec<Value>` |
-| **VJP** | `vjp(prim, inputs, [ḡ]) → [ḡ_input]` | `vjp(prim, inputs, [ḡ₁, ḡ₂], [out₁, out₂]) → [ḡ_input]` |
-| **JVP** | `jvp_rule(prim, primals, tangents) → tangent` | `jvp_rule_multi(prim, primals, tangents, primal_outs) → [tangent₁, tangent₂]` |
+| **Eval** | `eval_primitive() -> Value` | `eval_primitive_multi() -> Vec<Value>` |
+| **VJP** | `vjp(prim, inputs, [g]) -> [g_input]` | `vjp(prim, inputs, [g1, g2], [out1, out2]) -> [g_input]` |
+| **JVP** | `jvp_rule(prim, primals, tangents) -> tangent` | `jvp_rule_multi(prim, primals, tangents, primal_outs) -> [t1, t2]` |
 | **Vmap** | Batch dim tracked on single output | Each output independently tracks its batch dim |
 | **Tape** | Stores one output value | Stores all output values (needed for VJP of decompositions) |
 
@@ -489,7 +489,7 @@ FrankenJAX reimplements JAX's *semantics*, not its *implementation*. Key archite
 | **IR** | JAXPR with Python objects | Jaxpr with Rust enums (fully serializable) |
 | **Tracing** | Python abstract interpreter | Rust closure tracing via `TracerRef` operator overloading |
 | **AD tape** | Implicit via Python closures | Explicit `Vec<TapeEntry>` with value snapshots |
-| **Compilation** | XLA HLO → device code | E-graph optimization → direct interpretation |
+| **Compilation** | XLA HLO to device code | E-graph optimization then direct interpretation |
 | **Dispatch** | C++ `xla::Client` | Rust `dispatch()` with transform stack |
 | **Type system** | NumPy dtype objects | Rust `DType` enum (11 variants) |
 | **Parallelism** | XLA partitioning + SPMD | Rayon dependency-wave scheduling |
@@ -509,7 +509,7 @@ What we added: Trace Transform Ledger (auditable composition proofs), RaptorQ du
 let jaxpr = make_jaxpr(|inputs| {
     vec![&inputs[0] * &inputs[0] + &inputs[0]]  // x^2 + x
 }, vec![ShapedArray::scalar(DType::F64)])?;
-// → Jaxpr: v2 = mul(v1, v1); v3 = add(v2, v1); output = v3
+// produces: Jaxpr: v2 = mul(v1, v1); v3 = add(v2, v1); output = v3
 ```
 
 Each `TracerRef` carries an abstract value (dtype + shape) and a reference to the shared trace context. Operator overloading on `+`, `-`, `*` routes through `binary_op(Primitive::Add, ...)` which records an `Equation` in the active trace frame rather than evaluating it.
@@ -540,15 +540,15 @@ This is the mechanism that enables `jit` to specialize programs: static shapes, 
 
 ```
 vmap(sin)(x)  where x.shape=[batch, n]
-→ sin(x)      # batch dim just passes through, no loop
+=> sin(x)     # batch dim just passes through, no loop
 ```
 
 **Reductions** (reduce_sum, reduce_max, ...): The reduction axis is shifted to account for the batch dimension. Reduction never operates along the batch axis itself.
 
 ```
 vmap(reduce_sum, axis=1)(x)  where x.shape=[batch, m, n]
-→ reduce_sum(x, axis=2)     # axis shifted past batch dim
-→ result.shape=[batch, m]
+=> reduce_sum(x, axis=2)    # axis shifted past batch dim
+=> result.shape=[batch, m]
 ```
 
 **Shape operations** (reshape, transpose, ...): The batch dimension is excluded from the reshape/transpose operation. The permutation indices are adjusted to skip position 0 (the batch axis).
@@ -590,9 +590,9 @@ Cost: `input_dim` forward passes. Returns a `[output_dim, input_dim]` matrix.
 **Hessian** (mixed-mode, grad + finite differences):
 ```
 For each basis vector e_k in input space:
-    g_plus  = grad(f)(x + ε·e_k)   # Gradient at perturbed point
-    g_minus = grad(f)(x - ε·e_k)
-    H[:, k] = (g_plus - g_minus) / (2ε)  # Central difference
+    g_plus  = grad(f)(x + eps*e_k)   # Gradient at perturbed point
+    g_minus = grad(f)(x - eps*e_k)
+    H[:, k] = (g_plus - g_minus) / (2*eps)  # Central difference
 ```
 Cost: `2 × input_dim` gradient evaluations. Returns a symmetric `[input_dim, input_dim]` matrix. Uses `ε = 1e-5` for numerical stability.
 
@@ -601,8 +601,8 @@ Cost: `2 × input_dim` gradient evaluations. Returns a symmetric `[input_dim, in
 The FFT primitives use a **naive O(n^2) DFT** (direct Fourier transform) rather than the O(n log n) Cooley-Tukey algorithm. This is a deliberate choice: correctness over speed for a reference implementation.
 
 ```
-X[k] = Σ_{j=0}^{n-1} x[j] · e^{-2πi·j·k/n}    (DFT)
-x[j] = (1/n) Σ_{k=0}^{n-1} X[k] · e^{+2πi·j·k/n}    (IDFT)
+X[k] = sum_{j=0}^{n-1} x[j] * e^{-2*pi*i*j*k/n}    (DFT)
+x[j] = (1/n) sum_{k=0}^{n-1} X[k] * e^{+2*pi*i*j*k/n}    (IDFT)
 ```
 
 RFFT exploits Hermitian symmetry of real-valued input signals: only the first `n/2 + 1` frequency bins are returned (the rest are conjugate mirrors). IRFFT reconstructs the full spectrum from the half-spectrum before applying IDFT.
@@ -923,7 +923,7 @@ FrankenJAX uses several guards against numerical issues:
 
 - **Degenerate eigenvalue handling**: SVD and Eigh VJP rules check `|σ_i - σ_j| > 1e-20` before dividing by eigenvalue gaps. Near-degenerate eigenvalues produce zero gradient contributions instead of infinities.
 - **Cholesky diagonal guard**: The Cholesky decomposition checks for non-positive diagonal elements, which indicate a non-SPD input matrix.
-- **Division-by-zero protection**: The `div` primitive handles 0/0 → NaN and x/0 → ±Inf consistently with IEEE 754.
+- **Division-by-zero protection**: The `div` primitive produces NaN for 0/0 and Inf for x/0, consistent with IEEE 754.
 - **Triangular solve stability**: Forward/back substitution checks diagonal elements against machine epsilon before dividing.
 - **FFT scaling**: IFFT uses exact `1/n` scaling, and RFFT interior bins get the correct factor-of-2 for real-signal Hermitian symmetry.
 
