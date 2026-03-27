@@ -662,7 +662,7 @@ fn execute_vmap(
         .iter()
         .all(|spec| matches!(spec, AxisSpec::Batched(0) | AxisSpec::NotBatched));
     if tail.is_empty() && all_axis_zero && !compile_options.contains_key("vmap_out_axes") {
-        return execute_vmap_batch_trace(root_jaxpr, args, &in_axes);
+        return execute_vmap_batch_trace(root_jaxpr, args, &in_axes, lead_len);
     }
 
     // Fall back to loop-and-stack for non-trivial axes or composed transforms
@@ -685,6 +685,7 @@ fn execute_vmap_batch_trace(
     root_jaxpr: &Jaxpr,
     args: &[Value],
     in_axes: &[AxisSpec],
+    lead_len: usize,
 ) -> Result<Vec<Value>, DispatchError> {
     use batching::{BatchTracer, batch_eval_jaxpr};
 
@@ -722,9 +723,13 @@ fn execute_vmap_batch_trace(
                 outputs.push(moved);
             }
             None => {
-                // Unbatched output — need to broadcast to match batch dimension
-                // This happens when the function output doesn't depend on the input
-                outputs.push(tracer.value);
+                // Unbatched output — broadcast it across the mapped batch axis.
+                // This happens when the function output doesn't depend on the input.
+                let repeated = vec![tracer.value; lead_len];
+                let broadcast = TensorValue::stack_axis0(&repeated)
+                    .map(Value::Tensor)
+                    .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
+                outputs.push(broadcast);
             }
         }
     }
@@ -1032,6 +1037,50 @@ mod tests {
             .map(|literal| literal.as_i64().expect("expected i64 element"))
             .collect::<Vec<_>>();
         assert_eq!(as_i64, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn dispatch_vmap_broadcasts_constant_batch_trace_outputs() {
+        use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, VarId};
+        use smallvec::smallvec;
+
+        let constant_jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Lit(Literal::I64(1)), Atom::Lit(Literal::I64(2))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: Vec::new(),
+                sub_jaxprs: Vec::new(),
+            }],
+        );
+        let mut ttl = TraceTransformLedger::new(constant_jaxpr);
+        ttl.push_transform(Transform::Vmap, "constant-vmap".to_owned());
+
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ttl,
+            args: vec![Value::vector_i64(&[10, 20, 30]).expect("vector should build")],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch vmap with constant body should succeed");
+
+        let output = response.outputs[0]
+            .as_tensor()
+            .expect("constant vmap output should be tensor");
+        assert_eq!(output.shape, Shape { dims: vec![3] });
+        let values = output
+            .elements
+            .iter()
+            .map(|literal| literal.as_i64().expect("expected i64 element"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![3, 3, 3]);
     }
 
     #[test]

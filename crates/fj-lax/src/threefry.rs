@@ -68,69 +68,83 @@ pub fn random_split(key: PRNGKey) -> (PRNGKey, PRNGKey) {
 /// Mix additional data into a key, producing a derived key.
 ///
 /// Matches JAX's `random.fold_in(key, data)`.
+/// JAX internally calls `threefry_2x32(key, threefry_seed(data))` where
+/// `threefry_seed` puts high-32 bits first, low-32 bits second: `[data >> 32, data & 0xFFFFFFFF]`.
+/// For u32 data, this is always `[0, data]`.
 #[must_use]
 pub fn random_fold_in(key: PRNGKey, data: u32) -> PRNGKey {
-    PRNGKey(threefry2x32(key.0, [data, 0]))
+    PRNGKey(threefry2x32(key.0, [0, data]))
 }
 
 /// Generate `count` pseudorandom u32 values from a key using counter-based generation.
 ///
-/// Each element uses a unique counter value to produce independent samples.
+/// Matches JAX's `_threefry_random_bits_original`: creates a linear counter
+/// `[0, 1, ..., count-1]`, splits it in half, and uses the two halves as
+/// the (x0, x1) inputs to `threefry2x32`. The output is concatenated as
+/// `[y0[0], ..., y0[half-1], y1[0], ..., y1[half-1]]`.
 fn generate_bits(key: PRNGKey, count: usize) -> Vec<u32> {
-    let mut bits = Vec::with_capacity(count);
-    for i in 0..count.div_ceil(2) {
-        let result = threefry2x32(key.0, [i as u32, 0]);
-        bits.push(result[0]);
-        if bits.len() < count {
-            bits.push(result[1]);
-        }
+    // JAX: x = list(jnp.split(jnp.reshape(iota, (-1,)), 2))
+    // requires even count; pad if odd
+    let padded = if count % 2 == 0 { count } else { count + 1 };
+    let half = padded / 2;
+    let mut y0 = Vec::with_capacity(half);
+    let mut y1 = Vec::with_capacity(half);
+    for i in 0..half {
+        let result = threefry2x32(key.0, [i as u32, (i + half) as u32]);
+        y0.push(result[0]);
+        y1.push(result[1]);
     }
-    bits
+    // JAX concatenates [y0, y1]
+    y0.extend_from_slice(&y1);
+    y0.truncate(count);
+    y0
 }
 
 /// Generate uniform random f64 values in [minval, maxval).
 ///
-/// Matches JAX's `jax.random.uniform`. Converts 32-bit random integers to
-/// floating-point values in [0, 1) by dividing by 2^32, then scales to the
-/// requested range.
+/// Matches JAX's `jax.random.uniform` with `dtype=float64`:
+/// 1. Generate 2×count u32 values (64 random bits per sample)
+/// 2. Combine pairs into u64
+/// 3. Mask to 52 mantissa bits, OR with 1.0 exponent, bitcast to f64, subtract 1.0
+/// 4. Scale to [minval, maxval)
 #[must_use]
 pub fn random_uniform(key: PRNGKey, count: usize, minval: f64, maxval: f64) -> Vec<f64> {
-    let bits = generate_bits(key, count);
+    let total_u32 = count * 2;
+    let bits = generate_bits(key, total_u32);
     let scale = maxval - minval;
-    bits.into_iter()
-        .map(|b| {
-            let unit = (b as f64) / (u32::MAX as f64 + 1.0);
+    // JAX splits the output in half: first `count` u32s and second `count` u32s
+    // Then combines: u64[i] = (first[i] as u64) << 32 | (second[i] as u64)
+    let (first_half, second_half) = bits.split_at(count);
+    first_half
+        .iter()
+        .zip(second_half.iter())
+        .map(|(&hi, &lo)| {
+            let u64_val = ((hi as u64) << 32) | (lo as u64);
+            // Keep 52 mantissa bits, set exponent to 1.0 ([1.0, 2.0))
+            let mantissa = u64_val >> 12;
+            let float_bits = mantissa | 0x3FF0_0000_0000_0000_u64;
+            let unit = f64::from_bits(float_bits) - 1.0;
             minval + unit * scale
         })
         .collect()
 }
 
-/// Generate standard normal random f64 values using the Box-Muller transform.
+/// Generate standard normal random f64 values using the inverse error function.
 ///
-/// Matches JAX's approach for generating normally distributed samples.
-/// Uses pairs of uniform samples to produce pairs of normal samples.
+/// Matches JAX's approach: generate uniform samples in (-1, 1), then apply
+/// `sqrt(2) * erfinv(u)` to transform to standard normal distribution.
 #[must_use]
 pub fn random_normal(key: PRNGKey, count: usize) -> Vec<f64> {
-    // Box-Muller needs pairs of uniform samples
-    let pairs_needed = count.div_ceil(2);
-    let total_uniforms = pairs_needed * 2;
-    let bits = generate_bits(key, total_uniforms);
-
-    let mut result = Vec::with_capacity(count);
-    for i in 0..pairs_needed {
-        // Convert to (0,1) range — avoid exact 0 for log
-        let u1 = ((bits[2 * i] as f64) + 1.0) / (u32::MAX as f64 + 2.0);
-        let u2 = ((bits[2 * i + 1] as f64) + 1.0) / (u32::MAX as f64 + 2.0);
-
-        let r = (-2.0 * u1.ln()).sqrt();
-        let theta = 2.0 * std::f64::consts::PI * u2;
-
-        result.push(r * theta.cos());
-        if result.len() < count {
-            result.push(r * theta.sin());
-        }
-    }
-    result
+    // JAX: lo = nextafter(-1, 0), hi = 1.0; u = uniform(key, shape, lo, hi)
+    // Then: result = sqrt(2) * erfinv(u)
+    let lo = f64::from_bits((-1.0_f64).to_bits() - 1); // nextafter(-1.0, 0.0)
+    let hi = 1.0_f64;
+    let uniforms = random_uniform(key, count, lo, hi);
+    let sqrt2 = std::f64::consts::SQRT_2;
+    uniforms
+        .into_iter()
+        .map(|u| sqrt2 * crate::arithmetic::erf_inv_approx(u))
+        .collect()
 }
 
 /// Generate Bernoulli random boolean values with probability `p` of being true.
