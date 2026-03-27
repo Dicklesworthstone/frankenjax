@@ -508,26 +508,14 @@ fn egraph_preserves_cascade_rewrites() {
 fn egraph_preserves_exp_log_square() {
     // (log(exp(x)))^2 = x^2: inverse pair cancellation + squaring
     let jaxpr = make_exp_log_square_jaxpr();
-    verify_optimization_preserves_semantics(
-        &jaxpr,
-        &[s_f64(2.5)],
-        &[],
-        1e-10,
-        "exp-log-square",
-    );
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(2.5)], &[], 1e-10, "exp-log-square");
 }
 
 #[test]
 fn egraph_preserves_abs_idempotence() {
     // abs(abs(x)) = abs(x): idempotent rewrite
     let jaxpr = make_abs_abs_jaxpr();
-    verify_optimization_preserves_semantics(
-        &jaxpr,
-        &[s_f64(-3.7)],
-        &[],
-        1e-12,
-        "abs idempotence",
-    );
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(-3.7)], &[], 1e-12, "abs idempotence");
 }
 
 #[test]

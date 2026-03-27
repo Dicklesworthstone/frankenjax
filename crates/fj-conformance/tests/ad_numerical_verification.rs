@@ -390,7 +390,9 @@ fn cholesky_vjp_numerical_3x3() {
         TensorValue::new(
             DType::F64,
             Shape { dims: vec![3, 3] },
-            (0..9).map(|i| Literal::from_f64(if i % 4 == 0 { 1.0 } else { 0.5 })).collect(),
+            (0..9)
+                .map(|i| Literal::from_f64(if i % 4 == 0 { 1.0 } else { 0.5 }))
+                .collect(),
         )
         .unwrap(),
     );
@@ -457,12 +459,8 @@ fn qr_vjp_numerical() {
     let a_data = [1.0, -1.0, 1.0, 1.0];
     let a = make_f64_matrix(2, 2, &a_data);
 
-    let outputs = eval_primitive_multi(
-        Primitive::Qr,
-        std::slice::from_ref(&a),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let outputs =
+        eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
 
     // Zero cotangent for Q, nonzero for R — avoids sign-ambiguity issues
     let g_q = Value::Tensor(
@@ -527,12 +525,8 @@ fn svd_vjp_numerical() {
     let a_data = [3.0, 1.0, 1.0, 4.0, 0.5, 2.0];
     let a = make_f64_matrix(3, 2, &a_data);
 
-    let outputs = eval_primitive_multi(
-        Primitive::Svd,
-        std::slice::from_ref(&a),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let outputs =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
     // SVD returns: U (3x2), S (2,), Vt (2x2)
 
     // Zero cotangent for U and Vt, nonzero for S
@@ -605,12 +599,8 @@ fn eigh_vjp_numerical() {
     ];
     let a = make_f64_matrix(3, 3, &a_data);
 
-    let outputs = eval_primitive_multi(
-        Primitive::Eigh,
-        std::slice::from_ref(&a),
-        &BTreeMap::new(),
-    )
-    .unwrap();
+    let outputs =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
     // Eigh returns: eigenvalues (3,), eigenvectors (3x3)
 
     let g_w = Value::Tensor(
@@ -714,8 +704,7 @@ fn ifft_vjp_numerical() {
     .unwrap();
 
     // For linear op IFFT: VJP(g) = adjoint(IFFT)(g) = (1/n) * FFT(g)
-    let fft_g =
-        eval_primitive(Primitive::Fft, std::slice::from_ref(&g), &BTreeMap::new()).unwrap();
+    let fft_g = eval_primitive(Primitive::Fft, std::slice::from_ref(&g), &BTreeMap::new()).unwrap();
     let n = 4.0;
 
     let vjp_vals: Vec<(f64, f64)> = vjp_result[0]

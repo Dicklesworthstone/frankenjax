@@ -478,7 +478,10 @@ fn test_grad_through_while_add() {
     // while(init, step=3, threshold=10, add, lt) iterates 4 times: 0→3→6→9→12
     // d(output)/d(init) = 1 (addition is linear in init)
     let grad = run_grad_while_case(0.0, 3.0, 10.0, "add", "lt", 16);
-    assert!((grad - 1.0).abs() < 1e-6, "grad(while add) should be 1.0, got {grad}");
+    assert!(
+        (grad - 1.0).abs() < 1e-6,
+        "grad(while add) should be 1.0, got {grad}"
+    );
 }
 
 #[test]
@@ -486,7 +489,10 @@ fn test_grad_through_while_mul() {
     // while(1, step=2, threshold=100, mul, lt) iterates 7 times: 1→2→4→8→16→32→64→128
     // d(output)/d(init) = 2^7 = 128 (each multiplication by step=2)
     let grad = run_grad_while_case(1.0, 2.0, 100.0, "mul", "lt", 16);
-    assert!((grad - 128.0).abs() < 1e-6, "grad(while mul) should be 128.0, got {grad}");
+    assert!(
+        (grad - 128.0).abs() < 1e-6,
+        "grad(while mul) should be 128.0, got {grad}"
+    );
 }
 
 #[test]
@@ -503,7 +509,10 @@ fn test_jit_grad_cond() {
         .as_f64_scalar()
         .expect("jit(grad(cond)) output should be f64");
     // false branch: f(x)=x^2 => grad=2x=10
-    assert!((grad - 10.0).abs() < 1e-6, "jit(grad(cond false)) should be 10.0, got {grad}");
+    assert!(
+        (grad - 10.0).abs() < 1e-6,
+        "jit(grad(cond false)) should be 10.0, got {grad}"
+    );
 }
 
 #[test]
@@ -523,7 +532,10 @@ fn test_jit_grad_scan() {
         .as_f64_scalar()
         .expect("jit(grad(scan)) output should be f64");
     // scan(mul, 3, [2, 5]) = 3*2*5 = 30, d/dinit = 2*5 = 10
-    assert!((grad - 10.0).abs() < 1e-6, "jit(grad(scan mul)) should be 10.0, got {grad}");
+    assert!(
+        (grad - 10.0).abs() < 1e-6,
+        "jit(grad(scan mul)) should be 10.0, got {grad}"
+    );
 }
 
 #[test]
