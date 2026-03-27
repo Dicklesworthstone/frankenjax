@@ -599,6 +599,7 @@ dependencies = [
  "fj-test-utils",
  "proptest",
  "rayon",
+ "rustc-hash",
 ]
 
 [[package]]

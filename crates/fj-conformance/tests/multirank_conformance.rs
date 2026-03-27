@@ -1648,7 +1648,7 @@ fn test_dtype_promotion_matrix() {
             name: "u32_f32",
             lhs: tensor_u32(&[], &[8]),
             rhs: tensor_f32(&[], &[3.0]),
-            expected: DType::F64,
+            expected: DType::F32, // JAX lattice: U32+F32→F32
         },
         PromotionCase {
             name: "u64_i64",

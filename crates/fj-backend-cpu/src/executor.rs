@@ -13,7 +13,9 @@ use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
 use rayon::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
+
+type HashMap<K, V> = FxHashMap<K, V>;
 
 fn equation_inputs_ready(equation: &fj_core::Equation, env: &HashMap<VarId, Value>) -> bool {
     equation.inputs.iter().all(|atom| match atom {
@@ -165,12 +167,14 @@ fn evaluate_jaxpr_parallel_inner(
 
         let should_parallelize = ready_indices.len() > 1 && rayon::current_num_threads() > 1;
         if should_parallelize {
-            let env_snapshot = env.clone();
+            // No env.clone() needed: the parallel phase only reads from env.
+            // The shared borrow is released after collect() before we mutate env below.
+            let env_ref = &env;
             let mut evaluated = ready_indices
                 .par_iter()
                 .map(|idx| {
                     let eqn = &jaxpr.equations[*idx];
-                    let output = evaluate_equation(eqn, &env_snapshot)?;
+                    let output = evaluate_equation(eqn, env_ref)?;
                     Ok((*idx, eqn.outputs[0], output))
                 })
                 .collect::<Result<Vec<_>, InterpreterError>>()?;
