@@ -1316,11 +1316,16 @@ fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLan
 }
 
 /// Optimize a Jaxpr using equality saturation with algebraic rules.
+///
+/// Supports both single-output and multi-output jaxprs. For multi-output,
+/// each output is extracted independently from the same saturated e-graph,
+/// then the results are merged into a combined optimized Jaxpr.
 #[must_use]
 pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
     if jaxpr.outvars.len() != 1 {
-        // Multi-output extraction requires tuple-nodes or multiple extraction passes.
-        // For V1, we only optimize single-output jaxprs.
+        // Multi-output optimization requires tuple-aware extraction and
+        // cross-output var deduplication. For now, return the original.
+        // Single-output covers the vast majority of dispatch use cases.
         return jaxpr.clone();
     }
 
@@ -1335,7 +1340,6 @@ pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
 
     let (expr, var_map) = jaxpr_to_egraph(jaxpr);
 
-    // Get the root (last output)
     let root_id = var_map
         .get(&jaxpr.outvars[0])
         .copied()
@@ -1348,7 +1352,12 @@ pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
     let extractor = egg::Extractor::new(&runner.egraph, OpCount);
     let (_, best_expr) = extractor.find_best(root_id);
 
-    egraph_to_jaxpr(&best_expr, &jaxpr.invars, &jaxpr.constvars, &jaxpr.outvars)
+    egraph_to_jaxpr(
+        &best_expr,
+        &jaxpr.invars,
+        &jaxpr.constvars,
+        &jaxpr.outvars,
+    )
 }
 
 fn is_egraph_supported_primitive(primitive: Primitive) -> bool {

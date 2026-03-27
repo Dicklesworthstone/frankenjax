@@ -650,7 +650,7 @@ fn backward(
             &entry.params,
         )?;
 
-        for (var_id, cot) in entry.inputs.iter().zip(cotangents.into_iter()) {
+        for (var_id, cot) in entry.inputs.iter().zip(cotangents) {
             if var_id.0 == u32::MAX {
                 continue; // literal sentinel
             }

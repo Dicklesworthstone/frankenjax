@@ -1347,8 +1347,26 @@ fn batch_cond(
         return Ok(BatchTracer::unbatched(selected.value.clone()));
     }
 
-    // Batched predicate: each element may select a different branch.
-    batch_control_flow_fallback(Primitive::Cond, inputs, params)
+    // Batched predicate: evaluate BOTH branches for the full batch, then use
+    // Select to pick per-element. This is O(1) vectorized instead of O(N) loop.
+    let pred_bd = inputs[0].batch_dim.unwrap();
+    let pred = move_batch_dim_to_front(&inputs[0].value, pred_bd)?;
+    let batch_size = get_batch_size(&inputs[0].value, pred_bd)?;
+
+    // Prepare on_true and on_false values with matching batch dimension
+    let on_true = match inputs[1].batch_dim {
+        Some(bd) => move_batch_dim_to_front(&inputs[1].value, bd)?,
+        None => broadcast_unbatched(&inputs[1].value, batch_size, 0)?,
+    };
+    let on_false = match inputs[2].batch_dim {
+        Some(bd) => move_batch_dim_to_front(&inputs[2].value, bd)?,
+        None => broadcast_unbatched(&inputs[2].value, batch_size, 0)?,
+    };
+
+    // Use Select(pred, on_true, on_false) for vectorized per-element selection
+    let result = eval_primitive(Primitive::Select, &[pred, on_true, on_false], params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
 }
 
 fn batch_scan(
@@ -1373,6 +1391,46 @@ fn batch_switch(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    // Fast path: scalar index selects one branch for the entire batch.
+    if inputs[0].batch_dim.is_none() {
+        let idx = match &inputs[0].value {
+            Value::Scalar(fj_core::Literal::I64(v)) => *v as usize,
+            Value::Scalar(fj_core::Literal::U32(v)) => *v as usize,
+            _ => {
+                return batch_control_flow_fallback(Primitive::Switch, inputs, params);
+            }
+        };
+        if idx + 1 < inputs.len() {
+            let selected = &inputs[idx + 1];
+            return match selected.batch_dim {
+                Some(bd) => {
+                    let moved = move_batch_dim_to_front(&selected.value, bd)?;
+                    Ok(BatchTracer::batched(moved, 0))
+                }
+                None => {
+                    let mut batch_size = None;
+                    for (branch_idx, tracer) in inputs.iter().enumerate() {
+                        if branch_idx == idx + 1 {
+                            continue;
+                        }
+                        if let Some(bd) = tracer.batch_dim {
+                            batch_size = Some(get_batch_size(&tracer.value, bd)?);
+                            break;
+                        }
+                    }
+                    if let Some(batch_size) = batch_size {
+                        let broadcasted = broadcast_unbatched(&selected.value, batch_size, 0)?;
+                        Ok(BatchTracer::batched(broadcasted, 0))
+                    } else {
+                        Ok(BatchTracer::unbatched(selected.value.clone()))
+                    }
+                }
+            };
+        }
+    }
+
+    // Batched index: per-element fallback (proper vectorization would require
+    // evaluating all branches and selecting per-element with an index mask).
     batch_control_flow_fallback(Primitive::Switch, inputs, params)
 }
 
@@ -1820,6 +1878,53 @@ mod tests {
         .unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![7, 8, 9]);
+    }
+
+    #[test]
+    fn test_batch_trace_cond_batched_predicate_vectorizes_selection() {
+        let pred = BatchTracer::batched(make_i64_vector(&[1, 0, 1]), 0);
+        let on_true = BatchTracer::batched(make_i64_vector(&[7, 8, 9]), 0);
+        let on_false = BatchTracer::unbatched(Value::scalar_i64(-1));
+        let result = apply_batch_rule(
+            Primitive::Cond,
+            &[pred, on_true, on_false],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![7, -1, 9]);
+    }
+
+    #[test]
+    fn test_batch_trace_switch_scalar_index_selects_batched_branch() {
+        let idx = BatchTracer::unbatched(Value::scalar_i64(1));
+        let on_zero = BatchTracer::unbatched(Value::scalar_i64(-1));
+        let on_one = BatchTracer::batched(make_i64_vector(&[4, 5, 6]), 0);
+        let on_two = BatchTracer::batched(make_i64_vector(&[40, 50, 60]), 0);
+        let result = apply_batch_rule(
+            Primitive::Switch,
+            &[idx, on_zero, on_one, on_two],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_batch_trace_switch_scalar_index_broadcasts_unbatched_branch() {
+        let idx = BatchTracer::unbatched(Value::scalar_i64(0));
+        let on_zero = BatchTracer::unbatched(Value::scalar_i64(11));
+        let on_one = BatchTracer::batched(make_i64_vector(&[4, 5, 6]), 0);
+        let on_two = BatchTracer::batched(make_i64_vector(&[40, 50, 60]), 0);
+        let result = apply_batch_rule(
+            Primitive::Switch,
+            &[idx, on_zero, on_one, on_two],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![11, 11, 11]);
     }
 
     // ── Control Flow Batching Tests ───────────────────────────

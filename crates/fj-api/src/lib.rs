@@ -403,4 +403,194 @@ mod tests {
         assert!((values[2] - 4.0).abs() < 1e-3);
         assert!(values[3].abs() < 1e-3);
     }
+
+    // ── End-to-end trace → transform integration tests ───────
+
+    #[test]
+    fn trace_jit_square_e2e() {
+        // Trace x*x via make_jaxpr, then jit it
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let sq = inputs[0].binary_op(Primitive::Mul, &inputs[0]).unwrap();
+                vec![sq]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let result = jit(closed.jaxpr)
+            .call(vec![Value::scalar_f64(7.0)])
+            .expect("jit(traced x*x) should succeed");
+        let val = result[0].as_f64_scalar().expect("should be f64");
+        assert!((val - 49.0).abs() < 1e-10, "7^2 should be 49, got {val}");
+    }
+
+    #[test]
+    fn trace_grad_square_e2e() {
+        // Trace x*x, then grad: d(x^2)/dx = 2x
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let sq = inputs[0].binary_op(Primitive::Mul, &inputs[0]).unwrap();
+                vec![sq]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let result = grad(closed.jaxpr)
+            .call(vec![Value::scalar_f64(5.0)])
+            .expect("grad(traced x*x) should succeed");
+        let derivative = result[0].as_f64_scalar().expect("should be f64");
+        assert!(
+            (derivative - 10.0).abs() < 1e-3,
+            "d(x^2)/dx at x=5 should be 10, got {derivative}"
+        );
+    }
+
+    #[test]
+    fn trace_jit_grad_square_e2e() {
+        // Trace x*x, then jit(grad): d(x^2)/dx = 2x via composition
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let sq = inputs[0].binary_op(Primitive::Mul, &inputs[0]).unwrap();
+                vec![sq]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let result = jit(closed.jaxpr)
+            .compose_grad()
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("jit(grad(traced x*x)) should succeed");
+        let derivative = result[0].as_f64_scalar().expect("should be f64");
+        assert!(
+            (derivative - 6.0).abs() < 1e-3,
+            "d(x^2)/dx at x=3 should be 6, got {derivative}"
+        );
+    }
+
+    #[test]
+    fn trace_chain_e2e() {
+        // Trace x*x + x + x + x = x^2 + 3x, then grad: d(x^2 + 3x)/dx = 2x + 3
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let x = &inputs[0];
+                let x_sq = x.binary_op(Primitive::Mul, x).unwrap();
+                let sum1 = x_sq.binary_op(Primitive::Add, x).unwrap();
+                let sum2 = sum1.binary_op(Primitive::Add, x).unwrap();
+                let sum3 = sum2.binary_op(Primitive::Add, x).unwrap();
+                vec![sum3]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        // f(x) = x^2 + 3x, f'(x) = 2x + 3
+        let result = grad(closed.jaxpr)
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("grad(traced x^2 + 3x) should succeed");
+        let derivative = result[0].as_f64_scalar().expect("should be f64");
+        assert!(
+            (derivative - 11.0).abs() < 1e-3,
+            "d(x^2 + 3x)/dx at x=4 should be 11, got {derivative}"
+        );
+    }
+
+    #[test]
+    fn trace_multi_input_e2e() {
+        // Trace f(x, y) = x + y, then jit
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: fj_core::Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let sum = inputs[0].binary_op(Primitive::Add, &inputs[1]).unwrap();
+                vec![sum]
+            },
+            vec![aval.clone(), aval],
+        )
+        .unwrap();
+
+        let result = jit(closed.jaxpr)
+            .call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)])
+            .expect("jit(traced x+y) should succeed");
+        let val = result[0].as_f64_scalar().expect("should be f64");
+        assert!((val - 7.0).abs() < 1e-10, "3+4 should be 7, got {val}");
+    }
+
+    #[test]
+    fn trace_unary_chain_e2e() {
+        // Trace neg(exp(x)), then jit
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let exp = inputs[0].unary_op(Primitive::Exp).unwrap();
+                let neg = exp.unary_op(Primitive::Neg).unwrap();
+                vec![neg]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let result = jit(closed.jaxpr)
+            .call(vec![Value::scalar_f64(1.0)])
+            .expect("jit(traced neg(exp(x))) should succeed");
+        let val = result[0].as_f64_scalar().expect("should be f64");
+        let expected = -(1.0_f64.exp());
+        assert!(
+            (val - expected).abs() < 1e-10,
+            "-exp(1) should be {expected}, got {val}"
+        );
+    }
+
+    #[test]
+    fn trace_fallible_error_propagation() {
+        // make_jaxpr_fallible should propagate errors cleanly
+        use fj_core::DType;
+        use fj_trace::{ShapedArray, TraceError};
+
+        let result = make_jaxpr_fallible(
+            |_inputs| Err(TraceError::InvalidAbstractValue),
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        );
+        assert!(result.is_err());
+    }
 }

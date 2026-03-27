@@ -568,3 +568,96 @@ fn egraph_preserves_tanh_scalar() {
     let jaxpr = make_unary_jaxpr(Primitive::Tanh);
     verify_optimization_preserves_semantics(&jaxpr, &[s_f64(0.8)], &[], 1e-12, "tanh scalar");
 }
+
+// ======================== Multi-Output Programs ========================
+
+/// Build: y1 = neg(x), y2 = abs(x) — two independent outputs from one input.
+fn make_multi_output_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2), VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+/// Build: t = neg(neg(x)), y1 = t, y2 = t + t  — shared intermediate, two outputs.
+fn make_multi_output_shared_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3), VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+#[test]
+fn egraph_preserves_multi_output_independent() {
+    // Two independent outputs: neg(x) and abs(x).
+    // Multi-output jaxprs pass through unoptimized (V1 limitation),
+    // but semantics must still be preserved.
+    let jaxpr = make_multi_output_jaxpr();
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(-3.5)],
+        &[],
+        1e-12,
+        "multi-output independent",
+    );
+}
+
+#[test]
+fn egraph_preserves_multi_output_shared() {
+    // Shared intermediate: neg(neg(x)) = x, and x + x = 2x.
+    // Multi-output jaxprs pass through unoptimized (V1 limitation).
+    let jaxpr = make_multi_output_shared_jaxpr();
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(7.0)],
+        &[],
+        1e-12,
+        "multi-output shared",
+    );
+}

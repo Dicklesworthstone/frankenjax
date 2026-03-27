@@ -52,7 +52,7 @@ pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     // - Same half type stays: BF16+BF16→BF16, F16+F16→F16
     // - F32 absorbs half types; F64 absorbs everything
     // - U64+I64 → F64 (no common integer type)
-    // - U32+F32 → F64 (U32 range exceeds F32 precision)
+    // - U32+F32 → F32 (JAX lattice; F32 absorbs U32)
     match (lhs, rhs) {
         // Complex types dominate
         (Complex128, _) | (_, Complex128) => Complex128,

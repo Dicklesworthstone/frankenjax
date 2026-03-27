@@ -125,6 +125,12 @@ pub enum TraceError {
         primitive: Primitive,
     },
     InvalidAbstractValue,
+    ForeignTracerContext {
+        tracer_id: TracerId,
+    },
+    TracerInvariantViolation {
+        tracer_id: TracerId,
+    },
     UnboundTracerInput {
         tracer_id: TracerId,
     },
@@ -161,6 +167,20 @@ impl std::fmt::Display for TraceError {
                 write!(f, "unsupported primitive {}", primitive.as_str())
             }
             Self::InvalidAbstractValue => write!(f, "invalid abstract value"),
+            Self::ForeignTracerContext { tracer_id } => {
+                write!(
+                    f,
+                    "tracer id {} escaped its originating trace context",
+                    tracer_id.0
+                )
+            }
+            Self::TracerInvariantViolation { tracer_id } => {
+                write!(
+                    f,
+                    "tracer id {} violated cached abstract-value invariants",
+                    tracer_id.0
+                )
+            }
             Self::UnboundTracerInput { tracer_id } => {
                 write!(f, "unbound tracer input id {}", tracer_id.0)
             }
@@ -2371,16 +2391,18 @@ fn broadcast_shape(lhs: &Shape, rhs: &Shape) -> Option<Shape> {
 fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     use DType::{BF16, Bool, Complex64, Complex128, F16, F32, F64, I32, I64, U32, U64};
 
+    // JAX type promotion lattice — must match fj-lax/src/type_promotion.rs
     match (lhs, rhs) {
         (Complex128, _) | (_, Complex128) => Complex128,
         (Complex64, _) | (_, Complex64) => Complex64,
-        (U64, I64) | (I64, U64) => F64,
-        (U32, F32) | (F32, U32) => F64,
         (F64, _) | (_, F64) => F64,
         (F32, _) | (_, F32) => F32,
-        (F16, F16) => F16,
+        (BF16, F16) | (F16, BF16) => F32,
         (BF16, BF16) => BF16,
-        (F16, _) | (_, F16) | (BF16, _) | (_, BF16) => F32,
+        (F16, F16) => F16,
+        (BF16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, BF16) => BF16,
+        (F16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, F16) => F16,
+        (U64, I64) | (I64, U64) => F64,
         (I32, U32) | (U32, I32) => I64,
         (I64, U32) | (U32, I64) => I64,
         (I64, _) | (_, I64) => I64,
@@ -2519,6 +2541,20 @@ impl std::fmt::Debug for TracerRef {
 }
 
 impl TracerRef {
+    fn validate_against_ctx(
+        &self,
+        expected_ctx: &Rc<RefCell<SimpleTraceContext>>,
+    ) -> Result<(), TraceError> {
+        if !Rc::ptr_eq(&self.ctx, expected_ctx) {
+            return Err(TraceError::ForeignTracerContext { tracer_id: self.id });
+        }
+        let actual = self.ctx.borrow().tracer_aval(self.id)?.clone();
+        if actual != self.aval {
+            return Err(TraceError::TracerInvariantViolation { tracer_id: self.id });
+        }
+        Ok(())
+    }
+
     /// Get the tracer ID.
     #[must_use]
     pub fn id(&self) -> TracerId {
@@ -2533,6 +2569,7 @@ impl TracerRef {
 
     /// Apply a unary primitive operation (e.g., sin, cos, neg, exp).
     pub fn unary_op(&self, primitive: Primitive) -> Result<TracerRef, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
         let output_ids =
             self.ctx
                 .borrow_mut()
@@ -2553,6 +2590,8 @@ impl TracerRef {
         primitive: Primitive,
         other: &TracerRef,
     ) -> Result<TracerRef, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
+        other.validate_against_ctx(&self.ctx)?;
         let output_ids = self.ctx.borrow_mut().process_primitive(
             primitive,
             &[self.id, other.id],
@@ -2575,8 +2614,10 @@ impl TracerRef {
         other_inputs: &[&TracerRef],
         params: BTreeMap<String, String>,
     ) -> Result<Vec<TracerRef>, TraceError> {
+        self.validate_against_ctx(&self.ctx)?;
         let mut input_ids = vec![self.id];
         for other in other_inputs {
+            other.validate_against_ctx(&self.ctx)?;
             input_ids.push(other.id);
         }
         let output_ids = self
@@ -2695,6 +2736,9 @@ where
 
     // Run the user's closure
     let output_refs = f(&input_refs);
+    for output in &output_refs {
+        output.validate_against_ctx(&ctx)?;
+    }
 
     // Extract output IDs before dropping refs
     let output_ids: Vec<TracerId> = output_refs.iter().map(|r| r.id).collect();
@@ -2740,6 +2784,9 @@ where
         .collect();
 
     let output_refs = f(&input_refs)?;
+    for output in &output_refs {
+        output.validate_against_ctx(&ctx)?;
+    }
     let output_ids: Vec<TracerId> = output_refs.iter().map(|r| r.id).collect();
     drop(input_refs);
     drop(output_refs);
@@ -2803,10 +2850,12 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
     use std::any::Any;
+    use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::fs;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
     use std::time::Instant;
 
     const PACKET_ID: &str = "FJ-P2C-001";
@@ -5122,5 +5171,299 @@ mod tests {
         {
             assert_eq!(e1.primitive, e2.primitive);
         }
+    }
+
+    #[test]
+    fn test_make_jaxpr_rejects_foreign_output_tracer() {
+        use super::{TraceError, TracerRef, make_jaxpr};
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let foreign = make_jaxpr(|inputs| vec![inputs[0].clone()], vec![aval.clone()]).unwrap();
+        assert!(foreign.jaxpr.equations.is_empty());
+
+        let foreign_ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let foreign_id = foreign_ctx.borrow_mut().bind_input(aval.clone());
+        let foreign_ref = TracerRef {
+            id: foreign_id,
+            aval: aval.clone(),
+            ctx: Rc::clone(&foreign_ctx),
+        };
+
+        let err = make_jaxpr(|_inputs| vec![foreign_ref.clone()], vec![aval]).unwrap_err();
+        assert!(matches!(err, TraceError::ForeignTracerContext { .. }));
+    }
+
+    #[test]
+    fn test_tracer_binary_op_rejects_foreign_context() {
+        use super::{TraceError, TracerRef};
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let ctx_a = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_a = ctx_a.borrow_mut().bind_input(aval.clone());
+        let a = TracerRef {
+            id: id_a,
+            aval: aval.clone(),
+            ctx: Rc::clone(&ctx_a),
+        };
+
+        let ctx_b = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_b = ctx_b.borrow_mut().bind_input(aval.clone());
+        let b = TracerRef {
+            id: id_b,
+            aval: aval.clone(),
+            ctx: Rc::clone(&ctx_b),
+        };
+
+        let err = a.binary_op(Primitive::Add, &b).unwrap_err();
+        assert!(matches!(err, TraceError::ForeignTracerContext { .. }));
+    }
+
+    #[test]
+    fn test_tracer_unary_op_rejects_cached_aval_mismatch() {
+        use super::{TraceError, TracerRef};
+        let actual_aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+        let stale_aval = ShapedArray {
+            dtype: DType::Bool,
+            shape: Shape::scalar(),
+        };
+
+        let ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id = ctx.borrow_mut().bind_input(actual_aval);
+        let stale = TracerRef {
+            id,
+            aval: stale_aval,
+            ctx,
+        };
+
+        let err = stale.unary_op(Primitive::Neg).unwrap_err();
+        assert!(matches!(err, TraceError::TracerInvariantViolation { .. }));
+    }
+
+    // ── Trace-time validation evidence tests ─────────────────
+
+    #[test]
+    fn test_binary_op_dtype_mismatch_detection() {
+        // When two tracers have different dtypes, binary op should still succeed
+        // (type promotion happens at eval time), but shape inference should catch
+        // incompatible shapes.
+        use super::make_jaxpr;
+        let aval_f64 = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let result = make_jaxpr(
+            |inputs| {
+                let sum = inputs[0].binary_op(Primitive::Add, &inputs[1]).unwrap();
+                vec![sum]
+            },
+            vec![aval_f64.clone(), aval_f64],
+        );
+        assert!(result.is_ok(), "same-shape binary op should succeed");
+    }
+
+    #[test]
+    fn test_foreign_tracer_in_binary_op_rhs() {
+        // Ensure foreign tracer detection works for RHS as well as LHS
+        use super::{TraceError, TracerRef};
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let ctx_a = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_a = ctx_a.borrow_mut().bind_input(aval.clone());
+        let a = TracerRef {
+            id: id_a,
+            aval: aval.clone(),
+            ctx: Rc::clone(&ctx_a),
+        };
+
+        let ctx_b = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_b = ctx_b.borrow_mut().bind_input(aval.clone());
+        let b = TracerRef {
+            id: id_b,
+            aval: aval.clone(),
+            ctx: Rc::clone(&ctx_b),
+        };
+
+        // Both directions should fail
+        assert!(matches!(
+            a.binary_op(Primitive::Add, &b),
+            Err(TraceError::ForeignTracerContext { .. })
+        ));
+        assert!(matches!(
+            b.binary_op(Primitive::Mul, &a),
+            Err(TraceError::ForeignTracerContext { .. })
+        ));
+    }
+
+    #[test]
+    fn test_binary_op_cached_aval_mismatch() {
+        // Stale aval on either side of a binary op should be caught
+        use super::{TraceError, TracerRef};
+        let actual = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+        let stale = ShapedArray {
+            dtype: DType::I64,
+            shape: Shape::scalar(),
+        };
+
+        let ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_good = ctx.borrow_mut().bind_input(actual.clone());
+        let id_bad = ctx.borrow_mut().bind_input(actual);
+        let good = TracerRef {
+            id: id_good,
+            aval: ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ctx: Rc::clone(&ctx),
+        };
+        let bad = TracerRef {
+            id: id_bad,
+            aval: stale,
+            ctx: Rc::clone(&ctx),
+        };
+
+        let err = good.binary_op(Primitive::Add, &bad).unwrap_err();
+        assert!(matches!(err, TraceError::TracerInvariantViolation { .. }));
+    }
+
+    #[test]
+    fn test_make_jaxpr_identity_function() {
+        // Identity function: output = input. Should produce empty equations.
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(|inputs| vec![inputs[0].clone()], vec![aval]).unwrap();
+        assert!(
+            closed.jaxpr.equations.is_empty(),
+            "identity should have no equations"
+        );
+        assert_eq!(closed.jaxpr.invars.len(), 1);
+        assert_eq!(closed.jaxpr.outvars.len(), 1);
+    }
+
+    #[test]
+    fn test_make_jaxpr_multi_output_neg_abs() {
+        // Function returning multiple outputs (neg and abs)
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let neg = inputs[0].unary_op(Primitive::Neg).unwrap();
+                let abs = inputs[0].unary_op(Primitive::Abs).unwrap();
+                vec![neg, abs]
+            },
+            vec![aval],
+        )
+        .unwrap();
+        assert_eq!(closed.jaxpr.equations.len(), 2);
+        assert_eq!(closed.jaxpr.outvars.len(), 2);
+    }
+
+    #[test]
+    fn test_make_jaxpr_chain_preserves_data_flow() {
+        // Chain: x -> neg -> exp -> output. Verify equation connectivity.
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let neg = inputs[0].unary_op(Primitive::Neg).unwrap();
+                let exp = neg.unary_op(Primitive::Exp).unwrap();
+                vec![exp]
+            },
+            vec![aval],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.equations.len(), 2);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Neg);
+        assert_eq!(closed.jaxpr.equations[1].primitive, Primitive::Exp);
+        // Second equation's input should be first equation's output
+        let neg_output = closed.jaxpr.equations[0].outputs[0];
+        let exp_input = match &closed.jaxpr.equations[1].inputs[0] {
+            fj_core::Atom::Var(v) => *v,
+            _ => panic!("expected var input"),
+        };
+        assert_eq!(neg_output, exp_input, "data flow should be connected");
+    }
+
+    #[test]
+    fn test_make_jaxpr_vector_shape_inference() {
+        // Trace with vector inputs, verify shape propagation
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![4] },
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let neg = inputs[0].unary_op(Primitive::Neg).unwrap();
+                vec![neg]
+            },
+            vec![aval],
+        )
+        .unwrap();
+        assert_eq!(closed.jaxpr.equations.len(), 1);
+    }
+
+    #[test]
+    fn test_make_jaxpr_fallible_wrong_output_count() {
+        // make_jaxpr_fallible should reject wrong output count
+        use super::make_jaxpr_fallible;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        // Return 2 outputs when traced with 1 input — should succeed (multi-output is valid)
+        let result = make_jaxpr_fallible(
+            |inputs| {
+                let neg = inputs[0].unary_op(Primitive::Neg)?;
+                let abs = inputs[0].unary_op(Primitive::Abs)?;
+                Ok(vec![neg, abs])
+            },
+            vec![aval],
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_make_jaxpr_fallible_error_propagation() {
+        // Errors inside the traced function should propagate
+        use super::{TraceError, make_jaxpr_fallible};
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let result =
+            make_jaxpr_fallible(|_inputs| Err(TraceError::InvalidAbstractValue), vec![aval]);
+        assert!(matches!(result, Err(TraceError::InvalidAbstractValue)));
     }
 }
