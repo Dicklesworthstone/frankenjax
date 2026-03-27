@@ -363,3 +363,474 @@ fn rfft_vjp_numerical() {
 
     assert_gradients_close(&analytical, &numerical, 1e-4, "RFFT VJP");
 }
+
+// ======================== Cholesky VJP 3x3 ========================
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn cholesky_vjp_numerical_3x3() {
+    // Test with a larger, well-conditioned SPD matrix
+    #[rustfmt::skip]
+    let a_data = [
+        10.0, 2.0, 1.0,
+         2.0, 8.0, 3.0,
+         1.0, 3.0, 6.0,
+    ];
+    let a = make_f64_matrix(3, 3, &a_data);
+
+    let outputs = eval_primitive_multi(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let l_out = &outputs[0];
+
+    let g_l = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            (0..9).map(|i| Literal::from_f64(if i % 4 == 0 { 1.0 } else { 0.5 })).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        std::slice::from_ref(&g_l),
+        std::slice::from_ref(l_out),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+
+    let eps = 1e-5;
+    let n = 3;
+    let mut numerical = vec![0.0; 9];
+    for idx in 0..9_usize {
+        let row = idx / n;
+        let col = idx % n;
+        let mut plus = a_data.to_vec();
+        plus[row * n + col] += eps;
+        if row != col {
+            plus[col * n + row] += eps;
+        }
+        let a_plus = make_f64_matrix(3, 3, &plus);
+
+        let mut minus = a_data.to_vec();
+        minus[row * n + col] -= eps;
+        if row != col {
+            minus[col * n + row] -= eps;
+        }
+        let a_minus = make_f64_matrix(3, 3, &minus);
+
+        let l_plus = loss_multi(
+            Primitive::Cholesky,
+            &a_plus,
+            std::slice::from_ref(&g_l),
+            &BTreeMap::new(),
+        );
+        let l_minus = loss_multi(
+            Primitive::Cholesky,
+            &a_minus,
+            std::slice::from_ref(&g_l),
+            &BTreeMap::new(),
+        );
+        let mut grad = (l_plus - l_minus) / (2.0 * eps);
+        if row != col {
+            grad *= 0.5;
+        }
+        numerical[idx] = grad;
+    }
+
+    assert_gradients_close(&analytical, &numerical, 1e-4, "Cholesky VJP 3x3");
+}
+
+// ======================== QR VJP ========================
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn qr_vjp_numerical() {
+    // Use the same 2x2 matrix as the JVP test for consistency.
+    // Verify via R output only (R is unique for full-rank matrices).
+    let a_data = [1.0, -1.0, 1.0, 1.0];
+    let a = make_f64_matrix(2, 2, &a_data);
+
+    let outputs = eval_primitive_multi(
+        Primitive::Qr,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    // Zero cotangent for Q, nonzero for R — avoids sign-ambiguity issues
+    let g_q = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            (0..4).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+    let g_r = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            vec![
+                Literal::from_f64(1.0),
+                Literal::from_f64(0.5),
+                Literal::from_f64(0.0),
+                Literal::from_f64(1.0),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Qr,
+        std::slice::from_ref(&a),
+        &[g_q.clone(), g_r.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+
+    let eps = 1e-5;
+    let gs = [g_q, g_r];
+    let mut numerical = vec![0.0; 4];
+    for idx in 0..4_usize {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let a_plus = make_f64_matrix(2, 2, &plus);
+        let l_plus = loss_multi(Primitive::Qr, &a_plus, &gs, &BTreeMap::new());
+
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let a_minus = make_f64_matrix(2, 2, &minus);
+        let l_minus = loss_multi(Primitive::Qr, &a_minus, &gs, &BTreeMap::new());
+
+        numerical[idx] = (l_plus - l_minus) / (2.0 * eps);
+    }
+
+    assert_gradients_close(&analytical, &numerical, 1e-3, "QR VJP (R only)");
+}
+
+// ======================== SVD VJP ========================
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn svd_vjp_numerical() {
+    // Verify SVD VJP via singular values S only (S is unique and sign-invariant;
+    // U and Vt have sign/rotation ambiguity under perturbation).
+    let a_data = [3.0, 1.0, 1.0, 4.0, 0.5, 2.0];
+    let a = make_f64_matrix(3, 2, &a_data);
+
+    let outputs = eval_primitive_multi(
+        Primitive::Svd,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    // SVD returns: U (3x2), S (2,), Vt (2x2)
+
+    // Zero cotangent for U and Vt, nonzero for S
+    let g_u = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 2] },
+            (0..6).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+    let g_s = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2] },
+            vec![Literal::from_f64(1.0), Literal::from_f64(0.5)],
+        )
+        .unwrap(),
+    );
+    let g_vt = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            (0..4).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Svd,
+        std::slice::from_ref(&a),
+        &[g_u.clone(), g_s.clone(), g_vt.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+
+    let eps = 1e-5;
+    let gs = [g_u, g_s, g_vt];
+    let mut numerical = vec![0.0; 6];
+    for idx in 0..6_usize {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let a_plus = make_f64_matrix(3, 2, &plus);
+        let l_plus = loss_multi(Primitive::Svd, &a_plus, &gs, &BTreeMap::new());
+
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let a_minus = make_f64_matrix(3, 2, &minus);
+        let l_minus = loss_multi(Primitive::Svd, &a_minus, &gs, &BTreeMap::new());
+
+        numerical[idx] = (l_plus - l_minus) / (2.0 * eps);
+    }
+
+    assert_gradients_close(&analytical, &numerical, 1e-3, "SVD VJP (S only)");
+}
+
+// ======================== Eigh VJP ========================
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn eigh_vjp_numerical() {
+    // Symmetric matrix with distinct eigenvalues for well-conditioned gradient
+    #[rustfmt::skip]
+    let a_data = [
+        5.0, 1.0, 0.5,
+        1.0, 4.0, 1.0,
+        0.5, 1.0, 3.0,
+    ];
+    let a = make_f64_matrix(3, 3, &a_data);
+
+    let outputs = eval_primitive_multi(
+        Primitive::Eigh,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    // Eigh returns: eigenvalues (3,), eigenvectors (3x3)
+
+    let g_w = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3] },
+            vec![
+                Literal::from_f64(1.0),
+                Literal::from_f64(1.0),
+                Literal::from_f64(1.0),
+            ],
+        )
+        .unwrap(),
+    );
+    let g_v = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            (0..9).map(|_| Literal::from_f64(0.1)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Eigh,
+        std::slice::from_ref(&a),
+        &[g_w.clone(), g_v.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+
+    let eps = 1e-5;
+    let gs = [g_w, g_v];
+    let n = 3;
+    let mut numerical = vec![0.0; 9];
+    for idx in 0..9_usize {
+        let row = idx / n;
+        let col = idx % n;
+        let mut plus = a_data.to_vec();
+        plus[row * n + col] += eps;
+        if row != col {
+            plus[col * n + row] += eps;
+        }
+        let a_plus = make_f64_matrix(3, 3, &plus);
+        let l_plus = loss_multi(Primitive::Eigh, &a_plus, &gs, &BTreeMap::new());
+
+        let mut minus = a_data.to_vec();
+        minus[row * n + col] -= eps;
+        if row != col {
+            minus[col * n + row] -= eps;
+        }
+        let a_minus = make_f64_matrix(3, 3, &minus);
+        let l_minus = loss_multi(Primitive::Eigh, &a_minus, &gs, &BTreeMap::new());
+
+        let mut grad = (l_plus - l_minus) / (2.0 * eps);
+        if row != col {
+            grad *= 0.5;
+        }
+        numerical[idx] = grad;
+    }
+
+    assert_gradients_close(&analytical, &numerical, 1e-3, "Eigh VJP");
+}
+
+// ======================== IFFT VJP ========================
+
+#[test]
+fn ifft_vjp_numerical() {
+    // IFFT is linear, so VJP(g) = adjoint(IFFT)(g) = (1/n) * FFT(g)
+    use fj_core::Literal::Complex128Bits;
+
+    let x = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![4] },
+            [1.0, -0.5, 2.0, 0.3]
+                .iter()
+                .map(|&v| Literal::from_complex128(v, 0.0))
+                .collect(),
+        )
+        .unwrap(),
+    );
+
+    let g = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![4] },
+            (0..4).map(|_| Literal::from_complex128(1.0, 0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Ifft,
+        std::slice::from_ref(&x),
+        &g,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    // For linear op IFFT: VJP(g) = adjoint(IFFT)(g) = (1/n) * FFT(g)
+    let fft_g =
+        eval_primitive(Primitive::Fft, std::slice::from_ref(&g), &BTreeMap::new()).unwrap();
+    let n = 4.0;
+
+    let vjp_vals: Vec<(f64, f64)> = vjp_result[0]
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| match l {
+            Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
+            _ => panic!("expected complex"),
+        })
+        .collect();
+
+    let fft_vals: Vec<(f64, f64)> = fft_g
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| match l {
+            Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
+            _ => panic!("expected complex"),
+        })
+        .collect();
+
+    for (i, ((vr, vi), (fr, fi))) in vjp_vals.iter().zip(fft_vals.iter()).enumerate() {
+        let expected_re = fr / n;
+        let expected_im = fi / n;
+        assert!(
+            (vr - expected_re).abs() < 1e-10 && (vi - expected_im).abs() < 1e-10,
+            "IFFT VJP[{i}]: got ({vr},{vi}), expected ({expected_re},{expected_im})"
+        );
+    }
+}
+
+// ======================== IRFFT VJP ========================
+
+#[test]
+fn irfft_vjp_numerical() {
+    // IRFFT: C^{n/2+1} → R^n. Verify VJP via finite differences.
+    let x_re = [10.0, -2.0, 2.0];
+    let x_im = [0.0, 3.0, 0.0];
+
+    let x = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![3] },
+            x_re.iter()
+                .zip(x_im.iter())
+                .map(|(&r, &i)| Literal::from_complex128(r, i))
+                .collect(),
+        )
+        .unwrap(),
+    );
+
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+
+    // Cotangent is real (output is real)
+    let g = make_f64_vector(&[1.0, 1.0, 1.0, 1.0]);
+
+    let vjp_result =
+        fj_ad::vjp_single(Primitive::Irfft, std::slice::from_ref(&x), &g, &params).unwrap();
+
+    // Finite-difference verification: perturb real and imag parts independently
+    let eps = 1e-6;
+    use fj_core::Literal::Complex128Bits;
+
+    // Check gradient w.r.t. real part of each input element
+    for bin in 0..3 {
+        let mut re_plus = x_re.to_vec();
+        re_plus[bin] += eps;
+        let x_plus = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: vec![3] },
+                re_plus
+                    .iter()
+                    .zip(x_im.iter())
+                    .map(|(&r, &i)| Literal::from_complex128(r, i))
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let out_plus =
+            eval_primitive(Primitive::Irfft, std::slice::from_ref(&x_plus), &params).unwrap();
+        let l_plus: f64 = extract_f64_vec(&out_plus).iter().sum();
+
+        let mut re_minus = x_re.to_vec();
+        re_minus[bin] -= eps;
+        let x_minus = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: vec![3] },
+                re_minus
+                    .iter()
+                    .zip(x_im.iter())
+                    .map(|(&r, &i)| Literal::from_complex128(r, i))
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let out_minus =
+            eval_primitive(Primitive::Irfft, std::slice::from_ref(&x_minus), &params).unwrap();
+        let l_minus: f64 = extract_f64_vec(&out_minus).iter().sum();
+
+        let numerical_re = (l_plus - l_minus) / (2.0 * eps);
+
+        let vjp_bin = match &vjp_result[0].as_tensor().unwrap().elements[bin] {
+            Complex128Bits(re, _im) => f64::from_bits(*re),
+            _ => panic!("expected complex"),
+        };
+
+        assert!(
+            (vjp_bin - numerical_re).abs() < 1e-4,
+            "IRFFT VJP real part at bin {bin}: analytical={vjp_bin}, numerical={numerical_re}"
+        );
+    }
+}

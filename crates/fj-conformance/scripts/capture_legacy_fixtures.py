@@ -320,45 +320,70 @@ def _random_split_py(key: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, 
 
 
 def _random_fold_in_py(key: tuple[int, int], data: int) -> tuple[int, int]:
-    return _threefry2x32_py(key, (_u32(data), 0))
+    # JAX: threefry_2x32(key, threefry_seed(data)) where threefry_seed puts [hi, lo]
+    # For u32 data, hi=0, lo=data
+    return _threefry2x32_py(key, (0, _u32(data)))
 
 
-def _generate_bits_py(key: tuple[int, int], count: int) -> list[int]:
-    bits: list[int] = []
-    pairs = (count + 1) // 2
-    for idx in range(pairs):
-        a, b = _threefry2x32_py(key, (_u32(idx), 0))
-        bits.append(a)
-        if len(bits) < count:
-            bits.append(b)
-    return bits
+def _generate_u32_bits_py(key: tuple[int, int], count: int) -> list[int]:
+    """Match JAX's partitionable _threefry_random_bits with bit_width=32.
+
+    For each sample index i, calls threefry2x32(key, [0, i]) and XORs the
+    two output words.
+    """
+    return [_threefry2x32_py(key, (0, _u32(i)))[0] ^ _threefry2x32_py(key, (0, _u32(i)))[1]
+            for i in range(count)]
 
 
 def _random_uniform_py(
     key: tuple[int, int], count: int, minval: float, maxval: float
 ) -> list[float]:
-    bits = _generate_bits_py(key, count)
+    """Match JAX's uniform with f32 mode (x64 not enabled).
+
+    Generates u32 bits via XOR, converts to f32 mantissa, then scales.
+    """
+    import struct
+    bits = _generate_u32_bits_py(key, count)
     span = maxval - minval
-    denom = float(_U32_MASK) + 1.0
-    return [minval + (float(b) / denom) * span for b in bits]
+    results = []
+    for b in bits:
+        mantissa = b >> 9
+        float_bits = mantissa | 0x3F800000
+        unit = struct.unpack("f", struct.pack("I", float_bits))[0] - 1.0
+        results.append(minval + float(unit) * span)
+    return results
 
 
 def _random_normal_py(key: tuple[int, int], count: int) -> list[float]:
-    pairs_needed = (count + 1) // 2
-    total_uniforms = pairs_needed * 2
-    bits = _generate_bits_py(key, total_uniforms)
-    denom = float(_U32_MASK) + 2.0
+    """Match JAX's normal with f32 mode: sqrt(2) * erfinv(uniform(-1, 1))."""
+    import struct
+    # nextafter_f32(-1.0, 0.0)
+    neg1_bits = struct.unpack("I", struct.pack("f", -1.0))[0]
+    lo = struct.unpack("f", struct.pack("I", neg1_bits - 1))[0]
+    hi = 1.0
+    uniforms = _random_uniform_py(key, count, float(lo), hi)
+    sqrt2 = math.sqrt(2.0)
+    return [sqrt2 * _erf_inv_py(u) for u in uniforms]
 
-    out: list[float] = []
-    for i in range(pairs_needed):
-        u1 = (float(bits[2 * i]) + 1.0) / denom
-        u2 = (float(bits[2 * i + 1]) + 1.0) / denom
-        r = math.sqrt(-2.0 * math.log(u1))
-        theta = 2.0 * math.pi * u2
-        out.append(r * math.cos(theta))
-        if len(out) < count:
-            out.append(r * math.sin(theta))
-    return out
+
+def _erf_inv_py(x: float) -> float:
+    """Winitzki approximation with Newton refinement for erfinv."""
+    if x <= -1.0:
+        return float("-inf") if x == -1.0 else float("nan")
+    if x >= 1.0:
+        return float("inf") if x == 1.0 else float("nan")
+    if x == 0.0:
+        return 0.0
+    a = 0.147
+    ln_term = math.log(1.0 - x * x)
+    t = 2.0 / (math.pi * a) + ln_term / 2.0
+    y = math.copysign(math.sqrt(math.sqrt(t * t - ln_term / a) - t), x)
+    coeff = 2.0 / math.sqrt(math.pi)
+    for _ in range(3):
+        err = math.erf(y) - x
+        deriv = coeff * math.exp(-y * y)
+        y -= err / deriv
+    return y
 
 
 def _seed_suite() -> list[int]:

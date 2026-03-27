@@ -76,54 +76,40 @@ pub fn random_fold_in(key: PRNGKey, data: u32) -> PRNGKey {
     PRNGKey(threefry2x32(key.0, [0, data]))
 }
 
-/// Generate `count` pseudorandom u32 values from a key using counter-based generation.
+/// Generate `count` pseudorandom u32 values from a key.
 ///
-/// Matches JAX's `_threefry_random_bits_original`: creates a linear counter
-/// `[0, 1, ..., count-1]`, splits it in half, and uses the two halves as
-/// the (x0, x1) inputs to `threefry2x32`. The output is concatenated as
-/// `[y0[0], ..., y0[half-1], y1[0], ..., y1[half-1]]`.
-fn generate_bits(key: PRNGKey, count: usize) -> Vec<u32> {
-    // JAX: x = list(jnp.split(jnp.reshape(iota, (-1,)), 2))
-    // requires even count; pad if odd
-    let padded = if count % 2 == 0 { count } else { count + 1 };
-    let half = padded / 2;
-    let mut y0 = Vec::with_capacity(half);
-    let mut y1 = Vec::with_capacity(half);
-    for i in 0..half {
-        let result = threefry2x32(key.0, [i as u32, (i + half) as u32]);
-        y0.push(result[0]);
-        y1.push(result[1]);
-    }
-    // JAX concatenates [y0, y1]
-    y0.extend_from_slice(&y1);
-    y0.truncate(count);
-    y0
+/// Matches JAX's partitionable `_threefry_random_bits_partitionable` with `bit_width=32`:
+/// For each sample index `i`, calls `threefry2x32(key, [0, i])` and XORs
+/// the two output words: `result[0] ^ result[1]`.
+fn generate_u32_bits(key: PRNGKey, count: usize) -> Vec<u32> {
+    (0..count)
+        .map(|i| {
+            let [a, b] = threefry2x32(key.0, [0, i as u32]);
+            a ^ b
+        })
+        .collect()
 }
 
 /// Generate uniform random f64 values in [minval, maxval).
 ///
-/// Matches JAX's `jax.random.uniform` with `dtype=float64`:
-/// 1. Generate 2×count u32 values (64 random bits per sample)
-/// 2. Combine pairs into u64
-/// 3. Mask to 52 mantissa bits, OR with 1.0 exponent, bitcast to f64, subtract 1.0
-/// 4. Scale to [minval, maxval)
+/// Matches JAX's `jax.random.uniform` with default f32 mode (x64 not enabled):
+/// 1. Generate one u32 per sample via XOR of threefry outputs
+/// 2. Right-shift by 9 to keep 23 mantissa bits (f32 precision)
+/// 3. OR with f32 1.0's bit pattern (0x3F800000), bitcast to f32, subtract 1.0
+/// 4. Convert to f64 and scale to [minval, maxval)
+///
+/// Note: JAX defaults to f32 unless `jax_enable_x64` is set. The oracle fixtures
+/// were captured without x64 mode, so uniform/normal use f32 precision internally.
 #[must_use]
 pub fn random_uniform(key: PRNGKey, count: usize, minval: f64, maxval: f64) -> Vec<f64> {
-    let total_u32 = count * 2;
-    let bits = generate_bits(key, total_u32);
+    let bits = generate_u32_bits(key, count);
     let scale = maxval - minval;
-    // JAX splits the output in half: first `count` u32s and second `count` u32s
-    // Then combines: u64[i] = (first[i] as u64) << 32 | (second[i] as u64)
-    let (first_half, second_half) = bits.split_at(count);
-    first_half
-        .iter()
-        .zip(second_half.iter())
-        .map(|(&hi, &lo)| {
-            let u64_val = ((hi as u64) << 32) | (lo as u64);
-            // Keep 52 mantissa bits, set exponent to 1.0 ([1.0, 2.0))
-            let mantissa = u64_val >> 12;
-            let float_bits = mantissa | 0x3FF0_0000_0000_0000_u64;
-            let unit = f64::from_bits(float_bits) - 1.0;
+    bits.into_iter()
+        .map(|u32_val| {
+            // Keep 23 mantissa bits, set exponent to 1.0 ([1.0, 2.0) in f32)
+            let mantissa = u32_val >> 9;
+            let float_bits = mantissa | 0x3F80_0000_u32;
+            let unit = f64::from(f32::from_bits(float_bits) - 1.0);
             minval + unit * scale
         })
         .collect()
@@ -131,13 +117,13 @@ pub fn random_uniform(key: PRNGKey, count: usize, minval: f64, maxval: f64) -> V
 
 /// Generate standard normal random f64 values using the inverse error function.
 ///
-/// Matches JAX's approach: generate uniform samples in (-1, 1), then apply
-/// `sqrt(2) * erfinv(u)` to transform to standard normal distribution.
+/// Matches JAX's approach: generate uniform samples in `(lo, hi)` where
+/// `lo = nextafter_f32(-1, 0)` and `hi = 1.0`, then apply `sqrt(2) * erfinv(u)`.
+/// Uses f32 precision internally (JAX default without x64 mode).
 #[must_use]
 pub fn random_normal(key: PRNGKey, count: usize) -> Vec<f64> {
-    // JAX: lo = nextafter(-1, 0), hi = 1.0; u = uniform(key, shape, lo, hi)
-    // Then: result = sqrt(2) * erfinv(u)
-    let lo = f64::from_bits((-1.0_f64).to_bits() - 1); // nextafter(-1.0, 0.0)
+    // JAX: lo = nextafter(float32(-1), float32(0)), hi = float32(1)
+    let lo = f64::from(f32::from_bits((-1.0_f32).to_bits() - 1)); // nextafter_f32(-1.0, 0.0)
     let hi = 1.0_f64;
     let uniforms = random_uniform(key, count, lo, hi);
     let sqrt2 = std::f64::consts::SQRT_2;

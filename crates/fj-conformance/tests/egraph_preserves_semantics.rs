@@ -323,3 +323,260 @@ fn egraph_preserves_cos_scalar() {
     let jaxpr = make_unary_jaxpr(Primitive::Cos);
     verify_optimization_preserves_semantics(&jaxpr, &[s_f64(1.5)], &[], 1e-12, "cos scalar");
 }
+
+// ======================== Multi-Equation Programs ========================
+
+/// Build: y = sin(x); z = y * y (3 equations: sin, then square)
+fn make_sin_squared_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+/// Build: y = neg(x); z = neg(y); w = z + z (4 equations: cascade rewrites)
+fn make_cascade_rewrite_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+/// Build: y = exp(x); z = log(y); w = z * z (exp(log) cancellation + squaring)
+fn make_exp_log_square_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+/// Build: y = abs(x); z = abs(y) (abs idempotence)
+fn make_abs_abs_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Abs,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+/// Build: y = reciprocal(x); z = reciprocal(y) (reciprocal involution)
+fn make_reciprocal_involution_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Reciprocal,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Reciprocal,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+#[test]
+fn egraph_preserves_sin_squared() {
+    // sin(x)^2: multi-equation with non-trivial computation
+    let jaxpr = make_sin_squared_jaxpr();
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(1.2)], &[], 1e-12, "sin²(x)");
+}
+
+#[test]
+fn egraph_preserves_sin_squared_tensor() {
+    // sin(x)^2 on a tensor
+    let jaxpr = make_sin_squared_jaxpr();
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[v_f64(&[0.5, 1.0, 1.5, 2.0])],
+        &[],
+        1e-12,
+        "sin²(x) tensor",
+    );
+}
+
+#[test]
+fn egraph_preserves_cascade_rewrites() {
+    // neg(neg(x)) + neg(neg(x)): should cascade to x + x = 2*x
+    let jaxpr = make_cascade_rewrite_jaxpr();
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(7.0)], &[], 1e-12, "cascade rewrites");
+}
+
+#[test]
+fn egraph_preserves_exp_log_square() {
+    // (log(exp(x)))^2 = x^2: inverse pair cancellation + squaring
+    let jaxpr = make_exp_log_square_jaxpr();
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(2.5)],
+        &[],
+        1e-10,
+        "exp-log-square",
+    );
+}
+
+#[test]
+fn egraph_preserves_abs_idempotence() {
+    // abs(abs(x)) = abs(x): idempotent rewrite
+    let jaxpr = make_abs_abs_jaxpr();
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(-3.7)],
+        &[],
+        1e-12,
+        "abs idempotence",
+    );
+}
+
+#[test]
+fn egraph_preserves_reciprocal_involution() {
+    // reciprocal(reciprocal(x)) = x: involution rewrite
+    let jaxpr = make_reciprocal_involution_jaxpr();
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(4.0)],
+        &[],
+        1e-12,
+        "reciprocal involution",
+    );
+}
+
+#[test]
+fn egraph_preserves_mul_tensor() {
+    // Tensor multiplication preserves values through optimization
+    let jaxpr = make_binary_jaxpr(Primitive::Mul);
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[v_f64(&[2.0, 3.0, 4.0]), v_f64(&[5.0, 6.0, 7.0])],
+        &[],
+        1e-12,
+        "mul tensor",
+    );
+}
+
+#[test]
+fn egraph_preserves_neg_tensor() {
+    // Tensor negation preserves values
+    let jaxpr = make_unary_jaxpr(Primitive::Neg);
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[v_f64(&[1.0, -2.0, 3.0, -4.0])],
+        &[],
+        1e-12,
+        "neg tensor",
+    );
+}
+
+#[test]
+fn egraph_preserves_sqrt_scalar() {
+    let jaxpr = make_unary_jaxpr(Primitive::Sqrt);
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(16.0)], &[], 1e-12, "sqrt scalar");
+}
+
+#[test]
+fn egraph_preserves_tanh_scalar() {
+    let jaxpr = make_unary_jaxpr(Primitive::Tanh);
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(0.8)], &[], 1e-12, "tanh scalar");
+}
