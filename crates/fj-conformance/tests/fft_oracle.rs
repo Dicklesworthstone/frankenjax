@@ -24,6 +24,23 @@ fn make_complex_tensor(pairs: &[(f64, f64)]) -> Value {
     )
 }
 
+fn make_complex_matrix(rows: u32, cols: u32, pairs: &[(f64, f64)]) -> Value {
+    let elements: Vec<Literal> = pairs
+        .iter()
+        .map(|&(re, im)| Literal::from_complex128(re, im))
+        .collect();
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![rows, cols],
+            },
+            elements,
+        )
+        .unwrap(),
+    )
+}
+
 fn make_real_tensor(data: &[f64]) -> Value {
     let elements: Vec<Literal> = data.iter().map(|&v| Literal::from_f64(v)).collect();
     Value::Tensor(
@@ -31,6 +48,20 @@ fn make_real_tensor(data: &[f64]) -> Value {
             DType::F64,
             Shape {
                 dims: vec![data.len() as u32],
+            },
+            elements,
+        )
+        .unwrap(),
+    )
+}
+
+fn make_real_matrix(rows: u32, cols: u32, data: &[f64]) -> Value {
+    let elements: Vec<Literal> = data.iter().map(|&v| Literal::from_f64(v)).collect();
+    Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![rows, cols],
             },
             elements,
         )
@@ -126,6 +157,42 @@ fn oracle_fft_alternating() {
     );
 }
 
+#[test]
+fn oracle_fft_rank2_batches_last_axis_independently() {
+    let x = make_complex_matrix(
+        2,
+        4,
+        &[
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+        ],
+    );
+    let result =
+        eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    let y = extract_complex_vec(&result);
+    assert_complex_close(
+        &y,
+        &[
+            (4.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 0.0),
+        ],
+        1e-10,
+        "FFT applied per batch row",
+    );
+}
+
 // ======================== IFFT ========================
 
 #[test]
@@ -197,6 +264,35 @@ fn oracle_rfft_impulse() {
     );
 }
 
+#[test]
+fn oracle_rfft_zero_pads_short_rank2_input() {
+    let x = make_real_matrix(
+        2,
+        3,
+        &[
+            1.0, 2.0, 0.0, //
+            0.0, 1.0, 0.0,
+        ],
+    );
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let result = eval_primitive(Primitive::Rfft, std::slice::from_ref(&x), &params).unwrap();
+    let y = extract_complex_vec(&result);
+    assert_complex_close(
+        &y,
+        &[
+            (3.0, 0.0),
+            (1.0, -2.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
+            (0.0, -1.0),
+            (-1.0, 0.0),
+        ],
+        1e-10,
+        "RFFT zero-pads each batch row to fft_length",
+    );
+}
+
 // ======================== IRFFT ========================
 
 #[test]
@@ -226,6 +322,27 @@ fn oracle_rfft_irfft_roundtrip() {
     let original = extract_f64_vec(&x);
     let recovered = extract_f64_vec(&roundtrip);
     assert_f64_close(&recovered, &original, 1e-10, "IRFFT(RFFT(x)) = x");
+}
+
+#[test]
+fn oracle_rfft_irfft_roundtrip_odd_length() {
+    let x = make_real_tensor(&[1.0, -2.0, 0.5, 3.0, -1.5]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "5".to_owned());
+    let rfft_result = eval_primitive(Primitive::Rfft, std::slice::from_ref(&x), &params).unwrap();
+    let roundtrip = eval_primitive(
+        Primitive::Irfft,
+        std::slice::from_ref(&rfft_result),
+        &params,
+    )
+    .unwrap();
+    let recovered = extract_f64_vec(&roundtrip);
+    assert_f64_close(
+        &recovered,
+        &[1.0, -2.0, 0.5, 3.0, -1.5],
+        1e-10,
+        "IRFFT(RFFT(x)) = x for odd fft_length",
+    );
 }
 
 #[test]

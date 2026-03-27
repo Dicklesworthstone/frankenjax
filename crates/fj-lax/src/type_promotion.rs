@@ -46,16 +46,31 @@ fn literal_to_i128(literal: Literal) -> Option<i128> {
 #[inline]
 pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     use DType::{BF16, Bool, Complex64, Complex128, F16, F32, F64, I32, I64, U32, U64};
+    // JAX type promotion lattice (jax.numpy.promote_types):
+    // - Half-precision types (BF16, F16) absorb integer and boolean types
+    // - BF16 + F16 promotes to F32 (cross-half promotion)
+    // - Same half type stays: BF16+BF16→BF16, F16+F16→F16
+    // - F32 absorbs half types; F64 absorbs everything
+    // - U64+I64 → F64 (no common integer type)
+    // - U32+F32 → F64 (U32 range exceeds F32 precision)
     match (lhs, rhs) {
+        // Complex types dominate
         (Complex128, _) | (_, Complex128) => Complex128,
         (Complex64, _) | (_, Complex64) => Complex64,
-        (U64, I64) | (I64, U64) => F64,
-        (U32, F32) | (F32, U32) => F64,
-        (U32, BF16 | F16) | (BF16 | F16, U32) => F64,
+        // F64 absorbs everything
         (F64, _) | (_, F64) => F64,
+        // F32 absorbs everything below it (JAX lattice: U32+F32→F32)
         (F32, _) | (_, F32) => F32,
-        (BF16, _) | (_, BF16) => F32,
-        (F16, _) | (_, F16) => F32,
+        // Cross-half promotion
+        (BF16, F16) | (F16, BF16) => F32,
+        // Same half type stays
+        (BF16, BF16) => BF16,
+        (F16, F16) => F16,
+        // Half types absorb integers and booleans
+        (BF16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, BF16) => BF16,
+        (F16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, F16) => F16,
+        // Integer promotion
+        (U64, I64) | (I64, U64) => F64,
         (I32, U32) | (U32, I32) => I64,
         (I64, U32) | (U32, I64) => I64,
         (I64, _) | (_, I64) => I64,
@@ -212,8 +227,9 @@ mod tests {
 
     #[test]
     fn test_type_promotion_u32_f32() {
-        assert_eq!(promote_dtype(DType::U32, DType::F32), DType::F64);
-        assert_eq!(promote_dtype(DType::F32, DType::U32), DType::F64);
+        // JAX lattice: U32+F32 → F32 (not F64)
+        assert_eq!(promote_dtype(DType::U32, DType::F32), DType::F32);
+        assert_eq!(promote_dtype(DType::F32, DType::U32), DType::F32);
     }
 
     #[test]

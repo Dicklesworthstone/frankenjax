@@ -25,6 +25,16 @@ fn make_f64_matrix(rows: u32, cols: u32, data: &[f64]) -> Value {
     )
 }
 
+fn transpose(rows: usize, cols: usize, data: &[f64]) -> Vec<f64> {
+    let mut out = vec![0.0; rows * cols];
+    for row in 0..rows {
+        for col in 0..cols {
+            out[col * rows + row] = data[row * cols + col];
+        }
+    }
+    out
+}
+
 fn extract_f64_matrix(val: &Value) -> Vec<f64> {
     val.as_tensor()
         .unwrap()
@@ -115,6 +125,27 @@ fn oracle_cholesky_3x3() {
     assert_close(&l, &expected, 1e-12, "cholesky(3×3)");
 }
 
+#[test]
+fn oracle_cholesky_4x4_known_factor() {
+    // Build A = L @ L^T from a known lower-triangular factor and recover L.
+    let expected_l = [
+        2.0, 0.0, 0.0, 0.0, //
+        -1.0, 3.0, 0.0, 0.0, //
+        4.0, 2.0, 1.0, 0.0, //
+        3.0, -2.0, 5.0, 2.0,
+    ];
+    let lt = transpose(4, 4, &expected_l);
+    let a = matmul(4, 4, 4, &expected_l, &lt);
+    let result = eval_primitive_multi(
+        Primitive::Cholesky,
+        &[make_f64_matrix(4, 4, &a)],
+        &no_params(),
+    )
+    .unwrap();
+    let l = extract_f64_matrix(&result[0]);
+    assert_close(&l, &expected_l, 1e-10, "cholesky(4x4 known factor)");
+}
+
 // ======================== QR Decomposition ========================
 
 #[test]
@@ -163,6 +194,43 @@ fn oracle_qr_2x2() {
     );
 }
 
+#[test]
+fn oracle_qr_4x3_tall_matrix() {
+    let a_data = [
+        1.0, 2.0, 0.0, //
+        0.0, 1.0, 1.0, //
+        1.0, 0.0, 1.0, //
+        2.0, 1.0, 3.0,
+    ];
+    let a = make_f64_matrix(4, 3, &a_data);
+    let result =
+        eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &no_params()).unwrap();
+    let q = extract_f64_matrix(&result[0]);
+    let r = extract_f64_matrix(&result[1]);
+
+    let reconstructed = matmul(4, 3, 3, &q, &r);
+    assert_close(&reconstructed, &a_data, 1e-10, "Q@R = A for tall matrix");
+
+    let qt = transpose(4, 3, &q);
+    let qtq = matmul(3, 4, 3, &qt, &q);
+    assert_close(
+        &qtq,
+        &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        1e-10,
+        "Q^T@Q = I for tall matrix",
+    );
+
+    for row in 1..3 {
+        for col in 0..row {
+            assert!(
+                r[row * 3 + col].abs() < 1e-10,
+                "R[{row},{col}] should be zero, got {}",
+                r[row * 3 + col]
+            );
+        }
+    }
+}
+
 // ======================== SVD ========================
 
 #[test]
@@ -203,6 +271,40 @@ fn oracle_svd_2x2() {
     let us = [u[0] * s[0], u[1] * s[1], u[2] * s[0], u[3] * s[1]];
     let reconstructed = matmul(2, 2, 2, &us, &vt);
     assert_close(&reconstructed, &[3.0, 0.0, 0.0, -2.0], 1e-12, "U@S@V^T = A");
+}
+
+#[test]
+fn oracle_svd_3x2_rectangular() {
+    let a_data = [
+        3.0, 1.0, //
+        0.0, 2.0, //
+        0.0, 0.0,
+    ];
+    let a = make_f64_matrix(3, 2, &a_data);
+    let result =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
+    let u = extract_f64_matrix(&result[0]);
+    let s = extract_f64_vec_from_value(&result[1]);
+    let vt = extract_f64_matrix(&result[2]);
+
+    assert_eq!(s.len(), 2);
+    assert!(s[0] >= s[1], "singular values should be sorted descending");
+
+    let us = [
+        u[0] * s[0],
+        u[1] * s[1],
+        u[2] * s[0],
+        u[3] * s[1],
+        u[4] * s[0],
+        u[5] * s[1],
+    ];
+    let reconstructed = matmul(3, 2, 2, &us, &vt);
+    assert_close(
+        &reconstructed,
+        &a_data,
+        1e-10,
+        "U@diag(S)@V^T = A for rectangular matrix",
+    );
 }
 
 // ======================== Eigh (Symmetric Eigendecomposition) ========================
@@ -259,6 +361,50 @@ fn oracle_eigh_symmetric() {
     assert_close(&vtv, &[1.0, 0.0, 0.0, 1.0], 1e-12, "V^T@V = I");
 }
 
+#[test]
+fn oracle_eigh_3x3_diagonal_repeated_eigenvalue() {
+    let a_data = [
+        2.0, 0.0, 0.0, //
+        0.0, 2.0, 0.0, //
+        0.0, 0.0, 5.0,
+    ];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let result =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params()).unwrap();
+    let w = extract_f64_vec_from_value(&result[0]);
+    let v = extract_f64_matrix(&result[1]);
+
+    assert_close(&w, &[2.0, 2.0, 5.0], 1e-12, "eigh repeated eigenvalues");
+
+    let vt = transpose(3, 3, &v);
+    let vtv = matmul(3, 3, 3, &vt, &v);
+    assert_close(
+        &vtv,
+        &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+        1e-10,
+        "V^T@V = I for repeated-eigenvalue case",
+    );
+
+    let vw = [
+        v[0] * w[0],
+        v[1] * w[1],
+        v[2] * w[2],
+        v[3] * w[0],
+        v[4] * w[1],
+        v[5] * w[2],
+        v[6] * w[0],
+        v[7] * w[1],
+        v[8] * w[2],
+    ];
+    let reconstructed = matmul(3, 3, 3, &vw, &vt);
+    assert_close(
+        &reconstructed,
+        &a_data,
+        1e-10,
+        "V@diag(w)@V^T = A for repeated-eigenvalue case",
+    );
+}
+
 // ======================== TriangularSolve ========================
 
 #[test]
@@ -298,4 +444,39 @@ fn oracle_triangular_solve_upper_2x2() {
     let result = eval_primitive_multi(Primitive::TriangularSolve, &[a, b], &params).unwrap();
     let x = extract_f64_matrix(&result[0]);
     assert_close(&x, &[1.0, 2.0], 1e-12, "triangular solve U@X=B");
+}
+
+#[test]
+fn oracle_triangular_solve_transpose_unit_diagonal_multiple_rhs() {
+    // L has implicit unit diagonal; solve L^T X = B with two RHS columns.
+    let a = make_f64_matrix(
+        3,
+        3,
+        &[
+            1.0, 0.0, 0.0, //
+            2.0, 1.0, 0.0, //
+            -1.0, 3.0, 1.0,
+        ],
+    );
+    let expected_x = [
+        2.0, -1.0, //
+        4.0, 3.0, //
+        5.0, -2.0,
+    ];
+    let lt = transpose(3, 3, &extract_f64_matrix(&a));
+    let b = matmul(3, 3, 2, &lt, &expected_x);
+    let rhs = make_f64_matrix(3, 2, &b);
+    let mut params = BTreeMap::new();
+    params.insert("lower".to_owned(), "true".to_owned());
+    params.insert("transpose_a".to_owned(), "true".to_owned());
+    params.insert("unit_diagonal".to_owned(), "true".to_owned());
+
+    let result = eval_primitive_multi(Primitive::TriangularSolve, &[a, rhs], &params).unwrap();
+    let x = extract_f64_matrix(&result[0]);
+    assert_close(
+        &x,
+        &expected_x,
+        1e-12,
+        "triangular solve with transpose_a and unit_diagonal",
+    );
 }
