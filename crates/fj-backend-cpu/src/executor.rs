@@ -13,9 +13,7 @@ use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
-
-type HashMap<K, V> = FxHashMap<K, V>;
+use rustc_hash::FxHashMap as HashMap;
 
 fn equation_inputs_ready(equation: &fj_core::Equation, env: &HashMap<VarId, Value>) -> bool {
     equation.inputs.iter().all(|atom| match atom {
@@ -102,8 +100,10 @@ fn evaluate_jaxpr_parallel_inner(
         });
     }
 
-    let mut env: HashMap<VarId, Value> =
-        HashMap::with_capacity(jaxpr.invars.len() + jaxpr.equations.len());
+    let mut env: HashMap<VarId, Value> = HashMap::with_capacity_and_hasher(
+        jaxpr.invars.len() + jaxpr.equations.len(),
+        Default::default(),
+    );
     for (index, var) in jaxpr.invars.iter().enumerate() {
         env.insert(*var, args[index].clone());
     }

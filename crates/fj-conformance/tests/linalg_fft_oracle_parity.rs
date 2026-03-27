@@ -1,8 +1,9 @@
 //! Oracle-backed linalg/FFT parity tests.
 //!
-//! Loads expected values captured from JAX 0.9.2 and compares them against
-//! FrankenJAX's eval results. This validates that our linalg and FFT primitive
-//! implementations produce outputs matching the JAX reference implementation.
+//! Loads expected values from the linalg/FFT oracle fixture bundle and compares
+//! them against FrankenJAX's eval results. This validates that our linalg and
+//! FFT primitive implementations produce outputs matching the recorded reference
+//! implementation.
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::{eval_primitive, eval_primitive_multi};
@@ -32,41 +33,63 @@ enum OracleValue {
     MatrixF64 { shape: Vec<u32>, values: Vec<f64> },
     #[serde(rename = "vector_f64")]
     VectorF64 { shape: Vec<u32>, values: Vec<f64> },
+    #[serde(rename = "tensor_f64")]
+    TensorF64 { shape: Vec<u32>, values: Vec<f64> },
     #[serde(rename = "complex_vector")]
     ComplexVector {
         shape: Vec<u32>,
         values: Vec<(f64, f64)>,
     },
+    #[serde(rename = "tensor_complex128")]
+    TensorComplex128 {
+        shape: Vec<u32>,
+        reals: Vec<f64>,
+        imags: Vec<f64>,
+    },
 }
 
 fn oracle_value_to_fj(ov: &OracleValue) -> Value {
     match ov {
-        OracleValue::MatrixF64 { shape, values } | OracleValue::VectorF64 { shape, values } => {
-            Value::Tensor(
-                TensorValue::new(
-                    DType::F64,
-                    Shape {
-                        dims: shape.clone(),
-                    },
-                    values.iter().map(|&v| Literal::from_f64(v)).collect(),
-                )
-                .unwrap(),
-            )
-        }
-        OracleValue::ComplexVector { shape, values } => Value::Tensor(
+        OracleValue::MatrixF64 { shape, values }
+        | OracleValue::VectorF64 { shape, values }
+        | OracleValue::TensorF64 { shape, values } => Value::Tensor(
             TensorValue::new(
-                DType::Complex128,
+                DType::F64,
                 Shape {
                     dims: shape.clone(),
                 },
-                values
-                    .iter()
-                    .map(|&(re, im)| Literal::from_complex128(re, im))
-                    .collect(),
+                values.iter().map(|&v| Literal::from_f64(v)).collect(),
             )
             .unwrap(),
         ),
+        OracleValue::ComplexVector { shape, values } => {
+            let (reals, imags): (Vec<f64>, Vec<f64>) = values.iter().copied().unzip();
+            complex_tensor_value(shape, &reals, &imags)
+        }
+        OracleValue::TensorComplex128 {
+            shape,
+            reals,
+            imags,
+        } => complex_tensor_value(shape, reals, imags),
     }
+}
+
+fn complex_tensor_value(shape: &[u32], reals: &[f64], imags: &[f64]) -> Value {
+    assert_eq!(reals.len(), imags.len(), "complex tensor length mismatch");
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            reals
+                .iter()
+                .zip(imags.iter())
+                .map(|(&re, &im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
 }
 
 fn extract_f64_vec(val: &Value) -> Vec<f64> {
@@ -178,9 +201,19 @@ fn run_case(case: &OracleCase) {
                         assert_f64_close(&actual_vals, values, tol, &context);
                     }
                 }
+                OracleValue::TensorF64 { values, .. } => {
+                    let actual_vals = extract_f64_vec(actual);
+                    assert_f64_close(&actual_vals, values, tol, &context);
+                }
                 OracleValue::ComplexVector { values, .. } => {
                     let actual_vals = extract_complex_vec(actual);
                     assert_complex_close(&actual_vals, values, tol, &context);
+                }
+                OracleValue::TensorComplex128 { reals, imags, .. } => {
+                    let actual_vals = extract_complex_vec(actual);
+                    let expected_vals: Vec<(f64, f64)> =
+                        reals.iter().copied().zip(imags.iter().copied()).collect();
+                    assert_complex_close(&actual_vals, &expected_vals, tol, &context);
                 }
             }
         }
@@ -194,11 +227,18 @@ fn run_case(case: &OracleCase) {
         );
         let context = &case.case_id;
         match &case.expected_outputs[0] {
-            OracleValue::MatrixF64 { values, .. } | OracleValue::VectorF64 { values, .. } => {
+            OracleValue::MatrixF64 { values, .. }
+            | OracleValue::VectorF64 { values, .. }
+            | OracleValue::TensorF64 { values, .. } => {
                 assert_f64_close(&extract_f64_vec(&output), values, tol, context);
             }
             OracleValue::ComplexVector { values, .. } => {
                 assert_complex_close(&extract_complex_vec(&output), values, tol, context);
+            }
+            OracleValue::TensorComplex128 { reals, imags, .. } => {
+                let expected_vals: Vec<(f64, f64)> =
+                    reals.iter().copied().zip(imags.iter().copied()).collect();
+                assert_complex_close(&extract_complex_vec(&output), &expected_vals, tol, context);
             }
         }
     }
