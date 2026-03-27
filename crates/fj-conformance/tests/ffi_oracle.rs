@@ -80,6 +80,34 @@ unsafe extern "C" fn ffi_negate_vec(
     0
 }
 
+/// Writes to output, then returns an error code.
+unsafe extern "C" fn ffi_mutates_then_fails(
+    _inputs: *const *const u8,
+    _input_count: usize,
+    outputs: *const *mut u8,
+    output_count: usize,
+) -> i32 {
+    unsafe {
+        if output_count > 0 {
+            let dst = *outputs as *mut f64;
+            *dst = 1234.5;
+        }
+    }
+    13
+}
+
+/// Succeeds with zero-sized input/output buffers without dereferencing pointers.
+unsafe extern "C" fn ffi_zero_sized_ok(
+    _inputs: *const *const u8,
+    input_count: usize,
+    _outputs: *const *mut u8,
+    output_count: usize,
+) -> i32 {
+    assert_eq!(input_count, 1);
+    assert_eq!(output_count, 1);
+    0
+}
+
 fn make_registry() -> FfiRegistry {
     let reg = FfiRegistry::new();
     reg.register("double", ffi_double).unwrap();
@@ -87,6 +115,9 @@ fn make_registry() -> FfiRegistry {
     reg.register("noop", ffi_noop).unwrap();
     reg.register("error", ffi_error).unwrap();
     reg.register("negate_vec", ffi_negate_vec).unwrap();
+    reg.register("mutates_then_fails", ffi_mutates_then_fails)
+        .unwrap();
+    reg.register("zero_sized_ok", ffi_zero_sized_ok).unwrap();
     reg
 }
 
@@ -318,6 +349,42 @@ fn adversarial_duplicate_registration() {
 fn adversarial_buffer_size_mismatch() {
     let err = FfiBuffer::new(vec![0u8; 4], vec![3], DType::F64).unwrap_err();
     assert!(matches!(err, FfiError::BufferMismatch { .. }));
+}
+
+/// Adversarial: failed calls must not leak partially written output bytes.
+#[test]
+fn adversarial_failed_call_zeroes_outputs() {
+    let reg = make_registry();
+    let call = FfiCall::new("mutates_then_fails");
+    let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
+
+    let err = call.invoke(&reg, &[], &mut outputs).unwrap_err();
+    assert!(matches!(
+        err,
+        FfiError::CallFailed {
+            target,
+            code: 13,
+            ..
+        } if target == "mutates_then_fails"
+    ));
+    assert!(
+        outputs[0].as_bytes().iter().all(|&b| b == 0),
+        "failed FFI call should leave output buffer zeroed"
+    );
+}
+
+/// Adversarial: zero-sized buffers are valid boundary values and should not fail.
+#[test]
+fn adversarial_zero_sized_buffers_roundtrip() {
+    let reg = make_registry();
+    let call = FfiCall::new("zero_sized_ok");
+
+    let input = FfiBuffer::new(Vec::new(), vec![0, 5], DType::F64).unwrap();
+    let mut outputs = [FfiBuffer::zeroed(vec![0, 5], DType::F64).unwrap()];
+
+    call.invoke(&reg, &[input], &mut outputs).unwrap();
+    assert_eq!(outputs[0].size(), 0);
+    assert!(outputs[0].as_bytes().is_empty());
 }
 
 /// Adversarial: concurrent FFI calls from multiple threads.

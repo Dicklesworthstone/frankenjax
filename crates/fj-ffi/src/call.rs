@@ -94,6 +94,11 @@ impl FfiCall {
 
         // 6. Check return code
         if return_code != 0 {
+            // Fail closed: do not expose partially written output buffers after
+            // the foreign function signaled an error.
+            for output in outputs.iter_mut() {
+                output.as_bytes_mut().fill(0);
+            }
             return Err(FfiError::CallFailed {
                 target: self.target_name.clone(),
                 code: return_code,
@@ -271,5 +276,151 @@ mod tests {
             let bytes: [u8; 8] = result_bytes[i * 8..(i + 1) * 8].try_into().unwrap();
             assert_eq!(f64::from_ne_bytes(bytes), *expected);
         }
+    }
+
+    // ── Adversarial boundary tests ──────────────────────────
+
+    #[test]
+    fn invoke_error_scrubs_output_buffers() {
+        // Write non-zero data to output before a failing call;
+        // verify the output is zeroed after the failure (fail-closed).
+        let reg = setup_registry("fail", mock_fail);
+        let call = FfiCall::new("fail");
+
+        let input = FfiBuffer::new(vec![0u8; 8], vec![], DType::F64).unwrap();
+        let mut outputs = [FfiBuffer::new(vec![0xFF; 8], vec![], DType::F64).unwrap()];
+
+        let err = call.invoke(&reg, &[input], &mut outputs);
+        assert!(err.is_err());
+        // Output must be scrubbed to zero after failed call
+        assert!(
+            outputs[0].as_bytes().iter().all(|&b| b == 0),
+            "output buffer should be zeroed after failed FFI call"
+        );
+    }
+
+    #[test]
+    fn invoke_multiple_inputs_outputs() {
+        // FFI function that sums two f64 inputs into one output.
+        unsafe extern "C" fn mock_sum2(
+            inputs: *const *const u8,
+            input_count: usize,
+            outputs: *const *mut u8,
+            output_count: usize,
+        ) -> i32 {
+            if input_count != 2 || output_count != 1 {
+                return 1;
+            }
+            unsafe {
+                let a = *(*inputs as *const f64);
+                let b = *(*(inputs.add(1)) as *const f64);
+                let dst = *outputs as *mut f64;
+                *dst = a + b;
+            }
+            0
+        }
+
+        let reg = setup_registry("sum2", mock_sum2);
+        let call = FfiCall::new("sum2");
+
+        let a = FfiBuffer::new(3.0_f64.to_ne_bytes().to_vec(), vec![], DType::F64).unwrap();
+        let b = FfiBuffer::new(4.0_f64.to_ne_bytes().to_vec(), vec![], DType::F64).unwrap();
+        let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
+
+        call.invoke(&reg, &[a, b], &mut outputs).unwrap();
+
+        let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
+        assert_eq!(f64::from_ne_bytes(result_bytes), 7.0);
+    }
+
+    #[test]
+    fn invoke_i32_dtype_buffers() {
+        // Verify non-f64 dtype buffers work correctly.
+        unsafe extern "C" fn mock_inc_i32(
+            inputs: *const *const u8,
+            _input_count: usize,
+            outputs: *const *mut u8,
+            _output_count: usize,
+        ) -> i32 {
+            unsafe {
+                let val = *(*inputs as *const i32);
+                let dst = *outputs as *mut i32;
+                *dst = val + 1;
+            }
+            0
+        }
+
+        let reg = setup_registry("inc_i32", mock_inc_i32);
+        let call = FfiCall::new("inc_i32");
+
+        let input = FfiBuffer::new(41_i32.to_ne_bytes().to_vec(), vec![], DType::I32).unwrap();
+        let mut outputs = [FfiBuffer::zeroed(vec![], DType::I32).unwrap()];
+
+        call.invoke(&reg, &[input], &mut outputs).unwrap();
+
+        let result_bytes: [u8; 4] = outputs[0].as_bytes().try_into().unwrap();
+        assert_eq!(i32::from_ne_bytes(result_bytes), 42);
+    }
+
+    #[test]
+    fn invoke_bool_dtype_buffer() {
+        // Boolean buffers at the FFI boundary.
+        unsafe extern "C" fn mock_not(
+            inputs: *const *const u8,
+            _input_count: usize,
+            outputs: *const *mut u8,
+            _output_count: usize,
+        ) -> i32 {
+            unsafe {
+                let val = *(*inputs);
+                let dst = *outputs;
+                *dst = if val == 0 { 1 } else { 0 };
+            }
+            0
+        }
+
+        let reg = setup_registry("not", mock_not);
+        let call = FfiCall::new("not");
+
+        let input = FfiBuffer::new(vec![1u8], vec![], DType::Bool).unwrap();
+        let mut outputs = [FfiBuffer::zeroed(vec![], DType::Bool).unwrap()];
+
+        call.invoke(&reg, &[input], &mut outputs).unwrap();
+        assert_eq!(outputs[0].as_bytes(), &[0u8]);
+    }
+
+    #[test]
+    fn buffer_overflow_shape_rejected() {
+        // Shape that overflows usize when multiplied should be rejected.
+        let err = FfiBuffer::new(vec![], vec![usize::MAX, 2], DType::F64);
+        assert!(err.is_err(), "overflow shape should be rejected");
+    }
+
+    #[test]
+    fn buffer_huge_single_dim_rejected() {
+        // Single huge dimension that overflows when multiplied by dtype size.
+        let err = FfiBuffer::zeroed(vec![usize::MAX / 4], DType::F64);
+        assert!(err.is_err(), "huge dim * 8 bytes should overflow");
+    }
+
+    #[test]
+    fn checked_buffer_size_empty_shape() {
+        // Empty shape = scalar = 1 element
+        let size = crate::buffer::checked_buffer_size(&[], DType::F64).unwrap();
+        assert_eq!(size, 8);
+    }
+
+    #[test]
+    fn checked_buffer_size_zero_dim() {
+        // Zero dimension = 0 elements = 0 bytes
+        let size = crate::buffer::checked_buffer_size(&[0, 10], DType::F64).unwrap();
+        assert_eq!(size, 0);
+    }
+
+    #[test]
+    fn checked_buffer_size_complex128() {
+        // Complex128 = 16 bytes per element
+        let size = crate::buffer::checked_buffer_size(&[3], DType::Complex128).unwrap();
+        assert_eq!(size, 48);
     }
 }
