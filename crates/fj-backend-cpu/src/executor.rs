@@ -61,6 +61,7 @@ fn evaluate_equation_multi(
     if outputs.len() != equation.outputs.len() {
         return Err(InterpreterError::UnexpectedOutputArity {
             primitive: equation.primitive,
+            expected: equation.outputs.len(),
             actual: outputs.len(),
         });
     }
@@ -74,6 +75,7 @@ fn evaluate_equation(
     if equation.outputs.len() != 1 {
         return Err(InterpreterError::UnexpectedOutputArity {
             primitive: equation.primitive,
+            expected: 1,
             actual: equation.outputs.len(),
         });
     }

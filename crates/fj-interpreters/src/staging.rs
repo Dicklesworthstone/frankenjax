@@ -658,6 +658,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_staging_rejects_constvar_jaxpr() {
+        run_logged_test(
+            "test_staging_rejects_constvar_jaxpr",
+            &("staging", "constvars", "unsupported"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(vec![VarId(1)], vec![VarId(2)], vec![VarId(1)], vec![]);
+                let err = stage_jaxpr(&jaxpr, &[false], &[Value::scalar_i64(1)]).unwrap_err();
+                assert!(matches!(
+                    err,
+                    StagingError::PartialEval(PartialEvalError::UnsupportedConstvars { count: 1 })
+                ));
+                Ok(vec![])
+            },
+        );
+    }
+
     // ── Schema contract ─────────────────────────────────────────────
 
     #[test]

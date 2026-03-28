@@ -71,6 +71,8 @@ pub struct PartialEvalResult {
 pub enum PartialEvalError {
     /// Input mask length doesn't match Jaxpr input count.
     InputMaskMismatch { expected: usize, actual: usize },
+    /// Staging currently cannot evaluate Jaxprs that require external const values.
+    UnsupportedConstvars { count: usize },
     /// A variable referenced in an equation was not defined.
     UndefinedVariable(VarId),
     /// Residual type mismatch between known outputs and unknown inputs.
@@ -85,6 +87,12 @@ impl std::fmt::Display for PartialEvalError {
                     f,
                     "input mask length mismatch: jaxpr has {} inputs, mask has {} entries",
                     expected, actual
+                )
+            }
+            Self::UnsupportedConstvars { count } => {
+                write!(
+                    f,
+                    "partial eval does not support jaxprs with {count} external constvars"
                 )
             }
             Self::UndefinedVariable(var) => write!(f, "undefined variable v{}", var.0),
@@ -127,6 +135,12 @@ pub fn partial_eval_jaxpr_typed(
     unknowns: &[bool],
     in_avals: Option<&[AbstractValue]>,
 ) -> Result<PartialEvalResult, PartialEvalError> {
+    if !jaxpr.constvars.is_empty() {
+        return Err(PartialEvalError::UnsupportedConstvars {
+            count: jaxpr.constvars.len(),
+        });
+    }
+
     if unknowns.len() != jaxpr.invars.len() {
         return Err(PartialEvalError::InputMaskMismatch {
             expected: jaxpr.invars.len(),
@@ -1869,11 +1883,33 @@ mod tests {
                 let e2 = PartialEvalError::UndefinedVariable(VarId(42));
                 assert!(format!("{e2}").contains("42"));
 
-                let e3 = PartialEvalError::ResidualTypeMismatch { index: 7 };
-                assert!(format!("{e3}").contains("7"));
+                let e3 = PartialEvalError::UnsupportedConstvars { count: 2 };
+                assert!(format!("{e3}").contains("2"));
+                assert!(format!("{e3}").contains("constvars"));
+
+                let e4 = PartialEvalError::ResidualTypeMismatch { index: 7 };
+                assert!(format!("{e4}").contains("7"));
 
                 // Error trait impl
                 let _: &dyn std::error::Error = &e1;
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_rejects_constvar_jaxpr() {
+        run_logged_test(
+            "test_pe_rejects_constvar_jaxpr",
+            &("pe", "constvars", "unsupported"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(vec![VarId(1)], vec![VarId(2)], vec![VarId(1)], vec![]);
+                let err = partial_eval_jaxpr(&jaxpr, &[false]).unwrap_err();
+                assert!(matches!(
+                    err,
+                    PartialEvalError::UnsupportedConstvars { count: 1 }
+                ));
                 Ok(vec![])
             },
         );

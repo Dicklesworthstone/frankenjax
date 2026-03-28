@@ -124,6 +124,20 @@ mod tests {
         assert!((grad_val - 8.0).abs() < 1e-3);
     }
 
+    #[test]
+    fn value_and_grad_returns_gradient_for_each_input() {
+        let jaxpr = build_program(ProgramSpec::LaxMul);
+        let (value, gradients) = value_and_grad(jaxpr)
+            .call(vec![Value::scalar_f64(2.0), Value::scalar_f64(3.0)])
+            .expect("value_and_grad should succeed");
+
+        assert_eq!(value.len(), 1);
+        assert_eq!(gradients.len(), 2);
+        assert!((value[0].as_f64_scalar().expect("scalar output") - 6.0).abs() < 1e-6);
+        assert!((gradients[0].as_f64_scalar().expect("scalar gradient") - 3.0).abs() < 1e-6);
+        assert!((gradients[1].as_f64_scalar().expect("scalar gradient") - 2.0).abs() < 1e-6);
+    }
+
     // --- Transform composition tests ---
 
     #[test]

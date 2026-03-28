@@ -530,9 +530,9 @@ fn execute_grad(
                 }
                 other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
             })?;
-        // Match current API behavior: gradient defaults to the first argument.
-        let first_grad = grads.into_iter().next().unwrap_or(Value::scalar_f64(0.0));
-        values.push(first_grad);
+        // value_and_grad returns the primal outputs followed by one gradient
+        // per input, matching fj_ad::value_and_grad_jaxpr.
+        values.extend(grads);
         return Ok(values);
     }
 

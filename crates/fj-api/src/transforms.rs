@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use fj_core::{CompatibilityMode, Jaxpr, TraceTransformLedger, Transform, Value};
-use fj_dispatch::{DispatchRequest, dispatch};
+use fj_dispatch::{dispatch, DispatchRequest};
 
 use crate::errors::ApiError;
 

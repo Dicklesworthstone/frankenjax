@@ -4,7 +4,7 @@ pub mod partial_eval;
 pub mod staging;
 
 use fj_core::{Atom, Jaxpr, Value, VarId};
-use fj_lax::{EvalError, eval_primitive};
+use fj_lax::{EvalError, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +20,7 @@ pub enum InterpreterError {
     MissingVariable(VarId),
     UnexpectedOutputArity {
         primitive: fj_core::Primitive,
+        expected: usize,
         actual: usize,
     },
     Primitive(EvalError),
@@ -43,11 +44,16 @@ impl std::fmt::Display for InterpreterError {
                 )
             }
             Self::MissingVariable(var) => write!(f, "missing variable v{}", var.0),
-            Self::UnexpectedOutputArity { primitive, actual } => write!(
+            Self::UnexpectedOutputArity {
+                primitive,
+                expected,
+                actual,
+            } => write!(
                 f,
-                "expected single-output primitive {}, got {} outputs",
+                "primitive {} returned {} outputs for {} bindings",
                 primitive.as_str(),
-                actual
+                actual,
+                expected
             ),
             Self::Primitive(err) => write!(f, "primitive eval failed: {err}"),
         }
@@ -98,13 +104,6 @@ pub fn eval_jaxpr_with_consts(
     }
 
     for eqn in &jaxpr.equations {
-        if eqn.outputs.len() != 1 {
-            return Err(InterpreterError::UnexpectedOutputArity {
-                primitive: eqn.primitive,
-                actual: eqn.outputs.len(),
-            });
-        }
-
         let mut resolved = Vec::with_capacity(eqn.inputs.len());
         for atom in &eqn.inputs {
             match atom {
@@ -119,8 +118,18 @@ pub fn eval_jaxpr_with_consts(
             }
         }
 
-        let output = eval_primitive(eqn.primitive, &resolved, &eqn.params)?;
-        env.insert(eqn.outputs[0], output);
+        let outputs = eval_primitive_multi(eqn.primitive, &resolved, &eqn.params)?;
+        if outputs.len() != eqn.outputs.len() {
+            return Err(InterpreterError::UnexpectedOutputArity {
+                primitive: eqn.primitive,
+                expected: eqn.outputs.len(),
+                actual: outputs.len(),
+            });
+        }
+
+        for (out_var, output) in eqn.outputs.iter().zip(outputs) {
+            env.insert(*out_var, output);
+        }
     }
 
     jaxpr
@@ -137,7 +146,10 @@ pub fn eval_jaxpr_with_consts(
 #[cfg(test)]
 mod tests {
     use super::{InterpreterError, eval_jaxpr, eval_jaxpr_with_consts};
-    use fj_core::{Atom, Equation, Jaxpr, Primitive, ProgramSpec, Value, VarId, build_program};
+    use fj_core::{
+        Atom, DType, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Shape, TensorValue, Value,
+        VarId, build_program,
+    };
     use smallvec::smallvec;
     use std::collections::BTreeMap;
 
@@ -221,6 +233,32 @@ mod tests {
                 actual: 0,
             }
         );
+    }
+
+    #[test]
+    fn eval_multi_output_qr_jaxpr() {
+        let jaxpr = build_program(ProgramSpec::LaxQr);
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .expect("matrix tensor should build"),
+        );
+
+        let outputs = eval_jaxpr(&jaxpr, &[input]).expect("qr eval should succeed");
+        assert_eq!(outputs.len(), 2);
+
+        let q = outputs[0].as_tensor().expect("q should be tensor");
+        let r = outputs[1].as_tensor().expect("r should be tensor");
+        assert_eq!(q.shape, Shape { dims: vec![2, 2] });
+        assert_eq!(r.shape, Shape { dims: vec![2, 2] });
     }
 
     #[test]
