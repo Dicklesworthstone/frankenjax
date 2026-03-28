@@ -910,6 +910,52 @@
       }
     },
     {
+      "case_id": "tsolve_upper_2x2",
+      "expected_outputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            1.0,
+            2.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            2
+          ],
+          "values": [
+            4.0,
+            1.0,
+            0.0,
+            2.0
+          ]
+        },
+        {
+          "kind": "matrix_f64",
+          "shape": [
+            2,
+            1
+          ],
+          "values": [
+            6.0,
+            4.0
+          ]
+        }
+      ],
+      "operation": "triangular_solve",
+      "params": {
+        "lower": "false"
+      }
+    },
+    {
       "case_id": "tsolve_lower_transpose_unitdiag_3x2",
       "expected_outputs": [
         {
@@ -1139,6 +1185,62 @@
       "operation": "fft"
     },
     {
+      "case_id": "fft_alternating",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              4.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            4
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              -1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              -1.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "fft"
+    },
+    {
       "case_id": "fft_batched_2x4",
       "expected_outputs": [
         {
@@ -1300,6 +1402,49 @@
       }
     },
     {
+      "case_id": "rfft_impulse",
+      "expected_outputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            3
+          ],
+          "values": [
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ],
+            [
+              1.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      ],
+      "operation": "rfft",
+      "params": {
+        "fft_length": "4"
+      }
+    },
+    {
       "case_id": "rfft_ramp",
       "expected_outputs": [
         {
@@ -1435,6 +1580,49 @@
       }
     },
     {
+      "case_id": "irfft_dc",
+      "expected_outputs": [
+        {
+          "kind": "vector_f64",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            1.0,
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "inputs": [
+        {
+          "kind": "complex_vector",
+          "shape": [
+            3
+          ],
+          "values": [
+            [
+              4.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0
+            ]
+          ]
+        }
+      ],
+      "operation": "irfft",
+      "params": {
+        "fft_length": "4"
+      }
+    },
+    {
       "case_id": "irfft_odd_roundtrip",
       "expected_outputs": [
         {
@@ -1479,14 +1667,14 @@
       }
     }
   ],
-  "generated_at_unix_ms": 1774637242118,
+  "generated_at_unix_ms": 1774675018323,
   "generated_by": "capture_linalg_fft_oracle.py",
   "metadata": {
     "hardware": "x86_64",
     "jax_version": "0.9.2",
     "platform": "Linux",
     "python_version": "3.12.13",
-    "timestamp": "2026-03-27T18:47:22Z"
+    "timestamp": "2026-03-28T05:16:58Z"
   },
   "oracle_root": "/tmp/frankenjax-legacy-jax",
   "schema_version": "frankenjax.linalg-fft-oracle.v2"

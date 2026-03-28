@@ -249,6 +249,18 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
         )
     )
 
+    tsl_u = jnp.array([[4.0, 1.0], [0.0, 2.0]], dtype=jnp.float64)
+    rhs_u = jnp.array([[6.0], [4.0]], dtype=jnp.float64)
+    cases.append(
+        _case(
+            "tsolve_upper_2x2",
+            "triangular_solve",
+            [_real_value(tsl_u), _real_value(rhs_u)],
+            [_real_value(lax.linalg.triangular_solve(tsl_u, rhs_u, left_side=True, lower=False))],
+            {"lower": "false"},
+        )
+    )
+
     tsl_t = jnp.array(
         [[1.0, 0.0, 0.0], [2.0, 1.0, 0.0], [-1.0, 3.0, 1.0]],
         dtype=jnp.float64,
@@ -284,6 +296,9 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     fft_general = jnp.array([1.0 + 0.0j, 2.0 + 0.0j, 3.0 + 0.0j, 4.0 + 0.0j], dtype=jnp.complex128)
     cases.append(_case("fft_general", "fft", [_complex_value(fft_general)], [_complex_value(jnp.fft.fft(fft_general))]))
 
+    fft_alternating = jnp.array([1.0 + 0.0j, -1.0 + 0.0j, 1.0 + 0.0j, -1.0 + 0.0j], dtype=jnp.complex128)
+    cases.append(_case("fft_alternating", "fft", [_complex_value(fft_alternating)], [_complex_value(jnp.fft.fft(fft_alternating))]))
+
     fft_batched = jnp.array(
         [[1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], [1.0 + 0.0j, 0.0 + 0.0j, 0.0 + 0.0j, 0.0 + 0.0j]],
         dtype=jnp.complex128,
@@ -296,6 +311,9 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     rfft_dc = jnp.array([1.0, 1.0, 1.0, 1.0], dtype=jnp.float64)
     cases.append(_case("rfft_dc", "rfft", [_real_value(rfft_dc)], [_complex_value(jnp.fft.rfft(rfft_dc, n=4))], {"fft_length": "4"}))
 
+    rfft_impulse = jnp.array([1.0, 0.0, 0.0, 0.0], dtype=jnp.float64)
+    cases.append(_case("rfft_impulse", "rfft", [_real_value(rfft_impulse)], [_complex_value(jnp.fft.rfft(rfft_impulse, n=4))], {"fft_length": "4"}))
+
     rfft_ramp = jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float64)
     cases.append(_case("rfft_ramp", "rfft", [_real_value(rfft_ramp)], [_complex_value(jnp.fft.rfft(rfft_ramp, n=4))], {"fft_length": "4"}))
 
@@ -304,6 +322,9 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
 
     irfft_known = jnp.array([10.0 + 0.0j, -2.0 + 2.0j, -2.0 + 0.0j], dtype=jnp.complex128)
     cases.append(_case("irfft_known", "irfft", [_complex_value(irfft_known)], [_real_value(jnp.fft.irfft(irfft_known, n=4))], {"fft_length": "4"}))
+
+    irfft_dc = jnp.array([4.0 + 0.0j, 0.0 + 0.0j, 0.0 + 0.0j], dtype=jnp.complex128)
+    cases.append(_case("irfft_dc", "irfft", [_complex_value(irfft_dc)], [_real_value(jnp.fft.irfft(irfft_dc, n=4))], {"fft_length": "4"}))
 
     irfft_odd = jnp.fft.rfft(jnp.array([1.0, -2.0, 0.5, 3.0, -1.5], dtype=jnp.float64), n=5)
     cases.append(_case("irfft_odd_roundtrip", "irfft", [_complex_value(irfft_odd)], [_real_value(jnp.fft.irfft(irfft_odd, n=5))], {"fft_length": "5"}))
