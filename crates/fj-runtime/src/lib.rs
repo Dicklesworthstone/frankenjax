@@ -135,4 +135,62 @@ mod tests {
         );
         assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
     }
+
+    // ── Admission model boundary tests ────────────────────────
+
+    #[test]
+    fn admission_keep_at_zero_posterior() {
+        let model = RuntimeAdmissionModel::new(CompatibilityMode::Strict);
+        assert_eq!(model.decide(0.0), DecisionAction::Keep);
+    }
+
+    #[test]
+    fn admission_kill_at_one_posterior() {
+        let model = RuntimeAdmissionModel::new(CompatibilityMode::Strict);
+        assert_eq!(model.decide(1.0), DecisionAction::Kill);
+    }
+
+    #[test]
+    fn admission_strict_vs_hardened_monotonic() {
+        // Hardened should be at least as aggressive as strict at every posterior
+        let strict = RuntimeAdmissionModel::new(CompatibilityMode::Strict);
+        let hardened = RuntimeAdmissionModel::new(CompatibilityMode::Hardened);
+
+        let mut strict_kills_at = None;
+        let mut hardened_kills_at = None;
+        for i in 0..=100 {
+            let posterior = i as f64 / 100.0;
+            if strict.decide(posterior) == DecisionAction::Kill && strict_kills_at.is_none() {
+                strict_kills_at = Some(posterior);
+            }
+            if hardened.decide(posterior) == DecisionAction::Kill && hardened_kills_at.is_none() {
+                hardened_kills_at = Some(posterior);
+            }
+        }
+
+        let s = strict_kills_at.unwrap_or(1.0);
+        let h = hardened_kills_at.unwrap_or(1.0);
+        assert!(
+            h <= s,
+            "hardened should kill at same or lower posterior than strict: hardened={h}, strict={s}"
+        );
+    }
+
+    #[test]
+    fn admission_effective_loss_matrix_strict_unchanged() {
+        let model = RuntimeAdmissionModel::new(CompatibilityMode::Strict);
+        let effective = model.effective_loss_matrix();
+        assert_eq!(effective, model.loss_matrix);
+    }
+
+    #[test]
+    fn admission_effective_loss_matrix_hardened_more_aggressive() {
+        let model = RuntimeAdmissionModel::new(CompatibilityMode::Hardened);
+        let effective = model.effective_loss_matrix();
+        let default = fj_ledger::LossMatrix::default();
+        // Hardened should have lower kill_if_useful (less penalty for killing useful work)
+        assert!(effective.kill_if_useful <= default.kill_if_useful);
+        // Hardened should have higher keep_if_abandoned (more penalty for keeping abandoned)
+        assert!(effective.keep_if_abandoned >= default.keep_if_abandoned);
+    }
 }

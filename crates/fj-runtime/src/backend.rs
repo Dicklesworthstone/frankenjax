@@ -241,4 +241,85 @@ mod tests {
         assert!(err.to_string().contains("allocation failed"));
         assert!(err.to_string().contains("out of memory"));
     }
+
+    #[test]
+    fn backend_error_transfer_display() {
+        let err = BackendError::TransferFailed {
+            source: DeviceId(0),
+            target: DeviceId(1),
+            detail: "cross-device not supported".to_owned(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("device:0"));
+        assert!(msg.contains("device:1"));
+        assert!(msg.contains("cross-device not supported"));
+    }
+
+    #[test]
+    fn backend_error_execution_display() {
+        let err = BackendError::ExecutionFailed {
+            detail: "shape mismatch".to_owned(),
+        };
+        assert!(err.to_string().contains("shape mismatch"));
+    }
+
+    #[test]
+    fn backend_error_equality() {
+        let a = BackendError::Unavailable {
+            backend: "gpu".to_owned(),
+        };
+        let b = BackendError::Unavailable {
+            backend: "gpu".to_owned(),
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn backend_capabilities_default_fields() {
+        let caps = BackendCapabilities {
+            supported_dtypes: vec![DType::F64],
+            max_tensor_rank: 8,
+            memory_limit_bytes: None,
+            multi_device: false,
+        };
+        assert_eq!(caps.supported_dtypes.len(), 1);
+        assert_eq!(caps.max_tensor_rank, 8);
+        assert!(caps.memory_limit_bytes.is_none());
+        assert!(!caps.multi_device);
+    }
+
+    #[test]
+    fn backend_capabilities_with_memory_limit() {
+        let caps = BackendCapabilities {
+            supported_dtypes: vec![DType::F64, DType::I64],
+            max_tensor_rank: 4,
+            memory_limit_bytes: Some(1024 * 1024 * 1024),
+            multi_device: true,
+        };
+        assert_eq!(caps.memory_limit_bytes, Some(1_073_741_824));
+        assert!(caps.multi_device);
+    }
+
+    #[test]
+    fn backend_registry_empty() {
+        let registry = BackendRegistry::new(vec![]);
+        assert!(registry.default_backend().is_none());
+        assert!(registry.get("cpu").is_none());
+        assert!(registry.available_backends().is_empty());
+    }
+
+    #[test]
+    fn backend_registry_empty_resolve_fails() {
+        let registry = BackendRegistry::new(vec![]);
+        let result = registry.resolve_placement(&DevicePlacement::Default, None);
+        assert!(matches!(result, Err(BackendError::Unavailable { .. })));
+    }
+
+    #[test]
+    fn backend_registry_empty_fallback_fails() {
+        let registry = BackendRegistry::new(vec![]);
+        let result =
+            registry.resolve_with_fallback(&DevicePlacement::Default, Some("gpu"));
+        assert!(matches!(result, Err(BackendError::Unavailable { .. })));
+    }
 }

@@ -672,10 +672,10 @@ uv pip install --python .venv/bin/python jax jaxlib numpy
 |---------------|-------|--------|
 | Transform (jit/grad/vmap/lax/control_flow/mixed_dtype) | 611 | JAX 0.9.2 |
 | RNG determinism (key/split/fold_in/uniform/normal) | 25 | JAX 0.9.2 |
-| Linear algebra + FFT oracle | 21 | JAX 0.9.2 (x64) |
+| Linear algebra + FFT oracle | 33 | JAX 0.9.2 (x64) |
 | Transform composition (jit+grad, grad+grad, vmap+grad, jacobian, hessian) | 15 | JAX 0.9.2 (x64) |
 | Dtype promotion (9x9 dtype matrix, add + mul) | 162 | JAX 0.9.2 (x64) |
-| **Total** | **834** | |
+| **Total** | **846** | |
 
 ## Building from Source
 

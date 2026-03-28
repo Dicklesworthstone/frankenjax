@@ -106,4 +106,58 @@ mod tests {
         let placement = DevicePlacement::default();
         assert_eq!(placement, DevicePlacement::Default);
     }
+
+    #[test]
+    fn device_placement_explicit() {
+        let placement = DevicePlacement::Explicit(DeviceId(3));
+        assert_eq!(placement, DevicePlacement::Explicit(DeviceId(3)));
+        assert_ne!(placement, DevicePlacement::Default);
+    }
+
+    #[test]
+    fn device_id_ordering() {
+        assert!(DeviceId(0) < DeviceId(1));
+        assert!(DeviceId(1) < DeviceId(100));
+    }
+
+    #[test]
+    fn platform_display() {
+        assert_eq!(format!("{}", Platform::Cpu), "cpu");
+        assert_eq!(format!("{}", Platform::Gpu), "gpu");
+        assert_eq!(format!("{}", Platform::Tpu), "tpu");
+    }
+
+    #[test]
+    fn device_info_equality() {
+        let a = DeviceInfo {
+            id: DeviceId(0),
+            platform: Platform::Cpu,
+            host_id: 0,
+            process_index: 0,
+        };
+        let b = DeviceInfo {
+            id: DeviceId(0),
+            platform: Platform::Cpu,
+            host_id: 0,
+            process_index: 0,
+        };
+        let c = DeviceInfo {
+            id: DeviceId(1),
+            platform: Platform::Gpu,
+            host_id: 0,
+            process_index: 0,
+        };
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn device_id_hash_works() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(DeviceId(0));
+        set.insert(DeviceId(1));
+        set.insert(DeviceId(0)); // duplicate
+        assert_eq!(set.len(), 2);
+    }
 }

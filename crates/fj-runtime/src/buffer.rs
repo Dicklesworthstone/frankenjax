@@ -178,4 +178,78 @@ mod tests {
         let recovered = buf.into_bytes();
         assert_eq!(original, recovered);
     }
+
+    #[test]
+    fn buffer_empty() {
+        let buf = Buffer::new(vec![], DeviceId(0));
+        assert_eq!(buf.size(), 0);
+        assert!(buf.as_bytes().is_empty());
+    }
+
+    #[test]
+    fn buffer_zeroed_empty() {
+        let buf = Buffer::zeroed(0, DeviceId(0));
+        assert_eq!(buf.size(), 0);
+    }
+
+    #[test]
+    fn buffer_mutable_write() {
+        let mut buf = Buffer::zeroed(4, DeviceId(0));
+        buf.as_bytes_mut().copy_from_slice(&[1, 2, 3, 4]);
+        assert_eq!(buf.as_bytes(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn buffer_clone_is_independent() {
+        let buf = Buffer::new(vec![1, 2, 3], DeviceId(0));
+        let mut cloned = buf.clone();
+        cloned.as_bytes_mut()[0] = 99;
+        assert_eq!(buf.as_bytes()[0], 1, "original should be unchanged");
+        assert_eq!(cloned.as_bytes()[0], 99);
+    }
+
+    #[test]
+    fn buffer_equality() {
+        let a = Buffer::new(vec![1, 2, 3], DeviceId(0));
+        let b = Buffer::new(vec![1, 2, 3], DeviceId(0));
+        let c = Buffer::new(vec![1, 2, 3], DeviceId(1));
+        assert_eq!(a, b);
+        assert_ne!(a, c, "different device should be unequal");
+    }
+
+    #[test]
+    fn buffer_view_empty_buffer() {
+        let buf = Buffer::new(vec![], DeviceId(0));
+        let view = BufferView::from_buffer(&buf);
+        assert_eq!(view.size(), 0);
+        assert!(view.slice(0, 1).is_none());
+    }
+
+    #[test]
+    fn buffer_view_full_slice() {
+        let buf = Buffer::new(vec![1, 2, 3], DeviceId(0));
+        let view = BufferView::from_buffer(&buf);
+        let full = view.slice(0, 3).expect("full slice should work");
+        assert_eq!(full.as_bytes(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn buffer_view_boundary_slice() {
+        let buf = Buffer::new(vec![10, 20, 30], DeviceId(0));
+        let view = BufferView::from_buffer(&buf);
+        // Exact boundary: offset + len == size
+        let last = view.slice(2, 1).expect("boundary slice");
+        assert_eq!(last.as_bytes(), &[30]);
+        // Just past boundary
+        assert!(view.slice(2, 2).is_none());
+    }
+
+    #[test]
+    fn buffer_view_nested_slice() {
+        let buf = Buffer::new(vec![1, 2, 3, 4, 5, 6], DeviceId(0));
+        let view = BufferView::from_buffer(&buf);
+        let sub = view.slice(1, 4).expect("first slice");
+        let nested = sub.slice(1, 2).expect("nested slice");
+        assert_eq!(nested.as_bytes(), &[3, 4]);
+    }
 }
