@@ -801,6 +801,13 @@ fn execute_vmap_loop_and_stack(
     }
 
     let out_axes = parse_vmap_out_axes(compile_options, per_output_values.len());
+    if out_axes.len() != per_output_values.len() {
+        return Err(TransformExecutionError::VmapAxesCountMismatch {
+            expected: per_output_values.len(),
+            actual: out_axes.len(),
+        }
+        .into());
+    }
 
     let mut outputs = Vec::with_capacity(per_output_values.len());
     for (out_idx, values) in per_output_values.iter().enumerate() {
@@ -2318,5 +2325,48 @@ mod tests {
         opts.insert("vmap_out_axes".to_owned(), "1".to_owned());
         let axes = super::parse_vmap_out_axes(&opts, 3);
         assert_eq!(axes, vec![super::AxisSpec::Batched(1); 3]);
+    }
+
+    #[test]
+    fn test_out_axes_error_mismatched_output_arity() {
+        let batched_qr_input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![2, 3, 2],
+                },
+                [
+                    1.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0, // batch element 0
+                    2.0, 0.0, 0.0, 2.0, 2.0, 2.0, // batch element 1
+                ]
+                .into_iter()
+                .map(|x| fj_core::Literal::F64Bits(x.to_bits()))
+                .collect(),
+            )
+            .expect("batched qr input"),
+        );
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "0,0,0".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::LaxQr, &[Transform::Vmap, Transform::Jit]),
+            args: vec![batched_qr_input],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("mismatched out_axes length should fail");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("length mismatch"),
+            "error should mention length mismatch, got: {msg}"
+        );
+        assert!(
+            msg.contains("expected 2"),
+            "error should report expected arity"
+        );
+        assert!(msg.contains("got 3"), "error should report provided arity");
     }
 }

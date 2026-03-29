@@ -235,27 +235,18 @@ pub fn partial_eval_jaxpr_typed(
         } else {
             // Propagate types through known equations for residual typing.
             if in_avals.is_some() {
-                let first_input_aval = eqn.inputs.iter().find_map(|atom| match atom {
-                    Atom::Var(v) => var_aval[v.0 as usize].clone(),
-                    Atom::Lit(lit) => Some(AbstractValue {
-                        dtype: match lit {
-                            fj_core::Literal::I64(_) => DType::I64,
-                            fj_core::Literal::U32(_) => DType::U32,
-                            fj_core::Literal::U64(_) => DType::U64,
-                            fj_core::Literal::Bool(_) => DType::Bool,
-                            fj_core::Literal::BF16Bits(_) => DType::BF16,
-                            fj_core::Literal::F16Bits(_) => DType::F16,
-                            fj_core::Literal::F64Bits(_) => DType::F64,
-                            fj_core::Literal::Complex64Bits(..) => DType::Complex64,
-                            fj_core::Literal::Complex128Bits(..) => DType::Complex128,
-                        },
-                        shape: Shape::scalar(),
-                    }),
-                });
-                if let Some(aval) = first_input_aval {
-                    let out_aval = infer_equation_output_aval(eqn, &aval);
-                    for out_var in &eqn.outputs {
-                        var_aval[out_var.0 as usize] = Some(out_aval.clone());
+                let input_avals: Vec<AbstractValue> = eqn
+                    .inputs
+                    .iter()
+                    .filter_map(|atom| match atom {
+                        Atom::Var(v) => var_aval[v.0 as usize].clone(),
+                        Atom::Lit(lit) => Some(abstract_value_of_literal(lit)),
+                    })
+                    .collect();
+                if !input_avals.is_empty() {
+                    let out_avals = infer_equation_output_avals(eqn, &input_avals);
+                    for (out_var, out_aval) in eqn.outputs.iter().zip(out_avals.into_iter()) {
+                        var_aval[out_var.0 as usize] = Some(out_aval);
                     }
                 }
             }
@@ -451,6 +442,23 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
 /// Comparison primitives always output Bool. Reductions honour the "axes" param.
 /// Shape-manipulation ops (Reshape, Slice, Transpose) parse their params.
 /// Dot always produces a scalar.
+fn infer_equation_output_avals(
+    eqn: &Equation,
+    input_avals: &[AbstractValue],
+) -> Vec<AbstractValue> {
+    let Some(first_input) = input_avals.first() else {
+        return vec![];
+    };
+
+    use fj_core::Primitive::*;
+    match eqn.primitive {
+        Qr => infer_qr_output_avals(first_input, eqn),
+        Svd => infer_svd_output_avals(first_input, eqn),
+        Eigh => infer_eigh_output_avals(first_input),
+        _ => vec![infer_equation_output_aval(eqn, first_input); eqn.outputs.len()],
+    }
+}
+
 fn infer_equation_output_aval(eqn: &Equation, first_input: &AbstractValue) -> AbstractValue {
     use fj_core::Primitive::*;
     match eqn.primitive {
@@ -672,6 +680,97 @@ fn infer_equation_output_aval(eqn: &Equation, first_input: &AbstractValue) -> Ab
         }
         // Most element-wise ops preserve dtype and shape
         _ => first_input.clone(),
+    }
+}
+
+fn infer_qr_output_avals(input: &AbstractValue, eqn: &Equation) -> Vec<AbstractValue> {
+    let Some((&m, &n)) = input.shape.dims.first().zip(input.shape.dims.get(1)) else {
+        return vec![input.clone(); eqn.outputs.len()];
+    };
+    let k = m.min(n);
+    let full_matrices = eqn
+        .params
+        .get("full_matrices")
+        .is_some_and(|v| v.trim() == "true");
+    let q_cols = if full_matrices { m } else { k };
+    let r_rows = if full_matrices { m } else { k };
+    vec![
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape {
+                dims: vec![m, q_cols],
+            },
+        },
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape {
+                dims: vec![r_rows, n],
+            },
+        },
+    ]
+}
+
+fn infer_svd_output_avals(input: &AbstractValue, eqn: &Equation) -> Vec<AbstractValue> {
+    let Some((&m, &n)) = input.shape.dims.first().zip(input.shape.dims.get(1)) else {
+        return vec![input.clone(); eqn.outputs.len()];
+    };
+    let k = m.min(n);
+    let full_matrices = eqn
+        .params
+        .get("full_matrices")
+        .is_some_and(|v| v.trim() == "true");
+    let u_cols = if full_matrices { m } else { k };
+    let vt_rows = if full_matrices { n } else { k };
+    vec![
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape {
+                dims: vec![m, u_cols],
+            },
+        },
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape { dims: vec![k] },
+        },
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape {
+                dims: vec![vt_rows, n],
+            },
+        },
+    ]
+}
+
+fn infer_eigh_output_avals(input: &AbstractValue) -> Vec<AbstractValue> {
+    let Some(&n) = input.shape.dims.first() else {
+        return vec![input.clone(), input.clone()];
+    };
+    vec![
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape { dims: vec![n] },
+        },
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape { dims: vec![n, n] },
+        },
+    ]
+}
+
+fn abstract_value_of_literal(lit: &fj_core::Literal) -> AbstractValue {
+    AbstractValue {
+        dtype: match lit {
+            fj_core::Literal::I64(_) => DType::I64,
+            fj_core::Literal::U32(_) => DType::U32,
+            fj_core::Literal::U64(_) => DType::U64,
+            fj_core::Literal::Bool(_) => DType::Bool,
+            fj_core::Literal::BF16Bits(_) => DType::BF16,
+            fj_core::Literal::F16Bits(_) => DType::F16,
+            fj_core::Literal::F64Bits(_) => DType::F64,
+            fj_core::Literal::Complex64Bits(..) => DType::Complex64,
+            fj_core::Literal::Complex128Bits(..) => DType::Complex128,
+        },
+        shape: Shape::scalar(),
     }
 }
 
@@ -2386,6 +2485,116 @@ mod tests {
                     result.residual_avals[0].shape.dims,
                     vec![2, 3],
                     "broadcast_in_dim should use target shape [2,3]"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_svd_singular_values_keep_vector_shape() {
+        run_logged_test(
+            "test_pe_typed_svd_singular_values_keep_vector_shape",
+            &("pe", "typed", "svd_s"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(5)],
+                    vec![],
+                    vec![VarId(6)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Svd,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2), VarId(3), VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(5))],
+                            outputs: smallvec![VarId(6)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![3, 2] },
+                    },
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2] },
+                    },
+                ];
+                let result =
+                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                assert_eq!(
+                    result.residual_avals,
+                    vec![AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2] },
+                    }],
+                    "SVD singular values should stage as a length-k vector residual"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_qr_r_output_keeps_factor_shape() {
+        run_logged_test(
+            "test_pe_typed_qr_r_output_keeps_factor_shape",
+            &("pe", "typed", "qr_r"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(4)],
+                    vec![],
+                    vec![VarId(5)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Qr,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2), VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                            outputs: smallvec![VarId(5)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![3, 2] },
+                    },
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2, 2] },
+                    },
+                ];
+                let result =
+                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                assert_eq!(
+                    result.residual_avals,
+                    vec![AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2, 2] },
+                    }],
+                    "QR residual should preserve R's k-by-n shape"
                 );
                 Ok(vec![])
             },

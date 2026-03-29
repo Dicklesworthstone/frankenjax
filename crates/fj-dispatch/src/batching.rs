@@ -5,7 +5,7 @@
 //! achieving O(1) vectorized execution matching JAX's `BatchTrace` semantics.
 
 use fj_core::{Atom, Jaxpr, Primitive, Shape, TensorValue, Value, VarId};
-use fj_lax::eval_primitive;
+use fj_lax::{eval_primitive, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 
@@ -469,6 +469,19 @@ pub fn apply_batch_rule(
 
         // ── Windowed reduction ─────────────────────────────────
         Primitive::ReduceWindow => batch_reduce_window(inputs, params),
+    }
+}
+
+fn apply_batch_rule_multi(
+    primitive: Primitive,
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    match primitive {
+        Primitive::Qr | Primitive::Svd | Primitive::Eigh => {
+            batch_passthrough_leading_multi(primitive, inputs, params)
+        }
+        _ => apply_batch_rule(primitive, inputs, params).map(|result| vec![result]),
     }
 }
 
@@ -1312,6 +1325,70 @@ fn batch_passthrough_leading(
     Ok(BatchTracer::batched(Value::Tensor(stacked), 0))
 }
 
+fn batch_passthrough_leading_multi(
+    primitive: Primitive,
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let any_batched = inputs.iter().find(|t| t.batch_dim.is_some());
+    if any_batched.is_none() {
+        let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
+        return eval_primitive_multi(primitive, &values, params)
+            .map(|outputs| outputs.into_iter().map(BatchTracer::unbatched).collect())
+            .map_err(|e| BatchError::EvalError(e.to_string()));
+    }
+
+    let batched = any_batched.expect("checked is_some");
+    let batch_dim = batched.batch_dim.expect("batched tracer has batch_dim");
+    let batch_size = get_batch_size(&batched.value, batch_dim)?;
+
+    let values: Result<Vec<Value>, BatchError> = inputs
+        .iter()
+        .map(|t| match t.batch_dim {
+            Some(bd) => move_batch_dim_to_front(&t.value, bd),
+            None => broadcast_unbatched(&t.value, batch_size, 0),
+        })
+        .collect();
+    let values = values?;
+
+    let mut per_output: Option<Vec<Vec<Value>>> = None;
+    for i in 0..batch_size {
+        let slices: Result<Vec<Value>, BatchError> = values
+            .iter()
+            .map(|v| match v {
+                Value::Tensor(t) => t
+                    .slice_axis0(i)
+                    .map_err(|e| BatchError::TensorError(e.to_string())),
+                Value::Scalar(_) => Ok(v.clone()),
+            })
+            .collect();
+        let outputs = eval_primitive_multi(primitive, &slices?, params)
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+
+        let buckets = per_output.get_or_insert_with(|| vec![Vec::new(); outputs.len()]);
+        if buckets.len() != outputs.len() {
+            return Err(BatchError::InterpreterError(format!(
+                "primitive {} returned inconsistent output arity across batch slices",
+                primitive.as_str()
+            )));
+        }
+
+        for (bucket, output) in buckets.iter_mut().zip(outputs) {
+            bucket.push(output);
+        }
+    }
+
+    per_output
+        .unwrap_or_default()
+        .into_iter()
+        .map(|outputs| {
+            TensorValue::stack_axis0(&outputs)
+                .map(|tensor| BatchTracer::batched(Value::Tensor(tensor), 0))
+                .map_err(|e| BatchError::TensorError(e.to_string()))
+        })
+        .collect()
+}
+
 // ── Control Flow Fallback ──────────────────────────────────────────
 
 fn batch_control_flow_fallback(
@@ -1510,15 +1587,18 @@ pub fn batch_eval_jaxpr_with_consts(
             .collect();
         let inputs = inputs?;
 
-        let result = apply_batch_rule(eqn.primitive, &inputs, &eqn.params)?;
+        let results = apply_batch_rule_multi(eqn.primitive, &inputs, &eqn.params)?;
+        if results.len() != eqn.outputs.len() {
+            return Err(BatchError::InterpreterError(format!(
+                "primitive {} returned {} outputs for {} bindings",
+                eqn.primitive.as_str(),
+                results.len(),
+                eqn.outputs.len()
+            )));
+        }
 
-        // Bind result to output variable(s). Most primitives have one output.
-        if eqn.outputs.len() == 1 {
-            env.insert(eqn.outputs[0], result);
-        } else {
-            // For multi-output primitives, we'd need to destructure.
-            // Currently all our primitives are single-output.
-            env.insert(eqn.outputs[0], result);
+        for (out_var, result) in eqn.outputs.iter().zip(results) {
+            env.insert(*out_var, result);
         }
     }
 
@@ -1816,6 +1896,82 @@ mod tests {
         assert_eq!(results[0].batch_dim, Some(0));
         let vals = extract_f64_vec(&results[0].value);
         assert_eq!(vals, vec![11.0, 21.0, 31.0]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_qr_binds_all_unbatched_outputs() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(1), VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Qr,
+                inputs: smallvec![Atom::Var(VarId(0))],
+                outputs: smallvec![VarId(1), VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+
+        let input = BatchTracer::unbatched(make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0]));
+        let results = batch_eval_jaxpr(&jaxpr, &[input]).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].batch_dim, None);
+        assert_eq!(results[1].batch_dim, None);
+        assert_eq!(results[0].value.as_tensor().unwrap().shape.dims, vec![3, 2]);
+        assert_eq!(results[1].value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_qr_binds_all_batched_outputs() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(1), VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Qr,
+                inputs: smallvec![Atom::Var(VarId(0))],
+                outputs: smallvec![VarId(1), VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+
+        let input = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![2, 3, 2],
+                    },
+                    [
+                        1.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0, // batch element 0
+                        2.0, 0.0, 0.0, 2.0, 2.0, 2.0, // batch element 1
+                    ]
+                    .into_iter()
+                    .map(|x| Literal::F64Bits(x.to_bits()))
+                    .collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let results = batch_eval_jaxpr(&jaxpr, &[input]).unwrap();
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].batch_dim, Some(0));
+        assert_eq!(results[1].batch_dim, Some(0));
+        assert_eq!(
+            results[0].value.as_tensor().unwrap().shape.dims,
+            vec![2, 3, 2]
+        );
+        assert_eq!(
+            results[1].value.as_tensor().unwrap().shape.dims,
+            vec![2, 2, 2]
+        );
     }
 
     #[test]

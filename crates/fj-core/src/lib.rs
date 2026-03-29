@@ -4305,9 +4305,9 @@ mod tests {
 
     #[test]
     fn value_scalar_f64_construction() {
-        let v = Value::scalar_f64(3.14);
+        let v = Value::scalar_f64(std::f64::consts::PI);
         let f = v.as_f64_scalar().unwrap();
-        assert!((f - 3.14).abs() < 1e-12);
+        assert!((f - std::f64::consts::PI).abs() < 1e-12);
     }
 
     #[test]
