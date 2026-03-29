@@ -4204,4 +4204,211 @@ mod tests {
         assert!(lit.as_f64().is_none());
         assert!(lit.as_i64().is_none());
     }
+
+    // ── Shape tests ──────────────────────────────────────────
+
+    #[test]
+    fn shape_scalar_is_empty() {
+        let s = Shape::scalar();
+        assert_eq!(s.dims, Vec::<u32>::new());
+        assert_eq!(s.rank(), 0);
+        assert_eq!(s.element_count(), Some(1));
+    }
+
+    #[test]
+    fn shape_vector_rank_1() {
+        let s = Shape { dims: vec![5] };
+        assert_eq!(s.rank(), 1);
+        assert_eq!(s.element_count(), Some(5));
+    }
+
+    #[test]
+    fn shape_matrix_rank_2() {
+        let s = Shape { dims: vec![3, 4] };
+        assert_eq!(s.rank(), 2);
+        assert_eq!(s.element_count(), Some(12));
+    }
+
+    #[test]
+    fn shape_zero_dim_element_count() {
+        let s = Shape { dims: vec![3, 0, 4] };
+        assert_eq!(s.element_count(), Some(0));
+    }
+
+    // ── TensorValue edge cases ───────────────────────────────
+
+    #[test]
+    fn tensor_value_empty() {
+        let tv = TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![0] },
+            vec![],
+        )
+        .unwrap();
+        assert!(tv.is_empty());
+        assert_eq!(tv.len(), 0);
+        assert_eq!(tv.rank(), 1);
+    }
+
+    #[test]
+    fn tensor_value_element_count_mismatch() {
+        let err = TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3] },
+            vec![Literal::from_f64(1.0), Literal::from_f64(2.0)],
+        );
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn tensor_value_scalar_shape() {
+        // Scalar shape = 1 element
+        let tv = TensorValue::new(
+            DType::F64,
+            Shape::scalar(),
+            vec![Literal::from_f64(42.0)],
+        )
+        .unwrap();
+        assert_eq!(tv.len(), 1);
+        assert_eq!(tv.rank(), 0);
+    }
+
+    #[test]
+    fn tensor_value_leading_dim() {
+        let tv = TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 2] },
+            (0..6).map(|i| Literal::from_f64(i as f64)).collect(),
+        )
+        .unwrap();
+        assert_eq!(tv.leading_dim(), Some(3));
+    }
+
+    #[test]
+    fn tensor_value_leading_dim_scalar() {
+        let tv = TensorValue::new(
+            DType::F64,
+            Shape::scalar(),
+            vec![Literal::from_f64(1.0)],
+        )
+        .unwrap();
+        assert_eq!(tv.leading_dim(), None);
+    }
+
+    // ── Value construction helpers ───────────────────────────
+
+    #[test]
+    fn value_scalar_i64_construction() {
+        let v = Value::scalar_i64(42);
+        assert_eq!(v.as_i64_scalar(), Some(42));
+    }
+
+    #[test]
+    fn value_scalar_f64_construction() {
+        let v = Value::scalar_f64(3.14);
+        let f = v.as_f64_scalar().unwrap();
+        assert!((f - 3.14).abs() < 1e-12);
+    }
+
+    #[test]
+    fn value_scalar_bool_construction() {
+        let v = Value::scalar_bool(true);
+        match v {
+            Value::Scalar(Literal::Bool(b)) => assert!(b),
+            _ => panic!("expected bool scalar"),
+        }
+    }
+
+    #[test]
+    fn value_vector_i64_construction() {
+        let v = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let t = v.as_tensor().unwrap();
+        assert_eq!(t.shape.dims, vec![3]);
+        assert_eq!(t.dtype, DType::I64);
+    }
+
+    #[test]
+    fn value_vector_f64_construction() {
+        let v = Value::vector_f64(&[1.0, 2.0]).unwrap();
+        let t = v.as_tensor().unwrap();
+        assert_eq!(t.shape.dims, vec![2]);
+        assert_eq!(t.dtype, DType::F64);
+    }
+
+    // ── Jaxpr construction ───────────────────────────────────
+
+    #[test]
+    fn jaxpr_new_basic() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: std::collections::BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+        assert_eq!(jaxpr.invars.len(), 1);
+        assert_eq!(jaxpr.outvars.len(), 1);
+        assert_eq!(jaxpr.equations.len(), 1);
+        assert!(jaxpr.constvars.is_empty());
+    }
+
+    #[test]
+    fn jaxpr_empty_equations() {
+        // Identity function: output = input
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(1)],
+            vec![],
+        );
+        assert!(jaxpr.equations.is_empty());
+        assert_eq!(jaxpr.invars, jaxpr.outvars);
+    }
+
+    // ── Primitive as_str round-trip ──────────────────────────
+
+    #[test]
+    fn all_primitives_have_nonempty_name() {
+        // Ensure every variant of Primitive returns a non-empty as_str()
+        let prims = [
+            Primitive::Add, Primitive::Sub, Primitive::Mul, Primitive::Neg,
+            Primitive::Abs, Primitive::Sin, Primitive::Cos, Primitive::Exp,
+            Primitive::Log, Primitive::Sqrt, Primitive::ReduceSum,
+            Primitive::Cholesky, Primitive::Qr, Primitive::Svd,
+            Primitive::Fft, Primitive::Ifft, Primitive::Rfft, Primitive::Irfft,
+            Primitive::Cond, Primitive::Scan, Primitive::While, Primitive::Switch,
+        ];
+        for p in prims {
+            assert!(
+                !p.as_str().is_empty(),
+                "primitive {:?} should have non-empty name",
+                p
+            );
+        }
+    }
+
+    // ── DType properties ─────────────────────────────────────
+
+    #[test]
+    fn dtype_all_variants_distinct() {
+        let dtypes = [
+            DType::BF16, DType::F16, DType::F32, DType::F64,
+            DType::I32, DType::I64, DType::U32, DType::U64,
+            DType::Bool, DType::Complex64, DType::Complex128,
+        ];
+        // Verify all 11 are distinct via pairwise comparison
+        for (i, a) in dtypes.iter().enumerate() {
+            for (j, b) in dtypes.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "dtypes at index {i} and {j} should differ");
+                }
+            }
+        }
+    }
 }

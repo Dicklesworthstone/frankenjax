@@ -274,6 +274,220 @@ mod tests {
         assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
     }
 
+    // ── Broader primitive coverage through interpreter ──────
+
+    fn make_unary_jaxpr(prim: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: prim,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_binary_jaxpr(prim: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: prim,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn eval_neg_scalar() {
+        let jaxpr = make_unary_jaxpr(Primitive::Neg);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(5.0)]).unwrap();
+        assert!((out[0].as_f64_scalar().unwrap() - (-5.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eval_abs_negative() {
+        let jaxpr = make_unary_jaxpr(Primitive::Abs);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(-7.0)]).unwrap();
+        assert!((out[0].as_f64_scalar().unwrap() - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eval_exp_scalar() {
+        let jaxpr = make_unary_jaxpr(Primitive::Exp);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(1.0)]).unwrap();
+        assert!((out[0].as_f64_scalar().unwrap() - std::f64::consts::E).abs() < 1e-10);
+    }
+
+    #[test]
+    fn eval_log_scalar() {
+        let jaxpr = make_unary_jaxpr(Primitive::Log);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(std::f64::consts::E)]).unwrap();
+        assert!((out[0].as_f64_scalar().unwrap() - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn eval_sin_cos_identity() {
+        // sin^2(x) + cos^2(x) = 1
+        let x = 1.5;
+        let sin_jaxpr = make_unary_jaxpr(Primitive::Sin);
+        let cos_jaxpr = make_unary_jaxpr(Primitive::Cos);
+        let sin_val = eval_jaxpr(&sin_jaxpr, &[Value::scalar_f64(x)])
+            .unwrap()[0]
+            .as_f64_scalar()
+            .unwrap();
+        let cos_val = eval_jaxpr(&cos_jaxpr, &[Value::scalar_f64(x)])
+            .unwrap()[0]
+            .as_f64_scalar()
+            .unwrap();
+        assert!((sin_val * sin_val + cos_val * cos_val - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eval_sqrt_scalar() {
+        let jaxpr = make_unary_jaxpr(Primitive::Sqrt);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(25.0)]).unwrap();
+        assert!((out[0].as_f64_scalar().unwrap() - 5.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eval_mul_scalar() {
+        let jaxpr = make_binary_jaxpr(Primitive::Mul);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(3.0), Value::scalar_f64(7.0)]).unwrap();
+        assert!((out[0].as_f64_scalar().unwrap() - 21.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eval_sub_scalar() {
+        let jaxpr = make_binary_jaxpr(Primitive::Sub);
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_i64(10), Value::scalar_i64(3)]).unwrap();
+        assert_eq!(out[0].as_i64_scalar().unwrap(), 7);
+    }
+
+    #[test]
+    fn eval_max_min_scalar() {
+        let max_jaxpr = make_binary_jaxpr(Primitive::Max);
+        let min_jaxpr = make_binary_jaxpr(Primitive::Min);
+        let a = Value::scalar_f64(3.0);
+        let b = Value::scalar_f64(7.0);
+        let max_out = eval_jaxpr(&max_jaxpr, &[a.clone(), b.clone()]).unwrap();
+        let min_out = eval_jaxpr(&min_jaxpr, &[a, b]).unwrap();
+        assert!((max_out[0].as_f64_scalar().unwrap() - 7.0).abs() < 1e-12);
+        assert!((min_out[0].as_f64_scalar().unwrap() - 3.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn eval_chain_neg_exp() {
+        // f(x) = exp(neg(x)) = exp(-x)
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Exp,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(2.0)]).unwrap();
+        let expected = (-2.0_f64).exp();
+        assert!((out[0].as_f64_scalar().unwrap() - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn eval_literal_input_equation() {
+        // f(x) = x + 10 where 10 is a literal
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(10))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let out = eval_jaxpr(&jaxpr, &[Value::scalar_i64(5)]).unwrap();
+        assert_eq!(out[0].as_i64_scalar().unwrap(), 15);
+    }
+
+    #[test]
+    fn eval_vector_neg() {
+        let jaxpr = make_unary_jaxpr(Primitive::Neg);
+        let input = Value::vector_f64(&[1.0, -2.0, 3.0]).unwrap();
+        let out = eval_jaxpr(&jaxpr, &[input]).unwrap();
+        let t = out[0].as_tensor().unwrap();
+        let vals = t.to_f64_vec().unwrap();
+        assert_eq!(vals, vec![-1.0, 2.0, -3.0]);
+    }
+
+    #[test]
+    fn eval_cholesky_through_interpreter() {
+        let jaxpr = build_program(ProgramSpec::LaxCholesky);
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let outputs = eval_jaxpr(&jaxpr, &[input]).unwrap();
+        assert!(!outputs.is_empty());
+        let l = outputs[0].as_tensor().unwrap();
+        assert_eq!(l.shape, Shape { dims: vec![2, 2] });
+    }
+
+    #[test]
+    fn eval_error_display() {
+        let err = InterpreterError::InputArity {
+            expected: 2,
+            actual: 1,
+        };
+        assert!(err.to_string().contains("input arity mismatch"));
+
+        let err = InterpreterError::MissingVariable(VarId(42));
+        assert!(err.to_string().contains("v42"));
+
+        let err = InterpreterError::UnexpectedOutputArity {
+            primitive: Primitive::Add,
+            expected: 1,
+            actual: 2,
+        };
+        assert!(err.to_string().contains("add"));
+    }
+
     mod proptest_tests {
         use super::*;
         use proptest::prelude::*;
