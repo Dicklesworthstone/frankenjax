@@ -707,6 +707,17 @@ mod tests {
     }
 
     #[test]
+    fn registry_fallback_rebinds_invalid_explicit_device_to_cpu_default() {
+        let registry = BackendRegistry::new(vec![Box::new(CpuBackend::new())]);
+        let (backend, device, fell_back) = registry
+            .resolve_with_fallback(&DevicePlacement::Explicit(DeviceId(9)), Some("gpu"))
+            .expect("fallback should choose a runnable default device");
+        assert_eq!(backend.name(), "cpu");
+        assert_eq!(device, DeviceId(0));
+        assert!(fell_back, "should report fallback occurred");
+    }
+
+    #[test]
     fn registry_resolve_no_fallback_needed() {
         let registry = BackendRegistry::new(vec![Box::new(CpuBackend::new())]);
         let (backend, _, fell_back) = registry

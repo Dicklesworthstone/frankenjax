@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use fj_core::{CompatibilityMode, Jaxpr, TraceTransformLedger, Transform, Value};
-use fj_dispatch::{dispatch, DispatchRequest};
+use fj_dispatch::{DispatchRequest, dispatch};
 
 use crate::errors::ApiError;
 
@@ -53,6 +53,7 @@ pub struct ComposedTransform {
     transforms: Vec<Transform>,
     backend: String,
     mode: CompatibilityMode,
+    compile_options: BTreeMap<String, String>,
 }
 
 #[must_use]
@@ -149,6 +150,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
         transforms,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+        compile_options: BTreeMap::new(),
     }
 }
 
@@ -183,6 +185,7 @@ impl JitWrapped {
             transforms: vec![Transform::Jit, Transform::Grad],
             backend: self.backend,
             mode: self.mode,
+            compile_options: BTreeMap::new(),
         }
     }
 
@@ -194,6 +197,7 @@ impl JitWrapped {
             transforms: vec![Transform::Jit, Transform::Vmap],
             backend: self.backend,
             mode: self.mode,
+            compile_options: BTreeMap::new(),
         }
     }
 }
@@ -277,11 +281,19 @@ impl VmapWrapped {
     /// Compose: `vmap(grad(f))`.
     #[must_use]
     pub fn compose_grad(self) -> ComposedTransform {
+        let mut compile_options = BTreeMap::new();
+        if let Some(in_axes) = self.in_axes {
+            compile_options.insert("vmap_in_axes".to_owned(), in_axes);
+        }
+        if let Some(out_axes) = self.out_axes {
+            compile_options.insert("vmap_out_axes".to_owned(), out_axes);
+        }
         ComposedTransform {
             jaxpr: self.jaxpr,
             transforms: vec![Transform::Vmap, Transform::Grad],
             backend: self.backend,
             mode: self.mode,
+            compile_options,
         }
     }
 }
@@ -300,12 +312,13 @@ impl ComposedTransform {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(
+        dispatch_with_options(
             self.jaxpr.clone(),
             &self.transforms,
             args,
             &self.backend,
             self.mode,
+            self.compile_options.clone(),
         )
     }
 }
@@ -475,6 +488,43 @@ mod tests {
     fn vmap_compose_grad() {
         let composed = vmap(make_mul_jaxpr()).compose_grad();
         assert_eq!(composed.transforms, vec![Transform::Vmap, Transform::Grad]);
+    }
+
+    #[test]
+    fn vmap_compose_grad_preserves_axes() {
+        let composed = vmap(make_mul_jaxpr())
+            .with_in_axes("none,0")
+            .with_out_axes("0")
+            .compose_grad();
+        assert_eq!(
+            composed.compile_options.get("vmap_in_axes"),
+            Some(&"none,0".to_owned())
+        );
+        assert_eq!(
+            composed.compile_options.get("vmap_out_axes"),
+            Some(&"0".to_owned())
+        );
+    }
+
+    #[test]
+    fn vmap_compose_grad_applies_preserved_axes_at_call_time() {
+        let composed = vmap(make_mul_jaxpr())
+            .with_in_axes("none,0")
+            .with_out_axes("0")
+            .compose_grad();
+
+        let result = composed
+            .call(vec![
+                Value::scalar_f64(2.0),
+                Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector should build"),
+            ])
+            .expect("composed vmap(grad) should preserve configured axes");
+
+        let output = result[0]
+            .as_tensor()
+            .expect("output should be batched tensor");
+        let values = output.to_f64_vec().expect("f64 tensor");
+        assert_eq!(values, vec![1.0, 2.0, 3.0]);
     }
 
     #[test]

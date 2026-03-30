@@ -197,11 +197,14 @@ impl BackendRegistry {
             }
             (DevicePlacement::Explicit(device_id), None) => {
                 let backend = self
-                    .default_backend()
-                    .ok_or_else(|| BackendError::Unavailable {
-                        backend: "(none)".to_owned(),
+                    .backends
+                    .iter()
+                    .find(|backend| backend.devices().iter().any(|info| info.id == *device_id))
+                    .map(|backend| backend.as_ref())
+                    .ok_or_else(|| BackendError::ExecutionFailed {
+                        detail: format!("device {device_id} not available on any backend"),
                     })?;
-                Ok((backend, Self::validate_device(backend, *device_id)?))
+                Ok((backend, *device_id))
             }
         }
     }
@@ -226,7 +229,8 @@ impl BackendRegistry {
                     })?;
                 let device = match placement {
                     DevicePlacement::Default => fallback.default_device(),
-                    DevicePlacement::Explicit(id) => Self::validate_device(fallback, *id)?,
+                    DevicePlacement::Explicit(id) => Self::validate_device(fallback, *id)
+                        .unwrap_or_else(|_| fallback.default_device()),
                 };
                 Ok((fallback, device, true))
             }
@@ -407,5 +411,168 @@ mod tests {
         let msg = err.to_string();
         assert!(msg.contains("device:1"), "error should identify device");
         assert!(msg.contains("fake"), "error should identify backend");
+    }
+
+    #[test]
+    fn backend_registry_fallback_rebinds_invalid_explicit_device_to_default() {
+        use crate::device::{DeviceInfo, Platform};
+        use fj_core::{Jaxpr, Value};
+
+        struct FakeBackend;
+
+        impl Backend for FakeBackend {
+            fn name(&self) -> &str {
+                "fake"
+            }
+
+            fn devices(&self) -> Vec<DeviceInfo> {
+                vec![DeviceInfo {
+                    id: DeviceId(0),
+                    platform: Platform::Cpu,
+                    host_id: 0,
+                    process_index: 0,
+                }]
+            }
+
+            fn default_device(&self) -> DeviceId {
+                DeviceId(0)
+            }
+
+            fn execute(
+                &self,
+                _jaxpr: &Jaxpr,
+                _args: &[Value],
+                _device: DeviceId,
+            ) -> Result<Vec<Value>, BackendError> {
+                unreachable!("not used in registry validation test")
+            }
+
+            fn allocate(
+                &self,
+                _size_bytes: usize,
+                _device: DeviceId,
+            ) -> Result<crate::buffer::Buffer, BackendError> {
+                unreachable!("not used in registry validation test")
+            }
+
+            fn transfer(
+                &self,
+                _buffer: &crate::buffer::Buffer,
+                _target: DeviceId,
+            ) -> Result<crate::buffer::Buffer, BackendError> {
+                unreachable!("not used in registry validation test")
+            }
+
+            fn version(&self) -> &str {
+                "fake/0"
+            }
+
+            fn capabilities(&self) -> BackendCapabilities {
+                BackendCapabilities {
+                    supported_dtypes: vec![DType::F64],
+                    max_tensor_rank: 8,
+                    memory_limit_bytes: None,
+                    multi_device: false,
+                }
+            }
+        }
+
+        let registry = BackendRegistry::new(vec![Box::new(FakeBackend)]);
+        let (backend, device, fell_back) = registry
+            .resolve_with_fallback(&DevicePlacement::Explicit(DeviceId(7)), Some("gpu"))
+            .expect("fallback should rebind to default device");
+        assert_eq!(backend.name(), "fake");
+        assert_eq!(device, DeviceId(0));
+        assert!(fell_back);
+    }
+
+    #[test]
+    fn backend_registry_searches_all_backends_for_explicit_device() {
+        use crate::device::{DeviceInfo, Platform};
+        use fj_core::{Jaxpr, Value};
+
+        struct FakeBackend {
+            name: &'static str,
+            devices: Vec<DeviceInfo>,
+        }
+
+        impl Backend for FakeBackend {
+            fn name(&self) -> &str {
+                self.name
+            }
+
+            fn devices(&self) -> Vec<DeviceInfo> {
+                self.devices.clone()
+            }
+
+            fn default_device(&self) -> DeviceId {
+                self.devices[0].id
+            }
+
+            fn execute(
+                &self,
+                _jaxpr: &Jaxpr,
+                _args: &[Value],
+                _device: DeviceId,
+            ) -> Result<Vec<Value>, BackendError> {
+                unreachable!("not used in registry validation test")
+            }
+
+            fn allocate(
+                &self,
+                _size_bytes: usize,
+                _device: DeviceId,
+            ) -> Result<crate::buffer::Buffer, BackendError> {
+                unreachable!("not used in registry validation test")
+            }
+
+            fn transfer(
+                &self,
+                _buffer: &crate::buffer::Buffer,
+                _target: DeviceId,
+            ) -> Result<crate::buffer::Buffer, BackendError> {
+                unreachable!("not used in registry validation test")
+            }
+
+            fn version(&self) -> &str {
+                "fake/0"
+            }
+
+            fn capabilities(&self) -> BackendCapabilities {
+                BackendCapabilities {
+                    supported_dtypes: vec![DType::F64],
+                    max_tensor_rank: 8,
+                    memory_limit_bytes: None,
+                    multi_device: self.devices.len() > 1,
+                }
+            }
+        }
+
+        let registry = BackendRegistry::new(vec![
+            Box::new(FakeBackend {
+                name: "cpu",
+                devices: vec![DeviceInfo {
+                    id: DeviceId(0),
+                    platform: Platform::Cpu,
+                    host_id: 0,
+                    process_index: 0,
+                }],
+            }),
+            Box::new(FakeBackend {
+                name: "gpu",
+                devices: vec![DeviceInfo {
+                    id: DeviceId(7),
+                    platform: Platform::Cpu,
+                    host_id: 0,
+                    process_index: 0,
+                }],
+            }),
+        ]);
+
+        let (backend, device) = registry
+            .resolve_placement(&DevicePlacement::Explicit(DeviceId(7)), None)
+            .expect("explicit placement should search all registered backends");
+        assert_eq!(backend.name(), "gpu");
+        assert_eq!(device, DeviceId(7));
     }
 }
