@@ -278,9 +278,16 @@ impl Backend for CpuBackend {
         &self,
         jaxpr: &Jaxpr,
         args: &[Value],
-        _device: DeviceId,
+        device: DeviceId,
     ) -> Result<Vec<Value>, BackendError> {
-        // CPU backend ignores device ID — all execution is on the host.
+        if device.0 >= self.device_count {
+            return Err(BackendError::ExecutionFailed {
+                detail: format!(
+                    "device {} not available (have {})",
+                    device.0, self.device_count
+                ),
+            });
+        }
         evaluate_jaxpr_parallel(jaxpr, args).map_err(|e| BackendError::ExecutionFailed {
             detail: e.to_string(),
         })
@@ -422,6 +429,40 @@ mod tests {
             .expect("execution should succeed");
         let val = result[0].as_f64_scalar().expect("should be f64");
         assert!((val - 25.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn cpu_backend_execute_on_secondary_device() {
+        let backend = CpuBackend::with_device_count(2);
+        let jaxpr = build_program(ProgramSpec::Add2);
+        let result = backend
+            .execute(
+                &jaxpr,
+                &[Value::scalar_i64(3), Value::scalar_i64(4)],
+                DeviceId(1),
+            )
+            .expect("configured secondary device should execute");
+        assert_eq!(result, vec![Value::scalar_i64(7)]);
+    }
+
+    #[test]
+    fn cpu_backend_execute_invalid_device() {
+        let backend = CpuBackend::new();
+        let jaxpr = build_program(ProgramSpec::Add2);
+        let err = backend
+            .execute(
+                &jaxpr,
+                &[Value::scalar_i64(3), Value::scalar_i64(4)],
+                DeviceId(1),
+            )
+            .expect_err("invalid device should fail");
+
+        let msg = err.to_string();
+        assert!(msg.contains("device 1"), "error should identify device");
+        assert!(
+            msg.contains("not available"),
+            "error should mention availability"
+        );
     }
 
     #[test]
@@ -683,6 +724,18 @@ mod tests {
             .expect("should resolve");
         assert_eq!(backend.name(), "cpu");
         assert_eq!(device, DeviceId(2));
+    }
+
+    #[test]
+    fn registry_rejects_invalid_explicit_device_id() {
+        let registry = BackendRegistry::new(vec![Box::new(CpuBackend::new())]);
+        let err = registry
+            .resolve_placement(&DevicePlacement::Explicit(DeviceId(1)), Some("cpu"))
+            .err()
+            .expect("invalid explicit device should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("device:1"), "error should identify device");
+        assert!(msg.contains("cpu"), "error should identify backend");
     }
 
     // ── Category 1: All primitives execute correctly on CPU ───────

@@ -151,59 +151,60 @@ pub struct DispatchRequest {
 
 /// Parse in_axes from compile_options.
 /// Format: comma-separated list of axis specs, e.g. "0,none,1" or just "0" for uniform.
-fn parse_vmap_in_axes(opts: &BTreeMap<String, String>, num_args: usize) -> Vec<AxisSpec> {
+fn parse_axis_spec(raw: &str, option_name: &'static str) -> Result<AxisSpec, DispatchError> {
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Ok(AxisSpec::NotBatched);
+    }
+
+    trimmed.parse::<i32>().map(AxisSpec::Batched).map_err(|_| {
+        TransformExecutionError::InvalidVmapAxisSpec {
+            option: option_name,
+            value: trimmed.to_owned(),
+        }
+        .into()
+    })
+}
+
+fn parse_vmap_in_axes(
+    opts: &BTreeMap<String, String>,
+    num_args: usize,
+) -> Result<Vec<AxisSpec>, DispatchError> {
     match opts.get("vmap_in_axes") {
-        None => vec![AxisSpec::Batched(0); num_args],
-        Some(s) if s.trim().is_empty() => vec![AxisSpec::Batched(0); num_args],
+        None => Ok(vec![AxisSpec::Batched(0); num_args]),
+        Some(s) if s.trim().is_empty() => Ok(vec![AxisSpec::Batched(0); num_args]),
         Some(s) => {
-            let specs: Vec<AxisSpec> = s
+            let specs = s
                 .split(',')
-                .map(|part| {
-                    let trimmed = part.trim();
-                    if trimmed.eq_ignore_ascii_case("none") {
-                        AxisSpec::NotBatched
-                    } else {
-                        trimmed
-                            .parse::<i32>()
-                            .map(AxisSpec::Batched)
-                            .unwrap_or(AxisSpec::Batched(0))
-                    }
-                })
-                .collect();
+                .map(|part| parse_axis_spec(part, "vmap_in_axes"))
+                .collect::<Result<Vec<_>, _>>()?;
             // If only one spec provided, broadcast to all args
             if specs.len() == 1 {
-                vec![specs[0]; num_args]
+                Ok(vec![specs[0]; num_args])
             } else {
-                specs
+                Ok(specs)
             }
         }
     }
 }
 
 /// Parse out_axes from compile_options.
-fn parse_vmap_out_axes(opts: &BTreeMap<String, String>, num_outputs: usize) -> Vec<AxisSpec> {
+fn parse_vmap_out_axes(
+    opts: &BTreeMap<String, String>,
+    num_outputs: usize,
+) -> Result<Vec<AxisSpec>, DispatchError> {
     match opts.get("vmap_out_axes") {
-        None => vec![AxisSpec::Batched(0); num_outputs],
-        Some(s) if s.trim().is_empty() => vec![AxisSpec::Batched(0); num_outputs],
+        None => Ok(vec![AxisSpec::Batched(0); num_outputs]),
+        Some(s) if s.trim().is_empty() => Ok(vec![AxisSpec::Batched(0); num_outputs]),
         Some(s) => {
-            let specs: Vec<AxisSpec> = s
+            let specs = s
                 .split(',')
-                .map(|part| {
-                    let trimmed = part.trim();
-                    if trimmed.eq_ignore_ascii_case("none") {
-                        AxisSpec::NotBatched
-                    } else {
-                        trimmed
-                            .parse::<i32>()
-                            .map(AxisSpec::Batched)
-                            .unwrap_or(AxisSpec::Batched(0))
-                    }
-                })
-                .collect();
+                .map(|part| parse_axis_spec(part, "vmap_out_axes"))
+                .collect::<Result<Vec<_>, _>>()?;
             if specs.len() == 1 {
-                vec![specs[0]; num_outputs]
+                Ok(vec![specs[0]; num_outputs])
             } else {
-                specs
+                Ok(specs)
             }
         }
     }
@@ -242,6 +243,8 @@ pub enum TransformExecutionError {
     VmapInconsistentOutputArity { expected: usize, actual: usize },
     VmapAxesOutOfBounds { axis: i32, ndim: usize },
     VmapAxesCountMismatch { expected: usize, actual: usize },
+    InvalidVmapAxisSpec { option: &'static str, value: String },
+    VmapUnmappedOutputMismatch,
     EmptyVmapOutput,
     TensorBuild(String),
 }
@@ -288,6 +291,18 @@ impl std::fmt::Display for TransformExecutionError {
                 write!(
                     f,
                     "vmap in_axes/out_axes length mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::InvalidVmapAxisSpec { option, value } => {
+                write!(
+                    f,
+                    "invalid {option} axis spec {value:?}; expected an integer or \"none\""
+                )
+            }
+            Self::VmapUnmappedOutputMismatch => {
+                write!(
+                    f,
+                    "vmap out_axes=none requires the output to be identical across mapped elements"
                 )
             }
             Self::TensorBuild(detail) => write!(f, "tensor build error: {detail}"),
@@ -599,7 +614,7 @@ fn execute_vmap(
     }
 
     // Parse in_axes from compile_options
-    let in_axes = parse_vmap_in_axes(compile_options, args.len());
+    let in_axes = parse_vmap_in_axes(compile_options, args.len())?;
 
     // Validate in_axes length matches args
     if in_axes.len() != args.len() {
@@ -800,7 +815,7 @@ fn execute_vmap_loop_and_stack(
         }
     }
 
-    let out_axes = parse_vmap_out_axes(compile_options, per_output_values.len());
+    let out_axes = parse_vmap_out_axes(compile_options, per_output_values.len())?;
     if out_axes.len() != per_output_values.len() {
         return Err(TransformExecutionError::VmapAxesCountMismatch {
             expected: per_output_values.len(),
@@ -818,8 +833,17 @@ fn execute_vmap_loop_and_stack(
         let tensor = TensorValue::stack_axis0(values)
             .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
         match out_axis {
-            AxisSpec::Batched(0) | AxisSpec::NotBatched => {
+            AxisSpec::Batched(0) => {
                 outputs.push(Value::Tensor(tensor));
+            }
+            AxisSpec::NotBatched => {
+                let Some(first) = values.first() else {
+                    return Err(TransformExecutionError::EmptyVmapOutput.into());
+                };
+                if values.iter().skip(1).any(|value| value != first) {
+                    return Err(TransformExecutionError::VmapUnmappedOutputMismatch.into());
+                }
+                outputs.push(first.clone());
             }
             AxisSpec::Batched(target_axis) => {
                 // Move batch dim from 0 to target_axis via Transpose primitive
@@ -924,9 +948,10 @@ pub fn calibrated_posterior_abandoned(
 mod tests {
     use super::{DispatchError, DispatchRequest, dispatch};
     use fj_core::{
-        CompatibilityMode, DType, ProgramSpec, Shape, TensorValue, TraceTransformLedger, Transform,
-        Value, build_program,
+        Atom, CompatibilityMode, DType, Equation, Jaxpr, Primitive, ProgramSpec, Shape,
+        TensorValue, TraceTransformLedger, Transform, Value, VarId, build_program,
     };
+    use smallvec::smallvec;
     use std::collections::BTreeMap;
 
     fn ledger(program: ProgramSpec, transforms: &[Transform]) -> TraceTransformLedger {
@@ -2300,7 +2325,7 @@ mod tests {
     #[test]
     fn test_parse_vmap_in_axes_uniform() {
         let opts = BTreeMap::new();
-        let axes = super::parse_vmap_in_axes(&opts, 3);
+        let axes = super::parse_vmap_in_axes(&opts, 3).expect("default axes");
         assert_eq!(axes, vec![super::AxisSpec::Batched(0); 3]);
     }
 
@@ -2308,7 +2333,7 @@ mod tests {
     fn test_parse_vmap_in_axes_per_arg() {
         let mut opts = BTreeMap::new();
         opts.insert("vmap_in_axes".to_owned(), "0,none,1".to_owned());
-        let axes = super::parse_vmap_in_axes(&opts, 3);
+        let axes = super::parse_vmap_in_axes(&opts, 3).expect("per-arg axes");
         assert_eq!(
             axes,
             vec![
@@ -2323,8 +2348,51 @@ mod tests {
     fn test_parse_vmap_out_axes_broadcast_single() {
         let mut opts = BTreeMap::new();
         opts.insert("vmap_out_axes".to_owned(), "1".to_owned());
-        let axes = super::parse_vmap_out_axes(&opts, 3);
+        let axes = super::parse_vmap_out_axes(&opts, 3).expect("broadcast out axes");
         assert_eq!(axes, vec![super::AxisSpec::Batched(1); 3]);
+    }
+
+    #[test]
+    fn test_parse_vmap_in_axes_rejects_invalid_token() {
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_in_axes".to_owned(), "oops".to_owned());
+        let err = super::parse_vmap_in_axes(&opts, 1).expect_err("invalid axis token");
+        let msg = err.to_string();
+        assert!(msg.contains("vmap_in_axes"), "error should identify option");
+        assert!(msg.contains("oops"), "error should include invalid token");
+    }
+
+    #[test]
+    fn test_parse_vmap_out_axes_rejects_invalid_token() {
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "bad".to_owned());
+        let err = super::parse_vmap_out_axes(&opts, 1).expect_err("invalid axis token");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("vmap_out_axes"),
+            "error should identify option"
+        );
+        assert!(msg.contains("bad"), "error should include invalid token");
+    }
+
+    #[test]
+    fn test_dispatch_rejects_invalid_vmap_in_axes_option() {
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_in_axes".to_owned(), "bad".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap]),
+            args: vec![Value::vector_i64(&[1, 2, 3]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("invalid axis token should fail dispatch");
+
+        let msg = err.to_string();
+        assert!(msg.contains("vmap_in_axes"), "error should identify option");
+        assert!(msg.contains("bad"), "error should include invalid token");
     }
 
     #[test]
@@ -2368,5 +2436,69 @@ mod tests {
             "error should report expected arity"
         );
         assert!(msg.contains("got 3"), "error should report provided arity");
+    }
+
+    #[test]
+    fn test_out_axes_none_returns_unmapped_constant_output() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![
+                    Atom::Lit(fj_core::Literal::I64(3)),
+                    Atom::Lit(fj_core::Literal::I64(4))
+                ],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+        let mut ledger = TraceTransformLedger::new(jaxpr);
+        ledger.push_transform(Transform::Vmap, "test-vmap".to_owned());
+        ledger.push_transform(Transform::Jit, "test-jit".to_owned());
+
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "none".to_owned());
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger,
+            args: vec![Value::vector_i64(&[10, 20, 30]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("constant unmapped output should succeed");
+
+        assert_eq!(response.outputs, vec![Value::scalar_i64(7)]);
+    }
+
+    #[test]
+    fn test_out_axes_none_rejects_varying_outputs() {
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "none".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap, Transform::Jit]),
+            args: vec![Value::vector_i64(&[1, 2, 3]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("varying unmapped output should fail");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out_axes=none"),
+            "error should mention unmapped out_axes"
+        );
+        assert!(
+            msg.contains("identical"),
+            "error should explain equality requirement"
+        );
     }
 }

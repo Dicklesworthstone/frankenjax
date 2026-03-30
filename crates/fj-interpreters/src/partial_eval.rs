@@ -245,7 +245,7 @@ pub fn partial_eval_jaxpr_typed(
                     .collect();
                 if !input_avals.is_empty() {
                     let out_avals = infer_equation_output_avals(eqn, &input_avals);
-                    for (out_var, out_aval) in eqn.outputs.iter().zip(out_avals.into_iter()) {
+                    for (out_var, out_aval) in eqn.outputs.iter().zip(out_avals) {
                         var_aval[out_var.0 as usize] = Some(out_aval);
                     }
                 }
