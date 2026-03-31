@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use egg::{CostFunction, Id, Language, RecExpr, Runner, define_language, rewrite};
+use egg::{define_language, rewrite, CostFunction, Id, Language, RecExpr, Runner};
 use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, VarId};
 use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -321,12 +321,10 @@ fn are_inverse_transposes(
                     .all(|(index, axis)| rhs[*axis] == index)
         }
         (Some(TransposeSpec::Reverse), Some(TransposeSpec::Explicit(permutation)))
-        | (Some(TransposeSpec::Explicit(permutation)), Some(TransposeSpec::Reverse)) => {
-            permutation
-                .iter()
-                .enumerate()
-                .all(|(index, axis)| *axis == permutation.len().saturating_sub(index + 1))
-        }
+        | (Some(TransposeSpec::Explicit(permutation)), Some(TransposeSpec::Reverse)) => permutation
+            .iter()
+            .enumerate()
+            .all(|(index, axis)| *axis == permutation.len().saturating_sub(index + 1)),
         _ => false,
     }
 }
@@ -652,14 +650,18 @@ pub fn egraph_to_jaxpr(
     // After equality saturation + extraction, Symbol nodes may appear in any order
     // in the RecExpr, so we cannot assume positional correspondence with invars.
     for (idx, node) in expr.as_ref().iter().enumerate() {
-        if let FjLang::Symbol(sym) = node
-            && let Some(rest) = sym.as_str().strip_prefix('v')
-            && let Ok(var_num) = rest.parse::<u32>()
-        {
-            let var_id = VarId(var_num);
-            if invars.contains(&var_id) || constvars.contains(&var_id) {
-                node_to_var.insert(idx, var_id);
-            }
+        let FjLang::Symbol(sym) = node else {
+            continue;
+        };
+        let Some(rest) = sym.as_str().strip_prefix('v') else {
+            continue;
+        };
+        let Ok(var_num) = rest.parse::<u32>() else {
+            continue;
+        };
+        let var_id = VarId(var_num);
+        if invars.contains(&var_id) || constvars.contains(&var_id) {
+            node_to_var.insert(idx, var_id);
         }
     }
 
@@ -1479,9 +1481,10 @@ fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLan
         FjLang::Num(n) => Atom::Lit(Literal::I64(*n)),
         FjLang::Symbol(sym) => {
             // f64 literals were encoded as Symbol("f64:{bits}") in jaxpr_to_egraph
-            if let Some(bits_str) = sym.as_str().strip_prefix("f64:")
-                && let Ok(bits) = bits_str.parse::<u64>()
-            {
+            if let Some(bits_str) = sym.as_str().strip_prefix("f64:") {
+                let Ok(bits) = bits_str.parse::<u64>() else {
+                    unreachable!("f64 literal symbol prefix must contain valid bits");
+                };
                 return Atom::Lit(Literal::F64Bits(bits));
             }
             if let Some(bool_str) = sym.as_str().strip_prefix("bool:") {
@@ -1696,10 +1699,10 @@ fn build_supported_segment_jaxpr(
     let mut seen_inputs = BTreeSet::new();
     for equation in &equations {
         for atom in &equation.inputs {
-            if let Atom::Var(var) = atom
-                && !bound_vars.contains(var)
-                && seen_inputs.insert(*var)
-            {
+            let Atom::Var(var) = atom else {
+                continue;
+            };
+            if !bound_vars.contains(var) && seen_inputs.insert(*var) {
                 input_vars.push(*var);
             }
         }
@@ -1809,7 +1812,7 @@ fn is_egraph_supported_primitive(primitive: Primitive) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{DType, ProgramSpec, Shape, TensorValue, Value, build_program};
+    use fj_core::{build_program, DType, ProgramSpec, Shape, TensorValue, Value};
     use fj_interpreters::eval_jaxpr;
 
     #[test]
