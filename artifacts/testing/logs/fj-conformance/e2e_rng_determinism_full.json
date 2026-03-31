@@ -105,7 +105,7 @@
       "test_name": "e2e_rng_determinism_full"
     },
     {
-      "bitwise_match": true,
+      "bitwise_match": false,
       "fixture_source": "rng_determinism.v1.json",
       "function": "uniform",
       "key": 42,
@@ -153,7 +153,7 @@
       "test_name": "e2e_rng_determinism_full"
     },
     {
-      "bitwise_match": true,
+      "bitwise_match": false,
       "fixture_source": "rng_determinism.v1.json",
       "function": "normal",
       "key": 2147483647,
@@ -185,7 +185,7 @@
       "test_name": "e2e_rng_determinism_full"
     },
     {
-      "bitwise_match": false,
+      "bitwise_match": true,
       "fixture_source": "rng_determinism.v1.json",
       "function": "uniform",
       "key": 4294967295,
@@ -201,7 +201,7 @@
       "test_name": "e2e_rng_determinism_full"
     }
   ],
-  "generated_at_unix_ms": 1773376052765,
+  "generated_at_unix_ms": 1774926465643,
   "passed_cases": 25,
   "test_name": "e2e_rng_determinism_full",
   "total_cases": 25

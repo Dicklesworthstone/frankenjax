@@ -1,5 +1,5 @@
 {
-  "generated_at_unix_ms": 1773376052343,
+  "generated_at_unix_ms": 1774926460000,
   "records": [
     {
       "carry_shapes": [
@@ -270,6 +270,79 @@
       "oracle_match": true,
       "output_shapes": [
         []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        [
+          3
+        ]
+      ],
+      "control_flow_type": "vmap+cond",
+      "iterations": 3,
+      "oracle_match": true,
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "grad+while",
+      "iterations": 4,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "grad+while",
+      "iterations": 7,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        []
+      ],
+      "control_flow_type": "jit+grad+cond",
+      "iterations": 1,
+      "oracle_match": true,
+      "output_shapes": [
+        []
+      ],
+      "pass": true,
+      "test_name": "e2e_control_flow_conformance"
+    },
+    {
+      "carry_shapes": [
+        [
+          3
+        ]
+      ],
+      "control_flow_type": "vmap+cond",
+      "iterations": 3,
+      "oracle_match": true,
+      "output_shapes": [
+        [
+          3
+        ]
       ],
       "pass": true,
       "test_name": "e2e_control_flow_conformance"

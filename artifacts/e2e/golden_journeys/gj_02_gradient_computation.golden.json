@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_02_gradient_computation",
   "scenario_category": "gradient_computation",
-  "ts_utc_unix_ms": 1773376052699,
+  "ts_utc_unix_ms": 1774926465545,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_02 --exact --nocapture",
   "input_capture": {
     "inputs": [

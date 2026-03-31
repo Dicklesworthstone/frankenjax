@@ -205,9 +205,70 @@
         30
       ],
       "pass": true
+    },
+    {
+      "branch_taken": "add",
+      "control_flow_type": "grad+while",
+      "fixture_id": "control-flow-case-23",
+      "fj_output": 1.0,
+      "iterations": 4,
+      "oracle_output": 1.0,
+      "pass": true
+    },
+    {
+      "branch_taken": "mul",
+      "control_flow_type": "grad+while",
+      "fixture_id": "control-flow-case-24",
+      "fj_output": 128.0,
+      "iterations": 7,
+      "oracle_output": 128.0,
+      "pass": true
+    },
+    {
+      "branch_taken": "true",
+      "control_flow_type": "jit+grad+cond",
+      "fixture_id": "control-flow-case-25",
+      "fj_output": 1.0,
+      "iterations": 1,
+      "oracle_output": 1.0,
+      "pass": true
+    },
+    {
+      "branch_taken": "all_true",
+      "control_flow_type": "vmap+cond",
+      "fixture_id": "control-flow-case-26",
+      "fj_output": [
+        5,
+        10,
+        15
+      ],
+      "iterations": 3,
+      "oracle_output": [
+        5,
+        10,
+        15
+      ],
+      "pass": true
+    },
+    {
+      "branch_taken": "all_false",
+      "control_flow_type": "vmap+cond",
+      "fixture_id": "control-flow-case-27",
+      "fj_output": [
+        50,
+        100,
+        150
+      ],
+      "iterations": 3,
+      "oracle_output": [
+        50,
+        100,
+        150
+      ],
+      "pass": true
     }
   ],
-  "generated_at_unix_ms": 1773376052343,
+  "generated_at_unix_ms": 1774926460000,
   "scenario": "e2e_control_flow_conformance",
   "schema_version": "frankenjax.e2e.control-flow.v1"
 }

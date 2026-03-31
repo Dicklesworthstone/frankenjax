@@ -3,8 +3,8 @@
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::collections::BTreeMap;
 
-use crate::EvalError;
 use crate::type_promotion::{binary_literal_op, promote_dtype};
+use crate::EvalError;
 
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
@@ -819,6 +819,48 @@ pub(crate) fn eval_cos(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         })
     } else {
         eval_unary_elementwise(primitive, inputs, f64::cos)
+    }
+}
+
+pub(crate) fn eval_tan(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            let denom = (2.0 * a).cos() + (2.0 * b).cosh();
+            ((2.0 * a).sin() / denom, (2.0 * b).sinh() / denom)
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::tan)
+    }
+}
+
+pub(crate) fn eval_sinh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            (a.sinh() * b.cos(), a.cosh() * b.sin())
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::sinh)
+    }
+}
+
+pub(crate) fn eval_cosh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            (a.cosh() * b.cos(), a.sinh() * b.sin())
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::cosh)
+    }
+}
+
+pub(crate) fn eval_tanh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            let denom = (2.0 * a).cosh() + (2.0 * b).cos();
+            ((2.0 * a).sinh() / denom, (2.0 * b).sin() / denom)
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::tanh)
     }
 }
 

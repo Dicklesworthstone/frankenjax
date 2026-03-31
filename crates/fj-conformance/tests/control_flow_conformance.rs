@@ -1036,3 +1036,360 @@ fn e2e_control_flow_conformance() {
         &test_log_payload,
     );
 }
+
+// ============================================================================
+// Nested Multi-Transform Compositions (frankenjax-lfe)
+// ============================================================================
+
+/// vmap(grad(cond)): vectorize gradient computation over a batch of inputs
+/// through a conditional. grad_cond_jaxpr: f(x, pred) = cond(pred, x, x^2).
+/// For each batch element, grad(f)(x) = 1 (true branch) or 2x (false branch).
+#[test]
+fn test_vmap_grad_cond() {
+    // Build batch inputs: 4 elements, all taking the false branch (f(x) = x^2, grad = 2x)
+    let batch_x = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).expect("vector");
+    let batch_pred = Value::vector_bool(&[false, false, false, false]).expect("bool vector");
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+
+    let response = dispatch(make_request(
+        grad_cond_jaxpr(),
+        vec![batch_x, batch_pred],
+        &[Transform::Vmap, Transform::Grad],
+        compile_options,
+    ))
+    .expect("vmap(grad(cond)) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 4, "batch size should be 4");
+    // false branch: f(x) = x^2, grad = 2x
+    for (i, &v) in vals.iter().enumerate() {
+        let expected = 2.0 * (i as f64 + 1.0);
+        assert!(
+            (v - expected).abs() < 1e-6,
+            "vmap(grad(cond false)) index {i}: expected {expected}, got {v}"
+        );
+    }
+}
+
+/// vmap(grad(cond)) with mixed predicates: some true, some false branches.
+#[test]
+fn test_vmap_grad_cond_mixed() {
+    let batch_x = Value::vector_f64(&[3.0, 5.0, 7.0]).expect("vector");
+    let batch_pred = Value::vector_bool(&[true, false, true]).expect("bool vector");
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+
+    let response = dispatch(make_request(
+        grad_cond_jaxpr(),
+        vec![batch_x, batch_pred],
+        &[Transform::Vmap, Transform::Grad],
+        compile_options,
+    ))
+    .expect("vmap(grad(cond mixed)) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 3);
+    // true branch: grad = 1.0; false branch: grad = 2x
+    let expected = [1.0, 10.0, 1.0]; // true: 1.0, false: 2*5=10, true: 1.0
+    for (i, (&actual, &exp)) in vals.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < 1e-6,
+            "vmap(grad(cond mixed)) index {i}: expected {exp}, got {actual}"
+        );
+    }
+}
+
+/// vmap(grad(scan)): vectorize gradient of scan over a batch.
+/// scan(mul, init, [a, b]) = init * a * b => d/dinit = a * b.
+/// We batch over different init values; the gradient should be a*b for each.
+#[test]
+fn test_vmap_grad_scan() {
+    // Batch of 3 init values, same xs for each
+    let batch_init = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
+    let xs = Value::vector_f64(&[2.0, 5.0]).expect("xs vector");
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0,none".to_owned());
+
+    let response = dispatch(make_request(
+        scan_jaxpr("mul", false),
+        vec![batch_init, xs],
+        &[Transform::Vmap, Transform::Grad],
+        compile_options,
+    ))
+    .expect("vmap(grad(scan)) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 3, "batch size should be 3");
+    // d/dinit of (init * 2 * 5) = 10 for all batch elements
+    for (i, &v) in vals.iter().enumerate() {
+        assert!(
+            (v - 10.0).abs() < 1e-6,
+            "vmap(grad(scan mul)) index {i}: expected 10.0, got {v}"
+        );
+    }
+}
+
+/// jit(vmap(grad(cond))): triple composition with control flow.
+#[test]
+fn test_jit_vmap_grad_cond() {
+    let batch_x = Value::vector_f64(&[2.0, 4.0]).expect("vector");
+    let batch_pred = Value::vector_bool(&[false, false]).expect("bool vector");
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+
+    let response = dispatch(make_request(
+        grad_cond_jaxpr(),
+        vec![batch_x, batch_pred],
+        &[Transform::Jit, Transform::Vmap, Transform::Grad],
+        compile_options,
+    ))
+    .expect("jit(vmap(grad(cond))) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 2);
+    // false branch: f(x) = x^2, grad = 2x => [4.0, 8.0]
+    assert!(
+        (vals[0] - 4.0).abs() < 1e-6,
+        "jit(vmap(grad(cond))) [0]: expected 4.0, got {}",
+        vals[0]
+    );
+    assert!(
+        (vals[1] - 8.0).abs() < 1e-6,
+        "jit(vmap(grad(cond))) [1]: expected 8.0, got {}",
+        vals[1]
+    );
+}
+
+/// jit(vmap(grad(scan))): triple composition with scan.
+#[test]
+fn test_jit_vmap_grad_scan() {
+    let batch_init = Value::vector_f64(&[1.0, 5.0]).expect("vector");
+    let xs = Value::vector_f64(&[3.0, 4.0]).expect("xs vector");
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0,none".to_owned());
+
+    let response = dispatch(make_request(
+        scan_jaxpr("mul", false),
+        vec![batch_init, xs],
+        &[Transform::Jit, Transform::Vmap, Transform::Grad],
+        compile_options,
+    ))
+    .expect("jit(vmap(grad(scan))) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 2);
+    // d/dinit of (init * 3 * 4) = 12 for all
+    for (i, &v) in vals.iter().enumerate() {
+        assert!(
+            (v - 12.0).abs() < 1e-6,
+            "jit(vmap(grad(scan))) index {i}: expected 12.0, got {v}"
+        );
+    }
+}
+
+/// grad(grad(f)): second-order derivative through simple programs.
+/// For f(x) = x^2 + 3x (SquarePlusLinear): f'(x) = 2x + 3, f''(x) = 2.
+#[test]
+fn test_grad_grad_square_plus_linear() {
+    use fj_core::{ProgramSpec, build_program};
+
+    let jaxpr = build_program(ProgramSpec::SquarePlusLinear);
+    let response = dispatch(make_request(
+        jaxpr,
+        vec![Value::scalar_f64(5.0)],
+        &[Transform::Grad, Transform::Grad],
+        BTreeMap::new(),
+    ))
+    .expect("grad(grad(f)) dispatch should succeed");
+
+    let d2 = response.outputs[0]
+        .as_f64_scalar()
+        .expect("second derivative should be scalar f64");
+    // f''(x) = 2 for all x
+    assert!(
+        (d2 - 2.0).abs() < 1e-6,
+        "grad(grad(x^2+3x)) should be 2.0, got {d2}"
+    );
+}
+
+/// jit(grad(grad(f))): JIT-wrapped second derivative.
+#[test]
+fn test_jit_grad_grad_square() {
+    use fj_core::{ProgramSpec, build_program};
+
+    let jaxpr = build_program(ProgramSpec::Square);
+    let response = dispatch(make_request(
+        jaxpr,
+        vec![Value::scalar_f64(7.0)],
+        &[Transform::Jit, Transform::Grad, Transform::Grad],
+        BTreeMap::new(),
+    ))
+    .expect("jit(grad(grad(x^2))) dispatch should succeed");
+
+    let d2 = response.outputs[0]
+        .as_f64_scalar()
+        .expect("second derivative should be scalar f64");
+    // f(x) = x^2, f'(x) = 2x, f''(x) = 2
+    assert!(
+        (d2 - 2.0).abs() < 1e-6,
+        "jit(grad(grad(x^2))) should be 2.0, got {d2}"
+    );
+}
+
+/// vmap(grad(grad(f))): vectorized second derivative.
+/// f(x) = x^2 => f''(x) = 2 for all x.
+#[test]
+fn test_vmap_grad_grad_square() {
+    use fj_core::{ProgramSpec, build_program};
+
+    let jaxpr = build_program(ProgramSpec::Square);
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0".to_owned());
+
+    let response = dispatch(make_request(
+        jaxpr,
+        vec![Value::vector_f64(&[1.0, 3.0, 5.0, 10.0]).expect("vector")],
+        &[Transform::Vmap, Transform::Grad, Transform::Grad],
+        compile_options,
+    ))
+    .expect("vmap(grad(grad(x^2))) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 4);
+    for (i, &v) in vals.iter().enumerate() {
+        assert!(
+            (v - 2.0).abs() < 1e-6,
+            "vmap(grad(grad(x^2))) index {i}: expected 2.0, got {v}"
+        );
+    }
+}
+
+/// jit(vmap(grad(grad(f)))): 4-deep composition.
+#[test]
+fn test_jit_vmap_grad_grad_square() {
+    use fj_core::{ProgramSpec, build_program};
+
+    let jaxpr = build_program(ProgramSpec::Square);
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0".to_owned());
+
+    let response = dispatch(make_request(
+        jaxpr,
+        vec![Value::vector_f64(&[2.0, 8.0]).expect("vector")],
+        &[
+            Transform::Jit,
+            Transform::Vmap,
+            Transform::Grad,
+            Transform::Grad,
+        ],
+        compile_options,
+    ))
+    .expect("jit(vmap(grad(grad(x^2)))) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 2);
+    for (i, &v) in vals.iter().enumerate() {
+        assert!(
+            (v - 2.0).abs() < 1e-6,
+            "jit(vmap(grad(grad(x^2)))) index {i}: expected 2.0, got {v}"
+        );
+    }
+}
+
+/// vmap(jit(grad(f))): vmap over jit-compiled gradient.
+#[test]
+fn test_vmap_jit_grad_square() {
+    use fj_core::{ProgramSpec, build_program};
+
+    let jaxpr = build_program(ProgramSpec::Square);
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0".to_owned());
+
+    let response = dispatch(make_request(
+        jaxpr,
+        vec![Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector")],
+        &[Transform::Vmap, Transform::Jit, Transform::Grad],
+        compile_options,
+    ))
+    .expect("vmap(jit(grad(x^2))) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    // grad(x^2) = 2x => [2, 4, 6]
+    let expected = [2.0, 4.0, 6.0];
+    for (i, (&actual, &exp)) in vals.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < 1e-6,
+            "vmap(jit(grad(x^2))) index {i}: expected {exp}, got {actual}"
+        );
+    }
+}
+
+/// vmap(grad(while)): vectorize gradient through while loop.
+/// while(init, step=2, threshold=8, mul, lt):
+///   init=1: 1→2→4→8 (3 iterations), d/dinit = 2^3 = 8
+///   init=2: 2→4→8 (2 iterations), d/dinit = 2^2 = 4
+///   init=3: 3→6→12 (2 iterations), d/dinit = 2^2 = 4
+#[test]
+fn test_vmap_grad_while_mul() {
+    let batch_init = Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector");
+    let step = Value::scalar_f64(2.0);
+    let threshold = Value::scalar_f64(8.0);
+
+    let mut compile_options = BTreeMap::new();
+    compile_options.insert("vmap_in_axes".to_owned(), "0,none,none".to_owned());
+
+    let response = dispatch(make_request(
+        while_jaxpr("mul", "lt", 16),
+        vec![batch_init, step, threshold],
+        &[Transform::Vmap, Transform::Grad],
+        compile_options,
+    ))
+    .expect("vmap(grad(while mul)) dispatch should succeed");
+
+    let t = response.outputs[0]
+        .as_tensor()
+        .expect("output should be tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 3);
+    // Verify each gradient against independently computed grad(while)
+    let expected = [8.0, 4.0, 4.0];
+    for (i, (&actual, &exp)) in vals.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - exp).abs() < 1e-6,
+            "vmap(grad(while mul)) index {i}: expected {exp}, got {actual}"
+        );
+    }
+}

@@ -14,9 +14,9 @@ use std::collections::BTreeMap;
 
 use arithmetic::{
     erf_approx, eval_abs, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
-    eval_digamma, eval_dot, eval_erf_inv, eval_exp, eval_imag, eval_integer_pow, eval_is_finite,
-    eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_real, eval_select, eval_sin,
-    eval_unary_elementwise, eval_unary_int_or_float,
+    eval_cosh, eval_digamma, eval_dot, eval_erf_inv, eval_exp, eval_imag, eval_integer_pow,
+    eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_real, eval_select,
+    eval_sin, eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float,
 };
 
 use comparison::eval_comparison;
@@ -161,14 +161,14 @@ pub fn eval_primitive(
         // Trigonometric
         Primitive::Sin => eval_sin(primitive, inputs),
         Primitive::Cos => eval_cos(primitive, inputs),
-        Primitive::Tan => eval_unary_elementwise(primitive, inputs, f64::tan),
+        Primitive::Tan => eval_tan(primitive, inputs),
         Primitive::Asin => eval_unary_elementwise(primitive, inputs, f64::asin),
         Primitive::Acos => eval_unary_elementwise(primitive, inputs, f64::acos),
         Primitive::Atan => eval_unary_elementwise(primitive, inputs, f64::atan),
         // Hyperbolic
-        Primitive::Sinh => eval_unary_elementwise(primitive, inputs, f64::sinh),
-        Primitive::Cosh => eval_unary_elementwise(primitive, inputs, f64::cosh),
-        Primitive::Tanh => eval_unary_elementwise(primitive, inputs, f64::tanh),
+        Primitive::Sinh => eval_sinh(primitive, inputs),
+        Primitive::Cosh => eval_cosh(primitive, inputs),
+        Primitive::Tanh => eval_tanh(primitive, inputs),
         // Additional math
         Primitive::Expm1 => eval_unary_elementwise(primitive, inputs, f64::exp_m1),
         Primitive::Log1p => eval_unary_elementwise(primitive, inputs, f64::ln_1p),
@@ -1343,7 +1343,7 @@ fn eval_reduce_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{EvalError, eval_primitive};
+    use super::{eval_primitive, EvalError};
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
     use std::collections::BTreeMap;
 
@@ -5790,7 +5790,7 @@ mod tests {
 #[cfg(test)]
 mod prop_tests {
     use super::arithmetic::trigamma_approx;
-    use super::{EvalError, eval_fori_loop, eval_primitive};
+    use super::{eval_fori_loop, eval_primitive, EvalError};
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
     use proptest::prelude::*;
     use std::collections::BTreeMap;
@@ -6102,6 +6102,50 @@ mod prop_tests {
         )
         .unwrap();
         assert_complex128_close(&out, 1.0_f64.cosh(), 0.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_tan() {
+        let out = eval_primitive(
+            Primitive::Tan,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 1.0_f64.tanh(), 1e-12);
+    }
+
+    #[test]
+    fn test_complex_sinh() {
+        let out = eval_primitive(
+            Primitive::Sinh,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 1.0_f64.sin(), 1e-12);
+    }
+
+    #[test]
+    fn test_complex_cosh() {
+        let out = eval_primitive(
+            Primitive::Cosh,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 1.0_f64.cos(), 0.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_tanh() {
+        let out = eval_primitive(
+            Primitive::Tanh,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 1.0_f64.tan(), 1e-12);
     }
 
     #[test]

@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-dispatch_under_load",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1773376052542,
+  "ts_utc_unix_ms": 1774926465402,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -23,18 +23,18 @@
     {
       "drift_count": 0,
       "iterations": 1000,
-      "p50_ns": 33583,
-      "p95_ns": 49974,
-      "p99_ns": 84438
+      "p50_ns": 30197,
+      "p95_ns": 58380,
+      "p99_ns": 119636
     }
   ],
   "output_capture": {
     "drift_count": 0,
-    "p50_ns": 33583,
-    "p95_ns": 49974,
-    "p99_ns": 84438
+    "p50_ns": 30197,
+    "p95_ns": 58380,
+    "p99_ns": 119636
   },
   "result": "PASS",
-  "duration_ms": 37,
+  "duration_ms": 39,
   "details": null
 }

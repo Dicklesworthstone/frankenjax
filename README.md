@@ -264,7 +264,7 @@ FrankenJAX supports Complex64 (32-bit real + 32-bit imag) and Complex128 (64-bit
 - Multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
 - Division: (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c^2+d^2)
 
-**Primitives:** `Complex(re, im)` constructs a complex value, `Real(z)` and `Imag(z)` extract components, `Conj(z)` conjugates. All trigonometric and exponential functions support complex arguments.
+**Primitives:** `Complex(re, im)` constructs a complex value, `Real(z)` and `Imag(z)` extract components, `Conj(z)` conjugates. Core complex eval support currently includes `add`, `sub`, `mul`, `div`, `exp`, `log`, `sin`, `cos`, `tan`, `sinh`, `cosh`, and `tanh`.
 
 **FFT:** Complex-valued FFT/IFFT operates on Complex128 tensors directly. RFFT takes real input and produces Complex128 output (half-spectrum). IRFFT inverts this.
 

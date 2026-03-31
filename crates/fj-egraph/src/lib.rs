@@ -3,7 +3,7 @@
 use egg::{CostFunction, Id, Language, RecExpr, Runner, define_language, rewrite};
 use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, VarId};
 use smallvec::smallvec;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 define_language! {
     pub enum FjLang {
@@ -1317,47 +1317,263 @@ fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLan
 
 /// Optimize a Jaxpr using equality saturation with algebraic rules.
 ///
-/// Supports both single-output and multi-output jaxprs. For multi-output,
-/// each output is extracted independently from the same saturated e-graph,
-/// then the results are merged into a combined optimized Jaxpr.
+/// Optimizes supported single-output regions while preserving opaque barriers
+/// such as multi-output primitives, control flow, and shape-parametric ops.
 #[must_use]
 pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
-    if jaxpr.outvars.len() != 1 {
-        // Multi-output optimization requires tuple-aware extraction and
-        // cross-output var deduplication. For now, return the original.
-        // Single-output covers the vast majority of dispatch use cases.
-        return jaxpr.clone();
+    let mut equations = Vec::new();
+    let mut index = 0;
+    let mut next_var = max_var_id(jaxpr).saturating_add(1);
+    let mut outvar_remap = BTreeMap::new();
+
+    while index < jaxpr.equations.len() {
+        if is_egraph_barrier(&jaxpr.equations[index]) {
+            equations.push(jaxpr.equations[index].clone());
+            index += 1;
+            continue;
+        }
+
+        let segment_start = index;
+        while index < jaxpr.equations.len() && !is_egraph_barrier(&jaxpr.equations[index]) {
+            index += 1;
+        }
+
+        let (segment, preserved_outvars) =
+            build_supported_segment_jaxpr(jaxpr, segment_start, index);
+        let optimized = optimize_supported_segment(&segment, &preserved_outvars, &mut next_var);
+        equations.extend(optimized.equations);
+        outvar_remap.extend(optimized.outvar_remap);
     }
 
-    if jaxpr
-        .equations
-        .iter()
-        .any(|eqn| !is_egraph_supported_primitive(eqn.primitive))
-    {
-        // Keep behavior unchanged when e-graph cannot represent an operation yet.
-        return jaxpr.clone();
-    }
+    let mut optimized = Jaxpr::new(
+        jaxpr.invars.clone(),
+        jaxpr.constvars.clone(),
+        jaxpr
+            .outvars
+            .iter()
+            .map(|outvar| *outvar_remap.get(outvar).unwrap_or(outvar))
+            .collect(),
+        equations,
+    );
+    optimized.effects = jaxpr.effects.clone();
+    optimized
+}
 
+struct SegmentOptimization {
+    equations: Vec<Equation>,
+    outvar_remap: BTreeMap<VarId, VarId>,
+}
+
+fn optimize_supported_segment(
+    jaxpr: &Jaxpr,
+    preserved_outvars: &BTreeSet<VarId>,
+    next_var: &mut u32,
+) -> SegmentOptimization {
     let (expr, var_map) = jaxpr_to_egraph(jaxpr);
-
-    let root_id = var_map
-        .get(&jaxpr.outvars[0])
-        .copied()
-        .unwrap_or_else(|| Id::from(expr.as_ref().len() - 1));
-
     let runner = Runner::<FjLang, ()>::default()
         .with_expr(&expr)
         .run(&algebraic_rules());
-
     let extractor = egg::Extractor::new(&runner.egraph, OpCount);
-    let (_, best_expr) = extractor.find_best(root_id);
 
-    egraph_to_jaxpr(
-        &best_expr,
-        &jaxpr.invars,
-        &jaxpr.constvars,
-        &jaxpr.outvars,
+    let mut merged_equations = Vec::new();
+    let mut outvar_remap = BTreeMap::new();
+    for desired_outvar in &jaxpr.outvars {
+        let root_id = var_map
+            .get(desired_outvar)
+            .copied()
+            .unwrap_or_else(|| Id::from(expr.as_ref().len() - 1));
+        let (_, best_expr) = extractor.find_best(root_id);
+        let piece = egraph_to_jaxpr(
+            &best_expr,
+            &jaxpr.invars,
+            &jaxpr.constvars,
+            &[*desired_outvar],
+        );
+        let result = rewrite_piece_for_output(
+            &piece,
+            *desired_outvar,
+            preserved_outvars.contains(desired_outvar),
+            &jaxpr.invars,
+            &jaxpr.constvars,
+            next_var,
+        );
+        merged_equations.extend(result.equations);
+        outvar_remap.insert(*desired_outvar, result.actual_outvar);
+    }
+
+    SegmentOptimization {
+        equations: merged_equations,
+        outvar_remap,
+    }
+}
+
+struct PieceRewriteResult {
+    equations: Vec<Equation>,
+    actual_outvar: VarId,
+}
+
+fn rewrite_piece_for_output(
+    piece: &Jaxpr,
+    desired_outvar: VarId,
+    preserve_output_var: bool,
+    invars: &[VarId],
+    constvars: &[VarId],
+    next_var: &mut u32,
+) -> PieceRewriteResult {
+    let actual_outvar = piece.outvars[0];
+    let interface_vars: BTreeSet<VarId> = invars.iter().chain(constvars.iter()).copied().collect();
+    let can_retarget_directly = preserve_output_var && !interface_vars.contains(&actual_outvar);
+
+    let mut remap = BTreeMap::new();
+    if can_retarget_directly && actual_outvar != desired_outvar {
+        remap.insert(actual_outvar, desired_outvar);
+    }
+
+    for equation in &piece.equations {
+        for outvar in &equation.outputs {
+            if remap.contains_key(outvar) {
+                continue;
+            }
+            if preserve_output_var && *outvar == desired_outvar {
+                remap.insert(*outvar, desired_outvar);
+                continue;
+            }
+            if interface_vars.contains(outvar) {
+                remap.insert(*outvar, *outvar);
+            } else {
+                remap.insert(*outvar, VarId(*next_var));
+                *next_var += 1;
+            }
+        }
+    }
+
+    let mut rewritten = Vec::with_capacity(piece.equations.len() + 1);
+    for equation in &piece.equations {
+        let inputs = equation
+            .inputs
+            .iter()
+            .map(|atom| match atom {
+                Atom::Var(var) => Atom::Var(*remap.get(var).unwrap_or(var)),
+                Atom::Lit(lit) => Atom::Lit(*lit),
+            })
+            .collect();
+        let outputs = equation
+            .outputs
+            .iter()
+            .map(|var| *remap.get(var).unwrap_or(var))
+            .collect();
+
+        rewritten.push(Equation {
+            primitive: equation.primitive,
+            inputs,
+            outputs,
+            params: equation.params.clone(),
+            effects: equation.effects.clone(),
+            sub_jaxprs: equation.sub_jaxprs.clone(),
+        });
+    }
+
+    let actual_outvar = *remap.get(&actual_outvar).unwrap_or(&actual_outvar);
+    if preserve_output_var && actual_outvar != desired_outvar {
+        rewritten.push(Equation {
+            primitive: Primitive::Copy,
+            inputs: smallvec![Atom::Var(actual_outvar)],
+            outputs: smallvec![desired_outvar],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+        return PieceRewriteResult {
+            equations: rewritten,
+            actual_outvar: desired_outvar,
+        };
+    }
+
+    PieceRewriteResult {
+        equations: rewritten,
+        actual_outvar,
+    }
+}
+
+fn build_supported_segment_jaxpr(
+    jaxpr: &Jaxpr,
+    start: usize,
+    end: usize,
+) -> (Jaxpr, BTreeSet<VarId>) {
+    let equations = jaxpr.equations[start..end].to_vec();
+    let bound_vars: BTreeSet<VarId> = equations
+        .iter()
+        .flat_map(|equation| equation.outputs.iter().copied())
+        .collect();
+
+    let mut input_vars = Vec::new();
+    let mut seen_inputs = BTreeSet::new();
+    for equation in &equations {
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom
+                && !bound_vars.contains(var)
+                && seen_inputs.insert(*var)
+            {
+                input_vars.push(*var);
+            }
+        }
+    }
+
+    let mut later_uses = BTreeSet::new();
+    for equation in &jaxpr.equations[end..] {
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom {
+                later_uses.insert(*var);
+            }
+        }
+    }
+    let preserved_outvars = later_uses.clone();
+    later_uses.extend(jaxpr.outvars.iter().copied());
+
+    let mut outvars = Vec::new();
+    let mut seen_outvars = BTreeSet::new();
+    for equation in &equations {
+        for outvar in &equation.outputs {
+            if later_uses.contains(outvar) && seen_outvars.insert(*outvar) {
+                outvars.push(*outvar);
+            }
+        }
+    }
+
+    (
+        Jaxpr::new(input_vars, vec![], outvars, equations),
+        preserved_outvars,
     )
+}
+
+fn is_egraph_barrier(equation: &Equation) -> bool {
+    equation.outputs.len() != 1
+        || !equation.effects.is_empty()
+        || !equation.sub_jaxprs.is_empty()
+        || !is_egraph_supported_primitive(equation.primitive)
+}
+
+fn max_var_id(jaxpr: &Jaxpr) -> u32 {
+    let mut max_var = 0;
+    for var in jaxpr
+        .invars
+        .iter()
+        .chain(jaxpr.constvars.iter())
+        .chain(jaxpr.outvars.iter())
+    {
+        max_var = max_var.max(var.0);
+    }
+    for equation in &jaxpr.equations {
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom {
+                max_var = max_var.max(var.0);
+            }
+        }
+        for outvar in &equation.outputs {
+            max_var = max_var.max(outvar.0);
+        }
+    }
+    max_var
 }
 
 fn is_egraph_supported_primitive(primitive: Primitive) -> bool {

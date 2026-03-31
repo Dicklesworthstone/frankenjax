@@ -633,12 +633,56 @@ fn make_multi_output_shared_jaxpr() -> Jaxpr {
     )
 }
 
+/// Build: (q, y) where (q, r) = qr(x), t = r + 0, y = neg(neg(t)).
+/// The QR itself is an opaque multi-output barrier, but the downstream
+/// algebraic region should still optimize.
+fn make_multi_output_barrier_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2), VarId(6)],
+        vec![
+            Equation {
+                primitive: Primitive::Qr,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2), VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::from_f64(0.0))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(5))],
+                outputs: smallvec![VarId(6)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 #[test]
 fn egraph_preserves_multi_output_independent() {
-    // Two independent outputs: neg(x) and abs(x).
-    // Multi-output jaxprs pass through unoptimized (V1 limitation),
-    // but semantics must still be preserved.
     let jaxpr = make_multi_output_jaxpr();
+    let optimized = optimize_jaxpr(&jaxpr);
+    assert_eq!(optimized.equations.len(), jaxpr.equations.len());
     verify_optimization_preserves_semantics(
         &jaxpr,
         &[s_f64(-3.5)],
@@ -650,14 +694,49 @@ fn egraph_preserves_multi_output_independent() {
 
 #[test]
 fn egraph_preserves_multi_output_shared() {
-    // Shared intermediate: neg(neg(x)) = x, and x + x = 2x.
-    // Multi-output jaxprs pass through unoptimized (V1 limitation).
     let jaxpr = make_multi_output_shared_jaxpr();
+    let optimized = optimize_jaxpr(&jaxpr);
+    assert!(
+        optimized.equations.len() < jaxpr.equations.len(),
+        "shared multi-output jaxpr should shrink after optimization"
+    );
     verify_optimization_preserves_semantics(
         &jaxpr,
         &[s_f64(7.0)],
         &[],
         1e-12,
         "multi-output shared",
+    );
+}
+
+#[test]
+fn egraph_preserves_multi_output_barrier_regions() {
+    let jaxpr = make_multi_output_barrier_jaxpr();
+    let optimized = optimize_jaxpr(&jaxpr);
+    assert!(
+        optimized.equations.len() < jaxpr.equations.len(),
+        "supported region after multi-output barrier should still optimize"
+    );
+
+    let matrix = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            vec![
+                Literal::from_f64(3.0),
+                Literal::from_f64(1.0),
+                Literal::from_f64(0.0),
+                Literal::from_f64(2.0),
+            ],
+        )
+        .expect("matrix"),
+    );
+
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[matrix],
+        &[],
+        1e-12,
+        "multi-output barrier region",
     );
 }

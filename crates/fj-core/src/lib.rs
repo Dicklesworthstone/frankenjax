@@ -529,6 +529,15 @@ impl Value {
         )?))
     }
 
+    pub fn vector_bool(values: &[bool]) -> Result<Self, ValueError> {
+        let elements = values.iter().copied().map(Literal::Bool).collect::<Vec<_>>();
+        Ok(Self::Tensor(TensorValue::new(
+            DType::Bool,
+            Shape::vector(values.len() as u32),
+            elements,
+        )?))
+    }
+
     pub fn vector_f64(values: &[f64]) -> Result<Self, ValueError> {
         let elements = values
             .iter()
