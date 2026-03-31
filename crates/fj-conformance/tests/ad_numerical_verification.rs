@@ -1323,7 +1323,13 @@ fn exp_vjp_large_input() {
     let x = Value::scalar_f64(700.0);
     let g = Value::scalar_f64(1.0);
 
-    let vjp_result = fj_ad::vjp_single(Primitive::Exp, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Exp,
+        std::slice::from_ref(&x),
+        &g,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     let analytical = extract_f64_scalar(&vjp_result[0]);
 
     // exp'(x) = exp(x), so gradient should equal exp(700)
@@ -1341,7 +1347,13 @@ fn log_vjp_near_zero() {
     let x = Value::scalar_f64(1e-300);
     let g = Value::scalar_f64(1.0);
 
-    let vjp_result = fj_ad::vjp_single(Primitive::Log, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Log,
+        std::slice::from_ref(&x),
+        &g,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     let analytical = extract_f64_scalar(&vjp_result[0]);
 
     // log'(x) = 1/x = 1e300

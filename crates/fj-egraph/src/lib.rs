@@ -254,6 +254,191 @@ pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
     ]
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TransposeSpec {
+    Reverse,
+    Explicit(Vec<usize>),
+}
+
+fn resolve_var_alias(var: VarId, aliases: &BTreeMap<VarId, VarId>) -> VarId {
+    let mut current = var;
+    while let Some(next) = aliases.get(&current).copied() {
+        if next == current {
+            break;
+        }
+        current = next;
+    }
+    current
+}
+
+fn use_counts(jaxpr: &Jaxpr) -> BTreeMap<VarId, usize> {
+    let mut counts = BTreeMap::new();
+    for equation in &jaxpr.equations {
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom {
+                *counts.entry(*var).or_insert(0) += 1;
+            }
+        }
+    }
+    for outvar in &jaxpr.outvars {
+        *counts.entry(*outvar).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn parse_usize_csv(raw: &str) -> Option<Vec<usize>> {
+    raw.split(',')
+        .map(|part| part.trim().parse::<usize>().ok())
+        .collect()
+}
+
+fn transpose_spec(params: &BTreeMap<String, String>) -> Option<TransposeSpec> {
+    match params.get("permutation") {
+        Some(raw) => parse_usize_csv(raw).map(TransposeSpec::Explicit),
+        None => Some(TransposeSpec::Reverse),
+    }
+}
+
+fn is_identity_transpose(params: &BTreeMap<String, String>) -> bool {
+    matches!(
+        transpose_spec(params),
+        Some(TransposeSpec::Explicit(permutation))
+            if permutation.iter().enumerate().all(|(axis, value)| axis == *value)
+    )
+}
+
+fn are_inverse_transposes(
+    first: &BTreeMap<String, String>,
+    second: &BTreeMap<String, String>,
+) -> bool {
+    match (transpose_spec(first), transpose_spec(second)) {
+        (Some(TransposeSpec::Reverse), Some(TransposeSpec::Reverse)) => true,
+        (Some(TransposeSpec::Explicit(lhs)), Some(TransposeSpec::Explicit(rhs))) => {
+            lhs.len() == rhs.len()
+                && lhs
+                    .iter()
+                    .enumerate()
+                    .all(|(index, axis)| rhs[*axis] == index)
+        }
+        (Some(TransposeSpec::Reverse), Some(TransposeSpec::Explicit(permutation)))
+        | (Some(TransposeSpec::Explicit(permutation)), Some(TransposeSpec::Reverse)) => {
+            permutation
+                .iter()
+                .enumerate()
+                .all(|(index, axis)| *axis == permutation.len().saturating_sub(index + 1))
+        }
+        _ => false,
+    }
+}
+
+fn squeeze_single_dimension(params: &BTreeMap<String, String>) -> Option<usize> {
+    params
+        .get("dimensions")
+        .and_then(|raw| parse_usize_csv(raw))
+        .filter(|dims| dims.len() == 1)
+        .map(|dims| dims[0])
+}
+
+fn expand_dims_axis(params: &BTreeMap<String, String>) -> Option<usize> {
+    params.get("axis").and_then(|raw| raw.parse::<usize>().ok())
+}
+
+fn is_shape_identity(equation: &Equation) -> bool {
+    match equation.primitive {
+        Primitive::Transpose => is_identity_transpose(&equation.params),
+        _ => false,
+    }
+}
+
+fn cancels_shape_chain(previous: &Equation, current: &Equation) -> bool {
+    match (previous.primitive, current.primitive) {
+        (Primitive::Transpose, Primitive::Transpose) => {
+            are_inverse_transposes(&previous.params, &current.params)
+        }
+        (Primitive::ExpandDims, Primitive::Squeeze) => {
+            expand_dims_axis(&previous.params) == squeeze_single_dimension(&current.params)
+        }
+        (Primitive::Squeeze, Primitive::ExpandDims) => {
+            squeeze_single_dimension(&previous.params) == expand_dims_axis(&current.params)
+        }
+        _ => false,
+    }
+}
+
+fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
+    let counts = use_counts(jaxpr);
+    let mut aliases = BTreeMap::new();
+    let mut equations: Vec<Equation> = Vec::with_capacity(jaxpr.equations.len());
+
+    for equation in &jaxpr.equations {
+        let mut rewritten = equation.clone();
+        for atom in &mut rewritten.inputs {
+            if let Atom::Var(var) = atom {
+                *var = resolve_var_alias(*var, &aliases);
+            }
+        }
+
+        let identity_input = if rewritten.outputs.len() == 1
+            && rewritten.inputs.len() == 1
+            && is_shape_identity(&rewritten)
+        {
+            match rewritten.inputs[0] {
+                Atom::Var(input_var) => Some(input_var),
+                Atom::Lit(_) => None,
+            }
+        } else {
+            None
+        };
+        if let Some(input_var) = identity_input {
+            aliases.insert(rewritten.outputs[0], input_var);
+            continue;
+        }
+
+        let previous = equations.last();
+        let can_cancel = if rewritten.outputs.len() == 1 && rewritten.inputs.len() == 1 {
+            if let (Some(previous), Atom::Var(input_var)) = (previous, &rewritten.inputs[0]) {
+                previous.outputs.len() == 1
+                    && previous.outputs[0] == *input_var
+                    && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
+                    && cancels_shape_chain(previous, &rewritten)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if can_cancel {
+            let previous = equations.pop().expect("previous equation must exist");
+            let source = match previous.inputs[0] {
+                Atom::Var(var) => var,
+                Atom::Lit(_) => {
+                    equations.push(previous);
+                    equations.push(rewritten);
+                    continue;
+                }
+            };
+            aliases.insert(rewritten.outputs[0], source);
+            continue;
+        }
+
+        equations.push(rewritten);
+    }
+
+    let mut optimized = Jaxpr::new(
+        jaxpr.invars.clone(),
+        jaxpr.constvars.clone(),
+        jaxpr
+            .outvars
+            .iter()
+            .map(|outvar| resolve_var_alias(*outvar, &aliases))
+            .collect(),
+        equations,
+    );
+    optimized.effects = jaxpr.effects.clone();
+    optimized
+}
+
 /// Convert a Jaxpr to an e-graph RecExpr.
 pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) {
     let mut expr = RecExpr::default();
@@ -1321,9 +1506,10 @@ fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLan
 /// such as multi-output primitives, control flow, and shape-parametric ops.
 #[must_use]
 pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
+    let jaxpr = optimize_shape_parametric_chains(jaxpr);
     let mut equations = Vec::new();
     let mut index = 0;
-    let mut next_var = max_var_id(jaxpr).saturating_add(1);
+    let mut next_var = max_var_id(&jaxpr).saturating_add(1);
     let mut outvar_remap = BTreeMap::new();
 
     while index < jaxpr.equations.len() {
@@ -1339,7 +1525,7 @@ pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
         }
 
         let (segment, preserved_outvars) =
-            build_supported_segment_jaxpr(jaxpr, segment_start, index);
+            build_supported_segment_jaxpr(&jaxpr, segment_start, index);
         let optimized = optimize_supported_segment(&segment, &preserved_outvars, &mut next_var);
         equations.extend(optimized.equations);
         outvar_remap.extend(optimized.outvar_remap);
@@ -1623,7 +1809,7 @@ fn is_egraph_supported_primitive(primitive: Primitive) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{ProgramSpec, Value, build_program};
+    use fj_core::{DType, ProgramSpec, Shape, TensorValue, Value, build_program};
     use fj_interpreters::eval_jaxpr;
 
     #[test]
@@ -3065,6 +3251,168 @@ mod tests {
             optimized.equations.len(),
             jaxpr.equations.len(),
         );
+    }
+
+    #[test]
+    fn transpose_identity_permutation_is_elided() {
+        let mut params = BTreeMap::new();
+        params.insert("permutation".to_owned(), "0,1".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Transpose,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params,
+                sub_jaxprs: vec![],
+            }],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(optimized.equations.is_empty());
+        assert_eq!(optimized.outvars, vec![VarId(1)]);
+    }
+
+    #[test]
+    fn transpose_inverse_pair_is_elided() {
+        let mut params = BTreeMap::new();
+        params.insert("permutation".to_owned(), "1,0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: params.clone(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(optimized.equations.is_empty());
+        assert_eq!(optimized.outvars, vec![VarId(1)]);
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
+                ],
+            )
+            .unwrap(),
+        );
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn expand_dims_then_squeeze_same_axis_is_elided() {
+        let mut expand_params = BTreeMap::new();
+        expand_params.insert("axis".to_owned(), "0".to_owned());
+        let mut squeeze_params = BTreeMap::new();
+        squeeze_params.insert("dimensions".to_owned(), "0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::ExpandDims,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: expand_params,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Squeeze,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: squeeze_params,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(optimized.equations.is_empty());
+        assert_eq!(optimized.outvars, vec![VarId(1)]);
+
+        let input = Value::vector_i64(&[7, 8, 9]).unwrap();
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn squeeze_then_expand_dims_same_axis_is_elided() {
+        let mut squeeze_params = BTreeMap::new();
+        squeeze_params.insert("dimensions".to_owned(), "0".to_owned());
+        let mut expand_params = BTreeMap::new();
+        expand_params.insert("axis".to_owned(), "0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Squeeze,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: squeeze_params,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ExpandDims,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: expand_params,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(optimized.equations.is_empty());
+        assert_eq!(optimized.outvars, vec![VarId(1)]);
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![1, 3] },
+                vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)],
+            )
+            .unwrap(),
+        );
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
     }
 
     #[test]

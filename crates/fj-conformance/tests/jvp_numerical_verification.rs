@@ -467,3 +467,230 @@ fn mul_jvp_denormal_input() {
         "Mul JVP denormal input",
     );
 }
+
+// ============================================================================
+// Additional JVP edge-case tests (frankenjax-gl1)
+// ============================================================================
+
+fn make_multi_output_jaxpr(prim: Primitive, num_outputs: usize) -> Jaxpr {
+    let outvars: Vec<VarId> = (0..num_outputs).map(|i| VarId(2 + i as u32)).collect();
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        outvars.clone(),
+        vec![Equation {
+            primitive: prim,
+            inputs: smallvec![Atom::Var(VarId(1))],
+            outputs: outvars.into_iter().collect(),
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        }],
+    )
+}
+
+/// QR JVP on a 3x2 moderately ill-conditioned rectangular matrix.
+#[test]
+fn qr_jvp_rectangular_ill_conditioned() {
+    let a_data = [1.0, 0.01, 0.0, 0.5, -1.0, 0.02];
+    let a = make_f64_matrix(3, 2, &a_data);
+    // Random tangent direction
+    let da_data = [0.1, -0.05, 0.2, 0.15, -0.1, 0.08];
+    let da = make_f64_matrix(3, 2, &da_data);
+
+    let jaxpr = make_multi_output_jaxpr(Primitive::Qr, 2);
+    let jvp_result =
+        fj_ad::jvp(&jaxpr, std::slice::from_ref(&a), std::slice::from_ref(&da)).unwrap();
+
+    // Verify tangents are finite
+    for (i, t) in jvp_result.tangents.iter().enumerate() {
+        let vals = extract_f64_vec(t);
+        assert!(
+            vals.iter().all(|v| v.is_finite()),
+            "QR JVP rectangular tangent {i} should be finite: {vals:?}"
+        );
+    }
+
+    // Finite-difference verification (sum of all outputs)
+    let eps = 1e-7;
+    let a_plus = perturb(&a, &da, eps);
+    let a_minus = perturb(&a, &da, -eps);
+    let outs_plus = eval_primitive_multi(Primitive::Qr, &[a_plus], &BTreeMap::new()).unwrap();
+    let outs_minus = eval_primitive_multi(Primitive::Qr, &[a_minus], &BTreeMap::new()).unwrap();
+
+    for (idx, ((tangent, plus), minus)) in jvp_result
+        .tangents
+        .iter()
+        .zip(outs_plus.iter())
+        .zip(outs_minus.iter())
+        .enumerate()
+    {
+        let t_vals = extract_f64_vec(tangent);
+        let p_vals = extract_f64_vec(plus);
+        let m_vals = extract_f64_vec(minus);
+        let numerical: Vec<f64> = p_vals
+            .iter()
+            .zip(m_vals.iter())
+            .map(|(p, m)| (p - m) / (2.0 * eps))
+            .collect();
+        assert_close(
+            &t_vals,
+            &numerical,
+            5e-2,
+            &format!("QR JVP rectangular output {idx}"),
+        );
+    }
+}
+
+/// SVD JVP on a 3x3 diagonal matrix with a near-zero singular value.
+#[test]
+fn svd_jvp_near_zero_singular_value_3x3() {
+    let a_data = [5.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1e-6];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let da_data = [0.01, 0.0, 0.0, 0.0, 0.01, 0.0, 0.0, 0.0, 0.01];
+    let da = make_f64_matrix(3, 3, &da_data);
+
+    let jaxpr = make_multi_output_jaxpr(Primitive::Svd, 3);
+    let jvp_result =
+        fj_ad::jvp(&jaxpr, std::slice::from_ref(&a), std::slice::from_ref(&da)).unwrap();
+
+    // Verify all tangents are finite
+    for (i, t) in jvp_result.tangents.iter().enumerate() {
+        let vals = extract_f64_vec(t);
+        assert!(
+            vals.iter().all(|v| v.is_finite()),
+            "SVD JVP near-zero SV tangent {i} should be finite: {vals:?}"
+        );
+    }
+
+    // Verify S tangent (most stable for finite-diff comparison)
+    let eps = 1e-7;
+    let a_plus = perturb(&a, &da, eps);
+    let a_minus = perturb(&a, &da, -eps);
+    let outs_plus = eval_primitive_multi(Primitive::Svd, &[a_plus], &BTreeMap::new()).unwrap();
+    let outs_minus = eval_primitive_multi(Primitive::Svd, &[a_minus], &BTreeMap::new()).unwrap();
+
+    // Index 1 is S (singular values)
+    let s_tangent = extract_f64_vec(&jvp_result.tangents[1]);
+    let s_plus = extract_f64_vec(&outs_plus[1]);
+    let s_minus = extract_f64_vec(&outs_minus[1]);
+    let s_numerical: Vec<f64> = s_plus
+        .iter()
+        .zip(s_minus.iter())
+        .map(|(p, m)| (p - m) / (2.0 * eps))
+        .collect();
+    assert_close(
+        &s_tangent,
+        &s_numerical,
+        1e-3,
+        "SVD JVP near-zero SV S tangent",
+    );
+}
+
+/// Eigh JVP on a well-conditioned 3x3 symmetric matrix.
+#[test]
+fn eigh_jvp_well_conditioned_3x3() {
+    let a_data = [5.0, 1.0, 0.5, 1.0, 8.0, 1.0, 0.5, 1.0, 3.0];
+    let a = make_f64_matrix(3, 3, &a_data);
+    // Symmetric tangent
+    let da_data = [0.1, 0.02, 0.01, 0.02, 0.15, 0.03, 0.01, 0.03, 0.08];
+    let da = make_f64_matrix(3, 3, &da_data);
+
+    let jaxpr = make_multi_output_jaxpr(Primitive::Eigh, 2);
+    let jvp_result =
+        fj_ad::jvp(&jaxpr, std::slice::from_ref(&a), std::slice::from_ref(&da)).unwrap();
+
+    for (i, t) in jvp_result.tangents.iter().enumerate() {
+        let vals = extract_f64_vec(t);
+        assert!(
+            vals.iter().all(|v| v.is_finite()),
+            "Eigh JVP 3x3 tangent {i} should be finite: {vals:?}"
+        );
+    }
+
+    // Verify W (eigenvalue) tangent
+    let eps = 1e-7;
+    let a_plus = perturb(&a, &da, eps);
+    let a_minus = perturb(&a, &da, -eps);
+    let outs_plus = eval_primitive_multi(Primitive::Eigh, &[a_plus], &BTreeMap::new()).unwrap();
+    let outs_minus = eval_primitive_multi(Primitive::Eigh, &[a_minus], &BTreeMap::new()).unwrap();
+
+    // Index 0 is W (eigenvalues)
+    let w_tangent = extract_f64_vec(&jvp_result.tangents[0]);
+    let w_plus = extract_f64_vec(&outs_plus[0]);
+    let w_minus = extract_f64_vec(&outs_minus[0]);
+    let w_numerical: Vec<f64> = w_plus
+        .iter()
+        .zip(w_minus.iter())
+        .map(|(p, m)| (p - m) / (2.0 * eps))
+        .collect();
+    assert_close(&w_tangent, &w_numerical, 1e-3, "Eigh JVP 3x3 W tangent");
+}
+
+/// TriangularSolve JVP with near-zero diagonal.
+#[test]
+fn triangular_solve_jvp_near_singular_diagonal() {
+    let l_data = [1.0, 0.0, 0.5, 0.001];
+    let l_matrix = make_f64_matrix(2, 2, &l_data);
+    let b = make_f64_matrix(2, 1, &[1.0, 0.5]);
+    // Tangent for L and b
+    let dl = make_f64_matrix(2, 2, &[0.01, 0.0, 0.02, 0.001]);
+    let db = make_f64_matrix(2, 1, &[0.1, 0.05]);
+
+    let mut params = BTreeMap::new();
+    params.insert("lower".to_owned(), "true".to_owned());
+    params.insert("unit_diagonal".to_owned(), "false".to_owned());
+
+    let jaxpr = make_two_input_jaxpr(Primitive::TriangularSolve, params.clone());
+    let jvp_result = fj_ad::jvp(
+        &jaxpr,
+        &[l_matrix.clone(), b.clone()],
+        &[dl.clone(), db.clone()],
+    )
+    .unwrap();
+
+    let t_vals = extract_f64_vec(&jvp_result.tangents[0]);
+    assert!(
+        t_vals.iter().all(|v| v.is_finite()),
+        "TriangularSolve JVP near-singular tangent should be finite: {t_vals:?}"
+    );
+}
+
+/// Exp JVP at large input (near overflow).
+#[test]
+fn exp_jvp_large_input() {
+    let x = Value::scalar_f64(700.0);
+    let dx = Value::scalar_f64(1.0);
+
+    let jaxpr = make_single_op_jaxpr(Primitive::Exp);
+    let jvp_result = fj_ad::jvp(&jaxpr, &[x], &[dx]).unwrap();
+    let tangent = extract_f64_scalar(&jvp_result.tangents[0]);
+
+    assert!(tangent.is_finite(), "exp(700) JVP tangent should be finite");
+    let expected = 700.0_f64.exp();
+    assert!(
+        (tangent - expected).abs() / expected < 1e-10,
+        "exp JVP at 700: tangent={tangent}, expected={expected}"
+    );
+}
+
+/// Log JVP near zero: gradient 1/x with tiny x.
+#[test]
+fn log_jvp_near_zero() {
+    let x = Value::scalar_f64(1e-300);
+    let dx = Value::scalar_f64(1.0);
+
+    let jaxpr = make_single_op_jaxpr(Primitive::Log);
+    let jvp_result = fj_ad::jvp(&jaxpr, &[x], &[dx]).unwrap();
+    let tangent = extract_f64_scalar(&jvp_result.tangents[0]);
+
+    assert!(
+        tangent.is_finite(),
+        "log(1e-300) JVP tangent should be finite"
+    );
+    let expected = 1.0 / 1e-300;
+    assert!(
+        (tangent - expected).abs() / expected < 1e-10,
+        "log JVP near zero: tangent={tangent}, expected={expected}"
+    );
+}
