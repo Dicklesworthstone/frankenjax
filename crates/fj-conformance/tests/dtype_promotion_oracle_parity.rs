@@ -374,9 +374,6 @@ fn complex_dtype_promotion_rules() {
 /// Verify that binary operations on complex values produce correctly promoted results.
 #[test]
 fn complex_binary_operation_dtype_output() {
-    use fj_core::TensorValue;
-    use fj_core::Shape;
-
     // Complex128 + F64 scalar → Complex128
     let c128 = Value::scalar_complex128(1.0, 2.0);
     let f64_val = Value::scalar_f64(3.0);

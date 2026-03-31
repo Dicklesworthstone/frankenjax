@@ -1116,8 +1116,12 @@ fn qr_vjp_near_singular_rectangular() {
     for idx in 0..6_usize {
         let mut plus = a_data.to_vec();
         plus[idx] += eps;
-        let l_plus =
-            loss_multi(Primitive::Qr, &make_f64_matrix(3, 2, &plus), &gs, &BTreeMap::new());
+        let l_plus = loss_multi(
+            Primitive::Qr,
+            &make_f64_matrix(3, 2, &plus),
+            &gs,
+            &BTreeMap::new(),
+        );
 
         let mut minus = a_data.to_vec();
         minus[idx] -= eps;
@@ -1224,6 +1228,52 @@ fn eigh_vjp_well_conditioned_3x3() {
     );
 }
 
+/// Eigh VJP should remain bounded when eigenvalues are extremely close.
+///
+/// The exact derivative through eigenvectors is ill-conditioned in this regime,
+/// so the implementation treats sufficiently small eigenvalue gaps as
+/// degenerate and suppresses the unstable 1/(lambda_i-lambda_j) term.
+#[test]
+fn eigh_vjp_close_eigenvalues_is_bounded() {
+    let a = make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0 + 1e-12]);
+    let outputs =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+
+    let g_w = make_f64_vector(&[0.0, 0.0]);
+    let g_v = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            vec![
+                Literal::from_f64(0.0),
+                Literal::from_f64(1.0),
+                Literal::from_f64(-1.0),
+                Literal::from_f64(0.0),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Eigh,
+        std::slice::from_ref(&a),
+        &[g_w, g_v],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+
+    assert!(
+        analytical.iter().all(|value| value.is_finite()),
+        "close-eigenvalue Eigh VJP should remain finite: {analytical:?}"
+    );
+    assert!(
+        analytical.iter().all(|value| value.abs() < 1e6),
+        "close-eigenvalue Eigh VJP should be bounded after clustering guard: {analytical:?}"
+    );
+}
+
 /// TriangularSolve VJP with near-zero diagonal (nearly singular).
 /// L * x = b where L has a diagonal element close to zero.
 #[test]
@@ -1238,9 +1288,12 @@ fn triangular_solve_vjp_near_singular_diagonal() {
     params.insert("lower".to_owned(), "true".to_owned());
     params.insert("unit_diagonal".to_owned(), "false".to_owned());
 
-    let x_out =
-        eval_primitive(Primitive::TriangularSolve, &[l_matrix.clone(), b.clone()], &params)
-            .unwrap();
+    let x_out = eval_primitive(
+        Primitive::TriangularSolve,
+        &[l_matrix.clone(), b.clone()],
+        &params,
+    )
+    .unwrap();
 
     let g = make_f64_matrix(2, 1, &[1.0, 1.0]);
 
@@ -1270,7 +1323,7 @@ fn exp_vjp_large_input() {
     let x = Value::scalar_f64(700.0);
     let g = Value::scalar_f64(1.0);
 
-    let vjp_result = fj_ad::vjp_single(Primitive::Exp, &[x.clone()], &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(Primitive::Exp, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
     let analytical = extract_f64_scalar(&vjp_result[0]);
 
     // exp'(x) = exp(x), so gradient should equal exp(700)
@@ -1288,11 +1341,14 @@ fn log_vjp_near_zero() {
     let x = Value::scalar_f64(1e-300);
     let g = Value::scalar_f64(1.0);
 
-    let vjp_result = fj_ad::vjp_single(Primitive::Log, &[x.clone()], &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(Primitive::Log, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
     let analytical = extract_f64_scalar(&vjp_result[0]);
 
     // log'(x) = 1/x = 1e300
-    assert!(analytical.is_finite(), "log(1e-300) gradient should be finite");
+    assert!(
+        analytical.is_finite(),
+        "log(1e-300) gradient should be finite"
+    );
     let expected = 1.0 / 1e-300;
     assert!(
         (analytical - expected).abs() / expected < 1e-10,
@@ -1307,12 +1363,20 @@ fn div_vjp_near_zero_denominator() {
     let b = Value::scalar_f64(1e-150);
     let g = Value::scalar_f64(1.0);
 
-    let vjp_result =
-        fj_ad::vjp_single(Primitive::Div, &[a.clone(), b.clone()], &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Div,
+        &[a.clone(), b.clone()],
+        &g,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     // d(a/b)/da = 1/b = 1e150 (finite)
     let grad_a = extract_f64_scalar(&vjp_result[0]);
-    assert!(grad_a.is_finite(), "div grad w.r.t. numerator should be finite");
+    assert!(
+        grad_a.is_finite(),
+        "div grad w.r.t. numerator should be finite"
+    );
     assert!(
         (grad_a - 1e150).abs() / 1e150 < 1e-10,
         "div VJP grad_a: got {grad_a}, expected 1e150"
@@ -1332,7 +1396,7 @@ fn div_vjp_near_zero_denominator() {
 fn cholesky_vjp_ill_conditioned_3x3() {
     // SPD matrix with eigenvalues ~[1, 1e-3, 1e-6]
     // A = Q diag(1, 1e-3, 1e-6) Q^T where Q is a Householder reflection
-    let a_data = [
+    let _a_data = [
         1.000001, 0.0005, 0.0001, 0.0005, 0.001001, 0.0003, 0.0001, 0.0003, 0.000001,
     ];
 
@@ -1483,8 +1547,12 @@ fn svd_vjp_near_zero_singular_value() {
     for idx in 0..9_usize {
         let mut plus = a_data.to_vec();
         plus[idx] += eps;
-        let l_plus =
-            loss_multi(Primitive::Svd, &make_f64_matrix(3, 3, &plus), &gs, &BTreeMap::new());
+        let l_plus = loss_multi(
+            Primitive::Svd,
+            &make_f64_matrix(3, 3, &plus),
+            &gs,
+            &BTreeMap::new(),
+        );
 
         let mut minus = a_data.to_vec();
         minus[idx] -= eps;
