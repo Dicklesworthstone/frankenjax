@@ -577,6 +577,17 @@ impl Value {
         }
     }
 
+    /// Extract complex128 scalar as (re, im) f64 pair.
+    #[must_use]
+    pub fn as_complex128_scalar(&self) -> Option<(f64, f64)> {
+        match self.as_scalar_literal() {
+            Some(Literal::Complex128Bits(re_bits, im_bits)) => {
+                Some((f64::from_bits(re_bits), f64::from_bits(im_bits)))
+            }
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn dtype(&self) -> DType {
         match self {

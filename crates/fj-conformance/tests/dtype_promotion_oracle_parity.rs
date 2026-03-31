@@ -292,3 +292,178 @@ fn dtype_promotion_tensor_level() {
         tested - mismatches.len()
     );
 }
+
+// ============================================================================
+// Complex dtype promotion coverage (frankenjax-pgs)
+// ============================================================================
+
+/// Verify promote_dtype() for all Complex64/Complex128 combinations.
+/// These follow JAX's promotion lattice:
+///   Complex128 + anything → Complex128
+///   Complex64 + {F64, I64, U64} → Complex128 (component widening)
+///   Complex64 + {F32, F16, BF16, I32, U32, Bool, Complex64} → Complex64
+#[test]
+fn complex_dtype_promotion_rules() {
+    use fj_lax::promote_dtype_public as promote;
+
+    let all_dtypes = [
+        DType::Bool,
+        DType::I32,
+        DType::I64,
+        DType::U32,
+        DType::U64,
+        DType::F16,
+        DType::BF16,
+        DType::F32,
+        DType::F64,
+        DType::Complex64,
+        DType::Complex128,
+    ];
+
+    // Complex128 + anything → Complex128
+    for &dt in &all_dtypes {
+        assert_eq!(
+            promote(DType::Complex128, dt),
+            DType::Complex128,
+            "Complex128 + {dt:?} should be Complex128"
+        );
+        assert_eq!(
+            promote(dt, DType::Complex128),
+            DType::Complex128,
+            "{dt:?} + Complex128 should be Complex128"
+        );
+    }
+
+    // Complex64 + types that widen to f64 → Complex128
+    for &dt in &[DType::F64, DType::I64, DType::U64] {
+        assert_eq!(
+            promote(DType::Complex64, dt),
+            DType::Complex128,
+            "Complex64 + {dt:?} should be Complex128"
+        );
+        assert_eq!(
+            promote(dt, DType::Complex64),
+            DType::Complex128,
+            "{dt:?} + Complex64 should be Complex128"
+        );
+    }
+
+    // Complex64 + types within f32 → Complex64
+    for &dt in &[
+        DType::Bool,
+        DType::I32,
+        DType::U32,
+        DType::F16,
+        DType::BF16,
+        DType::F32,
+        DType::Complex64,
+    ] {
+        assert_eq!(
+            promote(DType::Complex64, dt),
+            DType::Complex64,
+            "Complex64 + {dt:?} should be Complex64"
+        );
+        assert_eq!(
+            promote(dt, DType::Complex64),
+            DType::Complex64,
+            "{dt:?} + Complex64 should be Complex64"
+        );
+    }
+}
+
+/// Verify that binary operations on complex values produce correctly promoted results.
+#[test]
+fn complex_binary_operation_dtype_output() {
+    use fj_core::TensorValue;
+    use fj_core::Shape;
+
+    // Complex128 + F64 scalar → Complex128
+    let c128 = Value::scalar_complex128(1.0, 2.0);
+    let f64_val = Value::scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Add, &[c128, f64_val], &BTreeMap::new())
+        .expect("Complex128 + F64 should succeed");
+    assert_eq!(
+        result.dtype(),
+        DType::Complex128,
+        "Complex128 + F64 should produce Complex128"
+    );
+
+    // Complex64 + F64 scalar → Complex128
+    let c64 = Value::scalar_complex64(1.0, 2.0);
+    let f64_val = Value::scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Add, &[c64.clone(), f64_val], &BTreeMap::new())
+        .expect("Complex64 + F64 should succeed");
+    assert_eq!(
+        result.dtype(),
+        DType::Complex128,
+        "Complex64 + F64 should produce Complex128"
+    );
+
+    // Complex64 + I64 → Complex128
+    let i64_val = Value::scalar_i64(5);
+    let result = eval_primitive(Primitive::Add, &[c64.clone(), i64_val], &BTreeMap::new())
+        .expect("Complex64 + I64 should succeed");
+    assert_eq!(
+        result.dtype(),
+        DType::Complex128,
+        "Complex64 + I64 should produce Complex128"
+    );
+
+    // Complex64 + Complex64 → Complex64
+    let c64_2 = Value::scalar_complex64(3.0, 4.0);
+    let result = eval_primitive(Primitive::Add, &[c64.clone(), c64_2], &BTreeMap::new())
+        .expect("Complex64 + Complex64 should succeed");
+    assert_eq!(
+        result.dtype(),
+        DType::Complex64,
+        "Complex64 + Complex64 should produce Complex64"
+    );
+
+    // Complex64 + Complex128 → Complex128
+    let c128 = Value::scalar_complex128(5.0, 6.0);
+    let result = eval_primitive(Primitive::Add, &[c64, c128], &BTreeMap::new())
+        .expect("Complex64 + Complex128 should succeed");
+    assert_eq!(
+        result.dtype(),
+        DType::Complex128,
+        "Complex64 + Complex128 should produce Complex128"
+    );
+}
+
+/// Verify complex multiplication follows correct field arithmetic.
+#[test]
+fn complex_mul_correctness() {
+    // (1+2i) * (3+4i) = (1*3 - 2*4) + (1*4 + 2*3)i = -5 + 10i
+    let a = Value::scalar_complex128(1.0, 2.0);
+    let b = Value::scalar_complex128(3.0, 4.0);
+    let result = eval_primitive(Primitive::Mul, &[a, b], &BTreeMap::new())
+        .expect("complex mul should succeed");
+    let (re, im) = result.as_complex128_scalar().expect("should be complex128");
+    assert!(
+        (re - (-5.0)).abs() < 1e-10,
+        "Re((1+2i)*(3+4i)) should be -5, got {re}"
+    );
+    assert!(
+        (im - 10.0).abs() < 1e-10,
+        "Im((1+2i)*(3+4i)) should be 10, got {im}"
+    );
+}
+
+/// Verify complex division follows conjugate-denominator formula.
+#[test]
+fn complex_div_correctness() {
+    // (1+2i) / (3+4i) = ((1*3+2*4) + (2*3-1*4)i) / (9+16) = (11 + 2i) / 25
+    let a = Value::scalar_complex128(1.0, 2.0);
+    let b = Value::scalar_complex128(3.0, 4.0);
+    let result = eval_primitive(Primitive::Div, &[a, b], &BTreeMap::new())
+        .expect("complex div should succeed");
+    let (re, im) = result.as_complex128_scalar().expect("should be complex128");
+    assert!(
+        (re - 11.0 / 25.0).abs() < 1e-10,
+        "Re((1+2i)/(3+4i)) should be 0.44, got {re}"
+    );
+    assert!(
+        (im - 2.0 / 25.0).abs() < 1e-10,
+        "Im((1+2i)/(3+4i)) should be 0.08, got {im}"
+    );
+}

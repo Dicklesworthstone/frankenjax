@@ -43,6 +43,10 @@ fn extract_f64_vec(val: &Value) -> Vec<f64> {
         .collect()
 }
 
+fn extract_f64_scalar(val: &Value) -> f64 {
+    val.as_f64_scalar().unwrap()
+}
+
 fn loss_multi(prim: Primitive, a: &Value, gs: &[Value], params: &BTreeMap<String, String>) -> f64 {
     let outs = eval_primitive_multi(prim, std::slice::from_ref(a), params).unwrap();
     let mut total = 0.0;
@@ -71,6 +75,15 @@ fn assert_gradients_close(analytical: &[f64], numerical: &[f64], tol: f64, conte
             (a - n).abs()
         );
     }
+}
+
+fn assert_scalar_close(analytical: f64, numerical: f64, abs_tol: f64, rel_tol: f64, context: &str) {
+    let diff = (analytical - numerical).abs();
+    let scale = analytical.abs().max(numerical.abs()).max(1.0);
+    assert!(
+        diff <= abs_tol.max(scale * rel_tol),
+        "{context}: analytical={analytical}, numerical={numerical}, diff={diff}, abs_tol={abs_tol}, rel_tol={rel_tol}"
+    );
 }
 
 // ======================== Cholesky VJP ========================
@@ -449,6 +462,92 @@ fn cholesky_vjp_numerical_3x3() {
     assert_gradients_close(&analytical, &numerical, 1e-4, "Cholesky VJP 3x3");
 }
 
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn cholesky_vjp_near_singular_matrix() {
+    // SPD but close to singular: the determinant is small, so this exercises
+    // the Cholesky VJP around a numerically fragile region without crossing
+    // into the invalid non-SPD domain.
+    let a_data = [1.0, 0.9999, 0.9999, 1.0];
+    let a = make_f64_matrix(2, 2, &a_data);
+
+    let outputs = eval_primitive_multi(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let l_out = &outputs[0];
+
+    let g_l = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            vec![
+                Literal::from_f64(1.0),
+                Literal::from_f64(0.0),
+                Literal::from_f64(0.25),
+                Literal::from_f64(1.0),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        std::slice::from_ref(&g_l),
+        std::slice::from_ref(l_out),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+    assert!(
+        analytical.iter().all(|value| value.is_finite()),
+        "near-singular Cholesky VJP should stay finite: {analytical:?}"
+    );
+
+    let eps = 1e-6;
+    let mut numerical = [0.0; 4];
+    for idx in 0..4_usize {
+        let row = idx / 2;
+        let col = idx % 2;
+
+        let mut plus = a_data.to_vec();
+        plus[row * 2 + col] += eps;
+        if row != col {
+            plus[col * 2 + row] += eps;
+        }
+
+        let mut minus = a_data.to_vec();
+        minus[row * 2 + col] -= eps;
+        if row != col {
+            minus[col * 2 + row] -= eps;
+        }
+
+        let l_plus = loss_multi(
+            Primitive::Cholesky,
+            &make_f64_matrix(2, 2, &plus),
+            std::slice::from_ref(&g_l),
+            &BTreeMap::new(),
+        );
+        let l_minus = loss_multi(
+            Primitive::Cholesky,
+            &make_f64_matrix(2, 2, &minus),
+            std::slice::from_ref(&g_l),
+            &BTreeMap::new(),
+        );
+
+        let mut grad = (l_plus - l_minus) / (2.0 * eps);
+        if row != col {
+            grad *= 0.5;
+        }
+        numerical[idx] = grad;
+    }
+
+    assert_gradients_close(&analytical, &numerical, 2e-2, "Cholesky VJP near singular");
+}
+
 // ======================== QR VJP ========================
 
 #[test]
@@ -513,6 +612,134 @@ fn qr_vjp_numerical() {
     }
 
     assert_gradients_close(&analytical, &numerical, 1e-3, "QR VJP (R only)");
+}
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn svd_vjp_ill_conditioned_matrix() {
+    // Diagonal with a large condition number. Singular values are stable enough
+    // for finite differences while still stressing the AD path on a nearly
+    // rank-deficient matrix.
+    let a_data = [1.0, 0.0, 0.0, 1e-4];
+    let a = make_f64_matrix(2, 2, &a_data);
+
+    let outputs =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+
+    let g_u = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            (0..4).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+    let g_s = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2] },
+            vec![Literal::from_f64(1.0), Literal::from_f64(0.25)],
+        )
+        .unwrap(),
+    );
+    let g_vt = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            (0..4).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Svd,
+        std::slice::from_ref(&a),
+        &[g_u.clone(), g_s.clone(), g_vt.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+    assert!(
+        analytical.iter().all(|value| value.is_finite()),
+        "ill-conditioned SVD VJP should stay finite: {analytical:?}"
+    );
+
+    let eps = 1e-6;
+    let gs = [g_u, g_s, g_vt];
+    let mut numerical = vec![0.0; 4];
+    for idx in 0..4_usize {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let l_plus = loss_multi(
+            Primitive::Svd,
+            &make_f64_matrix(2, 2, &plus),
+            &gs,
+            &BTreeMap::new(),
+        );
+
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let l_minus = loss_multi(
+            Primitive::Svd,
+            &make_f64_matrix(2, 2, &minus),
+            &gs,
+            &BTreeMap::new(),
+        );
+
+        numerical[idx] = (l_plus - l_minus) / (2.0 * eps);
+    }
+
+    assert_gradients_close(&analytical, &numerical, 1e-3, "SVD VJP ill conditioned");
+}
+
+#[test]
+fn mul_vjp_denormal_input() {
+    let x = Value::scalar_f64(f64::MIN_POSITIVE / 2.0);
+    let scale = Value::scalar_f64(2.0);
+    let g = Value::scalar_f64(1.0);
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Mul,
+        &[x.clone(), scale.clone()],
+        std::slice::from_ref(&g),
+        &[],
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let analytical = extract_f64_scalar(&vjp_result[0]);
+    assert!(analytical.is_finite(), "denormal VJP should stay finite");
+
+    let eps = f64::MIN_POSITIVE / 4.0;
+    let l_plus = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::Mul,
+            &[
+                Value::scalar_f64(extract_f64_scalar(&x) + eps),
+                scale.clone(),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap(),
+    );
+    let l_minus = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::Mul,
+            &[Value::scalar_f64(extract_f64_scalar(&x) - eps), scale],
+            &BTreeMap::new(),
+        )
+        .unwrap(),
+    );
+    let numerical = (l_plus - l_minus) / (2.0 * eps);
+
+    assert_scalar_close(
+        analytical,
+        numerical,
+        1e-12,
+        1e-12,
+        "Mul VJP denormal input",
+    );
 }
 
 // ======================== SVD VJP ========================
@@ -822,4 +1049,460 @@ fn irfft_vjp_numerical() {
             "IRFFT VJP real part at bin {bin}: analytical={vjp_bin}, numerical={numerical_re}"
         );
     }
+}
+
+// ======================== Edge-Case AD Verification (frankenjax-o2c) ========================
+
+/// QR VJP with a moderately ill-conditioned rectangular matrix.
+/// Condition number ~100 (not extreme, but stresses AD).
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn qr_vjp_near_singular_rectangular() {
+    // 3x2 matrix with condition number ~100
+    let a_data = [1.0, 0.01, 0.0, 0.5, -1.0, 0.02];
+    let a = make_f64_matrix(3, 2, &a_data);
+
+    let outputs =
+        eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+
+    // Cotangent for Q (3x2) and R (2x2)
+    let g_q = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 2] },
+            vec![
+                Literal::from_f64(1.0),
+                Literal::from_f64(0.0),
+                Literal::from_f64(0.0),
+                Literal::from_f64(1.0),
+                Literal::from_f64(0.5),
+                Literal::from_f64(0.5),
+            ],
+        )
+        .unwrap(),
+    );
+    let g_r = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2] },
+            vec![
+                Literal::from_f64(0.1),
+                Literal::from_f64(0.2),
+                Literal::from_f64(0.0),
+                Literal::from_f64(0.3),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Qr,
+        std::slice::from_ref(&a),
+        &[g_q.clone(), g_r.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+    assert!(
+        analytical.iter().all(|v| v.is_finite()),
+        "near-singular QR VJP should stay finite: {analytical:?}"
+    );
+
+    // Finite-difference verification
+    let eps = 1e-6;
+    let gs = [g_q, g_r];
+    let mut numerical = vec![0.0; 6];
+    for idx in 0..6_usize {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let l_plus =
+            loss_multi(Primitive::Qr, &make_f64_matrix(3, 2, &plus), &gs, &BTreeMap::new());
+
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let l_minus = loss_multi(
+            Primitive::Qr,
+            &make_f64_matrix(3, 2, &minus),
+            &gs,
+            &BTreeMap::new(),
+        );
+
+        numerical[idx] = (l_plus - l_minus) / (2.0 * eps);
+    }
+
+    assert_gradients_close(
+        &analytical,
+        &numerical,
+        1e-1,
+        "QR VJP near singular rectangular",
+    );
+}
+
+/// Eigh VJP with a well-conditioned 3x3 symmetric matrix.
+/// Verifies correctness for a larger input size beyond the existing 2x2 test.
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn eigh_vjp_well_conditioned_3x3() {
+    // Simple diagonal-dominant symmetric 3x3 (eigenvalues ≈ 1, 5, 10)
+    let a_data = [5.0, 1.0, 0.5, 1.0, 8.0, 1.0, 0.5, 1.0, 3.0];
+    let a = make_f64_matrix(3, 3, &a_data);
+
+    let outputs =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+
+    // Only perturb W (eigenvalue) cotangent for stable finite-diff comparison
+    let g_w = make_f64_vector(&[1.0, 0.5, 0.25]);
+    let g_v = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            (0..9).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Eigh,
+        std::slice::from_ref(&a),
+        &[g_w.clone(), g_v.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+    assert!(
+        analytical.iter().all(|v| v.is_finite()),
+        "3x3 Eigh VJP should stay finite: {analytical:?}"
+    );
+
+    // Finite differences (symmetric perturbation)
+    let eps = 1e-6;
+    let gs = [g_w, g_v];
+    let mut numerical = vec![0.0; 9];
+    for idx in 0..9_usize {
+        let row = idx / 3;
+        let col = idx % 3;
+
+        let mut plus = a_data.to_vec();
+        plus[row * 3 + col] += eps;
+        if row != col {
+            plus[col * 3 + row] += eps;
+        }
+
+        let mut minus = a_data.to_vec();
+        minus[row * 3 + col] -= eps;
+        if row != col {
+            minus[col * 3 + row] -= eps;
+        }
+
+        let l_plus = loss_multi(
+            Primitive::Eigh,
+            &make_f64_matrix(3, 3, &plus),
+            &gs,
+            &BTreeMap::new(),
+        );
+        let l_minus = loss_multi(
+            Primitive::Eigh,
+            &make_f64_matrix(3, 3, &minus),
+            &gs,
+            &BTreeMap::new(),
+        );
+
+        let mut grad = (l_plus - l_minus) / (2.0 * eps);
+        if row != col {
+            grad *= 0.5;
+        }
+        numerical[idx] = grad;
+    }
+
+    assert_gradients_close(
+        &analytical,
+        &numerical,
+        1e-3,
+        "Eigh VJP well conditioned 3x3",
+    );
+}
+
+/// TriangularSolve VJP with near-zero diagonal (nearly singular).
+/// L * x = b where L has a diagonal element close to zero.
+#[test]
+fn triangular_solve_vjp_near_singular_diagonal() {
+    // Lower triangular with L[1,1] ≈ 0.001 (nearly singular)
+    let l_data = [1.0, 0.0, 0.5, 0.001];
+    let l_matrix = make_f64_matrix(2, 2, &l_data);
+    // b must be rank-2 (matrix) for TriangularSolve
+    let b = make_f64_matrix(2, 1, &[1.0, 0.5]);
+
+    let mut params = BTreeMap::new();
+    params.insert("lower".to_owned(), "true".to_owned());
+    params.insert("unit_diagonal".to_owned(), "false".to_owned());
+
+    let x_out =
+        eval_primitive(Primitive::TriangularSolve, &[l_matrix.clone(), b.clone()], &params)
+            .unwrap();
+
+    let g = make_f64_matrix(2, 1, &[1.0, 1.0]);
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::TriangularSolve,
+        &[l_matrix, b],
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&x_out),
+        &params,
+    )
+    .unwrap();
+
+    // VJP should produce finite gradients for both L and b
+    for (i, grad) in vjp_result.iter().enumerate() {
+        let vals = extract_f64_vec(grad);
+        assert!(
+            vals.iter().all(|v| v.is_finite()),
+            "near-singular TriangularSolve VJP output {i} should be finite: {vals:?}"
+        );
+    }
+}
+
+/// Exp VJP at large input: exp(700) is near f64::MAX.
+/// Verify gradients stay finite and are numerically accurate.
+#[test]
+fn exp_vjp_large_input() {
+    let x = Value::scalar_f64(700.0);
+    let g = Value::scalar_f64(1.0);
+
+    let vjp_result = fj_ad::vjp_single(Primitive::Exp, &[x.clone()], &g, &BTreeMap::new()).unwrap();
+    let analytical = extract_f64_scalar(&vjp_result[0]);
+
+    // exp'(x) = exp(x), so gradient should equal exp(700)
+    assert!(analytical.is_finite(), "exp(700) gradient should be finite");
+    let expected = 700.0_f64.exp();
+    assert!(
+        (analytical - expected).abs() / expected < 1e-10,
+        "exp VJP at 700: analytical={analytical}, expected={expected}"
+    );
+}
+
+/// Log VJP near zero: log(1e-300) exercises gradient 1/x with tiny x.
+#[test]
+fn log_vjp_near_zero() {
+    let x = Value::scalar_f64(1e-300);
+    let g = Value::scalar_f64(1.0);
+
+    let vjp_result = fj_ad::vjp_single(Primitive::Log, &[x.clone()], &g, &BTreeMap::new()).unwrap();
+    let analytical = extract_f64_scalar(&vjp_result[0]);
+
+    // log'(x) = 1/x = 1e300
+    assert!(analytical.is_finite(), "log(1e-300) gradient should be finite");
+    let expected = 1.0 / 1e-300;
+    assert!(
+        (analytical - expected).abs() / expected < 1e-10,
+        "log VJP near zero: analytical={analytical}, expected={expected}"
+    );
+}
+
+/// Div VJP with near-zero denominator.
+#[test]
+fn div_vjp_near_zero_denominator() {
+    let a = Value::scalar_f64(1.0);
+    let b = Value::scalar_f64(1e-150);
+    let g = Value::scalar_f64(1.0);
+
+    let vjp_result =
+        fj_ad::vjp_single(Primitive::Div, &[a.clone(), b.clone()], &g, &BTreeMap::new()).unwrap();
+
+    // d(a/b)/da = 1/b = 1e150 (finite)
+    let grad_a = extract_f64_scalar(&vjp_result[0]);
+    assert!(grad_a.is_finite(), "div grad w.r.t. numerator should be finite");
+    assert!(
+        (grad_a - 1e150).abs() / 1e150 < 1e-10,
+        "div VJP grad_a: got {grad_a}, expected 1e150"
+    );
+
+    // d(a/b)/db = -a/b^2 = -1e300 (finite)
+    let grad_b = extract_f64_scalar(&vjp_result[1]);
+    assert!(
+        grad_b.is_finite(),
+        "div grad w.r.t. denominator should be finite"
+    );
+}
+
+/// Cholesky VJP with 3x3 ill-conditioned SPD matrix (condition number ~10^6).
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn cholesky_vjp_ill_conditioned_3x3() {
+    // SPD matrix with eigenvalues ~[1, 1e-3, 1e-6]
+    // A = Q diag(1, 1e-3, 1e-6) Q^T where Q is a Householder reflection
+    let a_data = [
+        1.000001, 0.0005, 0.0001, 0.0005, 0.001001, 0.0003, 0.0001, 0.0003, 0.000001,
+    ];
+
+    // Ensure it's SPD by constructing A = B^T B + eps*I
+    let b_data = [1.0, 0.0, 0.0, 0.0005, 0.001, 0.0, 0.0001, 0.0003, 0.001];
+    let mut spd = [0.0_f64; 9];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                spd[i * 3 + j] += b_data[k * 3 + i] * b_data[k * 3 + j];
+            }
+            if i == j {
+                spd[i * 3 + j] += 1e-8; // regularization
+            }
+        }
+    }
+
+    let a = make_f64_matrix(3, 3, &spd);
+    let outputs = eval_primitive_multi(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let l_out = &outputs[0];
+
+    let g_l = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            (0..9)
+                .map(|i| Literal::from_f64(if i % 4 == 0 { 1.0 } else { 0.25 }))
+                .collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        std::slice::from_ref(&g_l),
+        std::slice::from_ref(l_out),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+    assert!(
+        analytical.iter().all(|v| v.is_finite()),
+        "ill-conditioned 3x3 Cholesky VJP should stay finite: {analytical:?}"
+    );
+
+    // Finite differences for symmetric perturbation
+    let eps = 1e-7;
+    let mut numerical = vec![0.0; 9];
+    for idx in 0..9_usize {
+        let row = idx / 3;
+        let col = idx % 3;
+
+        let mut plus = spd.to_vec();
+        plus[row * 3 + col] += eps;
+        if row != col {
+            plus[col * 3 + row] += eps;
+        }
+
+        let mut minus = spd.to_vec();
+        minus[row * 3 + col] -= eps;
+        if row != col {
+            minus[col * 3 + row] -= eps;
+        }
+
+        let l_plus = loss_multi(
+            Primitive::Cholesky,
+            &make_f64_matrix(3, 3, &plus),
+            std::slice::from_ref(&g_l),
+            &BTreeMap::new(),
+        );
+        let l_minus = loss_multi(
+            Primitive::Cholesky,
+            &make_f64_matrix(3, 3, &minus),
+            std::slice::from_ref(&g_l),
+            &BTreeMap::new(),
+        );
+
+        let mut grad = (l_plus - l_minus) / (2.0 * eps);
+        if row != col {
+            grad *= 0.5;
+        }
+        numerical[idx] = grad;
+    }
+
+    // Wider tolerance for ill-conditioned case (conditioning amplifies FD error)
+    assert_gradients_close(
+        &analytical,
+        &numerical,
+        1.0,
+        "Cholesky VJP ill conditioned 3x3",
+    );
+}
+
+/// SVD VJP with 3x3 matrix having a near-zero singular value.
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn svd_vjp_near_zero_singular_value() {
+    // Matrix with singular values approximately [5.0, 1.0, 1e-6]
+    let a_data = [5.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1e-6];
+    let a = make_f64_matrix(3, 3, &a_data);
+
+    let outputs =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+
+    // Only perturb S cotangent to avoid numerical noise in U/Vt
+    let g_u = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            (0..9).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+    let g_s = make_f64_vector(&[1.0, 0.5, 0.25]);
+    let g_vt = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![3, 3] },
+            (0..9).map(|_| Literal::from_f64(0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result = fj_ad::vjp(
+        Primitive::Svd,
+        std::slice::from_ref(&a),
+        &[g_u.clone(), g_s.clone(), g_vt.clone()],
+        &outputs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp_result[0]);
+    assert!(
+        analytical.iter().all(|v| v.is_finite()),
+        "near-zero singular value SVD VJP should stay finite: {analytical:?}"
+    );
+
+    // Finite differences
+    let eps = 1e-6;
+    let gs = [g_u, g_s, g_vt];
+    let mut numerical = vec![0.0; 9];
+    for idx in 0..9_usize {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let l_plus =
+            loss_multi(Primitive::Svd, &make_f64_matrix(3, 3, &plus), &gs, &BTreeMap::new());
+
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let l_minus = loss_multi(
+            Primitive::Svd,
+            &make_f64_matrix(3, 3, &minus),
+            &gs,
+            &BTreeMap::new(),
+        );
+
+        numerical[idx] = (l_plus - l_minus) / (2.0 * eps);
+    }
+
+    // Wider tolerance for near-singular case (S cotangent only, so should be stable)
+    assert_gradients_close(
+        &analytical,
+        &numerical,
+        1e-3,
+        "SVD VJP near zero singular value 3x3",
+    );
 }

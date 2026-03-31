@@ -44,7 +44,7 @@ fn literal_to_i128(literal: Literal) -> Option<i128> {
 /// Infer the DType from a slice of Literal elements.
 /// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
 #[inline]
-pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
+pub fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     use DType::{BF16, Bool, Complex64, Complex128, F16, F32, F64, I32, I64, U32, U64};
     // JAX type promotion lattice (jax.numpy.promote_types):
     // - Half-precision types (BF16, F16) absorb integer and boolean types
@@ -54,8 +54,13 @@ pub(crate) fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     // - U64+I64 → F64 (no common integer type)
     // - U32+F32 → F32 (JAX lattice; F32 absorbs U32)
     match (lhs, rhs) {
-        // Complex types dominate
+        // Complex128 absorbs everything
         (Complex128, _) | (_, Complex128) => Complex128,
+        // Complex64 + types that promote to f64 → Complex128
+        // JAX: complex64 + float64 → complex128, complex64 + int64 → complex128,
+        //       complex64 + uint64 → complex128
+        (Complex64, F64 | I64 | U64) | (F64 | I64 | U64, Complex64) => Complex128,
+        // Complex64 + types that stay within f32 → Complex64
         (Complex64, _) | (_, Complex64) => Complex64,
         // F64 absorbs everything
         (F64, _) | (_, F64) => F64,

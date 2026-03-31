@@ -9,6 +9,9 @@ mod tensor_ops;
 pub mod threefry;
 mod type_promotion;
 
+/// Public access to `promote_dtype` for conformance tests.
+pub use type_promotion::promote_dtype as promote_dtype_public;
+
 use fj_core::{Literal, Primitive, Shape, TensorValue, Value, ValueError};
 use std::collections::BTreeMap;
 
