@@ -1346,7 +1346,7 @@ fn eval_reduce_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{eval_primitive, EvalError};
+    use super::{EvalError, eval_primitive};
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
     use std::collections::BTreeMap;
 
@@ -5793,7 +5793,7 @@ mod tests {
 #[cfg(test)]
 mod prop_tests {
     use super::arithmetic::trigamma_approx;
-    use super::{eval_fori_loop, eval_primitive, EvalError};
+    use super::{EvalError, eval_fori_loop, eval_primitive};
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
     use proptest::prelude::*;
     use std::collections::BTreeMap;

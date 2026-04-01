@@ -1010,29 +1010,23 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![g_real, g_imag])
         }
-        Primitive::Conj => Ok(vec![eval_primitive(
-            Primitive::Conj,
-            std::slice::from_ref(g),
-            &BTreeMap::new(),
-        )
-        .map_err(|e| AdError::EvalFailed(e.to_string()))?]),
+        Primitive::Conj => Ok(vec![
+            eval_primitive(Primitive::Conj, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+        ]),
         Primitive::Real => {
             let zero = zeros_like(g);
-            Ok(vec![eval_primitive(
-                Primitive::Complex,
-                &[g.clone(), zero],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?])
+            Ok(vec![
+                eval_primitive(Primitive::Complex, &[g.clone(), zero], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ])
         }
         Primitive::Imag => {
             let zero = zeros_like(g);
-            Ok(vec![eval_primitive(
-                Primitive::Complex,
-                &[zero, g.clone()],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?])
+            Ok(vec![
+                eval_primitive(Primitive::Complex, &[zero, g.clone()], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ])
         }
         Primitive::Select => {
             // select(cond, on_true, on_false): grad to on_true where cond, else to on_false
@@ -2071,12 +2065,10 @@ pub fn vjp(
         }
 
         // Rev: gradient is reversed along the same axes
-        Primitive::Rev => Ok(vec![eval_primitive(
-            Primitive::Rev,
-            std::slice::from_ref(g),
-            params,
-        )
-        .map_err(|e| AdError::EvalFailed(e.to_string()))?]),
+        Primitive::Rev => Ok(vec![
+            eval_primitive(Primitive::Rev, std::slice::from_ref(g), params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+        ]),
         // Squeeze: gradient needs reshape back to original shape
         Primitive::Squeeze => {
             let shape_str = match &inputs[0] {
@@ -2094,12 +2086,10 @@ pub fn vjp(
             } else {
                 let mut p = BTreeMap::new();
                 p.insert("new_shape".into(), shape_str);
-                Ok(vec![eval_primitive(
-                    Primitive::Reshape,
-                    std::slice::from_ref(g),
-                    &p,
-                )
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?])
+                Ok(vec![
+                    eval_primitive(Primitive::Reshape, std::slice::from_ref(g), &p)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+                ])
             }
         }
         // Split: gradient reshapes back to the original input shape.
@@ -2119,12 +2109,10 @@ pub fn vjp(
             } else {
                 let mut p = BTreeMap::new();
                 p.insert("new_shape".into(), shape_str);
-                Ok(vec![eval_primitive(
-                    Primitive::Reshape,
-                    std::slice::from_ref(g),
-                    &p,
-                )
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?])
+                Ok(vec![
+                    eval_primitive(Primitive::Reshape, std::slice::from_ref(g), &p)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+                ])
             }
         }
         // ExpandDims: gradient is squeeze (inverse of expand_dims)
@@ -2135,12 +2123,10 @@ pub fn vjp(
                 .unwrap_or(0);
             let mut p = BTreeMap::new();
             p.insert("dimensions".into(), axis.to_string());
-            Ok(vec![eval_primitive(
-                Primitive::Squeeze,
-                std::slice::from_ref(g),
-                &p,
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?])
+            Ok(vec![
+                eval_primitive(Primitive::Squeeze, std::slice::from_ref(g), &p)
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ])
         }
 
         // Bitwise ops are not differentiable — gradient is zero.
@@ -5304,9 +5290,9 @@ pub fn hessian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{build_program, Equation, ProgramSpec};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use fj_core::{Equation, ProgramSpec, build_program};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Mutex, OnceLock};
 
     fn custom_rule_test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -9639,9 +9625,10 @@ mod tests {
                 })
                 .collect(),
             Value::Scalar(l) => {
-                vec![l
-                    .as_complex128()
-                    .unwrap_or((l.as_f64().unwrap_or(0.0), 0.0))]
+                vec![
+                    l.as_complex128()
+                        .unwrap_or((l.as_f64().unwrap_or(0.0), 0.0)),
+                ]
             }
         }
     }

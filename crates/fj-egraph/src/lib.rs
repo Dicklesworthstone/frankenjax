@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use egg::{define_language, rewrite, CostFunction, Id, Language, RecExpr, Runner};
+use egg::{CostFunction, Id, Language, RecExpr, Runner, define_language, rewrite};
 use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, VarId};
 use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1812,7 +1812,7 @@ fn is_egraph_supported_primitive(primitive: Primitive) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{build_program, DType, ProgramSpec, Shape, TensorValue, Value};
+    use fj_core::{DType, ProgramSpec, Shape, TensorValue, Value, build_program};
     use fj_interpreters::eval_jaxpr;
 
     #[test]

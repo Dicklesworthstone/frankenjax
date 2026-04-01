@@ -530,7 +530,11 @@ impl Value {
     }
 
     pub fn vector_bool(values: &[bool]) -> Result<Self, ValueError> {
-        let elements = values.iter().copied().map(Literal::Bool).collect::<Vec<_>>();
+        let elements = values
+            .iter()
+            .copied()
+            .map(Literal::Bool)
+            .collect::<Vec<_>>();
         Ok(Self::Tensor(TensorValue::new(
             DType::Bool,
             Shape::vector(values.len() as u32),
@@ -4251,7 +4255,9 @@ mod tests {
 
     #[test]
     fn shape_zero_dim_element_count() {
-        let s = Shape { dims: vec![3, 0, 4] };
+        let s = Shape {
+            dims: vec![3, 0, 4],
+        };
         assert_eq!(s.element_count(), Some(0));
     }
 
@@ -4259,12 +4265,7 @@ mod tests {
 
     #[test]
     fn tensor_value_empty() {
-        let tv = TensorValue::new(
-            DType::F64,
-            Shape { dims: vec![0] },
-            vec![],
-        )
-        .unwrap();
+        let tv = TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap();
         assert!(tv.is_empty());
         assert_eq!(tv.len(), 0);
         assert_eq!(tv.rank(), 1);
@@ -4283,12 +4284,8 @@ mod tests {
     #[test]
     fn tensor_value_scalar_shape() {
         // Scalar shape = 1 element
-        let tv = TensorValue::new(
-            DType::F64,
-            Shape::scalar(),
-            vec![Literal::from_f64(42.0)],
-        )
-        .unwrap();
+        let tv =
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(42.0)]).unwrap();
         assert_eq!(tv.len(), 1);
         assert_eq!(tv.rank(), 0);
     }
@@ -4306,12 +4303,8 @@ mod tests {
 
     #[test]
     fn tensor_value_leading_dim_scalar() {
-        let tv = TensorValue::new(
-            DType::F64,
-            Shape::scalar(),
-            vec![Literal::from_f64(1.0)],
-        )
-        .unwrap();
+        let tv =
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(1.0)]).unwrap();
         assert_eq!(tv.leading_dim(), None);
     }
 
@@ -4381,12 +4374,7 @@ mod tests {
     #[test]
     fn jaxpr_empty_equations() {
         // Identity function: output = input
-        let jaxpr = Jaxpr::new(
-            vec![VarId(1)],
-            vec![],
-            vec![VarId(1)],
-            vec![],
-        );
+        let jaxpr = Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![]);
         assert!(jaxpr.equations.is_empty());
         assert_eq!(jaxpr.invars, jaxpr.outvars);
     }
@@ -4397,12 +4385,28 @@ mod tests {
     fn all_primitives_have_nonempty_name() {
         // Ensure every variant of Primitive returns a non-empty as_str()
         let prims = [
-            Primitive::Add, Primitive::Sub, Primitive::Mul, Primitive::Neg,
-            Primitive::Abs, Primitive::Sin, Primitive::Cos, Primitive::Exp,
-            Primitive::Log, Primitive::Sqrt, Primitive::ReduceSum,
-            Primitive::Cholesky, Primitive::Qr, Primitive::Svd,
-            Primitive::Fft, Primitive::Ifft, Primitive::Rfft, Primitive::Irfft,
-            Primitive::Cond, Primitive::Scan, Primitive::While, Primitive::Switch,
+            Primitive::Add,
+            Primitive::Sub,
+            Primitive::Mul,
+            Primitive::Neg,
+            Primitive::Abs,
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Exp,
+            Primitive::Log,
+            Primitive::Sqrt,
+            Primitive::ReduceSum,
+            Primitive::Cholesky,
+            Primitive::Qr,
+            Primitive::Svd,
+            Primitive::Fft,
+            Primitive::Ifft,
+            Primitive::Rfft,
+            Primitive::Irfft,
+            Primitive::Cond,
+            Primitive::Scan,
+            Primitive::While,
+            Primitive::Switch,
         ];
         for p in prims {
             assert!(
@@ -4418,9 +4422,17 @@ mod tests {
     #[test]
     fn dtype_all_variants_distinct() {
         let dtypes = [
-            DType::BF16, DType::F16, DType::F32, DType::F64,
-            DType::I32, DType::I64, DType::U32, DType::U64,
-            DType::Bool, DType::Complex64, DType::Complex128,
+            DType::BF16,
+            DType::F16,
+            DType::F32,
+            DType::F64,
+            DType::I32,
+            DType::I64,
+            DType::U32,
+            DType::U64,
+            DType::Bool,
+            DType::Complex64,
+            DType::Complex128,
         ];
         // Verify all 11 are distinct via pairwise comparison
         for (i, a) in dtypes.iter().enumerate() {

@@ -342,12 +342,10 @@ mod tests {
         let x = 1.5;
         let sin_jaxpr = make_unary_jaxpr(Primitive::Sin);
         let cos_jaxpr = make_unary_jaxpr(Primitive::Cos);
-        let sin_val = eval_jaxpr(&sin_jaxpr, &[Value::scalar_f64(x)])
-            .unwrap()[0]
+        let sin_val = eval_jaxpr(&sin_jaxpr, &[Value::scalar_f64(x)]).unwrap()[0]
             .as_f64_scalar()
             .unwrap();
-        let cos_val = eval_jaxpr(&cos_jaxpr, &[Value::scalar_f64(x)])
-            .unwrap()[0]
+        let cos_val = eval_jaxpr(&cos_jaxpr, &[Value::scalar_f64(x)]).unwrap()[0]
             .as_f64_scalar()
             .unwrap();
         assert!((sin_val * sin_val + cos_val * cos_val - 1.0).abs() < 1e-12);

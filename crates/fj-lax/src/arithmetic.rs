@@ -3,8 +3,8 @@
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::collections::BTreeMap;
 
-use crate::type_promotion::{binary_literal_op, promote_dtype};
 use crate::EvalError;
+use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
