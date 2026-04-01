@@ -8,7 +8,7 @@
     "rust_version": "rustc 1.96.0-nightly (80d0e4be6 2026-03-25)",
     "os": "linux",
     "cargo_target_dir": "/tmp/cargo-target",
-    "timestamp_unix_ms": 1774926465774
+    "timestamp_unix_ms": 1775063980855
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -16,10 +16,10 @@
     "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__ttl_construction_with_empty_stack_is_deterministic.json"
   ],
   "result": "pass",
-  "duration_ms": 38,
+  "duration_ms": 35,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-core;result=pass",
   "phase_timings": {
-    "setup_ms": 38,
+    "setup_ms": 35,
     "execute_ms": 0,
     "verify_ms": 0,
     "teardown_ms": 0

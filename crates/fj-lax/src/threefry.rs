@@ -542,4 +542,223 @@ mod tests {
             "heavily-weighted category should dominate, got {count_0}/1000"
         );
     }
+
+    // === Extended RNG tests (frankenjax-tr5) ===
+
+    #[test]
+    fn test_multi_level_split_independence() {
+        // Split a key multiple times and verify all descendants are unique
+        let root = random_key(42);
+        let (a, b) = random_split(root);
+        let (a1, a2) = random_split(a);
+        let (b1, b2) = random_split(b);
+        let (a1a, a1b) = random_split(a1);
+
+        let all_keys = [root, a, b, a1, a2, b1, b2, a1a, a1b];
+        for i in 0..all_keys.len() {
+            for j in (i + 1)..all_keys.len() {
+                assert_ne!(
+                    all_keys[i], all_keys[j],
+                    "keys at positions {i} and {j} should be different"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_multi_level_split_determinism() {
+        // Splitting the same key tree twice should produce identical results
+        let root = random_key(123);
+        let (a1, b1) = random_split(root);
+        let (a1a1, a1b1) = random_split(a1);
+
+        let (a2, b2) = random_split(root);
+        let (a1a2, a1b2) = random_split(a2);
+
+        assert_eq!(a1, a2);
+        assert_eq!(b1, b2);
+        assert_eq!(a1a1, a1a2);
+        assert_eq!(a1b1, a1b2);
+    }
+
+    #[test]
+    fn test_fold_in_composition() {
+        let key = random_key(42);
+        // fold_in(fold_in(key, 0), 1) should differ from fold_in(key, 0) and fold_in(key, 1)
+        let f0 = random_fold_in(key, 0);
+        let f1 = random_fold_in(key, 1);
+        let f01 = random_fold_in(f0, 1);
+        let f10 = random_fold_in(f1, 0);
+
+        assert_ne!(f0, f1, "fold_in(key,0) != fold_in(key,1)");
+        assert_ne!(f01, f10, "fold_in composition should not commute");
+        assert_ne!(f01, f0, "double fold should differ from single");
+        assert_ne!(f01, f1, "double fold should differ from single");
+    }
+
+    #[test]
+    fn test_fold_in_sequence_samples_independent() {
+        // Fold in a sequence of indices and verify samples are independent
+        let root = random_key(42);
+        let n = 1000;
+        let mut all_means = Vec::new();
+        for i in 0..10 {
+            let derived = random_fold_in(root, i);
+            let samples = random_uniform(derived, n, 0.0, 1.0);
+            let mean = samples.iter().sum::<f64>() / n as f64;
+            all_means.push(mean);
+        }
+        // Each mean should be near 0.5
+        for (i, &mean) in all_means.iter().enumerate() {
+            assert!(
+                (mean - 0.5).abs() < 0.05,
+                "fold_in({i}) uniform mean should be ~0.5, got {mean}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_large_seed_values() {
+        // Seeds near u64::MAX should work correctly
+        let key_max = random_key(u64::MAX);
+        assert_eq!(key_max.0[0], u32::MAX);
+        assert_eq!(key_max.0[1], u32::MAX);
+
+        let key_large = random_key(u64::MAX - 1);
+        assert_ne!(key_max, key_large);
+
+        // Both should produce valid samples
+        let samples_max = random_uniform(key_max, 100, 0.0, 1.0);
+        let samples_large = random_uniform(key_large, 100, 0.0, 1.0);
+        assert_ne!(samples_max, samples_large);
+        for v in samples_max.iter().chain(samples_large.iter()) {
+            assert!(*v >= 0.0 && *v < 1.0, "large seed sample {v} out of range");
+        }
+    }
+
+    #[test]
+    fn test_exponential_via_uniform() {
+        // Exponential distribution via -log(uniform): verify mean ≈ 1/λ
+        let key = random_key(42);
+        let n = 10_000;
+        let uniforms = random_uniform(key, n, 0.0, 1.0);
+        let lambda = 2.0;
+        let exponentials: Vec<f64> = uniforms
+            .iter()
+            .map(|&u| -u.max(1e-30).ln() / lambda)
+            .collect();
+
+        let mean = exponentials.iter().sum::<f64>() / n as f64;
+        let expected_mean = 1.0 / lambda;
+        assert!(
+            (mean - expected_mean).abs() < 0.05,
+            "exponential mean should be ~{expected_mean}, got {mean}"
+        );
+
+        // All values should be non-negative
+        assert!(
+            exponentials.iter().all(|&v| v >= 0.0),
+            "exponential values should be non-negative"
+        );
+    }
+
+    #[test]
+    fn test_truncated_normal_via_rejection() {
+        // Truncated normal in [-2, 2] via rejection sampling
+        let key = random_key(42);
+        let n = 20_000;
+        let normals = random_normal(key, n);
+        let truncated: Vec<f64> = normals
+            .into_iter()
+            .filter(|&v| v >= -2.0 && v <= 2.0)
+            .collect();
+
+        // Should retain ~95.4% of samples (2-sigma)
+        let retention = truncated.len() as f64 / n as f64;
+        assert!(
+            (retention - 0.954).abs() < 0.02,
+            "truncated normal retention should be ~95.4%, got {:.1}%",
+            retention * 100.0
+        );
+
+        // Mean should be ~0 (symmetric truncation)
+        let mean = truncated.iter().sum::<f64>() / truncated.len() as f64;
+        assert!(
+            mean.abs() < 0.05,
+            "truncated normal mean should be ~0, got {mean}"
+        );
+    }
+
+    #[test]
+    fn test_multi_seed_ks_uniform() {
+        // Run KS test across 5 different seeds to verify consistency
+        for seed in [0, 42, 100, 999, 65535] {
+            let key = random_key(seed);
+            let n = 5_000;
+            let mut vals = random_uniform(key, n, 0.0, 1.0);
+            vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut d_max = 0.0_f64;
+            for (i, v) in vals.iter().enumerate() {
+                let empirical = (i + 1) as f64 / n as f64;
+                d_max = d_max.max((empirical - *v).abs());
+                let empirical_minus = i as f64 / n as f64;
+                d_max = d_max.max((empirical_minus - *v).abs());
+            }
+            let critical = 1.63 / (n as f64).sqrt();
+            assert!(
+                d_max < critical,
+                "KS test failed for seed {seed}: D={d_max:.4}, critical={critical:.4}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_multi_seed_normal_mean_stddev() {
+        // Verify normal distribution statistics across multiple seeds
+        for seed in [7, 42, 256, 1000, 50000] {
+            let key = random_key(seed);
+            let n = 5_000;
+            let vals = random_normal(key, n);
+            let mean = vals.iter().sum::<f64>() / n as f64;
+            let variance = vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64;
+            let stddev = variance.sqrt();
+            assert!(
+                mean.abs() < 0.08,
+                "seed {seed}: normal mean should be ~0, got {mean}"
+            );
+            assert!(
+                (stddev - 1.0).abs() < 0.08,
+                "seed {seed}: normal stddev should be ~1, got {stddev}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_split_samples_uncorrelated() {
+        // Samples from split keys should be uncorrelated
+        let root = random_key(42);
+        let (k1, k2) = random_split(root);
+        let n = 1000;
+        let samples1 = random_uniform(k1, n, 0.0, 1.0);
+        let samples2 = random_uniform(k2, n, 0.0, 1.0);
+
+        // Compute Pearson correlation coefficient
+        let mean1 = samples1.iter().sum::<f64>() / n as f64;
+        let mean2 = samples2.iter().sum::<f64>() / n as f64;
+        let mut cov = 0.0;
+        let mut var1 = 0.0;
+        let mut var2 = 0.0;
+        for i in 0..n {
+            let d1 = samples1[i] - mean1;
+            let d2 = samples2[i] - mean2;
+            cov += d1 * d2;
+            var1 += d1 * d1;
+            var2 += d2 * d2;
+        }
+        let corr = cov / (var1.sqrt() * var2.sqrt());
+        assert!(
+            corr.abs() < 0.1,
+            "split key samples should be uncorrelated, got r={corr:.4}"
+        );
+    }
 }

@@ -508,3 +508,215 @@ proptest! {
         prop_assert!((d1 - d2).abs() < 1e-6, "grad={d1}, jit(grad)={d2}");
     }
 }
+
+// ============================================================================
+// 8. Extended Transform Composition Tests (frankenjax-h52)
+// ============================================================================
+
+/// grad(sin(x)) = cos(x)
+#[test]
+fn grad_sin() {
+    let jaxpr = build_program(ProgramSpec::SinX);
+    let result = grad(jaxpr)
+        .call(vec![Value::scalar_f64(1.0)])
+        .expect("grad(sin) should succeed");
+    let d = result[0].as_f64_scalar().expect("scalar");
+    let expected = 1.0_f64.cos();
+    assert!(
+        (d - expected).abs() < 1e-10,
+        "grad(sin(1.0)) should be cos(1.0)={expected}, got {d}"
+    );
+}
+
+/// grad(cos(x)) = -sin(x)
+#[test]
+fn grad_cos() {
+    let jaxpr = build_program(ProgramSpec::CosX);
+    let result = grad(jaxpr)
+        .call(vec![Value::scalar_f64(1.0)])
+        .expect("grad(cos) should succeed");
+    let d = result[0].as_f64_scalar().expect("scalar");
+    let expected = -(1.0_f64.sin());
+    assert!(
+        (d - expected).abs() < 1e-10,
+        "grad(cos(1.0)) should be -sin(1.0)={expected}, got {d}"
+    );
+}
+
+/// grad(exp(x)) = exp(x)
+#[test]
+fn grad_exp() {
+    let jaxpr = build_program(ProgramSpec::LaxExp);
+    let result = grad(jaxpr)
+        .call(vec![Value::scalar_f64(2.0)])
+        .expect("grad(exp) should succeed");
+    let d = result[0].as_f64_scalar().expect("scalar");
+    let expected = 2.0_f64.exp();
+    assert!(
+        (d - expected).abs() < 1e-10,
+        "grad(exp(2.0)) should be exp(2.0)={expected}, got {d}"
+    );
+}
+
+/// grad(log(x)) = 1/x
+#[test]
+fn grad_log() {
+    let jaxpr = build_program(ProgramSpec::LaxLog);
+    let result = grad(jaxpr)
+        .call(vec![Value::scalar_f64(3.0)])
+        .expect("grad(log) should succeed");
+    let d = result[0].as_f64_scalar().expect("scalar");
+    let expected = 1.0 / 3.0;
+    assert!(
+        (d - expected).abs() < 1e-10,
+        "grad(log(3.0)) should be 1/3={expected}, got {d}"
+    );
+}
+
+/// grad(tanh(x)) = 1 - tanh(x)^2
+#[test]
+fn grad_tanh() {
+    let jaxpr = build_program(ProgramSpec::LaxTanh);
+    let result = grad(jaxpr)
+        .call(vec![Value::scalar_f64(0.5)])
+        .expect("grad(tanh) should succeed");
+    let d = result[0].as_f64_scalar().expect("scalar");
+    let t = 0.5_f64.tanh();
+    let expected = 1.0 - t * t;
+    assert!(
+        (d - expected).abs() < 1e-10,
+        "grad(tanh(0.5)) should be sech^2(0.5)={expected}, got {d}"
+    );
+}
+
+/// grad(grad(sin(x))) = -sin(x)
+#[test]
+fn grad_grad_sin() {
+    let jaxpr = build_program(ProgramSpec::SinX);
+    let result = compose(jaxpr, vec![Transform::Grad, Transform::Grad])
+        .call(vec![Value::scalar_f64(1.0)])
+        .expect("grad(grad(sin)) should succeed");
+    let d2 = result[0].as_f64_scalar().expect("scalar");
+    let expected = -(1.0_f64.sin());
+    assert!(
+        (d2 - expected).abs() < 1e-6,
+        "grad(grad(sin(1.0))) should be -sin(1.0)={expected}, got {d2}"
+    );
+}
+
+/// grad(grad(cos(x))) = -cos(x)
+#[test]
+fn grad_grad_cos() {
+    let jaxpr = build_program(ProgramSpec::CosX);
+    let result = compose(jaxpr, vec![Transform::Grad, Transform::Grad])
+        .call(vec![Value::scalar_f64(1.0)])
+        .expect("grad(grad(cos)) should succeed");
+    let d2 = result[0].as_f64_scalar().expect("scalar");
+    let expected = -(1.0_f64.cos());
+    assert!(
+        (d2 - expected).abs() < 1e-6,
+        "grad(grad(cos(1.0))) should be -cos(1.0)={expected}, got {d2}"
+    );
+}
+
+/// grad(grad(exp(x))) = exp(x) — exp is its own nth derivative
+#[test]
+fn grad_grad_exp() {
+    let jaxpr = build_program(ProgramSpec::LaxExp);
+    let result = compose(jaxpr, vec![Transform::Grad, Transform::Grad])
+        .call(vec![Value::scalar_f64(1.0)])
+        .expect("grad(grad(exp)) should succeed");
+    let d2 = result[0].as_f64_scalar().expect("scalar");
+    let expected = 1.0_f64.exp();
+    assert!(
+        (d2 - expected).abs() < 1e-6,
+        "grad(grad(exp(1.0))) should be exp(1.0)={expected}, got {d2}"
+    );
+}
+
+/// grad(grad(grad(x^3))) = 6 (third derivative of x^3 is constant 6)
+#[test]
+fn grad_grad_grad_cube() {
+    // f(x) = x^2 + 3x has f'''(x) = 0
+    let jaxpr2 = build_program(ProgramSpec::SquarePlusLinear);
+    let result = compose(
+        jaxpr2,
+        vec![Transform::Grad, Transform::Grad, Transform::Grad],
+    )
+    .call(vec![Value::scalar_f64(5.0)])
+    .expect("grad(grad(grad(x^2+3x))) should succeed");
+    let d3 = result[0].as_f64_scalar().expect("scalar");
+    // f(x) = x^2 + 3x, f'(x) = 2x+3, f''(x) = 2, f'''(x) = 0
+    assert!(d3.abs() < 1e-6, "grad^3(x^2+3x) should be 0, got {d3}");
+}
+
+/// vmap(grad(sin)) over a batch of inputs
+#[test]
+fn vmap_grad_sin_batch() {
+    let jaxpr = build_program(ProgramSpec::SinX);
+    let inputs = vec![
+        0.0,
+        std::f64::consts::FRAC_PI_4,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    ];
+    let result = vmap(jaxpr)
+        .compose_grad()
+        .call(vec![Value::vector_f64(&inputs).expect("vector")])
+        .expect("vmap(grad(sin)) should succeed");
+    let t = result[0].as_tensor().expect("tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals.len(), 4);
+    for (i, (&actual, &x)) in vals.iter().zip(inputs.iter()).enumerate() {
+        let expected = x.cos();
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "vmap(grad(sin))[{i}]: x={x}, expected cos(x)={expected}, got {actual}"
+        );
+    }
+}
+
+/// jit(vmap(grad(exp))) — triple composition with exp
+#[test]
+fn jit_vmap_grad_exp() {
+    let jaxpr = build_program(ProgramSpec::LaxExp);
+    let inputs = vec![0.0, 1.0, 2.0];
+    let result = compose(
+        jaxpr,
+        vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+    )
+    .call(vec![Value::vector_f64(&inputs).expect("vector")])
+    .expect("jit(vmap(grad(exp))) should succeed");
+    let t = result[0].as_tensor().expect("tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    for (i, (&actual, &x)) in vals.iter().zip(inputs.iter()).enumerate() {
+        let expected = x.exp();
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "jit(vmap(grad(exp)))[{i}]: expected exp({x})={expected}, got {actual}"
+        );
+    }
+}
+
+/// vmap(grad(grad(sin))) — vectorized second derivative of sin
+/// sin''(x) = -sin(x)
+#[test]
+fn vmap_grad_grad_sin() {
+    let jaxpr = build_program(ProgramSpec::SinX);
+    let inputs = vec![0.5, 1.0, 2.0];
+    let result = compose(
+        jaxpr,
+        vec![Transform::Vmap, Transform::Grad, Transform::Grad],
+    )
+    .call(vec![Value::vector_f64(&inputs).expect("vector")])
+    .expect("vmap(grad(grad(sin))) should succeed");
+    let t = result[0].as_tensor().expect("tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    for (i, (&actual, &x)) in vals.iter().zip(inputs.iter()).enumerate() {
+        let expected = -x.sin();
+        assert!(
+            (actual - expected).abs() < 1e-4,
+            "vmap(grad(grad(sin)))[{i}]: expected -sin({x})={expected}, got {actual}"
+        );
+    }
+}

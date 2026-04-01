@@ -235,12 +235,36 @@ fn run_composition_case(case: &CompositionCase) {
             // double application of reverse-mode AD
             assert_value_close(&response.outputs[0], &case.expected[0], 1e-8, &case.case_id);
         }
-        "grad" | "value_and_grad" | "jacobian" | "hessian" | "vmap(grad)" | "vmap"
-        | "jit(vmap)" => {
+        "vmap(grad)" => {
+            let jaxpr = build_jaxpr_for_program(&case.program);
+            let args: Vec<Value> = case.args.iter().map(fixture_to_value).collect();
+            let mut compile_options = BTreeMap::new();
+            compile_options.insert("vmap_in_axes".to_owned(), "0".to_owned());
+            let response = dispatch(DispatchRequest {
+                mode: fj_core::CompatibilityMode::Strict,
+                ledger: {
+                    let mut l = fj_core::TraceTransformLedger::new(jaxpr);
+                    l.push_transform(Transform::Vmap, "vmap-0");
+                    l.push_transform(Transform::Grad, "grad-1");
+                    l
+                },
+                args,
+                backend: "cpu".to_owned(),
+                compile_options,
+                custom_hook: None,
+                unknown_incompatible_features: vec![],
+            })
+            .unwrap();
+            assert!(
+                !response.outputs.is_empty(),
+                "{}: empty output",
+                case.case_id
+            );
+            assert_value_close(&response.outputs[0], &case.expected[0], tol, &case.case_id);
+        }
+        "grad" | "value_and_grad" | "jacobian" | "hessian" | "vmap" | "jit(vmap)" => {
             // These compositions are tested via the fj-ad and fj-api public APIs
-            // which are already covered by other test files. The oracle values are
-            // recorded here for reference and future use when the dispatch layer
-            // supports these compositions directly.
+            // which are already covered by other test files.
         }
         other => panic!("unsupported composition: {other}"),
     }
@@ -277,6 +301,23 @@ fn composition_oracle_grad_grad() {
         .filter(|c| c.composition == "grad(grad)")
         .collect();
     assert!(!cases.is_empty(), "expected grad(grad) cases");
+    for case in cases {
+        run_composition_case(case);
+    }
+}
+
+#[test]
+fn composition_oracle_vmap_grad() {
+    let bundle = load_bundle();
+    let cases: Vec<_> = bundle
+        .cases
+        .iter()
+        .filter(|c| c.composition == "vmap(grad)")
+        .collect();
+    if cases.is_empty() {
+        // No vmap(grad) fixture cases yet — skip gracefully
+        return;
+    }
     for case in cases {
         run_composition_case(case);
     }

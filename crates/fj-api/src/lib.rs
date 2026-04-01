@@ -592,6 +592,203 @@ mod tests {
         );
     }
 
+    // ================================================================
+    // E2E trace→transform tests for complex programs (frankenjax-kdi)
+    // ================================================================
+
+    #[test]
+    fn trace_sin_cos_chain_grad_e2e() {
+        // f(x) = sin(cos(x)), grad: f'(x) = cos(cos(x)) * (-sin(x))
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let cos_x = inputs[0].unary_op(Primitive::Cos).unwrap();
+                let sin_cos = cos_x.unary_op(Primitive::Sin).unwrap();
+                vec![sin_cos]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let x = 1.0_f64;
+        let result = grad(closed.jaxpr)
+            .call(vec![Value::scalar_f64(x)])
+            .expect("grad(sin(cos(x))) should succeed");
+        let d = result[0].as_f64_scalar().expect("should be f64");
+        let expected = x.cos().cos() * (-x.sin());
+        assert!(
+            (d - expected).abs() < 1e-10,
+            "grad(sin(cos(1.0))) should be {expected}, got {d}"
+        );
+    }
+
+    #[test]
+    fn trace_exp_mul_grad_e2e() {
+        // f(x) = x * exp(x), grad: f'(x) = exp(x) + x * exp(x) = (1+x) * exp(x)
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let exp_x = inputs[0].unary_op(Primitive::Exp).unwrap();
+                let x_exp = inputs[0].binary_op(Primitive::Mul, &exp_x).unwrap();
+                vec![x_exp]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let x = 2.0_f64;
+        let result = grad(closed.jaxpr)
+            .call(vec![Value::scalar_f64(x)])
+            .expect("grad(x*exp(x)) should succeed");
+        let d = result[0].as_f64_scalar().expect("should be f64");
+        let expected = (1.0 + x) * x.exp();
+        assert!(
+            (d - expected).abs() < 1e-6,
+            "grad(x*exp(x)) at x=2 should be {expected}, got {d}"
+        );
+    }
+
+    #[test]
+    fn trace_polynomial_jit_grad_e2e() {
+        // f(x) = x^3 + 2*x^2 + x via tracing: t1=x*x, t2=t1*x, t3=t1+t1, t4=t2+t3, y=t4+x
+        // f'(x) = 3x^2 + 4x + 1
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let x = &inputs[0];
+                let x2 = x.binary_op(Primitive::Mul, x).unwrap();
+                let x3 = x2.binary_op(Primitive::Mul, x).unwrap();
+                let two_x2 = x2.binary_op(Primitive::Add, &x2).unwrap();
+                let sum = x3.binary_op(Primitive::Add, &two_x2).unwrap();
+                let y = sum.binary_op(Primitive::Add, x).unwrap();
+                vec![y]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let x = 3.0_f64;
+        let result = jit(closed.jaxpr)
+            .compose_grad()
+            .call(vec![Value::scalar_f64(x)])
+            .expect("jit(grad(x^3+2x^2+x)) should succeed");
+        let d = result[0].as_f64_scalar().expect("should be f64");
+        let expected = 3.0 * x * x + 4.0 * x + 1.0;
+        assert!(
+            (d - expected).abs() < 1e-3,
+            "jit(grad(x^3+2x^2+x)) at x=3 should be {expected}, got {d}"
+        );
+    }
+
+    #[test]
+    fn trace_sin_vmap_grad_e2e() {
+        // Trace sin(x), then vmap(grad) over a batch
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let sin_x = inputs[0].unary_op(Primitive::Sin).unwrap();
+                vec![sin_x]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let inputs = [0.0, 1.0, 2.0, 3.0];
+        let result = vmap(closed.jaxpr)
+            .compose_grad()
+            .call(vec![Value::vector_f64(&inputs).expect("vector")])
+            .expect("vmap(grad(sin)) should succeed");
+        let t = result[0].as_tensor().expect("tensor");
+        let vals = t.to_f64_vec().expect("f64 vec");
+        for (i, (&actual, &x)) in vals.iter().zip(inputs.iter()).enumerate() {
+            let expected = x.cos();
+            assert!(
+                (actual - expected).abs() < 1e-6,
+                "vmap(grad(sin))[{i}]: expected cos({x})={expected}, got {actual}"
+            );
+        }
+    }
+
+    #[test]
+    fn trace_exp_neg_jit_e2e() {
+        // f(x) = -exp(x), jit execution
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let exp_x = inputs[0].unary_op(Primitive::Exp).unwrap();
+                let neg_exp = exp_x.unary_op(Primitive::Neg).unwrap();
+                vec![neg_exp]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let result = jit(closed.jaxpr)
+            .call(vec![Value::scalar_f64(0.0)])
+            .expect("jit(-exp(x)) should succeed");
+        let val = result[0].as_f64_scalar().expect("should be f64");
+        assert!(
+            (val - (-1.0)).abs() < 1e-10,
+            "-exp(0) should be -1, got {val}"
+        );
+    }
+
+    #[test]
+    fn trace_tanh_grad_grad_e2e() {
+        // f(x) = tanh(x), f''(x) = -2*tanh(x)*sech^2(x) = -2*tanh(x)*(1-tanh^2(x))
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let tanh_x = inputs[0].unary_op(Primitive::Tanh).unwrap();
+                vec![tanh_x]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let x = 0.5_f64;
+        let result = compose(closed.jaxpr, vec![Transform::Grad, Transform::Grad])
+            .call(vec![Value::scalar_f64(x)])
+            .expect("grad(grad(tanh)) should succeed");
+        let d2 = result[0].as_f64_scalar().expect("should be f64");
+        let t = x.tanh();
+        let expected = -2.0 * t * (1.0 - t * t);
+        assert!(
+            (d2 - expected).abs() < 1e-4,
+            "tanh''(0.5) should be {expected}, got {d2}"
+        );
+    }
+
     #[test]
     fn trace_fallible_error_propagation() {
         // make_jaxpr_fallible should propagate errors cleanly

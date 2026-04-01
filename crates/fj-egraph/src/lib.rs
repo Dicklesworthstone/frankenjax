@@ -121,6 +121,25 @@ impl CostFunction<FjLang> for OpCount {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EGraphLoweringError {
+    UnsupportedPrimitive(Primitive),
+}
+
+impl std::fmt::Display for EGraphLoweringError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedPrimitive(primitive) => write!(
+                f,
+                "primitive {} not supported by egraph lowering",
+                primitive.as_str()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EGraphLoweringError {}
+
 /// Standard algebraic rewrite rules for FjLang.
 #[must_use]
 pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
@@ -438,7 +457,9 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
 }
 
 /// Convert a Jaxpr to an e-graph RecExpr.
-pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) {
+pub fn jaxpr_to_egraph(
+    jaxpr: &Jaxpr,
+) -> Result<(RecExpr<FjLang>, BTreeMap<VarId, Id>), EGraphLoweringError> {
     let mut expr = RecExpr::default();
     let mut var_map: BTreeMap<VarId, Id> = BTreeMap::new();
 
@@ -613,10 +634,7 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
             | Primitive::Ifft
             | Primitive::Rfft
             | Primitive::Irfft => {
-                panic!(
-                    "primitive {} not supported by egraph lowering",
-                    eqn.primitive.as_str()
-                )
+                return Err(EGraphLoweringError::UnsupportedPrimitive(eqn.primitive));
             }
         };
 
@@ -626,7 +644,7 @@ pub fn jaxpr_to_egraph(jaxpr: &Jaxpr) -> (RecExpr<FjLang>, BTreeMap<VarId, Id>) 
         }
     }
 
-    (expr, var_map)
+    Ok((expr, var_map))
 }
 
 /// Convert an e-graph RecExpr back to a Jaxpr.
@@ -1558,7 +1576,19 @@ fn optimize_supported_segment(
     preserved_outvars: &BTreeSet<VarId>,
     next_var: &mut u32,
 ) -> SegmentOptimization {
-    let (expr, var_map) = jaxpr_to_egraph(jaxpr);
+    let (expr, var_map) = match jaxpr_to_egraph(jaxpr) {
+        Ok(lowered) => lowered,
+        Err(_) => {
+            return SegmentOptimization {
+                equations: jaxpr.equations.clone(),
+                outvar_remap: jaxpr
+                    .outvars
+                    .iter()
+                    .map(|outvar| (*outvar, *outvar))
+                    .collect(),
+            };
+        }
+    };
     let runner = Runner::<FjLang, ()>::default()
         .with_expr(&expr)
         .run(&algebraic_rules());
@@ -1826,6 +1856,29 @@ mod tests {
         let opt_out =
             eval_jaxpr(&optimized, &[Value::scalar_i64(3), Value::scalar_i64(4)]).unwrap();
         assert_eq!(orig_out, opt_out);
+    }
+
+    #[test]
+    fn public_lowering_returns_error_for_unsupported_primitive() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Transpose,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        );
+
+        let err = jaxpr_to_egraph(&jaxpr).unwrap_err();
+        assert_eq!(
+            err,
+            EGraphLoweringError::UnsupportedPrimitive(Primitive::Transpose)
+        );
     }
 
     #[test]
