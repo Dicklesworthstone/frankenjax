@@ -670,7 +670,7 @@ mod tests {
         let normals = random_normal(key, n);
         let truncated: Vec<f64> = normals
             .into_iter()
-            .filter(|&v| v >= -2.0 && v <= 2.0)
+            .filter(|&v| (-2.0..=2.0).contains(&v))
             .collect();
 
         // Should retain ~95.4% of samples (2-sigma)
