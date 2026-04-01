@@ -740,3 +740,322 @@ fn egraph_preserves_multi_output_barrier_regions() {
         "multi-output barrier region",
     );
 }
+
+// ============================================================================
+// Multi-equation chain optimization tests (frankenjax-fpe)
+// ============================================================================
+
+/// exp(sin(x) + cos(x)) — chain combining trig and exp
+#[test]
+fn egraph_preserves_exp_sin_plus_cos() {
+    // v2 = sin(v1), v3 = cos(v1), v4 = add(v2, v3), v5 = exp(v4)
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(5)],
+        vec![
+            Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Cos,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec![Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(1.0)],
+        &[],
+        1e-12,
+        "exp(sin(x)+cos(x))",
+    );
+}
+
+/// x * exp(-x^2) — Gaussian-like function
+#[test]
+fn egraph_preserves_gaussian_like() {
+    // v2 = mul(v1,v1), v3 = neg(v2), v4 = exp(v3), v5 = mul(v1,v4)
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(5)],
+        vec![
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec![Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(1.5)], &[], 1e-12, "x*exp(-x^2)");
+}
+
+/// neg(neg(sin(x))) — double negation around a trig function (should cancel)
+#[test]
+fn egraph_preserves_double_neg_sin() {
+    // v2 = sin(v1), v3 = neg(v2), v4 = neg(v3) => should simplify to sin(v1)
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    let optimized = optimize_jaxpr(&jaxpr);
+    assert!(
+        optimized.equations.len() < jaxpr.equations.len(),
+        "neg(neg(sin(x))) should simplify (got {} eqns, original {})",
+        optimized.equations.len(),
+        jaxpr.equations.len()
+    );
+    verify_optimization_preserves_semantics(&jaxpr, &[s_f64(2.0)], &[], 1e-12, "neg(neg(sin(x)))");
+}
+
+/// exp(log(x)) * exp(log(y)) — should simplify toward x*y
+#[test]
+fn egraph_preserves_exp_log_product() {
+    // v3 = log(v1), v4 = exp(v3) => x; v5 = log(v2), v6 = exp(v5) => y; v7 = mul(v4,v6) => x*y
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(7)],
+        vec![
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec![Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Log,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Exp,
+                inputs: smallvec![Atom::Var(VarId(5))],
+                outputs: smallvec![VarId(6)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(6))],
+                outputs: smallvec![VarId(7)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    let optimized = optimize_jaxpr(&jaxpr);
+    assert!(
+        optimized.equations.len() < jaxpr.equations.len(),
+        "exp(log(x))*exp(log(y)) should simplify (got {} eqns, original {})",
+        optimized.equations.len(),
+        jaxpr.equations.len()
+    );
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(3.0), s_f64(5.0)],
+        &[],
+        1e-10,
+        "exp(log(x))*exp(log(y))",
+    );
+}
+
+/// (a + b) - b — subtraction should cancel addition
+#[test]
+fn egraph_preserves_add_sub_cancel() {
+    // v3 = add(v1,v2), v4 = sub(v3,v2) => should simplify to v1
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(7.0), s_f64(3.0)],
+        &[],
+        1e-12,
+        "(a+b)-b",
+    );
+}
+
+/// sin(x)^2 * 1 + cos(x)^2 * 1 — Pythagorean identity components
+#[test]
+fn egraph_preserves_sin2_cos2_sum() {
+    // v2=sin(v1), v3=mul(v2,v2), v4=cos(v1), v5=mul(v4,v4), v6=add(v3,v5)
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(6)],
+        vec![
+            Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Cos,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(5))],
+                outputs: smallvec![VarId(6)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    );
+    // sin^2(x) + cos^2(x) = 1, so optimization should simplify
+    // Regardless of optimization, semantics must be preserved
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        &[s_f64(1.23)],
+        &[],
+        1e-12,
+        "sin^2(x)+cos^2(x)",
+    );
+    // Verify the result is 1.0
+    let result = eval_jaxpr(&jaxpr, &[s_f64(1.23)]).unwrap();
+    let val = result[0].as_f64_scalar().unwrap();
+    assert!(
+        (val - 1.0).abs() < 1e-12,
+        "sin^2+cos^2 should equal 1.0, got {val}"
+    );
+}

@@ -2221,6 +2221,95 @@ mod tests {
 
     // ── Bitwise Tests ──────────────────────────────────────────
 
+    // ── Tensor Op Batching Tests (frankenjax-sje) ───────────────
+
+    #[test]
+    fn test_batch_trace_slice_batched() {
+        // Batch of 3 vectors of length 5, slice [1:4] from each
+        let data: Vec<f64> = (0..15).map(|i| i as f64).collect();
+        let input = BatchTracer::batched(make_f64_matrix(3, 5, &data), 0);
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".to_owned(), "1".to_owned());
+        params.insert("limit_indices".to_owned(), "4".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+        let result = apply_batch_rule(Primitive::Slice, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        // Output should be [3, 3] (batch=3, sliced_len=3)
+        assert_eq!(tensor.shape.dims, vec![3, 3]);
+        let vals = extract_f64_vec(&result.value);
+        // Row 0: [1,2,3], Row 1: [6,7,8], Row 2: [11,12,13]
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 6.0, 7.0, 8.0, 11.0, 12.0, 13.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_broadcast_in_dim() {
+        // Batch of scalars broadcast to vectors
+        let input = BatchTracer::batched(make_f64_vector(&[10.0, 20.0, 30.0]), 0);
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), "3".to_owned());
+        params.insert("broadcast_dimensions".to_owned(), "".to_owned());
+        let result = apply_batch_rule(Primitive::BroadcastInDim, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        // Each scalar from batch broadcasted to a [3]-vector, overall [3, 3]
+        assert_eq!(tensor.shape.dims, vec![3, 3]);
+    }
+
+    #[test]
+    fn test_batch_trace_squeeze_batched() {
+        // Batch of 2 matrices [2, 1], squeeze the trailing dim
+        // Input shape: [2, 2, 1] (batch_dim=0)
+        // Per-element shape: [2, 1], squeeze dim 1 → [2]
+        let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+        let input = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![2, 2, 1],
+                    },
+                    data.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let mut params = BTreeMap::new();
+        // Squeeze dim 1 of per-element [2, 1] → [2]
+        params.insert("dimensions".to_owned(), "1".to_owned());
+        let result = apply_batch_rule(Primitive::Squeeze, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        // Result: [2, 2] (batch=2, squeezed_len=2)
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_batch_trace_expand_dims_batched() {
+        // Batch of [3] vectors, expand dim 1 → [3, 1] matrices, overall [batch, 3, 1]
+        let input = BatchTracer::batched(make_f64_vector(&[1.0, 2.0, 3.0]), 0);
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), "1".to_owned());
+        let result = apply_batch_rule(Primitive::ExpandDims, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+    }
+
+    #[test]
+    fn test_batch_trace_concatenate_unbatched_inputs() {
+        // Two unbatched vectors concatenated should remain unbatched
+        let a = BatchTracer::unbatched(make_f64_vector(&[1.0, 2.0]));
+        let b = BatchTracer::unbatched(make_f64_vector(&[3.0, 4.0, 5.0]));
+        let mut params = BTreeMap::new();
+        params.insert("dimension".to_owned(), "0".to_owned());
+        let result = apply_batch_rule(Primitive::Concatenate, &[a, b], &params).unwrap();
+        assert_eq!(result.batch_dim, None);
+        let vals = extract_f64_vec(&result.value);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    // ── Bitwise Tests ──────────────────────────────────────────
+
     #[test]
     fn test_batch_trace_bitwise_and() {
         let a = BatchTracer::batched(make_i64_vector(&[0b1100, 0b1010, 0b1111]), 0);
