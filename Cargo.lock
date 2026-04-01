@@ -753,6 +753,7 @@ name = "fj-trace"
 version = "0.1.0"
 dependencies = [
  "fj-core",
+ "fj-interpreters",
  "fj-test-utils",
  "proptest",
  "serde_json",

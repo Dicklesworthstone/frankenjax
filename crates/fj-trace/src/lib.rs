@@ -2846,7 +2846,7 @@ mod tests {
     use super::{
         JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceToJaxpr, TracerId,
     };
-    use fj_core::{DType, Primitive, Shape, Value};
+    use fj_core::{Atom, DType, Literal, Primitive, Shape, TensorValue, Value};
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
     use std::any::Any;
@@ -5465,5 +5465,285 @@ mod tests {
         let result =
             make_jaxpr_fallible(|_inputs| Err(TraceError::InvalidAbstractValue), vec![aval]);
         assert!(matches!(result, Err(TraceError::InvalidAbstractValue)));
+    }
+
+    // ================================================================
+    // Trace-time shape inference validation (frankenjax-cim)
+    // ================================================================
+
+    #[test]
+    fn test_trace_multi_input_broadcasting() {
+        // f(scalar, [3], [3]) = scalar * [3] + [3]
+        use super::make_jaxpr;
+        let s = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+        let v = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![3] },
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let scaled = &inputs[0] * &inputs[1]; // scalar * [3] → [3]
+                let sum = &scaled + &inputs[2]; // [3] + [3] → [3]
+                vec![sum]
+            },
+            vec![s, v.clone(), v],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.invars.len(), 3);
+        assert_eq!(closed.jaxpr.equations.len(), 2);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Mul);
+        assert_eq!(closed.jaxpr.equations[1].primitive, Primitive::Add);
+
+        // Evaluate to verify correctness
+        let result = fj_interpreters::eval_jaxpr(
+            &closed.jaxpr,
+            &[
+                Value::scalar_f64(2.0),
+                Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap(),
+                Value::vector_f64(&[10.0, 20.0, 30.0]).unwrap(),
+            ],
+        )
+        .unwrap();
+        let vals = result[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(vals, vec![12.0, 24.0, 36.0]);
+    }
+
+    #[test]
+    fn test_trace_unary_chain_shape_preservation() {
+        // f(x) = exp(neg(sin(x))) preserves shape through unary chain
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![4] },
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let s = inputs[0].unary_op(Primitive::Sin).unwrap();
+                let n = s.unary_op(Primitive::Neg).unwrap();
+                let e = n.unary_op(Primitive::Exp).unwrap();
+                vec![e]
+            },
+            vec![aval],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.equations.len(), 3);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Sin);
+        assert_eq!(closed.jaxpr.equations[1].primitive, Primitive::Neg);
+        assert_eq!(closed.jaxpr.equations[2].primitive, Primitive::Exp);
+
+        // Evaluate: exp(neg(sin([0, π/2, π, 3π/2])))
+        let input = Value::vector_f64(&[
+            0.0,
+            std::f64::consts::FRAC_PI_2,
+            std::f64::consts::PI,
+            3.0 * std::f64::consts::FRAC_PI_2,
+        ])
+        .unwrap();
+        let result = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[input]).unwrap();
+        let vals = result[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(vals.len(), 4);
+        // exp(-sin(0)) = exp(0) = 1
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        // exp(-sin(π/2)) = exp(-1) ≈ 0.3679
+        assert!((vals[1] - (-1.0_f64).exp()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trace_reduction_changes_shape() {
+        // f([3, 4]) -> reduce_sum(axis=1) -> [3]
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![3, 4] },
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), "1".to_owned());
+                inputs[0]
+                    .primitive_with_params(Primitive::ReduceSum, &[], params)
+                    .unwrap()
+            },
+            vec![aval],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.equations.len(), 1);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::ReduceSum);
+
+        // Evaluate: reduce_sum([[1,2,3,4],[5,6,7,8],[9,10,11,12]], axis=1) = [10, 26, 42]
+        let data: Vec<f64> = (1..=12).map(|i| i as f64).collect();
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3, 4] },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let result = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[input]).unwrap();
+        let vals = result[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(vals, vec![10.0, 26.0, 42.0]);
+    }
+
+    #[test]
+    fn test_trace_mixed_dtype_promotion() {
+        // f(i64, f64) = i64 + f64 should produce f64 output
+        use super::make_jaxpr;
+        let i64_aval = ShapedArray {
+            dtype: DType::I64,
+            shape: Shape::scalar(),
+        };
+        let f64_aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(
+            |inputs| vec![&inputs[0] + &inputs[1]],
+            vec![i64_aval, f64_aval],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.equations.len(), 1);
+        // The traced equation should handle type promotion
+        let result = fj_interpreters::eval_jaxpr(
+            &closed.jaxpr,
+            &[Value::scalar_i64(3), Value::scalar_f64(0.14)],
+        )
+        .unwrap();
+        let val = result[0].as_f64_scalar().unwrap();
+        assert!((val - 3.14).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trace_diamond_dag() {
+        // Diamond DAG: y = sin(x) + cos(x) — x feeds into two paths that merge
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let s = inputs[0].unary_op(Primitive::Sin).unwrap();
+                let c = inputs[0].unary_op(Primitive::Cos).unwrap();
+                vec![&s + &c]
+            },
+            vec![aval],
+        )
+        .unwrap();
+
+        // Should have 3 equations: sin, cos, add
+        assert_eq!(closed.jaxpr.equations.len(), 3);
+        // Input var used in both sin and cos equations
+        assert_eq!(closed.jaxpr.invars.len(), 1);
+        let x_var = closed.jaxpr.invars[0];
+        // Both sin and cos should reference the same input
+        assert!(closed.jaxpr.equations[0]
+            .inputs
+            .contains(&Atom::Var(x_var)));
+        assert!(closed.jaxpr.equations[1]
+            .inputs
+            .contains(&Atom::Var(x_var)));
+
+        // Evaluate: sin(π/4) + cos(π/4) = √2 ≈ 1.4142
+        let x = std::f64::consts::FRAC_PI_4;
+        let result =
+            fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(x)]).unwrap();
+        let val = result[0].as_f64_scalar().unwrap();
+        assert!(
+            (val - std::f64::consts::SQRT_2).abs() < 1e-10,
+            "sin(π/4)+cos(π/4) should be √2, got {val}"
+        );
+    }
+
+    #[test]
+    fn test_trace_multi_output_program() {
+        // f(x) returns (sin(x), cos(x)) — multi-output tracing
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let s = inputs[0].unary_op(Primitive::Sin).unwrap();
+                let c = inputs[0].unary_op(Primitive::Cos).unwrap();
+                vec![s, c]
+            },
+            vec![aval],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.outvars.len(), 2);
+        assert_eq!(closed.jaxpr.equations.len(), 2);
+
+        let result =
+            fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(1.0)]).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!((result[0].as_f64_scalar().unwrap() - 1.0_f64.sin()).abs() < 1e-10);
+        assert!((result[1].as_f64_scalar().unwrap() - 1.0_f64.cos()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_trace_multiple_reductions() {
+        // f([2,3]) returns (reduce_sum(axis=0), reduce_sum(axis=1))
+        // axis=0: [3] shape, axis=1: [2] shape
+        use super::make_jaxpr;
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![2, 3] },
+        };
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let mut params0 = BTreeMap::new();
+                params0.insert("axes".to_owned(), "0".to_owned());
+                let sum0 = inputs[0]
+                    .primitive_with_params(Primitive::ReduceSum, &[], params0)
+                    .unwrap();
+                let mut params1 = BTreeMap::new();
+                params1.insert("axes".to_owned(), "1".to_owned());
+                let sum1 = inputs[0]
+                    .primitive_with_params(Primitive::ReduceSum, &[], params1)
+                    .unwrap();
+                let mut out = sum0;
+                out.extend(sum1);
+                out
+            },
+            vec![aval],
+        )
+        .unwrap();
+
+        assert_eq!(closed.jaxpr.outvars.len(), 2);
+        assert_eq!(closed.jaxpr.equations.len(), 2);
+
+        // [[1,2,3],[4,5,6]]: sum(axis=0) = [5,7,9], sum(axis=1) = [6,15]
+        let data: Vec<f64> = (1..=6).map(|i| i as f64).collect();
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let result = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[input]).unwrap();
+        assert_eq!(result.len(), 2);
+        let sum0 = result[0].as_tensor().unwrap().to_f64_vec().unwrap();
+        let sum1 = result[1].as_tensor().unwrap().to_f64_vec().unwrap();
+        assert_eq!(sum0, vec![5.0, 7.0, 9.0]);
+        assert_eq!(sum1, vec![6.0, 15.0]);
     }
 }
