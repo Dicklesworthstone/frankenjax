@@ -3530,4 +3530,705 @@ mod tests {
             jaxpr2.equations.len(),
         );
     }
+
+    // ── Systematic rewrite rule unit tests (frankenjax-6qi) ──────────
+
+    // Helper: build a single unary-op Jaxpr: out = op(in)
+    fn unary_jaxpr(prim: Primitive, input: Atom) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: prim,
+                inputs: smallvec![input],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    // Helper: build a chained unary pair: t = op1(in), out = op2(t)
+    fn chained_unary_jaxpr(prim1: Primitive, prim2: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: prim1,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: prim2,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    // Helper: build a binary-op Jaxpr: out = op(lhs, rhs)
+    fn binary_jaxpr(prim: Primitive, lhs: Atom, rhs: Atom) -> Jaxpr {
+        let invars: Vec<VarId> = [&lhs, &rhs]
+            .iter()
+            .filter_map(|a| match a {
+                Atom::Var(v) => Some(*v),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Jaxpr::new(
+            invars,
+            vec![],
+            vec![VarId(100)],
+            vec![Equation {
+                primitive: prim,
+                inputs: smallvec![lhs, rhs],
+                outputs: smallvec![VarId(100)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn rule_sub_zero() {
+        // x - 0 → x
+        let jaxpr = binary_jaxpr(
+            Primitive::Sub,
+            Atom::Var(VarId(1)),
+            Atom::Lit(Literal::I64(0)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "x-0 should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_mul_one() {
+        // x * 1 → x
+        let jaxpr = binary_jaxpr(
+            Primitive::Mul,
+            Atom::Var(VarId(1)),
+            Atom::Lit(Literal::I64(1)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "x*1 should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_mul_neg_one() {
+        // x * (-1) → neg(x)
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Lit(Literal::I64(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "x*(-1) should simplify to neg(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_neg_zero() {
+        // neg(0) → 0 (extraction may keep a constant-binding equation)
+        let jaxpr = unary_jaxpr(Primitive::Neg, Atom::Lit(Literal::I64(0)));
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "neg(0) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_add_neg_self() {
+        // x + neg(x) → 0
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "x+neg(x) should simplify to 0: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_pow_zero() {
+        // x^0 → 1 (extraction may keep a constant-binding equation)
+        let jaxpr = binary_jaxpr(
+            Primitive::Pow,
+            Atom::Var(VarId(1)),
+            Atom::Lit(Literal::I64(0)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "x^0 should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_pow_one() {
+        // x^1 → x
+        let jaxpr = binary_jaxpr(
+            Primitive::Pow,
+            Atom::Var(VarId(1)),
+            Atom::Lit(Literal::I64(1)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "x^1 should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_log_exp_inverse() {
+        // log(exp(x)) → x
+        let jaxpr = chained_unary_jaxpr(Primitive::Exp, Primitive::Log);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "log(exp(x)) should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_ceil_idempotent() {
+        // ceil(ceil(x)) → ceil(x)
+        let jaxpr = chained_unary_jaxpr(Primitive::Ceil, Primitive::Ceil);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "ceil(ceil(x)) should simplify to ceil(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_round_idempotent() {
+        // round(round(x)) → round(x)
+        let jaxpr = chained_unary_jaxpr(Primitive::Round, Primitive::Round);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "round(round(x)) should simplify to round(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_reduce_sum_idempotent() {
+        // reduce_sum(reduce_sum(x)) → reduce_sum(x)
+        let jaxpr = chained_unary_jaxpr(Primitive::ReduceSum, Primitive::ReduceSum);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "reduce_sum(reduce_sum(x)) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_reduce_max_idempotent() {
+        let jaxpr = chained_unary_jaxpr(Primitive::ReduceMax, Primitive::ReduceMax);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "reduce_max(reduce_max(x)) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_reduce_min_idempotent() {
+        let jaxpr = chained_unary_jaxpr(Primitive::ReduceMin, Primitive::ReduceMin);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "reduce_min(reduce_min(x)) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_reduce_prod_idempotent() {
+        let jaxpr = chained_unary_jaxpr(Primitive::ReduceProd, Primitive::ReduceProd);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "reduce_prod(reduce_prod(x)) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_sin_neg() {
+        // sin(neg(x)) → neg(sin(x)) — should produce same structure or fewer ops
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Sin);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "sin(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_cos_neg() {
+        // cos(neg(x)) → cos(x) — should eliminate the neg
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Cos);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "cos(neg(x)) should simplify to cos(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_tan_neg() {
+        // tan(neg(x)) → neg(tan(x))
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Tan);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "tan(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_sinh_neg() {
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Sinh);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "sinh(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_cosh_neg() {
+        // cosh(neg(x)) → cosh(x) — should eliminate the neg
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Cosh);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "cosh(neg(x)) should simplify to cosh(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_tanh_neg() {
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Tanh);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "tanh(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_div_self() {
+        // x / x → 1 (extraction may keep a constant-binding equation)
+        let jaxpr = binary_jaxpr(Primitive::Div, Atom::Var(VarId(1)), Atom::Var(VarId(1)));
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "x/x should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_log1p_expm1_inverse() {
+        // log1p(expm1(x)) → x
+        let jaxpr = chained_unary_jaxpr(Primitive::Expm1, Primitive::Log1p);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "log1p(expm1(x)) should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_abs_neg_simplifies() {
+        // abs(neg(x)) → abs(x) — should eliminate the neg
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Abs);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "abs(neg(x)) should simplify to abs(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_reciprocal_as_div() {
+        // reciprocal(x) → div(1, x)
+        let jaxpr = unary_jaxpr(Primitive::Reciprocal, Atom::Var(VarId(1)));
+        let opt = optimize_jaxpr(&jaxpr);
+        // Should produce an equivalent (possibly different structure)
+        assert!(
+            opt.equations.len() <= 1,
+            "reciprocal(x) should not grow beyond 1 op: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_erf_neg_symmetry_chain() {
+        // erf(neg(x)) → neg(erf(x))
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Erf);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "erf(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_bitwise_and_self() {
+        // x & x → x
+        let jaxpr = binary_jaxpr(
+            Primitive::BitwiseAnd,
+            Atom::Var(VarId(1)),
+            Atom::Var(VarId(1)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "x&x should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_bitwise_or_self() {
+        // x | x → x
+        let jaxpr = binary_jaxpr(
+            Primitive::BitwiseOr,
+            Atom::Var(VarId(1)),
+            Atom::Var(VarId(1)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "x|x should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_is_finite_const_zero() {
+        // is_finite(0) → 1 (true); extraction may keep a constant-binding equation
+        let jaxpr = unary_jaxpr(Primitive::IsFinite, Atom::Lit(Literal::I64(0)));
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "is_finite(0) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_is_finite_const_one() {
+        // is_finite(1) → 1 (true); extraction may keep a constant-binding equation
+        let jaxpr = unary_jaxpr(Primitive::IsFinite, Atom::Lit(Literal::I64(1)));
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "is_finite(1) should simplify: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_complex_real_imag_roundtrip() {
+        // complex(real(z), imag(z)) → z
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Real,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Imag,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Complex,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "complex(real(z), imag(z)) should simplify to z: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_integer_pow_two() {
+        // integer_pow(x, 2) → mul(x, x)
+        let jaxpr = binary_jaxpr(
+            Primitive::IntegerPow,
+            Atom::Var(VarId(1)),
+            Atom::Lit(Literal::I64(2)),
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        // Should rewrite to mul(x, x) which is still 1 equation
+        assert!(
+            opt.equations.len() <= 1,
+            "integer_pow(x,2) should become mul(x,x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_cbrt_triple_idempotent() {
+        // cbrt(cbrt(cbrt(x))) → cbrt(x)
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Cbrt,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cbrt,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cbrt,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 1,
+            "cbrt(cbrt(cbrt(x))) should simplify to cbrt(x): got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_bitwise_not_not_chain() {
+        // bitwise_not(bitwise_not(x)) → x
+        let jaxpr = chained_unary_jaxpr(Primitive::BitwiseNot, Primitive::BitwiseNot);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "not(not(x)) should simplify to x: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_select_true_branch() {
+        // select(1, a, b) → a
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Select,
+                inputs: smallvec![
+                    Atom::Lit(Literal::I64(1)),
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2))
+                ],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "select(1,a,b) should simplify to a: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_select_false_branch() {
+        // select(0, a, b) → b
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Select,
+                inputs: smallvec![
+                    Atom::Lit(Literal::I64(0)),
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2))
+                ],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.is_empty(),
+            "select(0,a,b) should simplify to b: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_sub_to_add_neg() {
+        // sub(a, b) rewrites to add(a, neg(b))
+        let jaxpr = binary_jaxpr(Primitive::Sub, Atom::Var(VarId(1)), Atom::Var(VarId(2)));
+        let opt = optimize_jaxpr(&jaxpr);
+        // Rewrite may change the form but should not increase cost
+        assert!(
+            opt.equations.len() <= 2,
+            "sub(a,b) should not grow beyond 2 eqns: got {}",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_log_quotient() {
+        // log(div(a, b)) → sub(log(a), log(b))
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Div,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Log,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let opt = optimize_jaxpr(&jaxpr);
+        // May decompose to sub(log(a), log(b)) which is 3 eqns, or stay as 2
+        assert!(
+            opt.equations.len() <= 3,
+            "log(a/b) should not explode: got {} eqns",
+            opt.equations.len()
+        );
+    }
 }

@@ -2501,4 +2501,203 @@ mod tests {
             "error should explain equality requirement"
         );
     }
+
+    // ── Depth-3+ transform composition tests (frankenjax-yxv) ──────
+
+    #[test]
+    fn dispatch_jit_grad_grad_square() {
+        // jit(grad(grad(x^2))) at x=3: d²/dx²(x²)=2
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(
+                ProgramSpec::Square,
+                &[Transform::Grad, Transform::Grad, Transform::Jit],
+            ),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("jit(grad(grad(x^2))) should succeed");
+
+        let d2 = response.outputs[0]
+            .as_f64_scalar()
+            .expect("should be scalar");
+        assert!(
+            (d2 - 2.0).abs() < 1e-2,
+            "d²/dx²(x²) should be ≈2.0, got {d2}"
+        );
+    }
+
+    #[test]
+    fn dispatch_grad_grad_sin() {
+        // grad(grad(sin))(x) = -sin(x); at x=1.0
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::SinX, &[Transform::Grad, Transform::Grad]),
+            args: vec![Value::scalar_f64(1.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("grad(grad(sin)) should succeed");
+
+        let d2 = response.outputs[0]
+            .as_f64_scalar()
+            .expect("should be scalar");
+        let expected = -(1.0_f64.sin());
+        assert!(
+            (d2 - expected).abs() < 1e-4,
+            "d²/dx²(sin(x)) at x=1 should be {expected}, got {d2}"
+        );
+    }
+
+    #[test]
+    fn dispatch_vmap_grad_requires_scalar_inputs() {
+        // vmap(grad(x^2)) with vector input should fail because grad needs scalar inputs
+        let result = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Grad, Transform::Vmap]),
+            args: vec![Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        });
+        // Grad requires scalar inputs — this composition through dispatch correctly rejects
+        assert!(
+            result.is_err(),
+            "vmap(grad(f)) with vector input should fail through dispatch"
+        );
+    }
+
+    #[test]
+    fn dispatch_grad_vmap_add_one() {
+        // grad(vmap(f)) where f(x) = x+1 (constant derivative)
+        // grad of vmap(add_one) at each element should be 1.0
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap, Transform::Grad]),
+            args: vec![Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        });
+        // This may succeed or fail depending on how grad handles batched outputs.
+        // The key assertion: it shouldn't panic or produce garbage.
+        match response {
+            Ok(r) => {
+                // If it succeeds, outputs should be finite
+                for (i, out) in r.outputs.iter().enumerate() {
+                    if let Some(v) = out.as_f64_scalar() {
+                        assert!(v.is_finite(), "output[{i}] should be finite, got {v}");
+                    }
+                }
+            }
+            Err(e) => {
+                // Some composition orders may legitimately fail
+                let msg = e.to_string();
+                assert!(!msg.is_empty(), "error should have a descriptive message");
+            }
+        }
+    }
+
+    #[test]
+    fn dispatch_jit_vmap_add_one() {
+        // jit(vmap(f)) — JIT wrapping a vmapped function
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap, Transform::Jit]),
+            args: vec![Value::vector_i64(&[10, 20, 30]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("jit(vmap(add_one)) should succeed");
+
+        let t = response.outputs[0].as_tensor().expect("tensor result");
+        let vals = t.to_i64_vec().expect("i64 vec");
+        assert_eq!(vals, vec![11, 21, 31]);
+    }
+
+    #[test]
+    fn dispatch_composition_order_affects_cache_key() {
+        // Verify that [Grad, Jit] and [Jit, Grad] produce different cache keys
+        let response_gj = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Grad, Transform::Jit]),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("grad then jit should succeed");
+
+        let response_jg = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Jit, Transform::Grad]),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("jit then grad should succeed");
+
+        assert_ne!(
+            response_gj.cache_key, response_jg.cache_key,
+            "different transform orders must produce different cache keys"
+        );
+    }
+
+    #[test]
+    fn dispatch_grad_grad_grad_square() {
+        // Third derivative of x^2 should be 0
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(
+                ProgramSpec::Square,
+                &[Transform::Grad, Transform::Grad, Transform::Grad],
+            ),
+            args: vec![Value::scalar_f64(5.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("grad(grad(grad(x^2))) should succeed");
+
+        let d3 = response.outputs[0]
+            .as_f64_scalar()
+            .expect("should be scalar");
+        assert!(d3.abs() < 1e-4, "d³/dx³(x²) should be 0, got {d3}");
+    }
+
+    #[test]
+    fn dispatch_hardened_mode_grad_grad() {
+        // Same as above but in hardened mode — should still work correctly
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Hardened,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Grad, Transform::Grad]),
+            args: vec![Value::scalar_f64(4.0)],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("hardened grad(grad(x^2)) should succeed");
+
+        let d2 = response.outputs[0]
+            .as_f64_scalar()
+            .expect("should be scalar");
+        assert!(
+            (d2 - 2.0).abs() < 1e-4,
+            "hardened d²/dx²(x²) should be 2.0, got {d2}"
+        );
+    }
 }

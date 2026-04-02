@@ -2726,4 +2726,338 @@ mod tests {
             }
         }
     }
+
+    // ── Diamond DAG and dependency chain edge cases (frankenjax-8u3) ──
+
+    #[test]
+    fn test_pe_diamond_dag_known_unknown_split() {
+        // Diamond: v3 = neg(x), v4 = abs(x), v5 = add(v3, v4)
+        // When x is unknown, all equations should be in jaxpr_unknown
+        run_logged_test(
+            "test_pe_diamond_dag_known_unknown_split",
+            &("pe", "edge", "diamond_unknown"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Abs,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+
+                // x unknown (true=unknown): all equations should be residual
+                let result = partial_eval_jaxpr(&jaxpr, &[true]).unwrap();
+                assert_eq!(
+                    result.jaxpr_known.equations.len(),
+                    0,
+                    "no known equations when input is unknown"
+                );
+                assert_eq!(
+                    result.jaxpr_unknown.equations.len(),
+                    3,
+                    "all 3 equations should be in unknown jaxpr"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_diamond_dag_known_input() {
+        // Same diamond DAG but with known input — all should constant-fold
+        run_logged_test(
+            "test_pe_diamond_dag_known_input",
+            &("pe", "edge", "diamond_known"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Abs,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+
+                // x known (false=known): all equations should be in jaxpr_known
+                let result = partial_eval_jaxpr(&jaxpr, &[false]).unwrap();
+                assert_eq!(
+                    result.jaxpr_known.equations.len(),
+                    3,
+                    "all equations should be known-folded"
+                );
+                assert_eq!(
+                    result.jaxpr_unknown.equations.len(),
+                    0,
+                    "no unknown equations"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_mixed_known_unknown_residual_chain() {
+        // Two inputs: a (known), b (unknown)
+        // v3 = neg(a)   → known
+        // v4 = add(v3, b) → unknown (depends on known residual + unknown input)
+        // Residual chain: v3 flows from known to unknown
+        run_logged_test(
+            "test_pe_mixed_known_unknown_residual_chain",
+            &("pe", "edge", "residual_chain"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+
+                // a=known (false), b=unknown (true)
+                let result = partial_eval_jaxpr(&jaxpr, &[false, true]).unwrap();
+                assert_eq!(result.jaxpr_known.equations.len(), 1, "neg(a) is known");
+                assert_eq!(
+                    result.jaxpr_unknown.equations.len(),
+                    1,
+                    "add(v3, b) is unknown"
+                );
+                assert!(
+                    !result.residual_avals.is_empty(),
+                    "v3 should be a residual flowing from known to unknown"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_deep_dependency_chain_all_unknown() {
+        // 5-deep chain: v2=neg(x), v3=abs(v2), v4=neg(v3), v5=abs(v4), v6=neg(v5)
+        // All unknown when x is unknown
+        run_logged_test(
+            "test_pe_deep_dependency_chain_all_unknown",
+            &("pe", "edge", "deep_chain_unknown"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(6)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Abs,
+                            inputs: smallvec![Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(3))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Abs,
+                            inputs: smallvec![Atom::Var(VarId(4))],
+                            outputs: smallvec![VarId(5)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(5))],
+                            outputs: smallvec![VarId(6)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+
+                let result = partial_eval_jaxpr(&jaxpr, &[true]).unwrap();
+                assert_eq!(result.jaxpr_known.equations.len(), 0);
+                assert_eq!(result.jaxpr_unknown.equations.len(), 5);
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_literal_mixed_with_unknown_variable() {
+        // v3 = add(42, x) where x is unknown — literal is always known
+        // The equation should be in unknown because x is unknown
+        run_logged_test(
+            "test_pe_literal_mixed_with_unknown",
+            &("pe", "edge", "literal_unknown_mix"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(2)],
+                    vec![Equation {
+                        primitive: Primitive::Add,
+                        inputs: smallvec![
+                            Atom::Lit(fj_core::Literal::I64(42)),
+                            Atom::Var(VarId(1))
+                        ],
+                        outputs: smallvec![VarId(2)],
+                        params: BTreeMap::new(),
+                        effects: vec![],
+                        sub_jaxprs: vec![],
+                    }],
+                );
+
+                let result = partial_eval_jaxpr(&jaxpr, &[true]).unwrap();
+                assert_eq!(
+                    result.jaxpr_unknown.equations.len(),
+                    1,
+                    "literal + unknown → unknown equation"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_semantic_equivalence_diamond() {
+        // Verify that splitting and re-evaluating a diamond DAG gives the same result
+        run_logged_test(
+            "test_pe_semantic_equivalence_diamond",
+            &("pe", "edge", "diamond_semantic"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(5)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Abs,
+                            inputs: smallvec![Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                            outputs: smallvec![VarId(5)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+
+                let a = Value::scalar_f64(3.0);
+                let b = Value::scalar_f64(-7.0);
+
+                // Full evaluation
+                let full = crate::eval_jaxpr(&jaxpr, &[a.clone(), b.clone()]).unwrap();
+
+                // Partial eval: a=known (false), b=unknown (true)
+                let pe = partial_eval_jaxpr(&jaxpr, &[false, true]).unwrap();
+                let known_outs =
+                    crate::eval_jaxpr_with_consts(&pe.jaxpr_known, &pe.known_consts, &[a]).unwrap();
+                let mut unk_inputs = known_outs;
+                unk_inputs.push(b);
+                let staged = crate::eval_jaxpr(&pe.jaxpr_unknown, &unk_inputs).unwrap();
+
+                assert_eq!(
+                    full, staged,
+                    "partial eval split-and-recombine must match full eval"
+                );
+                Ok(vec![])
+            },
+        );
+    }
 }
