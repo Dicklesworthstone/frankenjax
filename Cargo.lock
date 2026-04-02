@@ -726,6 +726,7 @@ dependencies = [
  "fj-core",
  "fj-test-utils",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

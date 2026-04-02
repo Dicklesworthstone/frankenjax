@@ -5621,7 +5621,9 @@ mod tests {
         )
         .unwrap();
         let val = result[0].as_f64_scalar().unwrap();
-        assert!((val - 3.14).abs() < 1e-10);
+        #[allow(clippy::approx_constant)]
+        let expected = 3.14;
+        assert!((val - expected).abs() < 1e-10);
     }
 
     #[test]
@@ -5649,17 +5651,12 @@ mod tests {
         assert_eq!(closed.jaxpr.invars.len(), 1);
         let x_var = closed.jaxpr.invars[0];
         // Both sin and cos should reference the same input
-        assert!(closed.jaxpr.equations[0]
-            .inputs
-            .contains(&Atom::Var(x_var)));
-        assert!(closed.jaxpr.equations[1]
-            .inputs
-            .contains(&Atom::Var(x_var)));
+        assert!(closed.jaxpr.equations[0].inputs.contains(&Atom::Var(x_var)));
+        assert!(closed.jaxpr.equations[1].inputs.contains(&Atom::Var(x_var)));
 
         // Evaluate: sin(π/4) + cos(π/4) = √2 ≈ 1.4142
         let x = std::f64::consts::FRAC_PI_4;
-        let result =
-            fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(x)]).unwrap();
+        let result = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(x)]).unwrap();
         let val = result[0].as_f64_scalar().unwrap();
         assert!(
             (val - std::f64::consts::SQRT_2).abs() < 1e-10,
@@ -5689,8 +5686,7 @@ mod tests {
         assert_eq!(closed.jaxpr.outvars.len(), 2);
         assert_eq!(closed.jaxpr.equations.len(), 2);
 
-        let result =
-            fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(1.0)]).unwrap();
+        let result = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_f64(1.0)]).unwrap();
         assert_eq!(result.len(), 2);
         assert!((result[0].as_f64_scalar().unwrap() - 1.0_f64.sin()).abs() < 1e-10);
         assert!((result[1].as_f64_scalar().unwrap() - 1.0_f64.cos()).abs() < 1e-10);

@@ -750,4 +750,133 @@ mod tests {
         mgr.clear();
         assert_eq!(mgr.stats().entry_count, 0);
     }
+
+    // ── Transform Ordering Sensitivity (frankenjax-oy3) ──────────────
+
+    #[test]
+    fn key_sensitivity_transform_order_grad_vmap_vs_vmap_grad() {
+        let mut gv = baseline_input();
+        gv.transform_stack = vec![Transform::Grad, Transform::Vmap];
+        let mut vg = baseline_input();
+        vg.transform_stack = vec![Transform::Vmap, Transform::Grad];
+        assert_ne!(
+            key_hex(&gv),
+            key_hex(&vg),
+            "[Grad,Vmap] and [Vmap,Grad] must produce different cache keys"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_transform_count_grad_vs_grad_grad() {
+        let mut single = baseline_input();
+        single.transform_stack = vec![Transform::Grad];
+        let mut double = baseline_input();
+        double.transform_stack = vec![Transform::Grad, Transform::Grad];
+        assert_ne!(
+            key_hex(&single),
+            key_hex(&double),
+            "[Grad] and [Grad,Grad] must produce different cache keys"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_transform_triple_composition() {
+        let mut jvg = baseline_input();
+        jvg.transform_stack = vec![Transform::Jit, Transform::Vmap, Transform::Grad];
+        let mut jgv = baseline_input();
+        jgv.transform_stack = vec![Transform::Jit, Transform::Grad, Transform::Vmap];
+        assert_ne!(
+            key_hex(&jvg),
+            key_hex(&jgv),
+            "[Jit,Vmap,Grad] and [Jit,Grad,Vmap] must differ"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_empty_vs_nonempty_transforms() {
+        let mut empty = baseline_input();
+        empty.transform_stack = vec![];
+        let mut nonempty = baseline_input();
+        nonempty.transform_stack = vec![Transform::Jit];
+        assert_ne!(
+            key_hex(&empty),
+            key_hex(&nonempty),
+            "[] and [Jit] must produce different keys"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_different_jaxpr_primitives() {
+        let mut add = baseline_input();
+        add.jaxpr = fj_core::build_program(fj_core::ProgramSpec::Add2);
+        let mut square = baseline_input();
+        square.jaxpr = fj_core::build_program(fj_core::ProgramSpec::Square);
+        assert_ne!(
+            key_hex(&add),
+            key_hex(&square),
+            "Add2 and Square programs must produce different keys"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_different_jaxpr_equation_count() {
+        let mut one_eq = baseline_input();
+        one_eq.jaxpr = fj_core::build_program(fj_core::ProgramSpec::Square);
+        let mut multi_eq = baseline_input();
+        multi_eq.jaxpr = fj_core::build_program(fj_core::ProgramSpec::SquarePlusLinear);
+        assert_ne!(
+            key_hex(&one_eq),
+            key_hex(&multi_eq),
+            "Single-eq and multi-eq Jaxprs must produce different keys"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_compile_option_values() {
+        let mut opt_a = baseline_input();
+        opt_a
+            .compile_options
+            .insert("vmap_in_axes".to_owned(), "0".to_owned());
+        let mut opt_b = baseline_input();
+        opt_b
+            .compile_options
+            .insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+        assert_ne!(
+            key_hex(&opt_a),
+            key_hex(&opt_b),
+            "Different compile option values must produce different keys"
+        );
+    }
+
+    #[test]
+    fn key_determinism_multiple_calls() {
+        let input = baseline_input();
+        let keys: Vec<String> = (0..10).map(|_| key_hex(&input)).collect();
+        for (i, k) in keys.iter().enumerate().skip(1) {
+            assert_eq!(
+                &keys[0], k,
+                "Cache key must be deterministic (call 0 vs {i})"
+            );
+        }
+    }
+
+    #[test]
+    fn key_namespace_is_fjx() {
+        let key = build_cache_key(&baseline_input()).unwrap();
+        assert_eq!(key.namespace, "fjx");
+        assert!(
+            key.as_string().starts_with("fjx-"),
+            "key string should start with 'fjx-'"
+        );
+    }
+
+    #[test]
+    fn key_digest_is_valid_hex() {
+        let key = build_cache_key(&baseline_input()).unwrap();
+        assert_eq!(key.digest_hex.len(), 64, "SHA-256 hex should be 64 chars");
+        assert!(
+            key.digest_hex.chars().all(|c| c.is_ascii_hexdigit()),
+            "digest should be valid hex"
+        );
+    }
 }

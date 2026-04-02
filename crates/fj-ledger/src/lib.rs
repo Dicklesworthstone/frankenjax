@@ -579,6 +579,376 @@ mod tests {
         assert!((result - 0.0).abs() < 1e-10, "log(0 + 1) = 0: got {result}");
     }
 
+    // ── Extended ledger tests (frankenjax-o9j) ──────────────────
+
+    #[test]
+    fn log_domain_posterior_strong_evidence_shifts_belief() {
+        let mut posterior = super::LogDomainPosterior::new(0.5);
+        assert!((posterior.posterior_abandoned() - 0.5).abs() < 0.01);
+        // Positive log-likelihood shifts toward "abandoned"
+        posterior.update(2.0);
+        assert!(
+            posterior.posterior_abandoned() > 0.7,
+            "strong positive evidence should increase abandoned posterior: {}",
+            posterior.posterior_abandoned()
+        );
+    }
+
+    #[test]
+    fn log_domain_posterior_negative_evidence_shifts_to_useful() {
+        let mut posterior = super::LogDomainPosterior::new(0.5);
+        // Negative log-likelihood shifts toward "useful"
+        posterior.update(-3.0);
+        assert!(
+            posterior.posterior_abandoned() < 0.1,
+            "strong negative evidence should decrease abandoned posterior: {}",
+            posterior.posterior_abandoned()
+        );
+    }
+
+    #[test]
+    fn log_domain_posterior_extreme_prior() {
+        // Very low prior for abandoned
+        let mut posterior = super::LogDomainPosterior::new(0.001);
+        assert!(posterior.posterior_abandoned() < 0.01);
+        // Even with moderate evidence, prior dominates
+        posterior.update(1.0);
+        assert!(
+            posterior.posterior_abandoned() < 0.01,
+            "low prior should resist moderate evidence: {}",
+            posterior.posterior_abandoned()
+        );
+    }
+
+    #[test]
+    fn bayes_factor_matches_accumulated_evidence() {
+        let mut posterior = super::LogDomainPosterior::new(0.5);
+        posterior.update(1.0);
+        posterior.update(0.5);
+        let bf = posterior.bayes_factor();
+        let expected = (1.0_f64 + 0.5).exp();
+        assert!(
+            (bf - expected).abs() < 1e-10,
+            "Bayes factor should be exp(1.5)={expected}, got {bf}"
+        );
+    }
+
+    #[test]
+    fn e_process_rejects_after_strong_evidence() {
+        let mut ep = super::EProcess::new(20.0);
+        assert!(!ep.rejected());
+        assert_eq!(ep.observations(), 0);
+        // Each observation with LR=3 accumulates: 1*3=3, 3*3=9, 9*3=27>20
+        ep.update(3.0);
+        assert_eq!(ep.observations(), 1);
+        assert!(!ep.rejected());
+        ep.update(3.0);
+        assert!(!ep.rejected());
+        ep.update(3.0);
+        assert!(
+            ep.rejected(),
+            "e-value={} should exceed threshold 20",
+            ep.e_value()
+        );
+    }
+
+    #[test]
+    fn e_process_never_negative() {
+        let mut ep = super::EProcess::new(10.0);
+        ep.update(0.0); // LR=0 should make e-value 0, not negative
+        assert!(ep.e_value() >= 0.0);
+        ep.update(-1.0); // Negative LR clamped to 0
+        assert!(ep.e_value() >= 0.0);
+    }
+
+    #[test]
+    fn conformal_predictor_uncalibrated_uses_heuristic() {
+        let cp = super::ConformalPredictor::new(0.9, 10);
+        assert!(!cp.is_calibrated());
+        let est = cp.calibrated_posterior(0.6);
+        assert!(!est.used_conformal);
+        assert_eq!(est.coverage, 0.0);
+        // Heuristic: lower=0.3, upper=0.9
+        assert!((est.lower - 0.3).abs() < 1e-10);
+        assert!((est.upper - 0.9).abs() < 1e-10);
+    }
+
+    #[test]
+    fn conformal_predictor_calibrated_uses_conformal_bounds() {
+        let mut cp = super::ConformalPredictor::new(0.9, 5);
+        for i in 1..=10 {
+            cp.observe(i as f64 * 0.01);
+        }
+        assert!(cp.is_calibrated());
+        let est = cp.calibrated_posterior(0.5);
+        assert!(est.used_conformal);
+        assert!(est.coverage > 0.0);
+        assert!(est.lower <= est.point);
+        assert!(est.upper >= est.point);
+    }
+
+    #[test]
+    fn ledger_entry_serialization_roundtrip() {
+        use super::LedgerEntry;
+
+        let entry = LedgerEntry {
+            decision_id: "test-001".to_owned(),
+            record: DecisionRecord::from_posterior(
+                CompatibilityMode::Strict,
+                0.3,
+                &LossMatrix::default(),
+            ),
+            signals: vec![super::EvidenceSignal {
+                signal_name: "cache_hit_rate".to_owned(),
+                log_likelihood_delta: -0.5,
+                detail: "80% hit rate".to_owned(),
+            }],
+        };
+
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let deserialized: LedgerEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(entry.decision_id, deserialized.decision_id);
+        assert_eq!(entry.record.action, deserialized.record.action);
+        assert_eq!(entry.signals.len(), deserialized.signals.len());
+    }
+
+    #[test]
+    fn ledger_audit_trail_ordering() {
+        let mut ledger = EvidenceLedger::new();
+        assert!(ledger.is_empty());
+
+        for i in 0..5 {
+            ledger.append(super::LedgerEntry {
+                decision_id: format!("decision-{i}"),
+                record: DecisionRecord::from_posterior(
+                    CompatibilityMode::Strict,
+                    i as f64 * 0.2,
+                    &LossMatrix::default(),
+                ),
+                signals: vec![],
+            });
+        }
+
+        assert_eq!(ledger.len(), 5);
+        // Entries should be in insertion order
+        for (i, entry) in ledger.entries().iter().enumerate() {
+            assert_eq!(entry.decision_id, format!("decision-{i}"));
+        }
+    }
+
+    #[test]
+    fn loss_matrix_boundary_posterior_zero() {
+        // p(abandoned) = 0: always useful → Keep
+        let matrix = LossMatrix::default();
+        let action = recommend_action(0.0, &matrix);
+        assert_eq!(action, DecisionAction::Keep);
+    }
+
+    #[test]
+    fn loss_matrix_boundary_posterior_one() {
+        // p(abandoned) = 1: certainly abandoned → Kill
+        let matrix = LossMatrix::default();
+        let action = recommend_action(1.0, &matrix);
+        assert_eq!(action, DecisionAction::Kill);
+    }
+
+    #[test]
+    fn decision_record_uses_reprofile_on_exact_loss_tie() {
+        let matrix = LossMatrix {
+            keep_if_useful: 2,
+            kill_if_useful: 8,
+            keep_if_abandoned: 8,
+            kill_if_abandoned: 2,
+        };
+
+        let record = DecisionRecord::from_posterior(CompatibilityMode::Hardened, 0.5, &matrix);
+
+        assert!((record.expected_loss_keep - 5.0).abs() < 1e-10);
+        assert!((record.expected_loss_kill - 5.0).abs() < 1e-10);
+        assert_eq!(record.action, DecisionAction::Reprofile);
+        assert_eq!(record.mode, CompatibilityMode::Hardened);
+    }
+
+    #[test]
+    fn ledger_roundtrip_preserves_full_audit_trail() {
+        use super::{EvidenceSignal, LedgerEntry};
+
+        let mut ledger = EvidenceLedger::new();
+        for (idx, posterior) in [0.2, 0.6].into_iter().enumerate() {
+            ledger.append(LedgerEntry {
+                decision_id: format!("audit-{idx}"),
+                record: DecisionRecord::from_posterior(
+                    CompatibilityMode::Strict,
+                    posterior,
+                    &LossMatrix::default(),
+                ),
+                signals: vec![
+                    EvidenceSignal {
+                        signal_name: format!("signal-{idx}"),
+                        log_likelihood_delta: posterior - 0.5,
+                        detail: format!("detail-{idx}"),
+                    },
+                    EvidenceSignal {
+                        signal_name: format!("signal-{idx}-confirm"),
+                        log_likelihood_delta: 0.25,
+                        detail: "secondary corroboration".to_owned(),
+                    },
+                ],
+            });
+        }
+
+        let json = serde_json::to_string(&ledger).expect("serialize ledger");
+        let decoded: EvidenceLedger = serde_json::from_str(&json).expect("deserialize ledger");
+
+        assert_eq!(decoded.entries(), ledger.entries());
+        assert_eq!(
+            decoded.entries()[1].signals[1].detail,
+            "secondary corroboration"
+        );
+    }
+
+    #[test]
+    fn ledger_entries_expose_signal_payloads_without_reordering() {
+        use super::{EvidenceSignal, LedgerEntry};
+
+        let mut ledger = EvidenceLedger::new();
+        ledger.append(LedgerEntry {
+            decision_id: "audit-primary".to_owned(),
+            record: DecisionRecord::from_posterior(
+                CompatibilityMode::Strict,
+                0.15,
+                &LossMatrix::default(),
+            ),
+            signals: vec![
+                EvidenceSignal {
+                    signal_name: "cache_pressure".to_owned(),
+                    log_likelihood_delta: 0.4,
+                    detail: "cache pressure rising".to_owned(),
+                },
+                EvidenceSignal {
+                    signal_name: "manual_override".to_owned(),
+                    log_likelihood_delta: -0.2,
+                    detail: "operator inspected shard".to_owned(),
+                },
+            ],
+        });
+
+        let entry = &ledger.entries()[0];
+        assert_eq!(entry.decision_id, "audit-primary");
+        assert_eq!(entry.signals[0].signal_name, "cache_pressure");
+        assert_eq!(entry.signals[1].detail, "operator inspected shard");
+    }
+
+    #[test]
+    fn loss_matrix_custom_values_shift_decision_boundary() {
+        // Custom matrix where Kill is cheaper even at moderate abandonment
+        let aggressive_matrix = LossMatrix {
+            keep_if_useful: 10,
+            kill_if_useful: 20,
+            keep_if_abandoned: 80,
+            kill_if_abandoned: 5,
+        };
+        // At p(abandoned)=0.3: keep_loss = 0.7*10 + 0.3*80 = 31, kill_loss = 0.7*20 + 0.3*5 = 15.5
+        assert_eq!(
+            recommend_action(0.3, &aggressive_matrix),
+            DecisionAction::Kill
+        );
+        // At p(abandoned)=0.05: keep_loss = 0.95*10 + 0.05*80 = 13.5, kill_loss = 0.95*20 + 0.05*5 = 19.25
+        assert_eq!(
+            recommend_action(0.05, &aggressive_matrix),
+            DecisionAction::Keep
+        );
+    }
+
+    #[test]
+    fn loss_matrix_symmetric_always_reprofiles() {
+        let symmetric = LossMatrix {
+            keep_if_useful: 10,
+            kill_if_useful: 10,
+            keep_if_abandoned: 10,
+            kill_if_abandoned: 10,
+        };
+        // With symmetric costs, expected losses are always equal → Reprofile
+        assert_eq!(recommend_action(0.0, &symmetric), DecisionAction::Reprofile);
+        assert_eq!(recommend_action(0.5, &symmetric), DecisionAction::Reprofile);
+        assert_eq!(recommend_action(1.0, &symmetric), DecisionAction::Reprofile);
+    }
+
+    #[test]
+    fn decision_record_strict_vs_hardened_mode_preserved() {
+        let matrix = LossMatrix::default();
+        let strict = DecisionRecord::from_posterior(CompatibilityMode::Strict, 0.3, &matrix);
+        let hardened = DecisionRecord::from_posterior(CompatibilityMode::Hardened, 0.3, &matrix);
+
+        assert_eq!(strict.mode, CompatibilityMode::Strict);
+        assert_eq!(hardened.mode, CompatibilityMode::Hardened);
+        // Same posterior + matrix → same action regardless of mode
+        assert_eq!(strict.action, hardened.action);
+        assert!((strict.expected_loss_keep - hardened.expected_loss_keep).abs() < 1e-10);
+    }
+
+    #[test]
+    fn log_domain_posterior_multiple_updates_accumulate() {
+        let mut posterior = super::LogDomainPosterior::new(0.5);
+        // Multiple small updates should accumulate
+        for _ in 0..10 {
+            posterior.update(0.5);
+        }
+        let bf = posterior.bayes_factor();
+        let expected = (5.0_f64).exp(); // 10 * 0.5 = 5.0
+        assert!(
+            (bf - expected).abs() < 1e-6,
+            "10 updates of 0.5 should give exp(5.0), got {bf}"
+        );
+        // Posterior should be heavily shifted toward abandoned
+        assert!(posterior.posterior_abandoned() > 0.99);
+    }
+
+    #[test]
+    fn evidence_signal_negative_delta_favors_useful() {
+        use super::EvidenceSignal;
+        let signal = EvidenceSignal {
+            signal_name: "high_cache_hit".to_owned(),
+            log_likelihood_delta: -2.0,
+            detail: "95% cache hit rate suggests active usage".to_owned(),
+        };
+        assert!(signal.log_likelihood_delta < 0.0);
+
+        let mut posterior = super::LogDomainPosterior::new(0.5);
+        posterior.update(signal.log_likelihood_delta);
+        assert!(
+            posterior.posterior_abandoned() < 0.2,
+            "negative evidence should shift toward useful: {}",
+            posterior.posterior_abandoned()
+        );
+    }
+
+    #[test]
+    fn e_process_zero_lr_absorbs() {
+        let mut ep = super::EProcess::new(10.0);
+        ep.update(5.0); // e_value = 5
+        ep.update(0.0); // LR=0 → e_value = 0 (absorbing state)
+        assert!((ep.e_value()).abs() < 1e-10);
+        // Once absorbed, can never reject
+        ep.update(1000.0);
+        assert!((ep.e_value()).abs() < 1e-10);
+        assert!(!ep.rejected());
+    }
+
+    #[test]
+    fn calibration_report_mixed_predictions() {
+        let mut report = super::CalibrationReport::new(10);
+        // Well-calibrated: predict 0.8, observe true 80% of the time
+        for i in 0..100 {
+            report.observe(0.8, i < 80);
+        }
+        let ece = report.compute_ece();
+        assert!(
+            ece < 0.05,
+            "well-calibrated predictions should have low ECE: {ece}"
+        );
+    }
+
     #[test]
     fn test_ledger_test_log_schema_contract() {
         let fixture_id =
