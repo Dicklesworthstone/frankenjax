@@ -1586,3 +1586,360 @@ fn svd_vjp_near_zero_singular_value() {
         "SVD VJP near zero singular value 3x3",
     );
 }
+
+// ======================== Elementary Scalar VJP Numerical Tests (frankenjax-suz) ========================
+
+/// Finite-difference VJP verification for unary scalar primitives.
+/// For f: R → R, the VJP rule with cotangent g should satisfy:
+///   vjp_f(x, g) ≈ g * (f(x+ε) - f(x-ε)) / (2ε)
+fn verify_unary_scalar_vjp(prim: Primitive, x: f64, g: f64, tol: f64, label: &str) {
+    let x_val = Value::scalar_f64(x);
+    let g_val = Value::scalar_f64(g);
+    let params = BTreeMap::new();
+
+    // Forward pass
+    let out = eval_primitive(prim, std::slice::from_ref(&x_val), &params).unwrap();
+
+    // Analytical VJP
+    let vjp_result = fj_ad::vjp(
+        prim,
+        std::slice::from_ref(&x_val),
+        std::slice::from_ref(&g_val),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    let analytical = extract_f64_scalar(&vjp_result[0]);
+
+    // Numerical finite-difference
+    let eps = 1e-6;
+    let f_plus = extract_f64_scalar(
+        &eval_primitive(
+            prim,
+            std::slice::from_ref(&Value::scalar_f64(x + eps)),
+            &params,
+        )
+        .unwrap(),
+    );
+    let f_minus = extract_f64_scalar(
+        &eval_primitive(
+            prim,
+            std::slice::from_ref(&Value::scalar_f64(x - eps)),
+            &params,
+        )
+        .unwrap(),
+    );
+    let numerical = g * (f_plus - f_minus) / (2.0 * eps);
+
+    assert_scalar_close(analytical, numerical, tol, 1e-4, label);
+}
+
+#[test]
+fn sin_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Sin, 1.0, 1.0, 1e-5, "sin VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Sin, 0.0, 1.0, 1e-5, "sin VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Sin, 2.5, 0.7, 1e-5, "sin VJP at x=2.5, g=0.7");
+}
+
+#[test]
+fn cos_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Cos, 1.0, 1.0, 1e-5, "cos VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Cos, 0.0, 1.0, 1e-5, "cos VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Cos, -0.5, 2.0, 1e-5, "cos VJP at x=-0.5, g=2");
+}
+
+#[test]
+fn exp_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Exp, 1.0, 1.0, 1e-5, "exp VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Exp, 0.0, 1.0, 1e-5, "exp VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Exp, -2.0, 0.5, 1e-5, "exp VJP at x=-2, g=0.5");
+}
+
+#[test]
+fn log_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Log, 1.0, 1.0, 1e-5, "log VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Log, 2.0, 1.0, 1e-5, "log VJP at x=2");
+    verify_unary_scalar_vjp(Primitive::Log, 0.5, 3.0, 1e-5, "log VJP at x=0.5, g=3");
+}
+
+#[test]
+fn tanh_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Tanh, 0.5, 1.0, 1e-5, "tanh VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Tanh, 0.0, 1.0, 1e-5, "tanh VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Tanh, -1.0, 0.5, 1e-5, "tanh VJP at x=-1, g=0.5");
+}
+
+#[test]
+fn sqrt_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Sqrt, 4.0, 1.0, 1e-5, "sqrt VJP at x=4");
+    verify_unary_scalar_vjp(Primitive::Sqrt, 1.0, 1.0, 1e-5, "sqrt VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Sqrt, 0.25, 2.0, 1e-5, "sqrt VJP at x=0.25, g=2");
+}
+
+#[test]
+fn neg_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Neg, 3.0, 1.0, 1e-5, "neg VJP at x=3");
+    verify_unary_scalar_vjp(Primitive::Neg, -2.0, 0.5, 1e-5, "neg VJP at x=-2, g=0.5");
+}
+
+#[test]
+fn abs_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Abs, 3.0, 1.0, 1e-5, "abs VJP at x=3");
+    verify_unary_scalar_vjp(Primitive::Abs, -3.0, 1.0, 1e-5, "abs VJP at x=-3");
+}
+
+#[test]
+fn expm1_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Expm1, 0.5, 1.0, 1e-5, "expm1 VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Expm1, 0.0, 1.0, 1e-5, "expm1 VJP at x=0");
+}
+
+#[test]
+fn log1p_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Log1p, 0.5, 1.0, 1e-5, "log1p VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Log1p, 1.0, 1.0, 1e-5, "log1p VJP at x=1");
+}
+
+#[test]
+fn sinh_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Sinh, 1.0, 1.0, 1e-5, "sinh VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Sinh, -0.5, 2.0, 1e-5, "sinh VJP at x=-0.5, g=2");
+}
+
+#[test]
+fn cosh_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Cosh, 1.0, 1.0, 1e-5, "cosh VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Cosh, 0.0, 1.0, 1e-5, "cosh VJP at x=0");
+}
+
+#[test]
+fn tan_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Tan, 0.5, 1.0, 1e-5, "tan VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Tan, -0.3, 1.0, 1e-5, "tan VJP at x=-0.3");
+}
+
+#[test]
+fn asin_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Asin, 0.5, 1.0, 1e-5, "asin VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Asin, -0.3, 1.0, 1e-5, "asin VJP at x=-0.3");
+}
+
+#[test]
+fn acos_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Acos, 0.5, 1.0, 1e-5, "acos VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Acos, -0.3, 1.0, 1e-5, "acos VJP at x=-0.3");
+}
+
+#[test]
+fn atan_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Atan, 1.0, 1.0, 1e-5, "atan VJP at x=1");
+    verify_unary_scalar_vjp(Primitive::Atan, -2.0, 0.5, 1e-5, "atan VJP at x=-2, g=0.5");
+}
+
+#[test]
+fn square_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Square, 3.0, 1.0, 1e-5, "square VJP at x=3");
+    verify_unary_scalar_vjp(
+        Primitive::Square,
+        -2.0,
+        0.5,
+        1e-5,
+        "square VJP at x=-2, g=0.5",
+    );
+}
+
+#[test]
+fn reciprocal_vjp_numerical() {
+    verify_unary_scalar_vjp(
+        Primitive::Reciprocal,
+        2.0,
+        1.0,
+        1e-5,
+        "reciprocal VJP at x=2",
+    );
+    verify_unary_scalar_vjp(
+        Primitive::Reciprocal,
+        0.5,
+        1.0,
+        1e-5,
+        "reciprocal VJP at x=0.5",
+    );
+}
+
+#[test]
+fn rsqrt_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Rsqrt, 4.0, 1.0, 1e-5, "rsqrt VJP at x=4");
+    verify_unary_scalar_vjp(Primitive::Rsqrt, 1.0, 1.0, 1e-5, "rsqrt VJP at x=1");
+}
+
+#[test]
+fn cbrt_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Cbrt, 8.0, 1.0, 1e-5, "cbrt VJP at x=8");
+    verify_unary_scalar_vjp(Primitive::Cbrt, 1.0, 1.0, 1e-5, "cbrt VJP at x=1");
+}
+
+#[test]
+fn logistic_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Logistic, 0.0, 1.0, 1e-5, "logistic VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Logistic, 1.0, 1.0, 1e-5, "logistic VJP at x=1");
+    verify_unary_scalar_vjp(
+        Primitive::Logistic,
+        -1.0,
+        0.5,
+        1e-5,
+        "logistic VJP at x=-1, g=0.5",
+    );
+}
+
+#[test]
+fn erf_vjp_numerical() {
+    verify_unary_scalar_vjp(Primitive::Erf, 0.5, 1.0, 1e-4, "erf VJP at x=0.5");
+    // erf derivative at x=0 is 2/sqrt(pi); finite difference has wider error here
+    verify_unary_scalar_vjp(Primitive::Erf, 0.0, 1.0, 2e-3, "erf VJP at x=0");
+}
+
+// ======================== Binary Scalar VJP Numerical Tests (frankenjax-2zy) ========================
+
+/// Finite-difference VJP verification for binary scalar primitives.
+/// For f(a,b), the VJP with cotangent g gives gradients w.r.t. both inputs:
+///   grad_a ≈ g * (f(a+ε,b) - f(a-ε,b)) / (2ε)
+///   grad_b ≈ g * (f(a,b+ε) - f(a,b-ε)) / (2ε)
+fn verify_binary_scalar_vjp(prim: Primitive, a: f64, b: f64, g: f64, tol: f64, label: &str) {
+    let a_val = Value::scalar_f64(a);
+    let b_val = Value::scalar_f64(b);
+    let g_val = Value::scalar_f64(g);
+    let params = BTreeMap::new();
+
+    // Forward pass
+    let out = eval_primitive(prim, &[a_val.clone(), b_val.clone()], &params).unwrap();
+
+    // Analytical VJP
+    let vjp_result = fj_ad::vjp(
+        prim,
+        &[a_val, b_val],
+        std::slice::from_ref(&g_val),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+
+    let eps = 1e-6;
+
+    // Verify gradient w.r.t. first input (a)
+    let f_a_plus = extract_f64_scalar(
+        &eval_primitive(
+            prim,
+            &[Value::scalar_f64(a + eps), Value::scalar_f64(b)],
+            &params,
+        )
+        .unwrap(),
+    );
+    let f_a_minus = extract_f64_scalar(
+        &eval_primitive(
+            prim,
+            &[Value::scalar_f64(a - eps), Value::scalar_f64(b)],
+            &params,
+        )
+        .unwrap(),
+    );
+    let numerical_a = g * (f_a_plus - f_a_minus) / (2.0 * eps);
+    let analytical_a = extract_f64_scalar(&vjp_result[0]);
+    assert_scalar_close(
+        analytical_a,
+        numerical_a,
+        tol,
+        1e-4,
+        &format!("{label} grad_a"),
+    );
+
+    // Verify gradient w.r.t. second input (b)
+    let f_b_plus = extract_f64_scalar(
+        &eval_primitive(
+            prim,
+            &[Value::scalar_f64(a), Value::scalar_f64(b + eps)],
+            &params,
+        )
+        .unwrap(),
+    );
+    let f_b_minus = extract_f64_scalar(
+        &eval_primitive(
+            prim,
+            &[Value::scalar_f64(a), Value::scalar_f64(b - eps)],
+            &params,
+        )
+        .unwrap(),
+    );
+    let numerical_b = g * (f_b_plus - f_b_minus) / (2.0 * eps);
+    let analytical_b = extract_f64_scalar(&vjp_result[1]);
+    assert_scalar_close(
+        analytical_b,
+        numerical_b,
+        tol,
+        1e-4,
+        &format!("{label} grad_b"),
+    );
+}
+
+#[test]
+fn add_vjp_numerical() {
+    // d/da(a+b)=1, d/db(a+b)=1
+    verify_binary_scalar_vjp(Primitive::Add, 3.0, 4.0, 1.0, 1e-5, "add VJP");
+    verify_binary_scalar_vjp(Primitive::Add, -1.0, 2.0, 0.5, 1e-5, "add VJP negative");
+}
+
+#[test]
+fn sub_vjp_numerical() {
+    // d/da(a-b)=1, d/db(a-b)=-1
+    verify_binary_scalar_vjp(Primitive::Sub, 5.0, 2.0, 1.0, 1e-5, "sub VJP");
+    verify_binary_scalar_vjp(Primitive::Sub, -3.0, 7.0, 2.0, 1e-5, "sub VJP negative");
+}
+
+#[test]
+fn mul_vjp_numerical() {
+    // d/da(a*b)=b, d/db(a*b)=a (product rule)
+    verify_binary_scalar_vjp(Primitive::Mul, 3.0, 4.0, 1.0, 1e-5, "mul VJP");
+    verify_binary_scalar_vjp(Primitive::Mul, -2.0, 5.0, 0.7, 1e-5, "mul VJP negative");
+    verify_binary_scalar_vjp(Primitive::Mul, 0.0, 3.0, 1.0, 1e-5, "mul VJP zero");
+}
+
+#[test]
+fn div_vjp_numerical() {
+    // d/da(a/b)=1/b, d/db(a/b)=-a/b^2 (quotient rule)
+    verify_binary_scalar_vjp(Primitive::Div, 6.0, 2.0, 1.0, 1e-5, "div VJP");
+    verify_binary_scalar_vjp(
+        Primitive::Div,
+        1.0,
+        3.0,
+        1.0,
+        1e-5,
+        "div VJP small quotient",
+    );
+}
+
+#[test]
+fn pow_vjp_numerical() {
+    // d/da(a^b) = b*a^(b-1), d/db(a^b) = a^b * ln(a)
+    verify_binary_scalar_vjp(Primitive::Pow, 2.0, 3.0, 1.0, 1e-4, "pow VJP 2^3");
+    verify_binary_scalar_vjp(Primitive::Pow, 3.0, 0.5, 1.0, 1e-4, "pow VJP sqrt(3)");
+}
+
+#[test]
+fn max_vjp_numerical() {
+    // max(a,b): gradient passes through the larger input
+    verify_binary_scalar_vjp(Primitive::Max, 3.0, 7.0, 1.0, 1e-5, "max VJP b>a");
+    verify_binary_scalar_vjp(Primitive::Max, 7.0, 3.0, 1.0, 1e-5, "max VJP a>b");
+}
+
+#[test]
+fn min_vjp_numerical() {
+    // min(a,b): gradient passes through the smaller input
+    verify_binary_scalar_vjp(Primitive::Min, 3.0, 7.0, 1.0, 1e-5, "min VJP b>a");
+    verify_binary_scalar_vjp(Primitive::Min, 7.0, 3.0, 1.0, 1e-5, "min VJP a>b");
+}
+
+#[test]
+fn atan2_vjp_numerical() {
+    // d/da(atan2(a,b)) = b/(a^2+b^2), d/db(atan2(a,b)) = -a/(a^2+b^2)
+    verify_binary_scalar_vjp(Primitive::Atan2, 1.0, 1.0, 1.0, 1e-5, "atan2 VJP (1,1)");
+    verify_binary_scalar_vjp(Primitive::Atan2, 3.0, 4.0, 1.0, 1e-5, "atan2 VJP (3,4)");
+}
