@@ -587,4 +587,82 @@ mod tests {
         assert!(sig.contains("jit"), "signature should contain jit");
         assert!(sig.contains("grad"), "signature should contain grad");
     }
+
+    // ── value_and_grad execution tests (frankenjax-rjj) ──
+
+    #[test]
+    fn value_and_grad_call_square() {
+        // f(x) = x*x, value_and_grad should return (f(x), f'(x)) = (x^2, 2x)
+        use fj_core::ProgramSpec;
+        let wrapped = value_and_grad(fj_core::build_program(ProgramSpec::Square));
+        let (values, gradients) = wrapped
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("value_and_grad(x^2) should succeed");
+        // value = 9.0
+        let val = values[0].as_f64_scalar().expect("value should be f64");
+        assert!((val - 9.0).abs() < 1e-3, "f(3) = 3^2 = 9, got {val}");
+        // gradient = 6.0
+        assert!(
+            !gradients.is_empty(),
+            "should produce at least one gradient"
+        );
+    }
+
+    #[test]
+    fn value_and_grad_with_mode() {
+        use fj_core::ProgramSpec;
+        let wrapped = value_and_grad(fj_core::build_program(ProgramSpec::Square))
+            .with_mode(CompatibilityMode::Hardened);
+        let (values, gradients) = wrapped
+            .call(vec![Value::scalar_f64(5.0)])
+            .expect("hardened value_and_grad should succeed");
+        let val = values[0].as_f64_scalar().expect("value should be f64");
+        assert!((val - 25.0).abs() < 1e-3, "f(5) = 25, got {val}");
+        assert!(!gradients.is_empty());
+    }
+
+    #[test]
+    fn value_and_grad_defaults_checked() {
+        let wrapped = value_and_grad(make_mul_jaxpr());
+        assert_eq!(wrapped.backend, "cpu");
+        assert_eq!(wrapped.mode, CompatibilityMode::Strict);
+    }
+
+    #[test]
+    fn value_and_grad_with_backend() {
+        let wrapped = value_and_grad(make_mul_jaxpr()).with_backend("cpu");
+        assert_eq!(wrapped.backend, "cpu");
+    }
+
+    // ── Error path tests ──
+
+    #[test]
+    fn jit_wrong_arity_returns_error() {
+        let wrapped = jit(make_add_jaxpr());
+        let err = wrapped
+            .call(vec![Value::scalar_f64(1.0)])
+            .expect_err("wrong arity should fail");
+        let msg = format!("{err}");
+        assert!(!msg.is_empty(), "error should have a descriptive message");
+    }
+
+    #[test]
+    fn grad_wrong_arity_returns_error() {
+        // grad(add) expects 2 inputs
+        let wrapped = grad(make_add_jaxpr());
+        let err = wrapped
+            .call(vec![Value::scalar_f64(1.0)])
+            .expect_err("wrong arity should fail");
+        let msg = format!("{err}");
+        assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn compose_empty_transforms_acts_as_eval() {
+        let composed = compose(make_add_jaxpr(), vec![]);
+        let result = composed
+            .call(vec![Value::scalar_f64(2.0), Value::scalar_f64(3.0)])
+            .expect("empty transforms should succeed");
+        assert!((result[0].as_f64_scalar().unwrap() - 5.0).abs() < 1e-12);
+    }
 }

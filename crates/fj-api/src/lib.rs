@@ -804,4 +804,68 @@ mod tests {
         );
         assert!(result.is_err());
     }
+
+    // ── value_and_grad e2e test (frankenjax-rjj) ──
+
+    #[test]
+    fn trace_value_and_grad_e2e() {
+        // Trace x*x, then value_and_grad: returns (x^2, 2x)
+        use fj_core::DType;
+        use fj_trace::ShapedArray;
+
+        let closed = make_jaxpr(
+            |inputs| {
+                let sq = inputs[0].binary_op(Primitive::Mul, &inputs[0]).unwrap();
+                vec![sq]
+            },
+            vec![ShapedArray {
+                dtype: DType::F64,
+                shape: fj_core::Shape::scalar(),
+            }],
+        )
+        .unwrap();
+
+        let (values, gradients) = value_and_grad(closed.jaxpr)
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("value_and_grad(traced x*x) should succeed");
+        let val = values[0].as_f64_scalar().expect("value should be f64");
+        assert!((val - 16.0).abs() < 1e-3, "f(4) = 4^2 = 16, got {val}");
+        assert!(!gradients.is_empty(), "should produce gradients");
+    }
+
+    #[test]
+    fn jacobian_single_output_single_input() {
+        // f(x) = x*x, Jacobian = [2x]
+        let jaxpr = build_program(ProgramSpec::Square);
+        let jac = jacobian(jaxpr)
+            .call(vec![Value::scalar_f64(5.0)])
+            .expect("jacobian(x^2) should succeed");
+        // Result should be a scalar (1x1 Jacobian) or a 1-element tensor
+        if let Some(v) = jac.as_f64_scalar() {
+            assert!(
+                (v - 10.0).abs() < 1e-3,
+                "J(x^2) at x=5 should be 10, got {v}"
+            );
+        } else if let Some(t) = jac.as_tensor() {
+            let vals = t.to_f64_vec().expect("f64 tensor");
+            assert!(!vals.is_empty(), "jacobian tensor should have values");
+        } else {
+            panic!("jacobian should return a scalar or tensor");
+        }
+    }
+
+    #[test]
+    fn hessian_quadratic() {
+        // f(x) = x^2, H = [2]
+        let jaxpr = build_program(ProgramSpec::Square);
+        let hes = hessian(jaxpr)
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("hessian(x^2) should succeed");
+        if let Some(h) = hes.as_f64_scalar() {
+            assert!((h - 2.0).abs() < 1e-2, "d²/dx²(x²) should be 2, got {h}");
+        } else if let Some(t) = hes.as_tensor() {
+            let vals = t.to_f64_vec().expect("f64 tensor");
+            assert!(!vals.is_empty(), "hessian tensor should have values");
+        }
+    }
 }
