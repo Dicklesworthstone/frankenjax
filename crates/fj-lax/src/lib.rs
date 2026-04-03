@@ -179,6 +179,8 @@ pub fn eval_primitive(
             primitive,
             inputs,
             |x| x.signum(),
+            |x| u32::from(x != 0),
+            |x| u64::from(x != 0),
             |x| {
                 if x.is_nan() {
                     f64::NAN
@@ -189,7 +191,14 @@ pub fn eval_primitive(
                 }
             },
         ),
-        Primitive::Square => eval_unary_int_or_float(primitive, inputs, |x| x * x, |x| x * x),
+        Primitive::Square => eval_unary_int_or_float(
+            primitive,
+            inputs,
+            |x| x * x,
+            |x| x.wrapping_mul(x),
+            |x| x.wrapping_mul(x),
+            |x| x * x,
+        ),
         Primitive::Reciprocal => eval_unary_elementwise(primitive, inputs, |x| 1.0 / x),
         Primitive::Logistic => {
             eval_unary_elementwise(primitive, inputs, |x| 1.0 / (1.0 + (-x).exp()))
@@ -1466,6 +1475,18 @@ mod tests {
     }
 
     #[test]
+    fn neg_u32_scalar_wraps() {
+        let out = eval_primitive(Primitive::Neg, &[Value::scalar_u32(5)], &no_params());
+        assert_eq!(out, Ok(Value::scalar_u32(5u32.wrapping_neg())));
+    }
+
+    #[test]
+    fn neg_u64_scalar_wraps() {
+        let out = eval_primitive(Primitive::Neg, &[Value::scalar_u64(1)], &no_params());
+        assert_eq!(out, Ok(Value::scalar_u64(1u64.wrapping_neg())));
+    }
+
+    #[test]
     fn abs_negative_i64() {
         let out = eval_primitive(Primitive::Abs, &[Value::scalar_i64(-42)], &no_params());
         assert_eq!(out, Ok(Value::scalar_i64(42)));
@@ -1477,6 +1498,73 @@ mod tests {
             eval_primitive(Primitive::Abs, &[Value::scalar_f64(-2.78)], &no_params()).unwrap();
         let v = out.as_f64_scalar().unwrap();
         assert!((v - 2.78).abs() < 1e-10);
+    }
+
+    #[test]
+    fn abs_unsigned_scalars_are_identity() {
+        let u32_out = eval_primitive(Primitive::Abs, &[Value::scalar_u32(42)], &no_params());
+        let u64_out = eval_primitive(Primitive::Abs, &[Value::scalar_u64(99)], &no_params());
+        assert_eq!(u32_out, Ok(Value::scalar_u32(42)));
+        assert_eq!(u64_out, Ok(Value::scalar_u64(99)));
+    }
+
+    #[test]
+    fn sign_unsigned_scalars_match_zero_or_one() {
+        let zero_u32 = eval_primitive(Primitive::Sign, &[Value::scalar_u32(0)], &no_params());
+        let pos_u32 = eval_primitive(Primitive::Sign, &[Value::scalar_u32(7)], &no_params());
+        let zero_u64 = eval_primitive(Primitive::Sign, &[Value::scalar_u64(0)], &no_params());
+        let pos_u64 = eval_primitive(Primitive::Sign, &[Value::scalar_u64(11)], &no_params());
+
+        assert_eq!(zero_u32, Ok(Value::scalar_u32(0)));
+        assert_eq!(pos_u32, Ok(Value::scalar_u32(1)));
+        assert_eq!(zero_u64, Ok(Value::scalar_u64(0)));
+        assert_eq!(pos_u64, Ok(Value::scalar_u64(1)));
+    }
+
+    #[test]
+    fn unsigned_unary_tensor_ops_preserve_dtype() {
+        let neg_input = Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape::vector(2),
+                vec![Literal::U32(0), Literal::U32(5)],
+            )
+            .unwrap(),
+        );
+        let sign_input = Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape::vector(3),
+                vec![Literal::U64(0), Literal::U64(2), Literal::U64(9)],
+            )
+            .unwrap(),
+        );
+
+        let neg_out = eval_primitive(Primitive::Neg, &[neg_input], &no_params()).unwrap();
+        let sign_out = eval_primitive(Primitive::Sign, &[sign_input], &no_params()).unwrap();
+
+        assert_eq!(
+            neg_out,
+            Value::Tensor(
+                TensorValue::new(
+                    DType::U32,
+                    Shape::vector(2),
+                    vec![Literal::U32(0), Literal::U32(5u32.wrapping_neg())],
+                )
+                .unwrap(),
+            )
+        );
+        assert_eq!(
+            sign_out,
+            Value::Tensor(
+                TensorValue::new(
+                    DType::U64,
+                    Shape::vector(3),
+                    vec![Literal::U64(0), Literal::U64(1), Literal::U64(1)],
+                )
+                .unwrap(),
+            )
+        );
     }
 
     #[test]
@@ -6038,6 +6126,152 @@ mod prop_tests {
         )
         .unwrap();
         assert_complex128_close(&out, 0.44, 0.08, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_pow_integer_exponent() {
+        let out = eval_primitive(
+            Primitive::Pow,
+            &[
+                Value::scalar_complex128(1.0, 1.0),
+                Value::scalar_complex128(2.0, 0.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 2.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_pow_square_root_branch() {
+        let out = eval_primitive(
+            Primitive::Pow,
+            &[
+                Value::scalar_complex128(1.0, 1.0),
+                Value::scalar_complex128(0.5, 0.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 1.09868411346781, 0.45508986056222733, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_pow_real_inputs_match_real_pow() {
+        let complex_out = eval_primitive(
+            Primitive::Pow,
+            &[
+                Value::scalar_complex128(3.0, 0.0),
+                Value::scalar_complex128(0.5, 0.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        let real_out = eval_primitive(
+            Primitive::Pow,
+            &[Value::scalar_f64(3.0), Value::scalar_f64(0.5)],
+            &no_params(),
+        )
+        .unwrap();
+        let real_value = real_out.as_f64_scalar().unwrap();
+        assert_complex128_close(&complex_out, real_value, 0.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_max_lexicographic_order() {
+        let out = eval_primitive(
+            Primitive::Max,
+            &[
+                Value::scalar_complex128(1.0, 2.0),
+                Value::scalar_complex128(3.0, 0.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(3.0, 0.0));
+    }
+
+    #[test]
+    fn test_complex_min_lexicographic_tiebreaks_on_imag() {
+        let out = eval_primitive(
+            Primitive::Min,
+            &[
+                Value::scalar_complex128(1.0, 2.0),
+                Value::scalar_complex128(1.0, 1.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_complex128(1.0, 1.0));
+    }
+
+    #[test]
+    fn test_complex_rem_gaussian_integer_rounding() {
+        let out = eval_primitive(
+            Primitive::Rem,
+            &[
+                Value::scalar_complex128(4.0, 3.0),
+                Value::scalar_complex128(2.0, 1.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 1.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_atan2_reports_undefined() {
+        let err = eval_primitive(
+            Primitive::Atan2,
+            &[
+                Value::scalar_complex128(1.0, 1.0),
+                Value::scalar_complex128(2.0, -1.0),
+            ],
+            &no_params(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("atan2 is not defined for complex operands"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_select_complex_condition_reports_boolean_requirement() {
+        let err = eval_primitive(
+            Primitive::Select,
+            &[
+                Value::scalar_complex128(1.0, 0.0),
+                Value::scalar_f64(2.0),
+                Value::scalar_f64(3.0),
+            ],
+            &no_params(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("select condition must be boolean, got complex dtype"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_clamp_complex_value_reports_unsupported_dtype() {
+        let err = eval_primitive(
+            Primitive::Clamp,
+            &[
+                Value::scalar_complex128(1.0, 0.0),
+                Value::scalar_f64(0.0),
+                Value::scalar_f64(2.0),
+            ],
+            &no_params(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("clamp is not supported for complex dtypes"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

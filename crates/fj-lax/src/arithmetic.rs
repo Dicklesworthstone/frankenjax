@@ -157,11 +157,88 @@ fn apply_complex_binary(
             let denom = br * br + bi * bi;
             Ok(((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom))
         }
+        Primitive::Rem => {
+            let quotient = apply_complex_binary(Primitive::Div, lhs, rhs)?;
+            let rounded = (quotient.0.round(), quotient.1.round());
+            Ok(complex_sub((ar, ai), complex_mul(rhs, rounded)))
+        }
+        Primitive::Max => Ok(if complex_lex_ge(lhs, rhs) { lhs } else { rhs }),
+        Primitive::Min => Ok(if complex_lex_ge(lhs, rhs) { rhs } else { lhs }),
+        Primitive::Pow => apply_complex_pow(lhs, rhs),
         _ => Err(EvalError::TypeMismatch {
             primitive,
-            detail: "complex arithmetic not yet implemented",
+            detail: complex_binary_unsupported_detail(primitive),
         }),
     }
+}
+
+fn complex_sub(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
+    (lhs.0 - rhs.0, lhs.1 - rhs.1)
+}
+
+fn complex_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
+    let (ar, ai) = lhs;
+    let (br, bi) = rhs;
+    (ar * br - ai * bi, ar * bi + ai * br)
+}
+
+fn complex_exp((re, im): (f64, f64)) -> (f64, f64) {
+    let exp_re = re.exp();
+    (exp_re * im.cos(), exp_re * im.sin())
+}
+
+fn complex_binary_unsupported_detail(primitive: Primitive) -> &'static str {
+    match primitive {
+        Primitive::Atan2 => "atan2 is not defined for complex operands",
+        _ => "operation is not supported for complex operands",
+    }
+}
+
+fn complex_lex_ge(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
+    lhs.0 > rhs.0 || (lhs.0 == rhs.0 && lhs.1 >= rhs.1)
+}
+
+fn complex_integer_pow(mut base: (f64, f64), mut exponent: u64) -> (f64, f64) {
+    let mut acc = (1.0, 0.0);
+    while exponent > 0 {
+        if exponent & 1 == 1 {
+            acc = complex_mul(acc, base);
+        }
+        exponent >>= 1;
+        if exponent > 0 {
+            base = complex_mul(base, base);
+        }
+    }
+    acc
+}
+
+fn apply_complex_pow(lhs: (f64, f64), rhs: (f64, f64)) -> Result<(f64, f64), EvalError> {
+    let (base_re, base_im) = lhs;
+    let (exp_re, exp_im) = rhs;
+
+    if base_re == 0.0 && base_im == 0.0 {
+        return if exp_re == 0.0 && exp_im == 0.0 {
+            Ok((1.0, 0.0))
+        } else if exp_im == 0.0 && exp_re > 0.0 {
+            Ok((0.0, 0.0))
+        } else {
+            Ok((f64::NAN, f64::NAN))
+        };
+    }
+
+    if exp_im == 0.0 && exp_re.is_finite() && exp_re.fract() == 0.0 {
+        if exp_re >= 0.0 {
+            return Ok(complex_integer_pow(lhs, exp_re as u64));
+        }
+        let positive = complex_integer_pow(lhs, (-exp_re) as u64);
+        let denom = positive.0 * positive.0 + positive.1 * positive.1;
+        return Ok((positive.0 / denom, -positive.1 / denom));
+    }
+
+    let radius = base_re.hypot(base_im);
+    let angle = base_im.atan2(base_re);
+    let log_base = (radius.ln(), angle);
+    Ok(complex_exp(complex_mul((exp_re, exp_im), log_base)))
 }
 
 fn complex_binary_literal_op(
@@ -181,11 +258,18 @@ fn eval_binary_elementwise_complex(
     inputs: &[Value],
 ) -> Result<Value, EvalError> {
     match primitive {
-        Primitive::Add | Primitive::Sub | Primitive::Mul | Primitive::Div => {}
+        Primitive::Add
+        | Primitive::Sub
+        | Primitive::Mul
+        | Primitive::Div
+        | Primitive::Rem
+        | Primitive::Max
+        | Primitive::Min
+        | Primitive::Pow => {}
         _ => {
             return Err(EvalError::TypeMismatch {
                 primitive,
-                detail: "complex arithmetic not yet implemented",
+                detail: complex_binary_unsupported_detail(primitive),
             });
         }
     }
@@ -771,7 +855,14 @@ pub(crate) fn eval_neg(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_map(primitive, inputs, |re, im| (-re, -im))
     } else {
-        eval_unary_int_or_float(primitive, inputs, |x| -x, |x| -x)
+        eval_unary_int_or_float(
+            primitive,
+            inputs,
+            |x| -x,
+            u32::wrapping_neg,
+            u64::wrapping_neg,
+            |x| -x,
+        )
     }
 }
 
@@ -779,7 +870,14 @@ pub(crate) fn eval_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     if inputs.first().is_some_and(value_contains_complex) {
         eval_unary_complex_to_real(primitive, inputs, f64::hypot)
     } else {
-        eval_unary_int_or_float(primitive, inputs, i64::abs, f64::abs)
+        eval_unary_int_or_float(
+            primitive,
+            inputs,
+            i64::abs,
+            std::convert::identity,
+            std::convert::identity,
+            f64::abs,
+        )
     }
 }
 
@@ -926,6 +1024,8 @@ pub(crate) fn eval_unary_int_or_float(
     primitive: Primitive,
     inputs: &[Value],
     int_op: impl Fn(i64) -> i64,
+    u32_op: impl Fn(u32) -> u32,
+    u64_op: impl Fn(u64) -> u64,
     float_op: impl Fn(f64) -> f64,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
@@ -939,10 +1039,8 @@ pub(crate) fn eval_unary_int_or_float(
     match &inputs[0] {
         Value::Scalar(literal) => match *literal {
             Literal::I64(v) => Ok(Value::scalar_i64(int_op(v))),
-            Literal::U32(_) | Literal::U64(_) => Err(EvalError::TypeMismatch {
-                primitive,
-                detail: "unsigned unary arithmetic not yet implemented",
-            }),
+            Literal::U32(v) => Ok(Value::scalar_u32(u32_op(v))),
+            Literal::U64(v) => Ok(Value::scalar_u64(u64_op(v))),
             Literal::BF16Bits(bits) => {
                 let val = Literal::BF16Bits(bits)
                     .as_f64()
@@ -980,10 +1078,8 @@ pub(crate) fn eval_unary_int_or_float(
                 .copied()
                 .map(|literal| match literal {
                     Literal::I64(v) => Ok(Literal::I64(int_op(v))),
-                    Literal::U32(_) | Literal::U64(_) => Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "unsigned unary arithmetic not yet implemented",
-                    }),
+                    Literal::U32(v) => Ok(Literal::U32(u32_op(v))),
+                    Literal::U64(v) => Ok(Literal::U64(u64_op(v))),
                     Literal::BF16Bits(bits) => Ok(Literal::from_f64(float_op(
                         Literal::BF16Bits(bits)
                             .as_f64()
@@ -1051,7 +1147,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                     return Err(EvalError::TypeMismatch {
                         primitive,
-                        detail: "complex condition not yet supported for select",
+                        detail: "select condition must be boolean, got complex dtype",
                     });
                 }
             };
@@ -1095,7 +1191,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 DType::Complex64 | DType::Complex128 => {
                     return Err(EvalError::TypeMismatch {
                         primitive,
-                        detail: "complex arithmetic not yet implemented",
+                        detail: "select values must share a non-complex dtype",
                     });
                 }
             };
@@ -1130,7 +1226,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                             return Err(EvalError::TypeMismatch {
                                 primitive,
-                                detail: "complex condition not yet supported for select",
+                                detail: "select condition must be boolean, got complex dtype",
                             });
                         }
                     };
@@ -1172,7 +1268,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         DType::Bool => Ok(val),
                         DType::Complex64 | DType::Complex128 => Err(EvalError::TypeMismatch {
                             primitive,
-                            detail: "complex arithmetic not yet implemented",
+                            detail: "select values must share a non-complex dtype",
                         }),
                     }
                 })
@@ -1205,7 +1301,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                             return Err(EvalError::TypeMismatch {
                                 primitive,
-                                detail: "complex condition not yet supported for select",
+                                detail: "select condition must be boolean, got complex dtype",
                             });
                         }
                     };
@@ -1247,7 +1343,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         DType::Bool => Ok(val),
                         DType::Complex64 | DType::Complex128 => Err(EvalError::TypeMismatch {
                             primitive,
-                            detail: "complex arithmetic not yet implemented",
+                            detail: "select values must share a non-complex dtype",
                         }),
                     }
                 })
@@ -1282,7 +1378,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                     return Err(EvalError::TypeMismatch {
                         primitive,
-                        detail: "complex condition not yet supported for select",
+                        detail: "select condition must be boolean, got complex dtype",
                     });
                 }
             };
@@ -1332,7 +1428,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                        return Err("complex arithmetic not yet implemented");
+                        return Err("clamp is not supported for complex dtypes");
                     }
                 };
                 let lof = match lo {
@@ -1344,7 +1440,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                        return Err("complex arithmetic not yet implemented");
+                        return Err("clamp is not supported for complex dtypes");
                     }
                 };
                 let hif = match hi {
@@ -1356,7 +1452,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                        return Err("complex arithmetic not yet implemented");
+                        return Err("clamp is not supported for complex dtypes");
                     }
                 };
                 Ok(Literal::from_f64(xf.max(lof).min(hif)))

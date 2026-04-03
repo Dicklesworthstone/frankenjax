@@ -694,3 +694,274 @@ fn log_jvp_near_zero() {
         "log JVP near zero: tangent={tangent}, expected={expected}"
     );
 }
+
+// ======================== Elementary Scalar JVP Numerical Tests (frankenjax-5uy) ========================
+
+/// Finite-difference JVP verification for unary scalar primitives.
+/// For f: R → R, the JVP should satisfy:
+///   f'(x) · dx ≈ (f(x + ε·dx) - f(x - ε·dx)) / (2ε)
+fn verify_unary_scalar_jvp(prim: Primitive, x: f64, dx: f64, tol: f64, label: &str) {
+    let jaxpr = make_single_op_jaxpr(prim);
+    let jvp_result = fj_ad::jvp(&jaxpr, &[Value::scalar_f64(x)], &[Value::scalar_f64(dx)]).unwrap();
+    let analytical = extract_f64_scalar(&jvp_result.tangents[0]);
+
+    let eps = 1e-6;
+    let f_plus = extract_f64_scalar(
+        &fj_lax::eval_primitive(prim, &[Value::scalar_f64(x + eps * dx)], &BTreeMap::new())
+            .unwrap(),
+    );
+    let f_minus = extract_f64_scalar(
+        &fj_lax::eval_primitive(prim, &[Value::scalar_f64(x - eps * dx)], &BTreeMap::new())
+            .unwrap(),
+    );
+    let numerical = (f_plus - f_minus) / (2.0 * eps);
+
+    assert_scalar_close(analytical, numerical, tol, 1e-4, label);
+}
+
+/// Finite-difference JVP verification for binary scalar primitives.
+fn verify_binary_scalar_jvp(
+    prim: Primitive,
+    a: f64,
+    b: f64,
+    da: f64,
+    db: f64,
+    tol: f64,
+    label: &str,
+) {
+    let jaxpr = make_two_input_jaxpr(prim, BTreeMap::new());
+    let jvp_result = fj_ad::jvp(
+        &jaxpr,
+        &[Value::scalar_f64(a), Value::scalar_f64(b)],
+        &[Value::scalar_f64(da), Value::scalar_f64(db)],
+    )
+    .unwrap();
+    let analytical = extract_f64_scalar(&jvp_result.tangents[0]);
+
+    let eps = 1e-6;
+    let f_plus = extract_f64_scalar(
+        &fj_lax::eval_primitive(
+            prim,
+            &[
+                Value::scalar_f64(a + eps * da),
+                Value::scalar_f64(b + eps * db),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap(),
+    );
+    let f_minus = extract_f64_scalar(
+        &fj_lax::eval_primitive(
+            prim,
+            &[
+                Value::scalar_f64(a - eps * da),
+                Value::scalar_f64(b - eps * db),
+            ],
+            &BTreeMap::new(),
+        )
+        .unwrap(),
+    );
+    let numerical = (f_plus - f_minus) / (2.0 * eps);
+
+    assert_scalar_close(analytical, numerical, tol, 1e-4, label);
+}
+
+// ── Unary JVP tests ──
+
+#[test]
+fn sin_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Sin, 1.0, 1.0, 1e-5, "sin JVP at x=1");
+    verify_unary_scalar_jvp(Primitive::Sin, 0.0, 1.0, 1e-5, "sin JVP at x=0");
+}
+
+#[test]
+fn cos_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Cos, 1.0, 1.0, 1e-5, "cos JVP at x=1");
+    verify_unary_scalar_jvp(Primitive::Cos, 0.0, 1.0, 1e-5, "cos JVP at x=0");
+}
+
+#[test]
+fn exp_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Exp, 1.0, 1.0, 1e-5, "exp JVP at x=1");
+    verify_unary_scalar_jvp(Primitive::Exp, 0.0, 1.0, 1e-5, "exp JVP at x=0");
+}
+
+#[test]
+fn log_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Log, 1.0, 1.0, 1e-5, "log JVP at x=1");
+    verify_unary_scalar_jvp(Primitive::Log, 2.0, 1.0, 1e-5, "log JVP at x=2");
+}
+
+#[test]
+fn tanh_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Tanh, 0.5, 1.0, 1e-5, "tanh JVP at x=0.5");
+    verify_unary_scalar_jvp(Primitive::Tanh, 0.0, 1.0, 1e-5, "tanh JVP at x=0");
+}
+
+#[test]
+fn sqrt_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Sqrt, 4.0, 1.0, 1e-5, "sqrt JVP at x=4");
+    verify_unary_scalar_jvp(Primitive::Sqrt, 1.0, 1.0, 1e-5, "sqrt JVP at x=1");
+}
+
+#[test]
+fn neg_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Neg, 3.0, 1.0, 1e-5, "neg JVP at x=3");
+}
+
+#[test]
+fn abs_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Abs, 3.0, 1.0, 1e-5, "abs JVP at x=3");
+    verify_unary_scalar_jvp(Primitive::Abs, -3.0, 1.0, 1e-5, "abs JVP at x=-3");
+}
+
+#[test]
+fn expm1_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Expm1, 0.5, 1.0, 1e-5, "expm1 JVP at x=0.5");
+}
+
+#[test]
+fn log1p_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Log1p, 0.5, 1.0, 1e-5, "log1p JVP at x=0.5");
+}
+
+#[test]
+fn sinh_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Sinh, 1.0, 1.0, 1e-5, "sinh JVP at x=1");
+}
+
+#[test]
+fn cosh_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Cosh, 1.0, 1.0, 1e-5, "cosh JVP at x=1");
+}
+
+#[test]
+fn tan_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Tan, 0.5, 1.0, 1e-5, "tan JVP at x=0.5");
+}
+
+#[test]
+fn asin_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Asin, 0.5, 1.0, 1e-5, "asin JVP at x=0.5");
+}
+
+#[test]
+fn acos_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Acos, 0.5, 1.0, 1e-5, "acos JVP at x=0.5");
+}
+
+#[test]
+fn atan_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Atan, 1.0, 1.0, 1e-5, "atan JVP at x=1");
+}
+
+#[test]
+fn square_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Square, 3.0, 1.0, 1e-5, "square JVP at x=3");
+}
+
+#[test]
+fn reciprocal_jvp_numerical() {
+    verify_unary_scalar_jvp(
+        Primitive::Reciprocal,
+        2.0,
+        1.0,
+        1e-5,
+        "reciprocal JVP at x=2",
+    );
+}
+
+#[test]
+fn rsqrt_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Rsqrt, 4.0, 1.0, 1e-5, "rsqrt JVP at x=4");
+}
+
+#[test]
+fn cbrt_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Cbrt, 8.0, 1.0, 1e-5, "cbrt JVP at x=8");
+}
+
+#[test]
+fn logistic_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Logistic, 0.0, 1.0, 1e-5, "logistic JVP at x=0");
+    verify_unary_scalar_jvp(Primitive::Logistic, 1.0, 1.0, 1e-5, "logistic JVP at x=1");
+}
+
+#[test]
+fn erf_jvp_numerical() {
+    verify_unary_scalar_jvp(Primitive::Erf, 0.5, 1.0, 1e-4, "erf JVP at x=0.5");
+}
+
+// ── Binary JVP tests ──
+
+#[test]
+fn add_jvp_numerical() {
+    verify_binary_scalar_jvp(Primitive::Add, 3.0, 4.0, 1.0, 1.0, 1e-5, "add JVP");
+}
+
+#[test]
+fn sub_jvp_numerical() {
+    verify_binary_scalar_jvp(Primitive::Sub, 5.0, 2.0, 1.0, 1.0, 1e-5, "sub JVP");
+}
+
+#[test]
+fn mul_jvp_numerical_basic() {
+    verify_binary_scalar_jvp(Primitive::Mul, 3.0, 4.0, 1.0, 1.0, 1e-5, "mul JVP");
+    verify_binary_scalar_jvp(Primitive::Mul, 3.0, 4.0, 1.0, 0.0, 1e-5, "mul JVP da only");
+    verify_binary_scalar_jvp(Primitive::Mul, 3.0, 4.0, 0.0, 1.0, 1e-5, "mul JVP db only");
+}
+
+#[test]
+fn div_jvp_numerical() {
+    verify_binary_scalar_jvp(Primitive::Div, 6.0, 2.0, 1.0, 1.0, 1e-5, "div JVP");
+    verify_binary_scalar_jvp(
+        Primitive::Div,
+        1.0,
+        3.0,
+        0.5,
+        0.5,
+        1e-5,
+        "div JVP fractional",
+    );
+}
+
+#[test]
+fn pow_jvp_numerical() {
+    verify_binary_scalar_jvp(Primitive::Pow, 2.0, 3.0, 1.0, 0.0, 1e-4, "pow JVP da only");
+    verify_binary_scalar_jvp(Primitive::Pow, 2.0, 3.0, 0.0, 1.0, 1e-4, "pow JVP db only");
+    verify_binary_scalar_jvp(Primitive::Pow, 2.0, 3.0, 1.0, 1.0, 1e-4, "pow JVP both");
+}
+
+#[test]
+fn atan2_jvp_numerical() {
+    verify_binary_scalar_jvp(
+        Primitive::Atan2,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1e-5,
+        "atan2 JVP (1,1)",
+    );
+    verify_binary_scalar_jvp(
+        Primitive::Atan2,
+        3.0,
+        4.0,
+        1.0,
+        0.0,
+        1e-5,
+        "atan2 JVP da only",
+    );
+}
+
+#[test]
+fn max_jvp_numerical() {
+    verify_binary_scalar_jvp(Primitive::Max, 3.0, 7.0, 1.0, 1.0, 1e-5, "max JVP b>a");
+    verify_binary_scalar_jvp(Primitive::Max, 7.0, 3.0, 1.0, 1.0, 1e-5, "max JVP a>b");
+}
+
+#[test]
+fn min_jvp_numerical() {
+    verify_binary_scalar_jvp(Primitive::Min, 3.0, 7.0, 1.0, 1.0, 1e-5, "min JVP b>a");
+    verify_binary_scalar_jvp(Primitive::Min, 7.0, 3.0, 1.0, 1.0, 1e-5, "min JVP a>b");
+}

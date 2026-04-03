@@ -5,6 +5,9 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[lib]
+doctest = false
+
 [dependencies]
 fj-ad = { path = "../fj-ad" }
 fj-core = { path = "../fj-core" }
