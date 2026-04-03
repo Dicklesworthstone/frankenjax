@@ -6220,6 +6220,51 @@ mod prop_tests {
     }
 
     #[test]
+    fn test_complex_sign_normalizes_value() {
+        let out = eval_primitive(
+            Primitive::Sign,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        let inv_sqrt2 = 2.0_f64.sqrt().recip();
+        assert_complex128_close(&out, inv_sqrt2, inv_sqrt2, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_square_multiplies_in_field() {
+        let out = eval_primitive(
+            Primitive::Square,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 2.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_reciprocal_inverts_value() {
+        let out = eval_primitive(
+            Primitive::Reciprocal,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.5, -0.5, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_is_finite_checks_both_parts() {
+        let out = eval_primitive(
+            Primitive::IsFinite,
+            &[Value::scalar_complex128(1.0, f64::INFINITY)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_bool(false));
+    }
+
+    #[test]
     fn test_complex_atan2_reports_undefined() {
         let err = eval_primitive(
             Primitive::Atan2,
@@ -6233,6 +6278,21 @@ mod prop_tests {
         assert!(
             err.to_string()
                 .contains("atan2 is not defined for complex operands"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_floor_complex_reports_unsupported_dtype() {
+        let err = eval_primitive(
+            Primitive::Floor,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("floor is not supported for complex dtypes"),
             "unexpected error: {err}"
         );
     }

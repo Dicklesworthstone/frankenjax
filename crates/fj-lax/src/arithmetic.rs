@@ -187,9 +187,28 @@ fn complex_exp((re, im): (f64, f64)) -> (f64, f64) {
     (exp_re * im.cos(), exp_re * im.sin())
 }
 
+fn complex_reciprocal((re, im): (f64, f64)) -> (f64, f64) {
+    let denom = re * re + im * im;
+    (re / denom, -im / denom)
+}
+
 fn complex_binary_unsupported_detail(primitive: Primitive) -> &'static str {
     match primitive {
         Primitive::Atan2 => "atan2 is not defined for complex operands",
+        _ => "operation is not supported for complex operands",
+    }
+}
+
+fn complex_unary_unsupported_detail(primitive: Primitive) -> &'static str {
+    match primitive {
+        Primitive::Floor => "floor is not supported for complex dtypes",
+        Primitive::Ceil => "ceil is not supported for complex dtypes",
+        Primitive::Round => "round is not supported for complex dtypes",
+        Primitive::Lgamma => "lgamma is not supported for complex dtypes",
+        Primitive::Digamma => "digamma is not supported for complex dtypes",
+        Primitive::Erf => "erf is not supported for complex dtypes",
+        Primitive::Erfc => "erfc is not supported for complex dtypes",
+        Primitive::ErfInv => "erf_inv is not supported for complex dtypes",
         _ => "operation is not supported for complex operands",
     }
 }
@@ -979,6 +998,23 @@ pub(crate) fn eval_unary_elementwise(
 
     match &inputs[0] {
         Value::Scalar(literal) => {
+            if literal.is_complex() {
+                return match primitive {
+                    Primitive::Reciprocal => {
+                        let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                        let (out_re, out_im) = complex_reciprocal((re, im));
+                        Ok(Value::Scalar(complex_literal_from_f64_parts(
+                            literal_dtype(*literal),
+                            out_re,
+                            out_im,
+                        )))
+                    }
+                    _ => Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: complex_unary_unsupported_detail(primitive),
+                    }),
+                };
+            }
             let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
                 primitive,
                 detail: "expected numeric scalar",
@@ -986,6 +1022,36 @@ pub(crate) fn eval_unary_elementwise(
             Ok(Value::scalar_f64(op(value)))
         }
         Value::Tensor(tensor) => {
+            if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
+                return match primitive {
+                    Primitive::Reciprocal => {
+                        let elements = tensor
+                            .elements
+                            .iter()
+                            .copied()
+                            .map(|literal| {
+                                let (re, im) = literal_to_complex_parts(primitive, literal)?;
+                                let (out_re, out_im) = complex_reciprocal((re, im));
+                                Ok(complex_literal_from_f64_parts(
+                                    tensor.dtype,
+                                    out_re,
+                                    out_im,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, EvalError>>()?;
+
+                        Ok(Value::Tensor(TensorValue::new(
+                            tensor.dtype,
+                            tensor.shape.clone(),
+                            elements,
+                        )?))
+                    }
+                    _ => Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: complex_unary_unsupported_detail(primitive),
+                    }),
+                };
+            }
             let out_dtype = match tensor.dtype {
                 DType::BF16 | DType::F16 | DType::F32 | DType::F64 => tensor.dtype,
                 _ => DType::F64,
@@ -1064,12 +1130,35 @@ pub(crate) fn eval_unary_int_or_float(
                 primitive,
                 detail: "expected numeric scalar, got bool",
             }),
-            Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                Err(EvalError::TypeMismatch {
+            Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => match primitive {
+                Primitive::Sign => {
+                    let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                    let magnitude = re.hypot(im);
+                    let (out_re, out_im) = if magnitude == 0.0 {
+                        (0.0, 0.0)
+                    } else {
+                        (re / magnitude, im / magnitude)
+                    };
+                    Ok(Value::Scalar(complex_literal_from_f64_parts(
+                        literal_dtype(*literal),
+                        out_re,
+                        out_im,
+                    )))
+                }
+                Primitive::Square => {
+                    let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                    let (out_re, out_im) = complex_mul((re, im), (re, im));
+                    Ok(Value::Scalar(complex_literal_from_f64_parts(
+                        literal_dtype(*literal),
+                        out_re,
+                        out_im,
+                    )))
+                }
+                _ => Err(EvalError::TypeMismatch {
                     primitive,
-                    detail: "complex arithmetic not yet implemented",
-                })
-            }
+                    detail: complex_unary_unsupported_detail(primitive),
+                }),
+            },
         },
         Value::Tensor(tensor) => {
             let elements = tensor
@@ -1101,12 +1190,27 @@ pub(crate) fn eval_unary_int_or_float(
                         primitive,
                         detail: "expected numeric tensor elements, got bool",
                     }),
-                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                        Err(EvalError::TypeMismatch {
+                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => match primitive {
+                        Primitive::Sign => {
+                            let (re, im) = literal_to_complex_parts(primitive, literal)?;
+                            let magnitude = re.hypot(im);
+                            let (out_re, out_im) = if magnitude == 0.0 {
+                                (0.0, 0.0)
+                            } else {
+                                (re / magnitude, im / magnitude)
+                            };
+                            Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
+                        }
+                        Primitive::Square => {
+                            let (re, im) = literal_to_complex_parts(primitive, literal)?;
+                            let (out_re, out_im) = complex_mul((re, im), (re, im));
+                            Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
+                        }
+                        _ => Err(EvalError::TypeMismatch {
                             primitive,
-                            detail: "complex arithmetic not yet implemented",
-                        })
-                    }
+                            detail: complex_unary_unsupported_detail(primitive),
+                        }),
+                    },
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
@@ -1786,24 +1890,41 @@ pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<V
 
     match &inputs[0] {
         Value::Scalar(literal) => {
-            let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
-                primitive,
-                detail: "expected numeric scalar",
-            })?;
-            Ok(Value::Scalar(Literal::Bool(value.is_finite())))
+            let is_finite = match *literal {
+                Literal::Complex64Bits(re, im) => {
+                    f32::from_bits(re).is_finite() && f32::from_bits(im).is_finite()
+                }
+                Literal::Complex128Bits(re, im) => {
+                    f64::from_bits(re).is_finite() && f64::from_bits(im).is_finite()
+                }
+                _ => {
+                    let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric scalar",
+                    })?;
+                    value.is_finite()
+                }
+            };
+            Ok(Value::Scalar(Literal::Bool(is_finite)))
         }
         Value::Tensor(tensor) => {
             let elements = tensor
                 .elements
                 .iter()
-                .map(|literal| {
-                    literal
+                .map(|literal| match *literal {
+                    Literal::Complex64Bits(re, im) => Ok(Literal::Bool(
+                        f32::from_bits(re).is_finite() && f32::from_bits(im).is_finite(),
+                    )),
+                    Literal::Complex128Bits(re, im) => Ok(Literal::Bool(
+                        f64::from_bits(re).is_finite() && f64::from_bits(im).is_finite(),
+                    )),
+                    _ => literal
                         .as_f64()
                         .map(|v| Literal::Bool(v.is_finite()))
                         .ok_or(EvalError::TypeMismatch {
                             primitive,
                             detail: "expected numeric tensor elements",
-                        })
+                        }),
                 })
                 .collect::<Result<Vec<_>, _>>()?;
 
