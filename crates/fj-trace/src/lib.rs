@@ -1792,6 +1792,12 @@ fn infer_ifft(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
         });
     }
     let input = &inputs[0];
+    if !matches!(input.dtype, DType::Complex64 | DType::Complex128) {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "ifft expects complex-valued input".to_owned(),
+        });
+    }
     Ok(vec![ShapedArray {
         dtype: to_complex_dtype(input.dtype),
         shape: input.shape.clone(),
@@ -5592,6 +5598,29 @@ mod tests {
         let result = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[input]).unwrap();
         let vals = result[0].as_tensor().unwrap().to_f64_vec().unwrap();
         assert_eq!(vals, vec![10.0, 26.0, 42.0]);
+    }
+
+    #[test]
+    fn test_ifft_rejects_real_input_shape_inference() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(8),
+        }]);
+
+        let err = ctx
+            .process_primitive(Primitive::Ifft, &[TracerId(1)], BTreeMap::new())
+            .expect_err("ifft should reject real-valued input during tracing");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Ifft,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("complex-valued input"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

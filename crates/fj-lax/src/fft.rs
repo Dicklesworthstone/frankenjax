@@ -58,6 +58,10 @@ fn make_real_literal(val: f64, _dtype: DType) -> Literal {
     Literal::from_f64(val)
 }
 
+fn is_complex_dtype(dtype: DType) -> bool {
+    matches!(dtype, DType::Complex64 | DType::Complex128)
+}
+
 /// Extract a rank-1+ tensor from a Value, returning shape and elements as (re, im) pairs.
 #[allow(clippy::type_complexity)]
 fn extract_tensor_complex(
@@ -211,6 +215,12 @@ pub(crate) fn eval_ifft(
     }
 
     let (shape, in_dtype, elements) = extract_tensor_complex(primitive, &inputs[0])?;
+    if !is_complex_dtype(in_dtype) {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "IFFT expects complex-valued input, got real tensor".to_owned(),
+        });
+    }
     let out_dtype = complex_dtype_for(in_dtype);
 
     let n = *shape.dims.last().unwrap() as usize;
@@ -261,6 +271,12 @@ pub(crate) fn eval_rfft(
     }
 
     let (shape, in_dtype, elements) = extract_tensor_complex(primitive, &inputs[0])?;
+    if is_complex_dtype(in_dtype) {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "RFFT expects real-valued input, got complex tensor".to_owned(),
+        });
+    }
     let out_dtype = complex_dtype_for(in_dtype);
 
     let input_last = *shape.dims.last().unwrap() as usize;
@@ -347,6 +363,12 @@ pub(crate) fn eval_irfft(
     }
 
     let (shape, in_dtype, elements) = extract_tensor_complex(primitive, &inputs[0])?;
+    if !is_complex_dtype(in_dtype) {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "IRFFT expects complex-valued input, got real tensor".to_owned(),
+        });
+    }
     let out_dtype = real_dtype_for(in_dtype);
 
     let input_last = *shape.dims.last().unwrap() as usize;
@@ -555,6 +577,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn ifft_rejects_real_input() {
+        let input = make_real_vector(&[1.0, 2.0, 3.0, 4.0]);
+        let err = eval_ifft(&[input], &BTreeMap::new()).expect_err("real IFFT input must fail");
+        assert!(matches!(
+            err,
+            EvalError::Unsupported {
+                primitive: Primitive::Ifft,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("complex-valued input"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ── RFFT tests ───────────────────────────────────────────
 
     #[test]
@@ -580,6 +619,23 @@ mod tests {
         // Impulse FFT: all ones, keep first 3
         assert_eq!(elems.len(), 3);
         assert_complex_close(&elems, &[(1.0, 0.0), (1.0, 0.0), (1.0, 0.0)], 1e-10);
+    }
+
+    #[test]
+    fn rfft_rejects_complex_input() {
+        let input = make_complex_vector(&[(1.0, 0.0), (0.0, 1.0), (2.0, -1.0), (3.0, 0.5)]);
+        let err = eval_rfft(&[input], &BTreeMap::new()).expect_err("complex RFFT input must fail");
+        assert!(matches!(
+            err,
+            EvalError::Unsupported {
+                primitive: Primitive::Rfft,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("real-valued input"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── IRFFT tests ──────────────────────────────────────────
@@ -625,6 +681,23 @@ mod tests {
                 "element {i}: got {got}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn irfft_rejects_real_input() {
+        let input = make_real_vector(&[1.0, 2.0, 3.0]);
+        let err = eval_irfft(&[input], &BTreeMap::new()).expect_err("real IRFFT input must fail");
+        assert!(matches!(
+            err,
+            EvalError::Unsupported {
+                primitive: Primitive::Irfft,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("complex-valued input"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
