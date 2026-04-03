@@ -6310,7 +6310,8 @@ mod prop_tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("select condition must be boolean, got complex dtype"),
+            err.to_string()
+                .contains("select condition must be boolean, got complex dtype"),
             "unexpected error: {err}"
         );
     }
@@ -7223,8 +7224,8 @@ mod prop_tests {
     }
 
     #[test]
-    fn e2e_stub_errors_graceful() {
-        // All formerly-stubbed primitives are now implemented.
+    fn e2e_special_function_error_paths_graceful() {
+        // These primitives are implemented and should reject invalid scalar input cleanly.
         // Verify they all reject invalid (scalar) input gracefully.
         let implemented = [
             ("cholesky", Primitive::Cholesky),
@@ -7251,7 +7252,7 @@ mod prop_tests {
             "[{}]",
             rows.iter()
                 .map(|(function, pass)| format!(
-                    "{{\"test_name\":\"e2e_stub_errors_graceful\",\"function\":{:?},\"pass\":{}}}",
+                    "{{\"test_name\":\"e2e_special_function_error_paths_graceful\",\"function\":{:?},\"pass\":{}}}",
                     function, pass
                 ))
                 .collect::<Vec<_>>()
@@ -7259,7 +7260,7 @@ mod prop_tests {
         );
 
         let forensic_log = format!(
-            "{{\"scenario\":\"e2e_stub_errors_graceful\",\"all_passed\":{},\"cases\":[{}]}}",
+            "{{\"scenario\":\"e2e_special_function_error_paths_graceful\",\"all_passed\":{},\"cases\":[{}]}}",
             all_passed,
             rows.iter()
                 .map(|(function, pass)| format!(
@@ -7271,8 +7272,9 @@ mod prop_tests {
         );
 
         let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../artifacts");
-        let e2e_path = root.join("e2e/e2e_stub_errors.e2e.json");
-        let test_log_path = root.join("testing/logs/fj-lax/e2e_stub_errors_graceful.json");
+        let e2e_path = root.join("e2e/e2e_special_function_error_paths.e2e.json");
+        let test_log_path =
+            root.join("testing/logs/fj-lax/e2e_special_function_error_paths_graceful.json");
 
         if let Some(parent) = e2e_path.parent() {
             std::fs::create_dir_all(parent).expect("create e2e artifact dir");
@@ -7281,8 +7283,8 @@ mod prop_tests {
             std::fs::create_dir_all(parent).expect("create test log dir");
         }
 
-        std::fs::write(&e2e_path, forensic_log).expect("write stub e2e forensic log");
-        std::fs::write(&test_log_path, case_logs).expect("write stub test logs");
+        std::fs::write(&e2e_path, forensic_log).expect("write special-function e2e forensic log");
+        std::fs::write(&test_log_path, case_logs).expect("write special-function test logs");
 
         assert!(
             all_passed,

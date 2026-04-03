@@ -123,16 +123,94 @@ impl CostFunction<FjLang> for OpCount {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EGraphLoweringError {
-    UnsupportedPrimitive(Primitive),
+    UnsupportedPrimitive {
+        primitive: Primitive,
+        reason: ExclusionReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExclusionReason {
+    ShapeManipulation,
+    LinearAlgebra,
+    Fft,
+    ControlFlow,
+    Sorting,
+    Convolution,
+    IndexUtility,
+    TypeConversion,
+    Cumulative,
+    Windowed,
+    Encoding,
+}
+
+impl ExclusionReason {
+    #[must_use]
+    pub fn category(self) -> &'static str {
+        match self {
+            Self::ShapeManipulation => "shape manipulation",
+            Self::LinearAlgebra => "linear algebra",
+            Self::Fft => "fft",
+            Self::ControlFlow => "control flow",
+            Self::Sorting => "sorting",
+            Self::Convolution => "convolution",
+            Self::IndexUtility => "index/utility",
+            Self::TypeConversion => "type conversion",
+            Self::Cumulative => "cumulative",
+            Self::Windowed => "windowed",
+            Self::Encoding => "encoding",
+        }
+    }
+
+    #[must_use]
+    pub fn detail(self) -> &'static str {
+        match self {
+            Self::ShapeManipulation => {
+                "requires shape or axis parameters not representable in the algebraic e-graph"
+            }
+            Self::LinearAlgebra => {
+                "requires decomposition-specific parameters or multi-result structure outside the algebraic e-graph"
+            }
+            Self::Fft => {
+                "requires transform-length and layout metadata not representable in the algebraic e-graph"
+            }
+            Self::ControlFlow => {
+                "requires sub-jaxprs and branch metadata outside the algebraic e-graph"
+            }
+            Self::Sorting => {
+                "requires sort-axis or comparator metadata not representable in the algebraic e-graph"
+            }
+            Self::Convolution => {
+                "requires window, stride, and padding metadata not representable in the algebraic e-graph"
+            }
+            Self::IndexUtility => {
+                "requires dynamic index or update metadata not representable in the algebraic e-graph"
+            }
+            Self::TypeConversion => {
+                "requires bit-layout or precision metadata not representable in the algebraic e-graph"
+            }
+            Self::Cumulative => {
+                "requires axis and scan-direction metadata not representable in the algebraic e-graph"
+            }
+            Self::Windowed => {
+                "requires window geometry metadata not representable in the algebraic e-graph"
+            }
+            Self::Encoding => {
+                "requires category-depth and axis metadata not representable in the algebraic e-graph"
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for EGraphLoweringError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedPrimitive(primitive) => write!(
+            Self::UnsupportedPrimitive { primitive, reason } => write!(
                 f,
-                "primitive {} not supported by egraph lowering",
-                primitive.as_str()
+                "primitive {} excluded from egraph lowering ({}) because it {}",
+                primitive.as_str(),
+                reason.category(),
+                reason.detail()
             ),
         }
     }
@@ -514,6 +592,13 @@ pub fn jaxpr_to_egraph(
             })
             .collect();
 
+        if let Some(reason) = excluded_primitive_reason(eqn.primitive) {
+            return Err(EGraphLoweringError::UnsupportedPrimitive {
+                primitive: eqn.primitive,
+                reason,
+            });
+        }
+
         let node = match eqn.primitive {
             Primitive::Add => FjLang::Add([input_ids[0], input_ids[1]]),
             Primitive::Sub => FjLang::Sub([input_ids[0], input_ids[1]]),
@@ -595,47 +680,10 @@ pub fn jaxpr_to_egraph(
                 FjLang::ShiftRightArithmetic([input_ids[0], input_ids[1]])
             }
             Primitive::ShiftRightLogical => FjLang::ShiftRightLogical([input_ids[0], input_ids[1]]),
-            // Shape ops require params – not yet supported
-            Primitive::Reshape
-            | Primitive::Slice
-            | Primitive::DynamicSlice
-            | Primitive::Gather
-            | Primitive::Scatter
-            | Primitive::Transpose
-            | Primitive::BroadcastInDim
-            | Primitive::Concatenate
-            | Primitive::Pad
-            | Primitive::Rev
-            | Primitive::Squeeze
-            | Primitive::Split
-            | Primitive::ExpandDims
-            | Primitive::Iota
-            | Primitive::OneHot
-            | Primitive::DynamicUpdateSlice
-            | Primitive::Cumsum
-            | Primitive::Cumprod
-            | Primitive::Sort
-            | Primitive::Argsort
-            | Primitive::Conv
-            | Primitive::Cond
-            | Primitive::Scan
-            | Primitive::While
-            | Primitive::Switch
-            | Primitive::ReduceWindow
-            | Primitive::BroadcastedIota
-            | Primitive::BitcastConvertType
-            | Primitive::ReducePrecision
-            | Primitive::Cholesky
-            | Primitive::Qr
-            | Primitive::Svd
-            | Primitive::TriangularSolve
-            | Primitive::Eigh
-            | Primitive::Fft
-            | Primitive::Ifft
-            | Primitive::Rfft
-            | Primitive::Irfft => {
-                return Err(EGraphLoweringError::UnsupportedPrimitive(eqn.primitive));
-            }
+            primitive => unreachable!(
+                "excluded primitive {} should have returned before lowering",
+                primitive.as_str()
+            ),
         };
 
         let id = expr.add(node);
@@ -1796,47 +1844,61 @@ fn max_var_id(jaxpr: &Jaxpr) -> u32 {
 }
 
 fn is_egraph_supported_primitive(primitive: Primitive) -> bool {
-    !matches!(
-        primitive,
+    excluded_primitive_reason(primitive).is_none()
+}
+
+fn excluded_primitive_reason(primitive: Primitive) -> Option<ExclusionReason> {
+    match primitive {
+        // Shape manipulation is architecturally excluded because the
+        // s-expression e-graph cannot encode explicit shapes, slices, or axes.
         Primitive::Reshape
-            | Primitive::Slice
-            | Primitive::DynamicSlice
-            | Primitive::Gather
-            | Primitive::Scatter
-            | Primitive::Transpose
-            | Primitive::BroadcastInDim
-            | Primitive::Concatenate
-            | Primitive::Pad
-            | Primitive::Rev
-            | Primitive::Squeeze
-            | Primitive::Split
-            | Primitive::ExpandDims
-            | Primitive::Iota
-            | Primitive::BroadcastedIota
-            | Primitive::BitcastConvertType
-            | Primitive::ReducePrecision
-            | Primitive::ReduceWindow
-            | Primitive::Cond
-            | Primitive::Scan
-            | Primitive::While
-            | Primitive::Switch
-            | Primitive::OneHot
-            | Primitive::DynamicUpdateSlice
-            | Primitive::Cumsum
-            | Primitive::Cumprod
-            | Primitive::Sort
-            | Primitive::Argsort
-            | Primitive::Conv
-            | Primitive::Cholesky
-            | Primitive::Qr
-            | Primitive::Svd
-            | Primitive::TriangularSolve
-            | Primitive::Eigh
-            | Primitive::Fft
-            | Primitive::Ifft
-            | Primitive::Rfft
-            | Primitive::Irfft
-    )
+        | Primitive::Slice
+        | Primitive::DynamicSlice
+        | Primitive::Gather
+        | Primitive::Scatter
+        | Primitive::Transpose
+        | Primitive::BroadcastInDim
+        | Primitive::Concatenate
+        | Primitive::Pad
+        | Primitive::Rev
+        | Primitive::Squeeze
+        | Primitive::Split
+        | Primitive::ExpandDims => Some(ExclusionReason::ShapeManipulation),
+        // Linear algebra decompositions need richer result structure and
+        // decomposition metadata than the algebraic e-graph can model.
+        Primitive::Cholesky
+        | Primitive::Qr
+        | Primitive::Svd
+        | Primitive::TriangularSolve
+        | Primitive::Eigh => Some(ExclusionReason::LinearAlgebra),
+        // FFT lowering depends on transform-length and layout metadata.
+        Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
+            Some(ExclusionReason::Fft)
+        }
+        // Control flow carries sub-jaxprs and branch metadata.
+        Primitive::Cond | Primitive::Scan | Primitive::While | Primitive::Switch => {
+            Some(ExclusionReason::ControlFlow)
+        }
+        // Sorting needs explicit axis and comparator metadata.
+        Primitive::Sort | Primitive::Argsort => Some(ExclusionReason::Sorting),
+        // Convolution needs window, stride, and padding metadata.
+        Primitive::Conv => Some(ExclusionReason::Convolution),
+        // Index and utility helpers need dynamic index/update metadata.
+        Primitive::Iota | Primitive::BroadcastedIota | Primitive::DynamicUpdateSlice => {
+            Some(ExclusionReason::IndexUtility)
+        }
+        // Type-conversion ops carry bit-layout or precision parameters.
+        Primitive::BitcastConvertType | Primitive::ReducePrecision => {
+            Some(ExclusionReason::TypeConversion)
+        }
+        // Cumulative ops need axis and direction metadata.
+        Primitive::Cumsum | Primitive::Cumprod => Some(ExclusionReason::Cumulative),
+        // Windowed reduction carries window geometry.
+        Primitive::ReduceWindow => Some(ExclusionReason::Windowed),
+        // OneHot needs category-depth and axis metadata.
+        Primitive::OneHot => Some(ExclusionReason::Encoding),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1844,6 +1906,26 @@ mod tests {
     use super::*;
     use fj_core::{DType, ProgramSpec, Shape, TensorValue, Value, build_program};
     use fj_interpreters::eval_jaxpr;
+
+    fn single_equation_jaxpr(primitive: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
 
     #[test]
     fn round_trip_add2() {
@@ -1860,25 +1942,79 @@ mod tests {
 
     #[test]
     fn public_lowering_returns_error_for_unsupported_primitive() {
-        let jaxpr = Jaxpr::new(
-            vec![VarId(1)],
-            vec![],
-            vec![VarId(2)],
-            vec![Equation {
-                primitive: Primitive::Transpose,
-                inputs: smallvec![Atom::Var(VarId(1))],
-                outputs: smallvec![VarId(2)],
-                effects: vec![],
-                params: BTreeMap::new(),
-                sub_jaxprs: vec![],
-            }],
-        );
+        let jaxpr = single_equation_jaxpr(Primitive::Transpose);
 
         let err = jaxpr_to_egraph(&jaxpr).unwrap_err();
         assert_eq!(
             err,
-            EGraphLoweringError::UnsupportedPrimitive(Primitive::Transpose)
+            EGraphLoweringError::UnsupportedPrimitive {
+                primitive: Primitive::Transpose,
+                reason: ExclusionReason::ShapeManipulation,
+            }
         );
+    }
+
+    #[test]
+    fn excluded_primitive_messages_include_category_reason() {
+        let cases = [
+            (Primitive::Reshape, ExclusionReason::ShapeManipulation),
+            (Primitive::Slice, ExclusionReason::ShapeManipulation),
+            (Primitive::DynamicSlice, ExclusionReason::ShapeManipulation),
+            (Primitive::Gather, ExclusionReason::ShapeManipulation),
+            (Primitive::Scatter, ExclusionReason::ShapeManipulation),
+            (Primitive::Transpose, ExclusionReason::ShapeManipulation),
+            (
+                Primitive::BroadcastInDim,
+                ExclusionReason::ShapeManipulation,
+            ),
+            (Primitive::Concatenate, ExclusionReason::ShapeManipulation),
+            (Primitive::Pad, ExclusionReason::ShapeManipulation),
+            (Primitive::Rev, ExclusionReason::ShapeManipulation),
+            (Primitive::Squeeze, ExclusionReason::ShapeManipulation),
+            (Primitive::Split, ExclusionReason::ShapeManipulation),
+            (Primitive::ExpandDims, ExclusionReason::ShapeManipulation),
+            (Primitive::Cholesky, ExclusionReason::LinearAlgebra),
+            (Primitive::Qr, ExclusionReason::LinearAlgebra),
+            (Primitive::Svd, ExclusionReason::LinearAlgebra),
+            (Primitive::TriangularSolve, ExclusionReason::LinearAlgebra),
+            (Primitive::Eigh, ExclusionReason::LinearAlgebra),
+            (Primitive::Fft, ExclusionReason::Fft),
+            (Primitive::Ifft, ExclusionReason::Fft),
+            (Primitive::Rfft, ExclusionReason::Fft),
+            (Primitive::Irfft, ExclusionReason::Fft),
+            (Primitive::Cond, ExclusionReason::ControlFlow),
+            (Primitive::Scan, ExclusionReason::ControlFlow),
+            (Primitive::While, ExclusionReason::ControlFlow),
+            (Primitive::Switch, ExclusionReason::ControlFlow),
+            (Primitive::Sort, ExclusionReason::Sorting),
+            (Primitive::Argsort, ExclusionReason::Sorting),
+            (Primitive::Conv, ExclusionReason::Convolution),
+            (Primitive::Iota, ExclusionReason::IndexUtility),
+            (Primitive::BroadcastedIota, ExclusionReason::IndexUtility),
+            (Primitive::DynamicUpdateSlice, ExclusionReason::IndexUtility),
+            (
+                Primitive::BitcastConvertType,
+                ExclusionReason::TypeConversion,
+            ),
+            (Primitive::ReducePrecision, ExclusionReason::TypeConversion),
+            (Primitive::Cumsum, ExclusionReason::Cumulative),
+            (Primitive::Cumprod, ExclusionReason::Cumulative),
+            (Primitive::ReduceWindow, ExclusionReason::Windowed),
+            (Primitive::OneHot, ExclusionReason::Encoding),
+        ];
+
+        for (primitive, reason) in cases {
+            let err = jaxpr_to_egraph(&single_equation_jaxpr(primitive)).unwrap_err();
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains(reason.category()),
+                "{primitive:?} message missing category {reason:?}: {rendered}"
+            );
+            assert!(
+                rendered.contains(reason.detail()),
+                "{primitive:?} message missing detail {reason:?}: {rendered}"
+            );
+        }
     }
 
     #[test]

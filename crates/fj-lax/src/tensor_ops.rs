@@ -377,7 +377,7 @@ pub(crate) fn eval_reshape(
                         });
                     }
                     inferred_axis = Some(idx);
-                    dims.push(0_u32); // placeholder
+                    dims.push(0_u32); // temporary slot filled after the inferred extent is known
                 } else if *d >= 0 {
                     let du = *d as u32;
                     known_product *= u64::from(du);

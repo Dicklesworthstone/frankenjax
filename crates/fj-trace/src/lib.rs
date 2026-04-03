@@ -4073,10 +4073,10 @@ mod tests {
     }
 
     #[test]
-    fn v2_stub_linalg_fft_shape_contracts() {
+    fn v2_linalg_fft_shape_contracts() {
         run_logged_test(
-            "v2_stub_linalg_fft_shape_contracts",
-            fj_test_utils::fixture_id_from_json(&("v2-stub-shapes", 1_u32))
+            "v2_linalg_fft_shape_contracts",
+            fj_test_utils::fixture_id_from_json(&("v2-shape-contracts", 1_u32))
                 .expect("fixture digest"),
             fj_test_utils::TestMode::Strict,
             || {

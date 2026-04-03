@@ -254,17 +254,17 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::CountLeadingZeros => 1,
         // Nullary ops
         Primitive::Iota => 0,
-        // Other primitives with variable or unspecified arity
-        Primitive::DynamicUpdateSlice
-        | Primitive::OneHot
+        // Parameterized primitives with fixed or minimum input counts.
+        Primitive::DynamicUpdateSlice => 3,
+        Primitive::OneHot
         | Primitive::Cumsum
         | Primitive::Cumprod
         | Primitive::Sort
-        | Primitive::Argsort
-        | Primitive::Conv
-        | Primitive::Cond
-        | Primitive::Scan
-        | Primitive::While => 1, // Default placeholder
+        | Primitive::Argsort => 1,
+        Primitive::Conv => 2,
+        Primitive::Cond => 3,
+        Primitive::Scan => 2,
+        Primitive::While => 1,
     }
 }
 
@@ -567,4 +567,24 @@ pub fn sample_primitive_params(
     }
 
     params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::primitive_arity;
+    use fj_core::Primitive;
+
+    #[test]
+    fn primitive_arity_uses_real_counts_for_parameterized_primitives() {
+        assert_eq!(primitive_arity(Primitive::DynamicUpdateSlice), 3);
+        assert_eq!(primitive_arity(Primitive::OneHot), 1);
+        assert_eq!(primitive_arity(Primitive::Cumsum), 1);
+        assert_eq!(primitive_arity(Primitive::Cumprod), 1);
+        assert_eq!(primitive_arity(Primitive::Sort), 1);
+        assert_eq!(primitive_arity(Primitive::Argsort), 1);
+        assert_eq!(primitive_arity(Primitive::Conv), 2);
+        assert_eq!(primitive_arity(Primitive::Cond), 3);
+        assert_eq!(primitive_arity(Primitive::Scan), 2);
+        assert_eq!(primitive_arity(Primitive::While), 1);
+    }
 }

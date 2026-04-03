@@ -586,7 +586,7 @@ fn test_switch_dispatch() {
             }
             Err(e) => {
                 // Switch may not be fully wired in dispatch; document the gap
-                eprintln!("switch dispatch branch {branch_idx} not yet supported: {e}");
+                eprintln!("switch dispatch branch {branch_idx} unavailable in dispatch: {e}");
             }
         }
     }

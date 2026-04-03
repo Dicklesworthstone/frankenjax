@@ -1032,11 +1032,7 @@ pub(crate) fn eval_unary_elementwise(
                             .map(|literal| {
                                 let (re, im) = literal_to_complex_parts(primitive, literal)?;
                                 let (out_re, out_im) = complex_reciprocal((re, im));
-                                Ok(complex_literal_from_f64_parts(
-                                    tensor.dtype,
-                                    out_re,
-                                    out_im,
-                                ))
+                                Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
                             })
                             .collect::<Result<Vec<_>, EvalError>>()?;
 
