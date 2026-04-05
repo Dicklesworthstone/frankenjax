@@ -1777,6 +1777,12 @@ fn infer_fft(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
         });
     }
     let input = &inputs[0];
+    if input.shape.rank() == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "fft expects rank >= 1 input".to_owned(),
+        });
+    }
     Ok(vec![ShapedArray {
         dtype: to_complex_dtype(input.dtype),
         shape: input.shape.clone(),
@@ -1792,6 +1798,12 @@ fn infer_ifft(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
         });
     }
     let input = &inputs[0];
+    if input.shape.rank() == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "ifft expects rank >= 1 input".to_owned(),
+        });
+    }
     if !matches!(input.dtype, DType::Complex64 | DType::Complex128) {
         return Err(TraceError::ShapeInferenceFailed {
             primitive,
@@ -5619,6 +5631,52 @@ mod tests {
         ));
         assert!(
             err.to_string().contains("complex-valued input"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_fft_rejects_scalar_input_shape_inference() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        }]);
+
+        let err = ctx
+            .process_primitive(Primitive::Fft, &[TracerId(1)], BTreeMap::new())
+            .expect_err("fft should reject scalar input during tracing");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Fft,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("rank >= 1 input"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_ifft_rejects_scalar_input_shape_inference() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::Complex128,
+            shape: Shape::scalar(),
+        }]);
+
+        let err = ctx
+            .process_primitive(Primitive::Ifft, &[TracerId(1)], BTreeMap::new())
+            .expect_err("ifft should reject scalar input during tracing");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Ifft,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("rank >= 1 input"),
             "unexpected error: {err}"
         );
     }
