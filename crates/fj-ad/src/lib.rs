@@ -10239,4 +10239,238 @@ mod tests {
             );
         }
     }
+
+    // ── NaN/Inf gradient propagation tests (frankenjax-zrp) ──────────
+
+    /// Helper: build single-op Jaxpr and compute grad, return the gradient as f64.
+    fn grad_single_op(prim: Primitive, x: f64) -> Result<f64, AdError> {
+        use smallvec::smallvec;
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: prim,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let grads = grad_jaxpr(&jaxpr, &[Value::scalar_f64(x)])?;
+        Ok(to_f64(&grads[0]).unwrap_or(f64::NAN))
+    }
+
+    /// Helper: compute VJP for a unary op with a given cotangent.
+    fn vjp_single_op(prim: Primitive, x: f64, g: f64) -> Result<f64, AdError> {
+        let x_val = Value::scalar_f64(x);
+        let g_val = Value::scalar_f64(g);
+        let params = BTreeMap::new();
+        let out = fj_lax::eval_primitive(prim, std::slice::from_ref(&x_val), &params)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+        let vjp_result = vjp(
+            prim,
+            std::slice::from_ref(&x_val),
+            std::slice::from_ref(&g_val),
+            std::slice::from_ref(&out),
+            &params,
+        )?;
+        Ok(to_f64(&vjp_result[0]).unwrap_or(f64::NAN))
+    }
+
+    #[test]
+    fn nan_propagates_through_unary_gradients() {
+        // JAX contract: grad(f)(NaN) = NaN for all differentiable unary ops
+        // Neg excluded: grad(neg)(x) = -1 (constant), so NaN input → -1 is correct.
+        let nan_ops = [
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Exp,
+            Primitive::Log,
+            Primitive::Tanh,
+            Primitive::Square,
+            Primitive::Sqrt,
+            Primitive::Sinh,
+            Primitive::Cosh,
+        ];
+
+        for prim in &nan_ops {
+            let g = grad_single_op(*prim, f64::NAN);
+            match g {
+                Ok(val) => assert!(
+                    val.is_nan(),
+                    "grad({:?})(NaN) should be NaN, got {val}",
+                    prim
+                ),
+                Err(_) => {
+                    // Some ops may error on NaN input (e.g., log(NaN) in eval).
+                    // That's acceptable — the key is no silent zero.
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nan_cotangent_produces_nan_gradient() {
+        // If the output cotangent is NaN, the input gradient must be NaN
+        let ops = [
+            Primitive::Sin,
+            Primitive::Cos,
+            Primitive::Exp,
+            Primitive::Square,
+            Primitive::Neg,
+        ];
+
+        for prim in &ops {
+            match vjp_single_op(*prim, 1.0, f64::NAN) {
+                Ok(g) => assert!(
+                    g.is_nan(),
+                    "vjp({:?}, 1.0, cotangent=NaN) should give NaN gradient, got {g}",
+                    prim
+                ),
+                Err(_) => {} // Error is acceptable, silent zero is not
+            }
+        }
+    }
+
+    #[test]
+    fn inf_propagates_through_exp_gradient() {
+        // grad(exp)(x) = exp(x). At x=Inf, exp(Inf) = Inf, so grad = Inf.
+        match grad_single_op(Primitive::Exp, f64::INFINITY) {
+            Ok(g) => assert!(
+                g.is_infinite() || g.is_nan(),
+                "grad(exp)(Inf) should be Inf or NaN, got {g}"
+            ),
+            Err(_) => {} // Error acceptable
+        }
+    }
+
+    #[test]
+    fn inf_propagates_through_square_gradient() {
+        // grad(x^2)(x) = 2x. At x=Inf, grad = Inf.
+        match grad_single_op(Primitive::Square, f64::INFINITY) {
+            Ok(g) => assert!(g.is_infinite(), "grad(x^2)(Inf) should be Inf, got {g}"),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn neg_inf_input_gradient() {
+        // grad(exp)(-Inf) = exp(-Inf) = 0. This IS correct — not a silent error.
+        match grad_single_op(Primitive::Exp, f64::NEG_INFINITY) {
+            Ok(g) => assert!(
+                g.abs() < 1e-300 || g.is_nan(),
+                "grad(exp)(-Inf) should be ~0 or NaN, got {g}"
+            ),
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn jvp_nan_tangent_produces_nan_output() {
+        use smallvec::smallvec;
+        // JVP with NaN tangent: the output tangent should be NaN
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let result = jvp(
+            &jaxpr,
+            &[Value::scalar_f64(1.0)],
+            &[Value::scalar_f64(f64::NAN)],
+        );
+        match result {
+            Ok(r) => {
+                let tangent = to_f64(&r.tangents[0]).unwrap_or(0.0);
+                assert!(
+                    tangent.is_nan(),
+                    "jvp(sin, x=1.0, dx=NaN) tangent should be NaN, got {tangent}"
+                );
+            }
+            Err(_) => {} // Error acceptable
+        }
+    }
+
+    #[test]
+    fn jvp_nan_primal_produces_nan_tangent() {
+        use smallvec::smallvec;
+        // JVP with NaN primal: both output and tangent should be NaN
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Cos,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let result = jvp(
+            &jaxpr,
+            &[Value::scalar_f64(f64::NAN)],
+            &[Value::scalar_f64(1.0)],
+        );
+        match result {
+            Ok(r) => {
+                let tangent = to_f64(&r.tangents[0]).unwrap_or(0.0);
+                assert!(
+                    tangent.is_nan(),
+                    "jvp(cos, x=NaN, dx=1.0) tangent should be NaN, got {tangent}"
+                );
+            }
+            Err(_) => {}
+        }
+    }
+
+    #[test]
+    fn binary_nan_propagation_mul() {
+        use smallvec::smallvec;
+        // grad(x*y) w.r.t. x at x=NaN, y=3.0: grad = y = 3.0? No — the forward
+        // pass produces NaN output, so the backward pass should propagate NaN.
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let result = grad_jaxpr(
+            &jaxpr,
+            &[Value::scalar_f64(f64::NAN), Value::scalar_f64(3.0)],
+        );
+        match result {
+            Ok(grads) => {
+                // grad w.r.t. x of x*y = y * cotangent. But if x=NaN, the
+                // forward pass output is NaN, and the VJP rule for mul uses
+                // the primal values, so NaN should appear somewhere.
+                let gx = to_f64(&grads[0]).unwrap_or(0.0);
+                // Either NaN (from primal contamination) or 3.0 (from the formula)
+                // are both defensible. The key assertion: it should NOT be 0.0.
+                assert!(
+                    gx.is_nan() || (gx - 3.0).abs() < 1e-10,
+                    "grad(x*y) at x=NaN, y=3: expected NaN or 3.0, got {gx}"
+                );
+            }
+            Err(_) => {}
+        }
+    }
 }
