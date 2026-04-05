@@ -2814,8 +2814,18 @@ pub(crate) fn eval_split(
             detail: "cannot split a scalar".into(),
         }),
         Value::Tensor(tensor) => {
-            let axis_vec = parse_usize_param(primitive, "axis", params)?;
-            let axis = axis_vec[0];
+            let axis = params
+                .get("axis")
+                .map(|raw| {
+                    raw.trim()
+                        .parse::<usize>()
+                        .map_err(|_| EvalError::Unsupported {
+                            primitive,
+                            detail: format!("invalid integer in param 'axis': '{raw}'"),
+                        })
+                })
+                .transpose()?
+                .unwrap_or(0);
             let dims = &tensor.shape.dims;
             let rank = dims.len();
 
@@ -2831,7 +2841,7 @@ pub(crate) fn eval_split(
             // Determine split sizes
             let sizes: Vec<usize> = if params.contains_key("sizes") {
                 parse_usize_param(primitive, "sizes", params)?
-            } else {
+            } else if params.contains_key("num_sections") {
                 let num_sections_vec = parse_usize_param(primitive, "num_sections", params)?;
                 let num_sections = num_sections_vec[0];
                 if !axis_size.is_multiple_of(num_sections) {
@@ -2844,6 +2854,8 @@ pub(crate) fn eval_split(
                 }
                 let section_size = axis_size / num_sections;
                 vec![section_size; num_sections]
+            } else {
+                vec![axis_size]
             };
 
             // Validate sizes sum to axis_size

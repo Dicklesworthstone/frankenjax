@@ -5658,6 +5658,28 @@ mod tests {
     }
 
     #[test]
+    fn test_split_defaults_axis_to_zero() {
+        let input = Value::vector_i64(&[1, 2, 3, 4, 5, 6]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("num_sections".into(), "3".into());
+        let out = eval_primitive(Primitive::Split, &[input], &params).unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.shape.dims, vec![3, 2]);
+        let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+        assert_eq!(vals, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_split_defaults_to_single_section_without_sizes_or_num_sections() {
+        let input = Value::vector_i64(&[1, 2, 3, 4]).unwrap();
+        let out = eval_primitive(Primitive::Split, &[input], &BTreeMap::new()).unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.shape.dims, vec![1, 4]);
+        let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+        assert_eq!(vals, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
     fn test_split_unequal() {
         // split [1,2,3,4,5] with sizes [2,3] — first section = [1,2]
         let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();

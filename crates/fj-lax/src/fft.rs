@@ -62,6 +62,42 @@ fn is_complex_dtype(dtype: DType) -> bool {
     matches!(dtype, DType::Complex64 | DType::Complex128)
 }
 
+fn parse_optional_fft_length(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+    default: usize,
+) -> Result<usize, EvalError> {
+    if let Some(raw) = params.get("fft_length") {
+        return raw
+            .trim()
+            .parse::<usize>()
+            .map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid fft_length: {raw}"),
+            });
+    }
+
+    if let Some(raw) = params.get("fft_lengths") {
+        let len = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .next_back()
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid fft_lengths: {raw}"),
+            })?
+            .parse::<usize>()
+            .map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid fft_lengths: {raw}"),
+            })?;
+        return Ok(len);
+    }
+
+    Ok(default)
+}
+
 /// Extract a rank-1+ tensor from a Value, returning shape and elements as (re, im) pairs.
 #[allow(clippy::type_complexity)]
 fn extract_tensor_complex(
@@ -288,18 +324,7 @@ pub(crate) fn eval_rfft(
     }
 
     // Parse fft_length from params (defaults to input last dim)
-    let fft_length = params
-        .get("fft_length")
-        .map(|s| {
-            s.trim()
-                .parse::<usize>()
-                .map_err(|_| EvalError::Unsupported {
-                    primitive,
-                    detail: format!("invalid fft_length: {s}"),
-                })
-        })
-        .transpose()?
-        .unwrap_or(input_last);
+    let fft_length = parse_optional_fft_length(primitive, params, input_last)?;
 
     if fft_length == 0 {
         return Err(EvalError::Unsupported {
@@ -381,18 +406,7 @@ pub(crate) fn eval_irfft(
 
     // Parse fft_length from params. Default: (input_last - 1) * 2
     let default_fft_length = input_last.saturating_sub(1).saturating_mul(2);
-    let fft_length = params
-        .get("fft_length")
-        .map(|s| {
-            s.trim()
-                .parse::<usize>()
-                .map_err(|_| EvalError::Unsupported {
-                    primitive,
-                    detail: format!("invalid fft_length: {s}"),
-                })
-        })
-        .transpose()?
-        .unwrap_or(default_fft_length);
+    let fft_length = parse_optional_fft_length(primitive, params, default_fft_length)?;
 
     if fft_length == 0 {
         return Err(EvalError::Unsupported {
@@ -622,6 +636,28 @@ mod tests {
     }
 
     #[test]
+    fn rfft_accepts_fft_lengths_alias() {
+        let input = make_real_vector(&[1.0, 2.0, 3.0, 4.0]);
+        let mut params = BTreeMap::new();
+        params.insert("fft_lengths".to_owned(), "4".to_owned());
+        let result = eval_rfft(&[input], &params).unwrap();
+        let elems = extract_complex_elements(&result);
+        assert_eq!(elems.len(), 3);
+        assert_complex_close(&elems, &[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)], 1e-10);
+    }
+
+    #[test]
+    fn rfft_accepts_fft_lengths_list() {
+        let input = make_real_vector(&[1.0, 2.0, 3.0, 4.0]);
+        let mut params = BTreeMap::new();
+        params.insert("fft_lengths".to_owned(), "2, 4".to_owned());
+        let result = eval_rfft(&[input], &params).unwrap();
+        let elems = extract_complex_elements(&result);
+        assert_eq!(elems.len(), 3);
+        assert_complex_close(&elems, &[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)], 1e-10);
+    }
+
+    #[test]
     fn rfft_rejects_complex_input() {
         let input = make_complex_vector(&[(1.0, 0.0), (0.0, 1.0), (2.0, -1.0), (3.0, 0.5)]);
         let err = eval_rfft(&[input], &BTreeMap::new()).expect_err("complex RFFT input must fail");
@@ -698,6 +734,38 @@ mod tests {
             err.to_string().contains("complex-valued input"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn irfft_accepts_fft_lengths_alias() {
+        let input = make_complex_vector(&[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)]);
+        let mut params = BTreeMap::new();
+        params.insert("fft_lengths".to_owned(), "4".to_owned());
+        let result = eval_irfft(&[input], &params).unwrap();
+        let elems = extract_f64_elements(&result);
+        assert_eq!(elems.len(), 4);
+        for (i, (&got, &expected)) in elems.iter().zip([1.0, 2.0, 3.0, 4.0].iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-10,
+                "element {i}: got {got}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn irfft_accepts_fft_lengths_list() {
+        let input = make_complex_vector(&[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)]);
+        let mut params = BTreeMap::new();
+        params.insert("fft_lengths".to_owned(), "2, 4".to_owned());
+        let result = eval_irfft(&[input], &params).unwrap();
+        let elems = extract_f64_elements(&result);
+        assert_eq!(elems.len(), 4);
+        for (i, (&got, &expected)) in elems.iter().zip([1.0, 2.0, 3.0, 4.0].iter()).enumerate() {
+            assert!(
+                (got - expected).abs() < 1e-10,
+                "element {i}: got {got}, expected {expected}"
+            );
+        }
     }
 
     #[test]
