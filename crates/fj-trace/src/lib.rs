@@ -3355,6 +3355,31 @@ mod tests {
     }
 
     #[test]
+    fn test_infer_split_shapes_defaults_axis_to_zero() {
+        run_logged_test(
+            "test_infer_split_shapes_defaults_axis_to_zero",
+            fj_test_utils::fixture_id_from_json(&("split-shape-default-axis", [8_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(8),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("num_sections".to_owned(), "4".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::Split, &[TracerId(1)], params)
+                    .expect("split inference should default axis to zero");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.shape, Shape { dims: vec![4, 2] });
+                assert_eq!(aval.dtype, DType::F64);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
     fn test_infer_expand_dims_shape() {
         run_logged_test(
             "test_infer_expand_dims_shape",

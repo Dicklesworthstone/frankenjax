@@ -81,8 +81,7 @@ fn parse_optional_fft_length(
         let len = raw
             .split(',')
             .map(str::trim)
-            .filter(|part| !part.is_empty())
-            .next_back()
+            .rfind(|part| !part.is_empty())
             .ok_or_else(|| EvalError::Unsupported {
                 primitive,
                 detail: format!("invalid fft_lengths: {raw}"),
