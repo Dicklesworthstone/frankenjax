@@ -10323,13 +10323,12 @@ mod tests {
         ];
 
         for prim in &ops {
-            match vjp_single_op(*prim, 1.0, f64::NAN) {
-                Ok(g) => assert!(
+            if let Ok(g) = vjp_single_op(*prim, 1.0, f64::NAN) {
+                assert!(
                     g.is_nan(),
                     "vjp({:?}, 1.0, cotangent=NaN) should give NaN gradient, got {g}",
                     prim
-                ),
-                Err(_) => {} // Error is acceptable, silent zero is not
+                );
             }
         }
     }
@@ -10337,33 +10336,30 @@ mod tests {
     #[test]
     fn inf_propagates_through_exp_gradient() {
         // grad(exp)(x) = exp(x). At x=Inf, exp(Inf) = Inf, so grad = Inf.
-        match grad_single_op(Primitive::Exp, f64::INFINITY) {
-            Ok(g) => assert!(
+        if let Ok(g) = grad_single_op(Primitive::Exp, f64::INFINITY) {
+            assert!(
                 g.is_infinite() || g.is_nan(),
                 "grad(exp)(Inf) should be Inf or NaN, got {g}"
-            ),
-            Err(_) => {} // Error acceptable
+            );
         }
     }
 
     #[test]
     fn inf_propagates_through_square_gradient() {
         // grad(x^2)(x) = 2x. At x=Inf, grad = Inf.
-        match grad_single_op(Primitive::Square, f64::INFINITY) {
-            Ok(g) => assert!(g.is_infinite(), "grad(x^2)(Inf) should be Inf, got {g}"),
-            Err(_) => {}
+        if let Ok(g) = grad_single_op(Primitive::Square, f64::INFINITY) {
+            assert!(g.is_infinite(), "grad(x^2)(Inf) should be Inf, got {g}");
         }
     }
 
     #[test]
     fn neg_inf_input_gradient() {
         // grad(exp)(-Inf) = exp(-Inf) = 0. This IS correct — not a silent error.
-        match grad_single_op(Primitive::Exp, f64::NEG_INFINITY) {
-            Ok(g) => assert!(
+        if let Ok(g) = grad_single_op(Primitive::Exp, f64::NEG_INFINITY) {
+            assert!(
                 g.abs() < 1e-300 || g.is_nan(),
                 "grad(exp)(-Inf) should be ~0 or NaN, got {g}"
-            ),
-            Err(_) => {}
+            );
         }
     }
 
@@ -10389,15 +10385,12 @@ mod tests {
             &[Value::scalar_f64(1.0)],
             &[Value::scalar_f64(f64::NAN)],
         );
-        match result {
-            Ok(r) => {
-                let tangent = to_f64(&r.tangents[0]).unwrap_or(0.0);
-                assert!(
-                    tangent.is_nan(),
-                    "jvp(sin, x=1.0, dx=NaN) tangent should be NaN, got {tangent}"
-                );
-            }
-            Err(_) => {} // Error acceptable
+        if let Ok(r) = result {
+            let tangent = to_f64(&r.tangents[0]).unwrap_or(0.0);
+            assert!(
+                tangent.is_nan(),
+                "jvp(sin, x=1.0, dx=NaN) tangent should be NaN, got {tangent}"
+            );
         }
     }
 
@@ -10423,15 +10416,12 @@ mod tests {
             &[Value::scalar_f64(f64::NAN)],
             &[Value::scalar_f64(1.0)],
         );
-        match result {
-            Ok(r) => {
-                let tangent = to_f64(&r.tangents[0]).unwrap_or(0.0);
-                assert!(
-                    tangent.is_nan(),
-                    "jvp(cos, x=NaN, dx=1.0) tangent should be NaN, got {tangent}"
-                );
-            }
-            Err(_) => {}
+        if let Ok(r) = result {
+            let tangent = to_f64(&r.tangents[0]).unwrap_or(0.0);
+            assert!(
+                tangent.is_nan(),
+                "jvp(cos, x=NaN, dx=1.0) tangent should be NaN, got {tangent}"
+            );
         }
     }
 
@@ -10457,20 +10447,17 @@ mod tests {
             &jaxpr,
             &[Value::scalar_f64(f64::NAN), Value::scalar_f64(3.0)],
         );
-        match result {
-            Ok(grads) => {
-                // grad w.r.t. x of x*y = y * cotangent. But if x=NaN, the
-                // forward pass output is NaN, and the VJP rule for mul uses
-                // the primal values, so NaN should appear somewhere.
-                let gx = to_f64(&grads[0]).unwrap_or(0.0);
-                // Either NaN (from primal contamination) or 3.0 (from the formula)
-                // are both defensible. The key assertion: it should NOT be 0.0.
-                assert!(
-                    gx.is_nan() || (gx - 3.0).abs() < 1e-10,
-                    "grad(x*y) at x=NaN, y=3: expected NaN or 3.0, got {gx}"
-                );
-            }
-            Err(_) => {}
+        if let Ok(grads) = result {
+            // grad w.r.t. x of x*y = y * cotangent. But if x=NaN, the
+            // forward pass output is NaN, and the VJP rule for mul uses
+            // the primal values, so NaN should appear somewhere.
+            let gx = to_f64(&grads[0]).unwrap_or(0.0);
+            // Either NaN (from primal contamination) or 3.0 (from the formula)
+            // are both defensible. The key assertion: it should NOT be 0.0.
+            assert!(
+                gx.is_nan() || (gx - 3.0).abs() < 1e-10,
+                "grad(x*y) at x=NaN, y=3: expected NaN or 3.0, got {gx}"
+            );
         }
     }
 }
