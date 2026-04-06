@@ -3,18 +3,18 @@
 
 Usage:
   # With JAX available in .venv/:
-  python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
+  python3 crates/fj-conformance/scripts/capture_legacy_fixtures.py \
       --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
       --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json
 
   # Capture transform bundle + RNG determinism bundle:
-  python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
+  python3 crates/fj-conformance/scripts/capture_legacy_fixtures.py \
       --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
       --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json \
       --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json
 
   # With --strict to require JAX (no fallback):
-  python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
+  python3 crates/fj-conformance/scripts/capture_legacy_fixtures.py \
       --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
       --output ... --strict
 
@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import os
 import platform
 import sys
 import time

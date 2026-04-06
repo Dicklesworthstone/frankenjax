@@ -13,7 +13,7 @@ This folder stores normalized oracle-vs-target fixtures for `fj-conformance`.
 Use the legacy capture script:
 
 ```bash
-python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
+python3 crates/fj-conformance/scripts/capture_legacy_fixtures.py \
   --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
   --output /data/projects/frankenjax/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json \
   --rng-output /data/projects/frankenjax/crates/fj-conformance/fixtures/rng/rng_determinism.v1.json

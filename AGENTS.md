@@ -208,7 +208,7 @@ cargo bench
 Transform conformance fixtures are captured from the legacy JAX oracle and stored in `crates/fj-conformance/fixtures/`. Regenerate with:
 
 ```bash
-python crates/fj-conformance/scripts/capture_legacy_fixtures.py \
+python3 crates/fj-conformance/scripts/capture_legacy_fixtures.py \
   --legacy-root /data/projects/frankenjax/legacy_jax_code/jax \
   --output /data/projects/frankenjax/crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json
 ```

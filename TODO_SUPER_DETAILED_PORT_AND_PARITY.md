@@ -14,7 +14,7 @@ Goal: Complete all identified next-step streams end-to-end in one pass.
 ## Stream A: Legacy Fixture Capture + Conformance Wiring
 
 ### A0. Task management and design lock
-- [x] Create master TODO tracker in-repo.
+- [x] Create main TODO tracker in-repo.
 - [x] Freeze fixture schema fields and versioning strategy.
 - [x] Define minimal first-pass case family set (`jit`, `grad`, `vmap`) with composition cases.
 - [x] Add TODO sync points after each major code edit cluster.
