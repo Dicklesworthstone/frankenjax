@@ -848,12 +848,20 @@ fn execute_vmap_loop_and_stack(
             AxisSpec::Batched(target_axis) => {
                 // Move batch dim from 0 to target_axis via Transpose primitive
                 let rank = tensor.rank();
-                let resolved = if target_axis < 0 {
-                    (rank as i32 + target_axis) as usize
-                } else {
-                    target_axis as usize
-                };
-                if resolved >= rank || resolved == 0 {
+                let resolved = AxisSpec::Batched(target_axis).resolve(rank).ok_or(
+                    TransformExecutionError::VmapAxesOutOfBounds {
+                        axis: target_axis,
+                        ndim: rank,
+                    },
+                )?;
+                if resolved >= rank {
+                    return Err(TransformExecutionError::VmapAxesOutOfBounds {
+                        axis: target_axis,
+                        ndim: rank,
+                    }
+                    .into());
+                }
+                if resolved == 0 {
                     outputs.push(Value::Tensor(tensor));
                 } else {
                     // Build permutation: move axis 0 to position `resolved`
@@ -946,7 +954,7 @@ pub fn calibrated_posterior_abandoned(
 
 #[cfg(test)]
 mod tests {
-    use super::{DispatchError, DispatchRequest, dispatch};
+    use super::{DispatchError, DispatchRequest, TransformExecutionError, dispatch};
     use fj_core::{
         Atom, CompatibilityMode, DType, Equation, Jaxpr, Primitive, ProgramSpec, Shape,
         TensorValue, TraceTransformLedger, Transform, Value, VarId, build_program,
@@ -2194,9 +2202,7 @@ mod tests {
     #[test]
     fn test_out_axes_1_trailing() {
         // out_axes=1: batch dim moved from position 0 to position 1.
-        // vmap(AddOne) on [3] vector: inner outputs are scalars, stacked to [3].
-        // out_axes=1 on a 1D output [3] has resolved=1 >= rank=1, so it stays as-is.
-        // Use a matrix input for a meaningful test:
+        // Use a matrix input so the stacked output rank is 2 and axis 1 is valid:
         // Input [3, 2], in_axes=0 → inner gets [2], outputs [2], stacked → [3, 2]
         // out_axes=1 → transpose to [2, 3]
         let matrix = Value::Tensor(
@@ -2295,6 +2301,63 @@ mod tests {
             msg.contains("out of bounds"),
             "error should mention out of bounds, got: {msg}"
         );
+    }
+
+    #[test]
+    fn test_out_axes_error_positive_out_of_bounds() {
+        let input = Value::vector_i64(&[1, 2, 3]).expect("vector");
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "1".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap, Transform::Jit]),
+            args: vec![input],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("rank-1 outputs should reject out_axes=1");
+
+        assert!(matches!(
+            err,
+            DispatchError::TransformExecution(TransformExecutionError::VmapAxesOutOfBounds {
+                axis: 1,
+                ndim: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn test_out_axes_error_negative_out_of_bounds() {
+        let matrix = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3, 2] },
+                (1..=6).map(fj_core::Literal::I64).collect(),
+            )
+            .expect("matrix"),
+        );
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "-3".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap, Transform::Jit]),
+            args: vec![matrix],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("rank-2 outputs should reject out_axes=-3");
+
+        assert!(matches!(
+            err,
+            DispatchError::TransformExecution(TransformExecutionError::VmapAxesOutOfBounds {
+                axis: -3,
+                ndim: 2,
+            })
+        ));
     }
 
     #[test]
