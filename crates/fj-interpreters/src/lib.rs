@@ -23,6 +23,9 @@ pub enum InterpreterError {
         expected: usize,
         actual: usize,
     },
+    InvariantViolation {
+        detail: String,
+    },
     Primitive(EvalError),
 }
 
@@ -55,6 +58,9 @@ impl std::fmt::Display for InterpreterError {
                 actual,
                 expected
             ),
+            Self::InvariantViolation { detail } => {
+                write!(f, "interpreter invariant violated: {detail}")
+            }
             Self::Primitive(err) => write!(f, "primitive eval failed: {err}"),
         }
     }
@@ -649,6 +655,11 @@ mod tests {
             actual: 2,
         };
         assert!(err.to_string().contains("add"));
+
+        let err = InterpreterError::InvariantViolation {
+            detail: "scheduler stalled".to_owned(),
+        };
+        assert!(err.to_string().contains("scheduler stalled"));
     }
 
     mod proptest_tests {

@@ -50,14 +50,22 @@ fn evaluate_equation(
         });
     }
     let mut outputs = evaluate_equation_multi(equation, env)?;
-    debug_assert_eq!(
-        outputs.len(),
-        1,
-        "single-output path should return one value"
-    );
-    Ok(outputs
-        .pop()
-        .expect("single-output path should produce exactly one value"))
+    if outputs.len() != 1 {
+        return Err(InterpreterError::UnexpectedOutputArity {
+            primitive: equation.primitive,
+            expected: 1,
+            actual: outputs.len(),
+        });
+    }
+    match outputs.pop() {
+        Some(output) => Ok(output),
+        None => Err(InterpreterError::InvariantViolation {
+            detail: format!(
+                "single-output equation {} produced no values after arity validation",
+                equation.primitive.as_str()
+            ),
+        }),
+    }
 }
 
 fn evaluate_jaxpr_parallel_inner(
@@ -90,10 +98,13 @@ fn evaluate_jaxpr_parallel_inner(
     let mut remaining = jaxpr.equations.len();
 
     while remaining > 0 {
-        let first_pending = executed
-            .iter()
-            .position(|done| !*done)
-            .expect("remaining > 0 guarantees at least one pending equation");
+        let Some(first_pending) = executed.iter().position(|done| !*done) else {
+            return Err(InterpreterError::InvariantViolation {
+                detail: format!(
+                    "scheduler reported {remaining} remaining equation(s) with no pending work"
+                ),
+            });
+        };
         let first_eqn = &jaxpr.equations[first_pending];
 
         let is_multi_output = first_eqn.outputs.len() > 1;
@@ -213,14 +224,30 @@ impl CpuBackend {
     }
 
     /// Create a CPU backend exposing multiple logical devices.
-    /// Useful for testing multi-device dispatch without GPU hardware.
-    #[must_use]
-    pub fn with_device_count(count: u32) -> Self {
-        assert!(count > 0, "device count must be at least 1");
-        Self {
+    ///
+    /// Returns a structured error when the configuration is invalid.
+    pub fn try_with_device_count(count: u32) -> Result<Self, BackendError> {
+        if count == 0 {
+            return Err(BackendError::InvalidConfiguration {
+                backend: "cpu".to_owned(),
+                detail: "device count must be at least 1".to_owned(),
+            });
+        }
+
+        Ok(Self {
             device_count: count,
             version_string: format!("fj-backend-cpu/{}", env!("CARGO_PKG_VERSION")),
-        }
+        })
+    }
+
+    /// Create a CPU backend exposing multiple logical devices.
+    /// Useful for testing multi-device dispatch without GPU hardware.
+    ///
+    /// Invalid counts fall back to the single-device baseline to keep the CPU
+    /// backend total and panic-free.
+    #[must_use]
+    pub fn with_device_count(count: u32) -> Self {
+        Self::try_with_device_count(count).unwrap_or_default()
     }
 }
 
@@ -420,6 +447,26 @@ mod tests {
             assert_eq!(dev.id, DeviceId(i as u32));
             assert_eq!(dev.platform, Platform::Cpu);
         }
+    }
+
+    #[test]
+    fn cpu_backend_try_with_zero_devices_returns_structured_error() {
+        let result = CpuBackend::try_with_device_count(0);
+        assert!(matches!(
+            result,
+            Err(BackendError::InvalidConfiguration { .. })
+        ));
+        if let Err(err) = result {
+            assert!(err.to_string().contains("device count must be at least 1"));
+        }
+    }
+
+    #[test]
+    fn cpu_backend_with_zero_devices_falls_back_to_single_device() {
+        let backend = CpuBackend::with_device_count(0);
+        let devices = backend.devices();
+        assert_eq!(devices.len(), 1);
+        assert_eq!(devices[0].id, DeviceId(0));
     }
 
     #[test]
@@ -717,11 +764,10 @@ mod tests {
     fn registry_resolve_unavailable_backend() {
         let registry = BackendRegistry::new(vec![Box::new(CpuBackend::new())]);
         let result = registry.resolve_placement(&DevicePlacement::Default, Some("gpu"));
-        match result {
-            Err(BackendError::Unavailable { backend }) => assert_eq!(backend, "gpu"),
-            Err(other) => panic!("expected Unavailable, got: {other}"),
-            Ok(_) => panic!("expected error for unavailable gpu backend"),
-        }
+        assert!(matches!(
+            result,
+            Err(BackendError::Unavailable { backend }) if backend == "gpu"
+        ));
     }
 
     #[test]

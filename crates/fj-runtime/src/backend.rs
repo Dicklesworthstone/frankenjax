@@ -16,6 +16,8 @@ use fj_core::{DType, Jaxpr, Value};
 pub enum BackendError {
     /// Requested backend is not available on this system.
     Unavailable { backend: String },
+    /// Backend configuration is invalid before execution starts.
+    InvalidConfiguration { backend: String, detail: String },
     /// Device allocation failed (e.g., OOM).
     AllocationFailed { device: DeviceId, detail: String },
     /// Cross-device transfer failed.
@@ -32,6 +34,9 @@ impl std::fmt::Display for BackendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unavailable { backend } => write!(f, "backend unavailable: {backend}"),
+            Self::InvalidConfiguration { backend, detail } => {
+                write!(f, "invalid backend configuration for {backend}: {detail}")
+            }
             Self::AllocationFailed { device, detail } => {
                 write!(f, "allocation failed on {device}: {detail}")
             }
@@ -250,6 +255,13 @@ mod tests {
             backend: "tpu".to_owned(),
         };
         assert_eq!(err.to_string(), "backend unavailable: tpu");
+
+        let err = BackendError::InvalidConfiguration {
+            backend: "cpu".to_owned(),
+            detail: "device count must be at least 1".to_owned(),
+        };
+        assert!(err.to_string().contains("invalid backend configuration"));
+        assert!(err.to_string().contains("device count must be at least 1"));
 
         let err = BackendError::AllocationFailed {
             device: DeviceId(0),
