@@ -297,6 +297,26 @@ fn switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
     )
 }
 
+fn switch_control_flow_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3)],
+        vec![Equation {
+            primitive: Primitive::Switch,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec::smallvec![VarId(3)],
+            params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
+            effects: vec![],
+            sub_jaxprs: vec![
+                switch_branch_identity_jaxpr(),
+                switch_branch_self_binary_jaxpr(Primitive::Add),
+                switch_branch_self_binary_jaxpr(Primitive::Mul),
+            ],
+        }],
+    )
+}
+
 fn run_grad_cond_case(x: f64, pred: bool) -> f64 {
     let response = dispatch(make_request(
         grad_cond_jaxpr(),
@@ -571,31 +591,9 @@ fn test_fori_loop_functional() {
 
 #[test]
 fn test_switch_dispatch() {
-    // Switch: select branch by index.
-    // Construct IR: switch(index, x) where branch 0 => x, branch 1 => x+x, branch 2 => x*x.
-    use smallvec::smallvec;
-
-    let switch_jaxpr = Jaxpr::new(
-        vec![VarId(1), VarId(2)],
-        vec![],
-        vec![VarId(3)],
-        vec![Equation {
-            primitive: Primitive::Switch,
-            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
-            outputs: smallvec![VarId(3)],
-            params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
-            effects: vec![],
-            sub_jaxprs: vec![
-                switch_branch_identity_jaxpr(),
-                switch_branch_self_binary_jaxpr(Primitive::Add),
-                switch_branch_self_binary_jaxpr(Primitive::Mul),
-            ],
-        }],
-    );
-
     for (branch_idx, x, expected) in [(0_i64, 5_i64, 5_i64), (1, 5, 10), (2, 5, 25)] {
         let response = dispatch(make_request(
-            switch_jaxpr.clone(),
+            switch_control_flow_jaxpr(),
             vec![Value::scalar_i64(branch_idx), Value::scalar_i64(x)],
             &[],
             BTreeMap::new(),
@@ -606,6 +604,52 @@ fn test_switch_dispatch() {
             .expect("switch output should be i64");
         assert_eq!(result, expected, "switch branch {branch_idx} with x={x}");
     }
+}
+
+#[test]
+fn test_vmap_switch_dispatch_with_batched_indices() {
+    let response = dispatch(make_request(
+        switch_control_flow_jaxpr(),
+        vec![
+            Value::vector_i64(&[0, 1, 2]).expect("branch index vector should build"),
+            Value::vector_i64(&[5, 6, 7]).expect("operand vector should build"),
+        ],
+        &[Transform::Vmap],
+        BTreeMap::new(),
+    ))
+    .expect("vmap(switch) dispatch should succeed for batched indices");
+    let result = response.outputs[0]
+        .as_tensor()
+        .expect("vmap(switch) output should be a tensor");
+    let values: Vec<i64> = result
+        .elements
+        .iter()
+        .map(|lit| lit.as_i64().expect("i64 element"))
+        .collect();
+    assert_eq!(values, vec![5, 12, 49]);
+}
+
+#[test]
+fn test_vmap_switch_dispatch_with_scalar_index_and_batched_operand() {
+    let response = dispatch(make_request(
+        switch_control_flow_jaxpr(),
+        vec![
+            Value::scalar_i64(1),
+            Value::vector_i64(&[2, 3, 4]).expect("operand vector should build"),
+        ],
+        &[Transform::Vmap],
+        BTreeMap::from([("vmap_in_axes".to_owned(), "none,0".to_owned())]),
+    ))
+    .expect("vmap(switch) dispatch should batch the selected branch for a scalar index");
+    let result = response.outputs[0]
+        .as_tensor()
+        .expect("vmap(switch) output should be a tensor");
+    let values: Vec<i64> = result
+        .elements
+        .iter()
+        .map(|lit| lit.as_i64().expect("i64 element"))
+        .collect();
+    assert_eq!(values, vec![4, 6, 8]);
 }
 
 #[test]

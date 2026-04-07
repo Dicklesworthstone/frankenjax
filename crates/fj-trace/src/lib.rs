@@ -257,6 +257,7 @@ struct TraceEquation {
     inputs: Vec<TracerId>,
     outputs: Vec<TracerId>,
     params: BTreeMap<String, String>,
+    sub_jaxprs: Vec<Jaxpr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -399,6 +400,40 @@ impl SimpleTraceContext {
             .pop()
             .ok_or(TraceError::CompositionViolation)?;
         self.build_closed_jaxpr(frame)
+    }
+
+    pub fn process_control_flow_primitive(
+        &mut self,
+        primitive: Primitive,
+        input_ids: &[TracerId],
+        output_avals: Vec<ShapedArray>,
+        mut params: BTreeMap<String, String>,
+        sub_jaxprs: Vec<Jaxpr>,
+    ) -> Result<Vec<TracerId>, TraceError> {
+        for tracer_id in input_ids {
+            let _ = self.tracer_aval(*tracer_id)?;
+        }
+
+        if primitive == Primitive::Switch && !params.contains_key("num_branches") {
+            params.insert("num_branches".to_owned(), sub_jaxprs.len().to_string());
+        }
+
+        let output_ids = output_avals
+            .into_iter()
+            .map(|aval| self.allocate_tracer(aval))
+            .collect::<Vec<_>>();
+
+        let frame = self.active_frame_mut();
+        frame.equations.push(TraceEquation {
+            primitive,
+            inputs: input_ids.to_vec(),
+            outputs: output_ids.clone(),
+            params,
+            sub_jaxprs,
+        });
+        frame.last_output_ids = output_ids.clone();
+
+        Ok(output_ids)
     }
 
     fn active_frame(&self) -> &TraceFrame {
@@ -1203,7 +1238,7 @@ impl SimpleTraceContext {
                 outputs: out_vars,
                 params: eqn.params.clone(),
                 effects: vec![],
-                sub_jaxprs: vec![],
+                sub_jaxprs: eqn.sub_jaxprs.clone(),
             });
         }
 
@@ -1294,6 +1329,7 @@ impl TraceContext for SimpleTraceContext {
             inputs: input_ids.to_vec(),
             outputs: output_ids.clone(),
             params,
+            sub_jaxprs: vec![],
         });
         frame.last_output_ids = output_ids.clone();
 
@@ -2864,7 +2900,9 @@ mod tests {
     use super::{
         JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceToJaxpr, TracerId,
     };
-    use fj_core::{Atom, DType, Literal, Primitive, Shape, TensorValue, Value};
+    use fj_core::{
+        Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId,
+    };
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
     use std::any::Any;
@@ -5025,6 +5063,69 @@ mod tests {
                 Ok(Vec::new())
             },
         );
+    }
+
+    fn make_switch_branch_identity_jaxpr() -> Jaxpr {
+        Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
+    }
+
+    fn make_switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec::smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn test_trace_preserves_switch_sub_jaxprs_for_control_flow_ir() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+        ]);
+        let output_ids = ctx
+            .process_control_flow_primitive(
+                Primitive::Switch,
+                &[TracerId(1), TracerId(2)],
+                vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::scalar(),
+                }],
+                BTreeMap::new(),
+                vec![
+                    make_switch_branch_identity_jaxpr(),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Add),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Mul),
+                ],
+            )
+            .expect("control-flow switch tracing should succeed");
+        assert_eq!(output_ids.len(), 1);
+
+        let closed = ctx.finalize().expect("trace should finalize");
+        assert_eq!(closed.jaxpr.equations.len(), 1);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Switch);
+        assert_eq!(closed.jaxpr.equations[0].sub_jaxprs.len(), 3);
+
+        let outputs = fj_interpreters::eval_jaxpr(
+            &closed.jaxpr,
+            &[Value::scalar_i64(2), Value::scalar_i64(7)],
+        )
+        .expect("preserved switch sub_jaxprs should execute through the interpreter");
+        assert_eq!(outputs, vec![Value::scalar_i64(49)]);
     }
 
     // ── make_jaxpr tests ─────────────────────────────────────────────

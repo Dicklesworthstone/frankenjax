@@ -4,7 +4,8 @@
 //! dimension metadata through primitives via per-primitive batching rules,
 //! achieving O(1) vectorized execution matching JAX's `BatchTrace` semantics.
 
-use fj_core::{Atom, Jaxpr, Primitive, Shape, TensorValue, Value, VarId};
+use fj_core::{Atom, Equation, Jaxpr, Primitive, Shape, TensorValue, Value, VarId};
+use fj_interpreters::eval_jaxpr_with_consts;
 use fj_lax::{eval_primitive, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
@@ -1524,6 +1525,199 @@ fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
     }
 }
 
+fn scalar_to_i64(value: &Value, primitive: Primitive) -> Result<i64, BatchError> {
+    match value {
+        Value::Scalar(fj_core::Literal::I64(v)) => Ok(*v),
+        Value::Scalar(fj_core::Literal::U32(v)) => Ok(i64::from(*v)),
+        Value::Scalar(fj_core::Literal::U64(v)) => i64::try_from(*v).map_err(|_| {
+            BatchError::InterpreterError(format!(
+                "{} index {} does not fit in i64",
+                primitive.as_str(),
+                v
+            ))
+        }),
+        Value::Scalar(fj_core::Literal::Bool(v)) => Ok(i64::from(*v)),
+        other => Err(BatchError::InterpreterError(format!(
+            "{} index must be integer, got {:?}",
+            primitive.as_str(),
+            other.dtype()
+        ))),
+    }
+}
+
+fn batch_size_from_inputs(inputs: &[BatchTracer]) -> Result<Option<usize>, BatchError> {
+    for tracer in inputs {
+        if let Some(batch_dim) = tracer.batch_dim {
+            return Ok(Some(get_batch_size(&tracer.value, batch_dim)?));
+        }
+    }
+    Ok(None)
+}
+
+fn broadcast_unbatched_outputs(
+    outputs: Vec<BatchTracer>,
+    batch_size: Option<usize>,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let Some(batch_size) = batch_size else {
+        return Ok(outputs);
+    };
+
+    outputs
+        .into_iter()
+        .map(|tracer| match tracer.batch_dim {
+            Some(_) => Ok(tracer),
+            None => Ok(BatchTracer::batched(
+                broadcast_unbatched(&tracer.value, batch_size, 0)?,
+                0,
+            )),
+        })
+        .collect()
+}
+
+fn select_switch_branch(equation: &Equation, index: i64) -> Result<&Jaxpr, BatchError> {
+    let expected_branches = equation
+        .params
+        .get("num_branches")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(equation.sub_jaxprs.len());
+    if expected_branches != equation.sub_jaxprs.len() {
+        return Err(BatchError::InterpreterError(format!(
+            "switch declares {expected_branches} branches but carries {} sub_jaxprs",
+            equation.sub_jaxprs.len()
+        )));
+    }
+    if index < 0 || index as usize >= equation.sub_jaxprs.len() {
+        return Err(BatchError::InterpreterError(format!(
+            "switch index {index} out of bounds for {} branches",
+            equation.sub_jaxprs.len()
+        )));
+    }
+    Ok(&equation.sub_jaxprs[index as usize])
+}
+
+fn batch_switch_sub_jaxprs(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+) -> Result<Vec<BatchTracer>, BatchError> {
+    if inputs.is_empty() {
+        return Err(BatchError::InterpreterError(
+            "switch with sub_jaxprs requires at least the index input".to_owned(),
+        ));
+    }
+
+    let batch_size = batch_size_from_inputs(inputs)?;
+
+    if inputs[0].batch_dim.is_none() {
+        let index = scalar_to_i64(&inputs[0].value, Primitive::Switch)?;
+        let selected_branch = select_switch_branch(equation, index)?;
+        let provided_bindings = &inputs[1..];
+        let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
+        if provided_bindings.len() != expected_bindings {
+            return Err(BatchError::InterpreterError(format!(
+                "switch selected branch expects {expected_bindings} bindings, got {}",
+                provided_bindings.len()
+            )));
+        }
+        let (const_values, branch_args) =
+            provided_bindings.split_at(selected_branch.constvars.len());
+        let outputs = batch_eval_jaxpr_with_consts(selected_branch, const_values, branch_args)?;
+        return broadcast_unbatched_outputs(outputs, batch_size);
+    }
+
+    let batch_size = batch_size.ok_or_else(|| {
+        BatchError::InterpreterError(
+            "switch with batched index requires a resolvable batch size".to_owned(),
+        )
+    })?;
+    let values: Result<Vec<Value>, BatchError> = inputs
+        .iter()
+        .map(|tracer| match tracer.batch_dim {
+            Some(batch_dim) => move_batch_dim_to_front(&tracer.value, batch_dim),
+            None => broadcast_unbatched(&tracer.value, batch_size, 0),
+        })
+        .collect();
+    let values = values?;
+
+    let mut per_output: Option<Vec<Vec<Value>>> = None;
+    for batch_idx in 0..batch_size {
+        let slices: Result<Vec<Value>, BatchError> = values
+            .iter()
+            .map(|value| match value {
+                Value::Tensor(tensor) => tensor
+                    .slice_axis0(batch_idx)
+                    .map_err(|e| BatchError::TensorError(e.to_string())),
+                Value::Scalar(_) => Ok(value.clone()),
+            })
+            .collect();
+        let slices = slices?;
+        let index = scalar_to_i64(&slices[0], Primitive::Switch)?;
+        let selected_branch = select_switch_branch(equation, index)?;
+        let provided_bindings = &slices[1..];
+        let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
+        if provided_bindings.len() != expected_bindings {
+            return Err(BatchError::InterpreterError(format!(
+                "switch selected branch expects {expected_bindings} bindings, got {}",
+                provided_bindings.len()
+            )));
+        }
+        let (const_values, branch_args) =
+            provided_bindings.split_at(selected_branch.constvars.len());
+        let outputs = eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
+            .map_err(|e| BatchError::InterpreterError(e.to_string()))?;
+
+        let buckets = per_output.get_or_insert_with(|| vec![Vec::new(); outputs.len()]);
+        if buckets.len() != outputs.len() {
+            return Err(BatchError::InterpreterError(format!(
+                "switch returned inconsistent output arity across batch slices: expected {}, got {}",
+                buckets.len(),
+                outputs.len()
+            )));
+        }
+        for (bucket, output) in buckets.iter_mut().zip(outputs) {
+            bucket.push(output);
+        }
+    }
+
+    per_output
+        .unwrap_or_default()
+        .into_iter()
+        .map(|outputs| {
+            TensorValue::stack_axis0(&outputs)
+                .map(|tensor| BatchTracer::batched(Value::Tensor(tensor), 0))
+                .map_err(|e| BatchError::TensorError(e.to_string()))
+        })
+        .collect()
+}
+
+fn batch_eval_equation_outputs(
+    equation: &Equation,
+    env: &FxHashMap<VarId, BatchTracer>,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let inputs: Result<Vec<BatchTracer>, BatchError> = equation
+        .inputs
+        .iter()
+        .map(|atom| match atom {
+            Atom::Var(var) => env.get(var).cloned().ok_or_else(|| {
+                BatchError::InterpreterError(format!("missing variable v{}", var.0))
+            }),
+            Atom::Lit(lit) => Ok(BatchTracer::unbatched(Value::Scalar(*lit))),
+        })
+        .collect();
+    let inputs = inputs?;
+
+    if equation.sub_jaxprs.is_empty() {
+        return apply_batch_rule_multi(equation.primitive, &inputs, &equation.params);
+    }
+
+    match equation.primitive {
+        Primitive::Switch => batch_switch_sub_jaxprs(equation, &inputs),
+        primitive => Err(BatchError::InterpreterError(format!(
+            "sub_jaxpr execution is not implemented for {} in BatchTrace",
+            primitive.as_str()
+        ))),
+    }
+}
+
 // ── Batch Evaluation of a Jaxpr ────────────────────────────────────
 
 /// Evaluate a Jaxpr with batched inputs, propagating batch dimensions
@@ -1575,19 +1769,7 @@ pub fn batch_eval_jaxpr_with_consts(
     }
 
     for eqn in &jaxpr.equations {
-        let inputs: Result<Vec<BatchTracer>, BatchError> = eqn
-            .inputs
-            .iter()
-            .map(|atom| match atom {
-                Atom::Var(var) => env.get(var).cloned().ok_or_else(|| {
-                    BatchError::InterpreterError(format!("missing variable v{}", var.0))
-                }),
-                Atom::Lit(lit) => Ok(BatchTracer::unbatched(Value::Scalar(*lit))),
-            })
-            .collect();
-        let inputs = inputs?;
-
-        let results = apply_batch_rule_multi(eqn.primitive, &inputs, &eqn.params)?;
+        let results = batch_eval_equation_outputs(eqn, &env)?;
         if results.len() != eqn.outputs.len() {
             return Err(BatchError::InterpreterError(format!(
                 "primitive {} returned {} outputs for {} bindings",
@@ -1743,6 +1925,46 @@ mod tests {
             Value::Tensor(t) => t.elements.iter().map(|lit| lit.as_i64().unwrap()).collect(),
             Value::Scalar(lit) => vec![lit.as_i64().unwrap()],
         }
+    }
+
+    fn make_switch_branch_identity_jaxpr() -> Jaxpr {
+        Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
+    }
+
+    fn make_switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_switch_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(0), VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Switch,
+                inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
+                effects: vec![],
+                sub_jaxprs: vec![
+                    make_switch_branch_identity_jaxpr(),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Add),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Mul),
+                ],
+            }],
+        )
     }
 
     // ── Unary Elementwise Tests ────────────────────────────────
@@ -2081,6 +2303,38 @@ mod tests {
         .unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![11, 11, 11]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_switch_sub_jaxprs_scalar_index_batches_selected_branch() {
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::unbatched(Value::scalar_i64(1)),
+                BatchTracer::batched(make_i64_vector(&[2, 3, 4]), 0),
+            ],
+        )
+        .expect("switch with sub_jaxprs should batch the selected branch");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![4, 6, 8]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_switch_sub_jaxprs_batched_index_selects_per_element_branch() {
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::batched(make_i64_vector(&[0, 1, 2]), 0),
+                BatchTracer::batched(make_i64_vector(&[5, 6, 7]), 0),
+            ],
+        )
+        .expect("batched switch index should select branches per element");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![5, 12, 49]);
     }
 
     // ── Control Flow Batching Tests ───────────────────────────
