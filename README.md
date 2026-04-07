@@ -8,10 +8,10 @@
   Semantic fidelity. Mathematical rigor. Operational safety. Profile-proven performance.
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
-  ![Tests](https://img.shields.io/badge/tests-1867_passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2179_passing-brightgreen)
   ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
   ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
-  ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-834_cases-purple)
+  ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-846_cases-purple)
 </div>
 
 ---
@@ -32,10 +32,10 @@
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
 | E-graph equality saturation optimizer (87 algebraic rewrite rules) | All green |
-| 834 JAX oracle fixture cases for differential conformance | All green |
+| 846 JAX oracle fixture cases for differential conformance | All green |
 | RaptorQ erasure-coded durability for all long-lived artifacts | All green |
 | Strict/Hardened compatibility-security mode split | All green |
-| 1,867 `#[test]` cases + proptest suites | All passing |
+| 2,179 `#[test]` cases + proptest suites | All passing |
 
 ## Comparison vs Alternatives
 
@@ -45,7 +45,7 @@
 | **Runtime dependency** | None (standalone) | Python + XLA + CUDA | Python + CUDA | LLVM toolchain | NumPy |
 | **Transform composition** | Full (`jit`/`grad`/`vmap`) | Full | Limited (`torch.func`) | `grad` only | `grad` only |
 | **Verifiable proofs** | Trace Transform Ledger | No | No | No | No |
-| **Oracle conformance** | 834 JAX-verified cases | N/A (is the oracle) | No | No | No |
+| **Oracle conformance** | 846 JAX-verified cases | N/A (is the oracle) | No | No | No |
 | **Artifact durability** | RaptorQ sidecars | No | No | No | No |
 | **E-graph optimization** | 87 rules, equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
 | **Embeddable** | Yes (Rust library + C FFI) | No (Python required) | Partially (libtorch) | Yes (LLVM plugin) | No |
@@ -118,7 +118,7 @@ mul_vjp for v2:  g_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
 Every transform composition produces a verifiable proof artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL).
 
 **2. Differential conformance, not reimplementation faith.**
-Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 834 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
+Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 846 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
 
 **3. Strict/Hardened mode split.**
 Strict mode maximizes observable compatibility. Hardened mode adds safety guards with bounded defensive recovery. You choose the tradeoff per invocation.
@@ -172,14 +172,14 @@ Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 | `fj-ledger` | Decision/evidence ledger, loss-matrix actions, audit trail | Yes |
 | `fj-runtime` | Tensor-aware runtime value model, optional async integration | Yes |
 | `fj-interpreters` | Scoped primitive interpreter, partial evaluation, staging | Yes |
-| `fj-conformance` | Differential conformance harness, 834 oracle fixtures, durability | 200+ |
+| `fj-conformance` | Differential conformance harness, 846 oracle fixtures, durability | 200+ |
 | `fj-backend-cpu` | Dependency-wave parallel executor (rayon) | 40 |
 | `fj-ffi` | C FFI surface (only crate permitted `unsafe`) | Yes |
 | `fj-test-utils` | Shared test scaffolding, fixture helpers | Yes |
 
 ## Current Status
 
-**80,872 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
+**93,592 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
 
 - **110 primitive operations** covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions
 - **11 DTypes** (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128) with JAX-verified type promotion rules
@@ -189,8 +189,8 @@ Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 - **E-graph optimizer**: 87 algebraic rewrite rules with equality saturation, verified to preserve program semantics
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
 - **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support
-- **834 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
-- **1,867 `#[test]` cases** plus proptest/property-based suites
+- **846 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
+- **2,179 `#[test]` cases** plus proptest/property-based suites
 - **RaptorQ durability pipeline** for all long-lived evidence artifacts
 
 ## The Canonical IR: Jaxpr
@@ -321,7 +321,7 @@ This is a formal audit trail, not a debugging log. It answers "why did the syste
 
 FrankenJAX uses **four layers of correctness assurance**, each catching different classes of bugs:
 
-**Layer 1: Oracle conformance (834 cases)**
+**Layer 1: Oracle conformance (846 cases)**
 Capture expected outputs from real JAX, replay against FrankenJAX. Catches: wrong evaluation logic, incorrect primitive semantics, dtype mismatches.
 
 **Layer 2: Numerical AD verification (9 tests)**
@@ -962,7 +962,7 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 A: JAX requires Python + XLA + CUDA/TPU. FrankenJAX gives you the mathematical transform semantics in a standalone Rust library with no Python dependency.
 
 **Q: How do you verify correctness without running JAX?**
-A: We capture oracle fixtures from real JAX 0.9.2 (834 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
+A: We capture oracle fixtures from real JAX 0.9.2 (846 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
 
 **Q: Is the AD (automatic differentiation) complete?**
 A: Yes. All 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Numerical verification tests confirm correctness via finite-difference comparison.

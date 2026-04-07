@@ -853,16 +853,14 @@ fn value_shape_fingerprint(v: &Value) -> String {
     }
 }
 
-/// Evaluate Switch: multi-branch conditional.
+/// Evaluate the primitive-form `Switch`: select among precomputed branch values.
 ///
-/// inputs: [index, operand, branch0_result, branch1_result, ...]
+/// inputs: [index, branch0_result, branch1_result, ...]
 ///   - index: integer selecting which branch to take
-///   - operand: passed to the selected branch (unused in primitive form)
 ///   - branch results: pre-computed results for each branch
 ///
-/// In primitive form (no sub_jaxprs), the branches are pre-evaluated and
-/// switch simply selects the correct output by index. With sub_jaxprs,
-/// only the selected branch would be evaluated.
+/// Equation-level control-flow execution for `Switch` with `sub_jaxprs`
+/// happens in the Jaxpr interpreter/backend, not here.
 ///
 /// params:
 ///   - "num_branches": number of branches (required)

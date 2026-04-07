@@ -273,23 +273,15 @@ fn dtype_promotion_tensor_level() {
         }
     }
 
-    // Report results — some half-precision cases may not match yet
-    // This test documents current coverage rather than asserting perfection
     println!(
         "Tensor dtype promotion: {}/{tested} passed",
         tested - mismatches.len()
     );
-    // Assert at least 50% pass rate for tensor dtype promotion
-    let pass_rate = if tested > 0 {
-        (tested - mismatches.len()) as f64 / tested as f64
-    } else {
-        1.0
-    };
     assert!(
-        pass_rate >= 0.5,
-        "tensor dtype promotion pass rate too low: {:.1}% ({}/{tested})",
-        pass_rate * 100.0,
-        tested - mismatches.len()
+        mismatches.is_empty(),
+        "tensor dtype promotion mismatches: {}/{tested}\n{}",
+        mismatches.len(),
+        mismatches.join("\n")
     );
 }
 

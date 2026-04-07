@@ -901,8 +901,11 @@ pub struct Equation {
     pub params: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<String>,
-    /// Nested sub-jaxprs for control flow primitives (Cond branches, Scan/While bodies).
-    /// For Cond: [true_branch, false_branch]. For Scan/While: [body].
+    /// Nested sub-jaxprs for control-flow primitives.
+    /// For Cond: [true_branch, false_branch].
+    /// For Scan: [body].
+    /// For While: [cond, body].
+    /// For Switch: [branch0, branch1, ...].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_jaxprs: Vec<Jaxpr>,
 }

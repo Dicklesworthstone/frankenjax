@@ -277,6 +277,26 @@ fn run_while_case(
         .expect("while output should be i64")
 }
 
+fn switch_branch_identity_jaxpr() -> Jaxpr {
+    Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
+}
+
+fn switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        }],
+    )
+}
+
 fn run_grad_cond_case(x: f64, pred: bool) -> f64 {
     let response = dispatch(make_request(
         grad_cond_jaxpr(),
@@ -552,8 +572,7 @@ fn test_fori_loop_functional() {
 #[test]
 fn test_switch_dispatch() {
     // Switch: select branch by index.
-    // Construct IR: switch(index, x) where branch 0 => x, branch 1 => x+x, branch 2 => x*x
-    // Test with branch 1: x=5 => 10
+    // Construct IR: switch(index, x) where branch 0 => x, branch 1 => x+x, branch 2 => x*x.
     use smallvec::smallvec;
 
     let switch_jaxpr = Jaxpr::new(
@@ -566,7 +585,11 @@ fn test_switch_dispatch() {
             outputs: smallvec![VarId(3)],
             params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
             effects: vec![],
-            sub_jaxprs: vec![],
+            sub_jaxprs: vec![
+                switch_branch_identity_jaxpr(),
+                switch_branch_self_binary_jaxpr(Primitive::Add),
+                switch_branch_self_binary_jaxpr(Primitive::Mul),
+            ],
         }],
     );
 
@@ -576,19 +599,12 @@ fn test_switch_dispatch() {
             vec![Value::scalar_i64(branch_idx), Value::scalar_i64(x)],
             &[],
             BTreeMap::new(),
-        ));
-        match response {
-            Ok(r) => {
-                let result = r.outputs[0]
-                    .as_i64_scalar()
-                    .expect("switch output should be i64");
-                assert_eq!(result, expected, "switch branch {branch_idx} with x={x}");
-            }
-            Err(e) => {
-                // Switch may not be fully wired in dispatch; document the gap
-                eprintln!("switch dispatch branch {branch_idx} unavailable in dispatch: {e}");
-            }
-        }
+        ))
+        .expect("switch dispatch should succeed");
+        let result = response.outputs[0]
+            .as_i64_scalar()
+            .expect("switch output should be i64");
+        assert_eq!(result, expected, "switch branch {branch_idx} with x={x}");
     }
 }
 

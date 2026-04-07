@@ -3,7 +3,7 @@
 pub mod partial_eval;
 pub mod staging;
 
-use fj_core::{Atom, Jaxpr, Value, VarId};
+use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Value, VarId};
 use fj_lax::{EvalError, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 
@@ -72,6 +72,130 @@ pub fn eval_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, Interpret
     eval_jaxpr_with_consts(jaxpr, &[], args)
 }
 
+fn resolve_equation_inputs(
+    equation: &Equation,
+    env: &FxHashMap<VarId, Value>,
+) -> Result<Vec<Value>, InterpreterError> {
+    let mut resolved = Vec::with_capacity(equation.inputs.len());
+    for atom in &equation.inputs {
+        match atom {
+            Atom::Var(var) => {
+                let value = env
+                    .get(var)
+                    .cloned()
+                    .ok_or(InterpreterError::MissingVariable(*var))?;
+                resolved.push(value);
+            }
+            Atom::Lit(lit) => resolved.push(Value::Scalar(*lit)),
+        }
+    }
+    Ok(resolved)
+}
+
+fn evaluate_switch_sub_jaxprs(
+    equation: &Equation,
+    resolved: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
+    let index = match resolved.first() {
+        Some(Value::Scalar(Literal::I64(value))) => *value,
+        Some(Value::Scalar(Literal::U32(value))) => i64::from(*value),
+        Some(Value::Scalar(Literal::U64(value))) => i64::try_from(*value).map_err(|_| {
+            InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::Switch,
+                detail: format!("switch index {value} does not fit in i64"),
+            })
+        })?,
+        Some(Value::Scalar(Literal::Bool(value))) => i64::from(*value),
+        Some(other) => {
+            return Err(InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::Switch,
+                detail: format!("switch index must be integer, got {:?}", other.dtype()),
+            }));
+        }
+        None => {
+            return Err(InterpreterError::Primitive(EvalError::ArityMismatch {
+                primitive: Primitive::Switch,
+                expected: 1,
+                actual: 0,
+            }));
+        }
+    };
+
+    let expected_branches = equation
+        .params
+        .get("num_branches")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(equation.sub_jaxprs.len());
+    if expected_branches != equation.sub_jaxprs.len() {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Switch,
+            detail: format!(
+                "switch declares {expected_branches} branches but carries {} sub_jaxprs",
+                equation.sub_jaxprs.len()
+            ),
+        }));
+    }
+    if index < 0 || index as usize >= equation.sub_jaxprs.len() {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Switch,
+            detail: format!(
+                "switch index {index} out of bounds for {} branches",
+                equation.sub_jaxprs.len()
+            ),
+        }));
+    }
+
+    let selected_branch = &equation.sub_jaxprs[index as usize];
+    let provided_bindings = &resolved[1..];
+    let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
+    if provided_bindings.len() != expected_bindings {
+        return Err(InterpreterError::InputArity {
+            expected: expected_bindings,
+            actual: provided_bindings.len(),
+        });
+    }
+
+    let (const_values, branch_args) = provided_bindings.split_at(selected_branch.constvars.len());
+    eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
+}
+
+/// Evaluate a single equation against the current environment.
+///
+/// This handles equation-level control-flow semantics that require access to
+/// `sub_jaxprs` and therefore cannot be expressed via primitive evaluation
+/// alone.
+pub fn eval_equation_outputs(
+    equation: &Equation,
+    env: &FxHashMap<VarId, Value>,
+) -> Result<Vec<Value>, InterpreterError> {
+    let outputs = if equation.sub_jaxprs.is_empty() {
+        let resolved = resolve_equation_inputs(equation, env)?;
+        eval_primitive_multi(equation.primitive, &resolved, &equation.params)?
+    } else {
+        match equation.primitive {
+            Primitive::Switch => {
+                let resolved = resolve_equation_inputs(equation, env)?;
+                evaluate_switch_sub_jaxprs(equation, &resolved)?
+            }
+            primitive => {
+                return Err(InterpreterError::Primitive(EvalError::Unsupported {
+                    primitive,
+                    detail: "sub_jaxpr execution is not implemented for this primitive".to_owned(),
+                }));
+            }
+        }
+    };
+
+    if outputs.len() != equation.outputs.len() {
+        return Err(InterpreterError::UnexpectedOutputArity {
+            primitive: equation.primitive,
+            expected: equation.outputs.len(),
+            actual: outputs.len(),
+        });
+    }
+    Ok(outputs)
+}
+
 pub fn eval_jaxpr_with_consts(
     jaxpr: &Jaxpr,
     const_values: &[Value],
@@ -104,29 +228,7 @@ pub fn eval_jaxpr_with_consts(
     }
 
     for eqn in &jaxpr.equations {
-        let mut resolved = Vec::with_capacity(eqn.inputs.len());
-        for atom in &eqn.inputs {
-            match atom {
-                Atom::Var(var) => {
-                    let value = env
-                        .get(var)
-                        .cloned()
-                        .ok_or(InterpreterError::MissingVariable(*var))?;
-                    resolved.push(value);
-                }
-                Atom::Lit(lit) => resolved.push(Value::Scalar(*lit)),
-            }
-        }
-
-        let outputs = eval_primitive_multi(eqn.primitive, &resolved, &eqn.params)?;
-        if outputs.len() != eqn.outputs.len() {
-            return Err(InterpreterError::UnexpectedOutputArity {
-                primitive: eqn.primitive,
-                expected: eqn.outputs.len(),
-                actual: outputs.len(),
-            });
-        }
-
+        let outputs = eval_equation_outputs(eqn, &env)?;
         for (out_var, output) in eqn.outputs.iter().zip(outputs) {
             env.insert(*out_var, output);
         }
@@ -259,6 +361,69 @@ mod tests {
         let r = outputs[1].as_tensor().expect("r should be tensor");
         assert_eq!(q.shape, Shape { dims: vec![2, 2] });
         assert_eq!(r.shape, Shape { dims: vec![2, 2] });
+    }
+
+    fn make_switch_branch_identity_jaxpr() -> Jaxpr {
+        Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
+    }
+
+    fn make_switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_switch_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Switch,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
+                sub_jaxprs: vec![
+                    make_switch_branch_identity_jaxpr(),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Add),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Mul),
+                ],
+                effects: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn eval_switch_with_sub_jaxprs_selects_the_requested_branch() {
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let cases = [(0_i64, 5_i64, 5_i64), (1, 5, 10), (2, 5, 25)];
+        for (branch_idx, operand, expected) in cases {
+            let outputs = eval_jaxpr(
+                &jaxpr,
+                &[Value::scalar_i64(branch_idx), Value::scalar_i64(operand)],
+            )
+            .expect("switch with sub_jaxprs should evaluate");
+            assert_eq!(outputs, vec![Value::scalar_i64(expected)]);
+        }
+    }
+
+    #[test]
+    fn eval_switch_with_sub_jaxprs_rejects_out_of_bounds_index() {
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let err = eval_jaxpr(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(5)])
+            .expect_err("out-of-bounds switch index should fail");
+        let msg = err.to_string();
+        assert!(msg.contains("out of bounds"), "unexpected error: {msg}");
     }
 
     #[test]

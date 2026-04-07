@@ -7,8 +7,7 @@
 //! Contract: p2c006.strict.inv001 (CPU always available).
 
 use fj_core::{Atom, DType, Jaxpr, Value, VarId};
-use fj_interpreters::InterpreterError;
-use fj_lax::{eval_primitive, eval_primitive_multi};
+use fj_interpreters::{InterpreterError, eval_equation_outputs};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
@@ -32,40 +31,11 @@ fn first_missing_input_var(
     })
 }
 
-fn resolve_equation_inputs(
-    equation: &fj_core::Equation,
-    env: &HashMap<VarId, Value>,
-) -> Result<Vec<Value>, InterpreterError> {
-    let mut resolved = Vec::with_capacity(equation.inputs.len());
-    for atom in &equation.inputs {
-        match atom {
-            Atom::Var(var) => {
-                let value = env
-                    .get(var)
-                    .cloned()
-                    .ok_or(InterpreterError::MissingVariable(*var))?;
-                resolved.push(value);
-            }
-            Atom::Lit(lit) => resolved.push(Value::Scalar(*lit)),
-        }
-    }
-    Ok(resolved)
-}
-
 fn evaluate_equation_multi(
     equation: &fj_core::Equation,
     env: &HashMap<VarId, Value>,
 ) -> Result<Vec<Value>, InterpreterError> {
-    let resolved = resolve_equation_inputs(equation, env)?;
-    let outputs = eval_primitive_multi(equation.primitive, &resolved, &equation.params)?;
-    if outputs.len() != equation.outputs.len() {
-        return Err(InterpreterError::UnexpectedOutputArity {
-            primitive: equation.primitive,
-            expected: equation.outputs.len(),
-            actual: outputs.len(),
-        });
-    }
-    Ok(outputs)
+    eval_equation_outputs(equation, env)
 }
 
 fn evaluate_equation(
@@ -79,9 +49,15 @@ fn evaluate_equation(
             actual: equation.outputs.len(),
         });
     }
-    let resolved = resolve_equation_inputs(equation, env)?;
-    let output = eval_primitive(equation.primitive, &resolved, &equation.params)?;
-    Ok(output)
+    let mut outputs = evaluate_equation_multi(equation, env)?;
+    debug_assert_eq!(
+        outputs.len(),
+        1,
+        "single-output path should return one value"
+    );
+    Ok(outputs
+        .pop()
+        .expect("single-output path should produce exactly one value"))
 }
 
 fn evaluate_jaxpr_parallel_inner(
@@ -372,6 +348,46 @@ mod tests {
         )
     }
 
+    fn make_switch_branch_identity_jaxpr() -> Jaxpr {
+        Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
+    }
+
+    fn make_switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(1))].into(),
+                outputs: vec![VarId(2)].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_switch_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Switch,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Var(VarId(2))].into(),
+                outputs: vec![VarId(3)].into(),
+                params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
+                effects: vec![],
+                sub_jaxprs: vec![
+                    make_switch_branch_identity_jaxpr(),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Add),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Mul),
+                ],
+            }],
+        )
+    }
+
     #[test]
     fn cpu_backend_name() {
         let backend = CpuBackend::new();
@@ -496,6 +512,20 @@ mod tests {
             .expect("interpreter execution should succeed");
 
         assert_eq!(backend_outputs, interpreter_outputs);
+    }
+
+    #[test]
+    fn cpu_executes_switch_with_sub_jaxprs() {
+        let backend = CpuBackend::new();
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let outputs = backend
+            .execute(
+                &jaxpr,
+                &[Value::scalar_i64(2), Value::scalar_i64(7)],
+                DeviceId(0),
+            )
+            .expect("switch with sub_jaxprs should execute on CPU");
+        assert_eq!(outputs, vec![Value::scalar_i64(49)]);
     }
 
     #[test]
