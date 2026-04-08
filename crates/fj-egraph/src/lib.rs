@@ -127,6 +127,9 @@ pub enum EGraphLoweringError {
         primitive: Primitive,
         reason: ExclusionReason,
     },
+    MissingLoweringCase {
+        primitive: Primitive,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,6 +214,11 @@ impl std::fmt::Display for EGraphLoweringError {
                 primitive.as_str(),
                 reason.category(),
                 reason.detail()
+            ),
+            Self::MissingLoweringCase { primitive } => write!(
+                f,
+                "primitive {} is permitted for egraph lowering but has no lowering case",
+                primitive.as_str()
             ),
         }
     }
@@ -504,7 +512,10 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
         };
 
         if can_cancel {
-            let previous = equations.pop().expect("previous equation must exist");
+            let Some(previous) = equations.pop() else {
+                equations.push(rewritten);
+                continue;
+            };
             let source = match previous.inputs[0] {
                 Atom::Var(var) => var,
                 Atom::Lit(_) => {
@@ -680,10 +691,9 @@ pub fn jaxpr_to_egraph(
                 FjLang::ShiftRightArithmetic([input_ids[0], input_ids[1]])
             }
             Primitive::ShiftRightLogical => FjLang::ShiftRightLogical([input_ids[0], input_ids[1]]),
-            primitive => unreachable!(
-                "excluded primitive {} should have returned before lowering",
-                primitive.as_str()
-            ),
+            primitive => {
+                return Err(EGraphLoweringError::MissingLoweringCase { primitive });
+            }
         };
 
         let id = expr.add(node);
@@ -693,6 +703,51 @@ pub fn jaxpr_to_egraph(
     }
 
     Ok((expr, var_map))
+}
+
+fn decode_symbol_literal(sym: &egg::Symbol) -> Option<Literal> {
+    let raw = sym.as_str();
+    if let Some(bits_str) = raw.strip_prefix("f64:") {
+        return bits_str.parse::<u64>().ok().map(Literal::F64Bits);
+    }
+    if let Some(bool_str) = raw.strip_prefix("bool:") {
+        return match bool_str {
+            "0" => Some(Literal::Bool(false)),
+            "1" => Some(Literal::Bool(true)),
+            _ => None,
+        };
+    }
+    if let Some(value_str) = raw.strip_prefix("u32:") {
+        return value_str.parse::<u32>().ok().map(Literal::U32);
+    }
+    if let Some(value_str) = raw.strip_prefix("u64:") {
+        return value_str.parse::<u64>().ok().map(Literal::U64);
+    }
+    if let Some(bits_str) = raw.strip_prefix("bf16:") {
+        return bits_str.parse::<u16>().ok().map(Literal::BF16Bits);
+    }
+    if let Some(bits_str) = raw.strip_prefix("f16:") {
+        return bits_str.parse::<u16>().ok().map(Literal::F16Bits);
+    }
+    if let Some(values_str) = raw.strip_prefix("c64:") {
+        let mut parts = values_str.split(':');
+        let re = parts.next()?.parse::<u32>().ok()?;
+        let im = parts.next()?.parse::<u32>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        return Some(Literal::Complex64Bits(re, im));
+    }
+    if let Some(values_str) = raw.strip_prefix("c128:") {
+        let mut parts = values_str.split(':');
+        let re = parts.next()?.parse::<u64>().ok()?;
+        let im = parts.next()?.parse::<u64>().ok()?;
+        if parts.next().is_some() {
+            return None;
+        }
+        return Some(Literal::Complex128Bits(re, im));
+    }
+    None
 }
 
 /// Convert an e-graph RecExpr back to a Jaxpr.
@@ -1430,9 +1485,7 @@ pub fn egraph_to_jaxpr(
             let last_node = &expr.as_ref()[last_idx];
             let is_literal = match last_node {
                 FjLang::Num(_) => true,
-                FjLang::Symbol(sym) => {
-                    sym.as_str().starts_with("f64:") || sym.as_str().starts_with("bool:")
-                }
+                FjLang::Symbol(sym) => decode_symbol_literal(sym).is_some(),
                 _ => false,
             };
             if is_literal {
@@ -1542,19 +1595,12 @@ fn push_ternary(
 
 fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLang>) -> Atom {
     let idx: usize = id.into();
-    // Check if this node is a literal (Num or f64-encoded Symbol)
+    // Check if this node is a literal (Num or encoded Symbol)
     match &expr.as_ref()[idx] {
         FjLang::Num(n) => Atom::Lit(Literal::I64(*n)),
         FjLang::Symbol(sym) => {
-            // f64 literals were encoded as Symbol("f64:{bits}") in jaxpr_to_egraph
-            if let Some(bits_str) = sym.as_str().strip_prefix("f64:") {
-                let Ok(bits) = bits_str.parse::<u64>() else {
-                    unreachable!("f64 literal symbol prefix must contain valid bits");
-                };
-                return Atom::Lit(Literal::F64Bits(bits));
-            }
-            if let Some(bool_str) = sym.as_str().strip_prefix("bool:") {
-                return Atom::Lit(Literal::Bool(bool_str == "1"));
+            if let Some(literal) = decode_symbol_literal(sym) {
+                return Atom::Lit(literal);
             }
             // Otherwise it's a variable reference
             node_to_var
@@ -2111,6 +2157,73 @@ mod tests {
                 "f64 literal round-trip mismatch at x={x}: original={orig_out:?}, optimized={opt_out:?}"
             );
         }
+    }
+
+    #[test]
+    fn round_trip_with_all_encoded_symbol_literal_kinds() {
+        let literals = [
+            Literal::Bool(true),
+            Literal::U32(7),
+            Literal::U64(11),
+            Literal::BF16Bits(0x3f80),
+            Literal::F16Bits(0x3c00),
+            Literal::Complex64Bits(1.5_f32.to_bits(), (-2.25_f32).to_bits()),
+        ];
+
+        for literal in literals {
+            let jaxpr = Jaxpr::new(
+                vec![],
+                vec![],
+                vec![VarId(1)],
+                vec![Equation {
+                    primitive: Primitive::Copy,
+                    inputs: smallvec![Atom::Lit(literal)],
+                    outputs: smallvec![VarId(1)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                }],
+            );
+
+            let (expr, _) = jaxpr_to_egraph(&jaxpr).expect("literal copy should lower");
+            let roundtrip = egraph_to_jaxpr(&expr, &jaxpr.invars, &jaxpr.constvars, &jaxpr.outvars);
+            assert_eq!(roundtrip.equations.len(), 1);
+            assert_eq!(roundtrip.equations[0].inputs[0], Atom::Lit(literal));
+        }
+    }
+
+    #[test]
+    fn encoded_u32_symbol_root_becomes_literal_output() {
+        let mut expr = RecExpr::default();
+        expr.add(FjLang::Symbol(egg::Symbol::from("u32:7")));
+
+        let roundtrip = egraph_to_jaxpr(&expr, &[], &[], &[VarId(1)]);
+        assert_eq!(roundtrip.outvars, vec![VarId(1)]);
+        assert_eq!(roundtrip.equations.len(), 1);
+        assert_eq!(roundtrip.equations[0].primitive, Primitive::Select);
+        assert_eq!(roundtrip.equations[0].outputs.as_slice(), &[VarId(1)]);
+        assert_eq!(
+            roundtrip.equations[0].inputs.as_slice(),
+            &[
+                Atom::Lit(Literal::Bool(true)),
+                Atom::Lit(Literal::U32(7)),
+                Atom::Lit(Literal::U32(7))
+            ]
+        );
+    }
+
+    #[test]
+    fn malformed_f64_symbol_falls_back_to_variable_reference() {
+        let mut expr = RecExpr::default();
+        let malformed = expr.add(FjLang::Symbol(egg::Symbol::from("f64:not-bits")));
+        let one = expr.add(FjLang::Num(1));
+        expr.add(FjLang::Add([malformed, one]));
+
+        let roundtrip = egraph_to_jaxpr(&expr, &[], &[], &[VarId(9)]);
+        assert_eq!(roundtrip.equations.len(), 1);
+        assert_eq!(roundtrip.equations[0].primitive, Primitive::Add);
+        assert!(matches!(roundtrip.equations[0].inputs[0], Atom::Var(_)));
+        assert_eq!(roundtrip.equations[0].inputs[1], Atom::Lit(Literal::I64(1)));
     }
 
     #[test]
