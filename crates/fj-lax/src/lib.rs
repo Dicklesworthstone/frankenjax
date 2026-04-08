@@ -592,17 +592,15 @@ where
             if values.is_empty() {
                 return Ok(Value::scalar_f64(0.0));
             }
-            // Check if all values are scalars
-            let all_scalar = values.iter().all(|v| matches!(v, Value::Scalar(_)));
-            if all_scalar {
+            let scalar_elements = values
+                .iter()
+                .map(|value| match value {
+                    Value::Scalar(lit) => Some(*lit),
+                    _ => None,
+                })
+                .collect::<Option<Vec<Literal>>>();
+            if let Some(elements) = scalar_elements {
                 // Stack scalars into a vector
-                let elements: Vec<Literal> = values
-                    .iter()
-                    .map(|v| match v {
-                        Value::Scalar(lit) => *lit,
-                        _ => unreachable!(),
-                    })
-                    .collect();
                 let dtype = Value::Scalar(elements[0]).dtype();
                 let len = elements.len() as u32;
                 TensorValue::new(dtype, Shape { dims: vec![len] }, elements)
@@ -1354,7 +1352,7 @@ fn eval_reduce_window(
 #[cfg(test)]
 mod tests {
     use super::{EvalError, eval_primitive};
-    use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
+    use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value, ValueError};
     use std::collections::BTreeMap;
 
     fn no_params() -> BTreeMap<String, String> {
@@ -4638,6 +4636,34 @@ mod tests {
         .unwrap();
         assert_eq!(carry[0].as_f64_scalar().unwrap(), 6.0);
         assert!(ys.is_empty());
+    }
+
+    #[test]
+    fn test_scan_mixed_output_kinds_returns_error() {
+        let init = vec![Value::scalar_f64(0.0)];
+        let xs = Value::vector_f64(&[1.0, 2.0]).unwrap();
+        let mut emit_tensor = false;
+        let result = super::eval_scan_functional(
+            init,
+            &xs,
+            |carry, _x| {
+                let y = if emit_tensor {
+                    Value::vector_f64(&[1.0]).unwrap()
+                } else {
+                    emit_tensor = true;
+                    Value::scalar_f64(1.0)
+                };
+                Ok((carry, vec![y]))
+            },
+            false,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(EvalError::InvalidTensor(ValueError::MixedAxisStackKinds))
+            ),
+            "mixed scan outputs should return a structured error, got: {result:?}"
+        );
     }
 
     #[test]
