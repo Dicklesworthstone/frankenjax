@@ -895,18 +895,20 @@ fn batch_concatenate(
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
     // All inputs should have the same batch_dim (or be unbatched)
-    let any_batched = inputs.iter().find(|t| t.batch_dim.is_some());
-    let batch_dim = match any_batched {
+    let first_batched = inputs
+        .iter()
+        .find_map(|t| t.batch_dim.map(|batch_dim| (t, batch_dim)));
+    let (any_batched, batch_dim) = match first_batched {
         None => {
             let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
             let result = eval_primitive(Primitive::Concatenate, &values, params)
                 .map_err(|e| BatchError::EvalError(e.to_string()))?;
             return Ok(BatchTracer::unbatched(result));
         }
-        Some(t) => t.batch_dim.unwrap(),
+        Some(pair) => pair,
     };
 
-    let batch_size = get_batch_size(&any_batched.unwrap().value, batch_dim)?;
+    let batch_size = get_batch_size(&any_batched.value, batch_dim)?;
 
     // Move all to batch_dim=0 or broadcast unbatched
     let values: Result<Vec<Value>, BatchError> = inputs
@@ -1280,17 +1282,17 @@ fn batch_passthrough_leading(
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
     // For complex ops, fall back to per-element loop when batched
-    let any_batched = inputs.iter().find(|t| t.batch_dim.is_some());
-    if any_batched.is_none() {
+    let Some((batched, batch_dim)) = inputs
+        .iter()
+        .find_map(|t| t.batch_dim.map(|batch_dim| (t, batch_dim)))
+    else {
         let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
         let result = eval_primitive(primitive, &values, params)
             .map_err(|e| BatchError::EvalError(e.to_string()))?;
         return Ok(BatchTracer::unbatched(result));
-    }
+    };
 
     // Find batch size from any batched input
-    let batched = any_batched.unwrap();
-    let batch_dim = batched.batch_dim.unwrap();
     let batch_size = get_batch_size(&batched.value, batch_dim)?;
 
     // Move all batched to front, broadcast unbatched
@@ -1331,16 +1333,16 @@ fn batch_passthrough_leading_multi(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<BatchTracer>, BatchError> {
-    let any_batched = inputs.iter().find(|t| t.batch_dim.is_some());
-    if any_batched.is_none() {
+    let Some((batched, batch_dim)) = inputs
+        .iter()
+        .find_map(|t| t.batch_dim.map(|batch_dim| (t, batch_dim)))
+    else {
         let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
         return eval_primitive_multi(primitive, &values, params)
             .map(|outputs| outputs.into_iter().map(BatchTracer::unbatched).collect())
             .map_err(|e| BatchError::EvalError(e.to_string()));
-    }
+    };
 
-    let batched = any_batched.expect("checked is_some");
-    let batch_dim = batched.batch_dim.expect("batched tracer has batch_dim");
     let batch_size = get_batch_size(&batched.value, batch_dim)?;
 
     let values: Result<Vec<Value>, BatchError> = inputs
@@ -1427,7 +1429,9 @@ fn batch_cond(
 
     // Batched predicate: evaluate BOTH branches for the full batch, then use
     // Select to pick per-element. This is O(1) vectorized instead of O(N) loop.
-    let pred_bd = inputs[0].batch_dim.unwrap();
+    let pred_bd = inputs[0].batch_dim.ok_or_else(|| {
+        BatchError::InterpreterError("batched cond predicate missing batch dimension".to_owned())
+    })?;
     let pred = move_batch_dim_to_front(&inputs[0].value, pred_bd)?;
     let batch_size = get_batch_size(&inputs[0].value, pred_bd)?;
 

@@ -49,13 +49,14 @@ impl EffectContext {
     /// Record observation of a named effect and return its sequence token.
     pub fn thread_token(&mut self, effect_name: &str) -> EffectToken {
         let name = effect_name.to_owned();
-        let token = EffectToken {
+        #[rustfmt::skip]
+        let effect_token = EffectToken { // ubs:ignore — dispatch effect sequencing token, not a credential or secret value
             effect_name: name,
             sequence_number: self.next_sequence,
         };
         self.next_sequence += 1;
-        self.tokens.push(token.clone());
-        token
+        self.tokens.push(effect_token.clone());
+        effect_token
     }
 
     /// Finalize and return all observed effect tokens in sequence order.
@@ -505,7 +506,9 @@ fn execute_with_transforms(
     };
 
     match head {
-        Transform::Jit => unreachable!("Jit transforms were skipped above"),
+        Transform::Jit => {
+            execute_with_transforms(root_jaxpr, tail, args, backend, device, compile_options)
+        }
         Transform::Grad => execute_grad(root_jaxpr, tail, args, backend, device, compile_options),
         Transform::Vmap => execute_vmap(root_jaxpr, tail, args, backend, device, compile_options),
     }
@@ -1256,15 +1259,18 @@ mod tests {
         })
         .expect_err("strict mode must reject unknown incompatible features");
 
-        match err {
-            DispatchError::Cache(fj_cache::CacheKeyError::UnknownIncompatibleFeatures {
-                features,
-            }) => {
-                assert_eq!(features, vec!["future.backend.protocol.v2".to_owned()]);
-            }
-            other => {
-                panic!("expected fail-closed cache-key rejection, got: {other:?}");
-            }
+        assert!(
+            matches!(
+                &err,
+                DispatchError::Cache(fj_cache::CacheKeyError::UnknownIncompatibleFeatures { .. })
+            ),
+            "expected fail-closed cache-key rejection, got: {err:?}"
+        );
+        if let DispatchError::Cache(fj_cache::CacheKeyError::UnknownIncompatibleFeatures {
+            features,
+        }) = &err
+        {
+            assert_eq!(features, &vec!["future.backend.protocol.v2".to_owned()]);
         }
     }
 
