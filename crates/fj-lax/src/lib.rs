@@ -589,28 +589,9 @@ where
     let stacked_ys: Vec<Value> = per_output_values
         .into_iter()
         .map(|values| {
-            if values.is_empty() {
-                return Ok(Value::scalar_f64(0.0));
-            }
-            let scalar_elements = values
-                .iter()
-                .map(|value| match value {
-                    Value::Scalar(lit) => Some(*lit),
-                    _ => None,
-                })
-                .collect::<Option<Vec<Literal>>>();
-            if let Some(elements) = scalar_elements {
-                // Stack scalars into a vector
-                let dtype = Value::Scalar(elements[0]).dtype();
-                let len = elements.len() as u32;
-                TensorValue::new(dtype, Shape { dims: vec![len] }, elements)
-                    .map(Value::Tensor)
-                    .map_err(EvalError::InvalidTensor)
-            } else {
-                TensorValue::stack_axis0(&values)
-                    .map(Value::Tensor)
-                    .map_err(EvalError::InvalidTensor)
-            }
+            TensorValue::stack_axis0(&values)
+                .map(Value::Tensor)
+                .map_err(EvalError::InvalidTensor)
         })
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -4562,6 +4543,34 @@ mod tests {
         assert_eq!(carry[0].as_f64_scalar().unwrap(), 24.0);
         let ys_vals = ys[0].as_tensor().unwrap().to_f64_vec().unwrap();
         assert_eq!(ys_vals, vec![1.0, 2.0, 6.0, 24.0]);
+    }
+
+    #[test]
+    fn test_scan_functional_scalar_outputs_use_shared_stack_axis0() {
+        let init = vec![Value::scalar_i64(0)];
+        let xs = Value::vector_i64(&[0, 1]).unwrap();
+        let (_, ys) = super::eval_scan_functional(
+            init,
+            &xs,
+            |carry, x| {
+                let carry_value = carry[0].as_i64_scalar().expect("carry should be i64");
+                let x_value = x.as_i64_scalar().expect("scan slice should be i64");
+                let next_carry = Value::scalar_i64(carry_value + x_value);
+                let y = if x_value == 0 {
+                    Value::scalar_i64(1)
+                } else {
+                    Value::scalar_f64(2.5)
+                };
+                Ok((vec![next_carry], vec![y]))
+            },
+            false,
+        )
+        .expect("functional scan with mixed scalar outputs should succeed");
+
+        let ys_tensor = ys[0].as_tensor().expect("ys should be tensor");
+        assert_eq!(ys_tensor.shape, Shape::vector(2));
+        assert_eq!(ys_tensor.dtype, DType::F64);
+        assert_eq!(ys_tensor.to_f64_vec().unwrap(), vec![1.0, 2.5]);
     }
 
     #[test]
