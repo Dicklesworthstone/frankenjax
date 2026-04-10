@@ -1353,6 +1353,15 @@ pub(crate) fn eval_dynamic_slice(
             ),
         });
     }
+    for (ax, &size) in slice_sizes.iter().enumerate() {
+        let dim = tensor.shape.dims[ax] as usize;
+        if size > dim {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("slice size {size} exceeds dimension {dim} on axis {ax}"),
+            });
+        }
+    }
 
     // Start indices come from remaining inputs (one scalar per axis)
     if inputs.len() != 1 + rank {
@@ -1395,7 +1404,8 @@ pub(crate) fn eval_dynamic_slice(
                 // Clamp to valid range [0, dim - size]
                 let dim = tensor.shape.dims[ax] as i64;
                 let size = slice_sizes[ax] as i64;
-                let clamped = raw.max(0).min(dim - size);
+                let max_start = dim - size;
+                let clamped = raw.max(0).min(max_start);
                 clamped as usize
             }
             Value::Tensor(_) => {
@@ -1410,12 +1420,14 @@ pub(crate) fn eval_dynamic_slice(
 
     // Validate slice sizes
     for ax in 0..rank {
-        if starts[ax] + slice_sizes[ax] > tensor.shape.dims[ax] as usize {
+        let dim = tensor.shape.dims[ax] as usize;
+        let max_start = dim - slice_sizes[ax];
+        if starts[ax] > max_start {
             return Err(EvalError::Unsupported {
                 primitive,
                 detail: format!(
-                    "dynamic_slice out of bounds on axis {ax}: start={} size={} dim={}",
-                    starts[ax], slice_sizes[ax], tensor.shape.dims[ax]
+                    "dynamic_slice out of bounds on axis {ax}: start={} max_start={}",
+                    starts[ax], max_start
                 ),
             });
         }
@@ -1504,6 +1516,16 @@ pub(crate) fn eval_dynamic_update_slice(
             ),
         });
     }
+    for ax in 0..rank {
+        let dim = operand.shape.dims[ax];
+        let upd = update.shape.dims[ax];
+        if upd > dim {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("update dim {upd} exceeds operand dim {dim} on axis {ax}"),
+            });
+        }
+    }
 
     if inputs.len() != 2 + rank {
         return Err(EvalError::ArityMismatch {
@@ -1539,7 +1561,8 @@ pub(crate) fn eval_dynamic_update_slice(
                 };
                 let dim = operand.shape.dims[ax] as i64;
                 let upd_size = update.shape.dims[ax] as i64;
-                raw.max(0).min(dim - upd_size) as usize
+                let max_start = dim - upd_size;
+                raw.max(0).min(max_start) as usize
             }
             Value::Tensor(_) => {
                 return Err(EvalError::Unsupported {

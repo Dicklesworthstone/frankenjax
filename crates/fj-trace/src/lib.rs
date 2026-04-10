@@ -1000,16 +1000,77 @@ impl SimpleTraceContext {
                         detail: "expected at least 1 input".to_owned(),
                     });
                 }
-                let slice_sizes = if let Some(raw) = params.get("slice_sizes") {
-                    parse_u32_list(primitive, "slice_sizes", raw)?
-                } else {
+                let operand = &inputs[0];
+                let rank = operand.shape.rank();
+                if rank == 0 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
-                        detail: "missing required param 'slice_sizes'".to_owned(),
+                        detail: "cannot dynamic_slice a scalar".to_owned(),
                     });
-                };
+                }
+                let raw_sizes =
+                    params
+                        .get("slice_sizes")
+                        .ok_or(TraceError::MissingPrimitiveParam {
+                            primitive,
+                            key: "slice_sizes",
+                        })?;
+                if raw_sizes.trim().is_empty() {
+                    return Err(TraceError::InvalidPrimitiveParam {
+                        primitive,
+                        key: "slice_sizes",
+                        value: raw_sizes.to_owned(),
+                    });
+                }
+                let slice_sizes = parse_u32_list(primitive, "slice_sizes", raw_sizes)?;
+                if slice_sizes.len() != rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "slice_sizes length {} does not match operand rank {}",
+                            slice_sizes.len(),
+                            rank
+                        ),
+                    });
+                }
+                for (ax, &size) in slice_sizes.iter().enumerate() {
+                    let dim = operand.shape.dims[ax];
+                    if size > dim {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "slice size {size} exceeds dimension {dim} on axis {ax}"
+                            ),
+                        });
+                    }
+                }
+                if inputs.len() != 1 + rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "expected {} inputs (operand + starts), got {}",
+                            1 + rank,
+                            inputs.len()
+                        ),
+                    });
+                }
+                for ax in 0..rank {
+                    let start_aval = &inputs[1 + ax];
+                    if start_aval.shape.rank() != 0 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("start index for axis {ax} must be a scalar"),
+                        });
+                    }
+                    if matches!(start_aval.dtype, DType::Complex64 | DType::Complex128) {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("complex start index not supported for axis {ax}"),
+                        });
+                    }
+                }
                 Ok(vec![ShapedArray {
-                    dtype: inputs[0].dtype,
+                    dtype: operand.dtype,
                     shape: Shape { dims: slice_sizes },
                 }])
             }
@@ -1021,9 +1082,65 @@ impl SimpleTraceContext {
                         detail: format!("expected at least 2 inputs, got {}", inputs.len()),
                     });
                 }
+                let operand = &inputs[0];
+                if operand.shape.rank() == 0 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "cannot dynamic_update_slice a scalar".to_owned(),
+                    });
+                }
+                let update = &inputs[1];
+                let rank = operand.shape.rank();
+                if update.shape.rank() != rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "update rank {} != operand rank {}",
+                            update.shape.rank(),
+                            rank
+                        ),
+                    });
+                }
+                for ax in 0..rank {
+                    let dim = operand.shape.dims[ax];
+                    let upd = update.shape.dims[ax];
+                    if upd > dim {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "update dim {upd} exceeds operand dim {dim} on axis {ax}"
+                            ),
+                        });
+                    }
+                }
+                if inputs.len() != 2 + rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "expected {} inputs (operand + update + starts), got {}",
+                            2 + rank,
+                            inputs.len()
+                        ),
+                    });
+                }
+                for ax in 0..rank {
+                    let start_aval = &inputs[2 + ax];
+                    if start_aval.shape.rank() != 0 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("start index for axis {ax} must be a scalar"),
+                        });
+                    }
+                    if matches!(start_aval.dtype, DType::Complex64 | DType::Complex128) {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("complex start index not supported for axis {ax}"),
+                        });
+                    }
+                }
                 Ok(vec![ShapedArray {
-                    dtype: inputs[0].dtype,
-                    shape: inputs[0].shape.clone(),
+                    dtype: operand.dtype,
+                    shape: operand.shape.clone(),
                 }])
             }
             Primitive::Clamp => {
@@ -3251,7 +3368,7 @@ mod tests {
             std::panic::resume_unwind(payload);
         }
         if let Some(detail) = failure_detail {
-            panic!("{detail}");
+            std::panic::resume_unwind(Box::new(detail));
         }
     }
 
@@ -4001,7 +4118,7 @@ mod tests {
                         vec![TracerId(1)],
                         {
                             let mut p = BTreeMap::new();
-                            p.insert("dimensions".to_owned(), "1".to_owned());
+                            p.insert("axes".to_owned(), "1".to_owned());
                             p
                         },
                     ),
@@ -5829,7 +5946,10 @@ mod tests {
         let neg_output = closed.jaxpr.equations[0].outputs[0];
         let exp_input = match &closed.jaxpr.equations[1].inputs[0] {
             fj_core::Atom::Var(v) => *v,
-            _ => panic!("expected var input"),
+            other => {
+                assert!(matches!(other, fj_core::Atom::Var(_)), "expected var input");
+                return;
+            }
         };
         assert_eq!(neg_output, exp_input, "data flow should be connected");
     }
@@ -6058,6 +6178,88 @@ mod tests {
         ));
         assert!(
             err.to_string().contains("rank >= 1 input"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_trace_dynamic_slice_rejects_oversized_slice() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![3, 4] },
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+        ]);
+
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "4,2".to_owned());
+        let err = ctx
+            .process_primitive(
+                Primitive::DynamicSlice,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                params,
+            )
+            .expect_err("dynamic_slice should reject oversize slice");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::DynamicSlice,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string()
+                .contains("slice size 4 exceeds dimension 3 on axis 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_trace_dynamic_update_slice_rejects_oversized_update() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![2, 2] },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![3, 2] },
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+        ]);
+
+        let err = ctx
+            .process_primitive(
+                Primitive::DynamicUpdateSlice,
+                &[TracerId(1), TracerId(2), TracerId(3), TracerId(4)],
+                BTreeMap::new(),
+            )
+            .expect_err("dynamic_update_slice should reject oversize update");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::DynamicUpdateSlice,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string()
+                .contains("update dim 3 exceeds operand dim 2 on axis 0"),
             "unexpected error: {err}"
         );
     }

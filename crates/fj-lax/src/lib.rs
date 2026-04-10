@@ -1352,11 +1352,13 @@ mod tests {
     fn test_cholesky_rejects_scalar_input() {
         let err = eval_primitive(Primitive::Cholesky, &[Value::scalar_f64(1.0)], &no_params())
             .expect_err("cholesky should reject scalar input");
-        match err {
-            EvalError::Unsupported { detail, .. } => {
-                assert!(detail.contains("scalar"), "detail: {detail}");
-            }
-            other => panic!("expected unsupported error, got {other:?}"),
+        if let EvalError::Unsupported { detail, .. } = &err {
+            assert!(detail.contains("scalar"), "detail: {detail}");
+        } else {
+            assert!(
+                matches!(err, EvalError::Unsupported { .. }),
+                "expected unsupported error, got {err:?}"
+            );
         }
     }
 
@@ -1718,7 +1720,10 @@ mod tests {
             assert_eq!(t.elements[1], fj_core::Literal::Bool(false));
             assert_eq!(t.elements[2], fj_core::Literal::Bool(false));
         } else {
-            panic!("expected tensor output for vector comparison");
+            assert!(
+                matches!(out, Value::Tensor(_)),
+                "expected tensor output for vector comparison"
+            );
         }
     }
 
@@ -1785,7 +1790,7 @@ mod tests {
             assert_eq!(t.shape.dims, vec![2, 3]);
             assert_eq!(t.elements.len(), 6);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -1798,7 +1803,7 @@ mod tests {
         if let Value::Tensor(t) = &out {
             assert_eq!(t.shape.dims, vec![2, 3]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -1829,7 +1834,7 @@ mod tests {
             assert_eq!(t.elements[4], fj_core::Literal::I64(3));
             assert_eq!(t.elements[5], fj_core::Literal::I64(6));
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -1860,7 +1865,7 @@ mod tests {
             assert_eq!(t.elements[4], fj_core::Literal::I64(2));
             assert_eq!(t.elements[5], fj_core::Literal::I64(3));
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2183,7 +2188,10 @@ mod tests {
         if let Value::Scalar(fj_core::Literal::I64(v)) = out {
             assert_eq!(v, 1024);
         } else {
-            panic!("expected i64 scalar from int pow");
+            assert!(
+                matches!(out, Value::Scalar(fj_core::Literal::I64(_))),
+                "expected i64 scalar from int pow"
+            );
         }
     }
 
@@ -2548,7 +2556,7 @@ mod tests {
             let values: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(values, vec![6, 8, 10, 12]);
         } else {
-            panic!("expected tensor output");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor output");
         }
     }
 
@@ -2577,7 +2585,7 @@ mod tests {
             assert!((values[1] - 7.0).abs() < 1e-10);
             assert!((values[2] - 9.0).abs() < 1e-10);
         } else {
-            panic!("expected tensor output");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor output");
         }
     }
 
@@ -2705,13 +2713,14 @@ mod tests {
                     if let Literal::I64(n) = l {
                         *n
                     } else {
-                        panic!()
+                        assert!(matches!(l, Literal::I64(_)), "expected i64 literal");
+                        0
                     }
                 })
                 .collect();
             assert_eq!(vals, vec![50, 60, 10, 20]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2778,13 +2787,14 @@ mod tests {
                     if let Literal::I64(n) = l {
                         *n
                     } else {
-                        panic!()
+                        assert!(matches!(l, Literal::I64(_)), "expected i64 literal");
+                        0
                     }
                 })
                 .collect();
             assert_eq!(vals, vec![30, 40, 10, 20, 0, 0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2823,13 +2833,14 @@ mod tests {
                     if let Literal::I64(n) = l {
                         *n
                     } else {
-                        panic!()
+                        assert!(matches!(l, Literal::I64(_)), "expected i64 literal");
+                        0
                     }
                 })
                 .collect();
             assert_eq!(vals, vec![40, 20, 50]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2884,7 +2895,7 @@ mod tests {
             assert_eq!(t.elements[1], fj_core::Literal::Bool(false)); // 3 > 5
             assert_eq!(t.elements[2], fj_core::Literal::Bool(false)); // 3 > 3
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2898,7 +2909,7 @@ mod tests {
             assert_eq!(t.elements[1], fj_core::Literal::Bool(false)); // 5 <= 3
             assert_eq!(t.elements[2], fj_core::Literal::Bool(true)); // 3 <= 3
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2965,7 +2976,7 @@ mod tests {
             assert!((e0 - 1.0).abs() < 1e-10);
             assert!((e1 - std::f64::consts::E).abs() < 1e-10);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2978,7 +2989,7 @@ mod tests {
             assert!((t.elements[1].as_f64().unwrap() - 2.0).abs() < 1e-10);
             assert!((t.elements[2].as_f64().unwrap() - (-1.0)).abs() < 1e-10);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -2991,7 +3002,7 @@ mod tests {
             assert!((t.elements[1].as_f64().unwrap() - 0.5).abs() < 1e-10);
             assert!((t.elements[2].as_f64().unwrap() - 0.25).abs() < 1e-10);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3036,7 +3047,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![10.0, -1.0, 10.0]);
         } else {
-            panic!("expected tensor output");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor output");
         }
     }
 
@@ -3103,7 +3114,7 @@ mod tests {
             assert_eq!(vals[1], 30.0); // 10 + 20 accumulated
             assert_eq!(vals[2], 0.0);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3141,7 +3152,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![105.0, 200.0, 300.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3196,7 +3207,7 @@ mod tests {
             assert_eq!(t.elements.len(), 0);
             assert_eq!(t.shape.dims[0], 0);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(result, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3222,7 +3233,7 @@ mod tests {
             assert_eq!(vals[1], 0.0);
             assert_eq!(vals[2], 0.0);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3270,7 +3281,7 @@ mod tests {
             assert_eq!(t.elements.len(), 0);
             assert_eq!(t.shape.dims[0], 0);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3285,7 +3296,7 @@ mod tests {
             assert_eq!(t.elements.len(), 1);
             assert_eq!(t.elements[0].as_f64().unwrap(), 20.0);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3436,12 +3447,11 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("length".to_owned(), "0".to_owned());
         let out = eval_primitive(Primitive::Iota, &[], &params).unwrap();
-        match out {
-            Value::Tensor(t) => {
-                assert_eq!(t.shape, Shape::vector(0));
-                assert!(t.elements.is_empty());
-            }
-            _ => panic!("expected tensor"),
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape, Shape::vector(0));
+            assert!(t.elements.is_empty());
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3547,6 +3557,15 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn dynamic_slice_oversize_errors() {
+        let x = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "5".to_owned());
+        let result = eval_primitive(Primitive::DynamicSlice, &[x, Value::scalar_i64(0)], &params);
+        assert!(result.is_err());
+    }
+
     // ── Higher-rank gather/scatter tests ─────────────────────────
 
     #[test]
@@ -3586,14 +3605,15 @@ mod tests {
                     if let Literal::I64(n) = l {
                         *n
                     } else {
-                        panic!()
+                        assert!(matches!(l, Literal::I64(_)), "expected i64 literal");
+                        0
                     }
                 })
                 .collect();
             // index 2: elements 9,10,11,12; index 0: elements 1,2,3,4
             assert_eq!(vals, vec![9, 10, 11, 12, 1, 2, 3, 4]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3647,14 +3667,15 @@ mod tests {
                     if let Literal::I64(n) = l {
                         *n
                     } else {
-                        panic!()
+                        assert!(matches!(l, Literal::I64(_)), "expected i64 literal");
+                        0
                     }
                 })
                 .collect();
             // Slot 0: [0,0,0,0], Slot 1: [10,20,30,40], Slot 2: [0,0,0,0]
             assert_eq!(vals, vec![0, 0, 0, 0, 10, 20, 30, 40, 0, 0, 0, 0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3685,7 +3706,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![10, 2, 30]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3738,7 +3759,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 20, 30, 4]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3771,7 +3792,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3785,7 +3806,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![0.0, 0.0, 1.0, 0.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3798,7 +3819,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![0.0, 0.0, 0.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3813,7 +3834,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![-1.0, 5.0, -1.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3844,7 +3865,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![0, 0, 10, 20, 0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3879,7 +3900,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![0, 0, 0, 0, 7, 8]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3900,7 +3921,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 99, 88]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3908,6 +3929,18 @@ mod tests {
     fn dynamic_update_slice_arity_error() {
         let operand = Value::vector_i64(&[1, 2]).unwrap();
         let result = eval_primitive(Primitive::DynamicUpdateSlice, &[operand], &no_params());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dynamic_update_slice_oversize_update_errors() {
+        let operand = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let update = Value::vector_i64(&[9, 8, 7, 6]).unwrap();
+        let result = eval_primitive(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, Value::scalar_i64(0)],
+            &no_params(),
+        );
         assert!(result.is_err());
     }
 
@@ -3928,7 +3961,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 3, 6, 10]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3953,7 +3986,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 2, 4, 6]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3978,7 +4011,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 3, 3, 7]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -3991,7 +4024,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 2, 6, 24]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4004,7 +4037,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![1.0, 2.0, 6.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4018,7 +4051,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 1, 3, 4, 5]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4032,7 +4065,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![5, 4, 3, 1, 1]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4044,7 +4077,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 2, 0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4069,7 +4102,7 @@ mod tests {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 3, 2, 4]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4118,7 +4151,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 5.0, 7.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4161,7 +4194,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 6.0, 5.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4197,7 +4230,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 7.0, 11.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4245,7 +4278,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![12.0, 16.0, 24.0, 28.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4280,7 +4313,7 @@ mod tests {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert!((vals[4] - 45.0).abs() < 1e-10, "center = {}", vals[4]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4337,7 +4370,7 @@ mod tests {
             // pixel (0,1): [3,4] -> [3, 4, 7]
             assert_eq!(vals[3..6], [3.0, 4.0, 7.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4368,11 +4401,11 @@ mod tests {
         let false_val = Value::vector_f64(&[4.0, 5.0, 6.0]).unwrap();
         let params = BTreeMap::new();
         let out = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &params).unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![1.0, 2.0, 3.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -4475,11 +4508,11 @@ mod tests {
             .unwrap(),
         );
         let out = eval_primitive(Primitive::Scan, &[init, xs], &scan_params("add")).unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![5.0, 7.0, 9.0]);
         } else {
-            panic!("expected tensor output");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor output");
         }
     }
 
@@ -4939,11 +4972,13 @@ mod tests {
             &[init, step, threshold],
             &while_params_max("add", "lt", 5),
         );
-        match result {
-            Err(super::EvalError::MaxIterationsExceeded { max_iterations, .. }) => {
-                assert_eq!(max_iterations, 5);
-            }
-            other => panic!("expected MaxIterationsExceeded, got {other:?}"),
+        if let Err(super::EvalError::MaxIterationsExceeded { max_iterations, .. }) = result {
+            assert_eq!(max_iterations, 5);
+        } else {
+            assert!(
+                matches!(result, Err(super::EvalError::MaxIterationsExceeded { .. })),
+                "expected MaxIterationsExceeded, got {result:?}"
+            );
         }
     }
 
@@ -4988,9 +5023,12 @@ mod tests {
                 Ok(vec![Value::vector_f64(&[1.0, 2.0]).unwrap()])
             },
         );
-        match result {
-            Err(super::EvalError::ShapeChanged { .. }) => {}
-            other => panic!("expected ShapeChanged, got {other:?}"),
+        if let Err(super::EvalError::ShapeChanged { .. }) = result {
+        } else {
+            assert!(
+                matches!(result, Err(super::EvalError::ShapeChanged { .. })),
+                "expected ShapeChanged, got {result:?}"
+            );
         }
     }
 
@@ -5411,11 +5449,11 @@ mod tests {
             &rw_params("sum", "3", "1"),
         )
         .unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![6.0, 9.0, 12.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -5429,11 +5467,11 @@ mod tests {
             &rw_params("max", "2", "1"),
         )
         .unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 3.0, 5.0, 5.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -5447,11 +5485,11 @@ mod tests {
             &rw_params("max", "2", "2"),
         )
         .unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 5.0, 6.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -5475,12 +5513,12 @@ mod tests {
             &rw_params("sum", "2,2", "1,1"),
         )
         .unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             assert_eq!(t.shape.dims, vec![2, 2]);
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![12.0, 16.0, 24.0, 28.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -5494,11 +5532,11 @@ mod tests {
             &rw_params("min", "3", "1"),
         )
         .unwrap();
-        if let Value::Tensor(t) = out {
+        if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 1.0, 1.0]);
         } else {
-            panic!("expected tensor");
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
     }
 
@@ -5860,7 +5898,18 @@ mod tests {
                     "bitcast round trip must preserve exact bits"
                 );
             }
-            other => panic!("unexpected round-trip payload: {other:?}"),
+            other => {
+                assert!(
+                    matches!(
+                        other,
+                        (
+                            Value::Scalar(Literal::F64Bits(_)),
+                            Value::Scalar(Literal::F64Bits(_))
+                        )
+                    ),
+                    "unexpected round-trip payload: {other:?}"
+                );
+            }
         }
     }
 
@@ -5959,7 +6008,17 @@ mod prop_tests {
             Value::Scalar(Literal::Complex64Bits(re, im)) => {
                 (f32::from_bits(*re) as f64, f32::from_bits(*im) as f64)
             }
-            _ => panic!("expected complex scalar, got {value:?}"),
+            _ => {
+                assert!(
+                    matches!(
+                        value,
+                        Value::Scalar(Literal::Complex128Bits(_, _))
+                            | Value::Scalar(Literal::Complex64Bits(_, _))
+                    ),
+                    "expected complex scalar, got {value:?}"
+                );
+                (0.0, 0.0)
+            }
         };
         assert!(
             (re - expected_re).abs() <= tol,
@@ -6885,10 +6944,16 @@ mod prop_tests {
     fn test_fori_loop_zero_range() {
         // lower == upper => no iterations, return init_val unchanged
         let init = Value::scalar_f64(42.0);
-        let result = eval_fori_loop(5, 5, init.clone(), |_, _| {
-            panic!("body should not be called for empty range");
+        let body_called = std::cell::Cell::new(false);
+        let result = eval_fori_loop(5, 5, init.clone(), |_, val| {
+            body_called.set(true);
+            Ok(val)
         })
         .unwrap();
+        assert!(
+            !body_called.get(),
+            "body should not be called for empty range"
+        );
         assert_eq!(result, init);
     }
 
@@ -6896,10 +6961,16 @@ mod prop_tests {
     fn test_fori_loop_negative_range() {
         // upper < lower => no iterations
         let init = Value::scalar_f64(99.0);
-        let result = eval_fori_loop(10, 5, init.clone(), |_, _| {
-            panic!("body should not be called for negative range");
+        let body_called = std::cell::Cell::new(false);
+        let result = eval_fori_loop(10, 5, init.clone(), |_, val| {
+            body_called.set(true);
+            Ok(val)
         })
         .unwrap();
+        assert!(
+            !body_called.get(),
+            "body should not be called for negative range"
+        );
         assert_eq!(result, init);
     }
 
@@ -7024,20 +7095,19 @@ mod prop_tests {
             .unwrap(),
         );
         let result = eval_primitive(Primitive::IsFinite, &[tensor], &BTreeMap::new()).unwrap();
-        match result {
-            Value::Tensor(t) => {
-                assert_eq!(t.dtype, DType::Bool);
-                assert_eq!(
-                    t.elements,
-                    vec![
-                        Literal::Bool(true),
-                        Literal::Bool(false),
-                        Literal::Bool(false),
-                        Literal::Bool(true),
-                    ]
-                );
-            }
-            _ => panic!("expected tensor"),
+        if let Value::Tensor(t) = &result {
+            assert_eq!(t.dtype, DType::Bool);
+            assert_eq!(
+                t.elements,
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ]
+            );
+        } else {
+            assert!(matches!(result, Value::Tensor(_)), "expected tensor");
         }
     }
 
