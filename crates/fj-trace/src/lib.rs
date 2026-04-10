@@ -749,12 +749,35 @@ impl SimpleTraceContext {
             Primitive::Concatenate => infer_concatenate(inputs, params),
             Primitive::Pad => infer_pad(inputs, params),
             Primitive::Rev => {
-                // Rev preserves shape
+                // Rev preserves shape, but validate axes.
                 if inputs.len() != 1 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
                         detail: format!("expected 1 input, got {}", inputs.len()),
                     });
+                }
+                let raw_axes = params
+                    .get("axes")
+                    .ok_or(TraceError::MissingPrimitiveParam {
+                        primitive,
+                        key: "axes",
+                    })?;
+                if raw_axes.trim().is_empty() {
+                    return Err(TraceError::InvalidPrimitiveParam {
+                        primitive,
+                        key: "axes",
+                        value: raw_axes.to_owned(),
+                    });
+                }
+                let axes = parse_usize_list(primitive, "axes", raw_axes)?;
+                let rank = inputs[0].shape.rank();
+                for &axis in &axes {
+                    if axis >= rank {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("axis {axis} out of range for rank {rank}"),
+                        });
+                    }
                 }
                 Ok(vec![inputs[0].clone()])
             }
@@ -768,9 +791,14 @@ impl SimpleTraceContext {
                 }
                 let dims = &inputs[0].shape.dims;
                 let squeeze_dims: Vec<usize> = if let Some(raw) = params.get("dimensions") {
-                    raw.split(',')
-                        .map(|s| s.trim().parse::<usize>().unwrap_or(0))
-                        .collect()
+                    if raw.trim().is_empty() {
+                        return Err(TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "dimensions",
+                            value: raw.to_owned(),
+                        });
+                    }
+                    parse_usize_list(primitive, "dimensions", raw)?
                 } else {
                     dims.iter()
                         .enumerate()
@@ -778,6 +806,23 @@ impl SimpleTraceContext {
                         .map(|(i, _)| i)
                         .collect()
                 };
+                for &d in &squeeze_dims {
+                    if d >= dims.len() {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("dimension {d} out of range for rank {}", dims.len()),
+                        });
+                    }
+                    if dims[d] != 1 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "cannot squeeze dimension {d} with size {} (must be 1)",
+                                dims[d]
+                            ),
+                        });
+                    }
+                }
                 let new_dims: Vec<u32> = dims
                     .iter()
                     .enumerate()
@@ -797,32 +842,112 @@ impl SimpleTraceContext {
                         detail: format!("expected 1 input, got {}", inputs.len()),
                     });
                 }
-                let axis: usize = params
-                    .get("axis")
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
-                let dims = &inputs[0].shape.dims;
-                let num_sections: usize = if let Some(raw) = params.get("num_sections") {
-                    raw.trim().parse().unwrap_or(1)
-                } else if let Some(raw) = params.get("sizes") {
-                    raw.split(',').count()
-                } else {
-                    1
-                };
-                let section_size = dims[axis] as usize / num_sections;
-                let mut new_dims = Vec::with_capacity(dims.len() + 1);
-                for (i, &d) in dims.iter().enumerate() {
-                    if i == axis {
-                        new_dims.push(num_sections as u32);
-                        new_dims.push(section_size as u32);
-                    } else {
-                        new_dims.push(d);
+                let axis: usize = if let Some(raw) = params.get("axis") {
+                    let trimmed = raw.trim();
+                    if trimmed.is_empty() {
+                        return Err(TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "axis",
+                            value: raw.to_owned(),
+                        });
                     }
+                    trimmed
+                        .parse::<usize>()
+                        .map_err(|_| TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "axis",
+                            value: raw.to_owned(),
+                        })?
+                } else {
+                    0
+                };
+                let dims = &inputs[0].shape.dims;
+                let rank = dims.len();
+                if axis >= rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("axis {axis} out of range for rank {rank}"),
+                    });
                 }
-                Ok(vec![ShapedArray {
-                    dtype: inputs[0].dtype,
-                    shape: Shape { dims: new_dims },
-                }])
+
+                let axis_size = dims[axis] as usize;
+                let sizes: Vec<usize> = if let Some(raw) = params.get("sizes") {
+                    if raw.trim().is_empty() {
+                        return Err(TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "sizes",
+                            value: raw.to_owned(),
+                        });
+                    }
+                    parse_usize_list(primitive, "sizes", raw)?
+                } else if let Some(raw) = params.get("num_sections") {
+                    if raw.trim().is_empty() {
+                        return Err(TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "num_sections",
+                            value: raw.to_owned(),
+                        });
+                    }
+                    let sections = parse_usize_list(primitive, "num_sections", raw)?;
+                    let num_sections = sections.first().copied().ok_or_else(|| {
+                        TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "num_sections",
+                            value: raw.to_owned(),
+                        }
+                    })?;
+                    if num_sections == 0 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "num_sections must be >= 1".to_owned(),
+                        });
+                    }
+                    if !axis_size.is_multiple_of(num_sections) {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "axis size {axis_size} not evenly divisible by {num_sections}"
+                            ),
+                        });
+                    }
+                    let section_size = axis_size / num_sections;
+                    vec![section_size; num_sections]
+                } else {
+                    vec![axis_size]
+                };
+
+                let total: usize = sizes.iter().sum();
+                if total != axis_size {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("split sizes sum to {total} but axis size is {axis_size}"),
+                    });
+                }
+
+                if sizes.windows(2).all(|w| w[0] == w[1]) || sizes.len() == 1 {
+                    let num_sections = sizes.len();
+                    let section_size = sizes[0];
+                    let mut new_dims = Vec::with_capacity(dims.len() + 1);
+                    for (i, &d) in dims.iter().enumerate() {
+                        if i == axis {
+                            new_dims.push(num_sections as u32);
+                            new_dims.push(section_size as u32);
+                        } else {
+                            new_dims.push(d);
+                        }
+                    }
+                    Ok(vec![ShapedArray {
+                        dtype: inputs[0].dtype,
+                        shape: Shape { dims: new_dims },
+                    }])
+                } else {
+                    let mut new_dims = dims.clone();
+                    new_dims[axis] = sizes[0] as u32;
+                    Ok(vec![ShapedArray {
+                        dtype: inputs[0].dtype,
+                        shape: Shape { dims: new_dims },
+                    }])
+                }
             }
             Primitive::ExpandDims => {
                 // ExpandDims inserts a size-1 dim at the given axis
@@ -832,10 +957,34 @@ impl SimpleTraceContext {
                         detail: format!("expected 1 input, got {}", inputs.len()),
                     });
                 }
-                let axis: usize = params
+                let raw_axis = params
                     .get("axis")
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
+                    .ok_or(TraceError::MissingPrimitiveParam {
+                        primitive,
+                        key: "axis",
+                    })?;
+                if raw_axis.trim().is_empty() {
+                    return Err(TraceError::InvalidPrimitiveParam {
+                        primitive,
+                        key: "axis",
+                        value: raw_axis.to_owned(),
+                    });
+                }
+                let axis_list = parse_usize_list(primitive, "axis", raw_axis)?;
+                let axis = axis_list.first().copied().ok_or_else(|| {
+                    TraceError::InvalidPrimitiveParam {
+                        primitive,
+                        key: "axis",
+                        value: raw_axis.to_owned(),
+                    }
+                })?;
+                let rank = inputs[0].shape.rank();
+                if axis > rank {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("axis {axis} out of range for rank {rank} (max is {rank})"),
+                    });
+                }
                 let mut new_dims = inputs[0].shape.dims.clone();
                 new_dims.insert(axis, 1);
                 Ok(vec![ShapedArray {
@@ -889,17 +1038,38 @@ impl SimpleTraceContext {
             }
             Primitive::Iota => {
                 // Iota: no inputs, output shape from params
-                let length = params
+                if !inputs.is_empty() {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 0 inputs, got {}", inputs.len()),
+                    });
+                }
+                let length_str = params
                     .get("length")
-                    .and_then(|s| s.trim().parse::<u32>().ok())
-                    .unwrap_or(0);
-                let dtype_str = params.get("dtype").map(String::as_str).unwrap_or("I64");
-                let dtype = match dtype_str {
-                    "F64" | "f64" => DType::F64,
-                    "U32" | "u32" => DType::U32,
-                    "U64" | "u64" => DType::U64,
-                    _ => DType::I64,
+                    .ok_or(TraceError::MissingPrimitiveParam {
+                        primitive,
+                        key: "length",
+                    })?;
+                let length: u32 =
+                    length_str
+                        .trim()
+                        .parse()
+                        .map_err(|_| TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "length",
+                            value: length_str.to_owned(),
+                        })?;
+                let dtype = if let Some(raw) = params.get("dtype") {
+                    parse_dtype_name(primitive, "dtype", raw)?
+                } else {
+                    DType::I64
                 };
+                if !matches!(dtype, DType::I64 | DType::I32 | DType::F64 | DType::F32) {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("unsupported dtype for iota: {dtype:?}"),
+                    });
+                }
                 Ok(vec![ShapedArray {
                     dtype,
                     shape: Shape::vector(length),
@@ -920,10 +1090,25 @@ impl SimpleTraceContext {
                     })?;
                 let dims = parse_u32_list(primitive, "shape", raw_shape)?;
                 let rank = dims.len();
-                let dimension = params
-                    .get("dimension")
-                    .and_then(|raw| raw.trim().parse::<usize>().ok())
-                    .unwrap_or(0);
+                let dimension = if let Some(raw) = params.get("dimension") {
+                    let trimmed = raw.trim();
+                    if trimmed.is_empty() {
+                        return Err(TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "dimension",
+                            value: raw.to_owned(),
+                        });
+                    }
+                    trimmed
+                        .parse::<usize>()
+                        .map_err(|_| TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "dimension",
+                            value: raw.to_owned(),
+                        })?
+                } else {
+                    0
+                };
                 if rank > 0 && dimension >= rank {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
@@ -935,6 +1120,12 @@ impl SimpleTraceContext {
                 } else {
                     DType::I64
                 };
+                if matches!(dtype, DType::Complex64 | DType::Complex128) {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: "broadcasted_iota does not support complex dtypes".to_owned(),
+                    });
+                }
                 Ok(vec![ShapedArray {
                     dtype,
                     shape: Shape { dims },
@@ -3353,7 +3544,7 @@ mod tests {
                     },
                 }]);
                 let mut params = BTreeMap::new();
-                params.insert("dimensions".to_owned(), "1".to_owned());
+                params.insert("axes".to_owned(), "1".to_owned());
                 let out = ctx
                     .process_primitive(Primitive::Rev, &[TracerId(1)], params)
                     .expect("rev inference should succeed");
@@ -4500,8 +4691,10 @@ mod tests {
                     dtype: DType::F64,
                     shape: Shape { dims: vec![2, 3] },
                 }]);
+                let mut rev_params = BTreeMap::new();
+                rev_params.insert("axes".to_owned(), "1".to_owned());
                 let rev_out = ctx
-                    .process_primitive(Primitive::Rev, &[TracerId(1)], BTreeMap::new())
+                    .process_primitive(Primitive::Rev, &[TracerId(1)], rev_params)
                     .map_err(|err| err.to_string())?;
                 let rev_aval = ctx
                     .tracer_aval(rev_out[0])
