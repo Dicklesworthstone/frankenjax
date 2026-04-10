@@ -357,7 +357,7 @@ fn decode_from_sidecar_records(
         object_id,
         manifest.artifact_size as u64,
         manifest.symbol_size,
-        manifest.source_blocks,
+        manifest.source_blocks as _,
         manifest.symbols_per_block,
     );
 

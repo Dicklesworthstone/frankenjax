@@ -301,6 +301,16 @@ impl Default for SimpleTraceContext {
 }
 
 impl SimpleTraceContext {
+    fn root_frame() -> TraceFrame {
+        TraceFrame {
+            trace_id: 1,
+            in_ids: Vec::new(),
+            const_ids: Vec::new(),
+            equations: Vec::new(),
+            last_output_ids: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -308,13 +318,7 @@ impl SimpleTraceContext {
             next_trace_id: 2,
             tracer_avals: BTreeMap::new(),
             const_values: BTreeMap::new(),
-            frame_stack: vec![TraceFrame {
-                trace_id: 1,
-                in_ids: Vec::new(),
-                const_ids: Vec::new(),
-                equations: Vec::new(),
-                last_output_ids: Vec::new(),
-            }],
+            frame_stack: vec![Self::root_frame()],
         }
     }
 
@@ -322,7 +326,14 @@ impl SimpleTraceContext {
     pub fn with_inputs(in_avals: Vec<ShapedArray>) -> Self {
         let mut ctx = Self::new();
         for aval in in_avals {
-            let _ = ctx.bind_input(aval);
+            let tracer_id = ctx.allocate_tracer(aval);
+            if let Some(frame) = ctx.frame_stack.last_mut() {
+                frame.in_ids.push(tracer_id);
+            } else {
+                let mut frame = Self::root_frame();
+                frame.in_ids.push(tracer_id);
+                ctx.frame_stack.push(frame);
+            }
         }
         ctx
     }
@@ -345,18 +356,26 @@ impl SimpleTraceContext {
         self.next_tracer_id
     }
 
-    pub fn bind_input(&mut self, aval: ShapedArray) -> TracerId {
+    pub fn bind_input(&mut self, aval: ShapedArray) -> Result<TracerId, TraceError> {
+        if self.frame_stack.is_empty() {
+            return Err(TraceError::CompositionViolation);
+        }
         let tracer_id = self.allocate_tracer(aval);
-        self.active_frame_mut().in_ids.push(tracer_id);
-        tracer_id
+        let frame = self.active_frame_mut()?;
+        frame.in_ids.push(tracer_id);
+        Ok(tracer_id)
     }
 
-    pub fn bind_const_value(&mut self, value: Value) -> TracerId {
+    pub fn bind_const_value(&mut self, value: Value) -> Result<TracerId, TraceError> {
+        if self.frame_stack.is_empty() {
+            return Err(TraceError::CompositionViolation);
+        }
         let aval = ShapedArray::from_value(&value);
         let tracer_id = self.allocate_tracer(aval);
         self.const_values.insert(tracer_id, value);
-        self.active_frame_mut().const_ids.push(tracer_id);
-        tracer_id
+        let frame = self.active_frame_mut()?;
+        frame.const_ids.push(tracer_id);
+        Ok(tracer_id)
     }
 
     pub fn push_subtrace(&mut self, in_avals: Vec<ShapedArray>) -> u64 {
@@ -414,6 +433,10 @@ impl SimpleTraceContext {
             let _ = self.tracer_aval(*tracer_id)?;
         }
 
+        if self.frame_stack.is_empty() {
+            return Err(TraceError::CompositionViolation);
+        }
+
         if primitive == Primitive::Switch && !params.contains_key("num_branches") {
             params.insert("num_branches".to_owned(), sub_jaxprs.len().to_string());
         }
@@ -423,7 +446,7 @@ impl SimpleTraceContext {
             .map(|aval| self.allocate_tracer(aval))
             .collect::<Vec<_>>();
 
-        let frame = self.active_frame_mut();
+        let frame = self.active_frame_mut()?;
         frame.equations.push(TraceEquation {
             primitive,
             inputs: input_ids.to_vec(),
@@ -436,16 +459,16 @@ impl SimpleTraceContext {
         Ok(output_ids)
     }
 
-    fn active_frame(&self) -> &TraceFrame {
+    fn active_frame(&self) -> Result<&TraceFrame, TraceError> {
         self.frame_stack
             .last()
-            .expect("trace context should always have at least one frame")
+            .ok_or(TraceError::CompositionViolation)
     }
 
-    fn active_frame_mut(&mut self) -> &mut TraceFrame {
+    fn active_frame_mut(&mut self) -> Result<&mut TraceFrame, TraceError> {
         self.frame_stack
             .last_mut()
-            .expect("trace context should always have at least one frame")
+            .ok_or(TraceError::CompositionViolation)
     }
 
     fn allocate_tracer(&mut self, aval: ShapedArray) -> TracerId {
@@ -1317,13 +1340,17 @@ impl TraceContext for SimpleTraceContext {
             .map(|tracer_id| self.tracer_aval(*tracer_id).cloned())
             .collect::<Result<Vec<_>, _>>()?;
 
+        if self.frame_stack.is_empty() {
+            return Err(TraceError::CompositionViolation);
+        }
+
         let output_avals = Self::infer_primitive_output_avals(primitive, &input_avals, &params)?;
         let output_ids = output_avals
             .into_iter()
             .map(|aval| self.allocate_tracer(aval))
             .collect::<Vec<_>>();
 
-        let frame = self.active_frame_mut();
+        let frame = self.active_frame_mut()?;
         frame.equations.push(TraceEquation {
             primitive,
             inputs: input_ids.to_vec(),
@@ -1362,7 +1389,7 @@ impl TraceToJaxpr for SimpleTraceContext {
             });
         }
 
-        let frame = self.active_frame();
+        let frame = self.active_frame()?;
         if trace.in_avals.len() != frame.in_ids.len() {
             return Err(TraceError::InvalidAbstractValue);
         }
@@ -2779,14 +2806,14 @@ where
     let input_refs: Vec<TracerRef> = in_avals
         .into_iter()
         .map(|aval| {
-            let id = ctx.borrow_mut().bind_input(aval.clone());
-            TracerRef {
+            let id = ctx.borrow_mut().bind_input(aval.clone())?;
+            Ok(TracerRef {
                 id,
                 aval,
                 ctx: Rc::clone(&ctx),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, TraceError>>()?;
 
     // Run the user's closure
     let output_refs = f(&input_refs);
@@ -2804,7 +2831,7 @@ where
     // Set the output tracer IDs on the active frame
     {
         let mut ctx_mut = ctx.borrow_mut();
-        let frame = ctx_mut.active_frame_mut();
+        let frame = ctx_mut.active_frame_mut()?;
         frame.last_output_ids = output_ids;
     }
 
@@ -2828,14 +2855,14 @@ where
     let input_refs: Vec<TracerRef> = in_avals
         .into_iter()
         .map(|aval| {
-            let id = ctx.borrow_mut().bind_input(aval.clone());
-            TracerRef {
+            let id = ctx.borrow_mut().bind_input(aval.clone())?;
+            Ok(TracerRef {
                 id,
                 aval,
                 ctx: Rc::clone(&ctx),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, TraceError>>()?;
 
     let output_refs = f(&input_refs)?;
     for output in &output_refs {
@@ -2847,7 +2874,7 @@ where
 
     {
         let mut ctx_mut = ctx.borrow_mut();
-        let frame = ctx_mut.active_frame_mut();
+        let frame = ctx_mut.active_frame_mut()?;
         frame.last_output_ids = output_ids;
     }
 
@@ -2898,7 +2925,8 @@ pub fn simulate_nested_trace_contexts(
 #[cfg(test)]
 mod tests {
     use super::{
-        JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceToJaxpr, TracerId,
+        JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceError, TraceToJaxpr,
+        TracerId,
     };
     use fj_core::{
         Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId,
@@ -3050,7 +3078,9 @@ mod tests {
                 }]);
 
                 let input_id = TracerId(1);
-                let const_id = ctx.bind_const_value(Value::scalar_f64(10.0));
+                let const_id = ctx
+                    .bind_const_value(Value::scalar_f64(10.0))
+                    .expect("const binding should succeed");
 
                 let mut reshape_params = BTreeMap::new();
                 reshape_params.insert("new_shape".to_owned(), "3,2".to_owned());
@@ -5329,7 +5359,10 @@ mod tests {
         assert!(foreign.jaxpr.equations.is_empty());
 
         let foreign_ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let foreign_id = foreign_ctx.borrow_mut().bind_input(aval.clone());
+        let foreign_id = foreign_ctx
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .expect("bind_input should succeed");
         let foreign_ref = TracerRef {
             id: foreign_id,
             aval: aval.clone(),
@@ -5349,7 +5382,10 @@ mod tests {
         };
 
         let ctx_a = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let id_a = ctx_a.borrow_mut().bind_input(aval.clone());
+        let id_a = ctx_a
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .expect("bind_input should succeed");
         let a = TracerRef {
             id: id_a,
             aval: aval.clone(),
@@ -5357,7 +5393,10 @@ mod tests {
         };
 
         let ctx_b = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let id_b = ctx_b.borrow_mut().bind_input(aval.clone());
+        let id_b = ctx_b
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .expect("bind_input should succeed");
         let b = TracerRef {
             id: id_b,
             aval: aval.clone(),
@@ -5381,7 +5420,10 @@ mod tests {
         };
 
         let ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let id = ctx.borrow_mut().bind_input(actual_aval);
+        let id = ctx
+            .borrow_mut()
+            .bind_input(actual_aval)
+            .expect("bind_input should succeed");
         let stale = TracerRef {
             id,
             aval: stale_aval,
@@ -5425,7 +5467,10 @@ mod tests {
         };
 
         let ctx_a = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let id_a = ctx_a.borrow_mut().bind_input(aval.clone());
+        let id_a = ctx_a
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .expect("bind_input should succeed");
         let a = TracerRef {
             id: id_a,
             aval: aval.clone(),
@@ -5433,7 +5478,10 @@ mod tests {
         };
 
         let ctx_b = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let id_b = ctx_b.borrow_mut().bind_input(aval.clone());
+        let id_b = ctx_b
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .expect("bind_input should succeed");
         let b = TracerRef {
             id: id_b,
             aval: aval.clone(),
@@ -5465,8 +5513,14 @@ mod tests {
         };
 
         let ctx = Rc::new(RefCell::new(SimpleTraceContext::new()));
-        let id_good = ctx.borrow_mut().bind_input(actual.clone());
-        let id_bad = ctx.borrow_mut().bind_input(actual);
+        let id_good = ctx
+            .borrow_mut()
+            .bind_input(actual.clone())
+            .expect("bind_input should succeed");
+        let id_bad = ctx
+            .borrow_mut()
+            .bind_input(actual)
+            .expect("bind_input should succeed");
         let good = TracerRef {
             id: id_good,
             aval: ShapedArray {
@@ -5483,6 +5537,37 @@ mod tests {
 
         let err = good.binary_op(Primitive::Add, &bad).unwrap_err();
         assert!(matches!(err, TraceError::TracerInvariantViolation { .. }));
+    }
+
+    #[test]
+    fn test_bind_input_fails_closed_with_empty_frame_stack() {
+        let mut ctx = SimpleTraceContext::new();
+        ctx.frame_stack.clear();
+
+        let err = ctx
+            .bind_input(ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            })
+            .unwrap_err();
+        assert!(matches!(err, TraceError::CompositionViolation));
+    }
+
+    #[test]
+    fn test_process_primitive_fails_closed_with_empty_frame_stack() {
+        let mut ctx = SimpleTraceContext::new();
+        let input_id = ctx
+            .bind_input(ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            })
+            .expect("bind_input should succeed");
+        ctx.frame_stack.clear();
+
+        let err = ctx
+            .process_primitive(Primitive::Neg, &[input_id], BTreeMap::new())
+            .unwrap_err();
+        assert!(matches!(err, TraceError::CompositionViolation));
     }
 
     #[test]

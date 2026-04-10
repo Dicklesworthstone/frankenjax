@@ -31,7 +31,10 @@ fuzz_target!(|data: &[u8]| {
             dtype: sample_dtype(&mut cursor),
             shape: common::sample_shape(&mut cursor, 4, 4),
         };
-        input_ids.push(trace_ctx.bind_input(aval));
+        let Ok(input_id) = trace_ctx.bind_input(aval) else {
+            return;
+        };
+        input_ids.push(input_id);
     }
 
     let params = sample_primitive_params(&mut cursor, primitive);
