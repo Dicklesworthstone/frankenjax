@@ -48,6 +48,7 @@ pub fn arb_shape() -> impl Strategy<Value = Shape> {
 
 pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
     prop_oneof![
+        // Arithmetic
         Just(Primitive::Add),
         Just(Primitive::Sub),
         Just(Primitive::Mul),
@@ -63,15 +64,18 @@ pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
         Just(Primitive::Floor),
         Just(Primitive::Ceil),
         Just(Primitive::Round),
+        // Trigonometric
         Just(Primitive::Sin),
         Just(Primitive::Cos),
         Just(Primitive::Tan),
         Just(Primitive::Asin),
         Just(Primitive::Acos),
         Just(Primitive::Atan),
+        // Hyperbolic
         Just(Primitive::Sinh),
         Just(Primitive::Cosh),
         Just(Primitive::Tanh),
+        // Additional math
         Just(Primitive::Expm1),
         Just(Primitive::Log1p),
         Just(Primitive::Sign),
@@ -80,26 +84,93 @@ pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
         Just(Primitive::Logistic),
         Just(Primitive::Erf),
         Just(Primitive::Erfc),
+        // Binary math
         Just(Primitive::Div),
         Just(Primitive::Rem),
         Just(Primitive::Atan2),
+        // Complex number primitives
         Just(Primitive::Complex),
         Just(Primitive::Conj),
         Just(Primitive::Real),
         Just(Primitive::Imag),
+        // Selection
         Just(Primitive::Select),
+        // Dot product
         Just(Primitive::Dot),
+        // Comparison
         Just(Primitive::Eq),
         Just(Primitive::Ne),
         Just(Primitive::Lt),
         Just(Primitive::Le),
         Just(Primitive::Gt),
         Just(Primitive::Ge),
+        // Reduction
         Just(Primitive::ReduceSum),
         Just(Primitive::ReduceMax),
         Just(Primitive::ReduceMin),
         Just(Primitive::ReduceProd),
+        Just(Primitive::ReduceAnd),
+        Just(Primitive::ReduceOr),
+        Just(Primitive::ReduceXor),
+        // Shape manipulation
+        Just(Primitive::Reshape),
+        Just(Primitive::Slice),
+        Just(Primitive::DynamicSlice),
+        Just(Primitive::DynamicUpdateSlice),
+        Just(Primitive::Gather),
+        Just(Primitive::Scatter),
+        Just(Primitive::Transpose),
+        Just(Primitive::BroadcastInDim),
+        Just(Primitive::Concatenate),
         Just(Primitive::Pad),
+        Just(Primitive::Rev),
+        Just(Primitive::Squeeze),
+        Just(Primitive::Split),
+        Just(Primitive::ExpandDims),
+        // Special math
+        Just(Primitive::Cbrt),
+        Just(Primitive::Lgamma),
+        Just(Primitive::Digamma),
+        Just(Primitive::ErfInv),
+        Just(Primitive::IsFinite),
+        Just(Primitive::IntegerPow),
+        Just(Primitive::Nextafter),
+        // Clamping
+        Just(Primitive::Clamp),
+        // Index generation
+        Just(Primitive::Iota),
+        Just(Primitive::BroadcastedIota),
+        // Utility operations
+        Just(Primitive::Copy),
+        Just(Primitive::BitcastConvertType),
+        Just(Primitive::ReducePrecision),
+        // Linear algebra
+        Just(Primitive::Cholesky),
+        Just(Primitive::Qr),
+        Just(Primitive::Svd),
+        Just(Primitive::TriangularSolve),
+        Just(Primitive::Eigh),
+        // FFT
+        Just(Primitive::Fft),
+        Just(Primitive::Ifft),
+        Just(Primitive::Rfft),
+        Just(Primitive::Irfft),
+        // Encoding
+        Just(Primitive::OneHot),
+        // Cumulative
+        Just(Primitive::Cumsum),
+        Just(Primitive::Cumprod),
+        // Sorting
+        Just(Primitive::Sort),
+        Just(Primitive::Argsort),
+        // Convolution
+        Just(Primitive::Conv),
+        // Control flow
+        Just(Primitive::Cond),
+        Just(Primitive::Scan),
+        Just(Primitive::While),
+        Just(Primitive::Switch),
+        // Bitwise
         Just(Primitive::BitwiseAnd),
         Just(Primitive::BitwiseOr),
         Just(Primitive::BitwiseXor),
@@ -107,6 +178,9 @@ pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
         Just(Primitive::ShiftLeft),
         Just(Primitive::ShiftRightArithmetic),
         Just(Primitive::ShiftRightLogical),
+        // Windowed reduction (pooling)
+        Just(Primitive::ReduceWindow),
+        // Integer intrinsics
         Just(Primitive::PopulationCount),
         Just(Primitive::CountLeadingZeros),
     ]
