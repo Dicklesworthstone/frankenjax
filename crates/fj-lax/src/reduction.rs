@@ -126,11 +126,14 @@ pub(crate) fn eval_reduce_axes(
         });
     }
 
-    // If no axes param, fall back to full reduction
+    // If no axes param, fall back to full reduction. Empty list means identity.
     let axes_str = match params.get("axes") {
-        Some(s) if !s.trim().is_empty() => s,
-        _ => return eval_reduce(primitive, inputs, int_init, float_init, int_op, float_op),
+        Some(s) => s,
+        None => return eval_reduce(primitive, inputs, int_init, float_init, int_op, float_op),
     };
+    if axes_str.trim().is_empty() {
+        return Ok(inputs[0].clone());
+    }
 
     match &inputs[0] {
         Value::Scalar(_) => Ok(inputs[0].clone()),
@@ -296,7 +299,11 @@ pub(crate) fn eval_reduce_bitwise_axes(
         });
     }
 
-    let reduce_all = !matches!(params.get("axes"), Some(s) if !s.trim().is_empty());
+    let axes_param = params.get("axes");
+    if axes_param.is_some_and(|raw_axes| raw_axes.trim().is_empty()) {
+        return Ok(inputs[0].clone());
+    }
+    let reduce_all = axes_param.is_none();
 
     match &inputs[0] {
         Value::Scalar(literal) => Ok(Value::Scalar(*literal)),
@@ -644,10 +651,7 @@ mod tests {
         val.as_f64_scalar().unwrap()
     }
     fn extract_i64(val: &Value) -> i64 {
-        match val {
-            Value::Scalar(Literal::I64(v)) => *v,
-            _ => panic!("expected i64 scalar"),
-        }
+        val.as_i64_scalar().expect("expected i64 scalar")
     }
     fn extract_f64_vec(val: &Value) -> Vec<f64> {
         val.as_tensor()

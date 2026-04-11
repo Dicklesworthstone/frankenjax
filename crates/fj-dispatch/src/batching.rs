@@ -593,10 +593,24 @@ fn batch_reduce(
     };
 
     // Parse the reduction axes from params
+    let axes_raw = params.get("axes");
     let axes = parse_axes(params)?;
 
     // Move batch dim to front for consistent handling
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let per_elem_rank = match &value {
+        Value::Scalar(_) => 0,
+        Value::Tensor(tensor) => tensor.rank().saturating_sub(1),
+    };
+
+    let axes = if axes_raw.is_none() {
+        if per_elem_rank == 0 {
+            return Ok(BatchTracer::batched(value, 0));
+        }
+        (0..per_elem_rank).collect()
+    } else {
+        axes
+    };
 
     // Shift reduction axes: since we moved batch to position 0,
     // all non-batch axes shift up by 1
@@ -2132,6 +2146,26 @@ mod tests {
         let vals = extract_f64_vec(&result.value);
         // Each row summed: [3, 7, 11]
         assert_eq!(vals, vec![3.0, 7.0, 11.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_reduce_sum_all_axes_default() {
+        let data: Vec<f64> = (1..=12).map(|x| x as f64).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[3, 2, 2], &data), 0);
+        let result = apply_batch_rule(Primitive::ReduceSum, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let vals = extract_f64_vec(&result.value);
+        assert_eq!(vals, vec![10.0, 26.0, 42.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_reduce_sum_empty_axes_noop() {
+        let input = BatchTracer::batched(make_f64_matrix(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params = BTreeMap::from([("axes".to_owned(), "".to_owned())]);
+        let result = apply_batch_rule(Primitive::ReduceSum, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let vals = extract_f64_vec(&result.value);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
 
     // ── Dot Product Tests ──────────────────────────────────────

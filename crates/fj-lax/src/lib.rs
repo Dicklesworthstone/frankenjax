@@ -2470,6 +2470,18 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_or_empty_axes_identity() {
+        let input = bool_tensor(&[2, 2], &[true, false, false, true]);
+        let out = eval_primitive(
+            Primitive::ReduceOr,
+            std::slice::from_ref(&input),
+            &axes_params(""),
+        )
+        .unwrap();
+        assert_eq!(out, input);
+    }
+
+    #[test]
     fn test_reduce_xor_integer() {
         let input = i64_tensor(&[3], &[1, 3, 2]);
         let out = eval_primitive(Primitive::ReduceXor, &[input], &no_params()).unwrap();
@@ -2520,6 +2532,18 @@ mod tests {
         let out = eval_primitive(Primitive::ReduceSum, &[input], &axes_params("1")).unwrap();
         let expected = Value::vector_i64(&[6, 15]).unwrap();
         assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn reduce_sum_empty_axes_identity() {
+        let input = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let out = eval_primitive(
+            Primitive::ReduceSum,
+            std::slice::from_ref(&input),
+            &axes_params(""),
+        )
+        .unwrap();
+        assert_eq!(out, input);
     }
 
     #[test]
