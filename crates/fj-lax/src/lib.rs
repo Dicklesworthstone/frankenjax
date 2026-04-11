@@ -460,6 +460,24 @@ fn eval_cond(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError>
         Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
         Value::Scalar(fj_core::Literal::U32(v)) => *v != 0,
         Value::Scalar(fj_core::Literal::U64(v)) => *v != 0,
+        Value::Scalar(fj_core::Literal::BF16Bits(bits)) => {
+            fj_core::Literal::BF16Bits(*bits)
+                .as_f64()
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "cond predicate must be a scalar".to_owned(),
+                })?
+                != 0.0
+        }
+        Value::Scalar(fj_core::Literal::F16Bits(bits)) => {
+            fj_core::Literal::F16Bits(*bits)
+                .as_f64()
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "cond predicate must be a scalar".to_owned(),
+                })?
+                != 0.0
+        }
         Value::Scalar(fj_core::Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
         _ => {
             return Err(EvalError::Unsupported {
@@ -872,7 +890,7 @@ fn value_shape_fingerprint(v: &Value) -> String {
 /// happens in the Jaxpr interpreter/backend, not here.
 ///
 /// params:
-///   - "num_branches": number of branches (required)
+///   - "num_branches": number of branches (optional; defaults to provided branch values)
 fn eval_switch(
     primitive: Primitive,
     inputs: &[Value],
@@ -905,9 +923,37 @@ fn eval_switch(
         }
     }
 
-    let index_val = match &inputs[0] {
-        Value::Scalar(Literal::I64(i)) => *i,
-        Value::Scalar(Literal::Bool(b)) => i64::from(*b),
+    let provided_branches = inputs.len().saturating_sub(1);
+    let num_branches = if let Some(raw) = params.get("num_branches") {
+        raw.parse::<usize>().map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid num_branches value: {raw}"),
+        })?
+    } else {
+        provided_branches
+    };
+    if num_branches != provided_branches {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "switch expected {num_branches} branch values but got {provided_branches}"
+            ),
+        });
+    }
+
+    let index_u64 = match &inputs[0] {
+        Value::Scalar(Literal::I64(i)) => {
+            if *i < 0 {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("switch index {i} out of bounds for {num_branches} branches"),
+                });
+            }
+            *i as u64
+        }
+        Value::Scalar(Literal::U32(v)) => u64::from(*v),
+        Value::Scalar(Literal::U64(v)) => *v,
+        Value::Scalar(Literal::Bool(b)) => u64::from(*b),
         other => {
             return Err(EvalError::Unsupported {
                 primitive,
@@ -916,20 +962,16 @@ fn eval_switch(
         }
     };
 
-    let num_branches = params
-        .get("num_branches")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(inputs.len().saturating_sub(1));
-
-    if index_val < 0 || index_val as usize >= num_branches {
+    let num_branches_u64 = num_branches as u64;
+    if index_u64 >= num_branches_u64 {
         return Err(EvalError::Unsupported {
             primitive,
-            detail: format!("switch index {index_val} out of bounds for {num_branches} branches"),
+            detail: format!("switch index {index_u64} out of bounds for {num_branches} branches"),
         });
     }
 
     // Branch values start at inputs[1]
-    let branch_idx = index_val as usize;
+    let branch_idx = index_u64 as usize;
     if branch_idx + 1 >= inputs.len() {
         return Err(EvalError::Unsupported {
             primitive,
@@ -4759,6 +4801,26 @@ mod tests {
     }
 
     #[test]
+    fn cond_f16_predicate_zero_is_false() {
+        let pred = Value::scalar_f16(0.0);
+        let true_val = Value::scalar_f64(1.0);
+        let false_val = Value::scalar_f64(2.0);
+        let params = BTreeMap::new();
+        let out = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &params).unwrap();
+        assert_eq!(out.as_f64_scalar().unwrap(), 2.0);
+    }
+
+    #[test]
+    fn cond_bf16_predicate_nonzero_is_true() {
+        let pred = Value::scalar_bf16(1.0);
+        let true_val = Value::scalar_f64(3.0);
+        let false_val = Value::scalar_f64(4.0);
+        let params = BTreeMap::new();
+        let out = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &params).unwrap();
+        assert_eq!(out.as_f64_scalar().unwrap(), 3.0);
+    }
+
+    #[test]
     fn cond_arity_error() {
         let params = BTreeMap::new();
         let result = eval_primitive(Primitive::Cond, &[Value::scalar_bool(true)], &params);
@@ -7265,6 +7327,47 @@ mod prop_tests {
         )
         .unwrap();
         assert_eq!(result, t1);
+    }
+
+    #[test]
+    fn test_switch_u32_index_selects_branch() {
+        let mut params = no_params();
+        params.insert("num_branches".into(), "2".into());
+
+        let result = eval_primitive(
+            Primitive::Switch,
+            &[
+                Value::scalar_u32(0),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(2.0),
+            ],
+            &params,
+        )
+        .unwrap();
+        assert_eq!(result, Value::scalar_f64(1.0));
+    }
+
+    #[test]
+    fn test_switch_rejects_mismatched_num_branches() {
+        let mut params = no_params();
+        params.insert("num_branches".into(), "3".into());
+
+        let result = eval_primitive(
+            Primitive::Switch,
+            &[
+                Value::scalar_i64(0),
+                Value::scalar_f64(1.0),
+                Value::scalar_f64(2.0),
+            ],
+            &params,
+        );
+        assert!(matches!(
+            result,
+            Err(EvalError::Unsupported {
+                primitive: Primitive::Switch,
+                ..
+            })
+        ));
     }
 
     #[test]

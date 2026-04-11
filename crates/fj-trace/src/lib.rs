@@ -1524,6 +1524,33 @@ impl SimpleTraceContext {
                         ),
                     });
                 }
+                let pred = &inputs[0];
+                if pred.shape != Shape::scalar() {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "cond predicate must be scalar, got shape {:?}",
+                            pred.shape.dims
+                        ),
+                    });
+                }
+                match pred.dtype {
+                    DType::Bool
+                    | DType::I64
+                    | DType::U32
+                    | DType::U64
+                    | DType::F64
+                    | DType::BF16
+                    | DType::F16 => {}
+                    other => {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "cond predicate must be bool or numeric, got {other:?}"
+                            ),
+                        });
+                    }
+                }
                 let true_branch = &inputs[1];
                 let false_branch = &inputs[2];
                 if true_branch.shape != false_branch.shape {
@@ -1600,6 +1627,25 @@ impl SimpleTraceContext {
                             inputs.len()
                         ),
                     });
+                }
+                let index = &inputs[0];
+                if index.shape != Shape::scalar() {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "switch index must be scalar, got shape {:?}",
+                            index.shape.dims
+                        ),
+                    });
+                }
+                match index.dtype {
+                    DType::Bool | DType::I64 | DType::U32 | DType::U64 => {}
+                    other => {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!("switch index must be integer, got {other:?}"),
+                        });
+                    }
                 }
                 let branch = &inputs[1];
                 for (idx, other_branch) in inputs.iter().enumerate().skip(2) {
@@ -5963,6 +6009,38 @@ mod tests {
     }
 
     #[test]
+    fn test_infer_cond_rejects_non_scalar_predicate() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::Bool,
+                shape: Shape::vector(2),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+        ]);
+        let err = ctx
+            .process_primitive(
+                Primitive::Cond,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                BTreeMap::new(),
+            )
+            .expect_err("cond non-scalar predicate should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Cond,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn test_infer_switch_rejects_mismatched_branch_shapes() {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
@@ -5985,6 +6063,38 @@ mod tests {
                 BTreeMap::new(),
             )
             .expect_err("switch branch shape mismatch should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Switch,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_infer_switch_rejects_non_integer_index() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+        ]);
+        let err = ctx
+            .process_primitive(
+                Primitive::Switch,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                BTreeMap::new(),
+            )
+            .expect_err("switch with non-integer index should be rejected");
         assert!(matches!(
             err,
             TraceError::ShapeInferenceFailed {
