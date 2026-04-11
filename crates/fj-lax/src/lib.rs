@@ -3642,6 +3642,19 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_slice_rejects_float_start() {
+        let x = Value::vector_i64(&[10, 20, 30, 40]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2".to_owned());
+        let result = eval_primitive(
+            Primitive::DynamicSlice,
+            &[x, Value::scalar_f64(1.0)],
+            &params,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn dynamic_slice_2d() {
         let t = TensorValue::new(
             DType::I64,
@@ -4056,6 +4069,30 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_update_slice_rejects_float_start() {
+        let operand = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let update = Value::vector_i64(&[9, 8]).unwrap();
+        let result = eval_primitive(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, Value::scalar_f64(1.0)],
+            &no_params(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn dynamic_update_slice_dtype_mismatch_errors() {
+        let operand = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let update = Value::vector_f64(&[9.0, 8.0]).unwrap();
+        let result = eval_primitive(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, Value::scalar_i64(0)],
+            &no_params(),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn dynamic_update_slice_arity_error() {
         let operand = Value::vector_i64(&[1, 2]).unwrap();
         let result = eval_primitive(Primitive::DynamicUpdateSlice, &[operand], &no_params());
@@ -4280,6 +4317,40 @@ mod tests {
             assert_eq!(t.shape.dims, vec![1, 3, 1]);
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 5.0, 7.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn conv_1d_preserves_f32_dtype() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                vec![1.0, 2.0, 3.0]
+                    .into_iter()
+                    .map(Literal::from_f64)
+                    .collect(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![2, 1, 1],
+                },
+                vec![1.0, 1.0].into_iter().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::F32);
+            assert_eq!(t.shape.dims, vec![1, 2, 1]);
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

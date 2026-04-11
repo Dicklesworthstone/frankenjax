@@ -1062,11 +1062,17 @@ impl SimpleTraceContext {
                             detail: format!("start index for axis {ax} must be a scalar"),
                         });
                     }
-                    if matches!(start_aval.dtype, DType::Complex64 | DType::Complex128) {
-                        return Err(TraceError::ShapeInferenceFailed {
-                            primitive,
-                            detail: format!("complex start index not supported for axis {ax}"),
-                        });
+                    match start_aval.dtype {
+                        DType::I32 | DType::I64 | DType::U32 | DType::U64 | DType::Bool => {}
+                        _ => {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: format!(
+                                    "start index for axis {ax} must be integral dtype, got {:?}",
+                                    start_aval.dtype
+                                ),
+                            });
+                        }
                     }
                 }
                 Ok(vec![ShapedArray {
@@ -1090,6 +1096,15 @@ impl SimpleTraceContext {
                     });
                 }
                 let update = &inputs[1];
+                if update.dtype != operand.dtype {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "update dtype {:?} does not match operand dtype {:?}",
+                            update.dtype, operand.dtype
+                        ),
+                    });
+                }
                 let rank = operand.shape.rank();
                 if update.shape.rank() != rank {
                     return Err(TraceError::ShapeInferenceFailed {
@@ -1131,11 +1146,17 @@ impl SimpleTraceContext {
                             detail: format!("start index for axis {ax} must be a scalar"),
                         });
                     }
-                    if matches!(start_aval.dtype, DType::Complex64 | DType::Complex128) {
-                        return Err(TraceError::ShapeInferenceFailed {
-                            primitive,
-                            detail: format!("complex start index not supported for axis {ax}"),
-                        });
+                    match start_aval.dtype {
+                        DType::I32 | DType::I64 | DType::U32 | DType::U64 | DType::Bool => {}
+                        _ => {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: format!(
+                                    "start index for axis {ax} must be integral dtype, got {:?}",
+                                    start_aval.dtype
+                                ),
+                            });
+                        }
                     }
                 }
                 Ok(vec![ShapedArray {
@@ -1303,7 +1324,9 @@ impl SimpleTraceContext {
             }
             Primitive::Conv => {
                 // Conv: output shape depends on input, kernel, strides, padding.
-                // For now: 1D conv with [batch, spatial, channels] layout.
+                // Supported layouts:
+                // 1D: lhs=[N, W, C_in], rhs=[K, C_in, C_out]
+                // 2D: lhs=[N, H, W, C_in], rhs=[KH, KW, C_in, C_out]
                 if inputs.len() != 2 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
@@ -1312,42 +1335,176 @@ impl SimpleTraceContext {
                 }
                 let lhs = &inputs[0];
                 let rhs = &inputs[1];
-                // Simple 1D: lhs=[N, W, C_in], rhs=[K, C_in, C_out]
-                // output=[N, W_out, C_out] where W_out depends on stride/padding
                 let lhs_rank = lhs.shape.rank();
-                if lhs_rank < 2 {
+                if lhs_rank != 3 && lhs_rank != 4 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
-                        detail: "lhs must have rank >= 2".to_owned(),
+                        detail: format!(
+                            "conv supports rank 3 (1D) and rank 4 (2D), got rank {lhs_rank}"
+                        ),
                     });
                 }
-                let strides: Vec<usize> = params
-                    .get("strides")
-                    .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
-                    .unwrap_or_else(|| vec![1; lhs_rank - 2]);
+
+                let is_float = |dtype: DType| {
+                    matches!(dtype, DType::BF16 | DType::F16 | DType::F32 | DType::F64)
+                };
+                if !is_float(lhs.dtype) || !is_float(rhs.dtype) {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "conv requires floating dtypes, got lhs {:?}, rhs {:?}",
+                            lhs.dtype, rhs.dtype
+                        ),
+                    });
+                }
+
                 let padding_mode = params.get("padding").map(String::as_str).unwrap_or("valid");
 
-                let mut out_dims = Vec::new();
-                out_dims.push(lhs.shape.dims[0]); // batch
-                for i in 0..(lhs_rank - 2) {
-                    let spatial = lhs.shape.dims[i + 1] as usize;
-                    let kernel = rhs.shape.dims[i] as usize;
-                    let stride = *strides.get(i).unwrap_or(&1);
-                    let out_spatial = match padding_mode {
-                        "same" | "SAME" => spatial.div_ceil(stride),
+                let out_dims = if lhs_rank == 3 {
+                    if rhs.shape.rank() != 3 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "1D conv kernel must have rank 3 [K, C_in, C_out], got rank {}",
+                                rhs.shape.rank()
+                            ),
+                        });
+                    }
+                    let width = lhs.shape.dims[1] as usize;
+                    let c_in = lhs.shape.dims[2] as usize;
+                    let kernel_w = rhs.shape.dims[0] as usize;
+                    let rhs_c_in = rhs.shape.dims[1] as usize;
+                    if c_in != rhs_c_in {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "channel mismatch: lhs c_in={c_in}, rhs c_in={rhs_c_in}"
+                            ),
+                        });
+                    }
+                    let c_out = rhs.shape.dims[2];
+                    let strides = params
+                        .get("strides")
+                        .map(|s| {
+                            s.split(',')
+                                .filter(|v| !v.trim().is_empty())
+                                .map(|v| v.trim().parse::<usize>().map_err(|_| v))
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .transpose()
+                        .map_err(|bad| TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "strides",
+                            value: bad.to_owned(),
+                        })?
+                        .unwrap_or_else(|| vec![1]);
+                    if strides.len() != 1 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "1D conv expects 1 stride value, got {}",
+                                strides.len()
+                            ),
+                        });
+                    }
+                    let stride = strides[0].max(1);
+                    let out_w = match padding_mode {
+                        "same" | "SAME" => width.div_ceil(stride),
                         _ => {
-                            // "valid" / default
-                            if spatial >= kernel {
-                                (spatial - kernel) / stride + 1
-                            } else {
-                                0
+                            if width < kernel_w {
+                                return Err(TraceError::ShapeInferenceFailed {
+                                    primitive,
+                                    detail: format!(
+                                        "input width {width} < kernel {kernel_w} with valid padding"
+                                    ),
+                                });
                             }
+                            (width - kernel_w) / stride + 1
                         }
                     };
-                    out_dims.push(out_spatial as u32);
-                }
-                // Last dim of rhs is output channels
-                out_dims.push(*rhs.shape.dims.last().unwrap_or(&1));
+                    vec![lhs.shape.dims[0], out_w as u32, c_out]
+                } else {
+                    if rhs.shape.rank() != 4 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "2D conv kernel must have rank 4 [KH, KW, C_in, C_out], got rank {}",
+                                rhs.shape.rank()
+                            ),
+                        });
+                    }
+                    let height = lhs.shape.dims[1] as usize;
+                    let width = lhs.shape.dims[2] as usize;
+                    let c_in = lhs.shape.dims[3] as usize;
+                    let kernel_h = rhs.shape.dims[0] as usize;
+                    let kernel_w = rhs.shape.dims[1] as usize;
+                    let rhs_c_in = rhs.shape.dims[2] as usize;
+                    if c_in != rhs_c_in {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "channel mismatch: lhs c_in={c_in}, rhs c_in={rhs_c_in}"
+                            ),
+                        });
+                    }
+                    let c_out = rhs.shape.dims[3];
+                    let strides = params
+                        .get("strides")
+                        .map(|s| {
+                            s.split(',')
+                                .filter(|v| !v.trim().is_empty())
+                                .map(|v| v.trim().parse::<usize>().map_err(|_| v))
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .transpose()
+                        .map_err(|bad| TraceError::InvalidPrimitiveParam {
+                            primitive,
+                            key: "strides",
+                            value: bad.to_owned(),
+                        })?
+                        .unwrap_or_else(|| vec![1, 1]);
+                    let (stride_h, stride_w) = match strides.as_slice() {
+                        [one] => (*one, *one),
+                        [h, w] => (*h, *w),
+                        _ => {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: format!(
+                                    "2D conv expects 1 or 2 stride values, got {}",
+                                    strides.len()
+                                ),
+                            });
+                        }
+                    };
+                    if padding_mode != "same" && padding_mode != "SAME" {
+                        if height < kernel_h {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: format!(
+                                    "input height {height} < kernel {kernel_h} with valid padding"
+                                ),
+                            });
+                        }
+                        if width < kernel_w {
+                            return Err(TraceError::ShapeInferenceFailed {
+                                primitive,
+                                detail: format!(
+                                    "input width {width} < kernel {kernel_w} with valid padding"
+                                ),
+                            });
+                        }
+                    }
+                    let out_h = match padding_mode {
+                        "same" | "SAME" => height.div_ceil(stride_h),
+                        _ => (height - kernel_h) / stride_h + 1,
+                    };
+                    let out_w = match padding_mode {
+                        "same" | "SAME" => width.div_ceil(stride_w),
+                        _ => (width - kernel_w) / stride_w + 1,
+                    };
+                    vec![lhs.shape.dims[0], out_h as u32, out_w as u32, c_out]
+                };
+
                 let dtype = promote_dtype(lhs.dtype, rhs.dtype);
                 Ok(vec![ShapedArray {
                     dtype,
@@ -6430,6 +6587,45 @@ mod tests {
     }
 
     #[test]
+    fn test_trace_dynamic_slice_rejects_float_start_dtype() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![3, 4] },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+        ]);
+
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2,2".to_owned());
+        let err = ctx
+            .process_primitive(
+                Primitive::DynamicSlice,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                params,
+            )
+            .expect_err("dynamic_slice should reject float start dtype");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::DynamicSlice,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("integral dtype"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn test_trace_dynamic_update_slice_rejects_oversized_update() {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
@@ -6467,6 +6663,84 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("update dim 3 exceeds operand dim 2 on axis 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_trace_dynamic_update_slice_rejects_dtype_mismatch() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![2, 2] },
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape { dims: vec![2, 2] },
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+        ]);
+
+        let err = ctx
+            .process_primitive(
+                Primitive::DynamicUpdateSlice,
+                &[TracerId(1), TracerId(2), TracerId(3), TracerId(4)],
+                BTreeMap::new(),
+            )
+            .expect_err("dynamic_update_slice should reject dtype mismatch");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::DynamicUpdateSlice,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("update dtype"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_trace_conv_rejects_non_float_dtype() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape {
+                    dims: vec![1, 3, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+
+        let err = ctx
+            .process_primitive(
+                Primitive::Conv,
+                &[TracerId(1), TracerId(2)],
+                BTreeMap::new(),
+            )
+            .expect_err("conv should reject non-float inputs");
+        assert!(matches!(
+            err,
+            super::TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Conv,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("floating dtypes"),
             "unexpected error: {err}"
         );
     }

@@ -4,7 +4,7 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::collections::BTreeMap;
 
 use crate::EvalError;
-use crate::type_promotion::binary_literal_op;
+use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Parse a comma-separated list of i64 values from a param string.
 pub(crate) fn parse_i64_param(
@@ -1432,13 +1432,6 @@ pub(crate) fn eval_dynamic_slice(
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
-                    Literal::BF16Bits(bits) => {
-                        Literal::BF16Bits(*bits).as_f64().unwrap_or_default() as i64
-                    }
-                    Literal::F16Bits(bits) => {
-                        Literal::F16Bits(*bits).as_f64().unwrap_or_default() as i64
-                    }
-                    Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => {
                         if *b {
                             1
@@ -1446,10 +1439,14 @@ pub(crate) fn eval_dynamic_slice(
                             0
                         }
                     }
-                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+                    Literal::BF16Bits(_)
+                    | Literal::F16Bits(_)
+                    | Literal::F64Bits(_)
+                    | Literal::Complex64Bits(..)
+                    | Literal::Complex128Bits(..) => {
                         return Err(EvalError::Unsupported {
                             primitive,
-                            detail: format!("complex start index not supported for axis {ax}"),
+                            detail: format!("start index for axis {ax} must be integral dtype"),
                         });
                     }
                 };
@@ -1556,6 +1553,12 @@ pub(crate) fn eval_dynamic_update_slice(
             });
         }
     };
+    if update.dtype != operand.dtype {
+        return Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "update dtype must match operand dtype",
+        });
+    }
 
     let rank = operand.shape.rank();
     if update.shape.rank() != rank {
@@ -1596,18 +1599,15 @@ pub(crate) fn eval_dynamic_update_slice(
                     Literal::I64(v) => *v,
                     Literal::U32(v) => i64::from(*v),
                     Literal::U64(v) => i64::try_from(*v).unwrap_or(i64::MAX),
-                    Literal::BF16Bits(bits) => {
-                        Literal::BF16Bits(*bits).as_f64().unwrap_or_default() as i64
-                    }
-                    Literal::F16Bits(bits) => {
-                        Literal::F16Bits(*bits).as_f64().unwrap_or_default() as i64
-                    }
-                    Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => i64::from(*b),
-                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+                    Literal::BF16Bits(_)
+                    | Literal::F16Bits(_)
+                    | Literal::F64Bits(_)
+                    | Literal::Complex64Bits(..)
+                    | Literal::Complex128Bits(..) => {
                         return Err(EvalError::Unsupported {
                             primitive,
-                            detail: format!("complex start index not supported for axis {ax}"),
+                            detail: format!("start index for axis {ax} must be integral dtype"),
                         });
                     }
                 };
@@ -2463,6 +2463,18 @@ pub(crate) fn eval_conv(
         }
     };
 
+    let is_float =
+        |dtype: DType| matches!(dtype, DType::BF16 | DType::F16 | DType::F32 | DType::F64);
+    if !is_float(lhs.dtype) || !is_float(rhs.dtype) {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "conv requires floating dtypes, got lhs {:?}, rhs {:?}",
+                lhs.dtype, rhs.dtype
+            ),
+        });
+    }
+
     let lhs_rank = lhs.shape.rank();
     if lhs_rank < 3 {
         return Err(EvalError::Unsupported {
@@ -2567,7 +2579,7 @@ fn eval_conv_1d(
     }
 
     Ok(Value::Tensor(TensorValue::new(
-        DType::F64,
+        promote_dtype(lhs.dtype, rhs.dtype),
         Shape {
             dims: vec![batch as u32, out_w as u32, c_out as u32],
         },
@@ -2671,7 +2683,7 @@ fn eval_conv_2d(
     }
 
     Ok(Value::Tensor(TensorValue::new(
-        DType::F64,
+        promote_dtype(lhs.dtype, rhs.dtype),
         Shape {
             dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
         },
