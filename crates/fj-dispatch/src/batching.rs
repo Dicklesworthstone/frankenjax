@@ -593,7 +593,7 @@ fn batch_reduce(
     };
 
     // Parse the reduction axes from params
-    let axes = parse_axes(params);
+    let axes = parse_axes(params)?;
 
     // Move batch dim to front for consistent handling
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
@@ -741,11 +741,11 @@ fn batch_reshape(
     let batch_size = tensor.shape.dims[0] as usize;
 
     // Parse target shape
-    let new_shape = parse_shape(params);
+    let new_shape = parse_shape(params)?;
 
     // Prepend batch dimension to new shape
     let mut batched_shape = Vec::with_capacity(new_shape.len() + 1);
-    batched_shape.push(batch_size as u32);
+    batched_shape.push(batch_size as i64);
     batched_shape.extend_from_slice(&new_shape);
 
     let mut new_params = params.clone();
@@ -776,8 +776,13 @@ fn batch_transpose(
     // Move batch to front
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
+    let tensor = value
+        .as_tensor()
+        .ok_or(BatchError::BatchDimMoveError("expected tensor".into()))?;
+    let per_elem_rank = tensor.shape.rank().saturating_sub(1);
+
     // Parse permutation
-    let perm = parse_permutation(params);
+    let perm = parse_permutation(params, per_elem_rank)?;
 
     // Adjust permutation: batch is at 0, shift all perm indices by +1
     let mut adjusted_perm = Vec::with_capacity(perm.len() + 1);
@@ -819,13 +824,19 @@ fn batch_broadcast_in_dim(
     let batch_size = tensor.shape.dims[0] as usize;
 
     // Parse target shape and broadcast_dimensions
-    let target_shape = parse_param_usize_list(params, "shape");
+    let target_shape = parse_param_usize_list(params, "shape")?;
     let raw_broadcast_dims = params.get("broadcast_dimensions");
-    let mut broadcast_dims = raw_broadcast_dims
-        .map(|raw| parse_usize_list(raw))
-        .unwrap_or_default();
+    let mut broadcast_dims = if let Some(raw) = raw_broadcast_dims {
+        if is_empty_list(raw) {
+            Vec::new()
+        } else {
+            parse_usize_list(raw, "broadcast_dimensions")?
+        }
+    } else {
+        Vec::new()
+    };
     let per_elem_rank = tensor.shape.rank().saturating_sub(1);
-    let needs_default = raw_broadcast_dims.is_none_or(|raw| raw.trim().is_empty());
+    let needs_default = raw_broadcast_dims.is_none_or(|raw| is_empty_list(raw));
     if needs_default && per_elem_rank > 0 {
         if per_elem_rank > target_shape.len() {
             return Err(BatchError::EvalError(format!(
@@ -840,9 +851,9 @@ fn batch_broadcast_in_dim(
 
     // Add batch to target shape and shift broadcast dimensions
     let mut new_shape = Vec::with_capacity(target_shape.len() + 1);
-    new_shape.push(batch_size as u32);
+    new_shape.push(batch_size);
     for &d in &target_shape {
-        new_shape.push(d as u32);
+        new_shape.push(d);
     }
 
     let mut new_broadcast_dims: Vec<usize> = Vec::with_capacity(broadcast_dims.len() + 1);
@@ -885,9 +896,9 @@ fn batch_slice(
     let batch_size = tensor.shape.dims[0] as usize;
 
     // Parse slice params: start_indices, limit_indices, strides
-    let starts = parse_param_usize_list(params, "start_indices");
-    let limits = parse_param_usize_list(params, "limit_indices");
-    let strides = parse_param_usize_list(params, "strides");
+    let starts = parse_param_usize_list(params, "start_indices")?;
+    let limits = parse_param_usize_list(params, "limit_indices")?;
+    let strides = parse_param_usize_list(params, "strides")?;
 
     // Prepend batch dimension (full slice)
     let mut new_starts = vec![0_usize];
@@ -937,7 +948,7 @@ fn batch_concatenate(
     let values = values?;
 
     // Shift concatenation axis by 1
-    let axis = parse_param_usize(params, "dimension").unwrap_or(0);
+    let axis = parse_param_usize(params, "dimension")?.unwrap_or(0);
     let mut new_params = params.clone();
     new_params.insert("dimension".to_owned(), (axis + 1).to_string());
     let result = eval_primitive(Primitive::Concatenate, &values, &new_params)
@@ -970,9 +981,9 @@ fn batch_pad(
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
     // Parse padding config: low, high, interior per dimension
-    let low = parse_param_i64_list(params, "padding_low");
-    let high = parse_param_i64_list(params, "padding_high");
-    let interior = parse_param_i64_list(params, "padding_interior");
+    let low = parse_param_i64_list(params, "padding_low")?;
+    let high = parse_param_i64_list(params, "padding_high")?;
+    let interior = parse_param_i64_list(params, "padding_interior")?;
 
     // Prepend zero padding for batch dimension
     let mut new_low = vec![0_i64];
@@ -1141,7 +1152,7 @@ fn batch_cumulative(
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
     // Shift axis by 1
-    let axis = parse_param_usize(params, "axis").unwrap_or(0);
+    let axis = parse_param_usize(params, "axis")?.unwrap_or(0);
     let mut new_params = params.clone();
     new_params.insert("axis".to_owned(), (axis + 1).to_string());
     let result = eval_primitive(primitive, &[value], &new_params)
@@ -1170,7 +1181,7 @@ fn batch_sort(
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
     // Shift sort dimension by 1
-    let dim = parse_param_usize(params, "dimension").unwrap_or(0);
+    let dim = parse_param_usize(params, "dimension")?.unwrap_or(0);
     let mut new_params = params.clone();
     new_params.insert("dimension".to_owned(), (dim + 1).to_string());
     let result = eval_primitive(primitive, &[value], &new_params)
@@ -1236,8 +1247,8 @@ fn batch_reduce_window(
     // Move batch to front, then prepend identity window for batch dim
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
-    let window_dims = parse_param_usize_list(params, "window_dimensions");
-    let window_strides = parse_param_usize_list(params, "window_strides");
+    let window_dims = parse_param_usize_list(params, "window_dimensions")?;
+    let window_strides = parse_param_usize_list(params, "window_strides")?;
     let padding_str = params.get("padding").cloned().unwrap_or_default();
 
     // Prepend size-1, stride-1 for batch dimension
@@ -1819,61 +1830,130 @@ pub fn batch_eval_jaxpr_with_consts(
 
 // ── Parameter Parsing Helpers ──────────────────────────────────────
 
-fn parse_axes(params: &BTreeMap<String, String>) -> Vec<usize> {
-    params
-        .get("axes")
-        .map(|s| parse_usize_list(s))
-        .unwrap_or_default()
+fn is_empty_list(raw: &str) -> bool {
+    let trimmed = raw.trim();
+    trimmed.is_empty()
+        || trimmed
+            .trim_matches(|c| c == '[' || c == ']')
+            .trim()
+            .is_empty()
 }
 
-fn parse_shape(params: &BTreeMap<String, String>) -> Vec<u32> {
-    params
+fn parse_axes(params: &BTreeMap<String, String>) -> Result<Vec<usize>, BatchError> {
+    match params.get("axes") {
+        None => Ok(Vec::new()),
+        Some(raw) if is_empty_list(raw) => Ok(Vec::new()),
+        Some(raw) => parse_usize_list(raw, "axes"),
+    }
+}
+
+fn parse_shape(params: &BTreeMap<String, String>) -> Result<Vec<i64>, BatchError> {
+    let raw = params
         .get("new_shape")
-        .map(|s| {
-            s.trim_matches(|c| c == '[' || c == ']')
-                .split(',')
-                .filter_map(|x| x.trim().parse::<u32>().ok())
-                .collect()
-        })
-        .unwrap_or_default()
+        .ok_or_else(|| BatchError::EvalError("missing required param 'new_shape'".to_owned()))?;
+    parse_i64_list(raw, "new_shape")
 }
 
-fn parse_permutation(params: &BTreeMap<String, String>) -> Vec<usize> {
-    params
-        .get("permutation")
-        .map(|s| parse_usize_list(s))
-        .unwrap_or_default()
+fn parse_permutation(
+    params: &BTreeMap<String, String>,
+    rank: usize,
+) -> Result<Vec<usize>, BatchError> {
+    match params.get("permutation") {
+        None => Ok((0..rank).rev().collect()),
+        Some(raw) => parse_usize_list(raw, "permutation"),
+    }
 }
 
-fn parse_param_usize_list(params: &BTreeMap<String, String>, key: &str) -> Vec<usize> {
-    params
+fn parse_param_usize_list(
+    params: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Vec<usize>, BatchError> {
+    let raw = params
         .get(key)
-        .map(|s| parse_usize_list(s))
-        .unwrap_or_default()
+        .ok_or_else(|| BatchError::EvalError(format!("missing required param '{key}'")))?;
+    parse_usize_list(raw, key)
 }
 
-fn parse_param_i64_list(params: &BTreeMap<String, String>, key: &str) -> Vec<i64> {
-    params
+fn parse_param_i64_list(
+    params: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Vec<i64>, BatchError> {
+    let raw = params
         .get(key)
-        .map(|s| parse_i64_list(s))
-        .unwrap_or_default()
+        .ok_or_else(|| BatchError::EvalError(format!("missing required param '{key}'")))?;
+    parse_i64_list(raw, key)
 }
 
-fn parse_param_usize(params: &BTreeMap<String, String>, key: &str) -> Option<usize> {
-    params.get(key).and_then(|s| s.trim().parse().ok())
+fn parse_param_usize(
+    params: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<usize>, BatchError> {
+    match params.get(key) {
+        None => Ok(None),
+        Some(raw) if raw.trim().is_empty() => Ok(None),
+        Some(raw) => {
+            raw.trim().parse::<usize>().map(Some).map_err(|_| {
+                BatchError::EvalError(format!("invalid usize in param '{key}': '{raw}'"))
+            })
+        }
+    }
 }
 
-fn parse_usize_list(s: &str) -> Vec<usize> {
-    s.trim_matches(|c| c == '[' || c == ']')
+fn parse_usize_list(raw: &str, key: &str) -> Result<Vec<usize>, BatchError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(BatchError::EvalError(format!(
+            "empty list for param '{key}'"
+        )));
+    }
+    let inner = trimmed.trim_matches(|c| c == '[' || c == ']');
+    if inner.trim().is_empty() {
+        return Err(BatchError::EvalError(format!(
+            "empty list for param '{key}'"
+        )));
+    }
+    inner
         .split(',')
-        .filter_map(|x| x.trim().parse::<usize>().ok())
+        .map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err(BatchError::EvalError(format!(
+                    "empty token in param '{key}'"
+                )));
+            }
+            part.parse::<usize>().map_err(|_| {
+                BatchError::EvalError(format!("invalid usize in param '{key}': '{part}'"))
+            })
+        })
         .collect()
 }
 
-fn parse_i64_list(s: &str) -> Vec<i64> {
-    s.trim_matches(|c| c == '[' || c == ']')
+fn parse_i64_list(raw: &str, key: &str) -> Result<Vec<i64>, BatchError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(BatchError::EvalError(format!(
+            "empty list for param '{key}'"
+        )));
+    }
+    let inner = trimmed.trim_matches(|c| c == '[' || c == ']');
+    if inner.trim().is_empty() {
+        return Err(BatchError::EvalError(format!(
+            "empty list for param '{key}'"
+        )));
+    }
+    inner
         .split(',')
-        .filter_map(|x| x.trim().parse::<i64>().ok())
+        .map(|part| {
+            let part = part.trim();
+            if part.is_empty() {
+                return Err(BatchError::EvalError(format!(
+                    "empty token in param '{key}'"
+                )));
+            }
+            part.parse::<i64>().map_err(|_| {
+                BatchError::EvalError(format!("invalid i64 in param '{key}': '{part}'"))
+            })
+        })
         .collect()
 }
 
@@ -1913,6 +1993,21 @@ mod tests {
                 DType::F64,
                 Shape {
                     dims: vec![rows as u32, cols as u32],
+                },
+                data.iter()
+                    .map(|&x| Literal::F64Bits(x.to_bits()))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn make_f64_tensor(dims: &[u32], data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: dims.to_vec(),
                 },
                 data.iter()
                     .map(|&x| Literal::F64Bits(x.to_bits()))
@@ -2082,6 +2177,22 @@ mod tests {
         assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
     }
 
+    #[test]
+    fn test_batch_trace_transpose_default_perm() {
+        // Default permutation should reverse per-element axes.
+        let data: Vec<f64> = (0..12).map(|x| x as f64).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 2, 3], &data), 0);
+        let result = apply_batch_rule(Primitive::Transpose, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
+        let vals = extract_f64_vec(&result.value);
+        assert_eq!(
+            vals,
+            vec![0.0, 3.0, 1.0, 4.0, 2.0, 5.0, 6.0, 9.0, 7.0, 10.0, 8.0, 11.0]
+        );
+    }
+
     // ── Reshape Tests ──────────────────────────────────────────
 
     #[test]
@@ -2107,6 +2218,19 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         let tensor = result.value.as_tensor().unwrap();
         assert_eq!(tensor.shape.dims, vec![3, 4]);
+    }
+
+    #[test]
+    fn test_batch_trace_reshape_with_inferred_dim() {
+        let data: Vec<f64> = (0..12).map(|x| x as f64).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 2, 3], &data), 0);
+        let params = BTreeMap::from([("new_shape".to_owned(), "-1, 2".to_owned())]);
+        let result = apply_batch_rule(Primitive::Reshape, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
+        let vals = extract_f64_vec(&result.value);
+        assert_eq!(vals, data);
     }
 
     // ── Jaxpr-Level Batch Evaluation ───────────────────────────
