@@ -438,6 +438,23 @@ fn eval_cond(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError>
             actual: inputs.len(),
         });
     }
+    let true_shape = value_shape(&inputs[1]);
+    let false_shape = value_shape(&inputs[2]);
+    if true_shape != false_shape {
+        return Err(EvalError::ShapeMismatch {
+            primitive,
+            left: true_shape,
+            right: false_shape,
+        });
+    }
+    let true_dtype = inputs[1].dtype();
+    let false_dtype = inputs[2].dtype();
+    if true_dtype != false_dtype {
+        return Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "cond branches must have same dtype",
+        });
+    }
     let pred = match &inputs[0] {
         Value::Scalar(fj_core::Literal::Bool(b)) => *b,
         Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
@@ -455,6 +472,13 @@ fn eval_cond(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError>
         Ok(inputs[1].clone())
     } else {
         Ok(inputs[2].clone())
+    }
+}
+
+fn value_shape(value: &Value) -> Shape {
+    match value {
+        Value::Scalar(_) => Shape::scalar(),
+        Value::Tensor(t) => t.shape.clone(),
     }
 }
 
@@ -860,6 +884,25 @@ fn eval_switch(
             expected: 2,
             actual: inputs.len(),
         });
+    }
+
+    let expected_shape = value_shape(&inputs[1]);
+    let expected_dtype = inputs[1].dtype();
+    for (_idx, branch) in inputs.iter().enumerate().skip(2) {
+        let other_shape = value_shape(branch);
+        if other_shape != expected_shape {
+            return Err(EvalError::ShapeMismatch {
+                primitive,
+                left: expected_shape,
+                right: other_shape,
+            });
+        }
+        if branch.dtype() != expected_dtype {
+            return Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "switch branches must have same dtype",
+            });
+        }
     }
 
     let index_val = match &inputs[0] {
@@ -4674,6 +4717,38 @@ mod tests {
     }
 
     #[test]
+    fn cond_branch_dtype_mismatch_errors() {
+        let pred = Value::scalar_bool(true);
+        let true_val = Value::scalar_f64(1.0);
+        let false_val = Value::scalar_i64(2);
+        let params = BTreeMap::new();
+        let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &params);
+        assert!(matches!(
+            result,
+            Err(EvalError::TypeMismatch {
+                primitive: Primitive::Cond,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn cond_branch_shape_mismatch_errors() {
+        let pred = Value::scalar_bool(true);
+        let true_val = Value::vector_f64(&[1.0, 2.0]).unwrap();
+        let false_val = Value::vector_f64(&[1.0]).unwrap();
+        let params = BTreeMap::new();
+        let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &params);
+        assert!(matches!(
+            result,
+            Err(EvalError::ShapeMismatch {
+                primitive: Primitive::Cond,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn cond_i64_pred_nonzero_is_true() {
         let pred = Value::scalar_i64(1);
         let true_val = Value::scalar_f64(10.0);
@@ -7190,6 +7265,46 @@ mod prop_tests {
         )
         .unwrap();
         assert_eq!(result, t1);
+    }
+
+    #[test]
+    fn test_switch_branch_dtype_mismatch_errors() {
+        let mut params = no_params();
+        params.insert("num_branches".into(), "2".into());
+
+        let result = eval_primitive(
+            Primitive::Switch,
+            &[
+                Value::scalar_i64(0),
+                Value::scalar_f64(10.0),
+                Value::scalar_i64(20),
+            ],
+            &params,
+        );
+        assert!(matches!(
+            result,
+            Err(EvalError::TypeMismatch {
+                primitive: Primitive::Switch,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn test_switch_branch_shape_mismatch_errors() {
+        let mut params = no_params();
+        params.insert("num_branches".into(), "2".into());
+
+        let t0 = Value::vector_f64(&[1.0]).unwrap();
+        let t1 = Value::vector_f64(&[1.0, 2.0]).unwrap();
+        let result = eval_primitive(Primitive::Switch, &[Value::scalar_i64(0), t0, t1], &params);
+        assert!(matches!(
+            result,
+            Err(EvalError::ShapeMismatch {
+                primitive: Primitive::Switch,
+                ..
+            })
+        ));
     }
 
     // ── fori_loop tests ──────────────────────────────────────────────

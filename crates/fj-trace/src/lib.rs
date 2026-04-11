@@ -1535,7 +1535,16 @@ impl SimpleTraceContext {
                         ),
                     });
                 }
-                let dtype = promote_dtype(true_branch.dtype, false_branch.dtype);
+                if true_branch.dtype != false_branch.dtype {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!(
+                            "cond branches must have same dtype: {:?} vs {:?}",
+                            true_branch.dtype, false_branch.dtype
+                        ),
+                    });
+                }
+                let dtype = true_branch.dtype;
                 Ok(vec![ShapedArray {
                     dtype,
                     shape: true_branch.shape.clone(),
@@ -1593,6 +1602,26 @@ impl SimpleTraceContext {
                     });
                 }
                 let branch = &inputs[1];
+                for (idx, other_branch) in inputs.iter().enumerate().skip(2) {
+                    if other_branch.shape != branch.shape {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "switch branch {idx} shape {:?} does not match {:?}",
+                                other_branch.shape.dims, branch.shape.dims
+                            ),
+                        });
+                    }
+                    if other_branch.dtype != branch.dtype {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "switch branch {idx} dtype {:?} does not match {:?}",
+                                other_branch.dtype, branch.dtype
+                            ),
+                        });
+                    }
+                }
                 Ok(vec![ShapedArray {
                     dtype: branch.dtype,
                     shape: branch.shape.clone(),
@@ -5899,6 +5928,70 @@ mod tests {
                 sub_jaxprs: vec![],
             }],
         )
+    }
+
+    #[test]
+    fn test_infer_cond_rejects_branch_dtype_mismatch() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::Bool,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+        ]);
+        let err = ctx
+            .process_primitive(
+                Primitive::Cond,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                BTreeMap::new(),
+            )
+            .expect_err("cond dtype mismatch should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Cond,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_infer_switch_rejects_mismatched_branch_shapes() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::I64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::vector(2),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::vector(3),
+            },
+        ]);
+        let err = ctx
+            .process_primitive(
+                Primitive::Switch,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                BTreeMap::new(),
+            )
+            .expect_err("switch branch shape mismatch should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Switch,
+                ..
+            }
+        ));
     }
 
     #[test]
