@@ -140,9 +140,15 @@ pub fn eval_primitive(
 ) -> Result<Value, EvalError> {
     match primitive {
         // Binary arithmetic
-        Primitive::Add => eval_binary_elementwise(primitive, inputs, |a, b| a + b, |a, b| a + b),
-        Primitive::Sub => eval_binary_elementwise(primitive, inputs, |a, b| a - b, |a, b| a - b),
-        Primitive::Mul => eval_binary_elementwise(primitive, inputs, |a, b| a * b, |a, b| a * b),
+        Primitive::Add => {
+            eval_binary_elementwise(primitive, inputs, |a, b| a.wrapping_add(b), |a, b| a + b)
+        }
+        Primitive::Sub => {
+            eval_binary_elementwise(primitive, inputs, |a, b| a.wrapping_sub(b), |a, b| a - b)
+        }
+        Primitive::Mul => {
+            eval_binary_elementwise(primitive, inputs, |a, b| a.wrapping_mul(b), |a, b| a * b)
+        }
         Primitive::Max => eval_binary_elementwise(primitive, inputs, |a, b| a.max(b), f64::max),
         Primitive::Min => eval_binary_elementwise(primitive, inputs, |a, b| a.min(b), f64::min),
         Primitive::Pow => eval_binary_elementwise(
@@ -215,13 +221,13 @@ pub fn eval_primitive(
         Primitive::Div => eval_binary_elementwise(
             primitive,
             inputs,
-            |a, b| if b != 0 { a / b } else { 0 },
+            |a, b| a.checked_div(b).unwrap_or(0),
             |a, b| a / b,
         ),
         Primitive::Rem => eval_binary_elementwise(
             primitive,
             inputs,
-            |a, b| if b != 0 { a % b } else { 0 },
+            |a, b| a.checked_rem(b).unwrap_or(0),
             |a, b| a % b,
         ),
         Primitive::Atan2 => eval_binary_elementwise(
@@ -1409,6 +1415,17 @@ mod tests {
     }
 
     #[test]
+    fn add_i64_overflow_wraps() {
+        let out = eval_primitive(
+            Primitive::Add,
+            &[Value::scalar_i64(i64::MAX), Value::scalar_i64(1)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_i64(i64::MIN));
+    }
+
+    #[test]
     fn add_vector_and_scalar_broadcasts() {
         let input = Value::vector_i64(&[1, 2, 3]).expect("vector value should build");
         let out = eval_primitive(Primitive::Add, &[input, Value::scalar_i64(2)], &no_params())
@@ -1429,6 +1446,17 @@ mod tests {
     }
 
     #[test]
+    fn sub_i64_overflow_wraps() {
+        let out = eval_primitive(
+            Primitive::Sub,
+            &[Value::scalar_i64(i64::MIN), Value::scalar_i64(1)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_i64(i64::MAX));
+    }
+
+    #[test]
     fn sub_f64_scalars() {
         let out = eval_primitive(
             Primitive::Sub,
@@ -1444,6 +1472,13 @@ mod tests {
     fn neg_i64_scalar() {
         let out = eval_primitive(Primitive::Neg, &[Value::scalar_i64(7)], &no_params());
         assert_eq!(out, Ok(Value::scalar_i64(-7)));
+    }
+
+    #[test]
+    fn neg_i64_min_wraps() {
+        let out =
+            eval_primitive(Primitive::Neg, &[Value::scalar_i64(i64::MIN)], &no_params()).unwrap();
+        assert_eq!(out, Value::scalar_i64(i64::MIN));
     }
 
     #[test]
@@ -1469,6 +1504,13 @@ mod tests {
     fn abs_negative_i64() {
         let out = eval_primitive(Primitive::Abs, &[Value::scalar_i64(-42)], &no_params());
         assert_eq!(out, Ok(Value::scalar_i64(42)));
+    }
+
+    #[test]
+    fn abs_i64_min_wraps() {
+        let out =
+            eval_primitive(Primitive::Abs, &[Value::scalar_i64(i64::MIN)], &no_params()).unwrap();
+        assert_eq!(out, Value::scalar_i64(i64::MIN));
     }
 
     #[test]
@@ -3119,6 +3161,25 @@ mod tests {
     }
 
     #[test]
+    fn scatter_add_mode_i64_accumulates() {
+        let operand = Value::vector_i64(&[0, 0, 0]).unwrap();
+        let indices = Value::vector_i64(&[1, 1]).unwrap();
+        let updates = Value::vector_i64(&[10, 20]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("mode".into(), "add".into());
+
+        let out =
+            eval_primitive(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.elements[0], Literal::I64(0));
+            assert_eq!(t.elements[1], Literal::I64(30));
+            assert_eq!(t.elements[2], Literal::I64(0));
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
     fn scatter_add_preserves_existing_values() {
         // operand: [100.0, 200.0, 300.0]
         // indices: [0]
@@ -3187,6 +3248,16 @@ mod tests {
         params.insert("slice_sizes".into(), "1,5".into());
         let result = eval_primitive(Primitive::Gather, &[operand, indices], &params);
         assert!(result.is_err(), "slice_sizes[1]=5 exceeds dim=2");
+    }
+
+    #[test]
+    fn gather_axis0_slice_size_must_be_one() {
+        let operand = Value::vector_i64(&[10, 20, 30, 40]).unwrap();
+        let indices = Value::vector_i64(&[1]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".into(), "2".into());
+        let result = eval_primitive(Primitive::Gather, &[operand, indices], &params);
+        assert!(result.is_err(), "slice_sizes[0] != 1 should be rejected");
     }
 
     #[test]
@@ -3263,6 +3334,65 @@ mod tests {
             result.is_err(),
             "updates element count mismatch should error"
         );
+    }
+
+    #[test]
+    fn scatter_updates_shape_dims_mismatch_rejected() {
+        // operand [2,2], indices [2], updates [4] (same element count, wrong shape)
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let indices = Value::vector_i64(&[0, 1]).unwrap();
+        let updates = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape::vector(4),
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let result = eval_primitive(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &no_params(),
+        );
+        assert!(matches!(result, Err(EvalError::ShapeMismatch { .. })));
+    }
+
+    #[test]
+    fn scatter_scalar_update_for_scalar_index() {
+        let operand = Value::vector_i64(&[0, 0, 0]).unwrap();
+        let indices = Value::scalar_i64(1);
+        let updates = Value::scalar_i64(7);
+        let out = eval_primitive(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &no_params(),
+        )
+        .unwrap();
+        if let Value::Tensor(t) = &out {
+            assert_eq!(
+                t.elements,
+                vec![Literal::I64(0), Literal::I64(7), Literal::I64(0)]
+            );
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
     }
 
     // ===================================================================

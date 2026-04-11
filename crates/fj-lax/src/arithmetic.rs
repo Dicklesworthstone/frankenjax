@@ -877,7 +877,7 @@ pub(crate) fn eval_neg(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         eval_unary_int_or_float(
             primitive,
             inputs,
-            |x| -x,
+            i64::wrapping_neg,
             u32::wrapping_neg,
             u64::wrapping_neg,
             |x| -x,
@@ -892,7 +892,7 @@ pub(crate) fn eval_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         eval_unary_int_or_float(
             primitive,
             inputs,
-            i64::abs,
+            i64::wrapping_abs,
             std::convert::identity,
             std::convert::identity,
             f64::abs,
@@ -2127,10 +2127,14 @@ mod tests {
             |a, b| a * b,
         )
         .unwrap();
-        match result {
-            Value::Scalar(Literal::I64(v)) => assert_eq!(v, 42),
-            _ => panic!("expected i64 scalar"),
-        }
+        assert!(
+            matches!(result, Value::Scalar(Literal::I64(_))),
+            "expected i64 scalar"
+        );
+        let Value::Scalar(Literal::I64(v)) = result else {
+            return;
+        };
+        assert_eq!(v, 42);
     }
 
     #[test]
@@ -2235,26 +2239,30 @@ mod tests {
     #[test]
     fn complex_construction() {
         let result = eval_complex(Primitive::Complex, &[s_f64(3.0), s_f64(4.0)]).unwrap();
-        match result {
-            Value::Scalar(Literal::Complex128Bits(re, im)) => {
-                assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
-                assert!((f64::from_bits(im) - 4.0).abs() < 1e-12);
-            }
-            _ => panic!("expected complex scalar"),
-        }
+        assert!(
+            matches!(result, Value::Scalar(Literal::Complex128Bits(..))),
+            "expected complex scalar"
+        );
+        let Value::Scalar(Literal::Complex128Bits(re, im)) = result else {
+            return;
+        };
+        assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
+        assert!((f64::from_bits(im) - 4.0).abs() < 1e-12);
     }
 
     #[test]
     fn complex_conj() {
         let z = Value::Scalar(Literal::from_complex128(3.0, 4.0));
         let result = eval_conj(Primitive::Conj, &[z]).unwrap();
-        match result {
-            Value::Scalar(Literal::Complex128Bits(re, im)) => {
-                assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
-                assert!((f64::from_bits(im) + 4.0).abs() < 1e-12);
-            }
-            _ => panic!("expected complex scalar"),
-        }
+        assert!(
+            matches!(result, Value::Scalar(Literal::Complex128Bits(..))),
+            "expected complex scalar"
+        );
+        let Value::Scalar(Literal::Complex128Bits(re, im)) = result else {
+            return;
+        };
+        assert!((f64::from_bits(re) - 3.0).abs() < 1e-12);
+        assert!((f64::from_bits(im) + 4.0).abs() < 1e-12);
     }
 
     #[test]
@@ -2382,28 +2390,40 @@ mod tests {
     #[test]
     fn is_finite_normal() {
         let result = eval_is_finite(Primitive::IsFinite, &[s_f64(42.0)]).unwrap();
-        match result {
-            Value::Scalar(Literal::Bool(v)) => assert!(v),
-            _ => panic!("expected bool"),
-        }
+        assert!(
+            matches!(result, Value::Scalar(Literal::Bool(_))),
+            "expected bool"
+        );
+        let Value::Scalar(Literal::Bool(v)) = result else {
+            return;
+        };
+        assert!(v);
     }
 
     #[test]
     fn is_finite_nan() {
         let result = eval_is_finite(Primitive::IsFinite, &[s_f64(f64::NAN)]).unwrap();
-        match result {
-            Value::Scalar(Literal::Bool(v)) => assert!(!v),
-            _ => panic!("expected bool"),
-        }
+        assert!(
+            matches!(result, Value::Scalar(Literal::Bool(_))),
+            "expected bool"
+        );
+        let Value::Scalar(Literal::Bool(v)) = result else {
+            return;
+        };
+        assert!(!v);
     }
 
     #[test]
     fn is_finite_inf() {
         let result = eval_is_finite(Primitive::IsFinite, &[s_f64(f64::INFINITY)]).unwrap();
-        match result {
-            Value::Scalar(Literal::Bool(v)) => assert!(!v),
-            _ => panic!("expected bool"),
-        }
+        assert!(
+            matches!(result, Value::Scalar(Literal::Bool(_))),
+            "expected bool"
+        );
+        let Value::Scalar(Literal::Bool(v)) = result else {
+            return;
+        };
+        assert!(!v);
     }
 
     // ── IntegerPow ──

@@ -2432,23 +2432,54 @@ fn infer_gather(
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<ShapedArray>, TraceError> {
     let primitive = Primitive::Gather;
-    if inputs.len() < 2 {
+    if inputs.len() != 2 {
         return Err(TraceError::ShapeInferenceFailed {
             primitive,
-            detail: format!("expected at least 2 inputs, got {}", inputs.len()),
+            detail: format!("expected 2 inputs, got {}", inputs.len()),
         });
     }
 
     let operand = &inputs[0];
+    if operand.shape.rank() == 0 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: "cannot gather from a rank-0 tensor".to_owned(),
+        });
+    }
     let indices = &inputs[1];
-    let slice_sizes = if let Some(raw) = params.get("slice_sizes") {
-        parse_u32_list(primitive, "slice_sizes", raw)?
-    } else {
-        vec![1_u32; operand.shape.rank()]
-    };
+    let slice_sizes = parse_u32_param_list(primitive, params, "slice_sizes")?;
+
+    if slice_sizes.len() != operand.shape.rank() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "slice_sizes length {} does not match operand rank {}",
+                slice_sizes.len(),
+                operand.shape.rank()
+            ),
+        });
+    }
+    if !slice_sizes.is_empty() && slice_sizes[0] != 1 {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "slice_sizes[0] must be 1 for gather, got {}",
+                slice_sizes[0]
+            ),
+        });
+    }
+    for (ax, &size) in slice_sizes.iter().enumerate() {
+        let dim = operand.shape.dims[ax];
+        if size > dim {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: format!("slice_sizes[{ax}] = {size} exceeds operand dim {dim}"),
+            });
+        }
+    }
 
     let mut dims = indices.shape.dims.clone();
-    dims.extend(slice_sizes);
+    dims.extend(slice_sizes.iter().skip(1).copied());
 
     Ok(vec![ShapedArray {
         dtype: operand.dtype,
@@ -3485,15 +3516,13 @@ mod tests {
                 );
 
                 let mut gather_params = BTreeMap::new();
-                gather_params.insert("slice_sizes".to_owned(), "2,2".to_owned());
+                gather_params.insert("slice_sizes".to_owned(), "1,2".to_owned());
                 let gathered = ctx
                     .process_primitive(Primitive::Gather, &[x, idx], gather_params)
                     .expect("gather inference should succeed");
                 assert_eq!(
                     ctx.tracer_aval(gathered[0]).expect("aval present").shape,
-                    Shape {
-                        dims: vec![2, 2, 2]
-                    }
+                    Shape { dims: vec![2, 2] }
                 );
 
                 let mut transpose_params = BTreeMap::new();
@@ -5085,11 +5114,11 @@ mod tests {
                     .expect("gather should succeed");
                 assert_eq!(out.len(), 1);
                 let out_aval = ctx.tracer_aval(out[0]).unwrap();
-                // Output shape = indices.shape ++ slice_sizes = [3] ++ [1,4] = [3,1,4]
+                // Output shape = indices.shape ++ slice_sizes[1..] = [3] ++ [4] = [3,4]
                 assert_eq!(
                     out_aval.shape.dims,
-                    vec![3, 1, 4],
-                    "gather output should be indices.shape ++ slice_sizes"
+                    vec![3, 4],
+                    "gather output should be indices.shape ++ slice_sizes[1..]"
                 );
                 Ok(Vec::new())
             },
@@ -5097,10 +5126,10 @@ mod tests {
     }
 
     #[test]
-    fn gather_default_slice_sizes_are_ones() {
+    fn gather_missing_slice_sizes_rejected() {
         run_logged_test(
-            "gather_default_slice_sizes_are_ones",
-            fj_test_utils::fixture_id_from_json(&("gather", "default_slices"))
+            "gather_missing_slice_sizes_rejected",
+            fj_test_utils::fixture_id_from_json(&("gather", "missing_slice_sizes"))
                 .expect("fixture digest"),
             fj_test_utils::TestMode::Strict,
             || {
@@ -5114,20 +5143,16 @@ mod tests {
                         shape: Shape::vector(2),
                     },
                 ]);
-                let out = ctx
+                let err = ctx
                     .process_primitive(
                         Primitive::Gather,
                         &[TracerId(1), TracerId(2)],
                         BTreeMap::new(),
                     )
-                    .expect("gather should succeed with default slice_sizes");
-                let out_aval = ctx.tracer_aval(out[0]).unwrap();
-                // Default slice_sizes = [1,1] for rank-2 operand
-                // Output = indices.shape ++ [1,1] = [2,1,1]
-                assert_eq!(
-                    out_aval.shape.dims,
-                    vec![2, 1, 1],
-                    "default slice_sizes should be [1,1] for rank-2"
+                    .unwrap_err();
+                assert!(
+                    format!("{err:?}").contains("slice_sizes"),
+                    "error should mention missing slice_sizes: {err:?}"
                 );
                 Ok(Vec::new())
             },
@@ -5149,8 +5174,39 @@ mod tests {
                     .process_primitive(Primitive::Gather, &[TracerId(1)], BTreeMap::new())
                     .unwrap_err();
                 assert!(
-                    format!("{err:?}").contains("at least 2 inputs"),
+                    format!("{err:?}").contains("expected 2 inputs"),
                     "error should mention arity: {err:?}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn gather_rejects_axis0_slice_size_not_one() {
+        run_logged_test(
+            "gather_rejects_axis0_slice_size_not_one",
+            fj_test_utils::fixture_id_from_json(&("gather", "axis0_size")).expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::vector(4),
+                    },
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::vector(2),
+                    },
+                ]);
+                let mut params = BTreeMap::new();
+                params.insert("slice_sizes".to_owned(), "2".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::Gather, &[TracerId(1), TracerId(2)], params)
+                    .unwrap_err();
+                assert!(
+                    format!("{err:?}").contains("slice_sizes[0]"),
+                    "error should mention slice_sizes[0]: {err:?}"
                 );
                 Ok(Vec::new())
             },

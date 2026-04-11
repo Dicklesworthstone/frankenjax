@@ -4,6 +4,7 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::collections::BTreeMap;
 
 use crate::EvalError;
+use crate::type_promotion::binary_literal_op;
 
 /// Parse a comma-separated list of i64 values from a param string.
 pub(crate) fn parse_i64_param(
@@ -1007,15 +1008,16 @@ pub(crate) fn eval_slice(
 
 /// Gather: index into an operand tensor using an indices tensor.
 ///
-/// Simplified semantics (1-D index gather):
+/// Simplified semantics (axis-0 index gather):
 ///   operand: tensor of any rank
-///   indices: 1-D integer tensor of gather indices (into axis 0 of operand)
+///   indices: integer tensor of gather indices (into axis 0 of operand)
 ///   params:  `slice_sizes` — comma-separated sizes for each axis of the gathered slice
 ///
 /// For each index i in `indices`, extracts a slice of shape `slice_sizes` starting
 /// at position `[indices[i], 0, 0, ...]` from `operand`.
-/// Output shape: `[num_indices] ++ slice_sizes[1..]` (the leading axis is replaced by
-/// the number of gathered indices, remaining axes keep their slice sizes).
+/// Constraint: `slice_sizes[0]` must be 1 (axis-0 indexing only).
+/// Output shape: `indices.shape ++ slice_sizes[1..]` (the leading axis is replaced by
+/// the indices tensor shape, remaining axes keep their slice sizes).
 pub(crate) fn eval_gather(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -1058,16 +1060,26 @@ pub(crate) fn eval_gather(
         });
     }
 
-    // Extract indices as flat i64 values
-    let index_vals: Vec<usize> = match &inputs[1] {
-        Value::Scalar(lit) => {
-            vec![lit_to_usize(lit, primitive)?]
-        }
-        Value::Tensor(t) => t
-            .elements
-            .iter()
-            .map(|lit| lit_to_usize(lit, primitive))
-            .collect::<Result<_, _>>()?,
+    if slice_sizes[0] != 1 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "slice_sizes[0] must be 1 for gather, got {}",
+                slice_sizes[0]
+            ),
+        });
+    }
+
+    // Extract indices as flat i64 values + capture indices shape
+    let (index_vals, index_shape): (Vec<usize>, Vec<u32>) = match &inputs[1] {
+        Value::Scalar(lit) => (vec![lit_to_usize(lit, primitive)?], Vec::new()),
+        Value::Tensor(t) => (
+            t.elements
+                .iter()
+                .map(|lit| lit_to_usize(lit, primitive))
+                .collect::<Result<_, _>>()?,
+            t.shape.dims.clone(),
+        ),
     };
 
     let num_indices = index_vals.len();
@@ -1090,11 +1102,9 @@ pub(crate) fn eval_gather(
         op_strides[i] = op_strides[i + 1] * op_dims[i + 1] as usize;
     }
 
-    // Output shape: [num_indices, slice_sizes[1], slice_sizes[2], ...]
-    let mut out_dims: Vec<u32> = vec![num_indices as u32];
-    for &s in &slice_sizes[1..] {
-        out_dims.push(s as u32);
-    }
+    // Output shape: indices.shape ++ slice_sizes[1..]
+    let mut out_dims: Vec<u32> = index_shape;
+    out_dims.extend(slice_sizes.iter().skip(1).map(|&s| s as u32));
 
     // Number of elements per gathered slice (product of slice_sizes[1..])
     let slice_elems: usize = slice_sizes[1..].iter().product::<usize>();
@@ -1185,23 +1195,53 @@ pub(crate) fn eval_scatter(
         });
     }
 
-    let index_vals: Vec<usize> = match &inputs[1] {
-        Value::Scalar(lit) => vec![lit_to_usize(lit, primitive)?],
-        Value::Tensor(t) => t
-            .elements
-            .iter()
-            .map(|lit| lit_to_usize(lit, primitive))
-            .collect::<Result<_, _>>()?,
+    let (index_vals, index_shape): (Vec<usize>, Vec<u32>) = match &inputs[1] {
+        Value::Scalar(lit) => (vec![lit_to_usize(lit, primitive)?], Vec::new()),
+        Value::Tensor(t) => (
+            t.elements
+                .iter()
+                .map(|lit| lit_to_usize(lit, primitive))
+                .collect::<Result<_, _>>()?,
+            t.shape.dims.clone(),
+        ),
     };
 
+    let updates_dtype = inputs[2].dtype();
+    if updates_dtype != operand.dtype {
+        return Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "scatter updates dtype must match operand dtype",
+        });
+    }
+
+    let mut expected_update_dims = index_shape;
+    expected_update_dims.extend(operand.shape.dims.iter().skip(1).copied());
+    let expected_update_shape = Shape {
+        dims: expected_update_dims.clone(),
+    };
+
+    let updates_storage = match &inputs[2] {
+        Value::Scalar(lit) => {
+            if expected_update_dims.is_empty() {
+                Some(TensorValue::new(
+                    operand.dtype,
+                    Shape::scalar(),
+                    vec![*lit],
+                )?)
+            } else {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "updates must be a tensor for non-scalar scatter slices".into(),
+                });
+            }
+        }
+        Value::Tensor(_) => None,
+    };
     let updates = match &inputs[2] {
         Value::Tensor(t) => t,
-        Value::Scalar(_) => {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: "updates must be a tensor".into(),
-            });
-        }
+        Value::Scalar(_) => updates_storage
+            .as_ref()
+            .expect("scalar updates tensor just constructed"),
     };
 
     let rank = operand.shape.rank();
@@ -1228,6 +1268,14 @@ pub(crate) fn eval_scatter(
         return Err(EvalError::Unsupported {
             primitive,
             detail: format!("unknown scatter mode \"{mode}\", expected \"overwrite\" or \"add\""),
+        });
+    }
+
+    if updates.shape != expected_update_shape {
+        return Err(EvalError::ShapeMismatch {
+            primitive,
+            left: updates.shape.clone(),
+            right: expected_update_shape,
         });
     }
 
@@ -1262,9 +1310,13 @@ pub(crate) fn eval_scatter(
             let current = &result_elements[base_offset + j];
             let update = &updates.elements[update_offset + j];
             if mode == "add" {
-                let c_val = current.as_f64().unwrap_or(0.0);
-                let u_val = update.as_f64().unwrap_or(0.0);
-                result_elements[base_offset + j] = Literal::from_f64(c_val + u_val);
+                result_elements[base_offset + j] = binary_literal_op(
+                    *current,
+                    *update,
+                    Primitive::Add,
+                    &|a, b| a.wrapping_add(b),
+                    &|a, b| a + b,
+                )?;
             } else {
                 result_elements[base_offset + j] = *update;
             }
