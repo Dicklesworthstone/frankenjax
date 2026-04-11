@@ -2507,6 +2507,43 @@ fn infer_scatter(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError>
         });
     }
 
+    let indices = &inputs[1];
+    match indices.dtype {
+        DType::I32 | DType::I64 | DType::U32 | DType::U64 | DType::Bool => {}
+        _ => {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: format!(
+                    "scatter indices must be integral dtype, got {:?}",
+                    indices.dtype
+                ),
+            });
+        }
+    }
+
+    let updates = &inputs[2];
+    if updates.dtype != operand.dtype {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "scatter updates dtype {:?} does not match operand dtype {:?}",
+                updates.dtype, operand.dtype
+            ),
+        });
+    }
+
+    let mut expected_dims = indices.shape.dims.clone();
+    expected_dims.extend(operand.shape.dims.iter().skip(1).copied());
+    if updates.shape.dims != expected_dims {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "scatter updates shape {:?} does not match expected {:?}",
+                updates.shape.dims, expected_dims
+            ),
+        });
+    }
+
     // Output shape always matches operand shape
     Ok(vec![operand.clone()])
 }
@@ -5084,6 +5121,120 @@ mod tests {
                     "scatter output should match operand shape"
                 );
                 assert_eq!(out_aval.dtype, DType::F64);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn scatter_rejects_updates_shape_mismatch() {
+        run_logged_test(
+            "scatter_rejects_updates_shape_mismatch",
+            fj_test_utils::fixture_id_from_json(&("scatter", "updates_shape"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![3, 2] },
+                    },
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::vector(2),
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::vector(4),
+                    },
+                ]);
+                let err = ctx
+                    .process_primitive(
+                        Primitive::Scatter,
+                        &[TracerId(1), TracerId(2), TracerId(3)],
+                        BTreeMap::new(),
+                    )
+                    .unwrap_err();
+                assert!(
+                    format!("{err:?}").contains("updates shape"),
+                    "error should mention updates shape: {err:?}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn scatter_rejects_updates_dtype_mismatch() {
+        run_logged_test(
+            "scatter_rejects_updates_dtype_mismatch",
+            fj_test_utils::fixture_id_from_json(&("scatter", "updates_dtype"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![3, 2] },
+                    },
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::vector(2),
+                    },
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape { dims: vec![2, 2] },
+                    },
+                ]);
+                let err = ctx
+                    .process_primitive(
+                        Primitive::Scatter,
+                        &[TracerId(1), TracerId(2), TracerId(3)],
+                        BTreeMap::new(),
+                    )
+                    .unwrap_err();
+                assert!(
+                    format!("{err:?}").contains("updates dtype"),
+                    "error should mention updates dtype: {err:?}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn scatter_rejects_non_integral_indices() {
+        run_logged_test(
+            "scatter_rejects_non_integral_indices",
+            fj_test_utils::fixture_id_from_json(&("scatter", "indices_dtype"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::vector(3),
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::vector(1),
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::vector(1),
+                    },
+                ]);
+                let err = ctx
+                    .process_primitive(
+                        Primitive::Scatter,
+                        &[TracerId(1), TracerId(2), TracerId(3)],
+                        BTreeMap::new(),
+                    )
+                    .unwrap_err();
+                assert!(
+                    format!("{err:?}").contains("indices must be integral"),
+                    "error should mention indices dtype: {err:?}"
+                );
                 Ok(Vec::new())
             },
         );
