@@ -1516,13 +1516,14 @@ fn batch_switch(
 ) -> Result<BatchTracer, BatchError> {
     // Fast path: scalar index selects one branch for the entire batch.
     if inputs[0].batch_dim.is_none() {
-        let idx = match &inputs[0].value {
-            Value::Scalar(fj_core::Literal::I64(v)) => *v as usize,
-            Value::Scalar(fj_core::Literal::U32(v)) => *v as usize,
-            _ => {
-                return batch_control_flow_fallback(Primitive::Switch, inputs, params);
-            }
-        };
+        let idx = scalar_to_i64(&inputs[0].value, Primitive::Switch)?;
+        if idx < 0 {
+            return Err(BatchError::InterpreterError(format!(
+                "switch index {idx} out of bounds for {} branches",
+                inputs.len().saturating_sub(1)
+            )));
+        }
+        let idx = idx as usize;
         if idx + 1 < inputs.len() {
             let selected = &inputs[idx + 1];
             return match selected.batch_dim {
@@ -1550,6 +1551,10 @@ fn batch_switch(
                 }
             };
         }
+        return Err(BatchError::InterpreterError(format!(
+            "switch index {idx} out of bounds for {} branches",
+            inputs.len().saturating_sub(1)
+        )));
     }
 
     // Batched index: per-element fallback (proper vectorization would require
@@ -1558,34 +1563,63 @@ fn batch_switch(
 }
 
 fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
-    match value {
-        Value::Scalar(fj_core::Literal::Bool(b)) => Ok(*b),
-        Value::Scalar(fj_core::Literal::I64(v)) => Ok(*v != 0),
-        Value::Scalar(fj_core::Literal::U32(v)) => Ok(*v != 0),
-        Value::Scalar(fj_core::Literal::U64(v)) => Ok(*v != 0),
-        Value::Scalar(fj_core::Literal::F64Bits(bits)) => Ok(f64::from_bits(*bits) != 0.0),
-        _ => Err(BatchError::EvalError(
-            "cond predicate must be scalar for unbatched fast-path".to_owned(),
-        )),
+    let literal = match value {
+        Value::Scalar(lit) => *lit,
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() || tensor.elements.len() != 1 {
+                return Err(BatchError::EvalError(
+                    "cond predicate must be scalar for unbatched fast-path".to_owned(),
+                ));
+            }
+            tensor.elements[0]
+        }
+    };
+    match literal {
+        fj_core::Literal::Bool(b) => Ok(b),
+        fj_core::Literal::I64(v) => Ok(v != 0),
+        fj_core::Literal::U32(v) => Ok(v != 0),
+        fj_core::Literal::U64(v) => Ok(v != 0),
+        fj_core::Literal::BF16Bits(bits) => Ok(fj_core::Literal::BF16Bits(bits)
+            .as_f64()
+            .is_some_and(|v| v != 0.0)),
+        fj_core::Literal::F16Bits(bits) => Ok(fj_core::Literal::F16Bits(bits)
+            .as_f64()
+            .is_some_and(|v| v != 0.0)),
+        fj_core::Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
+        fj_core::Literal::Complex64Bits(..) | fj_core::Literal::Complex128Bits(..) => Err(
+            BatchError::EvalError("cond predicate must be boolean or numeric".to_owned()),
+        ),
     }
 }
 
 fn scalar_to_i64(value: &Value, primitive: Primitive) -> Result<i64, BatchError> {
-    match value {
-        Value::Scalar(fj_core::Literal::I64(v)) => Ok(*v),
-        Value::Scalar(fj_core::Literal::U32(v)) => Ok(i64::from(*v)),
-        Value::Scalar(fj_core::Literal::U64(v)) => i64::try_from(*v).map_err(|_| {
+    let literal = match value {
+        Value::Scalar(lit) => *lit,
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() || tensor.elements.len() != 1 {
+                return Err(BatchError::InterpreterError(format!(
+                    "{} index must be scalar",
+                    primitive.as_str()
+                )));
+            }
+            tensor.elements[0]
+        }
+    };
+    match literal {
+        fj_core::Literal::I64(v) => Ok(v),
+        fj_core::Literal::U32(v) => Ok(i64::from(v)),
+        fj_core::Literal::U64(v) => i64::try_from(v).map_err(|_| {
             BatchError::InterpreterError(format!(
                 "{} index {} does not fit in i64",
                 primitive.as_str(),
                 v
             ))
         }),
-        Value::Scalar(fj_core::Literal::Bool(v)) => Ok(i64::from(*v)),
-        other => Err(BatchError::InterpreterError(format!(
+        fj_core::Literal::Bool(v) => Ok(i64::from(v)),
+        _ => Err(BatchError::InterpreterError(format!(
             "{} index must be integer, got {:?}",
             primitive.as_str(),
-            other.dtype()
+            value.dtype()
         ))),
     }
 }
@@ -2437,6 +2471,24 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_trace_cond_unbatched_tensor_predicate_selects_branch() {
+        let pred_value = Value::Tensor(
+            TensorValue::new(DType::Bool, Shape::scalar(), vec![Literal::Bool(true)]).unwrap(),
+        );
+        let pred = BatchTracer::unbatched(pred_value);
+        let on_true = BatchTracer::batched(make_i64_vector(&[7, 8, 9]), 0);
+        let on_false = BatchTracer::batched(make_i64_vector(&[70, 80, 90]), 0);
+        let result = apply_batch_rule(
+            Primitive::Cond,
+            &[pred, on_true, on_false],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![7, 8, 9]);
+    }
+
+    #[test]
     fn test_batch_trace_cond_batched_predicate_vectorizes_selection() {
         let pred = BatchTracer::batched(make_i64_vector(&[1, 0, 1]), 0);
         let on_true = BatchTracer::batched(make_i64_vector(&[7, 8, 9]), 0);
@@ -2465,6 +2517,25 @@ mod tests {
         .unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_batch_trace_switch_tensor_index_selects_batched_branch() {
+        let idx_value = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(2)]).unwrap(),
+        );
+        let idx = BatchTracer::unbatched(idx_value);
+        let on_zero = BatchTracer::unbatched(Value::scalar_i64(-1));
+        let on_one = BatchTracer::batched(make_i64_vector(&[4, 5, 6]), 0);
+        let on_two = BatchTracer::batched(make_i64_vector(&[40, 50, 60]), 0);
+        let result = apply_batch_rule(
+            Primitive::Switch,
+            &[idx, on_zero, on_one, on_two],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![40, 50, 60]);
     }
 
     #[test]

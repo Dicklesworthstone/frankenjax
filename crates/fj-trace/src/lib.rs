@@ -1536,9 +1536,11 @@ impl SimpleTraceContext {
                 }
                 match pred.dtype {
                     DType::Bool
+                    | DType::I32
                     | DType::I64
                     | DType::U32
                     | DType::U64
+                    | DType::F32
                     | DType::F64
                     | DType::BF16
                     | DType::F16 => {}
@@ -1639,7 +1641,7 @@ impl SimpleTraceContext {
                     });
                 }
                 match index.dtype {
-                    DType::Bool | DType::I64 | DType::U32 | DType::U64 => {}
+                    DType::Bool | DType::I32 | DType::I64 | DType::U32 | DType::U64 => {}
                     other => {
                         return Err(TraceError::ShapeInferenceFailed {
                             primitive,
@@ -6041,6 +6043,34 @@ mod tests {
     }
 
     #[test]
+    fn test_infer_cond_accepts_f32_predicate() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F32,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+        ]);
+        let out_ids = ctx
+            .process_primitive(
+                Primitive::Cond,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                BTreeMap::new(),
+            )
+            .expect("cond f32 predicate should be accepted");
+        let aval = ctx.tracer_aval(out_ids[0]).expect("aval present");
+        assert_eq!(aval.dtype, DType::F64);
+        assert_eq!(aval.shape, Shape::scalar());
+    }
+
+    #[test]
     fn test_infer_switch_rejects_mismatched_branch_shapes() {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
@@ -6102,6 +6132,34 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn test_infer_switch_accepts_i32_index() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::I32,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+        ]);
+        let out_ids = ctx
+            .process_primitive(
+                Primitive::Switch,
+                &[TracerId(1), TracerId(2), TracerId(3)],
+                BTreeMap::new(),
+            )
+            .expect("switch i32 index should be accepted");
+        let aval = ctx.tracer_aval(out_ids[0]).expect("aval present");
+        assert_eq!(aval.dtype, DType::F64);
+        assert_eq!(aval.shape, Shape::scalar());
     }
 
     #[test]

@@ -3,7 +3,7 @@
 pub mod partial_eval;
 pub mod staging;
 
-use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Value, VarId};
+use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, Value, ValueError, VarId};
 use fj_lax::{EvalError, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 
@@ -102,27 +102,55 @@ fn evaluate_switch_sub_jaxprs(
     equation: &Equation,
     resolved: &[Value],
 ) -> Result<Vec<Value>, InterpreterError> {
-    let index = match resolved.first() {
-        Some(Value::Scalar(Literal::I64(value))) => *value,
-        Some(Value::Scalar(Literal::U32(value))) => i64::from(*value),
-        Some(Value::Scalar(Literal::U64(value))) => i64::try_from(*value).map_err(|_| {
-            InterpreterError::Primitive(EvalError::Unsupported {
-                primitive: Primitive::Switch,
-                detail: format!("switch index {value} does not fit in i64"),
-            })
-        })?,
-        Some(Value::Scalar(Literal::Bool(value))) => i64::from(*value),
-        Some(other) => {
-            return Err(InterpreterError::Primitive(EvalError::Unsupported {
-                primitive: Primitive::Switch,
-                detail: format!("switch index must be integer, got {:?}", other.dtype()),
-            }));
-        }
+    let index_value = match resolved.first() {
+        Some(value) => value,
         None => {
             return Err(InterpreterError::Primitive(EvalError::ArityMismatch {
                 primitive: Primitive::Switch,
                 expected: 1,
                 actual: 0,
+            }));
+        }
+    };
+    let index_literal = match index_value {
+        Value::Scalar(literal) => *literal,
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() {
+                return Err(InterpreterError::Primitive(EvalError::ShapeMismatch {
+                    primitive: Primitive::Switch,
+                    left: tensor.shape.clone(),
+                    right: Shape::scalar(),
+                }));
+            }
+            if tensor.elements.len() != 1 {
+                return Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+                    ValueError::ElementCountMismatch {
+                        shape: tensor.shape.clone(),
+                        expected_count: 1,
+                        actual_count: tensor.elements.len(),
+                    },
+                )));
+            }
+            tensor.elements[0]
+        }
+    };
+    let index = match index_literal {
+        Literal::I64(value) => value,
+        Literal::U32(value) => i64::from(value),
+        Literal::U64(value) => i64::try_from(value).map_err(|_| {
+            InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::Switch,
+                detail: format!("switch index {value} does not fit in i64"),
+            })
+        })?,
+        Literal::Bool(value) => i64::from(value),
+        _ => {
+            return Err(InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::Switch,
+                detail: format!(
+                    "switch index must be integer, got {:?}",
+                    index_value.dtype()
+                ),
             }));
         }
     };
@@ -421,6 +449,17 @@ mod tests {
             .expect("switch with sub_jaxprs should evaluate");
             assert_eq!(outputs, vec![Value::scalar_i64(expected)]);
         }
+    }
+
+    #[test]
+    fn eval_switch_with_tensor_scalar_index_selects_branch() {
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let index = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(2)]).unwrap(),
+        );
+        let outputs =
+            eval_jaxpr(&jaxpr, &[index, Value::scalar_i64(5)]).expect("switch should evaluate");
+        assert_eq!(outputs, vec![Value::scalar_i64(25)]);
     }
 
     #[test]

@@ -455,37 +455,7 @@ fn eval_cond(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError>
             detail: "cond branches must have same dtype",
         });
     }
-    let pred = match &inputs[0] {
-        Value::Scalar(fj_core::Literal::Bool(b)) => *b,
-        Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
-        Value::Scalar(fj_core::Literal::U32(v)) => *v != 0,
-        Value::Scalar(fj_core::Literal::U64(v)) => *v != 0,
-        Value::Scalar(fj_core::Literal::BF16Bits(bits)) => {
-            fj_core::Literal::BF16Bits(*bits)
-                .as_f64()
-                .ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: "cond predicate must be a scalar".to_owned(),
-                })?
-                != 0.0
-        }
-        Value::Scalar(fj_core::Literal::F16Bits(bits)) => {
-            fj_core::Literal::F16Bits(*bits)
-                .as_f64()
-                .ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: "cond predicate must be a scalar".to_owned(),
-                })?
-                != 0.0
-        }
-        Value::Scalar(fj_core::Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
-        _ => {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: "cond predicate must be a scalar".to_owned(),
-            });
-        }
-    };
+    let pred = value_to_bool(primitive, &inputs[0])?;
     if pred {
         Ok(inputs[1].clone())
     } else {
@@ -714,7 +684,7 @@ fn eval_while_loop(
             &[carry.clone(), threshold.clone()],
             &BTreeMap::new(),
         )?;
-        Ok(value_to_bool(&cond_result))
+        value_to_bool(primitive, &cond_result)
     };
 
     let body_fn = |carry: Value| -> Result<Value, EvalError> {
@@ -841,22 +811,80 @@ fn parse_while_cond_op(primitive: Primitive, name: &str) -> Result<Primitive, Ev
     }
 }
 
-/// Extract a boolean-ish value from a comparison result.
-fn value_to_bool(v: &Value) -> bool {
-    match v {
-        Value::Scalar(fj_core::Literal::Bool(b)) => *b,
-        Value::Scalar(fj_core::Literal::I64(v)) => *v != 0,
-        Value::Scalar(fj_core::Literal::U32(v)) => *v != 0,
-        Value::Scalar(fj_core::Literal::U64(v)) => *v != 0,
-        Value::Scalar(fj_core::Literal::BF16Bits(bits)) => fj_core::Literal::BF16Bits(*bits)
-            .as_f64()
-            .is_some_and(|v| v != 0.0),
-        Value::Scalar(fj_core::Literal::F16Bits(bits)) => fj_core::Literal::F16Bits(*bits)
-            .as_f64()
-            .is_some_and(|v| v != 0.0),
-        Value::Scalar(fj_core::Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
-        _ => false,
+fn scalar_literal(primitive: Primitive, value: &Value) -> Result<Literal, EvalError> {
+    match value {
+        Value::Scalar(lit) => Ok(*lit),
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() {
+                return Err(EvalError::ShapeMismatch {
+                    primitive,
+                    left: tensor.shape.clone(),
+                    right: Shape::scalar(),
+                });
+            }
+            if tensor.elements.len() != 1 {
+                return Err(EvalError::InvalidTensor(ValueError::ElementCountMismatch {
+                    shape: tensor.shape.clone(),
+                    expected_count: 1,
+                    actual_count: tensor.elements.len(),
+                }));
+            }
+            Ok(tensor.elements[0])
+        }
     }
+}
+
+fn literal_to_bool(primitive: Primitive, literal: Literal) -> Result<bool, EvalError> {
+    match literal {
+        Literal::Bool(b) => Ok(b),
+        Literal::I64(v) => Ok(v != 0),
+        Literal::U32(v) => Ok(v != 0),
+        Literal::U64(v) => Ok(v != 0),
+        Literal::BF16Bits(bits) => Ok(Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)),
+        Literal::F16Bits(bits) => Ok(Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "predicate must be boolean or numeric",
+        }),
+    }
+}
+
+/// Extract a boolean-ish value from a comparison result.
+fn value_to_bool(primitive: Primitive, value: &Value) -> Result<bool, EvalError> {
+    let literal = scalar_literal(primitive, value)?;
+    literal_to_bool(primitive, literal)
+}
+
+fn literal_to_index(primitive: Primitive, literal: Literal) -> Result<u64, EvalError> {
+    match literal {
+        Literal::Bool(b) => Ok(u64::from(b)),
+        Literal::I64(v) => {
+            if v < 0 {
+                Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "switch index must be non-negative".to_owned(),
+                })
+            } else {
+                Ok(v as u64)
+            }
+        }
+        Literal::U32(v) => Ok(u64::from(v)),
+        Literal::U64(v) => Ok(v),
+        Literal::BF16Bits(..)
+        | Literal::F16Bits(..)
+        | Literal::F64Bits(..)
+        | Literal::Complex64Bits(..)
+        | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "switch index must be integer or bool",
+        }),
+    }
+}
+
+fn value_to_index(primitive: Primitive, value: &Value) -> Result<u64, EvalError> {
+    let literal = scalar_literal(primitive, value)?;
+    literal_to_index(primitive, literal)
 }
 
 /// Compute a simple shape fingerprint for shape-preservation checks.
@@ -941,26 +969,7 @@ fn eval_switch(
         });
     }
 
-    let index_u64 = match &inputs[0] {
-        Value::Scalar(Literal::I64(i)) => {
-            if *i < 0 {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("switch index {i} out of bounds for {num_branches} branches"),
-                });
-            }
-            *i as u64
-        }
-        Value::Scalar(Literal::U32(v)) => u64::from(*v),
-        Value::Scalar(Literal::U64(v)) => *v,
-        Value::Scalar(Literal::Bool(b)) => u64::from(*b),
-        other => {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!("switch index must be integer, got {:?}", other.dtype()),
-            });
-        }
-    };
+    let index_u64 = value_to_index(primitive, &inputs[0])?;
 
     let num_branches_u64 = num_branches as u64;
     if index_u64 >= num_branches_u64 {
@@ -4821,6 +4830,18 @@ mod tests {
     }
 
     #[test]
+    fn cond_tensor_bool_predicate_selects_true_branch() {
+        let pred = Value::Tensor(
+            TensorValue::new(DType::Bool, Shape::scalar(), vec![Literal::Bool(true)]).unwrap(),
+        );
+        let true_val = Value::scalar_f64(5.0);
+        let false_val = Value::scalar_f64(6.0);
+        let params = BTreeMap::new();
+        let out = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &params).unwrap();
+        assert_eq!(out.as_f64_scalar().unwrap(), 5.0);
+    }
+
+    #[test]
     fn cond_arity_error() {
         let params = BTreeMap::new();
         let result = eval_primitive(Primitive::Cond, &[Value::scalar_bool(true)], &params);
@@ -5273,6 +5294,28 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.as_f64_scalar().unwrap(), 10.0);
+    }
+
+    #[test]
+    fn while_tensor_scalar_predicate_works() {
+        let init = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(0)]).unwrap(),
+        );
+        let step = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(1)]).unwrap(),
+        );
+        let threshold = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(3)]).unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::While,
+            &[init, step, threshold],
+            &while_params("add", "lt"),
+        )
+        .unwrap();
+        let out_tensor = out.as_tensor().expect("while output should be tensor");
+        assert_eq!(out_tensor.shape, Shape::scalar());
+        assert_eq!(out_tensor.elements[0].as_i64().unwrap(), 3);
     }
 
     #[test]
@@ -7306,6 +7349,23 @@ mod prop_tests {
                 Value::scalar_f64(10.0),
                 Value::scalar_f64(20.0),
             ],
+            &params,
+        )
+        .unwrap();
+        assert_eq!(result, Value::scalar_f64(20.0));
+    }
+
+    #[test]
+    fn test_switch_tensor_index_selects_branch() {
+        let mut params = no_params();
+        params.insert("num_branches".into(), "2".into());
+
+        let index = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(1)]).unwrap(),
+        );
+        let result = eval_primitive(
+            Primitive::Switch,
+            &[index, Value::scalar_f64(10.0), Value::scalar_f64(20.0)],
             &params,
         )
         .unwrap();
