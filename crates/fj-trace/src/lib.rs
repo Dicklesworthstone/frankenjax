@@ -1545,11 +1545,11 @@ impl SimpleTraceContext {
             Primitive::Scan => {
                 // Scan: inputs are [init_carry, xs_tensor]
                 // Output shape = shape of init_carry (carry is threaded through)
-                if inputs.len() < 2 {
+                if inputs.len() != 2 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
                         detail: format!(
-                            "scan expects at least 2 inputs (init_carry, xs), got {}",
+                            "scan expects 2 inputs (init_carry, xs), got {}",
                             inputs.len()
                         ),
                     });
@@ -1564,10 +1564,13 @@ impl SimpleTraceContext {
             Primitive::While => {
                 // While: inputs are [init_carry, step_value, threshold]
                 // Output shape = shape of init_carry (carry is threaded through)
-                if inputs.is_empty() {
+                if inputs.len() != 3 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
-                        detail: "while expects at least 1 input (init_carry)".to_owned(),
+                        detail: format!(
+                            "while expects 3 inputs (init_carry, step_value, threshold), got {}",
+                            inputs.len()
+                        ),
                     });
                 }
                 let init_carry = &inputs[0];

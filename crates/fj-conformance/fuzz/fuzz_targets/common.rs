@@ -364,7 +364,7 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Argsort => 1,
         Primitive::Conv => 2,
         Primitive::Scan => 2,
-        Primitive::While => 1,
+        Primitive::While => 3,
         Primitive::Switch => 2,
     }
 }
@@ -735,7 +735,7 @@ mod tests {
         assert_eq!(primitive_arity(Primitive::Conv), 2);
         assert_eq!(primitive_arity(Primitive::Cond), 3);
         assert_eq!(primitive_arity(Primitive::Scan), 2);
-        assert_eq!(primitive_arity(Primitive::While), 1);
+        assert_eq!(primitive_arity(Primitive::While), 3);
         assert_eq!(primitive_arity(Primitive::Switch), 2);
         assert_eq!(primitive_arity(Primitive::BroadcastedIota), 0);
     }

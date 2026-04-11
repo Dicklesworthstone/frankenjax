@@ -239,7 +239,7 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Squeeze
         | Primitive::Split
         | Primitive::ExpandDims
-        | Primitive::While => 1,
+        | Primitive::While => 3,
         Primitive::Iota | Primitive::BroadcastedIota => 0,
         Primitive::DynamicUpdateSlice => 3,
         Primitive::Conv => 2,

@@ -476,7 +476,7 @@ fn eval_scan(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
 ) -> Result<Value, EvalError> {
-    if inputs.len() < 2 {
+    if inputs.len() != 2 {
         return Err(EvalError::ArityMismatch {
             primitive,
             expected: 2,
@@ -641,7 +641,7 @@ fn eval_while_loop(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
 ) -> Result<Value, EvalError> {
-    if inputs.len() < 3 {
+    if inputs.len() != 3 {
         return Err(EvalError::ArityMismatch {
             primitive,
             expected: 3,
