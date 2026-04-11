@@ -820,7 +820,23 @@ fn batch_broadcast_in_dim(
 
     // Parse target shape and broadcast_dimensions
     let target_shape = parse_param_usize_list(params, "shape");
-    let broadcast_dims = parse_param_usize_list(params, "broadcast_dimensions");
+    let raw_broadcast_dims = params.get("broadcast_dimensions");
+    let mut broadcast_dims = raw_broadcast_dims
+        .map(|raw| parse_usize_list(raw))
+        .unwrap_or_default();
+    let per_elem_rank = tensor.shape.rank().saturating_sub(1);
+    let needs_default = raw_broadcast_dims.is_none_or(|raw| raw.trim().is_empty());
+    if needs_default && per_elem_rank > 0 {
+        if per_elem_rank > target_shape.len() {
+            return Err(BatchError::EvalError(format!(
+                "input rank {} exceeds target rank {}",
+                per_elem_rank,
+                target_shape.len()
+            )));
+        }
+        let offset = target_shape.len() - per_elem_rank;
+        broadcast_dims = (offset..target_shape.len()).collect();
+    }
 
     // Add batch to target shape and shift broadcast dimensions
     let mut new_shape = Vec::with_capacity(target_shape.len() + 1);
@@ -2512,6 +2528,25 @@ mod tests {
         let tensor = result.value.as_tensor().unwrap();
         // Each scalar from batch broadcasted to a [3]-vector, overall [3, 3]
         assert_eq!(tensor.shape.dims, vec![3, 3]);
+    }
+
+    #[test]
+    fn test_batch_trace_broadcast_in_dim_default_mapping_non_scalar() {
+        // Batch of 2 vectors length 2, broadcast to [3,2] with default mapping.
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let input = BatchTracer::batched(make_f64_matrix(2, 2, &data), 0);
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), "3,2".to_owned());
+        params.insert("broadcast_dimensions".to_owned(), "".to_owned());
+        let result = apply_batch_rule(Primitive::BroadcastInDim, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
+        let vals = extract_f64_vec(&result.value);
+        assert_eq!(
+            vals,
+            vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]
+        );
     }
 
     #[test]

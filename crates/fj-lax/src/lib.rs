@@ -1912,6 +1912,45 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_in_dim_rejects_duplicate_axes() {
+        let input = Value::vector_i64(&[1, 2]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "2,2".into());
+        params.insert("broadcast_dimensions".into(), "1,1".into());
+        let result = eval_primitive(Primitive::BroadcastInDim, &[input], &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn broadcast_in_dim_rejects_out_of_range_axis() {
+        let input = Value::vector_i64(&[1, 2]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "2,2".into());
+        params.insert("broadcast_dimensions".into(), "2".into());
+        let result = eval_primitive(Primitive::BroadcastInDim, &[input], &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn broadcast_in_dim_rejects_incompatible_dim() {
+        let input = Value::vector_i64(&[1, 2]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "3,2".into());
+        params.insert("broadcast_dimensions".into(), "0".into());
+        let result = eval_primitive(Primitive::BroadcastInDim, &[input], &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn broadcast_in_dim_default_mapping_rejects_incompatible_dim() {
+        let input = Value::vector_i64(&[1, 2]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "3".into());
+        let result = eval_primitive(Primitive::BroadcastInDim, &[input], &params);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn concatenate_vectors() {
         let a = Value::vector_i64(&[1, 2]).unwrap();
         let b = Value::vector_i64(&[3, 4, 5]).unwrap();

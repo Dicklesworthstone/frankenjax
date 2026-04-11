@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::EvalError;
 use crate::type_promotion::{binary_literal_op, promote_dtype};
@@ -596,6 +596,35 @@ pub(crate) fn eval_broadcast_in_dim(
             }
 
             let out_rank = target_dims.len();
+            let mut seen = BTreeSet::new();
+            for (in_axis, &out_axis) in broadcast_dims.iter().enumerate() {
+                if out_axis >= out_rank {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "broadcast_dimensions axis {} out of range for output rank {}",
+                            out_axis, out_rank
+                        ),
+                    });
+                }
+                if !seen.insert(out_axis) {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "broadcast_dimensions must be unique".to_owned(),
+                    });
+                }
+                let in_dim = tensor.shape.dims[in_axis];
+                let target_dim = target_dims[out_axis];
+                if in_dim != 1 && in_dim != target_dim {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "cannot broadcast input dim {} into target dim {} at axis {}",
+                            in_dim, target_dim, out_axis
+                        ),
+                    });
+                }
+            }
             let total: usize = target_dims.iter().map(|d| *d as usize).product();
 
             // Build mapping: for each output axis, which input axis maps to it (if any).

@@ -2782,11 +2782,18 @@ fn infer_broadcast_in_dim(
             });
         }
 
+        let mut seen = BTreeSet::new();
         for (input_axis, target_axis) in dims.iter().enumerate() {
             if *target_axis >= target_dims.len() {
                 return Err(TraceError::ShapeInferenceFailed {
                     primitive,
                     detail: format!("target axis {} out of range", target_axis),
+                });
+            }
+            if !seen.insert(*target_axis) {
+                return Err(TraceError::ShapeInferenceFailed {
+                    primitive,
+                    detail: "broadcast_dimensions must be unique".to_owned(),
                 });
             }
             let in_dim = input.shape.dims[input_axis];
@@ -5738,6 +5745,108 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.dtype, DType::I64);
                 assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_broadcast_in_dim_rejects_duplicate_axes() {
+        run_logged_test(
+            "test_trace_broadcast_in_dim_rejects_duplicate_axes",
+            fj_test_utils::fixture_id_from_json(&("broadcast-in-dim", "dup-axes"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape { dims: vec![2, 2] },
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("shape".to_owned(), "2,2".to_owned());
+                params.insert("broadcast_dimensions".to_owned(), "1,1".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::BroadcastInDim, &[TracerId(1)], params)
+                    .expect_err("broadcast_in_dim should reject duplicate axes");
+                assert!(matches!(
+                    err,
+                    super::TraceError::ShapeInferenceFailed {
+                        primitive: Primitive::BroadcastInDim,
+                        ..
+                    }
+                ));
+                assert!(
+                    err.to_string().contains("must be unique"),
+                    "unexpected error: {err}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_broadcast_in_dim_rejects_out_of_range_axis() {
+        run_logged_test(
+            "test_trace_broadcast_in_dim_rejects_out_of_range_axis",
+            fj_test_utils::fixture_id_from_json(&("broadcast-in-dim", "out-of-range"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape { dims: vec![2] },
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("shape".to_owned(), "2,2".to_owned());
+                params.insert("broadcast_dimensions".to_owned(), "2".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::BroadcastInDim, &[TracerId(1)], params)
+                    .expect_err("broadcast_in_dim should reject out-of-range axis");
+                assert!(matches!(
+                    err,
+                    super::TraceError::ShapeInferenceFailed {
+                        primitive: Primitive::BroadcastInDim,
+                        ..
+                    }
+                ));
+                assert!(
+                    err.to_string().contains("out of range"),
+                    "unexpected error: {err}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_broadcast_in_dim_rejects_incompatible_dim() {
+        run_logged_test(
+            "test_trace_broadcast_in_dim_rejects_incompatible_dim",
+            fj_test_utils::fixture_id_from_json(&("broadcast-in-dim", "incompatible"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape { dims: vec![2] },
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("shape".to_owned(), "3,2".to_owned());
+                params.insert("broadcast_dimensions".to_owned(), "0".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::BroadcastInDim, &[TracerId(1)], params)
+                    .expect_err("broadcast_in_dim should reject incompatible dims");
+                assert!(matches!(
+                    err,
+                    super::TraceError::ShapeInferenceFailed {
+                        primitive: Primitive::BroadcastInDim,
+                        ..
+                    }
+                ));
+                assert!(
+                    err.to_string().contains("cannot broadcast input dim"),
+                    "unexpected error: {err}"
+                );
                 Ok(Vec::new())
             },
         );
