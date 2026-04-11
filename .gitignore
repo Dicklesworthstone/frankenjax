@@ -92,3 +92,6 @@ storage.sqlite3-wal.corrupt-*
 
 # CI/E2E test output artifacts
 artifacts/
+
+# NTM session state
+.ntm/
