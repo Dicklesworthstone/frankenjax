@@ -1514,6 +1514,25 @@ fn batch_switch(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    if inputs.len() < 2 {
+        return Err(BatchError::InterpreterError(format!(
+            "switch expects at least 2 inputs (index + branch), got {}",
+            inputs.len()
+        )));
+    }
+
+    let provided_branches = inputs.len().saturating_sub(1);
+    if let Some(raw) = params.get("num_branches") {
+        let declared = raw.parse::<usize>().map_err(|_| {
+            BatchError::InterpreterError(format!("invalid num_branches value: {raw}"))
+        })?;
+        if declared != provided_branches {
+            return Err(BatchError::InterpreterError(format!(
+                "switch expected {declared} branch values but got {provided_branches}"
+            )));
+        }
+    }
+
     // Fast path: scalar index selects one branch for the entire batch.
     if inputs[0].batch_dim.is_none() {
         let idx = scalar_to_i64(&inputs[0].value, Primitive::Switch)?;
@@ -2517,6 +2536,28 @@ mod tests {
         .unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![4, 5, 6]);
+    }
+
+    #[test]
+    fn test_batch_trace_switch_rejects_num_branches_mismatch() -> Result<(), BatchError> {
+        let idx = BatchTracer::unbatched(Value::scalar_i64(0));
+        let on_zero = BatchTracer::unbatched(Value::scalar_i64(11));
+        let on_one = BatchTracer::batched(make_i64_vector(&[22, 23]), 0);
+        let mut params = BTreeMap::new();
+        params.insert("num_branches".to_owned(), "3".to_owned());
+
+        let err = apply_batch_rule(Primitive::Switch, &[idx, on_zero, on_one], &params)
+            .expect_err("mismatched num_branches should error");
+        match err {
+            BatchError::InterpreterError(msg) => {
+                assert!(
+                    msg.contains("switch expected 3 branch values but got 2"),
+                    "unexpected error: {msg}"
+                );
+                Ok(())
+            }
+            other => Err(other),
+        }
     }
 
     #[test]
