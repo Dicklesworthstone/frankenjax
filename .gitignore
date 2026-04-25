@@ -40,6 +40,7 @@ references/
 
 # Original PNG (converted to webp)
 *.png
+!gh_og_share_image.png
 
 # Ephemeral agent/runtime artifacts
 storage.sqlite3
