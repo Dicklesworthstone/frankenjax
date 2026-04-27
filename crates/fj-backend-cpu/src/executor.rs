@@ -6,7 +6,7 @@
 //!
 //! Contract: p2c006.strict.inv001 (CPU always available).
 
-use fj_core::{Atom, DType, Jaxpr, Value, VarId};
+use fj_core::{Atom, DType, Equation, Jaxpr, Value, VarId};
 use fj_interpreters::{InterpreterError, eval_equation_outputs};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
@@ -14,32 +14,37 @@ use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
 
-fn equation_inputs_ready(equation: &fj_core::Equation, env: &HashMap<VarId, Value>) -> bool {
+// The scan scheduler stays faster for medium/wide DAGs; dependency counts win
+// once repeated ready scans dominate long pure segments.
+const DEPENDENCY_COUNT_MIN_SEGMENT_LEN: usize = 256;
+
+fn equation_inputs_ready(equation: &Equation, env: &HashMap<VarId, Value>) -> bool {
     equation.inputs.iter().all(|atom| match atom {
         Atom::Var(var) => env.contains_key(var),
         Atom::Lit(_) => true,
     })
 }
 
-fn first_missing_input_var(
-    equation: &fj_core::Equation,
-    env: &HashMap<VarId, Value>,
-) -> Option<VarId> {
+fn first_missing_input_var(equation: &Equation, env: &HashMap<VarId, Value>) -> Option<VarId> {
     equation.inputs.iter().find_map(|atom| match atom {
         Atom::Var(var) if !env.contains_key(var) => Some(*var),
         _ => None,
     })
 }
 
+fn is_scheduler_barrier(equation: &Equation) -> bool {
+    !equation.effects.is_empty() || !equation.sub_jaxprs.is_empty() || equation.outputs.len() > 1
+}
+
 fn evaluate_equation_multi(
-    equation: &fj_core::Equation,
+    equation: &Equation,
     env: &HashMap<VarId, Value>,
 ) -> Result<Vec<Value>, InterpreterError> {
     eval_equation_outputs(equation, env)
 }
 
 fn evaluate_equation(
-    equation: &fj_core::Equation,
+    equation: &Equation,
     env: &HashMap<VarId, Value>,
 ) -> Result<Value, InterpreterError> {
     if equation.outputs.len() != 1 {
@@ -66,6 +71,204 @@ fn evaluate_equation(
             ),
         }),
     }
+}
+
+fn single_output_var(equation: &Equation) -> Result<VarId, InterpreterError> {
+    equation
+        .outputs
+        .first()
+        .copied()
+        .ok_or(InterpreterError::UnexpectedOutputArity {
+            primitive: equation.primitive,
+            expected: 1,
+            actual: 0,
+        })
+}
+
+fn execute_ready_wave(
+    jaxpr: &Jaxpr,
+    env: &mut HashMap<VarId, Value>,
+    executed: &mut [bool],
+    remaining: &mut usize,
+    ready_indices: &[usize],
+) -> Result<Vec<VarId>, InterpreterError> {
+    let should_parallelize = ready_indices.len() > 1 && rayon::current_num_threads() > 1;
+    let mut produced_vars = Vec::with_capacity(ready_indices.len());
+
+    if should_parallelize {
+        // No env.clone() needed: the parallel phase only reads from env.
+        // The shared borrow is released after collect() before we mutate env below.
+        let env_ref = &*env;
+        let mut evaluated = ready_indices
+            .par_iter()
+            .map(|idx| {
+                let eqn = &jaxpr.equations[*idx];
+                let output = evaluate_equation(eqn, env_ref)?;
+                let out_var = single_output_var(eqn)?;
+                Ok((*idx, out_var, output))
+            })
+            .collect::<Result<Vec<_>, InterpreterError>>()?;
+
+        evaluated.sort_by_key(|(idx, _, _)| *idx);
+        for (idx, out_var, out_value) in evaluated {
+            env.insert(out_var, out_value);
+            executed[idx] = true;
+            *remaining -= 1;
+            produced_vars.push(out_var);
+        }
+    } else {
+        for idx in ready_indices {
+            let eqn = &jaxpr.equations[*idx];
+            let output = evaluate_equation(eqn, env)?;
+            let out_var = single_output_var(eqn)?;
+            env.insert(out_var, output);
+            executed[*idx] = true;
+            *remaining -= 1;
+            produced_vars.push(out_var);
+        }
+    }
+
+    Ok(produced_vars)
+}
+
+fn first_missing_input_in_segment(
+    jaxpr: &Jaxpr,
+    env: &HashMap<VarId, Value>,
+    executed: &[bool],
+    segment_start: usize,
+    segment_end: usize,
+) -> Result<VarId, InterpreterError> {
+    for (idx, done) in executed
+        .iter()
+        .enumerate()
+        .take(segment_end)
+        .skip(segment_start)
+    {
+        if *done {
+            continue;
+        }
+        let equation = &jaxpr.equations[idx];
+        if let Some(missing) = first_missing_input_var(equation, env) {
+            return Ok(missing);
+        }
+        if let Some(out_var) = equation.outputs.first() {
+            return Ok(*out_var);
+        }
+    }
+    Err(InterpreterError::InvariantViolation {
+        detail: format!(
+            "scheduler could not identify missing input in segment {segment_start}..{segment_end}"
+        ),
+    })
+}
+
+fn execute_scan_segment(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+    env: &mut HashMap<VarId, Value>,
+    executed: &mut [bool],
+    remaining: &mut usize,
+    max_ready_wave: &mut usize,
+) -> Result<(), InterpreterError> {
+    let mut segment_remaining = segment_end - segment_start;
+    while segment_remaining > 0 {
+        let mut ready_indices = Vec::new();
+        for (idx, done) in executed
+            .iter()
+            .enumerate()
+            .take(segment_end)
+            .skip(segment_start)
+        {
+            if *done {
+                continue;
+            }
+            let equation = &jaxpr.equations[idx];
+            if equation_inputs_ready(equation, env) {
+                ready_indices.push(idx);
+            }
+        }
+
+        if ready_indices.is_empty() {
+            return Err(InterpreterError::MissingVariable(
+                first_missing_input_in_segment(jaxpr, env, executed, segment_start, segment_end)?,
+            ));
+        }
+
+        *max_ready_wave = (*max_ready_wave).max(ready_indices.len());
+        let ready_len = ready_indices.len();
+        execute_ready_wave(jaxpr, env, executed, remaining, &ready_indices)?;
+        segment_remaining -= ready_len;
+    }
+
+    Ok(())
+}
+
+fn execute_pure_segment(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+    env: &mut HashMap<VarId, Value>,
+    executed: &mut [bool],
+    remaining: &mut usize,
+    max_ready_wave: &mut usize,
+) -> Result<(), InterpreterError> {
+    let segment_len = segment_end - segment_start;
+    let mut pending_inputs = vec![0_usize; segment_len];
+    let mut consumers: HashMap<VarId, Vec<usize>> =
+        HashMap::with_capacity_and_hasher(segment_len, Default::default());
+    let mut ready_indices = Vec::new();
+
+    for idx in segment_start..segment_end {
+        let local_idx = idx - segment_start;
+        let equation = &jaxpr.equations[idx];
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom {
+                if env.contains_key(var) {
+                    continue;
+                }
+                pending_inputs[local_idx] += 1;
+                consumers.entry(*var).or_default().push(local_idx);
+            }
+        }
+
+        if pending_inputs[local_idx] == 0 {
+            ready_indices.push(idx);
+        }
+    }
+
+    let mut segment_remaining = segment_len;
+    while segment_remaining > 0 {
+        if ready_indices.is_empty() {
+            return Err(InterpreterError::MissingVariable(
+                first_missing_input_in_segment(jaxpr, env, executed, segment_start, segment_end)?,
+            ));
+        }
+
+        *max_ready_wave = (*max_ready_wave).max(ready_indices.len());
+        let ready_len = ready_indices.len();
+        let produced_vars = execute_ready_wave(jaxpr, env, executed, remaining, &ready_indices)?;
+        segment_remaining -= ready_len;
+
+        let mut next_ready = Vec::new();
+        for produced_var in produced_vars {
+            if let Some(waiters) = consumers.get(&produced_var) {
+                for &local_idx in waiters {
+                    if executed[segment_start + local_idx] || pending_inputs[local_idx] == 0 {
+                        continue;
+                    }
+                    pending_inputs[local_idx] -= 1;
+                    if pending_inputs[local_idx] == 0 {
+                        next_ready.push(segment_start + local_idx);
+                    }
+                }
+            }
+        }
+        next_ready.sort_unstable();
+        ready_indices = next_ready;
+    }
+
+    Ok(())
 }
 
 fn evaluate_jaxpr_parallel_inner(
@@ -96,93 +299,59 @@ fn evaluate_jaxpr_parallel_inner(
 
     let mut executed = vec![false; jaxpr.equations.len()];
     let mut remaining = jaxpr.equations.len();
+    let mut next_pending = 0_usize;
 
     while remaining > 0 {
-        let Some(first_pending) = executed.iter().position(|done| !*done) else {
+        while next_pending < executed.len() && executed[next_pending] {
+            next_pending += 1;
+        }
+        if next_pending == executed.len() {
             return Err(InterpreterError::InvariantViolation {
                 detail: format!(
                     "scheduler reported {remaining} remaining equation(s) with no pending work"
                 ),
             });
-        };
+        }
+        let first_pending = next_pending;
         let first_eqn = &jaxpr.equations[first_pending];
 
-        let is_multi_output = first_eqn.outputs.len() > 1;
-        let barrier =
-            !first_eqn.effects.is_empty() || !first_eqn.sub_jaxprs.is_empty() || is_multi_output;
-        if barrier {
+        if is_scheduler_barrier(first_eqn) {
             let outputs = evaluate_equation_multi(first_eqn, &env)?;
             for (out_var, out_val) in first_eqn.outputs.iter().zip(outputs) {
                 env.insert(*out_var, out_val);
             }
             executed[first_pending] = true;
             remaining -= 1;
+            next_pending += 1;
             continue;
         }
 
-        let first_effect_barrier_index = (first_pending..jaxpr.equations.len())
-            .find(|idx| {
-                !executed[*idx]
-                    && (!jaxpr.equations[*idx].effects.is_empty()
-                        || !jaxpr.equations[*idx].sub_jaxprs.is_empty()
-                        || jaxpr.equations[*idx].outputs.len() > 1)
-            })
+        let segment_end = (first_pending..jaxpr.equations.len())
+            .find(|idx| !executed[*idx] && is_scheduler_barrier(&jaxpr.equations[*idx]))
             .unwrap_or(jaxpr.equations.len());
-
-        let mut ready_indices = Vec::new();
-        for (idx, done) in executed
-            .iter()
-            .enumerate()
-            .take(first_effect_barrier_index)
-            .skip(first_pending)
-        {
-            if *done {
-                continue;
-            }
-            let eqn = &jaxpr.equations[idx];
-            if equation_inputs_ready(eqn, &env) {
-                ready_indices.push(idx);
-            }
-        }
-
-        if ready_indices.is_empty() {
-            if let Some(missing) = first_missing_input_var(first_eqn, &env) {
-                return Err(InterpreterError::MissingVariable(missing));
-            }
-            return Err(InterpreterError::MissingVariable(first_eqn.outputs[0]));
-        }
-
-        *max_ready_wave = (*max_ready_wave).max(ready_indices.len());
-
-        let should_parallelize = ready_indices.len() > 1 && rayon::current_num_threads() > 1;
-        if should_parallelize {
-            // No env.clone() needed: the parallel phase only reads from env.
-            // The shared borrow is released after collect() before we mutate env below.
-            let env_ref = &env;
-            let mut evaluated = ready_indices
-                .par_iter()
-                .map(|idx| {
-                    let eqn = &jaxpr.equations[*idx];
-                    let output = evaluate_equation(eqn, env_ref)?;
-                    Ok((*idx, eqn.outputs[0], output))
-                })
-                .collect::<Result<Vec<_>, InterpreterError>>()?;
-
-            evaluated.sort_by_key(|(idx, _, _)| *idx);
-            for (idx, out_var, out_value) in evaluated {
-                env.insert(out_var, out_value);
-                executed[idx] = true;
-                remaining -= 1;
-            }
+        let segment_len = segment_end - first_pending;
+        if segment_len < DEPENDENCY_COUNT_MIN_SEGMENT_LEN {
+            execute_scan_segment(
+                jaxpr,
+                first_pending,
+                segment_end,
+                &mut env,
+                &mut executed,
+                &mut remaining,
+                max_ready_wave,
+            )?;
         } else {
-            for idx in ready_indices {
-                let eqn = &jaxpr.equations[idx];
-                let output = evaluate_equation(eqn, &env)?;
-                env.insert(eqn.outputs[0], output);
-                executed[idx] = true;
-                remaining -= 1;
-            }
+            execute_pure_segment(
+                jaxpr,
+                first_pending,
+                segment_end,
+                &mut env,
+                &mut executed,
+                &mut remaining,
+                max_ready_wave,
+            )?;
         }
+        next_pending = segment_end;
     }
 
     jaxpr
@@ -338,7 +507,7 @@ impl Backend for CpuBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{Atom, Equation, Jaxpr, Primitive, ProgramSpec, VarId, build_program};
+    use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, VarId, build_program};
     use std::collections::BTreeMap;
 
     fn make_parallel_independent_jaxpr() -> Jaxpr {
@@ -411,6 +580,90 @@ mod tests {
                     make_switch_branch_self_binary_jaxpr(Primitive::Add),
                     make_switch_branch_self_binary_jaxpr(Primitive::Mul),
                 ],
+            }],
+        )
+    }
+
+    fn make_out_of_order_dependency_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(VarId(2)), Atom::Lit(Literal::I64(1))].into(),
+                    outputs: vec![VarId(3)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(1))].into(),
+                    outputs: vec![VarId(2)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn make_barrier_order_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(3)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Switch,
+                    inputs: vec![Atom::Var(VarId(2)), Atom::Var(VarId(3))].into(),
+                    outputs: vec![VarId(4)].into(),
+                    params: BTreeMap::from([("num_branches".to_owned(), "1".to_owned())]),
+                    effects: vec![],
+                    sub_jaxprs: vec![make_switch_branch_identity_jaxpr()],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: vec![Atom::Var(VarId(1))].into(),
+                    outputs: vec![VarId(5)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(VarId(4)), Atom::Var(VarId(5))].into(),
+                    outputs: vec![VarId(6)].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn make_missing_dependency_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(VarId(99)), Atom::Lit(Literal::I64(1))].into(),
+                outputs: vec![VarId(2)].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
             }],
         )
     }
@@ -544,6 +797,44 @@ mod tests {
             max_ready_wave >= 2,
             "expected at least one parallel-ready wave with width >=2, got {max_ready_wave}"
         );
+    }
+
+    #[test]
+    fn dependency_scheduler_executes_out_of_order_pure_equations() {
+        let jaxpr = make_out_of_order_dependency_jaxpr();
+        let mut max_ready_wave = 0_usize;
+        let result =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(40)], &mut max_ready_wave);
+
+        assert_eq!(result, Ok(vec![Value::scalar_i64(42)]));
+        assert_eq!(max_ready_wave, 1);
+    }
+
+    #[test]
+    fn dependency_scheduler_keeps_control_flow_barriers_ordered() {
+        let jaxpr = make_barrier_order_jaxpr();
+        let mut max_ready_wave = 0_usize;
+        let result = evaluate_jaxpr_parallel_inner(
+            &jaxpr,
+            &[Value::scalar_i64(10), Value::scalar_i64(0)],
+            &mut max_ready_wave,
+        );
+
+        assert_eq!(result, Ok(vec![Value::scalar_i64(-20)]));
+        assert_eq!(
+            max_ready_wave, 1,
+            "ready equations after the switch barrier must not join the pre-barrier wave"
+        );
+    }
+
+    #[test]
+    fn dependency_scheduler_reports_missing_segment_input() {
+        let jaxpr = make_missing_dependency_jaxpr();
+        let mut max_ready_wave = 0_usize;
+        let err =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(1)], &mut max_ready_wave);
+
+        assert_eq!(err, Err(InterpreterError::MissingVariable(VarId(99))));
     }
 
     #[test]

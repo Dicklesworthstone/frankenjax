@@ -57,6 +57,28 @@ fn make_wide_parallel_jaxpr(width: usize) -> Jaxpr {
     Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
 }
 
+fn make_dependency_chain_jaxpr(length: usize) -> Jaxpr {
+    assert!(length >= 1, "length must be at least 1");
+    let input = VarId(1);
+    let mut current = input;
+    let mut equations = Vec::with_capacity(length);
+
+    for next_var in (2_u32..).take(length) {
+        let out = VarId(next_var);
+        equations.push(Equation {
+            primitive: Primitive::Add,
+            inputs: vec![Atom::Var(current), Atom::Lit(Literal::I64(1))].into(),
+            outputs: vec![out].into(),
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+        current = out;
+    }
+
+    Jaxpr::new(vec![input], vec![], vec![current], equations)
+}
+
 fn bench_execute_add2(c: &mut Criterion) {
     let backend = CpuBackend::new();
     let jaxpr = build_program(ProgramSpec::Add2);
@@ -90,6 +112,15 @@ fn bench_execute_wide_parallel(c: &mut Criterion) {
     let args = vec![Value::scalar_i64(7)];
     c.bench_function("backend_execute/wide_parallel_64", |b| {
         b.iter(|| backend.execute(&jaxpr, &args, DeviceId(0)).unwrap())
+    });
+}
+
+fn bench_execute_dependency_chain(c: &mut Criterion) {
+    let backend = CpuBackend::new();
+    let jaxpr = make_dependency_chain_jaxpr(512);
+    let args = vec![Value::scalar_i64(7)];
+    c.bench_function("backend_execute/dependency_chain_512", |b| {
+        b.iter(|| backend.execute(&jaxpr, &args, DeviceId(0)))
     });
 }
 
@@ -129,6 +160,7 @@ criterion_group!(
     bench_execute_square,
     bench_execute_10eqn,
     bench_execute_wide_parallel,
+    bench_execute_dependency_chain,
     bench_interpreter_wide_parallel,
     bench_allocate,
     bench_transfer,
