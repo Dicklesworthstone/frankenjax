@@ -2919,12 +2919,15 @@ fn batch_passthrough_leading(
     // Find batch size from any batched input
     let batch_size = get_batch_size(&batched.value, batch_dim)?;
 
-    // Move all batched to front, broadcast unbatched
-    let values: Result<Vec<Value>, BatchError> = inputs
+    // Move non-leading batched inputs to the front. Inputs already batched on
+    // axis 0 can be borrowed directly; cloning them here would copy the full
+    // tensor before the per-batch slices are materialized.
+    let values: Result<Vec<PreparedBatchInput<'_>>, BatchError> = inputs
         .iter()
         .map(|t| match t.batch_dim {
-            Some(bd) => move_batch_dim_to_front(&t.value, bd),
-            None => broadcast_unbatched(&t.value, batch_size, 0),
+            Some(0) => Ok(PreparedBatchInput::BatchedBorrowed(&t.value)),
+            Some(bd) => move_batch_dim_to_front(&t.value, bd).map(PreparedBatchInput::BatchedOwned),
+            None => Ok(PreparedBatchInput::Shared(&t.value)),
         })
         .collect();
     let values = values?;
@@ -2934,12 +2937,7 @@ fn batch_passthrough_leading(
     for i in 0..batch_size {
         let slices: Result<Vec<Value>, BatchError> = values
             .iter()
-            .map(|v| match v {
-                Value::Tensor(t) => t
-                    .slice_axis0(i)
-                    .map_err(|e| BatchError::TensorError(e.to_string())),
-                Value::Scalar(_) => Ok(v.clone()),
-            })
+            .map(|value| value.slice_for_batch(i))
             .collect();
         let slices = slices?;
         let r = eval_primitive(primitive, &slices, params)
@@ -2950,6 +2948,31 @@ fn batch_passthrough_leading(
     let stacked =
         TensorValue::stack_axis0(&results).map_err(|e| BatchError::TensorError(e.to_string()))?;
     Ok(BatchTracer::batched(Value::Tensor(stacked), 0))
+}
+
+enum PreparedBatchInput<'a> {
+    BatchedBorrowed(&'a Value),
+    BatchedOwned(Value),
+    Shared(&'a Value),
+}
+
+impl PreparedBatchInput<'_> {
+    fn slice_for_batch(&self, index: usize) -> Result<Value, BatchError> {
+        match self {
+            Self::BatchedBorrowed(value) => slice_batched_value(value, index),
+            Self::BatchedOwned(value) => slice_batched_value(value, index),
+            Self::Shared(value) => Ok((*value).clone()),
+        }
+    }
+}
+
+fn slice_batched_value(value: &Value, index: usize) -> Result<Value, BatchError> {
+    match value {
+        Value::Tensor(tensor) => tensor
+            .slice_axis0(index)
+            .map_err(|e| BatchError::TensorError(e.to_string())),
+        Value::Scalar(_) => Ok(value.clone()),
+    }
 }
 
 fn batch_passthrough_leading_multi(
@@ -5600,6 +5623,40 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
         assert_eq!(extract_i64_vec(&result.value), vec![40, 20, 80, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_gather_batched_operand_shared_indices_rank3_partial_slice() {
+        let operand = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape {
+                        dims: vec![2, 3, 4],
+                    },
+                    vec![
+                        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 100, 101, 102, 103, 104, 105, 106,
+                        107, 108, 109, 110, 111,
+                    ]
+                    .into_iter()
+                    .map(Literal::I64)
+                    .collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let indices = BatchTracer::unbatched(make_i64_vector(&[2, 0]));
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "1,2".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Gather, &[operand, indices], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2, 2]);
+        assert_eq!(
+            extract_i64_vec(&result.value),
+            vec![8, 9, 0, 1, 108, 109, 100, 101]
+        );
     }
 
     #[test]
