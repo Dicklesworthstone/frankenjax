@@ -265,7 +265,9 @@ fn cmd_batch(args: Vec<String>) -> Result<(), String> {
             "drop_source_count": drop_source_count,
             "results": results,
         });
-        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        let rendered = serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("serialize batch report: {err}"))?;
+        println!("{rendered}");
     } else {
         println!(
             "batch complete: {} total, {} passed, {} failed",
@@ -362,7 +364,9 @@ fn cmd_verify_only(args: Vec<String>) -> Result<(), String> {
             "missing_sidecar": missing_count,
             "results": results,
         });
-        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        let rendered = serde_json::to_string_pretty(&report)
+            .map_err(|err| format!("serialize verify report: {err}"))?;
+        println!("{rendered}");
     } else {
         println!(
             "verify: {} artifacts, {} passed, {} failed, {} missing sidecar",
