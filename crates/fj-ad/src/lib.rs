@@ -1680,17 +1680,7 @@ pub fn vjp(
             // lo and hi don't receive gradients in JAX
             Ok(vec![g_x, zeros_like(lo), zeros_like(hi)])
         }
-        Primitive::DynamicSlice => {
-            // VJP of dynamic_slice: same as static slice — gradient passes through
-            // to the operand at the sliced positions, zero elsewhere.
-            // For simplicity, pass g through as-is for the operand.
-            let mut grads = vec![g.clone()];
-            // Start indices don't receive gradients (they're discrete)
-            for _ in 1..inputs.len() {
-                grads.push(Value::scalar_f64(0.0));
-            }
-            Ok(grads)
-        }
+        Primitive::DynamicSlice => dynamic_slice_vjp(inputs, g),
         Primitive::Pad => {
             // VJP of pad: extract the original operand positions from g via
             // strided slicing (accounting for interior padding), and compute
@@ -2945,17 +2935,77 @@ fn increment_nd_index(idx: &mut [usize], dims: &[usize]) {
     }
 }
 
+fn zero_literal_for_dtype(dtype: DType) -> Literal {
+    match dtype {
+        DType::I64 | DType::I32 => Literal::I64(0),
+        DType::U32 => Literal::U32(0),
+        DType::U64 => Literal::U64(0),
+        DType::Bool => Literal::Bool(false),
+        DType::BF16 => Literal::from_bf16_f32(0.0),
+        DType::F16 => Literal::from_f16_f32(0.0),
+        DType::F32 => Literal::from_f32(0.0),
+        DType::F64 => Literal::from_f64(0.0),
+        DType::Complex64 => Literal::from_complex64(0.0, 0.0),
+        DType::Complex128 => Literal::from_complex128(0.0, 0.0),
+    }
+}
+
+fn dynamic_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
+    let operand = inputs.first().ok_or(AdError::InputArity {
+        expected: 1,
+        actual: 0,
+    })?;
+
+    let mut result = match (operand, g) {
+        (Value::Scalar(_), _) => vec![g.clone()],
+        (Value::Tensor(operand_tensor), Value::Tensor(g_tensor)) => {
+            let zero = zero_literal_for_dtype(g_tensor.dtype);
+            let zero_operand = Value::Tensor(
+                TensorValue::new(
+                    g_tensor.dtype,
+                    operand_tensor.shape.clone(),
+                    vec![zero; operand_tensor.elements.len()],
+                )
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            );
+            let mut update_inputs = Vec::with_capacity(inputs.len() + 1);
+            update_inputs.push(zero_operand);
+            update_inputs.push(g.clone());
+            update_inputs.extend_from_slice(&inputs[1..]);
+            vec![
+                eval_primitive(
+                    Primitive::DynamicUpdateSlice,
+                    &update_inputs,
+                    &BTreeMap::new(),
+                )
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            ]
+        }
+        (Value::Tensor(_), Value::Scalar(_)) => {
+            return Err(AdError::EvalFailed(
+                "dynamic_slice cotangent for tensor operand must be a tensor".to_owned(),
+            ));
+        }
+    };
+
+    result.extend(std::iter::repeat_n(
+        Value::scalar_f64(0.0),
+        inputs.len().saturating_sub(1),
+    ));
+    Ok(result)
+}
+
+fn normalize_dynamic_start(raw: i64, dim: i64, window: i64) -> usize {
+    let adjusted = if raw < 0 { raw + dim } else { raw };
+    adjusted.max(0).min(dim - window) as usize
+}
+
 /// DynamicUpdateSlice VJP: route gradients properly.
 ///
 /// Inputs: [operand, update, start_0, start_1, ..., start_{rank-1}]
 /// g_operand = g with the update region zeroed out
 /// g_update = slice of g at the start positions with update's shape
 /// Start indices have zero gradient (discrete).
-fn normalize_dynamic_start(raw: i64, dim: i64, window: i64) -> usize {
-    let adjusted = if raw < 0 { raw + dim } else { raw };
-    adjusted.max(0).min(dim - window) as usize
-}
-
 fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
     let g_tensor = match g {
         Value::Tensor(t) => t,
@@ -8707,7 +8757,75 @@ mod tests {
         );
     }
 
-    // ── DynamicUpdateSlice VJP tests ──────────────────────────────
+    // ── DynamicSlice / DynamicUpdateSlice VJP tests ───────────────
+
+    #[test]
+    fn dynamic_slice_vjp_embeds_cotangent_in_operand_shape() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![5] },
+                (1..=5).map(|i| Literal::from_f64(i as f64)).collect(),
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f64(7.0), Literal::from_f64(11.0)],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2".to_owned());
+
+        let grads = vjp(
+            Primitive::DynamicSlice,
+            &[operand, Value::scalar_i64(1)],
+            &[g],
+            &[],
+            &params,
+        )
+        .unwrap();
+
+        assert_eq!(tensor_f64_values(&grads[0]), vec![0.0, 7.0, 11.0, 0.0, 0.0]);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn dynamic_slice_vjp_negative_start_relative_to_end() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![5] },
+                (1..=5).map(|i| Literal::from_f64(i as f64)).collect(),
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f64(7.0), Literal::from_f64(11.0)],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2".to_owned());
+
+        let grads = vjp(
+            Primitive::DynamicSlice,
+            &[operand, Value::scalar_i64(-3)],
+            &[g],
+            &[],
+            &params,
+        )
+        .unwrap();
+
+        assert_eq!(tensor_f64_values(&grads[0]), vec![0.0, 0.0, 7.0, 11.0, 0.0]);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), 0.0);
+    }
 
     #[test]
     fn dynamic_update_slice_vjp_1d() {
