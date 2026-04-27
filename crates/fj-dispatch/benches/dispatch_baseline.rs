@@ -410,6 +410,49 @@ fn bench_vmap_qr(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_eigh(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_eigh");
+
+    let batched_matrix = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![512, 3, 3],
+            },
+            (0..512)
+                .flat_map(|batch| {
+                    let shift = f64::from(batch % 13) * 0.01;
+                    [
+                        Literal::F64Bits((2.0 + shift).to_bits()),
+                        Literal::F64Bits(0.1_f64.to_bits()),
+                        Literal::F64Bits(0.0_f64.to_bits()),
+                        Literal::F64Bits(0.1_f64.to_bits()),
+                        Literal::F64Bits((3.0 + shift).to_bits()),
+                        Literal::F64Bits(0.2_f64.to_bits()),
+                        Literal::F64Bits(0.0_f64.to_bits()),
+                        Literal::F64Bits(0.2_f64.to_bits()),
+                        Literal::F64Bits((4.0 + shift).to_bits()),
+                    ]
+                })
+                .collect(),
+        )
+        .expect("batched Eigh input should build"),
+    );
+
+    group.bench_function("batched_matrix_3x3", |b| {
+        b.iter(|| {
+            dispatch(dispatch_request(
+                ProgramSpec::LaxEigh,
+                &[Transform::Vmap],
+                vec![batched_matrix.clone()],
+            ))
+            .expect("vmap Eigh should succeed");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -684,6 +727,7 @@ criterion_group!(
     bench_vmap_scatter,
     bench_vmap_dot_i64,
     bench_vmap_qr,
+    bench_vmap_eigh,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,

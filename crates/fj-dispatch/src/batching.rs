@@ -2337,18 +2337,17 @@ fn batch_eigh_multi(
     let mut w_elements = Vec::with_capacity(batch_size * m);
     let mut v_elements = Vec::with_capacity(batch_size * m * m);
 
+    let mut matrix = Vec::with_capacity(matrix_len);
     for batch in 0..batch_size {
         let base = batch * matrix_len;
-        let mut matrix = tensor.elements[base..base + matrix_len]
-            .iter()
-            .map(|lit| {
-                lit.as_f64().ok_or_else(|| {
-                    BatchError::EvalError(
-                        "type mismatch for eigh: expected numeric elements".to_owned(),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        matrix.clear();
+        for lit in &tensor.elements[base..base + matrix_len] {
+            matrix.push(lit.as_f64().ok_or_else(|| {
+                BatchError::EvalError(
+                    "type mismatch for eigh: expected numeric elements".to_owned(),
+                )
+            })?);
+        }
         let (w, v) = eigh_decompose_matrix(&mut matrix, m);
         w_elements.extend(w.into_iter().map(Literal::from_f64));
         v_elements.extend(v.into_iter().map(Literal::from_f64));
