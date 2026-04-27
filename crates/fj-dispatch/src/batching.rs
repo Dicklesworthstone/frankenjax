@@ -2176,18 +2176,15 @@ fn batch_qr_multi(
 
     let mut q_elements = Vec::with_capacity(batch_size * m * q_cols);
     let mut r_elements = Vec::with_capacity(batch_size * r_rows * n);
+    let mut matrix = Vec::with_capacity(matrix_len);
     for batch in 0..batch_size {
         let base = batch * matrix_len;
-        let matrix = tensor.elements[base..base + matrix_len]
-            .iter()
-            .map(|lit| {
-                lit.as_f64().ok_or_else(|| {
-                    BatchError::EvalError(
-                        "type mismatch for qr: expected numeric elements".to_owned(),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        matrix.clear();
+        for lit in &tensor.elements[base..base + matrix_len] {
+            matrix.push(lit.as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
+            })?);
+        }
         let (q, r) = qr_decompose_matrix(m, n, &matrix, full_matrices);
         q_elements.extend(q.into_iter().map(Literal::from_f64));
         r_elements.extend(r.into_iter().map(Literal::from_f64));
