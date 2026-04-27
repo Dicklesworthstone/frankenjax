@@ -229,10 +229,7 @@ fn zeros_like(v: &Value) -> Value {
                 DType::Complex64 | DType::Complex128 => (Literal::from_f64(0.0), DType::F64),
             };
             let elements = vec![zero_lit; t.elements.len()];
-            Value::Tensor(
-                TensorValue::new(out_dtype, t.shape.clone(), elements)
-                    .expect("zeros_like should never fail for valid tensor shape"),
-            )
+            Value::Tensor(tensor_with_existing_shape(out_dtype, t, elements))
         }
     }
 }
@@ -250,11 +247,20 @@ fn ones_like(v: &Value) -> Value {
         },
         Value::Tensor(t) => {
             let elements = vec![Literal::from_f64(1.0); t.elements.len()];
-            Value::Tensor(
-                TensorValue::new(DType::F64, t.shape.clone(), elements)
-                    .expect("ones_like should never fail for valid tensor shape"),
-            )
+            Value::Tensor(tensor_with_existing_shape(DType::F64, t, elements))
         }
+    }
+}
+
+fn tensor_with_existing_shape(
+    dtype: DType,
+    source: &TensorValue,
+    elements: Vec<Literal>,
+) -> TensorValue {
+    TensorValue {
+        dtype,
+        shape: source.shape.clone(),
+        elements,
     }
 }
 
@@ -356,14 +362,57 @@ fn value_sub(a: &Value, b: &Value) -> Result<Value, AdError> {
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
+fn checked_axis_len(target_len: usize, context: &'static str) -> Result<u32, AdError> {
+    u32::try_from(target_len).map_err(|_| {
+        AdError::EvalFailed(format!(
+            "{context}: target axis length {target_len} exceeds u32 shape limit"
+        ))
+    })
+}
+
+fn last_axis_info(tensor: &TensorValue, context: &'static str) -> Result<(usize, usize), AdError> {
+    let Some((last_dim, batch_dims)) = tensor.shape.dims.split_last() else {
+        return Err(AdError::EvalFailed(format!(
+            "{context}: expected tensor rank to be at least 1"
+        )));
+    };
+
+    let mut batch_size = 1usize;
+    for dim in batch_dims {
+        batch_size = batch_size
+            .checked_mul(*dim as usize)
+            .ok_or_else(|| AdError::EvalFailed(format!("{context}: batch size overflow")))?;
+    }
+
+    Ok((*last_dim as usize, batch_size))
+}
+
+fn set_last_axis_len(
+    dims: &mut [u32],
+    target_len: u32,
+    context: &'static str,
+) -> Result<(), AdError> {
+    let Some(last_dim) = dims.last_mut() else {
+        return Err(AdError::EvalFailed(format!(
+            "{context}: expected tensor rank to be at least 1"
+        )));
+    };
+    *last_dim = target_len;
+    Ok(())
+}
+
 /// Zero-pad a complex tensor along the last axis from current length to `target_len`.
 fn zero_pad_last_axis_complex(tensor: &TensorValue, target_len: usize) -> Result<Value, AdError> {
-    let cur_len = *tensor.shape.dims.last().unwrap_or(&0) as usize;
+    let context = "zero_pad_last_axis_complex";
+    let (cur_len, batch_size) = last_axis_info(tensor, context)?;
     if cur_len >= target_len {
         return Ok(Value::Tensor(tensor.clone()));
     }
-    let batch_size = tensor.elements.len() / cur_len.max(1);
-    let mut elements = Vec::with_capacity(batch_size * target_len);
+    let target_dim = checked_axis_len(target_len, context)?;
+    let target_elements = batch_size
+        .checked_mul(target_len)
+        .ok_or_else(|| AdError::EvalFailed(format!("{context}: element count overflow")))?;
+    let mut elements = Vec::with_capacity(target_elements);
     let zero = Literal::from_complex128(0.0, 0.0);
     for batch in 0..batch_size {
         let start = batch * cur_len;
@@ -371,7 +420,7 @@ fn zero_pad_last_axis_complex(tensor: &TensorValue, target_len: usize) -> Result
         elements.resize(elements.len() + (target_len - cur_len), zero);
     }
     let mut dims = tensor.shape.dims.clone();
-    *dims.last_mut().unwrap() = target_len as u32;
+    set_last_axis_len(&mut dims, target_dim, context)?;
     TensorValue::new(tensor.dtype, Shape { dims }, elements)
         .map(Value::Tensor)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -404,18 +453,22 @@ fn take_real_part(value: &Value) -> Result<Value, AdError> {
 
 /// Truncate a tensor's last axis to `target_len` elements.
 fn truncate_last_axis(tensor: &TensorValue, target_len: usize) -> Result<Value, AdError> {
-    let cur_len = *tensor.shape.dims.last().unwrap_or(&0) as usize;
+    let context = "truncate_last_axis";
+    let (cur_len, batch_size) = last_axis_info(tensor, context)?;
     if cur_len <= target_len {
         return Ok(Value::Tensor(tensor.clone()));
     }
-    let batch_size = tensor.elements.len() / cur_len;
-    let mut elements = Vec::with_capacity(batch_size * target_len);
+    let target_dim = checked_axis_len(target_len, context)?;
+    let target_elements = batch_size
+        .checked_mul(target_len)
+        .ok_or_else(|| AdError::EvalFailed(format!("{context}: element count overflow")))?;
+    let mut elements = Vec::with_capacity(target_elements);
     for batch in 0..batch_size {
         let start = batch * cur_len;
         elements.extend_from_slice(&tensor.elements[start..start + target_len]);
     }
     let mut dims = tensor.shape.dims.clone();
-    *dims.last_mut().unwrap() = target_len as u32;
+    set_last_axis_len(&mut dims, target_dim, context)?;
     TensorValue::new(tensor.dtype, Shape { dims }, elements)
         .map(Value::Tensor)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -2325,20 +2378,23 @@ pub fn vjp(
 
             // M = R @ g_R^T - g_Q^T @ Q  (n×n)
             let gr_t_val = transpose_2d(gr)?;
-            let gr_t = gr_t_val.as_tensor().unwrap();
+            let gr_t = tensor_value(&gr_t_val, "QR VJP transpose(g_R)")?;
             let r_gr_t = matmul_2d(r, gr_t)?;
 
             let gq_t_val = transpose_2d(gq)?;
-            let gq_t = gq_t_val.as_tensor().unwrap();
+            let gq_t = tensor_value(&gq_t_val, "QR VJP transpose(g_Q)")?;
             let gq_t_q = matmul_2d(gq_t, q)?;
 
-            let m_val = tensor_sub(r_gr_t.as_tensor().unwrap(), gq_t_q.as_tensor().unwrap())?;
-            let m = m_val.as_tensor().unwrap();
+            let m_val = tensor_sub(
+                tensor_value(&r_gr_t, "QR VJP R @ g_R^T")?,
+                tensor_value(&gq_t_q, "QR VJP g_Q^T @ Q")?,
+            )?;
+            let m = tensor_value(&m_val, "QR VJP M")?;
 
             // M_sym = tril(M) + tril(M)^T - diag(diag(M))  [copyltu]
             let m_lower = tril(m)?;
             let m_lower_t_val = transpose_2d(&m_lower)?;
-            let m_lower_t = m_lower_t_val.as_tensor().unwrap();
+            let m_lower_t = tensor_value(&m_lower_t_val, "QR VJP transpose(tril(M))")?;
             let m_plus_mt = tensor_add(&m_lower, m_lower_t)?;
             // Subtract diagonal (it was counted twice)
             let n_dim = m.shape.dims[0] as usize;
@@ -2353,13 +2409,16 @@ pub fn vjp(
             }
             let diag_tensor = TensorValue::new(DType::F64, m.shape.clone(), diag_elements)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let m_sym = tensor_sub(m_plus_mt.as_tensor().unwrap(), &diag_tensor)?;
-            let m_sym_t = m_sym.as_tensor().unwrap();
+            let m_sym = tensor_sub(
+                tensor_value(&m_plus_mt, "QR VJP lower-triangle symmetrization")?,
+                &diag_tensor,
+            )?;
+            let m_sym_t = tensor_value(&m_sym, "QR VJP M_sym")?;
 
             // rhs = g_Q + Q @ M_sym  (m×n)
             let q_msym = matmul_2d(q, m_sym_t)?;
-            let rhs = tensor_add(gq, q_msym.as_tensor().unwrap())?;
-            let rhs_t = rhs.as_tensor().unwrap();
+            let rhs = tensor_add(gq, tensor_value(&q_msym, "QR VJP Q @ M_sym")?)?;
+            let rhs_t = tensor_value(&rhs, "QR VJP rhs")?;
 
             // dA = solve(R^T, rhs^T)^T
             // R^T x = rhs^T => triangular_solve(R, rhs^T, lower=false, transpose_a=true)
@@ -2373,7 +2432,7 @@ pub fn vjp(
                 &tri_params,
             )
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let da = transpose_2d(solve_result.as_tensor().unwrap())?;
+            let da = transpose_2d(tensor_value(&solve_result, "QR VJP triangular solve")?)?;
 
             Ok(vec![da])
         }
@@ -2433,16 +2492,16 @@ pub fn vjp(
 
             // g_V = g_Vt^T (V = Vt^T is used implicitly via Vt throughout)
             let gv_val = transpose_2d(gvt_t)?;
-            let gv_t = gv_val.as_tensor().unwrap();
+            let gv_t = tensor_value(&gv_val, "SVD VJP transpose(g_Vt)")?;
 
             // D_U = U^T g_U [k×k], D_V = V^T g_V [k×k]
             let ut_val = transpose_2d(u_t)?;
-            let ut = ut_val.as_tensor().unwrap();
+            let ut = tensor_value(&ut_val, "SVD VJP transpose(U)")?;
             let d_u_val = matmul_2d(ut, gu_t)?;
-            let d_u = d_u_val.as_tensor().unwrap();
+            let d_u = tensor_value(&d_u_val, "SVD VJP U^T @ g_U")?;
             let vt_for_dv = vt_t; // V^T = Vt
             let d_v_val = matmul_2d(vt_for_dv, gv_t)?;
-            let d_v = d_v_val.as_tensor().unwrap();
+            let d_v = tensor_value(&d_v_val, "SVD VJP V^T @ g_V")?;
 
             let du_vals: Vec<f64> = d_u
                 .elements
@@ -2487,11 +2546,13 @@ pub fn vjp(
 
             // dA_core = U G V^T [m×n]
             let ug = matmul_2d(u_t, &g_tensor)?;
-            let da_core = matmul_2d(ug.as_tensor().unwrap(), vt_t)?;
+            let da_core = matmul_2d(tensor_value(&ug, "SVD VJP U @ G")?, vt_t)?;
 
             let mut da_vals: Vec<f64> = da_core
                 .as_tensor()
-                .unwrap()
+                .ok_or_else(|| {
+                    AdError::EvalFailed("SVD VJP core gradient: expected tensor value".to_owned())
+                })?
                 .elements
                 .iter()
                 .map(|l| l.as_f64().unwrap_or(0.0))
@@ -2636,9 +2697,9 @@ pub fn vjp(
 
             // D = V^T g_V [n×n]
             let vt_val = transpose_2d(v_t)?;
-            let vt = vt_val.as_tensor().unwrap();
+            let vt = tensor_value(&vt_val, "Eigh VJP transpose(V)")?;
             let d_val = matmul_2d(vt, gv_t)?;
-            let d_t = d_val.as_tensor().unwrap();
+            let d_t = tensor_value(&d_val, "Eigh VJP V^T @ g_V")?;
             let d_vals: Vec<f64> = d_t
                 .elements
                 .iter()
@@ -2671,10 +2732,14 @@ pub fn vjp(
 
             // dA = V middle V^T
             let v_mid = matmul_2d(v_t, &mid_tensor)?;
-            let da_unsym = matmul_2d(v_mid.as_tensor().unwrap(), vt)?;
+            let da_unsym = matmul_2d(tensor_value(&v_mid, "Eigh VJP V @ middle")?, vt)?;
             let da_vals: Vec<f64> = da_unsym
                 .as_tensor()
-                .unwrap()
+                .ok_or_else(|| {
+                    AdError::EvalFailed(
+                        "Eigh VJP unsymmetrized dA: expected tensor value".to_owned(),
+                    )
+                })?
                 .elements
                 .iter()
                 .map(|l| l.as_f64().unwrap_or(0.0))
@@ -3627,6 +3692,12 @@ fn to_f64(value: &Value) -> Result<f64, AdError> {
         .ok_or(AdError::NonScalarGradientOutput)
 }
 
+fn tensor_value<'a>(value: &'a Value, context: &'static str) -> Result<&'a TensorValue, AdError> {
+    value
+        .as_tensor()
+        .ok_or_else(|| AdError::EvalFailed(format!("{context}: expected tensor value, got scalar")))
+}
+
 // ── Linear algebra matrix helpers ──────────────────────────────────
 
 /// Extract row-major f64 matrix data from a rank-2 tensor Value.
@@ -4053,7 +4124,13 @@ pub fn jvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<JvpRe
                 &eqn.params,
             )?;
             let out_var = eqn.outputs[0];
-            primal_env.insert(out_var, primal_outs.into_iter().next().unwrap());
+            let primal_out = primal_outs.into_iter().next().ok_or_else(|| {
+                AdError::EvalFailed(format!(
+                    "{} produced no primal output for single-output JVP equation",
+                    eqn.primitive.as_str()
+                ))
+            })?;
+            primal_env.insert(out_var, primal_out);
             tangent_env.insert(out_var, tangent_out);
         }
     }
@@ -4626,10 +4703,10 @@ fn jvp_rule_multi(
 
             // M = V^T dA V [n×n]
             let vt_val = transpose_2d(v_t)?;
-            let vt = vt_val.as_tensor().unwrap();
+            let vt = tensor_value(&vt_val, "Eigh JVP transpose(V)")?;
             let vt_da = matmul_2d(vt, da_t)?;
-            let m_val = matmul_2d(vt_da.as_tensor().unwrap(), v_t)?;
-            let m_t = m_val.as_tensor().unwrap();
+            let m_val = matmul_2d(tensor_value(&vt_da, "Eigh JVP V^T @ dA")?, v_t)?;
+            let m_t = tensor_value(&m_val, "Eigh JVP projected tangent")?;
             let m_vals: Vec<f64> = m_t
                 .elements
                 .iter()
@@ -4704,9 +4781,9 @@ fn jvp_rule_multi(
 
             // C = Q^T dA [k×n]
             let qt_val = transpose_2d(q_t)?;
-            let qt = qt_val.as_tensor().unwrap();
+            let qt = tensor_value(&qt_val, "QR JVP transpose(Q)")?;
             let c_val = matmul_2d(qt, da_t)?;
-            let c_t = c_val.as_tensor().unwrap();
+            let c_t = tensor_value(&c_val, "QR JVP Q^T @ dA")?;
             let c_vals: Vec<f64> = c_t
                 .elements
                 .iter()
@@ -4770,7 +4847,7 @@ fn jvp_rule_multi(
                 let proj: Vec<f64> = da_vals.iter().zip(q_c.iter()).map(|(a, b)| a - b).collect();
                 // proj @ R^{-1}: solve R X^T = proj^T => X = solve(R, proj^T)^T
                 let proj_val = build_matrix_f64(m, n, &proj)?;
-                let proj_t = transpose_2d(proj_val.as_tensor().unwrap())?;
+                let proj_t = transpose_2d(tensor_value(&proj_val, "QR JVP projected dA")?)?;
                 let mut tri_params_jvp = BTreeMap::new();
                 tri_params_jvp.insert("lower".to_owned(), "false".to_owned());
                 let solve_result = eval_primitive(
@@ -4779,8 +4856,16 @@ fn jvp_rule_multi(
                     &tri_params_jvp,
                 )
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-                let extra = transpose_2d(solve_result.as_tensor().unwrap())?;
-                dq = tensor_add(dq.as_tensor().unwrap(), extra.as_tensor().unwrap())?;
+                let extra = transpose_2d(tensor_value(
+                    &solve_result,
+                    "QR JVP triangular solve correction",
+                )?)?;
+                let next_dq = {
+                    let dq_t = tensor_value(&dq, "QR JVP dQ")?;
+                    let extra_t = tensor_value(&extra, "QR JVP extra dQ")?;
+                    tensor_add(dq_t, extra_t)?
+                };
+                dq = next_dq;
             }
 
             Ok(vec![dq, dr])
@@ -4821,14 +4906,14 @@ fn jvp_rule_multi(
 
             // V = Vt^T [n×k]
             let v_val = transpose_2d(vt_t)?;
-            let v_t = v_val.as_tensor().unwrap();
+            let v_t = tensor_value(&v_val, "SVD JVP transpose(Vt)")?;
 
             // M = U^T dA V [k×k]
             let ut_val = transpose_2d(u_t)?;
-            let ut = ut_val.as_tensor().unwrap();
+            let ut = tensor_value(&ut_val, "SVD JVP transpose(U)")?;
             let ut_da = matmul_2d(ut, da_t)?;
-            let m_val = matmul_2d(ut_da.as_tensor().unwrap(), v_t)?;
-            let m_t = m_val.as_tensor().unwrap();
+            let m_val = matmul_2d(tensor_value(&ut_da, "SVD JVP U^T @ dA")?, v_t)?;
+            let m_t = tensor_value(&m_val, "SVD JVP projected tangent")?;
             let m_vals: Vec<f64> = m_t
                 .elements
                 .iter()
@@ -4913,7 +4998,9 @@ fn jvp_rule_multi(
                 // (I - UU^T) dA V Σ^{-1}
                 let ut_da_vals: Vec<f64> = ut_da
                     .as_tensor()
-                    .unwrap()
+                    .ok_or_else(|| {
+                        AdError::EvalFailed("SVD JVP U^T @ dA: expected tensor value".to_owned())
+                    })?
                     .elements
                     .iter()
                     .map(|l| l.as_f64().unwrap_or(0.0))
@@ -4937,7 +5024,12 @@ fn jvp_rule_multi(
                     }
                 }
                 let du_extra_val = build_matrix_f64(m, k, &du_extra)?;
-                du = tensor_add(du.as_tensor().unwrap(), du_extra_val.as_tensor().unwrap())?;
+                let next_du = {
+                    let du_t = tensor_value(&du, "SVD JVP dU")?;
+                    let du_extra_t = tensor_value(&du_extra_val, "SVD JVP extra dU")?;
+                    tensor_add(du_t, du_extra_t)?
+                };
+                du = next_du;
             }
 
             if n > k {
@@ -4949,7 +5041,9 @@ fn jvp_rule_multi(
                 // Σ^{-1} U^T dA (I - VV^T)
                 let ut_da_vals: Vec<f64> = ut_da
                     .as_tensor()
-                    .unwrap()
+                    .ok_or_else(|| {
+                        AdError::EvalFailed("SVD JVP U^T @ dA: expected tensor value".to_owned())
+                    })?
                     .elements
                     .iter()
                     .map(|l| l.as_f64().unwrap_or(0.0))
@@ -4978,7 +5072,12 @@ fn jvp_rule_multi(
                     }
                 }
                 let dvt_extra_val = build_matrix_f64(k, n, &dvt_extra)?;
-                dvt = tensor_add(dvt.as_tensor().unwrap(), dvt_extra_val.as_tensor().unwrap())?;
+                let next_dvt = {
+                    let dvt_t = tensor_value(&dvt, "SVD JVP dVt")?;
+                    let dvt_extra_t = tensor_value(&dvt_extra_val, "SVD JVP extra dVt")?;
+                    tensor_add(dvt_t, dvt_extra_t)?
+                };
+                dvt = next_dvt;
             }
 
             Ok(vec![du, ds_val, dvt])
@@ -9610,6 +9709,39 @@ mod tests {
             dims: vec![data.len() as u32],
         };
         Value::Tensor(TensorValue::new(DType::Complex128, shape, elements).unwrap())
+    }
+
+    #[test]
+    fn fft_padding_rejects_rank_zero_tensor_without_panicking() -> Result<(), String> {
+        let scalar_shaped = TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex128(1.0, 0.0)],
+        )
+        .map_err(|e| e.to_string())?;
+
+        let err = match zero_pad_last_axis_complex(&scalar_shaped, 2) {
+            Ok(_) => return Err("rank-zero tensor unexpectedly padded successfully".to_owned()),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("rank to be at least 1"),
+            "unexpected error: {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tensor_value_reports_scalar_context_without_panicking() -> Result<(), String> {
+        let err = match tensor_value(&Value::scalar_f64(1.0), "test tensor conversion") {
+            Ok(_) => return Err("scalar unexpectedly converted to tensor".to_owned()),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("test tensor conversion"),
+            "unexpected error: {err}"
+        );
+        Ok(())
     }
 
     fn extract_f64_vec(v: &Value) -> Vec<f64> {
