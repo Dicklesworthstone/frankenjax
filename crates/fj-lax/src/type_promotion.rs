@@ -41,6 +41,14 @@ fn literal_to_i128(literal: Literal) -> Option<i128> {
     }
 }
 
+#[inline]
+fn literal_to_numeric_f64(literal: Literal) -> Option<f64> {
+    match literal {
+        Literal::Bool(value) => Some(f64::from(u8::from(value))),
+        _ => literal.as_f64(),
+    }
+}
+
 /// Infer the DType from a slice of Literal elements.
 /// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
 #[inline]
@@ -121,6 +129,28 @@ pub(crate) fn binary_literal_op(
     let out_dtype = promote_dtype(literal_dtype(lhs), literal_dtype(rhs));
 
     match out_dtype {
+        DType::Bool => {
+            let left = literal_to_i128(lhs).ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "expected boolean lhs",
+            })? != 0;
+            let right = literal_to_i128(rhs).ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "expected boolean rhs",
+            })? != 0;
+
+            let out = match primitive {
+                Primitive::Add | Primitive::Max => left || right,
+                Primitive::Mul | Primitive::Min => left && right,
+                _ => {
+                    return Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "unsupported bool/bool binary operation",
+                    });
+                }
+            };
+            Ok(Literal::Bool(out))
+        }
         DType::U32 | DType::U64 => {
             let left = literal_to_u64(lhs).ok_or(EvalError::TypeMismatch {
                 primitive,
@@ -141,11 +171,11 @@ pub(crate) fn binary_literal_op(
                 Primitive::Min => left.min(right),
                 Primitive::Pow => left.wrapping_pow(u32::try_from(right).unwrap_or(u32::MAX)),
                 _ => {
-                    let lhs_f = lhs.as_f64().ok_or(EvalError::TypeMismatch {
+                    let lhs_f = literal_to_numeric_f64(lhs).ok_or(EvalError::TypeMismatch {
                         primitive,
                         detail: "expected numeric lhs",
                     })?;
-                    let rhs_f = rhs.as_f64().ok_or(EvalError::TypeMismatch {
+                    let rhs_f = literal_to_numeric_f64(rhs).ok_or(EvalError::TypeMismatch {
                         primitive,
                         detail: "expected numeric rhs",
                     })?;
@@ -171,11 +201,11 @@ pub(crate) fn binary_literal_op(
                 })?;
                 Ok(Literal::I64(int_op(left_i64, right_i64)))
             } else {
-                let lhs_f = lhs.as_f64().ok_or(EvalError::TypeMismatch {
+                let lhs_f = literal_to_numeric_f64(lhs).ok_or(EvalError::TypeMismatch {
                     primitive,
                     detail: "expected numeric lhs",
                 })?;
-                let rhs_f = rhs.as_f64().ok_or(EvalError::TypeMismatch {
+                let rhs_f = literal_to_numeric_f64(rhs).ok_or(EvalError::TypeMismatch {
                     primitive,
                     detail: "expected numeric rhs",
                 })?;
@@ -183,11 +213,11 @@ pub(crate) fn binary_literal_op(
             }
         }
         _ => {
-            let lhs_f = lhs.as_f64().ok_or(EvalError::TypeMismatch {
+            let lhs_f = literal_to_numeric_f64(lhs).ok_or(EvalError::TypeMismatch {
                 primitive,
                 detail: "expected numeric lhs",
             })?;
-            let rhs_f = rhs.as_f64().ok_or(EvalError::TypeMismatch {
+            let rhs_f = literal_to_numeric_f64(rhs).ok_or(EvalError::TypeMismatch {
                 primitive,
                 detail: "expected numeric rhs",
             })?;
@@ -249,5 +279,42 @@ mod tests {
         assert_eq!(promote_dtype(DType::U32, DType::U64), DType::U64);
         assert_eq!(promote_dtype(DType::U64, DType::I64), DType::F64);
         assert_eq!(promote_dtype(DType::U32, DType::I64), DType::I64);
+    }
+
+    #[test]
+    fn bool_bool_add_and_mul_match_oracle_dtype() {
+        let add = binary_literal_op(
+            Literal::Bool(true),
+            Literal::Bool(false),
+            Primitive::Add,
+            &|a, b| a + b,
+            &|a, b| a + b,
+        )
+        .expect("bool + bool should evaluate");
+        assert_eq!(add, Literal::Bool(true));
+
+        let mul = binary_literal_op(
+            Literal::Bool(true),
+            Literal::Bool(false),
+            Primitive::Mul,
+            &|a, b| a * b,
+            &|a, b| a * b,
+        )
+        .expect("bool * bool should evaluate");
+        assert_eq!(mul, Literal::Bool(false));
+    }
+
+    #[test]
+    fn bool_float_uses_numeric_bool_value() {
+        let out = binary_literal_op(
+            Literal::Bool(true),
+            Literal::from_f64(2.5),
+            Primitive::Add,
+            &|a, b| a + b,
+            &|a, b| a + b,
+        )
+        .expect("bool + f64 should evaluate");
+
+        assert_eq!(out.as_f64(), Some(3.5));
     }
 }

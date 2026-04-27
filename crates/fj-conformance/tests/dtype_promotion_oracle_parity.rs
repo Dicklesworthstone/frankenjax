@@ -122,13 +122,12 @@ fn dtype_promotion_matches_jax() {
     let bundle = load_bundle();
     assert!(!bundle.cases.is_empty());
 
-    // Core numeric types that FrankenJAX fully supports at scalar level.
+    // Core scalar types that FrankenJAX fully supports at scalar level.
     // Known gaps:
-    // - bool: not treated as numeric in arithmetic ops
     // - i32: stored as i64 internally
     // - f32: no native F32 scalar literal (all floats stored as F64Bits)
     // - bf16/f16: half-precision scalar ops limited
-    let core_dtypes = ["i64", "u32", "u64", "f64"];
+    let core_dtypes = ["bool", "i64", "u32", "u64", "f64"];
 
     let mut mismatches = Vec::new();
     let mut tested = 0;
@@ -139,7 +138,7 @@ fn dtype_promotion_matches_jax() {
             continue;
         };
 
-        // Only test core numeric dtype pairs
+        // Only test core scalar dtype pairs
         if !core_dtypes.contains(&case.lhs_dtype.as_str())
             || !core_dtypes.contains(&case.rhs_dtype.as_str())
         {
@@ -206,7 +205,7 @@ fn dtype_promotion_tensor_level() {
     assert!(!bundle.cases.is_empty());
 
     // Expand to float types that need tensor representation
-    let tensor_dtypes = ["i64", "u32", "u64", "f16", "f32", "f64", "bf16"];
+    let tensor_dtypes = ["bool", "i64", "u32", "u64", "f16", "f32", "f64", "bf16"];
 
     let mut mismatches = Vec::new();
     let mut tested = 0;
@@ -416,6 +415,24 @@ fn complex_binary_operation_dtype_output() {
         result.dtype(),
         DType::Complex128,
         "Complex64 + Complex128 should produce Complex128"
+    );
+
+    // Complex64 + Bool → Complex64, with Bool promoted as 0/1.
+    let c64 = Value::scalar_complex64(1.0, 2.0);
+    let result = eval_primitive(
+        Primitive::Add,
+        &[c64, Value::Scalar(Literal::Bool(true))],
+        &BTreeMap::new(),
+    )
+    .expect("Complex64 + Bool should succeed");
+    assert_eq!(
+        result.dtype(),
+        DType::Complex64,
+        "Complex64 + Bool should produce Complex64"
+    );
+    assert_eq!(
+        result.as_scalar_literal().and_then(Literal::as_complex64),
+        Some((2.0, 2.0))
     );
 }
 

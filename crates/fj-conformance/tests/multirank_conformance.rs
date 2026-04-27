@@ -2143,15 +2143,15 @@ fn e2e_mixed_dtype_conformance() {
         .map_err(|e| e.to_string()),
     );
 
-    record_error_case!(
+    record_value_case!(
         "md_expr_add_then_mul_bool_vector",
-        "(i64 + f64) * bool -> error",
+        "(i64 + f64) * bool -> f64",
         vec![
             tensor_i64(&[3], &[1, 2, 3]),
             tensor_f64(&[3], &[0.5, 1.5, -1.0]),
             tensor_bool(&[3], &[true, false, true]),
         ],
-        "expected numeric rhs",
+        tensor_f64(&[3], &[1.5, 0.0, 2.0]),
         eval_primitive(
             Primitive::Add,
             &[
@@ -2171,15 +2171,15 @@ fn e2e_mixed_dtype_conformance() {
         }),
     );
 
-    record_error_case!(
+    record_value_case!(
         "md_expr_add_then_mul_bool_matrix",
-        "(i64 + f64) * bool -> error",
+        "(i64 + f64) * bool -> f64",
         vec![
             tensor_i64(&[2, 2], &[1, 2, 3, 4]),
             tensor_f64(&[2, 2], &[0.25, -0.5, 1.0, 2.5]),
             tensor_bool(&[2, 2], &[true, false, false, true]),
         ],
-        "expected numeric rhs",
+        tensor_f64(&[2, 2], &[1.25, 0.0, 0.0, 6.5]),
         eval_primitive(
             Primitive::Add,
             &[

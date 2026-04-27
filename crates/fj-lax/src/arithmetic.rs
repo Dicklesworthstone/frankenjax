@@ -99,13 +99,14 @@ fn value_contains_complex(value: &Value) -> bool {
 }
 
 fn literal_to_complex_parts(
-    primitive: Primitive,
+    _primitive: Primitive,
     literal: Literal,
 ) -> Result<(f64, f64), EvalError> {
     match literal {
         Literal::I64(v) => Ok((v as f64, 0.0)),
         Literal::U32(v) => Ok((v as f64, 0.0)),
         Literal::U64(v) => Ok((v as f64, 0.0)),
+        Literal::Bool(v) => Ok((f64::from(u8::from(v)), 0.0)),
         Literal::BF16Bits(bits) => {
             let lit = Literal::BF16Bits(bits);
             Ok((lit.as_f64().unwrap_or_default(), 0.0))
@@ -119,10 +120,6 @@ fn literal_to_complex_parts(
             Ok((f32::from_bits(re) as f64, f32::from_bits(im) as f64))
         }
         Literal::Complex128Bits(re, im) => Ok((f64::from_bits(re), f64::from_bits(im))),
-        Literal::Bool(_) => Err(EvalError::TypeMismatch {
-            primitive,
-            detail: "expected numeric value, got bool",
-        }),
     }
 }
 
