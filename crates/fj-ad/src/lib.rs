@@ -252,6 +252,42 @@ fn ones_like(v: &Value) -> Value {
     }
 }
 
+fn balanced_eq_weight(candidate: &Value, ans: &Value, other: &Value) -> Result<Value, AdError> {
+    let candidate_matches = eval_primitive(
+        Primitive::Eq,
+        &[candidate.clone(), ans.clone()],
+        &BTreeMap::new(),
+    )
+    .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+    let other_matches = eval_primitive(
+        Primitive::Eq,
+        &[other.clone(), ans.clone()],
+        &BTreeMap::new(),
+    )
+    .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+    let numerator = eval_primitive(
+        Primitive::Select,
+        &[
+            candidate_matches,
+            Value::scalar_f64(1.0),
+            Value::scalar_f64(0.0),
+        ],
+        &BTreeMap::new(),
+    )
+    .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+    let denominator = eval_primitive(
+        Primitive::Select,
+        &[
+            other_matches,
+            Value::scalar_f64(2.0),
+            Value::scalar_f64(1.0),
+        ],
+        &BTreeMap::new(),
+    )
+    .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+    value_div(&numerator, &denominator)
+}
+
 fn tensor_with_existing_shape(
     dtype: DType,
     source: &TensorValue,
@@ -790,39 +826,19 @@ pub fn vjp(
         Primitive::Max => {
             let a = &inputs[0];
             let b = &inputs[1];
-            let cond = eval_primitive(Primitive::Ge, &[a.clone(), b.clone()], &BTreeMap::new())
+            let ans = eval_primitive(Primitive::Max, &[a.clone(), b.clone()], &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let ga = eval_primitive(
-                Primitive::Select,
-                &[cond.clone(), g.clone(), zeros_like(g)],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let gb = eval_primitive(
-                Primitive::Select,
-                &[cond, zeros_like(g), g.clone()],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let ga = value_mul(g, &balanced_eq_weight(a, &ans, b)?)?;
+            let gb = value_mul(g, &balanced_eq_weight(b, &ans, a)?)?;
             Ok(vec![ga, gb])
         }
         Primitive::Min => {
             let a = &inputs[0];
             let b = &inputs[1];
-            let cond = eval_primitive(Primitive::Le, &[a.clone(), b.clone()], &BTreeMap::new())
+            let ans = eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let ga = eval_primitive(
-                Primitive::Select,
-                &[cond.clone(), g.clone(), zeros_like(g)],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let gb = eval_primitive(
-                Primitive::Select,
-                &[cond, zeros_like(g), g.clone()],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let ga = value_mul(g, &balanced_eq_weight(a, &ans, b)?)?;
+            let gb = value_mul(g, &balanced_eq_weight(b, &ans, a)?)?;
             Ok(vec![ga, gb])
         }
         Primitive::Pow => {
@@ -4863,22 +4879,43 @@ fn jvp_rule(
         Primitive::Real => ep(Primitive::Real, &[tangents[0].clone()]),
         Primitive::Imag => ep(Primitive::Imag, &[tangents[0].clone()]),
 
-        // ── Comparison-like ops: max/min select tangent from winner ──
+        // ── Comparison-like ops: max/min split ties like JAX balanced_eq ──
         Primitive::Max => {
-            // tangent from whichever input is larger
-            let cond = ep(Primitive::Ge, &[primals[0].clone(), primals[1].clone()])?;
-            ep(
-                Primitive::Select,
-                &[cond, tangents[0].clone(), tangents[1].clone()],
-            )
+            let ans = ep(Primitive::Max, primals)?;
+            let lhs = ep(
+                Primitive::Mul,
+                &[
+                    tangents[0].clone(),
+                    balanced_eq_weight(&primals[0], &ans, &primals[1])?,
+                ],
+            )?;
+            let rhs = ep(
+                Primitive::Mul,
+                &[
+                    tangents[1].clone(),
+                    balanced_eq_weight(&primals[1], &ans, &primals[0])?,
+                ],
+            )?;
+            ep(Primitive::Add, &[lhs, rhs])
         }
 
         Primitive::Min => {
-            let cond = ep(Primitive::Le, &[primals[0].clone(), primals[1].clone()])?;
-            ep(
-                Primitive::Select,
-                &[cond, tangents[0].clone(), tangents[1].clone()],
-            )
+            let ans = ep(Primitive::Min, primals)?;
+            let lhs = ep(
+                Primitive::Mul,
+                &[
+                    tangents[0].clone(),
+                    balanced_eq_weight(&primals[0], &ans, &primals[1])?,
+                ],
+            )?;
+            let rhs = ep(
+                Primitive::Mul,
+                &[
+                    tangents[1].clone(),
+                    balanced_eq_weight(&primals[1], &ans, &primals[0])?,
+                ],
+            )?;
+            ep(Primitive::Add, &[lhs, rhs])
         }
 
         // ── Select: tangent follows primal condition ──
@@ -7752,9 +7789,9 @@ mod tests {
     // ── Max/Min VJP tie-breaking and edge cases ──────────────────
 
     #[test]
-    fn vjp_max_gradient_goes_to_first_arg_when_equal() {
+    fn vjp_max_gradient_splits_equal_args() {
         use smallvec::smallvec;
-        // max(a, b) with a == b: gradient goes to a (first arg, Ge is true)
+        // max(a, b) with a == b: JAX splits the gradient evenly.
         let jaxpr = Jaxpr::new(
             vec![VarId(0), VarId(1)],
             vec![],
@@ -7770,11 +7807,10 @@ mod tests {
         );
 
         let x = 5.0;
-        // grad w.r.t. first arg: should be 1.0 (first arg wins the tie)
         let g0 = grad_first(&jaxpr, &[Value::scalar_f64(x), Value::scalar_f64(x)]).unwrap();
         assert!(
-            (g0 - 1.0).abs() < 1e-10,
-            "max tie: grad w.r.t. first arg should be 1.0, got {g0}"
+            (g0 - 0.5).abs() < 1e-10,
+            "max tie: grad w.r.t. first arg should be 0.5, got {g0}"
         );
     }
 
@@ -7804,9 +7840,9 @@ mod tests {
     }
 
     #[test]
-    fn vjp_min_gradient_goes_to_first_arg_when_equal() {
+    fn vjp_min_gradient_splits_equal_args() {
         use smallvec::smallvec;
-        // min(a, b) with a == b: gradient goes to a (first arg, Le is true)
+        // min(a, b) with a == b: JAX splits the gradient evenly.
         let jaxpr = Jaxpr::new(
             vec![VarId(0), VarId(1)],
             vec![],
@@ -7824,8 +7860,8 @@ mod tests {
         let x = 5.0;
         let g0 = grad_first(&jaxpr, &[Value::scalar_f64(x), Value::scalar_f64(x)]).unwrap();
         assert!(
-            (g0 - 1.0).abs() < 1e-10,
-            "min tie: grad w.r.t. first arg should be 1.0, got {g0}"
+            (g0 - 0.5).abs() < 1e-10,
+            "min tie: grad w.r.t. first arg should be 0.5, got {g0}"
         );
     }
 
@@ -7852,6 +7888,36 @@ mod tests {
             g0.abs() < 1e-10,
             "min(7,3): grad w.r.t. first arg should be 0.0, got {g0}"
         );
+    }
+
+    #[test]
+    fn test_jvp_max_tie_averages_tangents() {
+        let params = BTreeMap::new();
+        let tangent_out = jvp_rule(
+            Primitive::Max,
+            &[Value::scalar_f64(5.0), Value::scalar_f64(5.0)],
+            &[Value::scalar_f64(2.0), Value::scalar_f64(6.0)],
+            &params,
+        )
+        .expect("jvp");
+
+        let val = tangent_out.as_f64_scalar().expect("scalar tangent");
+        assert!((val - 4.0).abs() < 1e-10, "got {val}");
+    }
+
+    #[test]
+    fn test_jvp_min_tie_averages_tangents() {
+        let params = BTreeMap::new();
+        let tangent_out = jvp_rule(
+            Primitive::Min,
+            &[Value::scalar_f64(5.0), Value::scalar_f64(5.0)],
+            &[Value::scalar_f64(2.0), Value::scalar_f64(6.0)],
+            &params,
+        )
+        .expect("jvp");
+
+        let val = tangent_out.as_f64_scalar().expect("scalar tangent");
+        assert!((val - 4.0).abs() < 1e-10, "got {val}");
     }
 
     // ── Higher-order gradient tests ─────────────────────────────
