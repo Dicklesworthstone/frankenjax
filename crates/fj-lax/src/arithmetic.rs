@@ -1918,6 +1918,58 @@ fn dot_accumulate(
     }
 }
 
+fn dot_accumulate_contiguous(
+    primitive: Primitive,
+    output_kind: DotOutputKind,
+    lhs: &[Literal],
+    rhs: &[Literal],
+) -> Result<Literal, EvalError> {
+    match output_kind {
+        DotOutputKind::Integral => {
+            let mut sum = 0_i64;
+            for (left, right) in lhs.iter().zip(rhs) {
+                let left_i = left.as_i64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "integral dot expected i64 elements",
+                })?;
+                let right_i = right.as_i64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "integral dot expected i64 elements",
+                })?;
+                sum += left_i * right_i;
+            }
+            Ok(Literal::I64(sum))
+        }
+        DotOutputKind::Real => {
+            let mut sum = 0.0_f64;
+            for (left, right) in lhs.iter().zip(rhs) {
+                let left_f = left.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric lhs tensor",
+                })?;
+                let right_f = right.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric rhs tensor",
+                })?;
+                sum += left_f * right_f;
+            }
+            Ok(Literal::from_f64(sum))
+        }
+        DotOutputKind::Complex(dtype) => {
+            let mut sum = (0.0_f64, 0.0_f64);
+            for (left, right) in lhs.iter().zip(rhs) {
+                let product = complex_mul(
+                    literal_to_complex_parts(primitive, *left)?,
+                    literal_to_complex_parts(primitive, *right)?,
+                );
+                sum.0 += product.0;
+                sum.1 += product.1;
+            }
+            Ok(complex_literal_from_f64_parts(dtype, sum.0, sum.1))
+        }
+    }
+}
+
 fn element_count_from_dims(dims: &[u32]) -> usize {
     dims.iter()
         .fold(1_usize, |count, &dim| count * dim as usize)
@@ -1972,11 +2024,11 @@ fn eval_tensor_dot(
         let mut elements = Vec::with_capacity(output_count);
         for lhs_prefix in 0..output_count {
             let lhs_base = lhs_prefix * lhs_inner;
-            elements.push(dot_accumulate(
+            elements.push(dot_accumulate_contiguous(
                 primitive,
                 output_kind,
-                lhs_inner,
-                |index| (lhs.elements[lhs_base + index], rhs.elements[index]),
+                &lhs.elements[lhs_base..lhs_base + lhs_inner],
+                &rhs.elements[..rhs_inner],
             )?);
         }
 
