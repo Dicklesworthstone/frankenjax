@@ -432,7 +432,7 @@ pub fn apply_batch_rule(
         Primitive::DynamicUpdateSlice => batch_dynamic_update_slice(inputs, params),
         Primitive::Gather => batch_gather(inputs, params),
         Primitive::Scatter => batch_scatter(inputs, params),
-        Primitive::Rev => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Rev => batch_rev(inputs, params),
         Primitive::Squeeze => batch_squeeze(inputs, params),
         Primitive::Split => batch_passthrough_leading(primitive, inputs, params),
         Primitive::ExpandDims => batch_expand_dims(inputs, params),
@@ -1247,6 +1247,52 @@ fn batch_expand_dims(
     let mut new_params = params.clone();
     new_params.insert("axis".to_owned(), physical_axis.to_string());
     let result = eval_primitive(Primitive::ExpandDims, &[value], &new_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
+}
+
+fn batch_rev(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(Primitive::Rev, std::slice::from_ref(&input.value), params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    let axes = parse_param_usize_list(params, "axes")?;
+    get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value
+        .as_tensor()
+        .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for rev".into()))?;
+    let per_elem_rank = tensor.shape.rank().saturating_sub(1);
+
+    if per_elem_rank == 0 {
+        return Ok(BatchTracer::batched(value, 0));
+    }
+
+    let physical_axes = axes
+        .into_iter()
+        .map(|axis| {
+            if axis >= per_elem_rank {
+                return Err(BatchError::EvalError(format!(
+                    "rev axis {axis} out of range for per-element rank {per_elem_rank}"
+                )));
+            }
+            axis.checked_add(1)
+                .ok_or_else(|| BatchError::EvalError("rev axis overflow".to_owned()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut new_params = params.clone();
+    new_params.insert("axes".to_owned(), format_csv(&physical_axes));
+    let result = eval_primitive(Primitive::Rev, &[value], &new_params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
     Ok(BatchTracer::batched(result, 0))
 }
@@ -3283,6 +3329,74 @@ mod tests {
             vals,
             vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 3.0, 4.0, 3.0, 4.0, 3.0, 4.0]
         );
+    }
+
+    #[test]
+    fn test_batch_trace_rev_batched_logical_axis_zero() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params = BTreeMap::from([("axes".to_owned(), "0".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Rev, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![3.0, 2.0, 1.0, 6.0, 5.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_rev_logical_axis_one() {
+        let data: Vec<f64> = (1..=12).map(f64::from).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 2, 3], &data), 0);
+        let params = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Rev, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![
+                3.0, 2.0, 1.0, 6.0, 5.0, 4.0, 9.0, 8.0, 7.0, 12.0, 11.0, 10.0
+            ]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_rev_nonleading_batch_dim() {
+        let input = BatchTracer::batched(make_f64_matrix(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 1);
+        let params = BTreeMap::from([("axes".to_owned(), "0".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Rev, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![5.0, 3.0, 1.0, 6.0, 4.0, 2.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_rev_scalar_elements_are_noop() {
+        let input = BatchTracer::batched(make_f64_vector(&[1.0, 2.0, 3.0]), 0);
+        let params = BTreeMap::from([("axes".to_owned(), "0".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Rev, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_rev_requires_axes_param() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+
+        let err = apply_batch_rule(Primitive::Rev, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("missing required param 'axes'"));
     }
 
     #[test]
