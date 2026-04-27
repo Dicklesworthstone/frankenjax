@@ -241,7 +241,8 @@ enum Literal {
     U64(u64),
     BF16Bits(u16),             // Stored as raw bits
     F16Bits(u16),              // Stored as raw bits
-    F64Bits(u64),              // All floats stored as f64 bits
+    F32Bits(u32),              // Stored as raw bits
+    F64Bits(u64),              // Stored as raw bits
     Complex64Bits(u32, u32),   // (re_bits, im_bits)
     Complex128Bits(u64, u64),  // (re_bits, im_bits)
 }
@@ -253,7 +254,7 @@ struct TensorValue {
 }
 ```
 
-**Design rationale:** Storing floats as bit patterns (`F64Bits(u64)`) rather than as `f64` directly ensures exact round-trip serialization/deserialization without any NaN canonicalization surprises. The `Literal` enum is `Copy`, enabling cheap value passing through the interpreter. `TensorValue` uses flat row-major storage with a shape vector, matching NumPy/JAX's memory layout.
+**Design rationale:** Storing floats as bit patterns rather than as native float values ensures exact round-trip serialization/deserialization without any NaN canonicalization surprises. The `Literal` enum is `Copy`, enabling cheap value passing through the interpreter. `TensorValue` uses flat row-major storage with a shape vector, matching NumPy/JAX's memory layout.
 
 ## Complex Number Support
 
@@ -951,7 +952,6 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 ## Limitations
 
 - **CPU-only backend.** GPU/TPU backends are not yet implemented. The CPU backend uses rayon for wave-parallel execution.
-- **No F32 scalar literals.** All float scalars are stored as F64 internally. F32 tensor operations work via TensorValue, but scalar-level F32 promotion differs from JAX.
 - **No XLA lowering.** FrankenJAX evaluates through its own interpreter, not through XLA. This means we match JAX's mathematical semantics but not its compilation/optimization pipeline.
 - **Partial `vmap` + control flow composition.** `vmap(scan(...))` and similar compositions need further work.
 

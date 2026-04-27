@@ -13,6 +13,7 @@ fn literal_dtype(literal: Literal) -> DType {
         Literal::Bool(_) => DType::Bool,
         Literal::BF16Bits(_) => DType::BF16,
         Literal::F16Bits(_) => DType::F16,
+        Literal::F32Bits(_) => DType::F32,
         Literal::F64Bits(_) => DType::F64,
         Literal::Complex64Bits(..) => DType::Complex64,
         Literal::Complex128Bits(..) => DType::Complex128,
@@ -54,6 +55,7 @@ fn literal_from_numeric_f64(dtype: DType, value: f64) -> Literal {
     match dtype {
         DType::BF16 => Literal::from_bf16_f32(value as f32),
         DType::F16 => Literal::from_f16_f32(value as f32),
+        DType::F32 => Literal::from_f32(value as f32),
         _ => Literal::from_f64(value),
     }
 }
@@ -121,6 +123,11 @@ pub(crate) fn infer_dtype(elements: &[Literal]) -> DType {
         .all(|literal| matches!(literal, Literal::Bool(_)))
     {
         DType::Bool
+    } else if elements
+        .iter()
+        .all(|literal| matches!(literal, Literal::F32Bits(_)))
+    {
+        DType::F32
     } else {
         DType::F64
     }
@@ -350,5 +357,20 @@ mod tests {
         .expect("bool + f16 should evaluate");
         assert!(matches!(f16, Literal::F16Bits(_)));
         assert_eq!(f16.as_f64(), Some(3.5));
+    }
+
+    #[test]
+    fn f32_outputs_preserve_literal_width() -> Result<(), EvalError> {
+        let out = binary_literal_op(
+            Literal::Bool(true),
+            Literal::from_f32(2.5),
+            Primitive::Add,
+            &|a, b| a + b,
+            &|a, b| a + b,
+        )?;
+
+        assert!(matches!(out, Literal::F32Bits(_)));
+        assert_eq!(out.as_f64(), Some(3.5));
+        Ok(())
     }
 }

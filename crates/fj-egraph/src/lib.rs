@@ -580,6 +580,10 @@ pub fn jaxpr_to_egraph(
                     let sym = egg::Symbol::from(format!("f64:{bits}"));
                     expr.add(FjLang::Symbol(sym))
                 }
+                Atom::Lit(Literal::F32Bits(bits)) => {
+                    let sym = egg::Symbol::from(format!("f32:{bits}"));
+                    expr.add(FjLang::Symbol(sym))
+                }
                 Atom::Lit(Literal::Bool(b)) => {
                     let sym = egg::Symbol::from(format!("bool:{}", if *b { 1 } else { 0 }));
                     expr.add(FjLang::Symbol(sym))
@@ -709,6 +713,9 @@ fn decode_symbol_literal(sym: &egg::Symbol) -> Option<Literal> {
     let raw = sym.as_str();
     if let Some(bits_str) = raw.strip_prefix("f64:") {
         return bits_str.parse::<u64>().ok().map(Literal::F64Bits);
+    }
+    if let Some(bits_str) = raw.strip_prefix("f32:") {
+        return bits_str.parse::<u32>().ok().map(Literal::F32Bits);
     }
     if let Some(bool_str) = raw.strip_prefix("bool:") {
         return match bool_str {
@@ -2167,6 +2174,7 @@ mod tests {
             Literal::U64(11),
             Literal::BF16Bits(0x3f80),
             Literal::F16Bits(0x3c00),
+            Literal::F32Bits(1.25_f32.to_bits()),
             Literal::Complex64Bits(1.5_f32.to_bits(), (-2.25_f32).to_bits()),
         ];
 

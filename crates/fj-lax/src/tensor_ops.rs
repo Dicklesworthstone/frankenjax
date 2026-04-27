@@ -162,13 +162,15 @@ fn literal_to_bytes(
                 });
             }
         },
-        DType::F32 => {
-            let as_f32 = literal.as_f64().ok_or(EvalError::TypeMismatch {
-                primitive,
-                detail: "bitcast source literal is not representable as f32",
-            })? as f32;
-            as_f32.to_bits().to_le_bytes().to_vec()
-        }
+        DType::F32 => match literal {
+            Literal::F32Bits(bits) => bits.to_le_bytes().to_vec(),
+            _ => {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "bitcast source literal is not f32",
+                });
+            }
+        },
         DType::F64 => literal
             .as_f64()
             .ok_or(EvalError::TypeMismatch {
@@ -270,8 +272,7 @@ fn bytes_to_literal(
                 primitive,
                 detail: "bitcast internal size mismatch for f32".to_owned(),
             })?;
-            let as_f32 = f32::from_bits(u32::from_le_bytes(array));
-            Ok(Literal::from_f64(f64::from(as_f32)))
+            Ok(Literal::F32Bits(u32::from_le_bytes(array)))
         }
         DType::F64 => {
             let array = <[u8; 8]>::try_from(bytes).map_err(|_| EvalError::Unsupported {
@@ -354,6 +355,7 @@ pub(crate) fn eval_reshape(
                     Literal::U64(_) => DType::U64,
                     Literal::BF16Bits(_) => DType::BF16,
                     Literal::F16Bits(_) => DType::F16,
+                    Literal::F32Bits(_) => DType::F32,
                     Literal::F64Bits(_) => DType::F64,
                     Literal::Bool(_) => DType::Bool,
                     Literal::Complex64Bits(..) => DType::Complex64,
@@ -557,6 +559,7 @@ pub(crate) fn eval_broadcast_in_dim(
                 Literal::U64(_) => DType::U64,
                 Literal::BF16Bits(_) => DType::BF16,
                 Literal::F16Bits(_) => DType::F16,
+                Literal::F32Bits(_) => DType::F32,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Bool(_) => DType::Bool,
                 Literal::Complex64Bits(..) => DType::Complex64,
@@ -1377,10 +1380,12 @@ fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError>
             detail: format!("index {n} exceeds usize range"),
         }),
         Literal::Bool(b) => Ok(if *b { 1 } else { 0 }),
-        Literal::BF16Bits(_) | Literal::F16Bits(_) => Err(EvalError::Unsupported {
-            primitive,
-            detail: "float indices not supported".into(),
-        }),
+        Literal::BF16Bits(_) | Literal::F16Bits(_) | Literal::F32Bits(_) => {
+            Err(EvalError::Unsupported {
+                primitive,
+                detail: "float indices not supported".into(),
+            })
+        }
         Literal::F64Bits(_) => Err(EvalError::Unsupported {
             primitive,
             detail: "float indices not supported".into(),
@@ -1470,6 +1475,7 @@ pub(crate) fn eval_dynamic_slice(
                     }
                     Literal::BF16Bits(_)
                     | Literal::F16Bits(_)
+                    | Literal::F32Bits(_)
                     | Literal::F64Bits(_)
                     | Literal::Complex64Bits(..)
                     | Literal::Complex128Bits(..) => {
@@ -1631,6 +1637,7 @@ pub(crate) fn eval_dynamic_update_slice(
                     Literal::Bool(b) => i64::from(*b),
                     Literal::BF16Bits(_)
                     | Literal::F16Bits(_)
+                    | Literal::F32Bits(_)
                     | Literal::F64Bits(_)
                     | Literal::Complex64Bits(..)
                     | Literal::Complex128Bits(..) => {
@@ -3090,6 +3097,7 @@ pub(crate) fn eval_expand_dims(
                         Literal::Bool(_) => DType::Bool,
                         Literal::BF16Bits(_) => DType::BF16,
                         Literal::F16Bits(_) => DType::F16,
+                        Literal::F32Bits(_) => DType::F32,
                         Literal::F64Bits(_) => DType::F64,
                         Literal::Complex64Bits(..) => DType::Complex64,
                         Literal::Complex128Bits(..) => DType::Complex128,

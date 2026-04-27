@@ -115,6 +115,7 @@ fn literal_to_complex_parts(
             let lit = Literal::F16Bits(bits);
             Ok((lit.as_f64().unwrap_or_default(), 0.0))
         }
+        Literal::F32Bits(bits) => Ok((f64::from(f32::from_bits(bits)), 0.0)),
         Literal::F64Bits(bits) => Ok((f64::from_bits(bits), 0.0)),
         Literal::Complex64Bits(re, im) => {
             Ok((f32::from_bits(re) as f64, f32::from_bits(im) as f64))
@@ -128,6 +129,15 @@ fn complex_literal_from_f64_parts(out_dtype: DType, re: f64, im: f64) -> Literal
         DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
         DType::Complex128 => Literal::from_complex128(re, im),
         _ => Literal::from_complex128(re, im),
+    }
+}
+
+fn real_literal_from_f64(dtype: DType, value: f64) -> Literal {
+    match dtype {
+        DType::BF16 => Literal::from_bf16_f32(value as f32),
+        DType::F16 => Literal::from_f16_f32(value as f32),
+        DType::F32 => Literal::from_f32(value as f32),
+        _ => Literal::from_f64(value),
     }
 }
 
@@ -499,6 +509,7 @@ fn literal_dtype(literal: Literal) -> DType {
         Literal::U64(_) => DType::U64,
         Literal::BF16Bits(_) => DType::BF16,
         Literal::F16Bits(_) => DType::F16,
+        Literal::F32Bits(_) => DType::F32,
         Literal::F64Bits(_) => DType::F64,
         Literal::Bool(_) => DType::Bool,
         Literal::Complex64Bits(..) => DType::Complex64,
@@ -525,6 +536,7 @@ fn literal_to_real_f64(primitive: Primitive, literal: Literal) -> Result<f64, Ev
                 primitive,
                 detail: "expected real numeric value, got f16",
             }),
+        Literal::F32Bits(bits) => Ok(f64::from(f32::from_bits(bits))),
         Literal::F64Bits(bits) => Ok(f64::from_bits(bits)),
         Literal::Bool(_) => Err(EvalError::TypeMismatch {
             primitive,
@@ -1118,6 +1130,9 @@ pub(crate) fn eval_unary_int_or_float(
                     })?;
                 Ok(Value::scalar_f64(float_op(val)))
             }
+            Literal::F32Bits(bits) => Ok(Value::scalar_f32(
+                float_op(f64::from(f32::from_bits(bits))) as f32,
+            )),
             Literal::F64Bits(bits) => Ok(Value::scalar_f64(float_op(f64::from_bits(bits)))),
             Literal::Bool(_) => Err(EvalError::TypeMismatch {
                 primitive,
@@ -1178,6 +1193,9 @@ pub(crate) fn eval_unary_int_or_float(
                                 detail: "expected numeric tensor elements, got f16",
                             })?,
                     ))),
+                    Literal::F32Bits(bits) => Ok(Literal::from_f32(float_op(f64::from(
+                        f32::from_bits(bits),
+                    )) as f32)),
                     Literal::F64Bits(bits) => Ok(Literal::from_f64(float_op(f64::from_bits(bits)))),
                     Literal::Bool(_) => Err(EvalError::TypeMismatch {
                         primitive,
@@ -1240,6 +1258,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 Literal::F16Bits(bits) => {
                     Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
                 }
+                Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
                 Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                 Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                     return Err(EvalError::TypeMismatch {
@@ -1258,7 +1277,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         primitive,
                         detail: "expected numeric scalar for select",
                     })?;
-                    Literal::from_f64(f_val)
+                    real_literal_from_f64(dtype, f_val)
                 }
                 DType::I64 | DType::I32 => {
                     let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
@@ -1319,6 +1338,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         Literal::F16Bits(bits) => {
                             Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
                         }
+                        Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
                         Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                             return Err(EvalError::TypeMismatch {
@@ -1334,7 +1354,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                                 primitive,
                                 detail: "expected numeric tensor elements for select",
                             })?;
-                            Ok(Literal::from_f64(f_val))
+                            Ok(real_literal_from_f64(dtype, f_val))
                         }
                         DType::I64 | DType::I32 => {
                             let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
@@ -1394,6 +1414,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         Literal::F16Bits(bits) => {
                             Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
                         }
+                        Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
                         Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                             return Err(EvalError::TypeMismatch {
@@ -1409,7 +1430,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                                 primitive,
                                 detail: "expected numeric scalar for select",
                             })?;
-                            Ok(Literal::from_f64(f_val))
+                            Ok(real_literal_from_f64(dtype, f_val))
                         }
                         DType::I64 | DType::I32 => {
                             let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
@@ -1471,6 +1492,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 Literal::F16Bits(bits) => {
                     Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
                 }
+                Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
                 Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
                 Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
                     return Err(EvalError::TypeMismatch {
@@ -1514,6 +1536,12 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 let hif = f64::from_bits(hib);
                 Ok(Literal::from_f64(xf.max(lof).min(hif)))
             }
+            (Literal::F32Bits(xb), Literal::F32Bits(lob), Literal::F32Bits(hib)) => {
+                let xf = f32::from_bits(xb);
+                let lof = f32::from_bits(lob);
+                let hif = f32::from_bits(hib);
+                Ok(Literal::from_f32(xf.max(lof).min(hif)))
+            }
             _ => {
                 // Mixed types: promote to f64
                 let xf = match x {
@@ -1522,6 +1550,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     Literal::U64(v) => v as f64,
                     Literal::BF16Bits(bits) => Literal::BF16Bits(bits).as_f64().unwrap_or_default(),
                     Literal::F16Bits(bits) => Literal::F16Bits(bits).as_f64().unwrap_or_default(),
+                    Literal::F32Bits(b) => f64::from(f32::from_bits(b)),
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
@@ -1534,6 +1563,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     Literal::U64(v) => v as f64,
                     Literal::BF16Bits(bits) => Literal::BF16Bits(bits).as_f64().unwrap_or_default(),
                     Literal::F16Bits(bits) => Literal::F16Bits(bits).as_f64().unwrap_or_default(),
+                    Literal::F32Bits(b) => f64::from(f32::from_bits(b)),
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
@@ -1546,6 +1576,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     Literal::U64(v) => v as f64,
                     Literal::BF16Bits(bits) => Literal::BF16Bits(bits).as_f64().unwrap_or_default(),
                     Literal::F16Bits(bits) => Literal::F16Bits(bits).as_f64().unwrap_or_default(),
+                    Literal::F32Bits(b) => f64::from(f32::from_bits(b)),
                     Literal::F64Bits(b) => f64::from_bits(b),
                     Literal::Bool(_) => return Err("clamp does not support bool"),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {

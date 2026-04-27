@@ -1738,6 +1738,7 @@ fn value_type_runtime(actual: &Value) -> &'static str {
             fj_core::Literal::U64(_) => "u64",
             fj_core::Literal::BF16Bits(_) => "bf16",
             fj_core::Literal::F16Bits(_) => "f16",
+            fj_core::Literal::F32Bits(_) => "f32",
             fj_core::Literal::F64Bits(_) => "f64",
             fj_core::Literal::Bool(_) => "bool",
             fj_core::Literal::Complex64Bits(..) => "complex64",

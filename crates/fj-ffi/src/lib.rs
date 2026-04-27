@@ -278,6 +278,7 @@ mod tests {
 
         let values = vec![
             Value::Scalar(Literal::F64Bits(std::f64::consts::PI.to_bits())),
+            Value::Scalar(Literal::F32Bits(1.25_f32.to_bits())),
             Value::Scalar(Literal::I64(i64::MIN)),
             Value::Scalar(Literal::I64(i64::MAX)),
             Value::Scalar(Literal::Bool(true)),

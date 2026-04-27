@@ -64,7 +64,7 @@ fn make_typed_value(dtype: DType) -> Option<Value> {
         DType::U32 => Value::Scalar(Literal::U32(7)),
         DType::U64 => Value::Scalar(Literal::U64(7)),
         DType::F16 => Value::Scalar(Literal::F16Bits(0x4100)), // f16 2.5 = 0x4100
-        DType::F32 => Value::Scalar(Literal::from_f64(2.5)),   // stored as f64 bits internally
+        DType::F32 => Value::Scalar(Literal::from_f32(2.5)),
         DType::F64 => Value::Scalar(Literal::from_f64(2.5)),
         DType::BF16 => Value::Scalar(Literal::BF16Bits(0x4020)), // bf16 2.5 = 0x4020
         _ => return None,
@@ -80,7 +80,7 @@ fn make_typed_tensor(dtype: DType) -> Option<Value> {
         DType::U32 => vec![Literal::U32(7)],
         DType::U64 => vec![Literal::U64(7)],
         DType::F16 => vec![Literal::F16Bits(0x4100)],
-        DType::F32 => vec![Literal::from_f64(2.5)],
+        DType::F32 => vec![Literal::from_f32(2.5)],
         DType::F64 => vec![Literal::from_f64(2.5)],
         DType::BF16 => vec![Literal::BF16Bits(0x4020)],
         _ => return None,
@@ -99,6 +99,7 @@ fn result_dtype(val: &Value) -> DType {
             Literal::U64(_) => DType::U64,
             Literal::BF16Bits(_) => DType::BF16,
             Literal::F16Bits(_) => DType::F16,
+            Literal::F32Bits(_) => DType::F32,
             Literal::F64Bits(_) => DType::F64,
             Literal::Complex64Bits(..) => DType::Complex64,
             Literal::Complex128Bits(..) => DType::Complex128,
@@ -122,9 +123,8 @@ fn literal_matches_dtype(literal: Literal, dtype: DType) -> bool {
         DType::U64 => matches!(literal, Literal::U64(_)),
         DType::BF16 => matches!(literal, Literal::BF16Bits(_)),
         DType::F16 => matches!(literal, Literal::F16Bits(_)),
-        // FrankenJAX has no native F32 scalar literal; F32 tensor values use
-        // the shared floating literal representation.
-        DType::F32 | DType::F64 => matches!(literal, Literal::F64Bits(_)),
+        DType::F32 => matches!(literal, Literal::F32Bits(_)),
+        DType::F64 => matches!(literal, Literal::F64Bits(_)),
         DType::Complex64 => matches!(literal, Literal::Complex64Bits(..)),
         DType::Complex128 => matches!(literal, Literal::Complex128Bits(..)),
     }
@@ -192,9 +192,8 @@ fn dtype_promotion_matches_jax() {
     // Core scalar types that FrankenJAX fully supports at scalar level.
     // Known gaps:
     // - i32: stored as i64 internally
-    // - f32: no native F32 scalar literal (all floats stored as F64Bits)
     // - bf16/f16: half-precision scalar ops limited
-    let core_dtypes = ["bool", "i64", "u32", "u64", "f64"];
+    let core_dtypes = ["bool", "i64", "u32", "u64", "f32", "f64"];
 
     let mut mismatches = Vec::new();
     let mut tested = 0;
@@ -302,8 +301,7 @@ fn dtype_promotion_matches_jax() {
     }
 }
 
-/// Test dtype promotion at the tensor level, which supports F32, BF16, and F16 natively.
-/// These types only have proper representation in TensorValue, not as scalar Literals.
+/// Test dtype promotion at the tensor level, including half-precision tensor cases.
 #[test]
 fn dtype_promotion_tensor_level() {
     let bundle = load_bundle();

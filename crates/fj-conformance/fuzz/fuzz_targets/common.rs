@@ -396,10 +396,7 @@ pub fn sample_literal(cursor: &mut ByteCursor<'_>, dtype: DType) -> Literal {
         DType::U64 => Literal::U64(cursor.take_u64()),
         DType::BF16 => Literal::BF16Bits(cursor.take_u16()),
         DType::F16 => Literal::F16Bits(cursor.take_u16()),
-        DType::F32 => {
-            let value = f32::from_bits(cursor.take_u32());
-            Literal::from_f64(f64::from(value))
-        }
+        DType::F32 => Literal::F32Bits(cursor.take_u32()),
         DType::F64 => Literal::F64Bits(cursor.take_u64()),
         DType::Complex64 => Literal::Complex64Bits(cursor.take_u32(), cursor.take_u32()),
         DType::Complex128 => Literal::Complex128Bits(cursor.take_u64(), cursor.take_u64()),

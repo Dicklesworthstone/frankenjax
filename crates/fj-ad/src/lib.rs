@@ -215,6 +215,7 @@ fn zeros_like(v: &Value) -> Value {
             Literal::U32(_) | Literal::U64(_) => Value::scalar_f64(0.0),
             Literal::Bool(_) => Value::scalar_f64(0.0),
             Literal::BF16Bits(_) | Literal::F16Bits(_) => Value::scalar_f64(0.0),
+            Literal::F32Bits(_) => Value::scalar_f64(0.0),
             Literal::F64Bits(_) => Value::scalar_f64(0.0),
             Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Value::scalar_f64(0.0),
         },
@@ -243,6 +244,7 @@ fn ones_like(v: &Value) -> Value {
             Literal::U32(_) | Literal::U64(_) => Value::scalar_f64(1.0),
             Literal::Bool(_) => Value::scalar_f64(1.0),
             Literal::BF16Bits(_) | Literal::F16Bits(_) => Value::scalar_f64(1.0),
+            Literal::F32Bits(_) => Value::scalar_f64(1.0),
             Literal::F64Bits(_) => Value::scalar_f64(1.0),
             Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Value::scalar_f64(1.0),
         },
@@ -587,6 +589,7 @@ fn is_zero_value(v: &Value) -> bool {
         Value::Scalar(lit @ (Literal::BF16Bits(_) | Literal::F16Bits(_))) => {
             (*lit).as_f64().is_some_and(|value| value == 0.0)
         }
+        Value::Scalar(Literal::F32Bits(bits)) => f32::from_bits(*bits) == 0.0,
         Value::Scalar(Literal::Complex64Bits(re, im)) => {
             f32::from_bits(*re) == 0.0 && f32::from_bits(*im) == 0.0
         }
@@ -602,6 +605,7 @@ fn is_zero_value(v: &Value) -> bool {
             Literal::BF16Bits(_) | Literal::F16Bits(_) => {
                 (*e).as_f64().is_some_and(|value| value == 0.0)
             }
+            Literal::F32Bits(bits) => f32::from_bits(*bits) == 0.0,
             Literal::Complex64Bits(re, im) => {
                 f32::from_bits(*re) == 0.0 && f32::from_bits(*im) == 0.0
             }
@@ -2899,6 +2903,7 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
                     Literal::BF16Bits(_) | Literal::F16Bits(_) => {
                         (*lit).as_f64().unwrap_or(0.0) as i64
                     }
+                    Literal::F32Bits(b) => f32::from_bits(*b) as i64,
                     Literal::F64Bits(b) => f64::from_bits(*b) as i64,
                     Literal::Bool(b) => i64::from(*b),
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => 0,

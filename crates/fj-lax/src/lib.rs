@@ -842,6 +842,7 @@ fn literal_to_bool(primitive: Primitive, literal: Literal) -> Result<bool, EvalE
         Literal::U64(v) => Ok(v != 0),
         Literal::BF16Bits(bits) => Ok(Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)),
         Literal::F16Bits(bits) => Ok(Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)),
+        Literal::F32Bits(bits) => Ok(f32::from_bits(bits) != 0.0),
         Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
         Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
             primitive,
@@ -873,6 +874,7 @@ fn literal_to_index(primitive: Primitive, literal: Literal) -> Result<u64, EvalE
         Literal::U64(v) => Ok(v),
         Literal::BF16Bits(..)
         | Literal::F16Bits(..)
+        | Literal::F32Bits(..)
         | Literal::F64Bits(..)
         | Literal::Complex64Bits(..)
         | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
@@ -898,6 +900,7 @@ fn value_shape_fingerprint(v: &Value) -> String {
                 fj_core::Literal::Bool(_) => "bool",
                 fj_core::Literal::BF16Bits(_) => "bf16",
                 fj_core::Literal::F16Bits(_) => "f16",
+                fj_core::Literal::F32Bits(_) => "f32",
                 fj_core::Literal::F64Bits(_) => "f64",
                 fj_core::Literal::Complex64Bits(_, _) => "c64",
                 fj_core::Literal::Complex128Bits(_, _) => "c128",

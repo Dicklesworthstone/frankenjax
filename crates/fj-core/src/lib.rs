@@ -351,6 +351,7 @@ pub enum Literal {
     Bool(bool),
     BF16Bits(u16),
     F16Bits(u16),
+    F32Bits(u32),
     F64Bits(u64),
     Complex64Bits(u32, u32),
     Complex128Bits(u64, u64),
@@ -365,6 +366,11 @@ impl Literal {
     #[must_use]
     pub fn from_f16_f32(value: f32) -> Self {
         Self::F16Bits(f16::from_f32(value).to_bits())
+    }
+
+    #[must_use]
+    pub fn from_f32(value: f32) -> Self {
+        Self::F32Bits(value.to_bits())
     }
 
     #[must_use]
@@ -386,6 +392,7 @@ impl Literal {
     pub fn as_f64(self) -> Option<f64> {
         match self {
             Self::F64Bits(bits) => Some(f64::from_bits(bits)),
+            Self::F32Bits(bits) => Some(f64::from(f32::from_bits(bits))),
             Self::I64(value) => Some(value as f64),
             Self::U32(value) => Some(value as f64),
             Self::U64(value) => Some(value as f64),
@@ -404,6 +411,7 @@ impl Literal {
             Self::Bool(_)
             | Self::BF16Bits(_)
             | Self::F16Bits(_)
+            | Self::F32Bits(_)
             | Self::F64Bits(_)
             | Self::Complex64Bits(..)
             | Self::Complex128Bits(..) => None,
@@ -419,6 +427,7 @@ impl Literal {
             Self::Bool(_)
             | Self::BF16Bits(_)
             | Self::F16Bits(_)
+            | Self::F32Bits(_)
             | Self::F64Bits(_)
             | Self::Complex64Bits(..)
             | Self::Complex128Bits(..) => None,
@@ -498,6 +507,11 @@ impl Value {
     #[must_use]
     pub fn scalar_f16(value: f32) -> Self {
         Self::Scalar(Literal::from_f16_f32(value))
+    }
+
+    #[must_use]
+    pub fn scalar_f32(value: f32) -> Self {
+        Self::Scalar(Literal::from_f32(value))
     }
 
     #[must_use]
@@ -602,6 +616,7 @@ impl Value {
                 Literal::Bool(_) => DType::Bool,
                 Literal::BF16Bits(_) => DType::BF16,
                 Literal::F16Bits(_) => DType::F16,
+                Literal::F32Bits(_) => DType::F32,
                 Literal::F64Bits(_) => DType::F64,
                 Literal::Complex64Bits(..) => DType::Complex64,
                 Literal::Complex128Bits(..) => DType::Complex128,
@@ -882,6 +897,11 @@ fn infer_dtype_from_literals(elements: &[Literal]) -> DType {
         .all(|literal| matches!(literal, Literal::F16Bits(_)))
     {
         DType::F16
+    } else if elements
+        .iter()
+        .all(|literal| matches!(literal, Literal::F32Bits(_)))
+    {
+        DType::F32
     } else {
         DType::F64
     }
@@ -1147,6 +1167,9 @@ fn write_literal(out: &mut String, lit: Literal) {
         }
         Literal::F16Bits(value) => {
             let _ = write!(out, "f16bits:{value}");
+        }
+        Literal::F32Bits(value) => {
+            let _ = write!(out, "f32bits:{value}");
         }
         Literal::F64Bits(value) => {
             let _ = write!(out, "f64bits:{value}");

@@ -61,6 +61,7 @@ impl ShapedArray {
                     fj_core::Literal::Bool(_) => DType::Bool,
                     fj_core::Literal::BF16Bits(_) => DType::BF16,
                     fj_core::Literal::F16Bits(_) => DType::F16,
+                    fj_core::Literal::F32Bits(_) => DType::F32,
                     fj_core::Literal::F64Bits(_) => DType::F64,
                     fj_core::Literal::Complex64Bits(..) => DType::Complex64,
                     fj_core::Literal::Complex128Bits(..) => DType::Complex128,

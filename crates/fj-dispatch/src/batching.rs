@@ -1604,6 +1604,7 @@ fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
         fj_core::Literal::F16Bits(bits) => Ok(fj_core::Literal::F16Bits(bits)
             .as_f64()
             .is_some_and(|v| v != 0.0)),
+        fj_core::Literal::F32Bits(bits) => Ok(f32::from_bits(bits) != 0.0),
         fj_core::Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
         fj_core::Literal::Complex64Bits(..) | fj_core::Literal::Complex128Bits(..) => Err(
             BatchError::EvalError("cond predicate must be boolean or numeric".to_owned()),
