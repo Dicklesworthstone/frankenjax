@@ -3425,6 +3425,8 @@ fn while_vjp(
         "add" => Primitive::Add,
         "sub" => Primitive::Sub,
         "mul" => Primitive::Mul,
+        "div" => Primitive::Div,
+        "pow" => Primitive::Pow,
         _ => return Err(AdError::UnsupportedPrimitive(Primitive::While)),
     };
 
@@ -3434,6 +3436,8 @@ fn while_vjp(
         "le" => Primitive::Le,
         "gt" => Primitive::Gt,
         "ge" => Primitive::Ge,
+        "ne" => Primitive::Ne,
+        "eq" => Primitive::Eq,
         _ => return Err(AdError::UnsupportedPrimitive(Primitive::While)),
     };
 
@@ -9609,6 +9613,89 @@ mod tests {
         // Each iteration i: d(final)/d(step_at_i) = init * step^(n-1) = 128/2 = 64 each
         // 7 iterations * 64 = 448
         assert_eq!(grads[1].as_f64_scalar().unwrap(), 448.0);
+    }
+
+    #[test]
+    fn while_vjp_div_loop_matches_lax_supported_body_op() {
+        // while carry > 1: carry /= 2 => 8, 4, 2, 1 (3 iterations).
+        // Treating the iteration count as fixed, final = init / step^3.
+        let init = Value::scalar_f64(8.0);
+        let step = Value::scalar_f64(2.0);
+        let threshold = Value::scalar_f64(1.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(
+            Primitive::While,
+            &[init, step, threshold],
+            &g,
+            &while_params("div", "gt"),
+        )
+        .expect("while VJP should support lax body_op=div");
+        let grad_init = grads[0].as_f64_scalar().expect("init gradient");
+        let grad_step = grads[1].as_f64_scalar().expect("step gradient");
+        assert!((grad_init - 0.125).abs() < 1e-10, "grad_init = {grad_init}");
+        assert!((grad_step + 1.5).abs() < 1e-10, "grad_step = {grad_step}");
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn while_vjp_pow_loop_matches_lax_supported_body_op() {
+        // while carry < 3: carry = carry^2 => one iteration from 2 to 4.
+        let init = Value::scalar_f64(2.0);
+        let step = Value::scalar_f64(2.0);
+        let threshold = Value::scalar_f64(3.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(
+            Primitive::While,
+            &[init, step, threshold],
+            &g,
+            &while_params("pow", "lt"),
+        )
+        .expect("while VJP should support lax body_op=pow");
+        let grad_init = grads[0].as_f64_scalar().expect("init gradient");
+        let grad_step = grads[1].as_f64_scalar().expect("step gradient");
+        assert!((grad_init - 4.0).abs() < 1e-10, "grad_init = {grad_init}");
+        assert!(
+            (grad_step - (4.0_f64 * 2.0_f64.ln())).abs() < 1e-10,
+            "grad_step = {grad_step}"
+        );
+    }
+
+    #[test]
+    fn while_vjp_ne_condition_matches_lax_supported_cond_op() {
+        // while carry != 0: carry -= 1 => 2, 1, 0 (2 iterations).
+        let init = Value::scalar_f64(2.0);
+        let step = Value::scalar_f64(1.0);
+        let threshold = Value::scalar_f64(0.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(
+            Primitive::While,
+            &[init, step, threshold],
+            &g,
+            &while_params("sub", "ne"),
+        )
+        .expect("while VJP should support lax cond_op=ne");
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), -2.0);
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn while_vjp_eq_condition_matches_lax_supported_cond_op() {
+        // while carry == 0: carry += 1 => one iteration from 0 to 1.
+        let init = Value::scalar_f64(0.0);
+        let step = Value::scalar_f64(1.0);
+        let threshold = Value::scalar_f64(0.0);
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(
+            Primitive::While,
+            &[init, step, threshold],
+            &g,
+            &while_params("add", "eq"),
+        )
+        .expect("while VJP should support lax cond_op=eq");
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), 1.0);
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
     }
 
     // ── Task-specified control-flow AD coverage ───────────────────────
