@@ -451,7 +451,7 @@ pub fn apply_batch_rule(
         Primitive::BroadcastedIota => batch_broadcasted_iota(inputs, params),
 
         // ── Encoding ───────────────────────────────────────────
-        Primitive::OneHot => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::OneHot => batch_one_hot(inputs, params),
 
         // ── Cumulative ─────────────────────────────────────────
         Primitive::Cumsum | Primitive::Cumprod => batch_cumulative(primitive, inputs, params),
@@ -1521,6 +1521,33 @@ fn batch_nullary(
     Ok(BatchTracer::unbatched(result))
 }
 
+// ── One-Hot Batching ───────────────────────────────────────────────
+
+fn batch_one_hot(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(
+                Primitive::OneHot,
+                std::slice::from_ref(&input.value),
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let result = eval_primitive(Primitive::OneHot, &[value], params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
+}
+
 // ── Passthrough Leading Dim (Gather, Scatter, DynamicSlice, etc.) ──
 
 fn batch_passthrough_leading(
@@ -2378,6 +2405,19 @@ mod tests {
             TensorValue::new(
                 DType::I64,
                 Shape::vector(data.len() as u32),
+                data.iter().map(|&x| Literal::I64(x)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn make_i64_matrix(rows: usize, cols: usize, data: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
                 data.iter().map(|&x| Literal::I64(x)).collect(),
             )
             .unwrap(),
@@ -3526,6 +3566,83 @@ mod tests {
 
         let err = apply_batch_rule(Primitive::Split, &[input], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("cannot split a scalar"));
+    }
+
+    #[test]
+    fn test_batch_trace_one_hot_vector_indices() {
+        let input = BatchTracer::batched(make_i64_vector(&[0, 2, 1]), 0);
+        let params = BTreeMap::from([("num_classes".to_owned(), "3".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::OneHot, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![3, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_one_hot_nonleading_batch_dim() {
+        let input = BatchTracer::batched(make_i64_matrix(3, 2, &[0, 1, 2, 0, 1, 2]), 1);
+        let params = BTreeMap::from([("num_classes".to_owned(), "3".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::OneHot, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0,
+                0.0, 1.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_one_hot_custom_int_values() {
+        let input = BatchTracer::batched(make_i64_vector(&[1, -1, 3]), 0);
+        let params = BTreeMap::from([
+            ("num_classes".to_owned(), "3".to_owned()),
+            ("dtype".to_owned(), "I64".to_owned()),
+            ("on_value".to_owned(), "5".to_owned()),
+            ("off_value".to_owned(), "-2".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::OneHot, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape.dims, vec![3, 3]);
+        assert_eq!(
+            extract_i64_vec(&result.value),
+            vec![-2, 5, -2, -2, -2, -2, -2, -2, -2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_one_hot_unbatched_scalar() {
+        let input = BatchTracer::unbatched(Value::Scalar(Literal::I64(2)));
+        let params = BTreeMap::from([("num_classes".to_owned(), "4".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::OneHot, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, None);
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![4]);
+        assert_eq!(extract_f64_vec(&result.value), vec![0.0, 0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_one_hot_missing_num_classes_errors() {
+        let input = BatchTracer::batched(make_i64_vector(&[0, 1]), 0);
+
+        let err = apply_batch_rule(Primitive::OneHot, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing required param 'num_classes'")
+        );
     }
 
     #[test]
