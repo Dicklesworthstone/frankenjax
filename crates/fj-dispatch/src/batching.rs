@@ -440,11 +440,10 @@ pub fn apply_batch_rule(
         | Primitive::Qr
         | Primitive::Svd
         | Primitive::TriangularSolve
-        | Primitive::Eigh
-        | Primitive::Fft
-        | Primitive::Ifft
-        | Primitive::Rfft
-        | Primitive::Irfft => batch_passthrough_leading(primitive, inputs, params),
+        | Primitive::Eigh => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
+            batch_fft_like(primitive, inputs, params)
+        }
 
         // ── Index generation ───────────────────────────────────
         Primitive::Iota => batch_iota(inputs, params),
@@ -1521,6 +1520,40 @@ fn batch_nullary(
     Ok(BatchTracer::unbatched(result))
 }
 
+// ── FFT-Family Batching ────────────────────────────────────────────
+
+fn batch_fft_like(
+    primitive: Primitive,
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(primitive, std::slice::from_ref(&input.value), params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value.as_tensor().ok_or_else(|| {
+        BatchError::BatchDimMoveError(format!("expected tensor for {}", primitive.as_str()))
+    })?;
+    let per_elem_rank = tensor.shape.rank().saturating_sub(1);
+    if per_elem_rank == 0 {
+        return Err(BatchError::EvalError(
+            "FFT expects a tensor (rank >= 1), got scalar".to_owned(),
+        ));
+    }
+
+    let result = eval_primitive(primitive, &[value], params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
+}
+
 // ── One-Hot Batching ───────────────────────────────────────────────
 
 fn batch_one_hot(
@@ -2400,6 +2433,21 @@ mod tests {
         )
     }
 
+    fn make_complex128_tensor(dims: &[u32], data: &[(f64, f64)]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape {
+                    dims: dims.to_vec(),
+                },
+                data.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
+
     fn make_i64_vector(data: &[i64]) -> Value {
         Value::Tensor(
             TensorValue::new(
@@ -2435,6 +2483,32 @@ mod tests {
         match value {
             Value::Tensor(t) => t.elements.iter().map(|lit| lit.as_i64().unwrap()).collect(),
             Value::Scalar(lit) => vec![lit.as_i64().unwrap()],
+        }
+    }
+
+    fn extract_complex128_vec(value: &Value) -> Vec<(f64, f64)> {
+        match value {
+            Value::Tensor(t) => t
+                .elements
+                .iter()
+                .map(|lit| lit.as_complex128().unwrap())
+                .collect(),
+            Value::Scalar(lit) => vec![lit.as_complex128().unwrap()],
+        }
+    }
+
+    fn assert_complex_close(actual: &[(f64, f64)], expected: &[(f64, f64)]) {
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a.0 - e.0).abs() <= 1e-10, "real: {a:?} != {e:?}");
+            assert!((a.1 - e.1).abs() <= 1e-10, "imag: {a:?} != {e:?}");
+        }
+    }
+
+    fn assert_f64_close(actual: &[f64], expected: &[f64]) {
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() <= 1e-10, "{a} != {e}");
         }
     }
 
@@ -3566,6 +3640,183 @@ mod tests {
 
         let err = apply_batch_rule(Primitive::Split, &[input], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("cannot split a scalar"));
+    }
+
+    #[test]
+    fn test_batch_trace_fft_leading_batch_dim() {
+        let input = BatchTracer::batched(
+            make_complex128_tensor(
+                &[2, 4],
+                &[
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                ],
+            ),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Fft, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 4]);
+        assert_complex_close(
+            &extract_complex128_vec(&result.value),
+            &[
+                (4.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_fft_nonleading_batch_dim() {
+        let input = BatchTracer::batched(
+            make_complex128_tensor(
+                &[4, 2],
+                &[
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (0.0, 0.0),
+                ],
+            ),
+            1,
+        );
+
+        let result = apply_batch_rule(Primitive::Fft, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 4]);
+        assert_complex_close(
+            &extract_complex128_vec(&result.value),
+            &[
+                (4.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_ifft_leading_batch_dim() {
+        let input = BatchTracer::batched(
+            make_complex128_tensor(
+                &[2, 4],
+                &[
+                    (4.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                ],
+            ),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Ifft, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 4]);
+        assert_complex_close(
+            &extract_complex128_vec(&result.value),
+            &[
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_rfft_preserves_batch_and_updates_last_axis() {
+        let input = BatchTracer::batched(
+            make_f64_matrix(2, 4, &[1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0]),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Rfft, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_complex_close(
+            &extract_complex128_vec(&result.value),
+            &[
+                (4.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_irfft_preserves_batch_and_updates_last_axis() {
+        let input = BatchTracer::batched(
+            make_complex128_tensor(
+                &[2, 3],
+                &[
+                    (4.0, 0.0),
+                    (0.0, 0.0),
+                    (0.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                    (1.0, 0.0),
+                ],
+            ),
+            0,
+        );
+        let params = BTreeMap::from([("fft_length".to_owned(), "4".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Irfft, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 4]);
+        assert_f64_close(
+            &extract_f64_vec(&result.value),
+            &[1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_fft_scalar_elements_reject() {
+        let input = BatchTracer::batched(make_f64_vector(&[1.0, 2.0]), 0);
+
+        let err = apply_batch_rule(Primitive::Fft, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("FFT expects a tensor (rank >= 1), got scalar")
+        );
     }
 
     #[test]
