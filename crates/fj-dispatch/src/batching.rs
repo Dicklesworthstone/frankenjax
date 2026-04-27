@@ -435,7 +435,7 @@ pub fn apply_batch_rule(
         Primitive::Rev => batch_passthrough_leading(primitive, inputs, params),
         Primitive::Squeeze => batch_squeeze(inputs, params),
         Primitive::Split => batch_passthrough_leading(primitive, inputs, params),
-        Primitive::ExpandDims => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::ExpandDims => batch_expand_dims(inputs, params),
         Primitive::Cholesky
         | Primitive::Qr
         | Primitive::Svd
@@ -1204,6 +1204,49 @@ fn batch_squeeze(
     let mut new_params = params.clone();
     new_params.insert("dimensions".to_owned(), format_csv(&squeeze_dims));
     let result = eval_primitive(Primitive::Squeeze, &[value], &new_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
+}
+
+fn batch_expand_dims(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(
+                Primitive::ExpandDims,
+                std::slice::from_ref(&input.value),
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value
+        .as_tensor()
+        .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for expand_dims".into()))?;
+    let per_elem_rank = tensor.shape.rank().saturating_sub(1);
+    let logical_axis = parse_param_usize_list(params, "axis")?
+        .first()
+        .copied()
+        .ok_or_else(|| BatchError::EvalError("empty list for param 'axis'".to_owned()))?;
+
+    let physical_axis = if per_elem_rank == 0 {
+        1
+    } else {
+        logical_axis
+            .checked_add(1)
+            .ok_or_else(|| BatchError::EvalError("expand_dims axis overflow".to_owned()))?
+    };
+
+    let mut new_params = params.clone();
+    new_params.insert("axis".to_owned(), physical_axis.to_string());
+    let result = eval_primitive(Primitive::ExpandDims, &[value], &new_params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
     Ok(BatchTracer::batched(result, 0))
 }
@@ -3330,6 +3373,39 @@ mod tests {
         params.insert("axis".to_owned(), "1".to_owned());
         let result = apply_batch_rule(Primitive::ExpandDims, &[input], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![3, 1]);
+        assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_expand_dims_logical_axis_zero() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params = BTreeMap::from([("axis".to_owned(), "0".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::ExpandDims, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 1, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_expand_dims_trailing_logical_axis() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params = BTreeMap::from([("axis".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::ExpandDims, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 1]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
     }
 
     #[test]
