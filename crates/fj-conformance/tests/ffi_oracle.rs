@@ -121,6 +121,22 @@ fn make_registry() -> FfiRegistry {
     reg
 }
 
+fn exact_bytes<const N: usize>(bytes: &[u8], context: &str) -> [u8; N] {
+    assert_eq!(
+        bytes.len(),
+        N,
+        "{context}: expected {N} byte(s), got {}",
+        bytes.len()
+    );
+    let mut out = [0_u8; N];
+    out.copy_from_slice(bytes);
+    out
+}
+
+fn output_f64(buffer: &FfiBuffer, context: &str) -> f64 {
+    f64::from_ne_bytes(exact_bytes::<8>(buffer.as_bytes(), context))
+}
+
 // ======================== Oracle Tests ========================
 
 /// Oracle: FFI double matches Rust computation.
@@ -141,8 +157,7 @@ fn oracle_ffi_double_matches_rust() {
         let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
         call.invoke(&reg, &[input], &mut outputs).unwrap();
 
-        let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-        let result = f64::from_ne_bytes(result_bytes);
+        let result = output_f64(&outputs[0], "double output");
         let expected = val * 2.0;
         assert_eq!(
             result, expected,
@@ -166,8 +181,7 @@ fn oracle_ffi_sum3_matches_rust() {
     let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
     call.invoke(&reg, &[input], &mut outputs).unwrap();
 
-    let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-    let result = f64::from_ne_bytes(result_bytes);
+    let result = output_f64(&outputs[0], "sum3 output");
     let expected: f64 = values.iter().sum();
     assert_eq!(result, expected);
 }
@@ -223,22 +237,22 @@ fn oracle_ffi_negate_vec_matches_rust() {
 
 /// Oracle: error propagation is structured and lossless.
 #[test]
-fn oracle_error_propagation_is_structured() {
+fn oracle_error_propagation_is_structured() -> Result<(), String> {
     let reg = make_registry();
     let call = FfiCall::new("error");
     let err = call.invoke(&reg, &[], &mut []).unwrap_err();
-    match err {
+    let (target, code, message) = match err {
         FfiError::CallFailed {
             target,
             code,
             message,
-        } => {
-            assert_eq!(target, "error");
-            assert_eq!(code, 7);
-            assert!(!message.is_empty());
-        }
-        other => panic!("expected CallFailed, got: {other}"),
-    }
+        } => (target, code, message),
+        other => return Err(format!("expected CallFailed, got: {other:?}")),
+    };
+    assert_eq!(target, "error");
+    assert_eq!(code, 7);
+    assert!(!message.is_empty());
+    Ok(())
 }
 
 // ======================== Metamorphic Tests ========================
@@ -279,8 +293,7 @@ fn metamorphic_error_does_not_corrupt_state() {
     let input = FfiBuffer::new(5.0f64.to_ne_bytes().to_vec(), vec![], DType::F64).unwrap();
     let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
     call_ok.invoke(&reg, &[input], &mut outputs).unwrap();
-    let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-    let result_before = f64::from_ne_bytes(result_bytes);
+    let result_before = output_f64(&outputs[0], "first double output");
 
     // Then: failing call (should not corrupt registry or caller)
     let call_err = FfiCall::new("error");
@@ -290,8 +303,7 @@ fn metamorphic_error_does_not_corrupt_state() {
     let input2 = FfiBuffer::new(5.0f64.to_ne_bytes().to_vec(), vec![], DType::F64).unwrap();
     let mut outputs2 = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
     call_ok.invoke(&reg, &[input2], &mut outputs2).unwrap();
-    let result_bytes2: [u8; 8] = outputs2[0].as_bytes().try_into().unwrap();
-    let result_after = f64::from_ne_bytes(result_bytes2);
+    let result_after = output_f64(&outputs2[0], "second double output");
 
     assert_eq!(result_before, result_after);
 }
@@ -319,8 +331,7 @@ fn metamorphic_double_composition() {
     call.invoke(&reg, &[mid[0].clone()], &mut final_out)
         .unwrap();
 
-    let result_bytes: [u8; 8] = final_out[0].as_bytes().try_into().unwrap();
-    let result = f64::from_ne_bytes(result_bytes);
+    let result = output_f64(&final_out[0], "double composition output");
     assert_eq!(result, x * 4.0);
 }
 
@@ -404,8 +415,7 @@ fn adversarial_concurrent_ffi_calls() {
                 let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
                 call.invoke(&reg, &[input], &mut outputs).unwrap();
 
-                let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-                let result = f64::from_ne_bytes(result_bytes);
+                let result = output_f64(&outputs[0], "concurrent double output");
                 assert_eq!(result, val * 2.0);
             })
         })

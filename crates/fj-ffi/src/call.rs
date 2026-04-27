@@ -167,6 +167,26 @@ mod tests {
         reg
     }
 
+    fn exact_bytes<const N: usize>(bytes: &[u8], context: &str) -> [u8; N] {
+        assert_eq!(
+            bytes.len(),
+            N,
+            "{context}: expected {N} byte(s), got {}",
+            bytes.len()
+        );
+        let mut out = [0_u8; N];
+        out.copy_from_slice(bytes);
+        out
+    }
+
+    fn output_f64(buffer: &FfiBuffer, context: &str) -> f64 {
+        f64::from_ne_bytes(exact_bytes::<8>(buffer.as_bytes(), context))
+    }
+
+    fn output_i32(buffer: &FfiBuffer, context: &str) -> i32 {
+        i32::from_ne_bytes(exact_bytes::<4>(buffer.as_bytes(), context))
+    }
+
     #[test]
     fn invoke_copy_success() {
         let reg = setup_registry("copy", mock_copy);
@@ -178,9 +198,7 @@ mod tests {
 
         call.invoke(&reg, &[input], &mut outputs).unwrap();
 
-        let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-        let result = f64::from_ne_bytes(result_bytes);
-        assert_eq!(result, 42.0);
+        assert_eq!(output_f64(&outputs[0], "copy output"), 42.0);
     }
 
     #[test]
@@ -192,7 +210,7 @@ mod tests {
     }
 
     #[test]
-    fn invoke_error_return_code() {
+    fn invoke_error_return_code() -> Result<(), String> {
         let reg = setup_registry("fail", mock_fail);
         let call = FfiCall::new("fail");
 
@@ -200,13 +218,13 @@ mod tests {
         let mut outputs = [FfiBuffer::zeroed(vec![], DType::F64).unwrap()];
 
         let err = call.invoke(&reg, &[input], &mut outputs).unwrap_err();
-        match err {
-            FfiError::CallFailed { target, code, .. } => {
-                assert_eq!(target, "fail");
-                assert_eq!(code, 99);
-            }
-            other => panic!("expected CallFailed, got: {other}"),
-        }
+        let (target, code) = match err {
+            FfiError::CallFailed { target, code, .. } => (target, code),
+            other => return Err(format!("expected CallFailed, got: {other:?}")),
+        };
+        assert_eq!(target, "fail");
+        assert_eq!(code, 99);
+        Ok(())
     }
 
     #[test]
@@ -220,9 +238,7 @@ mod tests {
 
         call.invoke(&reg, &[input], &mut outputs).unwrap();
 
-        let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-        let result = f64::from_ne_bytes(result_bytes);
-        assert_eq!(result, 42.0);
+        assert_eq!(output_f64(&outputs[0], "double output"), 42.0);
     }
 
     #[test]
@@ -273,7 +289,8 @@ mod tests {
 
         let result_bytes = outputs[0].as_bytes();
         for (i, expected) in [-1.0f64, -2.0, -3.0].iter().enumerate() {
-            let bytes: [u8; 8] = result_bytes[i * 8..(i + 1) * 8].try_into().unwrap();
+            let bytes =
+                exact_bytes::<8>(&result_bytes[i * 8..(i + 1) * 8], "negated vector element");
             assert_eq!(f64::from_ne_bytes(bytes), *expected);
         }
     }
@@ -329,8 +346,7 @@ mod tests {
 
         call.invoke(&reg, &[a, b], &mut outputs).unwrap();
 
-        let result_bytes: [u8; 8] = outputs[0].as_bytes().try_into().unwrap();
-        assert_eq!(f64::from_ne_bytes(result_bytes), 7.0);
+        assert_eq!(output_f64(&outputs[0], "sum2 output"), 7.0);
     }
 
     #[test]
@@ -358,8 +374,7 @@ mod tests {
 
         call.invoke(&reg, &[input], &mut outputs).unwrap();
 
-        let result_bytes: [u8; 4] = outputs[0].as_bytes().try_into().unwrap();
-        assert_eq!(i32::from_ne_bytes(result_bytes), 42);
+        assert_eq!(output_i32(&outputs[0], "i32 output"), 42);
     }
 
     #[test]
