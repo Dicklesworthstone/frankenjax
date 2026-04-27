@@ -1690,9 +1690,19 @@ fn optimize_supported_segment(
             };
         }
     };
-    let runner = Runner::<FjLang, ()>::default()
-        .with_expr(&expr)
-        .run(&algebraic_rules());
+    let (egraph, rec_id_to_egraph_id) = build_egraph_with_id_map(&expr);
+    let var_map: BTreeMap<VarId, Id> = var_map
+        .into_iter()
+        .map(|(var, rec_id)| {
+            let idx: usize = rec_id.into();
+            (var, rec_id_to_egraph_id[idx])
+        })
+        .collect();
+    let mut runner = Runner::<FjLang, ()>::default().with_egraph(egraph);
+    if let Some(root) = rec_id_to_egraph_id.last().copied() {
+        runner.roots.push(root);
+    }
+    let runner = runner.run(&algebraic_rules());
     let extractor = egg::Extractor::new(&runner.egraph, OpCount);
 
     let mut merged_equations = Vec::new();
@@ -1720,11 +1730,95 @@ fn optimize_supported_segment(
         merged_equations.extend(result.equations);
         outvar_remap.insert(*desired_outvar, result.actual_outvar);
     }
+    let (merged_equations, aliases) =
+        dedupe_identical_extracted_equations(merged_equations, preserved_outvars);
+    for outvar in outvar_remap.values_mut() {
+        *outvar = resolve_var_alias(*outvar, &aliases);
+    }
 
     SegmentOptimization {
         equations: merged_equations,
         outvar_remap,
     }
+}
+
+fn build_egraph_with_id_map(expr: &RecExpr<FjLang>) -> (egg::EGraph<FjLang, ()>, Vec<Id>) {
+    let mut egraph = egg::EGraph::<FjLang, ()>::default();
+    let mut rec_id_to_egraph_id = Vec::with_capacity(expr.as_ref().len());
+
+    for node in expr.as_ref() {
+        let egraph_node = node
+            .clone()
+            .map_children(|child| rec_id_to_egraph_id[usize::from(child)]);
+        let id = egraph.add(egraph_node);
+        rec_id_to_egraph_id.push(id);
+    }
+
+    (egraph, rec_id_to_egraph_id)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExtractedEquationKey {
+    primitive: Primitive,
+    inputs: Vec<Atom>,
+    params: BTreeMap<String, String>,
+}
+
+fn dedupe_identical_extracted_equations(
+    equations: Vec<Equation>,
+    protected_outputs: &BTreeSet<VarId>,
+) -> (Vec<Equation>, BTreeMap<VarId, VarId>) {
+    let mut rewritten = Vec::with_capacity(equations.len());
+    let mut aliases = BTreeMap::new();
+    let mut seen: Vec<(ExtractedEquationKey, VarId)> = Vec::new();
+
+    for equation in equations {
+        let mut equation = equation;
+        for input in &mut equation.inputs {
+            if let Atom::Var(var) = input {
+                *var = resolve_var_alias(*var, &aliases);
+            }
+        }
+
+        if equation.outputs.len() != 1
+            || !equation.effects.is_empty()
+            || !equation.sub_jaxprs.is_empty()
+        {
+            rewritten.push(equation);
+            continue;
+        }
+
+        let key = ExtractedEquationKey {
+            primitive: equation.primitive,
+            inputs: equation.inputs.iter().cloned().collect(),
+            params: equation.params.clone(),
+        };
+        let output = equation.outputs[0];
+
+        if let Some((_, canonical)) = seen.iter().find(|(seen_key, _)| seen_key == &key) {
+            let canonical = resolve_var_alias(*canonical, &aliases);
+            if protected_outputs.contains(&output) {
+                if output != canonical {
+                    rewritten.push(Equation {
+                        primitive: Primitive::Copy,
+                        inputs: smallvec![Atom::Var(canonical)],
+                        outputs: smallvec![output],
+                        params: BTreeMap::new(),
+                        effects: vec![],
+                        sub_jaxprs: vec![],
+                    });
+                }
+            } else {
+                aliases.insert(output, canonical);
+            }
+            continue;
+        }
+
+        seen.push((key, output));
+        rewritten.push(equation);
+    }
+
+    (rewritten, aliases)
 }
 
 struct PieceRewriteResult {
@@ -1991,6 +2085,49 @@ mod tests {
         let opt_out =
             eval_jaxpr(&optimized, &[Value::scalar_i64(3), Value::scalar_i64(4)]).unwrap();
         assert_eq!(orig_out, opt_out);
+    }
+
+    #[test]
+    fn multi_output_extraction_deduplicates_shared_expression()
+    -> Result<(), fj_interpreters::InterpreterError> {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2), VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert_eq!(
+            optimized
+                .equations
+                .iter()
+                .filter(|equation| equation.primitive == Primitive::Sin)
+                .count(),
+            1,
+            "shared sin(x) should be extracted once for both outputs"
+        );
+
+        let args = [Value::scalar_f64(0.5)];
+        assert_eq!(eval_jaxpr(&jaxpr, &args)?, eval_jaxpr(&optimized, &args)?);
+        Ok(())
     }
 
     #[test]
