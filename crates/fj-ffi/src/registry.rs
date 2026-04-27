@@ -5,7 +5,7 @@
 //! The registry is immutable after first use (no deregistration in V1).
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use crate::error::FfiError;
 
@@ -57,6 +57,20 @@ impl FfiRegistry {
         }
     }
 
+    fn targets_read(&self) -> RwLockReadGuard<'_, HashMap<String, FfiTarget>> {
+        match self.targets.read() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
+    fn targets_write(&self) -> RwLockWriteGuard<'_, HashMap<String, FfiTarget>> {
+        match self.targets.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     /// Register an FFI target by name.
     ///
     /// # Errors
@@ -71,7 +85,7 @@ impl FfiRegistry {
             });
         }
 
-        let mut targets = self.targets.write().unwrap();
+        let mut targets = self.targets_write();
         if targets.contains_key(name) {
             return Err(FfiError::DuplicateTarget {
                 name: name.to_string(),
@@ -90,7 +104,7 @@ impl FfiRegistry {
 
     /// Look up a registered target by name.
     pub fn get(&self, name: &str) -> Result<FfiTarget, FfiError> {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets_read();
         targets
             .get(name)
             .cloned()
@@ -102,13 +116,13 @@ impl FfiRegistry {
 
     /// List all registered target names.
     pub fn registered_names(&self) -> Vec<String> {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets_read();
         targets.keys().cloned().collect()
     }
 
     /// Number of registered targets.
     pub fn len(&self) -> usize {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets_read();
         targets.len()
     }
 
@@ -126,7 +140,7 @@ impl Default for FfiRegistry {
 
 impl std::fmt::Debug for FfiRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let targets = self.targets.read().unwrap();
+        let targets = self.targets_read();
         f.debug_struct("FfiRegistry")
             .field("target_count", &targets.len())
             .field("targets", &targets.keys().collect::<Vec<_>>())
@@ -138,6 +152,7 @@ impl std::fmt::Debug for FfiRegistry {
 #[allow(unsafe_code)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     /// Trivial FFI function for testing: always returns 0 (success).
     unsafe extern "C" fn mock_success(
@@ -167,52 +182,88 @@ mod tests {
     }
 
     #[test]
-    fn registry_register_and_get() {
+    fn registry_register_and_get() -> Result<(), Box<dyn std::error::Error>> {
         let reg = FfiRegistry::new();
-        reg.register("add_vectors", mock_success).unwrap();
-        let target = reg.get("add_vectors").unwrap();
+        reg.register("add_vectors", mock_success)?;
+        let target = reg.get("add_vectors")?;
         assert_eq!(target.name, "add_vectors");
         assert_eq!(reg.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn registry_duplicate_rejected() {
+    fn registry_duplicate_rejected() -> Result<(), Box<dyn std::error::Error>> {
         let reg = FfiRegistry::new();
-        reg.register("my_fn", mock_success).unwrap();
-        let err = reg.register("my_fn", mock_error).unwrap_err();
+        reg.register("my_fn", mock_success)?;
+        let err = match reg.register("my_fn", mock_error) {
+            Ok(()) => return Err("duplicate registration unexpectedly succeeded".into()),
+            Err(err) => err,
+        };
         assert!(matches!(err, FfiError::DuplicateTarget { name } if name == "my_fn"));
+        Ok(())
     }
 
     #[test]
-    fn registry_target_not_found() {
+    fn registry_target_not_found() -> Result<(), Box<dyn std::error::Error>> {
         let reg = FfiRegistry::new();
-        reg.register("exists", mock_success).unwrap();
-        let err = reg.get("nonexistent").unwrap_err();
+        reg.register("exists", mock_success)?;
+        let err = match reg.get("nonexistent") {
+            Ok(target) => return Err(format!("unexpectedly found target: {target:?}").into()),
+            Err(err) => err,
+        };
         match err {
             FfiError::TargetNotFound { name, available } => {
                 assert_eq!(name, "nonexistent");
                 assert!(available.contains(&"exists".to_string()));
+                Ok(())
             }
-            other => panic!("expected TargetNotFound, got: {other}"),
+            other => Err(format!("expected TargetNotFound, got: {other}").into()),
         }
     }
 
     #[test]
-    fn registry_registered_names() {
+    fn registry_recovers_from_poisoned_lock() -> Result<(), Box<dyn std::error::Error>> {
+        let reg = Arc::new(FfiRegistry::new());
+        let reg_for_thread = Arc::clone(&reg);
+
+        let join = std::thread::spawn(move || {
+            let _guard = match reg_for_thread.targets.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::panic::panic_any("poison registry lock");
+        })
+        .join();
+
+        assert!(join.is_err());
+        reg.register("after_poison", mock_success)?;
+
+        let target = reg.get("after_poison")?;
+        assert_eq!(target.name, "after_poison");
+        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.registered_names(), vec!["after_poison".to_owned()]);
+        assert!(format!("{reg:?}").contains("after_poison"));
+        Ok(())
+    }
+
+    #[test]
+    fn registry_registered_names() -> Result<(), Box<dyn std::error::Error>> {
         let reg = FfiRegistry::new();
-        reg.register("alpha", mock_success).unwrap();
-        reg.register("beta", mock_error).unwrap();
+        reg.register("alpha", mock_success)?;
+        reg.register("beta", mock_error)?;
         let mut names = reg.registered_names();
         names.sort();
         assert_eq!(names, vec!["alpha", "beta"]);
+        Ok(())
     }
 
     #[test]
-    fn registry_multiple_registrations() {
+    fn registry_multiple_registrations() -> Result<(), Box<dyn std::error::Error>> {
         let reg = FfiRegistry::new();
         for i in 0..10 {
-            reg.register(&format!("fn_{i}"), mock_success).unwrap();
+            reg.register(&format!("fn_{i}"), mock_success)?;
         }
         assert_eq!(reg.len(), 10);
+        Ok(())
     }
 }
