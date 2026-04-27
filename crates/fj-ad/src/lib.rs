@@ -2210,9 +2210,10 @@ pub fn vjp(
             // Switch VJP: gradient flows through the selected branch only.
             // Index has no gradient; gradient for selected branch equals g,
             // all other branches get zero gradient.
-            let mut grads = vec![zeros_like(&inputs[0])]; // index: no grad
+            let idx = switch_branch_index(inputs, params)?;
+            let mut grads = Vec::with_capacity(inputs.len());
+            grads.push(zeros_like(&inputs[0])); // index: no grad
             for (i, inp) in inputs[1..].iter().enumerate() {
-                let idx = inputs[0].as_i64_scalar().unwrap_or(0) as usize;
                 if i == idx {
                     grads.push(g.clone());
                 } else {
@@ -3256,6 +3257,80 @@ fn cond_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
         // Gradient flows to false_operand, zero to true_operand
         Ok(vec![zero_pred, zeros_like(&inputs[1]), g.clone()])
     }
+}
+
+fn switch_scalar_literal(value: &Value) -> Result<Literal, AdError> {
+    match value {
+        Value::Scalar(lit) => Ok(*lit),
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() {
+                return Err(AdError::EvalFailed(format!(
+                    "switch index must be scalar, got shape {:?}",
+                    tensor.shape.dims
+                )));
+            }
+            if tensor.elements.len() != 1 {
+                return Err(AdError::EvalFailed(format!(
+                    "switch scalar index has {} elements",
+                    tensor.elements.len()
+                )));
+            }
+            Ok(tensor.elements[0])
+        }
+    }
+}
+
+fn switch_branch_index(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<usize, AdError> {
+    if inputs.len() < 2 {
+        return Err(AdError::InputArity {
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+
+    let provided_branches = inputs.len() - 1;
+    let num_branches = if let Some(raw) = params.get("num_branches") {
+        raw.parse::<usize>()
+            .map_err(|_| AdError::EvalFailed(format!("invalid switch num_branches value: {raw}")))?
+    } else {
+        provided_branches
+    };
+    if num_branches != provided_branches {
+        return Err(AdError::EvalFailed(format!(
+            "switch expected {num_branches} branch values but got {provided_branches}"
+        )));
+    }
+
+    let index = match switch_scalar_literal(&inputs[0])? {
+        Literal::Bool(value) => u64::from(value),
+        Literal::I64(value) => {
+            if value < 0 {
+                return Err(AdError::EvalFailed(
+                    "switch index must be non-negative".to_owned(),
+                ));
+            }
+            value as u64
+        }
+        Literal::U32(value) => u64::from(value),
+        Literal::U64(value) => value,
+        _ => {
+            return Err(AdError::EvalFailed(
+                "switch index must be integer or bool".to_owned(),
+            ));
+        }
+    };
+
+    if index >= num_branches as u64 {
+        return Err(AdError::EvalFailed(format!(
+            "switch index {index} out of bounds for {num_branches} branches"
+        )));
+    }
+
+    usize::try_from(index)
+        .map_err(|_| AdError::EvalFailed(format!("switch index {index} does not fit in usize")))
 }
 
 /// Scan VJP: reverse-propagate gradient through the scan loop.
@@ -5421,19 +5496,14 @@ fn jvp_rule(
         Primitive::While => while_jvp(primals, tangents, params),
 
         Primitive::Switch => {
-            if tangents.len() > 1 {
-                let idx = primals[0].as_i64_scalar().unwrap_or(0) as usize;
-                let branch_idx = idx + 1;
-                if branch_idx < tangents.len() {
-                    Ok(tangents[branch_idx].clone())
-                } else {
-                    Ok(tangents[1].clone())
-                }
-            } else if !tangents.is_empty() {
-                Ok(tangents[0].clone())
-            } else {
-                Ok(Value::scalar_f64(0.0))
+            let branch_idx = switch_branch_index(primals, params)? + 1;
+            if branch_idx >= tangents.len() {
+                return Err(AdError::InputArity {
+                    expected: primals.len(),
+                    actual: tangents.len(),
+                });
             }
+            Ok(tangents[branch_idx].clone())
         }
 
         // ── Bitwise: not differentiable ──
@@ -9754,6 +9824,12 @@ mod tests {
         p
     }
 
+    fn switch_params(num_branches: usize) -> BTreeMap<String, String> {
+        let mut p = BTreeMap::new();
+        p.insert("num_branches".to_owned(), num_branches.to_string());
+        p
+    }
+
     fn finite_diff_derivative<F>(f: F, x: f64, eps: f64) -> f64
     where
         F: Fn(f64) -> f64,
@@ -9971,6 +10047,70 @@ mod tests {
         )
         .expect("while JVP should handle empty primal loop path");
         assert_eq!(tangent.as_f64_scalar().unwrap(), 0.75);
+    }
+
+    #[test]
+    fn switch_vjp_bool_index_selects_true_branch() {
+        let grads = vjp_single(
+            Primitive::Switch,
+            &[
+                Value::scalar_bool(true),
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(20.0),
+            ],
+            &Value::scalar_f64(3.0),
+            &switch_params(2),
+        )
+        .expect("switch VJP should accept bool branch indices");
+
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), 0.0);
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 3.0);
+    }
+
+    #[test]
+    fn switch_jvp_scalar_tensor_index_selects_branch_tangent() {
+        let index = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(1)])
+                .expect("scalar tensor index"),
+        );
+        let tangent = jvp_rule(
+            Primitive::Switch,
+            &[index, Value::scalar_f64(10.0), Value::scalar_f64(20.0)],
+            &[
+                Value::scalar_f64(0.0),
+                Value::scalar_f64(0.5),
+                Value::scalar_f64(1.5),
+            ],
+            &switch_params(2),
+        )
+        .expect("switch JVP should accept scalar tensor branch indices");
+
+        assert_eq!(tangent.as_f64_scalar().unwrap(), 1.5);
+    }
+
+    #[test]
+    fn switch_jvp_rejects_negative_index() {
+        let result = jvp_rule(
+            Primitive::Switch,
+            &[
+                Value::scalar_i64(-1),
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(20.0),
+            ],
+            &[
+                Value::scalar_f64(0.0),
+                Value::scalar_f64(0.5),
+                Value::scalar_f64(1.5),
+            ],
+            &switch_params(2),
+        );
+
+        assert!(matches!(
+            result,
+            Err(AdError::EvalFailed(ref detail))
+                if detail.contains("switch index must be non-negative")
+        ));
     }
 
     // ── Task-specified control-flow AD coverage ───────────────────────
