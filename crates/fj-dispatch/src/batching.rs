@@ -4,7 +4,7 @@
 //! dimension metadata through primitives via per-primitive batching rules,
 //! achieving O(1) vectorized execution matching JAX's `BatchTrace` semantics.
 
-use fj_core::{Atom, Equation, Jaxpr, Primitive, Shape, TensorValue, Value, VarId};
+use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_interpreters::{eval_equation_outputs, eval_jaxpr_with_consts};
 use fj_lax::{eval_primitive, eval_primitive_multi};
 use rustc_hash::FxHashMap;
@@ -436,11 +436,10 @@ pub fn apply_batch_rule(
         Primitive::Squeeze => batch_squeeze(inputs, params),
         Primitive::Split => batch_split(inputs, params),
         Primitive::ExpandDims => batch_expand_dims(inputs, params),
-        Primitive::Cholesky
-        | Primitive::Qr
-        | Primitive::Svd
-        | Primitive::TriangularSolve
-        | Primitive::Eigh => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Cholesky => batch_cholesky(inputs, params),
+        Primitive::Qr | Primitive::Svd | Primitive::TriangularSolve | Primitive::Eigh => {
+            batch_passthrough_leading(primitive, inputs, params)
+        }
         Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
             batch_fft_like(primitive, inputs, params)
         }
@@ -1518,6 +1517,96 @@ fn batch_nullary(
         eval_primitive(primitive, &[], params).map_err(|e| BatchError::EvalError(e.to_string()))?;
     let _ = inputs;
     Ok(BatchTracer::unbatched(result))
+}
+
+// ── Linear Algebra Batching ────────────────────────────────────────
+
+fn batch_cholesky(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(
+                Primitive::Cholesky,
+                std::slice::from_ref(&input.value),
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value
+        .as_tensor()
+        .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for cholesky".to_owned()))?;
+
+    if tensor.rank() != 3 {
+        return batch_passthrough_leading(Primitive::Cholesky, inputs, params);
+    }
+
+    let batch_size = tensor.shape.dims[0] as usize;
+    let rows = tensor.shape.dims[1] as usize;
+    let cols = tensor.shape.dims[2] as usize;
+    if rows != cols {
+        return Err(BatchError::EvalError(format!(
+            "unsupported cholesky behavior: Cholesky requires a square matrix, got {rows}x{cols}"
+        )));
+    }
+
+    let matrix_len = rows * cols;
+    let mut elements = Vec::with_capacity(tensor.elements.len());
+    for batch in 0..batch_size {
+        let base = batch * matrix_len;
+        let mut l = vec![0.0_f64; matrix_len];
+
+        for i in 0..rows {
+            for j in 0..=i {
+                let mut sum = 0.0_f64;
+                for k in 0..j {
+                    sum += l[i * cols + k] * l[j * cols + k];
+                }
+
+                if i == j {
+                    let diag = tensor.elements[base + i * cols + i]
+                        .as_f64()
+                        .ok_or_else(|| {
+                            BatchError::EvalError(
+                                "type mismatch for cholesky: expected numeric elements".to_owned(),
+                            )
+                        })?
+                        - sum;
+                    if diag <= 0.0 {
+                        return Err(BatchError::EvalError(format!(
+                            "unsupported cholesky behavior: matrix is not positive definite \
+                             (diagonal element {i} = {diag})"
+                        )));
+                    }
+                    l[i * cols + j] = diag.sqrt();
+                } else {
+                    let a_ij = tensor.elements[base + i * cols + j]
+                        .as_f64()
+                        .ok_or_else(|| {
+                            BatchError::EvalError(
+                                "type mismatch for cholesky: expected numeric elements".to_owned(),
+                            )
+                        })?;
+                    l[i * cols + j] = (a_ij - sum) / l[j * cols + j];
+                }
+            }
+        }
+
+        elements.extend(l.into_iter().map(Literal::from_f64));
+    }
+
+    TensorValue::new(tensor.dtype, tensor.shape.clone(), elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))
 }
 
 // ── FFT-Family Batching ────────────────────────────────────────────
@@ -3640,6 +3729,62 @@ mod tests {
 
         let err = apply_batch_rule(Primitive::Split, &[input], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("cannot split a scalar"));
+    }
+
+    #[test]
+    fn test_batch_trace_cholesky_leading_batch_dim() {
+        let input = BatchTracer::batched(
+            make_f64_tensor(&[2, 2, 2], &[4.0, 2.0, 2.0, 3.0, 9.0, 3.0, 3.0, 2.0]),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 2]);
+        assert_f64_close(
+            &extract_f64_vec(&result.value),
+            &[2.0, 0.0, 1.0, 2.0_f64.sqrt(), 3.0, 0.0, 1.0, 1.0],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_cholesky_nonleading_batch_dim() {
+        let input = BatchTracer::batched(
+            make_f64_tensor(&[2, 2, 2], &[4.0, 2.0, 9.0, 3.0, 2.0, 3.0, 3.0, 2.0]),
+            1,
+        );
+
+        let result = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 2]);
+        assert_f64_close(
+            &extract_f64_vec(&result.value),
+            &[2.0, 0.0, 1.0, 2.0_f64.sqrt(), 3.0, 0.0, 1.0, 1.0],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_cholesky_non_square_batched_matrix_rejects() {
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 3],
+                &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0],
+            ),
+            0,
+        );
+
+        let err = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("requires a square matrix"));
+    }
+
+    #[test]
+    fn test_batch_trace_cholesky_scalar_elements_preserve_matrix_rank_error() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]), 0);
+
+        let err = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("expected rank-2 tensor"));
     }
 
     #[test]
