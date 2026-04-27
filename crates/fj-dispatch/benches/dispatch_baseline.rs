@@ -176,6 +176,47 @@ fn bench_dispatch_latency(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_gather(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_gather");
+
+    let operand = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape::vector(4096),
+            (0_i64..4096).map(Literal::I64).collect(),
+        )
+        .expect("operand should build"),
+    );
+    let indices = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 16],
+            },
+            (0..(128 * 16))
+                .map(|idx| Literal::I64((idx % 4096) as i64))
+                .collect(),
+        )
+        .expect("indices should build"),
+    );
+
+    group.bench_function("batched_indices", |b| {
+        b.iter(|| {
+            let mut request = dispatch_request(
+                ProgramSpec::LaxGather1d,
+                &[Transform::Vmap],
+                vec![operand.clone(), indices.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
+            dispatch(request).expect("vmap gather should succeed");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -446,6 +487,7 @@ fn bench_jaxpr_validation(c: &mut Criterion) {
 criterion_group!(
     dispatch_benches,
     bench_dispatch_latency,
+    bench_vmap_gather,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,

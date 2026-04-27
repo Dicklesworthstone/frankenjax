@@ -1344,33 +1344,25 @@ fn batch_gather(
     let indices = &inputs[1];
 
     // Fast-path common vmap case: unbatched operand with batched indices.
-    // Avoid broadcasting operand across the batch; instead evaluate per index slice.
+    // eval_gather already maps over the full indices tensor, producing
+    // indices.shape ++ slice_sizes[1..]. That is exactly the stacked result
+    // of gathering each mapped index slice against the same operand.
     if operand.batch_dim.is_none()
         && let Some(indices_bd) = indices.batch_dim
     {
         let indices_value = move_batch_dim_to_front(&indices.value, indices_bd)?;
-        let batch_size = get_batch_size(&indices_value, 0)?;
-        let indices_tensor = indices_value
-            .as_tensor()
-            .ok_or_else(|| BatchError::BatchDimMoveError("gather indices must be tensor".into()))?;
-
-        let mut results = Vec::with_capacity(batch_size);
-        for i in 0..batch_size {
-            let indices_slice = indices_tensor
-                .slice_axis0(i)
-                .map_err(|e| BatchError::TensorError(e.to_string()))?;
-            let out = eval_primitive(
-                Primitive::Gather,
-                &[operand.value.clone(), indices_slice],
-                params,
-            )
-            .map_err(|e| BatchError::EvalError(e.to_string()))?;
-            results.push(out);
+        if indices_value.as_tensor().is_none() {
+            return Err(BatchError::BatchDimMoveError(
+                "gather indices must be tensor".into(),
+            ));
         }
-
-        let stacked = TensorValue::stack_axis0(&results)
-            .map_err(|e| BatchError::TensorError(e.to_string()))?;
-        return Ok(BatchTracer::batched(Value::Tensor(stacked), 0));
+        let result = eval_primitive(
+            Primitive::Gather,
+            &[operand.value.clone(), indices_value],
+            params,
+        )
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+        return Ok(BatchTracer::batched(result, 0));
     }
 
     batch_passthrough_leading(Primitive::Gather, inputs, params)
@@ -5317,6 +5309,32 @@ mod tests {
                 3.0, 4.0, 200.0, 201.0, 7.0, 8.0, 202.0, 203.0, 11.0,
             ]
         );
+    }
+
+    #[test]
+    fn test_batch_trace_gather_batched_indices_direct() {
+        let operand = BatchTracer::unbatched(make_i64_vector(&[10, 20, 30, 40]));
+        let indices = BatchTracer::batched(make_i64_matrix(2, 3, &[3, 1, 0, 2, 2, 1]), 0);
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Gather, &[operand, indices], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
+        assert_eq!(extract_i64_vec(&result.value), vec![40, 20, 10, 30, 30, 20]);
+    }
+
+    #[test]
+    fn test_batch_trace_gather_batched_indices_moves_nonleading_axis() {
+        let operand = BatchTracer::unbatched(make_i64_vector(&[10, 20, 30]));
+        let indices = BatchTracer::batched(make_i64_matrix(3, 2, &[0, 1, 2, 0, 1, 2]), 1);
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Gather, &[operand, indices], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
+        assert_eq!(extract_i64_vec(&result.value), vec![10, 30, 20, 20, 10, 30]);
     }
 
     #[test]
