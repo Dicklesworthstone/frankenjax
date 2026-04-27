@@ -3627,12 +3627,8 @@ fn while_cond_op_for_ad(cond_op_name: &str) -> Option<Primitive> {
     }
 }
 
-fn while_cond_value_to_bool(cond_result: &Value) -> bool {
-    match cond_result {
-        Value::Scalar(Literal::Bool(b)) => *b,
-        Value::Scalar(Literal::I64(v)) => *v != 0,
-        _ => false,
-    }
+fn while_cond_value_to_bool(cond_result: &Value) -> Result<bool, AdError> {
+    scalar_predicate_for_ad(Primitive::While, "condition result", cond_result)
 }
 
 /// While loop VJP: reverse-propagate gradient through the iteration loop.
@@ -3681,7 +3677,7 @@ fn while_vjp(
             &BTreeMap::new(),
         )
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-        if !while_cond_value_to_bool(&cond_result) {
+        if !while_cond_value_to_bool(&cond_result)? {
             break;
         }
         carry = eval_primitive(body_op, &[carry, step_value.clone()], &BTreeMap::new())
@@ -3759,7 +3755,7 @@ fn while_jvp(
             &BTreeMap::new(),
         )
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-        if !while_cond_value_to_bool(&cond_result) {
+        if !while_cond_value_to_bool(&cond_result)? {
             return Ok(carry_tangent);
         }
 
@@ -10080,6 +10076,46 @@ mod tests {
         )
         .expect("while JVP should handle empty primal loop path");
         assert_eq!(tangent.as_f64_scalar().unwrap(), 0.75);
+    }
+
+    #[test]
+    fn while_jvp_tensor_scalar_condition_runs_loop() {
+        let init = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(0)])
+                .expect("init scalar tensor"),
+        );
+        let step = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(1)])
+                .expect("step scalar tensor"),
+        );
+        let threshold = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(3)])
+                .expect("threshold scalar tensor"),
+        );
+        let init_tangent = Value::Tensor(
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(0.5)])
+                .expect("init tangent"),
+        );
+        let step_tangent = Value::Tensor(
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(0.25)])
+                .expect("step tangent"),
+        );
+        let threshold_tangent = Value::Tensor(
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(0.0)])
+                .expect("threshold tangent"),
+        );
+
+        let tangent = jvp_rule(
+            Primitive::While,
+            &[init, step, threshold],
+            &[init_tangent, step_tangent, threshold_tangent],
+            &while_params("add", "lt"),
+        )
+        .expect("while JVP should treat scalar tensor comparison output as predicate");
+
+        let tensor = tangent.as_tensor().expect("tensor tangent output");
+        assert_eq!(tensor.shape, Shape::scalar());
+        assert_eq!(tensor.elements[0].as_f64().unwrap(), 1.25);
     }
 
     #[test]
