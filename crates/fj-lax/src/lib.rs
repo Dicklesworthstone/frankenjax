@@ -557,7 +557,7 @@ fn eval_scan(
 /// - `init_carry`: initial carry values (one or more)
 /// - `xs`: tensor to scan over (leading axis is iterated)
 /// - `body_fn`: `(carry_values, x_slice) -> (new_carry_values, output_values)`
-/// - `reverse`: if true, iterate xs in reverse order
+/// - `reverse`: if true, iterate xs in reverse order while returning `ys` in input order
 ///
 /// Returns `(final_carry_values, stacked_ys)` where `stacked_ys` are stacked
 /// along a new leading axis.
@@ -600,6 +600,12 @@ where
             if out_idx < per_output_values.len() {
                 per_output_values[out_idx].push(y);
             }
+        }
+    }
+
+    if reverse {
+        for values in &mut per_output_values {
+            values.reverse();
         }
     }
 
@@ -5290,7 +5296,7 @@ mod tests {
     #[test]
     fn test_scan_reverse() {
         // scan(add, init=0, xs=[1,2,3], reverse=true) → iterate 3,2,1
-        // ys=[3, 5, 6] (cumsum from reverse)
+        // JAX reverse scan returns ys in the original leading-axis order.
         let init = vec![Value::scalar_f64(0.0)];
         let xs = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
         let (carry, ys) = super::eval_scan_functional(
@@ -5306,8 +5312,8 @@ mod tests {
         .unwrap();
         assert_eq!(carry[0].as_f64_scalar().unwrap(), 6.0);
         let ys_vals = ys[0].as_tensor().unwrap().to_f64_vec().unwrap();
-        // Reverse: 0+3=3, 3+2=5, 5+1=6
-        assert_eq!(ys_vals, vec![3.0, 5.0, 6.0]);
+        // Execution-order partial sums are [3, 5, 6]; output order is reversed back.
+        assert_eq!(ys_vals, vec![6.0, 5.0, 3.0]);
     }
 
     // ── While loop tests ────────────────────────────────────────────
