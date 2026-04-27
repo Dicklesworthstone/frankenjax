@@ -235,6 +235,29 @@ impl std::fmt::Display for TraceError {
 
 impl std::error::Error for TraceError {}
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceOperatorFailure {
+    pub primitive: Primitive,
+    pub error: TraceError,
+}
+
+impl std::fmt::Display for TraceOperatorFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} operator tracing failed: {}",
+            self.primitive.as_str(),
+            self.error
+        )
+    }
+}
+
+impl std::error::Error for TraceOperatorFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
 pub trait TraceContext {
     fn process_primitive(
         &mut self,
@@ -3330,79 +3353,86 @@ impl TracerRef {
         let refs = output_ids
             .into_iter()
             .map(|oid| {
-                let aval = ctx.tracer_aval(oid).unwrap().clone();
-                TracerRef {
+                let aval = ctx.tracer_aval(oid)?.clone();
+                Ok(TracerRef {
                     id: oid,
                     aval,
                     ctx: Rc::clone(&self.ctx),
-                }
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>, TraceError>>()?;
         Ok(refs)
     }
 }
 
 // ── Operator overloading for TracerRef ────────────────────────────
 
+/// Operator traits cannot return `Result`, so they preserve expression syntax
+/// while surfacing trace invariant failures as a structured panic payload.
+/// Call `unary_op` or `binary_op` directly when the caller needs fallible flow.
+fn operator_trace_or_panic(
+    primitive: Primitive,
+    result: Result<TracerRef, TraceError>,
+) -> TracerRef {
+    match result {
+        Ok(tracer) => tracer,
+        Err(error) => std::panic::panic_any(TraceOperatorFailure { primitive, error }),
+    }
+}
+
 impl std::ops::Add for &TracerRef {
     type Output = TracerRef;
     fn add(self, rhs: Self) -> TracerRef {
-        self.binary_op(Primitive::Add, rhs)
-            .expect("add tracing failed")
+        operator_trace_or_panic(Primitive::Add, self.binary_op(Primitive::Add, rhs))
     }
 }
 
 impl std::ops::Add for TracerRef {
     type Output = TracerRef;
     fn add(self, rhs: Self) -> TracerRef {
-        self.binary_op(Primitive::Add, &rhs)
-            .expect("add tracing failed")
+        operator_trace_or_panic(Primitive::Add, self.binary_op(Primitive::Add, &rhs))
     }
 }
 
 impl std::ops::Sub for &TracerRef {
     type Output = TracerRef;
     fn sub(self, rhs: Self) -> TracerRef {
-        self.binary_op(Primitive::Sub, rhs)
-            .expect("sub tracing failed")
+        operator_trace_or_panic(Primitive::Sub, self.binary_op(Primitive::Sub, rhs))
     }
 }
 
 impl std::ops::Sub for TracerRef {
     type Output = TracerRef;
     fn sub(self, rhs: Self) -> TracerRef {
-        self.binary_op(Primitive::Sub, &rhs)
-            .expect("sub tracing failed")
+        operator_trace_or_panic(Primitive::Sub, self.binary_op(Primitive::Sub, &rhs))
     }
 }
 
 impl std::ops::Mul for &TracerRef {
     type Output = TracerRef;
     fn mul(self, rhs: Self) -> TracerRef {
-        self.binary_op(Primitive::Mul, rhs)
-            .expect("mul tracing failed")
+        operator_trace_or_panic(Primitive::Mul, self.binary_op(Primitive::Mul, rhs))
     }
 }
 
 impl std::ops::Mul for TracerRef {
     type Output = TracerRef;
     fn mul(self, rhs: Self) -> TracerRef {
-        self.binary_op(Primitive::Mul, &rhs)
-            .expect("mul tracing failed")
+        operator_trace_or_panic(Primitive::Mul, self.binary_op(Primitive::Mul, &rhs))
     }
 }
 
 impl std::ops::Neg for &TracerRef {
     type Output = TracerRef;
     fn neg(self) -> TracerRef {
-        self.unary_op(Primitive::Neg).expect("neg tracing failed")
+        operator_trace_or_panic(Primitive::Neg, self.unary_op(Primitive::Neg))
     }
 }
 
 impl std::ops::Neg for TracerRef {
     type Output = TracerRef;
     fn neg(self) -> TracerRef {
-        self.unary_op(Primitive::Neg).expect("neg tracing failed")
+        operator_trace_or_panic(Primitive::Neg, self.unary_op(Primitive::Neg))
     }
 }
 
@@ -3546,8 +3576,8 @@ pub fn simulate_nested_trace_contexts(
 #[cfg(test)]
 mod tests {
     use super::{
-        JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceError, TraceToJaxpr,
-        TracerId,
+        JaxprTrace, ShapedArray, SimpleTraceContext, TraceContext, TraceError,
+        TraceOperatorFailure, TraceToJaxpr, TracerId, TracerRef,
     };
     use fj_core::{
         Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId,
@@ -6453,6 +6483,53 @@ mod tests {
 
         let err = a.binary_op(Primitive::Add, &b).unwrap_err();
         assert!(matches!(err, TraceError::ForeignTracerContext { .. }));
+    }
+
+    #[test]
+    fn tracer_operator_reports_structured_foreign_context_failure() -> Result<(), String> {
+        let aval = ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        };
+
+        let ctx_a = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_a = ctx_a
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .map_err(|err| err.to_string())?;
+        let a = TracerRef {
+            id: id_a,
+            aval: aval.clone(),
+            ctx: Rc::clone(&ctx_a),
+        };
+
+        let ctx_b = Rc::new(RefCell::new(SimpleTraceContext::new()));
+        let id_b = ctx_b
+            .borrow_mut()
+            .bind_input(aval.clone())
+            .map_err(|err| err.to_string())?;
+        let b = TracerRef {
+            id: id_b,
+            aval,
+            ctx: Rc::clone(&ctx_b),
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = &a + &b;
+        }));
+        let Err(payload) = result else {
+            return Err("foreign-context operator unexpectedly succeeded".to_owned());
+        };
+        let failure = payload
+            .downcast_ref::<TraceOperatorFailure>()
+            .ok_or_else(|| "operator panic payload was not TraceOperatorFailure".to_owned())?;
+
+        assert_eq!(failure.primitive, Primitive::Add);
+        assert!(matches!(
+            failure.error,
+            TraceError::ForeignTracerContext { .. }
+        ));
+        Ok(())
     }
 
     #[test]
