@@ -193,6 +193,91 @@ fn evaluate_switch_sub_jaxprs(
     eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
 }
 
+fn evaluate_cond_sub_jaxprs(
+    equation: &Equation,
+    resolved: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
+    let predicate_value = match resolved.first() {
+        Some(value) => value,
+        None => {
+            return Err(InterpreterError::Primitive(EvalError::ArityMismatch {
+                primitive: Primitive::Cond,
+                expected: 1,
+                actual: 0,
+            }));
+        }
+    };
+    if equation.sub_jaxprs.len() != 2 {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Cond,
+            detail: format!(
+                "cond expects exactly 2 sub_jaxprs, got {}",
+                equation.sub_jaxprs.len()
+            ),
+        }));
+    }
+
+    let predicate_literal = match predicate_value {
+        Value::Scalar(literal) => *literal,
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() {
+                return Err(InterpreterError::Primitive(EvalError::ShapeMismatch {
+                    primitive: Primitive::Cond,
+                    left: tensor.shape.clone(),
+                    right: Shape::scalar(),
+                }));
+            }
+            if tensor.elements.len() != 1 {
+                return Err(InterpreterError::Primitive(EvalError::InvalidTensor(
+                    ValueError::ElementCountMismatch {
+                        shape: tensor.shape.clone(),
+                        expected_count: 1,
+                        actual_count: tensor.elements.len(),
+                    },
+                )));
+            }
+            tensor.elements[0]
+        }
+    };
+    let predicate = match predicate_literal {
+        Literal::Bool(value) => value,
+        Literal::I64(value) => value != 0,
+        Literal::U32(value) => value != 0,
+        Literal::U64(value) => value != 0,
+        Literal::BF16Bits(bits) => Literal::BF16Bits(bits)
+            .as_f64()
+            .is_some_and(|value| value != 0.0),
+        Literal::F16Bits(bits) => Literal::F16Bits(bits)
+            .as_f64()
+            .is_some_and(|value| value != 0.0),
+        Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
+        Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+            return Err(InterpreterError::Primitive(EvalError::TypeMismatch {
+                primitive: Primitive::Cond,
+                detail: "cond predicate must be boolean or numeric",
+            }));
+        }
+    };
+
+    let selected_branch = if predicate {
+        &equation.sub_jaxprs[0]
+    } else {
+        &equation.sub_jaxprs[1]
+    };
+    let provided_bindings = &resolved[1..];
+    let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
+    if provided_bindings.len() != expected_bindings {
+        return Err(InterpreterError::InputArity {
+            expected: expected_bindings,
+            actual: provided_bindings.len(),
+        });
+    }
+
+    let (const_values, branch_args) = provided_bindings.split_at(selected_branch.constvars.len());
+    eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
+}
+
 /// Evaluate a single equation against the current environment.
 ///
 /// This handles equation-level control-flow semantics that require access to
@@ -207,6 +292,10 @@ pub fn eval_equation_outputs(
         eval_primitive_multi(equation.primitive, &resolved, &equation.params)?
     } else {
         match equation.primitive {
+            Primitive::Cond => {
+                let resolved = resolve_equation_inputs(equation, env)?;
+                evaluate_cond_sub_jaxprs(equation, &resolved)?
+            }
             Primitive::Switch => {
                 let resolved = resolve_equation_inputs(equation, env)?;
                 evaluate_switch_sub_jaxprs(equation, &resolved)?
@@ -435,6 +524,140 @@ mod tests {
                 effects: vec![],
             }],
         )
+    }
+
+    fn make_cond_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Cond,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![
+                    make_switch_branch_self_binary_jaxpr(Primitive::Add),
+                    make_switch_branch_self_binary_jaxpr(Primitive::Mul),
+                ],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_cond_branch_with_const(primitive: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(2)],
+            vec![VarId(1)],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_cond_with_const_binding_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4)],
+            vec![Equation {
+                primitive: Primitive::Cond,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![
+                    make_cond_branch_with_const(Primitive::Add),
+                    make_cond_branch_with_const(Primitive::Mul),
+                ],
+                effects: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn eval_cond_with_sub_jaxprs_selects_true_and_false_branches() {
+        let jaxpr = make_cond_control_flow_jaxpr();
+        let cases = [(true, 5_i64, 10_i64), (false, 5, 25)];
+        for (predicate, operand, expected) in cases {
+            let outputs = eval_jaxpr(
+                &jaxpr,
+                &[Value::scalar_bool(predicate), Value::scalar_i64(operand)],
+            )
+            .expect("cond with sub_jaxprs should evaluate");
+            assert_eq!(outputs, vec![Value::scalar_i64(expected)]);
+        }
+    }
+
+    #[test]
+    fn eval_cond_with_sub_jaxprs_splits_branch_consts_from_args() {
+        let jaxpr = make_cond_with_const_binding_jaxpr();
+        let outputs = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::scalar_i64(1),
+                Value::scalar_i64(10),
+                Value::scalar_i64(7),
+            ],
+        )
+        .expect("truthy cond should use true branch");
+        assert_eq!(outputs, vec![Value::scalar_i64(17)]);
+
+        let outputs = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::scalar_i64(0),
+                Value::scalar_i64(10),
+                Value::scalar_i64(7),
+            ],
+        )
+        .expect("falsey cond should use false branch");
+        assert_eq!(outputs, vec![Value::scalar_i64(70)]);
+    }
+
+    #[test]
+    fn eval_cond_with_sub_jaxprs_rejects_missing_branch_operand() {
+        let mut jaxpr = make_cond_control_flow_jaxpr();
+        jaxpr.equations[0].inputs = smallvec![Atom::Var(VarId(1))];
+        let err = eval_jaxpr(&jaxpr, &[Value::scalar_bool(true), Value::scalar_i64(5)])
+            .expect_err("missing branch operand should fail");
+        assert_eq!(
+            err,
+            InterpreterError::InputArity {
+                expected: 1,
+                actual: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn eval_cond_with_complex_predicate_rejects_predicate_dtype() {
+        let jaxpr = make_cond_control_flow_jaxpr();
+        let err = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::Scalar(Literal::Complex128Bits(
+                    1.0_f64.to_bits(),
+                    0.0_f64.to_bits(),
+                )),
+                Value::scalar_i64(5),
+            ],
+        )
+        .expect_err("complex cond predicate should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("predicate must be boolean or numeric"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
