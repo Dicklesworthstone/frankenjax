@@ -478,7 +478,8 @@ fn apply_batch_rule_multi(
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<BatchTracer>, BatchError> {
     match primitive {
-        Primitive::Qr | Primitive::Svd | Primitive::Eigh => {
+        Primitive::Qr => batch_qr_multi(inputs, params),
+        Primitive::Svd | Primitive::Eigh => {
             batch_passthrough_leading_multi(primitive, inputs, params)
         }
         _ => apply_batch_rule(primitive, inputs, params).map(|result| vec![result]),
@@ -1608,6 +1609,167 @@ fn batch_cholesky(
         .map(Value::Tensor)
         .map(|result| BatchTracer::batched(result, 0))
         .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn batch_qr_multi(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let Some((input, batch_dim)) = inputs
+        .iter()
+        .find_map(|t| t.batch_dim.map(|batch_dim| (t, batch_dim)))
+    else {
+        let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
+        return eval_primitive_multi(Primitive::Qr, &values, params)
+            .map(|outputs| outputs.into_iter().map(BatchTracer::unbatched).collect())
+            .map_err(|e| BatchError::EvalError(e.to_string()));
+    };
+
+    if inputs.len() != 1 {
+        return batch_passthrough_leading_multi(Primitive::Qr, inputs, params);
+    }
+
+    let batch_size = get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value
+        .as_tensor()
+        .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for qr".to_owned()))?;
+
+    if tensor.rank() != 3 {
+        return batch_passthrough_leading_multi(Primitive::Qr, inputs, params);
+    }
+
+    if tensor.shape.dims[0] as usize != batch_size {
+        return batch_passthrough_leading_multi(Primitive::Qr, inputs, params);
+    }
+
+    let m = tensor.shape.dims[1] as usize;
+    let n = tensor.shape.dims[2] as usize;
+    let k = m.min(n);
+    let full_matrices = params
+        .get("full_matrices")
+        .is_some_and(|v| v.trim() == "true");
+    let q_cols = if full_matrices { m } else { k };
+    let r_rows = if full_matrices { m } else { k };
+    let matrix_len = m * n;
+
+    let mut q_elements = Vec::with_capacity(batch_size * m * q_cols);
+    let mut r_elements = Vec::with_capacity(batch_size * r_rows * n);
+    for batch in 0..batch_size {
+        let base = batch * matrix_len;
+        let matrix = tensor.elements[base..base + matrix_len]
+            .iter()
+            .map(|lit| {
+                lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for qr: expected numeric elements".to_owned(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (q, r) = qr_decompose_matrix(m, n, &matrix, full_matrices);
+        q_elements.extend(q.into_iter().map(Literal::from_f64));
+        r_elements.extend(r.into_iter().map(Literal::from_f64));
+    }
+
+    let q_shape = Shape {
+        dims: vec![batch_size as u32, m as u32, q_cols as u32],
+    };
+    let r_shape = Shape {
+        dims: vec![batch_size as u32, r_rows as u32, n as u32],
+    };
+    let q = TensorValue::new(tensor.dtype, q_shape, q_elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    let r = TensorValue::new(tensor.dtype, r_shape, r_elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    Ok(vec![q, r])
+}
+
+fn qr_decompose_matrix(
+    m: usize,
+    n: usize,
+    matrix: &[f64],
+    full_matrices: bool,
+) -> (Vec<f64>, Vec<f64>) {
+    let k = m.min(n);
+    let mut r = matrix.to_vec();
+    let mut v_store: Vec<Vec<f64>> = Vec::with_capacity(k);
+    let mut tau_store: Vec<f64> = Vec::with_capacity(k);
+
+    for j in 0..k {
+        let mut v: Vec<f64> = (j..m).map(|i| r[i * n + j]).collect();
+        let norm_v = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let alpha = if v[0] >= 0.0 { -norm_v } else { norm_v };
+        v[0] -= alpha;
+        let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+
+        if v_norm_sq > f64::EPSILON * 1e4 {
+            let tau = 2.0 / v_norm_sq;
+            for col in j..n {
+                let mut dot = 0.0;
+                for (vi, row) in v.iter().zip(j..m) {
+                    dot += vi * r[row * n + col];
+                }
+                for (vi, row) in v.iter().zip(j..m) {
+                    r[row * n + col] -= tau * vi * dot;
+                }
+            }
+            v_store.push(v);
+            tau_store.push(tau);
+        } else {
+            v_store.push(vec![0.0; m - j]);
+            tau_store.push(0.0);
+        }
+    }
+
+    let q_cols = if full_matrices { m } else { k };
+    let mut q = vec![0.0_f64; m * q_cols];
+    for i in 0..q_cols.min(m) {
+        q[i * q_cols + i] = 1.0;
+    }
+
+    for j in (0..k).rev() {
+        let v = &v_store[j];
+        let tau = tau_store[j];
+        if tau.abs() < f64::EPSILON {
+            continue;
+        }
+
+        for col in j..q_cols {
+            let mut dot = 0.0;
+            for (vi, row) in v.iter().zip(j..m) {
+                dot += vi * q[row * q_cols + col];
+            }
+            for (vi, row) in v.iter().zip(j..m) {
+                q[row * q_cols + col] -= tau * vi * dot;
+            }
+        }
+    }
+
+    let r_rows = if full_matrices { m } else { k };
+    let mut r_out = vec![0.0_f64; r_rows * n];
+    for i in 0..r_rows {
+        for j in i..n {
+            r_out[i * n + j] = r[i * n + j];
+        }
+    }
+
+    for i in 0..k {
+        if r_out[i * n + i] < 0.0 {
+            for j in 0..n {
+                r_out[i * n + j] = -r_out[i * n + j];
+            }
+            for row in 0..m {
+                q[row * q_cols + i] = -q[row * q_cols + i];
+            }
+        }
+    }
+
+    (q, r_out)
 }
 
 fn batch_triangular_solve(
@@ -3199,6 +3361,126 @@ mod tests {
             results[1].value.as_tensor().unwrap().shape.dims,
             vec![2, 2, 2]
         );
+    }
+
+    fn assert_qr_matches_slice_oracle(
+        outputs: &[BatchTracer],
+        matrices: &[Value],
+        params: &BTreeMap<String, String>,
+    ) {
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(outputs[1].batch_dim, Some(0));
+
+        let mut expected_by_output = vec![Vec::new(), Vec::new()];
+        for matrix in matrices {
+            let slice_outputs =
+                eval_primitive_multi(Primitive::Qr, std::slice::from_ref(matrix), params).unwrap();
+            assert_eq!(slice_outputs.len(), 2);
+            for (bucket, value) in expected_by_output.iter_mut().zip(slice_outputs) {
+                bucket.push(value);
+            }
+        }
+
+        for (actual, expected_slices) in outputs.iter().zip(expected_by_output) {
+            let expected = Value::Tensor(TensorValue::stack_axis0(&expected_slices).unwrap());
+            assert_eq!(
+                actual.value.as_tensor().unwrap().shape.dims,
+                expected.as_tensor().unwrap().shape.dims
+            );
+            assert_f64_close(&extract_f64_vec(&actual.value), &extract_f64_vec(&expected));
+        }
+    }
+
+    #[test]
+    fn test_batch_trace_qr_multi_leading_batch_dim() {
+        let matrix0 = make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let matrix1 = make_f64_matrix(3, 2, &[2.0, 0.0, 0.0, 2.0, 2.0, 2.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 3, 2],
+                &[
+                    1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // batch element 0
+                    2.0, 0.0, 0.0, 2.0, 2.0, 2.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+
+        let outputs = apply_batch_rule_multi(Primitive::Qr, &[input], &BTreeMap::new()).unwrap();
+        assert_qr_matches_slice_oracle(&outputs, &[matrix0, matrix1], &BTreeMap::new());
+        assert_eq!(
+            outputs[0].value.as_tensor().unwrap().shape.dims,
+            vec![2, 3, 2]
+        );
+        assert_eq!(
+            outputs[1].value.as_tensor().unwrap().shape.dims,
+            vec![2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_qr_multi_nonleading_batch_dim() {
+        let matrix0 = make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let matrix1 = make_f64_matrix(3, 2, &[2.0, 0.0, 0.0, 2.0, 2.0, 2.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[3, 2, 2],
+                &[
+                    1.0, 0.0, 2.0, 0.0, // row 0, both batch lanes
+                    0.0, 1.0, 0.0, 2.0, // row 1, both batch lanes
+                    1.0, 1.0, 2.0, 2.0, // row 2, both batch lanes
+                ],
+            ),
+            1,
+        );
+
+        let outputs = apply_batch_rule_multi(Primitive::Qr, &[input], &BTreeMap::new()).unwrap();
+        assert_qr_matches_slice_oracle(&outputs, &[matrix0, matrix1], &BTreeMap::new());
+        assert_eq!(
+            outputs[0].value.as_tensor().unwrap().shape.dims,
+            vec![2, 3, 2]
+        );
+        assert_eq!(
+            outputs[1].value.as_tensor().unwrap().shape.dims,
+            vec![2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_qr_multi_full_matrices() {
+        let matrix0 = make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+        let matrix1 = make_f64_matrix(3, 2, &[2.0, 0.0, 0.0, 2.0, 2.0, 2.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 3, 2],
+                &[
+                    1.0, 0.0, 0.0, 1.0, 1.0, 1.0, // batch element 0
+                    2.0, 0.0, 0.0, 2.0, 2.0, 2.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+        let params = BTreeMap::from([("full_matrices".to_owned(), "true".to_owned())]);
+
+        let outputs = apply_batch_rule_multi(Primitive::Qr, &[input], &params).unwrap();
+        assert_qr_matches_slice_oracle(&outputs, &[matrix0, matrix1], &params);
+        assert_eq!(
+            outputs[0].value.as_tensor().unwrap().shape.dims,
+            vec![2, 3, 3]
+        );
+        assert_eq!(
+            outputs[1].value.as_tensor().unwrap().shape.dims,
+            vec![2, 3, 2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_qr_multi_matrix_rank_error_preserved() {
+        let input = BatchTracer::batched(make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 0);
+
+        let err = apply_batch_rule_multi(Primitive::Qr, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("expected rank-2 tensor"));
     }
 
     #[test]
