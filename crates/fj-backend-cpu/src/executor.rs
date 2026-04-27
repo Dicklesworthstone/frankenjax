@@ -17,6 +17,7 @@ use rustc_hash::FxHashMap as HashMap;
 // The scan scheduler stays faster for medium/wide DAGs; dependency counts win
 // once repeated ready scans dominate long pure segments.
 const DEPENDENCY_COUNT_MIN_SEGMENT_LEN: usize = 128;
+const SCALAR_PARALLEL_READY_WAVE_MIN_LEN: usize = 256;
 
 fn equation_inputs_ready(equation: &Equation, env: &HashMap<VarId, Value>) -> bool {
     equation.inputs.iter().all(|atom| match atom {
@@ -85,6 +86,19 @@ fn single_output_var(equation: &Equation) -> Result<VarId, InterpreterError> {
         })
 }
 
+fn ready_wave_has_tensor_input(
+    jaxpr: &Jaxpr,
+    env: &HashMap<VarId, Value>,
+    ready_indices: &[usize],
+) -> bool {
+    ready_indices.iter().any(|idx| {
+        jaxpr.equations[*idx].inputs.iter().any(|atom| match atom {
+            Atom::Var(var) => matches!(env.get(var), Some(Value::Tensor(_))),
+            Atom::Lit(_) => false,
+        })
+    })
+}
+
 fn execute_ready_wave(
     jaxpr: &Jaxpr,
     env: &mut HashMap<VarId, Value>,
@@ -92,7 +106,10 @@ fn execute_ready_wave(
     remaining: &mut usize,
     ready_indices: &[usize],
 ) -> Result<(), InterpreterError> {
-    let should_parallelize = ready_indices.len() > 1 && rayon::current_num_threads() > 1;
+    let should_parallelize = ready_indices.len() > 1
+        && rayon::current_num_threads() > 1
+        && (ready_indices.len() >= SCALAR_PARALLEL_READY_WAVE_MIN_LEN
+            || ready_wave_has_tensor_input(jaxpr, env, ready_indices));
 
     if should_parallelize {
         // No env.clone() needed: the parallel phase only reads from env.
@@ -695,6 +712,53 @@ mod tests {
         Jaxpr::new(vec![input], vec![], vec![current], equations)
     }
 
+    fn make_branched_fanin_jaxpr(branches: usize, depth: usize) -> Jaxpr {
+        let input = VarId(1);
+        let mut next_var = 2_u32;
+        let mut equations = Vec::with_capacity(branches * depth + branches - 1);
+        let mut active = vec![input; branches];
+
+        for _ in 0..depth {
+            for var in &mut active {
+                let out = VarId(next_var);
+                next_var += 1;
+                equations.push(Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(*var), Atom::Lit(Literal::I64(1))].into(),
+                    outputs: vec![out].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                });
+                *var = out;
+            }
+        }
+
+        while active.len() > 1 {
+            let mut next_level = Vec::with_capacity(active.len().div_ceil(2));
+            for chunk in active.chunks(2) {
+                if chunk.len() == 1 {
+                    next_level.push(chunk[0]);
+                    continue;
+                }
+                let out = VarId(next_var);
+                next_var += 1;
+                equations.push(Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(chunk[0]), Atom::Var(chunk[1])].into(),
+                    outputs: vec![out].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                });
+                next_level.push(out);
+            }
+            active = next_level;
+        }
+
+        Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
+    }
+
     fn make_long_missing_dependency_jaxpr(length: usize) -> Jaxpr {
         let mut equations = Vec::with_capacity(length);
         let mut current = VarId(99);
@@ -894,6 +958,25 @@ mod tests {
 
         assert_eq!(result, Ok(vec![Value::scalar_i64(7 + length as i64)]));
         assert_eq!(max_ready_wave, 1);
+    }
+
+    #[test]
+    fn dependency_scheduler_executes_long_branched_fanin_with_dependency_counts() {
+        let branches = 16_usize;
+        let depth = 8_usize;
+        let jaxpr = make_branched_fanin_jaxpr(branches, depth);
+        let mut max_ready_wave = 0_usize;
+        let result =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(7)], &mut max_ready_wave);
+
+        assert_eq!(
+            result,
+            Ok(vec![Value::scalar_i64(
+                branches as i64 * (7 + depth as i64)
+            )])
+        );
+        assert_eq!(jaxpr.equations.len(), branches * depth + branches - 1);
+        assert_eq!(max_ready_wave, branches);
     }
 
     #[test]
