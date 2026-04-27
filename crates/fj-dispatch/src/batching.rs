@@ -1274,9 +1274,58 @@ fn batch_dynamic_update_slice(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    if let Some(result) = batch_dynamic_update_slice_static_starts(inputs, params)? {
+        return Ok(result);
+    }
+
     // Supports batched updates/start indices and mixed batched/unbatched operands
     // via per-element fallback semantics.
     batch_passthrough_leading(Primitive::DynamicUpdateSlice, inputs, params)
+}
+
+fn batch_dynamic_update_slice_static_starts(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Option<BatchTracer>, BatchError> {
+    let Some(operand) = inputs.first() else {
+        return Ok(None);
+    };
+    let Some(update) = inputs.get(1) else {
+        return Ok(None);
+    };
+    let Some(operand_batch_dim) = operand.batch_dim else {
+        return Ok(None);
+    };
+    let Some(update_batch_dim) = update.batch_dim else {
+        return Ok(None);
+    };
+    if inputs.iter().skip(2).any(|input| input.batch_dim.is_some()) {
+        return Ok(None);
+    }
+
+    let operand_value = move_batch_dim_to_front(&operand.value, operand_batch_dim)?;
+    let update_value = move_batch_dim_to_front(&update.value, update_batch_dim)?;
+    let (Value::Tensor(operand_tensor), Value::Tensor(update_tensor)) =
+        (&operand_value, &update_value)
+    else {
+        return Ok(None);
+    };
+    if operand_tensor.rank() != update_tensor.rank()
+        || operand_tensor.rank() != inputs.len() - 1
+        || operand_tensor.shape.dims.first() != update_tensor.shape.dims.first()
+    {
+        return Ok(None);
+    }
+
+    let mut values = Vec::with_capacity(inputs.len() + 1);
+    values.push(operand_value);
+    values.push(update_value);
+    values.push(Value::scalar_i64(0));
+    values.extend(inputs.iter().skip(2).map(|input| input.value.clone()));
+
+    let result = eval_primitive(Primitive::DynamicUpdateSlice, &values, params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(Some(BatchTracer::batched(result, 0)))
 }
 
 fn batch_gather(
@@ -5095,6 +5144,92 @@ mod tests {
         assert_eq!(
             extract_f64_vec(&result.value),
             vec![9.0, 10.0, 17.0, 18.0, 13.0, 14.0, 21.0, 22.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_dynamic_update_slice_static_start_direct_1d() {
+        let operand_data: Vec<f64> = (0..10).map(|i| i as f64).collect();
+        let operand = BatchTracer::batched(make_f64_matrix(2, 5, &operand_data), 0);
+        let update = BatchTracer::batched(make_f64_matrix(2, 2, &[100.0, 101.0, 200.0, 201.0]), 0);
+        let start = BatchTracer::unbatched(Value::scalar_i64(2));
+
+        let result = apply_batch_rule(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, start],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 5]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![0.0, 1.0, 100.0, 101.0, 4.0, 5.0, 6.0, 200.0, 201.0, 9.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_dynamic_update_slice_static_start_direct_2d() {
+        let operand_data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        let operand = BatchTracer::batched(make_f64_tensor(&[2, 3, 4], &operand_data), 0);
+        let update = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 2],
+                &[100.0, 101.0, 102.0, 103.0, 200.0, 201.0, 202.0, 203.0],
+            ),
+            0,
+        );
+        let row_start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let col_start = BatchTracer::unbatched(Value::scalar_i64(1));
+
+        let result = apply_batch_rule(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, row_start, col_start],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3, 4]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![
+                0.0, 1.0, 2.0, 3.0, 4.0, 100.0, 101.0, 7.0, 8.0, 102.0, 103.0, 11.0, 12.0, 13.0,
+                14.0, 15.0, 16.0, 200.0, 201.0, 19.0, 20.0, 202.0, 203.0, 23.0,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_dynamic_update_slice_static_start_moves_nonleading_batch() {
+        let operand_data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        let operand = BatchTracer::batched(make_f64_tensor(&[3, 2, 4], &operand_data), 1);
+        let update = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 2],
+                &[100.0, 101.0, 102.0, 103.0, 200.0, 201.0, 202.0, 203.0],
+            ),
+            0,
+        );
+        let row_start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let col_start = BatchTracer::unbatched(Value::scalar_i64(1));
+
+        let result = apply_batch_rule(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, row_start, col_start],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3, 4]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![
+                0.0, 1.0, 2.0, 3.0, 8.0, 100.0, 101.0, 11.0, 16.0, 102.0, 103.0, 19.0, 4.0, 5.0,
+                6.0, 7.0, 12.0, 200.0, 201.0, 15.0, 20.0, 202.0, 203.0, 23.0,
+            ]
         );
     }
 
