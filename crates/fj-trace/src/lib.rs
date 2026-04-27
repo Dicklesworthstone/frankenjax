@@ -2006,71 +2006,37 @@ fn infer_dot(inputs: &[ShapedArray]) -> Result<Vec<ShapedArray>, TraceError> {
 
     let lhs = &inputs[0];
     let rhs = &inputs[1];
-    let out_shape = match (lhs.shape.rank(), rhs.shape.rank()) {
-        (0, 0) => Shape::scalar(),
-        (1, 1) => {
-            if lhs.shape.dims[0] != rhs.shape.dims[0] {
-                return Err(TraceError::ShapeInferenceFailed {
-                    primitive,
-                    detail: format!(
-                        "dot rank-1 mismatch lhs={:?} rhs={:?}",
-                        lhs.shape.dims, rhs.shape.dims
-                    ),
-                });
-            }
-            Shape::scalar()
-        }
-        (2, 1) => {
-            if lhs.shape.dims[1] != rhs.shape.dims[0] {
-                return Err(TraceError::ShapeInferenceFailed {
-                    primitive,
-                    detail: format!(
-                        "dot rank-2x1 mismatch lhs={:?} rhs={:?}",
-                        lhs.shape.dims, rhs.shape.dims
-                    ),
-                });
-            }
-            Shape {
-                dims: vec![lhs.shape.dims[0]],
-            }
-        }
-        (1, 2) => {
-            if lhs.shape.dims[0] != rhs.shape.dims[0] {
-                return Err(TraceError::ShapeInferenceFailed {
-                    primitive,
-                    detail: format!(
-                        "dot rank-1x2 mismatch lhs={:?} rhs={:?}",
-                        lhs.shape.dims, rhs.shape.dims
-                    ),
-                });
-            }
-            Shape {
-                dims: vec![rhs.shape.dims[1]],
-            }
-        }
-        (2, 2) => {
-            if lhs.shape.dims[1] != rhs.shape.dims[0] {
-                return Err(TraceError::ShapeInferenceFailed {
-                    primitive,
-                    detail: format!(
-                        "dot rank-2x2 mismatch lhs={:?} rhs={:?}",
-                        lhs.shape.dims, rhs.shape.dims
-                    ),
-                });
-            }
-            Shape {
-                dims: vec![lhs.shape.dims[0], rhs.shape.dims[1]],
-            }
-        }
-        _ => {
+    let lhs_rank = lhs.shape.rank();
+    let rhs_rank = rhs.shape.rank();
+    let out_shape = if lhs_rank == 0 {
+        rhs.shape.clone()
+    } else if rhs_rank == 0 {
+        lhs.shape.clone()
+    } else {
+        let lhs_inner_axis = lhs_rank - 1;
+        let rhs_inner_axis = if rhs_rank == 1 { 0 } else { rhs_rank - 2 };
+        let lhs_inner = lhs.shape.dims[lhs_inner_axis];
+        let rhs_inner = rhs.shape.dims[rhs_inner_axis];
+        if lhs_inner != rhs_inner {
             return Err(TraceError::ShapeInferenceFailed {
                 primitive,
                 detail: format!(
-                    "dot supports rank combinations (0,0), (1,1), (2,1), (1,2), (2,2); got ({},{})",
-                    lhs.shape.rank(),
-                    rhs.shape.rank()
+                    "dot contraction mismatch lhs={:?} axis={} rhs={:?} axis={}",
+                    lhs.shape.dims, lhs_inner_axis, rhs.shape.dims, rhs_inner_axis
                 ),
             });
+        }
+
+        if rhs_rank == 1 {
+            Shape {
+                dims: lhs.shape.dims[..lhs_inner_axis].to_vec(),
+            }
+        } else {
+            let mut dims = Vec::with_capacity(lhs_inner_axis + rhs_inner_axis + 1);
+            dims.extend_from_slice(&lhs.shape.dims[..lhs_inner_axis]);
+            dims.extend_from_slice(&rhs.shape.dims[..rhs_inner_axis]);
+            dims.push(rhs.shape.dims[rhs_rank - 1]);
+            Shape { dims }
         }
     };
 
@@ -6576,6 +6542,113 @@ mod tests {
         .unwrap();
         assert_eq!(closed.jaxpr.equations.len(), 1);
         assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::Dot);
+    }
+
+    #[test]
+    fn test_trace_dot_scalar_tensor_shape() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::scalar(),
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 3, 4],
+                },
+            },
+        ]);
+        let out = ctx
+            .process_primitive(Primitive::Dot, &[TracerId(1), TracerId(2)], BTreeMap::new())
+            .expect("scalar dot tensor should infer as elementwise multiply");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(
+            aval.shape,
+            Shape {
+                dims: vec![2, 3, 4]
+            }
+        );
+    }
+
+    #[test]
+    fn test_trace_dot_rank3_vector_shape() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 3, 4],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape::vector(4),
+            },
+        ]);
+        let out = ctx
+            .process_primitive(Primitive::Dot, &[TracerId(1), TracerId(2)], BTreeMap::new())
+            .expect("rank-3 dot vector should infer lhs prefix shape");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
+    }
+
+    #[test]
+    fn test_trace_dot_rank3_rank3_shape() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 3, 4],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![5, 4, 6],
+                },
+            },
+        ]);
+        let out = ctx
+            .process_primitive(Primitive::Dot, &[TracerId(1), TracerId(2)], BTreeMap::new())
+            .expect("rank-3 dot rank-3 should stack prefix axes");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(
+            aval.shape,
+            Shape {
+                dims: vec![2, 3, 5, 6]
+            }
+        );
+    }
+
+    #[test]
+    fn test_trace_dot_high_rank_mismatch_reports_contraction() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 3, 4],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![5, 7, 6],
+                },
+            },
+        ]);
+        let err = ctx
+            .process_primitive(Primitive::Dot, &[TracerId(1), TracerId(2)], BTreeMap::new())
+            .expect_err("mismatched contraction axes should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Dot,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("contraction mismatch"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
