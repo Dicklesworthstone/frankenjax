@@ -1271,7 +1271,15 @@ fn batch_reduce_window(
     // Move batch to front, then prepend identity window for batch dim
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
-    let window_dims = parse_param_usize_list(params, "window_dimensions")?;
+    let logical_rank = match &value {
+        Value::Scalar(_) => 0,
+        Value::Tensor(tensor) => tensor.rank().saturating_sub(1),
+    };
+    let window_dims = match params.get("window_dimensions") {
+        None => vec![2_usize; logical_rank],
+        Some(raw) if is_empty_list(raw) => vec![2_usize; logical_rank],
+        Some(raw) => parse_usize_list(raw, "window_dimensions")?,
+    };
     let window_strides = match params.get("window_strides") {
         None => vec![1_usize; window_dims.len()],
         Some(raw) if is_empty_list(raw) => vec![1_usize; window_dims.len()],
@@ -3033,6 +3041,28 @@ mod tests {
             ("reduce_op".to_owned(), "sum".to_owned()),
             ("window_dimensions".to_owned(), "2".to_owned()),
         ]);
+
+        let result = apply_batch_rule(Primitive::ReduceWindow, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 4]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![3.0, 5.0, 7.0, 9.0, 30.0, 50.0, 70.0, 90.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_reduce_window_defaults_window_dimensions() {
+        let input = BatchTracer::batched(
+            make_f64_matrix(
+                2,
+                5,
+                &[1.0, 2.0, 3.0, 4.0, 5.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+            ),
+            0,
+        );
+        let params = BTreeMap::from([("reduce_op".to_owned(), "sum".to_owned())]);
 
         let result = apply_batch_rule(Primitive::ReduceWindow, &[input], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
