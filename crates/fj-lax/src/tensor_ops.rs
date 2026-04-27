@@ -1207,6 +1207,11 @@ pub(crate) fn eval_gather(
 
     let total = num_indices * slice_elems;
     let mut elements = Vec::with_capacity(total);
+    let trailing_slice_is_contiguous = slice_sizes
+        .iter()
+        .skip(1)
+        .zip(op_dims.iter().skip(1))
+        .all(|(&slice_size, &dim)| slice_size == dim as usize);
 
     for &idx in &index_vals {
         if idx >= op_dims[0] as usize {
@@ -1221,6 +1226,11 @@ pub(crate) fn eval_gather(
 
         // Base offset for this index along axis 0
         let base_offset = idx * op_strides[0];
+        if trailing_slice_is_contiguous {
+            let end = base_offset + slice_elems;
+            elements.extend_from_slice(&operand.elements[base_offset..end]);
+            continue;
+        }
 
         // Iterate over all positions within the slice (axes 1..rank)
         let mut slice_coords = vec![0_usize; rank.saturating_sub(1)];

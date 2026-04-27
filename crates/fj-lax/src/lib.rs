@@ -3013,6 +3013,38 @@ mod tests {
     }
 
     #[test]
+    fn gather_partial_trailing_slice_from_2d() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(10),
+                    Literal::I64(20),
+                    Literal::I64(30),
+                    Literal::I64(40),
+                    Literal::I64(50),
+                    Literal::I64(60),
+                ],
+            )
+            .unwrap(),
+        );
+        let indices = Value::vector_i64(&[1, 0]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".into(), "1,2".into());
+
+        let out = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
+        let tensor = out.as_tensor().expect("gather output should be tensor");
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        let vals: Vec<i64> = tensor
+            .elements
+            .iter()
+            .map(|literal| literal.as_i64().expect("i64 gather output"))
+            .collect();
+        assert_eq!(vals, vec![40, 50, 10, 20]);
+    }
+
+    #[test]
     fn gather_out_of_bounds_rejected() {
         let operand = Value::vector_i64(&[1, 2, 3]).unwrap();
         let indices = Value::Tensor(

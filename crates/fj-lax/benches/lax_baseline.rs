@@ -1,5 +1,5 @@
 use criterion::{Criterion, criterion_group, criterion_main};
-use fj_core::{Primitive, Value};
+use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
 
@@ -82,6 +82,33 @@ fn bench_reshape(c: &mut Criterion) {
     });
 }
 
+fn bench_gather_128_rows_16_cols(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..(128 * 16)).map(Literal::I64).collect();
+    let operand = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 16],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let indices_data: Vec<i64> = (0..128).rev().collect();
+    let indices = Value::vector_i64(&indices_data).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".into(), "1,16".into());
+    c.bench_function("eval/gather_128_rows_16_cols", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::Gather,
+                &[operand.clone(), indices.clone()],
+                &params,
+            )
+        })
+    });
+}
+
 fn bench_eq_1k(c: &mut Criterion) {
     let data: Vec<i64> = (0..1000).collect();
     let lhs = Value::vector_i64(&data).unwrap();
@@ -111,6 +138,7 @@ criterion_group!(
     bench_sin_1k,
     bench_exp_1k,
     bench_reshape,
+    bench_gather_128_rows_16_cols,
     bench_eq_1k,
 );
 criterion_main!(benches);
