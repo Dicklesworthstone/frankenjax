@@ -1918,7 +1918,7 @@ fn dot_accumulate(
     }
 }
 
-/// Dot product: scalar-scalar plus rank-1/rank-2 tensor dot.
+/// Dot product: scalar multiply plus rank-1/rank-2 tensor dot.
 pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
     let primitive = Primitive::Dot;
     if inputs.len() != 2 {
@@ -1949,6 +1949,9 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
             &|a, b| a * b,
             &|a, b| a * b,
         )?)),
+        (Value::Scalar(_), Value::Tensor(_)) | (Value::Tensor(_), Value::Scalar(_)) => {
+            eval_binary_elementwise(Primitive::Mul, inputs, |a, b| a * b, |a, b| a * b)
+        }
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
             let output_kind = dot_output_kind(lhs, rhs);
             let dtype = output_kind.tensor_dtype();
@@ -2061,10 +2064,6 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
                 }),
             }
         }
-        _ => Err(EvalError::Unsupported {
-            primitive,
-            detail: "dot expects either two scalars or tensor inputs".to_owned(),
-        }),
     }
 }
 
@@ -2660,6 +2659,39 @@ mod tests {
     fn dot_scalar_scalar() {
         let result = eval_dot(&[s_f64(3.0), s_f64(4.0)]).unwrap();
         assert!((extract_f64(&result) - 12.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dot_scalar_vector_matches_multiply() {
+        let result = eval_dot(&[s_f64(2.0), v_f64(&[1.0, -2.0, 3.5])]).unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(extract_f64_vec(&result), vec![2.0, -4.0, 7.0]);
+    }
+
+    #[test]
+    fn dot_matrix_scalar_preserves_integral_output() {
+        let result = eval_dot(&[matrix_i64(2, 2, &[1, 2, 3, 4]), s_i64(3)]).unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(extract_i64_vec(&result), vec![3, 6, 9, 12]);
+    }
+
+    #[test]
+    fn dot_complex_scalar_vector_matches_multiply() {
+        let result = eval_dot(&[
+            Value::scalar_complex128(2.0, -1.0),
+            v_complex128(&[(1.0, 3.0), (-2.0, 0.5)]),
+        ])
+        .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::Complex128);
+        assert_eq!(tensor.shape.dims, vec![2]);
+        let values = extract_complex_vec(&result);
+        assert_complex_close(values[0], (5.0, 5.0));
+        assert_complex_close(values[1], (-3.5, 3.0));
     }
 
     #[test]
