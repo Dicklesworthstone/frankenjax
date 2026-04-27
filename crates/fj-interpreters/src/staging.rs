@@ -328,7 +328,7 @@ mod tests {
             std::panic::resume_unwind(payload);
         }
         if let Some(detail) = failure_detail {
-            panic!("{detail}");
+            std::panic::panic_any(detail);
         }
     }
 

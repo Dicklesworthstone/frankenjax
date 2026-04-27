@@ -108,7 +108,7 @@ mod tests {
                 assert_eq!(target, "fail_fn");
                 assert_eq!(code, -1);
             }
-            other => panic!("expected CallFailed, got: {other}"),
+            other => std::panic::panic_any(format!("expected CallFailed, got: {other}")),
         }
     }
 
@@ -162,7 +162,7 @@ mod tests {
                 assert_eq!(name, "anything");
                 assert!(available.is_empty());
             }
-            other => panic!("expected TargetNotFound, got: {other}"),
+            other => std::panic::panic_any(format!("expected TargetNotFound, got: {other}")),
         }
     }
 
@@ -234,7 +234,7 @@ mod tests {
             current = buffer_to_value(&outputs[0]).unwrap();
             match &current {
                 Value::Scalar(Literal::I64(v)) => assert_eq!(*v, expected),
-                other => panic!("expected I64 scalar, got: {other:?}"),
+                other => std::panic::panic_any(format!("expected I64 scalar, got: {other:?}")),
             }
         }
     }

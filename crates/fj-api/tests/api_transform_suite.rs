@@ -260,7 +260,7 @@ fn error_grad_vector_input() {
                 "error should mention scalar: {detail}"
             );
         }
-        other => panic!("expected GradRequiresScalar, got: {other}"),
+        other => std::panic::panic_any(format!("expected GradRequiresScalar, got: {other}")),
     }
     log_pass("error_grad_vector_input", &("error", "grad_vector"));
 }
@@ -290,7 +290,7 @@ fn error_grad_rank3_input() {
                 "error should mention scalar: {detail}"
             );
         }
-        other => panic!("expected GradRequiresScalar, got: {other}"),
+        other => std::panic::panic_any(format!("expected GradRequiresScalar, got: {other}")),
     }
     log_pass("error_grad_rank3_input", &("error", "grad_rank3"));
 }

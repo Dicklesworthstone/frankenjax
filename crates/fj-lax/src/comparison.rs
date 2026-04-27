@@ -107,7 +107,7 @@ mod tests {
     fn extract_bool(val: &Value) -> bool {
         match val {
             Value::Scalar(Literal::Bool(b)) => *b,
-            _ => panic!("expected bool scalar, got {val:?}"),
+            _ => std::panic::panic_any(format!("expected bool scalar, got {val:?}")),
         }
     }
     fn extract_bools(val: &Value) -> Vec<bool> {
@@ -117,7 +117,7 @@ mod tests {
             .iter()
             .map(|l| match l {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool element"),
+                _ => std::panic::panic_any("expected bool element"),
             })
             .collect()
     }

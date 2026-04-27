@@ -24,10 +24,10 @@ mod tests {
 
     fn custom_rule_test_guard() -> std::sync::MutexGuard<'static, ()> {
         static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
-        GUARD
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("custom rule test guard lock should succeed")
+        match GUARD.get_or_init(|| Mutex::new(())).lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
     }
 
     // --- Basic transform tests ---
@@ -252,7 +252,9 @@ mod tests {
                 assert_eq!(expected, 3, "expected leading dim should be 3");
                 assert_eq!(actual, 2, "actual leading dim should be 2");
             }
-            other => panic!("expected VmapDimensionMismatch, got: {other:?}"),
+            other => {
+                std::panic::panic_any(format!("expected VmapDimensionMismatch, got: {other:?}"))
+            }
         }
     }
 
@@ -850,7 +852,7 @@ mod tests {
             let vals = t.to_f64_vec().expect("f64 tensor");
             assert!(!vals.is_empty(), "jacobian tensor should have values");
         } else {
-            panic!("jacobian should return a scalar or tensor");
+            std::panic::panic_any("jacobian should return a scalar or tensor");
         }
     }
 
