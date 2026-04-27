@@ -1252,7 +1252,7 @@ pub(crate) fn eval_scatter(
         dims: expected_update_dims.clone(),
     };
 
-    let updates_storage = match &inputs[2] {
+    let scalar_updates_storage = match &inputs[2] {
         Value::Scalar(lit) => {
             if expected_update_dims.is_empty() {
                 Some(TensorValue::new(
@@ -1271,9 +1271,15 @@ pub(crate) fn eval_scatter(
     };
     let updates = match &inputs[2] {
         Value::Tensor(t) => t,
-        Value::Scalar(_) => updates_storage
-            .as_ref()
-            .expect("scalar updates tensor just constructed"),
+        Value::Scalar(_) => match scalar_updates_storage.as_ref() {
+            Some(tensor) => tensor,
+            None => {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "scalar updates tensor construction failed".into(),
+                });
+            }
+        },
     };
 
     let rank = operand.shape.rank();
@@ -3294,6 +3300,30 @@ mod tests {
         assert_eq!(vals[4], 0.0);
         assert_eq!(vals[5], 1.0);
         assert_eq!(vals[10], 1.0);
+    }
+
+    // ── Scatter ──
+
+    #[test]
+    fn scatter_scalar_index_accepts_scalar_update() {
+        let operand = v_f64(&[1.0, 2.0, 3.0]);
+        let index = Value::Scalar(Literal::I64(1));
+        let update = Value::Scalar(Literal::from_f64(9.0));
+        let result = eval_scatter(&[operand, index, update], &BTreeMap::new()).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 9.0, 3.0]);
+    }
+
+    #[test]
+    fn scatter_scalar_update_rejects_non_scalar_slice() {
+        let operand = mat_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let index = Value::Scalar(Literal::I64(1));
+        let update = Value::Scalar(Literal::from_f64(9.0));
+        let err = eval_scatter(&[operand, index, update], &BTreeMap::new())
+            .expect_err("scalar update should not fill non-scalar scatter slices");
+        assert!(
+            err.to_string().contains("updates must be a tensor"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── Sort ──

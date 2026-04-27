@@ -62,6 +62,35 @@ fn is_complex_dtype(dtype: DType) -> bool {
     matches!(dtype, DType::Complex64 | DType::Complex128)
 }
 
+fn last_axis_len(primitive: Primitive, shape: &Shape) -> Result<usize, EvalError> {
+    shape
+        .dims
+        .last()
+        .copied()
+        .map(|dim| dim as usize)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "FFT expects rank >= 1 tensor, got empty shape".to_owned(),
+        })
+}
+
+fn replace_last_axis_len(
+    primitive: Primitive,
+    dims: &mut [u32],
+    len: usize,
+) -> Result<(), EvalError> {
+    let len = u32::try_from(len).map_err(|_| EvalError::Unsupported {
+        primitive,
+        detail: format!("FFT output last dimension exceeds u32: {len}"),
+    })?;
+    let last = dims.last_mut().ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "FFT expects rank >= 1 tensor, got empty shape".to_owned(),
+    })?;
+    *last = len;
+    Ok(())
+}
+
 fn parse_optional_fft_length(
     primitive: Primitive,
     params: &std::collections::BTreeMap<String, String>,
@@ -205,7 +234,7 @@ pub(crate) fn eval_fft(
     let (shape, in_dtype, elements) = extract_tensor_complex(primitive, &inputs[0])?;
     let out_dtype = complex_dtype_for(in_dtype);
 
-    let n = *shape.dims.last().unwrap() as usize;
+    let n = last_axis_len(primitive, &shape)?;
     if n == 0 {
         return Err(EvalError::Unsupported {
             primitive,
@@ -258,7 +287,7 @@ pub(crate) fn eval_ifft(
     }
     let out_dtype = complex_dtype_for(in_dtype);
 
-    let n = *shape.dims.last().unwrap() as usize;
+    let n = last_axis_len(primitive, &shape)?;
     if n == 0 {
         return Err(EvalError::Unsupported {
             primitive,
@@ -314,7 +343,7 @@ pub(crate) fn eval_rfft(
     }
     let out_dtype = complex_dtype_for(in_dtype);
 
-    let input_last = *shape.dims.last().unwrap() as usize;
+    let input_last = last_axis_len(primitive, &shape)?;
     if input_last == 0 {
         return Err(EvalError::Unsupported {
             primitive,
@@ -355,7 +384,7 @@ pub(crate) fn eval_rfft(
 
     // Build output shape: replace last dim with out_last
     let mut out_dims = shape.dims;
-    *out_dims.last_mut().unwrap() = out_last as u32;
+    replace_last_axis_len(primitive, &mut out_dims, out_last)?;
     let out_shape = Shape { dims: out_dims };
 
     let tensor =
@@ -395,7 +424,7 @@ pub(crate) fn eval_irfft(
     }
     let out_dtype = real_dtype_for(in_dtype);
 
-    let input_last = *shape.dims.last().unwrap() as usize;
+    let input_last = last_axis_len(primitive, &shape)?;
     if input_last == 0 {
         return Err(EvalError::Unsupported {
             primitive,
@@ -451,7 +480,7 @@ pub(crate) fn eval_irfft(
 
     // Build output shape: replace last dim with fft_length
     let mut out_dims = shape.dims;
-    *out_dims.last_mut().unwrap() = fft_length as u32;
+    replace_last_axis_len(primitive, &mut out_dims, fft_length)?;
     let out_shape = Shape { dims: out_dims };
 
     let tensor =
@@ -559,6 +588,16 @@ mod tests {
     fn fft_rejects_scalar() {
         let scalar = Value::Scalar(Literal::from_f64(1.0));
         assert!(eval_fft(&[scalar], &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn fft_rejects_empty_last_axis_without_panicking() {
+        let input = make_real_vector(&[]);
+        let err = eval_fft(&[input], &BTreeMap::new()).expect_err("empty FFT input must fail");
+        assert!(
+            err.to_string().contains("last dimension > 0"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── IFFT tests ───────────────────────────────────────────

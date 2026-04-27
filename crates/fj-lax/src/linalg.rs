@@ -424,7 +424,7 @@ pub(crate) fn eval_svd(
 
     // Step 3: Sort eigenvalues (and corresponding V columns) in descending order
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| eigenvalues[b].partial_cmp(&eigenvalues[a]).unwrap());
+    indices.sort_by(|&a, &b| eigenvalues[b].total_cmp(&eigenvalues[a]));
 
     let mut sigma = vec![0.0_f64; k];
     let mut v_sorted = vec![0.0_f64; n * n];
@@ -658,7 +658,7 @@ pub(crate) fn eval_eigh(
 
     // Sort eigenvalues in ascending order (JAX convention for eigh)
     let mut indices: Vec<usize> = (0..m).collect();
-    indices.sort_by(|&a, &b| eigenvalues[a].partial_cmp(&eigenvalues[b]).unwrap());
+    indices.sort_by(|&a, &b| eigenvalues[a].total_cmp(&eigenvalues[b]));
 
     let mut w_sorted = vec![0.0_f64; m];
     let mut v_sorted = vec![0.0_f64; m * m];
@@ -1099,6 +1099,13 @@ mod tests {
         assert!(eval_svd(&[scalar], &BTreeMap::new()).is_err());
     }
 
+    #[test]
+    fn svd_nan_input_does_not_panic_during_sort() {
+        let a = make_matrix(2, 2, &[f64::NAN, 0.0, 0.0, 1.0]);
+        let outcome = std::panic::catch_unwind(|| eval_svd(&[a], &BTreeMap::new()));
+        assert!(outcome.is_ok(), "SVD eigenvalue sorting should not panic");
+    }
+
     // ── Eigh tests ────────────────────────────────────────────
 
     #[test]
@@ -1151,5 +1158,12 @@ mod tests {
     fn eigh_rejects_non_square() {
         let a = make_matrix(2, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
         assert!(eval_eigh(&[a], &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn eigh_nan_input_does_not_panic_during_sort() {
+        let a = make_matrix(2, 2, &[f64::NAN, 0.0, 0.0, 1.0]);
+        let outcome = std::panic::catch_unwind(|| eval_eigh(&[a], &BTreeMap::new()));
+        assert!(outcome.is_ok(), "Eigh eigenvalue sorting should not panic");
     }
 }
