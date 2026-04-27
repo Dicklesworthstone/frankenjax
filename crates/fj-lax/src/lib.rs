@@ -2219,6 +2219,31 @@ mod tests {
     }
 
     #[test]
+    fn slice_full_trailing_rows() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![4, 3] },
+                (0..12).map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".into(), "1,0".into());
+        params.insert("limit_indices".into(), "3,3".into());
+
+        let out = eval_primitive(Primitive::Slice, &[input], &params).unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![2, 3]);
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(vals, vec![3, 4, 5, 6, 7, 8]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
     fn test_lax_test_log_schema_contract() {
         let fixture_id =
             fj_test_utils::fixture_id_from_json(&("lax", "add")).expect("fixture digest");

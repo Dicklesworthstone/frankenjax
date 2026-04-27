@@ -1072,6 +1072,23 @@ pub(crate) fn eval_slice(
             }
 
             let total: usize = out_dims.iter().map(|d| *d as usize).product();
+            let has_contiguous_trailing_slice = rank > 0
+                && starts.iter().skip(1).all(|&start| start == 0)
+                && limits
+                    .iter()
+                    .skip(1)
+                    .zip(in_dims.iter().skip(1))
+                    .all(|(&limit, &dim)| limit == dim as usize);
+            if has_contiguous_trailing_slice {
+                let start_offset = starts[0] * in_strides[0];
+                let end_offset = start_offset + total;
+                return Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    Shape { dims: out_dims },
+                    tensor.elements[start_offset..end_offset].to_vec(),
+                )?));
+            }
+
             let mut elements = Vec::with_capacity(total);
             let mut out_coords = vec![0_usize; rank];
 

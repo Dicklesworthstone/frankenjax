@@ -144,6 +144,26 @@ fn bench_scatter_128_rows_16_cols(c: &mut Criterion) {
     });
 }
 
+fn bench_slice_64_rows_16_cols(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..(128 * 16)).map(Literal::I64).collect();
+    let operand = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 16],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let mut params = BTreeMap::new();
+    params.insert("start_indices".into(), "32,0".into());
+    params.insert("limit_indices".into(), "96,16".into());
+    c.bench_function("eval/slice_64_rows_16_cols", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Slice, std::slice::from_ref(&operand), &params))
+    });
+}
+
 fn bench_dynamic_slice_64_rows_16_cols(c: &mut Criterion) {
     let elements: Vec<Literal> = (0..(128 * 16)).map(Literal::I64).collect();
     let operand = Value::Tensor(
@@ -240,6 +260,7 @@ criterion_group!(
     bench_reshape,
     bench_gather_128_rows_16_cols,
     bench_scatter_128_rows_16_cols,
+    bench_slice_64_rows_16_cols,
     bench_dynamic_slice_64_rows_16_cols,
     bench_dynamic_update_slice_64_rows_16_cols,
     bench_eq_1k,
