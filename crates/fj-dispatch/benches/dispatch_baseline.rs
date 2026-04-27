@@ -264,6 +264,50 @@ fn bench_vmap_scatter(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_dot_i64(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_dot_i64");
+
+    let batch = 128_usize;
+    let width = 64_usize;
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![batch as u32, width as u32],
+            },
+            (0..(batch * width))
+                .map(|idx| Literal::I64((idx % 17) as i64))
+                .collect(),
+        )
+        .expect("lhs should build"),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![batch as u32, width as u32],
+            },
+            (0..(batch * width))
+                .map(|idx| Literal::I64(((idx * 3) % 19) as i64))
+                .collect(),
+        )
+        .expect("rhs should build"),
+    );
+
+    group.bench_function("paired_vectors", |b| {
+        b.iter(|| {
+            dispatch(dispatch_request(
+                ProgramSpec::Dot3,
+                &[Transform::Vmap],
+                vec![lhs.clone(), rhs.clone()],
+            ))
+            .expect("vmap dot should succeed");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -536,6 +580,7 @@ criterion_group!(
     bench_dispatch_latency,
     bench_vmap_gather,
     bench_vmap_scatter,
+    bench_vmap_dot_i64,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,
