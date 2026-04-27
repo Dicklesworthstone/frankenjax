@@ -1612,6 +1612,24 @@ pub(crate) fn eval_dynamic_slice(
     }
 
     let total: usize = slice_sizes.iter().product();
+    let has_contiguous_trailing_slice = rank > 0
+        && slice_sizes
+            .iter()
+            .skip(1)
+            .zip(tensor.shape.dims.iter().skip(1))
+            .all(|(&slice_size, &dim)| slice_size == dim as usize)
+        && starts.iter().skip(1).all(|&start| start == 0);
+    if has_contiguous_trailing_slice {
+        let start_offset = starts[0] * in_strides[0];
+        let end_offset = start_offset + total;
+        let out_dims: Vec<u32> = slice_sizes.iter().map(|&s| s as u32).collect();
+        return Ok(Value::Tensor(TensorValue::new(
+            tensor.dtype,
+            Shape { dims: out_dims },
+            tensor.elements[start_offset..end_offset].to_vec(),
+        )?));
+    }
+
     let mut elements = Vec::with_capacity(total);
     let mut out_coords = vec![0_usize; rank];
 

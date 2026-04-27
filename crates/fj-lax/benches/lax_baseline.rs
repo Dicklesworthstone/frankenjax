@@ -144,6 +144,33 @@ fn bench_scatter_128_rows_16_cols(c: &mut Criterion) {
     });
 }
 
+fn bench_dynamic_slice_64_rows_16_cols(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..(128 * 16)).map(Literal::I64).collect();
+    let operand = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 16],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".into(), "64,16".into());
+    let start0 = Value::scalar_i64(32);
+    let start1 = Value::scalar_i64(0);
+    c.bench_function("eval/dynamic_slice_64_rows_16_cols", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::DynamicSlice,
+                &[operand.clone(), start0.clone(), start1.clone()],
+                &params,
+            )
+        })
+    });
+}
+
 fn bench_eq_1k(c: &mut Criterion) {
     let data: Vec<i64> = (0..1000).collect();
     let lhs = Value::vector_i64(&data).unwrap();
@@ -175,6 +202,7 @@ criterion_group!(
     bench_reshape,
     bench_gather_128_rows_16_cols,
     bench_scatter_128_rows_16_cols,
+    bench_dynamic_slice_64_rows_16_cols,
     bench_eq_1k,
 );
 criterion_main!(benches);

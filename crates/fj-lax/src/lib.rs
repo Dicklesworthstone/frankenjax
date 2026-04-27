@@ -4022,6 +4022,39 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_slice_full_trailing_rows() {
+        let t = TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![4, 3] },
+            (0..12).map(Literal::I64).collect(),
+        )
+        .unwrap();
+        let x = Value::Tensor(t);
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2,3".to_owned());
+        let out = eval_primitive(
+            Primitive::DynamicSlice,
+            &[x, Value::scalar_i64(1), Value::scalar_i64(0)],
+            &params,
+        )
+        .unwrap();
+        let expected = TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![2, 3] },
+            vec![
+                Literal::I64(3),
+                Literal::I64(4),
+                Literal::I64(5),
+                Literal::I64(6),
+                Literal::I64(7),
+                Literal::I64(8),
+            ],
+        )
+        .unwrap();
+        assert_eq!(out, Value::Tensor(expected));
+    }
+
+    #[test]
     fn dynamic_slice_scalar_error() {
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".to_owned(), "1".to_owned());
