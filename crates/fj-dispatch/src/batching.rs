@@ -434,7 +434,7 @@ pub fn apply_batch_rule(
         Primitive::Scatter => batch_scatter(inputs, params),
         Primitive::Rev => batch_rev(inputs, params),
         Primitive::Squeeze => batch_squeeze(inputs, params),
-        Primitive::Split => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Split => batch_split(inputs, params),
         Primitive::ExpandDims => batch_expand_dims(inputs, params),
         Primitive::Cholesky
         | Primitive::Qr
@@ -1293,6 +1293,48 @@ fn batch_rev(
     let mut new_params = params.clone();
     new_params.insert("axes".to_owned(), format_csv(&physical_axes));
     let result = eval_primitive(Primitive::Rev, &[value], &new_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
+}
+
+fn batch_split(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result =
+                eval_primitive(Primitive::Split, std::slice::from_ref(&input.value), params)
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    let logical_axis = parse_param_usize(params, "axis")?.unwrap_or(0);
+    get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value
+        .as_tensor()
+        .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for split".into()))?;
+    let per_elem_rank = tensor.shape.rank().saturating_sub(1);
+
+    if per_elem_rank == 0 {
+        return Err(BatchError::EvalError("cannot split a scalar".to_owned()));
+    }
+    if logical_axis >= per_elem_rank {
+        return Err(BatchError::EvalError(format!(
+            "split axis {logical_axis} out of range for per-element rank {per_elem_rank}"
+        )));
+    }
+
+    let physical_axis = logical_axis
+        .checked_add(1)
+        .ok_or_else(|| BatchError::EvalError("split axis overflow".to_owned()))?;
+    let mut new_params = params.clone();
+    new_params.insert("axis".to_owned(), physical_axis.to_string());
+    let result = eval_primitive(Primitive::Split, &[value], &new_params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
     Ok(BatchTracer::batched(result, 0))
 }
@@ -3397,6 +3439,93 @@ mod tests {
 
         let err = apply_batch_rule(Primitive::Rev, &[input], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("missing required param 'axes'"));
+    }
+
+    #[test]
+    fn test_batch_trace_split_equal_logical_axis_zero() {
+        let data: Vec<f64> = (1..=12).map(f64::from).collect();
+        let input = BatchTracer::batched(make_f64_matrix(2, 6, &data), 0);
+        let params = BTreeMap::from([
+            ("axis".to_owned(), "0".to_owned()),
+            ("num_sections".to_owned(), "3".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::Split, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
+        assert_eq!(extract_f64_vec(&result.value), data);
+    }
+
+    #[test]
+    fn test_batch_trace_split_equal_logical_axis_one() {
+        let data: Vec<f64> = (1..=16).map(f64::from).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 2, 4], &data), 0);
+        let params = BTreeMap::from([
+            ("axis".to_owned(), "1".to_owned()),
+            ("num_sections".to_owned(), "2".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::Split, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 2, 2]);
+        assert_eq!(extract_f64_vec(&result.value), data);
+    }
+
+    #[test]
+    fn test_batch_trace_split_unequal_returns_first_section_per_batch() {
+        let input = BatchTracer::batched(
+            make_f64_matrix(2, 5, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]),
+            0,
+        );
+        let params = BTreeMap::from([
+            ("axis".to_owned(), "0".to_owned()),
+            ("sizes".to_owned(), "2, 3".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::Split, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0, 6.0, 7.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_split_nonleading_batch_dim() {
+        let input = BatchTracer::batched(
+            make_f64_matrix(
+                6,
+                2,
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+                ],
+            ),
+            1,
+        );
+        let params = BTreeMap::from([
+            ("axis".to_owned(), "0".to_owned()),
+            ("num_sections".to_owned(), "3".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::Split, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 2]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![
+                1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0
+            ]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_split_scalar_elements_reject() {
+        let input = BatchTracer::batched(make_f64_vector(&[1.0, 2.0, 3.0]), 0);
+
+        let err = apply_batch_rule(Primitive::Split, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("cannot split a scalar"));
     }
 
     #[test]
