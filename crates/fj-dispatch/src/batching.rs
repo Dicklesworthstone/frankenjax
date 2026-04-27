@@ -5,7 +5,7 @@
 //! achieving O(1) vectorized execution matching JAX's `BatchTrace` semantics.
 
 use fj_core::{Atom, Equation, Jaxpr, Primitive, Shape, TensorValue, Value, VarId};
-use fj_interpreters::eval_jaxpr_with_consts;
+use fj_interpreters::{eval_equation_outputs, eval_jaxpr_with_consts};
 use fj_lax::{eval_primitive, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
@@ -1673,6 +1673,94 @@ fn broadcast_unbatched_outputs(
         .collect()
 }
 
+fn eval_sub_jaxpr_equation_values(
+    equation: &Equation,
+    values: &[Value],
+) -> Result<Vec<Value>, BatchError> {
+    if values.len() != equation.inputs.len() {
+        return Err(BatchError::InterpreterError(format!(
+            "{} expects {} resolved inputs, got {}",
+            equation.primitive.as_str(),
+            equation.inputs.len(),
+            values.len()
+        )));
+    }
+
+    let mut env = FxHashMap::default();
+    for (atom, value) in equation.inputs.iter().zip(values) {
+        if let Atom::Var(var) = atom {
+            env.insert(*var, value.clone());
+        }
+    }
+
+    eval_equation_outputs(equation, &env).map_err(|e| BatchError::InterpreterError(e.to_string()))
+}
+
+fn batch_sub_jaxpr_by_slices(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let Some(batch_size) = batch_size_from_inputs(inputs)? else {
+        let values = inputs
+            .iter()
+            .map(|tracer| tracer.value.clone())
+            .collect::<Vec<_>>();
+        return eval_sub_jaxpr_equation_values(equation, &values).map(|outputs| {
+            outputs
+                .into_iter()
+                .map(BatchTracer::unbatched)
+                .collect::<Vec<_>>()
+        });
+    };
+
+    let values: Result<Vec<Value>, BatchError> = inputs
+        .iter()
+        .map(|tracer| match tracer.batch_dim {
+            Some(batch_dim) => move_batch_dim_to_front(&tracer.value, batch_dim),
+            None => broadcast_unbatched(&tracer.value, batch_size, 0),
+        })
+        .collect();
+    let values = values?;
+
+    let mut per_output: Option<Vec<Vec<Value>>> = None;
+    for batch_idx in 0..batch_size {
+        let slices: Result<Vec<Value>, BatchError> = values
+            .iter()
+            .map(|value| match value {
+                Value::Tensor(tensor) => tensor
+                    .slice_axis0(batch_idx)
+                    .map_err(|e| BatchError::TensorError(e.to_string())),
+                Value::Scalar(_) => Ok(value.clone()),
+            })
+            .collect();
+        let slices = slices?;
+        let outputs = eval_sub_jaxpr_equation_values(equation, &slices)?;
+
+        let buckets = per_output.get_or_insert_with(|| vec![Vec::new(); outputs.len()]);
+        if buckets.len() != outputs.len() {
+            return Err(BatchError::InterpreterError(format!(
+                "{} returned inconsistent output arity across batch slices: expected {}, got {}",
+                equation.primitive.as_str(),
+                buckets.len(),
+                outputs.len()
+            )));
+        }
+        for (bucket, output) in buckets.iter_mut().zip(outputs) {
+            bucket.push(output);
+        }
+    }
+
+    per_output
+        .unwrap_or_default()
+        .into_iter()
+        .map(|outputs| {
+            TensorValue::stack_axis0(&outputs)
+                .map(|tensor| BatchTracer::batched(Value::Tensor(tensor), 0))
+                .map_err(|e| BatchError::TensorError(e.to_string()))
+        })
+        .collect()
+}
+
 fn select_switch_branch(equation: &Equation, index: i64) -> Result<&Jaxpr, BatchError> {
     let expected_branches = equation
         .params
@@ -1810,6 +1898,7 @@ fn batch_eval_equation_outputs(
 
     match equation.primitive {
         Primitive::Switch => batch_switch_sub_jaxprs(equation, &inputs),
+        Primitive::Cond | Primitive::While => batch_sub_jaxpr_by_slices(equation, &inputs),
         primitive => Err(BatchError::InterpreterError(format!(
             "sub_jaxpr execution is not implemented for {} in BatchTrace",
             primitive.as_str()
@@ -2145,6 +2234,108 @@ mod tests {
                     make_switch_branch_identity_jaxpr(),
                     make_switch_branch_self_binary_jaxpr(Primitive::Add),
                     make_switch_branch_self_binary_jaxpr(Primitive::Mul),
+                ],
+            }],
+        )
+    }
+
+    fn make_cond_branch_add_ten_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(10))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_cond_branch_negate_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec![Atom::Lit(Literal::I64(0)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_cond_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(0), VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Cond,
+                inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![
+                    make_cond_branch_add_ten_jaxpr(),
+                    make_cond_branch_negate_jaxpr(),
+                ],
+            }],
+        )
+    }
+
+    fn make_while_cond_gt_zero_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Gt,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_while_body_sub_two_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(2))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_while_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(1)],
+            vec![Equation {
+                primitive: Primitive::While,
+                inputs: smallvec![Atom::Var(VarId(0))],
+                outputs: smallvec![VarId(1)],
+                params: BTreeMap::from([("max_iter".to_owned(), "8".to_owned())]),
+                effects: vec![],
+                sub_jaxprs: vec![
+                    make_while_cond_gt_zero_jaxpr(),
+                    make_while_body_sub_two_jaxpr(),
                 ],
             }],
         )
@@ -2626,6 +2817,35 @@ mod tests {
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&outputs[0].value), vec![5, 12, 49]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_cond_sub_jaxprs_batched_predicate_selects_per_element_branch() {
+        let jaxpr = make_cond_control_flow_jaxpr();
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::batched(make_i64_vector(&[1, 0, 1]), 0),
+                BatchTracer::batched(make_i64_vector(&[2, 3, 4]), 0),
+            ],
+        )
+        .expect("cond with sub_jaxprs should select branches per batch element");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![12, -3, 14]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_while_sub_jaxprs_batched_carry_runs_per_element_loop() {
+        let jaxpr = make_while_control_flow_jaxpr();
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[BatchTracer::batched(make_i64_vector(&[1, 2, 5]), 0)],
+        )
+        .expect("while with sub_jaxprs should run each batch element independently");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![-1, 0, -1]);
     }
 
     // ── Control Flow Batching Tests ───────────────────────────
