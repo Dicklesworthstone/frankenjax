@@ -3,7 +3,8 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fj_backend_cpu::CpuBackend;
 use fj_core::{
-    Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Value, VarId, build_program,
+    Atom, DType, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Shape, TensorValue, Value,
+    VarId, build_program,
 };
 use fj_interpreters::eval_jaxpr;
 use fj_runtime::backend::Backend;
@@ -129,6 +130,66 @@ fn make_branched_fanin_jaxpr(branches: usize, depth: usize) -> Jaxpr {
     Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
 }
 
+fn make_tensor_branched_fanin_jaxpr(branches: usize, depth: usize) -> Jaxpr {
+    assert!(branches >= 2, "branches must be at least 2");
+    assert!(depth >= 1, "depth must be at least 1");
+
+    let input = VarId(1);
+    let mut next_var = 2_u32;
+    let mut equations = Vec::with_capacity(branches * depth + branches - 1);
+    let mut active = vec![input; branches];
+
+    for _ in 0..depth {
+        for var in &mut active {
+            let out = VarId(next_var);
+            next_var += 1;
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(*var), Atom::Lit(Literal::from_f64(1.0))].into(),
+                outputs: vec![out].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            });
+            *var = out;
+        }
+    }
+
+    while active.len() > 1 {
+        let mut next_level = Vec::with_capacity(active.len().div_ceil(2));
+        for chunk in active.chunks(2) {
+            if chunk.len() == 1 {
+                next_level.push(chunk[0]);
+                continue;
+            }
+            let out = VarId(next_var);
+            next_var += 1;
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(chunk[0]), Atom::Var(chunk[1])].into(),
+                outputs: vec![out].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            });
+            next_level.push(out);
+        }
+        active = next_level;
+    }
+
+    Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
+}
+
+fn vector_f64_arg(len: usize) -> Value {
+    let elements = (0..len)
+        .map(|idx| Literal::from_f64(idx as f64))
+        .collect::<Vec<_>>();
+    Value::Tensor(
+        TensorValue::new(DType::F64, Shape::vector(len as u32), elements)
+            .expect("benchmark tensor should be valid"),
+    )
+}
+
 fn bench_execute_add2(c: &mut Criterion) {
     let backend = CpuBackend::new();
     let jaxpr = build_program(ProgramSpec::Add2);
@@ -208,6 +269,29 @@ fn bench_scheduler_branched_shapes(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_scheduler_tensor_shapes(c: &mut Criterion) {
+    let backend = CpuBackend::new();
+    let mut group = c.benchmark_group("backend_scheduler_tensor_shapes");
+
+    for (branches, depth, len) in [
+        (16_usize, 4_usize, 4_usize),
+        (16, 4, 64),
+        (16, 4, 1024),
+        (16, 4, 4096),
+        (32, 4, 64),
+    ] {
+        let jaxpr = make_tensor_branched_fanin_jaxpr(branches, depth);
+        let args = vec![vector_f64_arg(len)];
+        group.bench_with_input(
+            BenchmarkId::new("tensor_branched_fanin", format!("{branches}x{depth}x{len}")),
+            &jaxpr,
+            |b, jaxpr| b.iter(|| backend.execute(jaxpr, &args, DeviceId(0))),
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_interpreter_wide_parallel(c: &mut Criterion) {
     let jaxpr = make_wide_parallel_jaxpr(64);
     let args = vec![Value::scalar_i64(7)];
@@ -247,6 +331,7 @@ criterion_group!(
     bench_execute_dependency_chain,
     bench_scheduler_cutover,
     bench_scheduler_branched_shapes,
+    bench_scheduler_tensor_shapes,
     bench_interpreter_wide_parallel,
     bench_allocate,
     bench_transfer,

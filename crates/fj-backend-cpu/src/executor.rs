@@ -2,7 +2,7 @@
 //!
 //! The CpuBackend provides the Backend trait implementation for host-CPU
 //! execution. Pure equations whose inputs are already available are evaluated
-//! in dependency waves, with each wave evaluated in parallel.
+//! in dependency waves, with sufficiently large waves evaluated in parallel.
 //!
 //! Contract: p2c006.strict.inv001 (CPU always available).
 
@@ -18,6 +18,14 @@ use rustc_hash::FxHashMap as HashMap;
 // once repeated ready scans dominate long pure segments.
 const DEPENDENCY_COUNT_MIN_SEGMENT_LEN: usize = 128;
 const SCALAR_PARALLEL_READY_WAVE_MIN_LEN: usize = 256;
+const TENSOR_PARALLEL_READY_WAVE_MIN_ELEMENTS: usize = 4_096;
+const TENSOR_PARALLEL_INPUT_MIN_ELEMENTS: usize = 1_024;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ReadyWaveCost {
+    tensor_element_work: usize,
+    max_tensor_elements: usize,
+}
 
 fn equation_inputs_ready(equation: &Equation, env: &HashMap<VarId, Value>) -> bool {
     equation.inputs.iter().all(|atom| match atom {
@@ -86,17 +94,61 @@ fn single_output_var(equation: &Equation) -> Result<VarId, InterpreterError> {
         })
 }
 
-fn ready_wave_has_tensor_input(
+fn atom_tensor_element_count(atom: &Atom, env: &HashMap<VarId, Value>) -> Option<usize> {
+    match atom {
+        Atom::Var(var) => env.get(var).and_then(|value| match value {
+            Value::Tensor(tensor) => Some(tensor.len()),
+            Value::Scalar(_) => None,
+        }),
+        Atom::Lit(_) => None,
+    }
+}
+
+fn ready_wave_cost(
+    jaxpr: &Jaxpr,
+    env: &HashMap<VarId, Value>,
+    ready_indices: &[usize],
+) -> ReadyWaveCost {
+    ready_indices
+        .iter()
+        .fold(ReadyWaveCost::default(), |mut cost, idx| {
+            let equation_work = jaxpr.equations[*idx]
+                .inputs
+                .iter()
+                .filter_map(|atom| atom_tensor_element_count(atom, env))
+                .max()
+                .unwrap_or(0);
+            cost.tensor_element_work = cost.tensor_element_work.saturating_add(equation_work);
+            cost.max_tensor_elements = cost.max_tensor_elements.max(equation_work);
+            cost
+        })
+}
+
+fn should_parallelize_ready_wave_by_cost(
+    ready_len: usize,
+    tensor_element_work: usize,
+    max_tensor_elements: usize,
+    available_threads: usize,
+) -> bool {
+    ready_len > 1
+        && available_threads > 1
+        && (ready_len >= SCALAR_PARALLEL_READY_WAVE_MIN_LEN
+            || tensor_element_work >= TENSOR_PARALLEL_READY_WAVE_MIN_ELEMENTS
+            || max_tensor_elements >= TENSOR_PARALLEL_INPUT_MIN_ELEMENTS)
+}
+
+fn should_parallelize_ready_wave(
     jaxpr: &Jaxpr,
     env: &HashMap<VarId, Value>,
     ready_indices: &[usize],
 ) -> bool {
-    ready_indices.iter().any(|idx| {
-        jaxpr.equations[*idx].inputs.iter().any(|atom| match atom {
-            Atom::Var(var) => matches!(env.get(var), Some(Value::Tensor(_))),
-            Atom::Lit(_) => false,
-        })
-    })
+    let cost = ready_wave_cost(jaxpr, env, ready_indices);
+    should_parallelize_ready_wave_by_cost(
+        ready_indices.len(),
+        cost.tensor_element_work,
+        cost.max_tensor_elements,
+        rayon::current_num_threads(),
+    )
 }
 
 fn execute_ready_wave(
@@ -106,10 +158,7 @@ fn execute_ready_wave(
     remaining: &mut usize,
     ready_indices: &[usize],
 ) -> Result<(), InterpreterError> {
-    let should_parallelize = ready_indices.len() > 1
-        && rayon::current_num_threads() > 1
-        && (ready_indices.len() >= SCALAR_PARALLEL_READY_WAVE_MIN_LEN
-            || ready_wave_has_tensor_input(jaxpr, env, ready_indices));
+    let should_parallelize = should_parallelize_ready_wave(jaxpr, env, ready_indices);
 
     if should_parallelize {
         // No env.clone() needed: the parallel phase only reads from env.
@@ -530,7 +579,10 @@ impl Backend for CpuBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, VarId, build_program};
+    use fj_core::{
+        Atom, DType, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Shape, TensorValue, VarId,
+        build_program,
+    };
     use std::collections::BTreeMap;
 
     fn make_parallel_independent_jaxpr() -> Jaxpr {
@@ -759,6 +811,37 @@ mod tests {
         Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
     }
 
+    fn make_tensor_ready_wave_jaxpr(width: usize) -> Jaxpr {
+        let input = VarId(1);
+        let mut equations = Vec::with_capacity(width);
+        let mut outputs = Vec::with_capacity(width);
+
+        for next_var in (2_u32..).take(width) {
+            let out = VarId(next_var);
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(input), Atom::Lit(Literal::from_f64(1.0))].into(),
+                outputs: vec![out].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            });
+            outputs.push(out);
+        }
+
+        Jaxpr::new(vec![input], vec![], outputs, equations)
+    }
+
+    fn vector_f64_arg(len: usize) -> Value {
+        let elements = (0..len)
+            .map(|idx| Literal::from_f64(idx as f64))
+            .collect::<Vec<_>>();
+        Value::Tensor(
+            TensorValue::new(DType::F64, Shape::vector(len as u32), elements)
+                .expect("test tensor should be valid"),
+        )
+    }
+
     fn make_long_missing_dependency_jaxpr(length: usize) -> Jaxpr {
         let mut equations = Vec::with_capacity(length);
         let mut current = VarId(99);
@@ -977,6 +1060,61 @@ mod tests {
         );
         assert_eq!(jaxpr.equations.len(), branches * depth + branches - 1);
         assert_eq!(max_ready_wave, branches);
+    }
+
+    #[test]
+    fn ready_wave_tensor_work_counts_one_output_work_unit_per_equation() {
+        let jaxpr = make_tensor_ready_wave_jaxpr(4);
+        let mut env = HashMap::with_capacity_and_hasher(1, Default::default());
+        env.insert(VarId(1), vector_f64_arg(8));
+
+        assert_eq!(
+            ready_wave_cost(&jaxpr, &env, &[0, 1, 2, 3]),
+            ReadyWaveCost {
+                tensor_element_work: 32,
+                max_tensor_elements: 8
+            }
+        );
+    }
+
+    #[test]
+    fn ready_wave_parallel_cost_gate_requires_enough_work() {
+        assert!(!should_parallelize_ready_wave_by_cost(
+            1,
+            usize::MAX,
+            usize::MAX,
+            4
+        ));
+        assert!(!should_parallelize_ready_wave_by_cost(
+            SCALAR_PARALLEL_READY_WAVE_MIN_LEN,
+            0,
+            0,
+            1
+        ));
+        assert!(should_parallelize_ready_wave_by_cost(
+            SCALAR_PARALLEL_READY_WAVE_MIN_LEN,
+            0,
+            0,
+            4
+        ));
+        assert!(!should_parallelize_ready_wave_by_cost(
+            16,
+            TENSOR_PARALLEL_READY_WAVE_MIN_ELEMENTS - 1,
+            TENSOR_PARALLEL_INPUT_MIN_ELEMENTS - 1,
+            4
+        ));
+        assert!(should_parallelize_ready_wave_by_cost(
+            16,
+            TENSOR_PARALLEL_READY_WAVE_MIN_ELEMENTS,
+            TENSOR_PARALLEL_INPUT_MIN_ELEMENTS - 1,
+            4
+        ));
+        assert!(should_parallelize_ready_wave_by_cost(
+            2,
+            0,
+            TENSOR_PARALLEL_INPUT_MIN_ELEMENTS,
+            4
+        ));
     }
 
     #[test]
