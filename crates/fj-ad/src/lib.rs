@@ -418,6 +418,20 @@ fn value_mul(a: &Value, b: &Value) -> Result<Value, AdError> {
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
+fn value_dot(a: &Value, b: &Value) -> Result<Value, AdError> {
+    eval_primitive(Primitive::Dot, &[a.clone(), b.clone()], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+fn value_reduce_sum_all(value: &Value) -> Result<Value, AdError> {
+    eval_primitive(
+        Primitive::ReduceSum,
+        std::slice::from_ref(value),
+        &BTreeMap::new(),
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 fn value_neg(a: &Value) -> Result<Value, AdError> {
     eval_primitive(Primitive::Neg, std::slice::from_ref(a), &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -666,6 +680,90 @@ fn transpose_2d(a: &TensorValue) -> Result<Value, AdError> {
     )
     .map(Value::Tensor)
     .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+fn vector_elements_f64(tensor: &TensorValue, context: &'static str) -> Result<Vec<f64>, AdError> {
+    if tensor.shape.rank() != 1 {
+        return Err(AdError::EvalFailed(format!(
+            "{context}: expected rank-1 tensor, got rank-{}",
+            tensor.shape.rank()
+        )));
+    }
+    tensor
+        .elements
+        .iter()
+        .map(|lit| {
+            lit.as_f64()
+                .ok_or_else(|| AdError::EvalFailed(format!("{context}: expected numeric tensor")))
+        })
+        .collect()
+}
+
+fn outer_product(lhs: &Value, rhs: &Value, context: &'static str) -> Result<Value, AdError> {
+    let lhs_tensor = tensor_value(lhs, context)?;
+    let rhs_tensor = tensor_value(rhs, context)?;
+    let lhs_values = vector_elements_f64(lhs_tensor, context)?;
+    let rhs_values = vector_elements_f64(rhs_tensor, context)?;
+    let mut elements = Vec::with_capacity(lhs_values.len() * rhs_values.len());
+    for lhs_value in &lhs_values {
+        for rhs_value in &rhs_values {
+            elements.push(Literal::from_f64(lhs_value * rhs_value));
+        }
+    }
+    TensorValue::new(
+        DType::F64,
+        Shape {
+            dims: vec![lhs_values.len() as u32, rhs_values.len() as u32],
+        },
+        elements,
+    )
+    .map(Value::Tensor)
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+fn dot_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
+    let a = &inputs[0];
+    let b = &inputs[1];
+    match (a, b) {
+        (Value::Scalar(_), Value::Scalar(_)) => Ok(vec![value_mul(g, b)?, value_mul(g, a)?]),
+        (Value::Scalar(_), Value::Tensor(_)) => {
+            let da = value_reduce_sum_all(&value_mul(g, b)?)?;
+            let db = value_mul(g, a)?;
+            Ok(vec![da, db])
+        }
+        (Value::Tensor(_), Value::Scalar(_)) => {
+            let da = value_mul(g, b)?;
+            let db = value_reduce_sum_all(&value_mul(g, a)?)?;
+            Ok(vec![da, db])
+        }
+        (Value::Tensor(a_tensor), Value::Tensor(b_tensor)) => {
+            match (a_tensor.rank(), b_tensor.rank()) {
+                (1, 1) => Ok(vec![value_mul(g, b)?, value_mul(g, a)?]),
+                (2, 1) => {
+                    let da = outer_product(g, b, "dot VJP matrix-vector lhs cotangent")?;
+                    let a_t = transpose_2d(a_tensor)?;
+                    let db = value_dot(&a_t, g)?;
+                    Ok(vec![da, db])
+                }
+                (1, 2) => {
+                    let b_t = transpose_2d(b_tensor)?;
+                    let da = value_dot(g, &b_t)?;
+                    let db = outer_product(a, g, "dot VJP vector-matrix rhs cotangent")?;
+                    Ok(vec![da, db])
+                }
+                (2, 2) => {
+                    let b_t = transpose_2d(b_tensor)?;
+                    let da = value_dot(g, &b_t)?;
+                    let a_t = transpose_2d(a_tensor)?;
+                    let db = value_dot(&a_t, g)?;
+                    Ok(vec![da, db])
+                }
+                (a_rank, b_rank) => Err(AdError::EvalFailed(format!(
+                    "dot VJP supports scalar, vector, and rank-2 tensor inputs; got ranks {a_rank} and {b_rank}"
+                ))),
+            }
+        }
+    }
 }
 
 /// Extract the lower triangle (including diagonal) of a square matrix.
@@ -1270,13 +1368,7 @@ pub fn vjp(
             // Bitwise reductions are non-differentiable.
             Ok(vec![zeros_like(&inputs[0])])
         }
-        Primitive::Dot => {
-            let a = &inputs[0];
-            let b = &inputs[1];
-            // Scalar case: dot(a,b) = a*b
-            // Vector case: dot(a,b) = sum(a*b), cotangents = (g*b, g*a)
-            Ok(vec![value_mul(g, b)?, value_mul(g, a)?])
-        }
+        Primitive::Dot => dot_vjp(inputs, g),
         // Comparison ops have zero gradient
         Primitive::Eq
         | Primitive::Ne
@@ -6556,6 +6648,83 @@ mod tests {
             .iter()
             .map(|lit| lit.as_f64().expect("expected numeric literal"))
             .collect()
+    }
+
+    fn tensor_f64(dims: &[u32], values: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: dims.to_vec(),
+                },
+                values.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .expect("test tensor shape should match element count"),
+        )
+    }
+
+    fn assert_tensor_f64(value: &Value, dims: &[u32], expected: &[f64]) {
+        let tensor = expect_tensor_ref(value, "assert_tensor_f64");
+        assert_eq!(tensor.shape.dims.as_slice(), dims);
+        let actual = tensor_f64_values(value);
+        assert_eq!(actual.len(), expected.len());
+        for (index, (actual_value, expected_value)) in actual.iter().zip(expected).enumerate() {
+            assert!(
+                (actual_value - expected_value).abs() < 1e-10,
+                "element {index}: actual={actual_value}, expected={expected_value}"
+            );
+        }
+    }
+
+    #[test]
+    fn vjp_dot_scalar_tensor_reduces_scalar_cotangent() {
+        let scalar = Value::scalar_f64(2.0);
+        let tensor = tensor_f64(&[2], &[3.0, 4.0]);
+        let g = tensor_f64(&[2], &[0.5, -1.0]);
+
+        let grads = vjp_single(Primitive::Dot, &[scalar, tensor], &g, &BTreeMap::new()).unwrap();
+
+        let scalar_grad = grads[0]
+            .as_f64_scalar()
+            .expect("scalar input cotangent should be scalar");
+        assert!((scalar_grad - (-2.5)).abs() < 1e-10);
+        assert_tensor_f64(&grads[1], &[2], &[1.0, -2.0]);
+    }
+
+    #[test]
+    fn vjp_dot_matrix_vector_rank2() {
+        let matrix = tensor_f64(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let vector = tensor_f64(&[3], &[7.0, 8.0, 9.0]);
+        let g = tensor_f64(&[2], &[0.5, -1.0]);
+
+        let grads = vjp_single(Primitive::Dot, &[matrix, vector], &g, &BTreeMap::new()).unwrap();
+
+        assert_tensor_f64(&grads[0], &[2, 3], &[3.5, 4.0, 4.5, -7.0, -8.0, -9.0]);
+        assert_tensor_f64(&grads[1], &[3], &[-3.5, -4.0, -4.5]);
+    }
+
+    #[test]
+    fn vjp_dot_vector_matrix_rank2() {
+        let vector = tensor_f64(&[3], &[1.0, 2.0, 3.0]);
+        let matrix = tensor_f64(&[3, 2], &[4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let g = tensor_f64(&[2], &[0.5, -1.0]);
+
+        let grads = vjp_single(Primitive::Dot, &[vector, matrix], &g, &BTreeMap::new()).unwrap();
+
+        assert_tensor_f64(&grads[0], &[3], &[-3.0, -4.0, -5.0]);
+        assert_tensor_f64(&grads[1], &[3, 2], &[0.5, -1.0, 1.0, -2.0, 1.5, -3.0]);
+    }
+
+    #[test]
+    fn vjp_dot_matrix_matrix_rank2() {
+        let lhs = tensor_f64(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let rhs = tensor_f64(&[3, 2], &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let g = tensor_f64(&[2, 2], &[0.5, -1.0, 2.0, 3.0]);
+
+        let grads = vjp_single(Primitive::Dot, &[lhs, rhs], &g, &BTreeMap::new()).unwrap();
+
+        assert_tensor_f64(&grads[0], &[2, 3], &[-4.5, -5.5, -6.5, 38.0, 48.0, 58.0]);
+        assert_tensor_f64(&grads[1], &[3, 2], &[8.5, 11.0, 11.0, 13.0, 13.5, 15.0]);
     }
 
     fn scalar_complex128(value: &Value) -> (f64, f64) {
