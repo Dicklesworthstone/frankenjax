@@ -3800,6 +3800,113 @@ fn reduce_prod_vjp_tensor(
     ))
 }
 
+fn reduce_prod_jvp_value(
+    primal: &Value,
+    tangent: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    match (primal, tangent) {
+        (Value::Scalar(_), Value::Scalar(tangent_literal)) => {
+            let _axes = parse_reduce_axes(params, 0, Primitive::ReduceProd)?;
+            let tangent = tangent_literal.as_f64().ok_or_else(|| {
+                AdError::EvalFailed("reduce_prod tangent must be numeric".to_owned())
+            })?;
+            Ok(Value::scalar_f64(tangent))
+        }
+        (Value::Tensor(primal_tensor), Value::Tensor(tangent_tensor)) => {
+            reduce_prod_jvp_tensor(primal_tensor, tangent_tensor, params)
+        }
+        _ => Err(AdError::EvalFailed(
+            "reduce_prod primal and tangent must have matching scalar/tensor structure".to_owned(),
+        )),
+    }
+}
+
+fn reduce_prod_jvp_tensor(
+    primal: &TensorValue,
+    tangent: &TensorValue,
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    if primal.elements.len() != tangent.elements.len() || primal.shape != tangent.shape {
+        return Err(AdError::EvalFailed(format!(
+            "reduce_prod tangent shape mismatch: expected {:?} with {} elements, got {:?} with {} elements",
+            primal.shape,
+            primal.elements.len(),
+            tangent.shape,
+            tangent.elements.len()
+        )));
+    }
+
+    let rank = primal.shape.rank();
+    let reduce_axes = match parse_reduce_axes(params, rank, Primitive::ReduceProd)? {
+        Some(axes) if axes.is_empty() => return Ok(Value::Tensor(tangent.clone())),
+        Some(axes) => axes,
+        None => (0..rank).collect(),
+    };
+    let mut reduced_axis = vec![false; rank];
+    for axis in &reduce_axes {
+        reduced_axis[*axis] = true;
+    }
+    let kept_axes = (0..rank)
+        .filter(|axis| !reduced_axis[*axis])
+        .collect::<Vec<_>>();
+    let out_dims = kept_axes
+        .iter()
+        .map(|axis| primal.shape.dims[*axis])
+        .collect::<Vec<_>>();
+    let out_count = if out_dims.is_empty() {
+        1
+    } else {
+        out_dims.iter().map(|dim| *dim as usize).product()
+    };
+
+    let strides = ad_row_major_strides(&primal.shape.dims);
+    let mut product_nonzero = vec![1.0_f64; out_count];
+    let mut zero_counts = vec![0_usize; out_count];
+    let mut element_terms = Vec::with_capacity(primal.elements.len());
+
+    for (flat_idx, (primal_literal, tangent_literal)) in primal
+        .elements
+        .iter()
+        .zip(tangent.elements.iter())
+        .enumerate()
+    {
+        let primal_value = primal_literal
+            .as_f64()
+            .ok_or_else(|| AdError::EvalFailed("reduce_prod input must be numeric".to_owned()))?;
+        let tangent_value = tangent_literal
+            .as_f64()
+            .ok_or_else(|| AdError::EvalFailed("reduce_prod tangent must be numeric".to_owned()))?;
+        let multi = ad_flat_to_multi(flat_idx, &strides);
+        let out_idx = ad_multi_to_kept_flat(&multi, &kept_axes, &out_dims);
+        element_terms.push((out_idx, primal_value, tangent_value));
+        if primal_value.abs() < f64::EPSILON {
+            zero_counts[out_idx] += 1;
+        } else {
+            product_nonzero[out_idx] *= primal_value;
+        }
+    }
+
+    let mut output = vec![0.0_f64; out_count];
+    for (out_idx, primal_value, tangent_value) in element_terms {
+        output[out_idx] += match zero_counts[out_idx] {
+            0 => tangent_value * product_nonzero[out_idx] / primal_value,
+            1 if primal_value.abs() < f64::EPSILON => tangent_value * product_nonzero[out_idx],
+            _ => 0.0,
+        };
+    }
+
+    if out_dims.is_empty() {
+        return Ok(Value::scalar_f64(output[0]));
+    }
+
+    let elements = output.into_iter().map(Literal::from_f64).collect();
+    Ok(Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: out_dims }, elements)
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?,
+    ))
+}
+
 fn to_f64(value: &Value) -> Result<f64, AdError> {
     value
         .as_f64_scalar()
@@ -4588,10 +4695,7 @@ fn jvp_rule(
             // Simplified: pass tangent through same reduction
             ep_p(primitive, &[tangents[0].clone()], params)
         }
-        Primitive::ReduceProd => {
-            // For reduce_prod, tangent = sum(prod/x_i * dx_i) — simplified as pass-through
-            ep_p(Primitive::ReduceSum, &[tangents[0].clone()], params)
-        }
+        Primitive::ReduceProd => reduce_prod_jvp_value(&primals[0], &tangents[0], params),
         Primitive::ReduceAnd | Primitive::ReduceOr | Primitive::ReduceXor => {
             // Bitwise reductions are non-differentiable: tangent is structurally zero.
             let primal_out = ep_p(primitive, primals, params)?;
@@ -9492,6 +9596,116 @@ mod tests {
             .as_f64_scalar()
             .expect("should reduce to scalar");
         assert!((val - 0.6).abs() < 1e-10, "got {val}"); // 0.1 + 0.2 + 0.3
+    }
+
+    #[test]
+    fn test_jvp_reduce_prod_full_reduction_uses_primal_products() {
+        let params = BTreeMap::new();
+
+        let x = Value::vector_f64(&[2.0, 3.0, 4.0]).expect("vector");
+        let dx = Value::vector_f64(&[0.5, 1.0, 1.5]).expect("vector");
+
+        let tangent_out = jvp_rule(Primitive::ReduceProd, &[x], &[dx], &params).expect("jvp");
+
+        let val = tangent_out
+            .as_f64_scalar()
+            .expect("full reduction should produce a scalar");
+        assert!((val - 23.0).abs() < 1e-10, "got {val}");
+    }
+
+    #[test]
+    fn test_jvp_reduce_prod_axis0_zero_aware() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(5.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(0.5),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(1.5),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "0".into());
+
+        let tangent_out = jvp_rule(Primitive::ReduceProd, &[x], &[dx], &params).expect("jvp");
+
+        let tensor = tangent_out
+            .as_tensor()
+            .expect("partial reduction should produce a tensor");
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(
+            tensor.to_f64_vec().expect("f64 elements"),
+            vec![3.5, 9.0, 12.0]
+        );
+    }
+
+    #[test]
+    fn test_jvp_reduce_prod_axis1_zero_aware() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(0.5),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(1.5),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "1".into());
+
+        let tangent_out = jvp_rule(Primitive::ReduceProd, &[x], &[dx], &params).expect("jvp");
+
+        let tensor = tangent_out
+            .as_tensor()
+            .expect("partial reduction should produce a tensor");
+        assert_eq!(tensor.shape.dims, vec![2]);
+        assert_eq!(tensor.to_f64_vec().expect("f64 elements"), vec![9.0, 72.0]);
     }
 
     #[test]
