@@ -2146,7 +2146,12 @@ fn batch_qr_multi(
     }
 
     let batch_size = get_batch_size(&input.value, batch_dim)?;
-    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let moved_value = if batch_dim == 0 {
+        None
+    } else {
+        Some(move_batch_dim_to_front(&input.value, batch_dim)?)
+    };
+    let value = moved_value.as_ref().unwrap_or(&input.value);
     let tensor = value
         .as_tensor()
         .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for qr".to_owned()))?;
