@@ -2461,7 +2461,7 @@ mod tests {
             std::panic::resume_unwind(payload);
         }
         if let Some(detail) = failure_detail {
-            panic!("{detail}");
+            std::panic::panic_any(detail);
         }
     }
 
@@ -4352,10 +4352,7 @@ mod tests {
     #[test]
     fn value_scalar_bool_construction() {
         let v = Value::scalar_bool(true);
-        match v {
-            Value::Scalar(Literal::Bool(b)) => assert!(b),
-            _ => panic!("expected bool scalar"),
-        }
+        assert!(matches!(v, Value::Scalar(Literal::Bool(true))));
     }
 
     #[test]
