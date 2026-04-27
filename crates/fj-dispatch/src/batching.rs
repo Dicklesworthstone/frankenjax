@@ -4,7 +4,7 @@
 //! dimension metadata through primitives via per-primitive batching rules,
 //! achieving O(1) vectorized execution matching JAX's `BatchTrace` semantics.
 
-use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_interpreters::{eval_equation_outputs, eval_jaxpr_with_consts};
 use fj_lax::{eval_primitive, eval_primitive_multi, promote_dtype_public};
 use rustc_hash::FxHashMap;
@@ -720,6 +720,10 @@ fn batch_dot(
             // Both batched: move both to front, loop
             let a_val = move_batch_dim_to_front(&a.value, bd_a)?;
             let b_val = move_batch_dim_to_front(&b.value, bd_b)?;
+            if let Some(result) = batch_paired_f64_dot(&a_val, &b_val)? {
+                return Ok(result);
+            }
+
             let batch_size = get_batch_size(&a_val, 0)?;
             let a_tensor = a_val
                 .as_tensor()
@@ -745,6 +749,141 @@ fn batch_dot(
             Ok(BatchTracer::batched(Value::Tensor(stacked), 0))
         }
     }
+}
+
+fn batch_paired_f64_dot(
+    lhs_value: &Value,
+    rhs_value: &Value,
+) -> Result<Option<BatchTracer>, BatchError> {
+    let (Value::Tensor(lhs), Value::Tensor(rhs)) = (lhs_value, rhs_value) else {
+        return Ok(None);
+    };
+
+    if lhs.dtype != DType::F64 || rhs.dtype != DType::F64 {
+        return Ok(None);
+    }
+
+    if lhs.rank() < 2 || rhs.rank() < 2 || lhs.shape.dims[0] != rhs.shape.dims[0] {
+        return Ok(None);
+    }
+
+    let batch = lhs.shape.dims[0] as usize;
+    let output = match (lhs.rank(), rhs.rank()) {
+        (2, 2) => {
+            let k = lhs.shape.dims[1] as usize;
+            if rhs.shape.dims[1] as usize != k {
+                return Ok(None);
+            }
+            let mut elements = Vec::with_capacity(batch);
+            for batch_idx in 0..batch {
+                let mut sum = 0.0;
+                for kk in 0..k {
+                    sum += f64_tensor_element(lhs, batch_idx * k + kk)?
+                        * f64_tensor_element(rhs, batch_idx * k + kk)?;
+                }
+                elements.push(Literal::from_f64(sum));
+            }
+            TensorValue::new(DType::F64, Shape::vector(batch as u32), elements)
+        }
+        (3, 2) => {
+            let rows = lhs.shape.dims[1] as usize;
+            let k = lhs.shape.dims[2] as usize;
+            if rhs.shape.dims[1] as usize != k {
+                return Ok(None);
+            }
+            let mut elements = Vec::with_capacity(batch * rows);
+            for batch_idx in 0..batch {
+                for row in 0..rows {
+                    let mut sum = 0.0;
+                    for kk in 0..k {
+                        let lhs_idx = (batch_idx * rows + row) * k + kk;
+                        let rhs_idx = batch_idx * k + kk;
+                        sum +=
+                            f64_tensor_element(lhs, lhs_idx)? * f64_tensor_element(rhs, rhs_idx)?;
+                    }
+                    elements.push(Literal::from_f64(sum));
+                }
+            }
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![batch as u32, rows as u32],
+                },
+                elements,
+            )
+        }
+        (2, 3) => {
+            let k = lhs.shape.dims[1] as usize;
+            let cols = rhs.shape.dims[2] as usize;
+            if rhs.shape.dims[1] as usize != k {
+                return Ok(None);
+            }
+            let mut elements = Vec::with_capacity(batch * cols);
+            for batch_idx in 0..batch {
+                for col in 0..cols {
+                    let mut sum = 0.0;
+                    for kk in 0..k {
+                        let lhs_idx = batch_idx * k + kk;
+                        let rhs_idx = (batch_idx * k + kk) * cols + col;
+                        sum +=
+                            f64_tensor_element(lhs, lhs_idx)? * f64_tensor_element(rhs, rhs_idx)?;
+                    }
+                    elements.push(Literal::from_f64(sum));
+                }
+            }
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![batch as u32, cols as u32],
+                },
+                elements,
+            )
+        }
+        (3, 3) => {
+            let rows = lhs.shape.dims[1] as usize;
+            let k = lhs.shape.dims[2] as usize;
+            let cols = rhs.shape.dims[2] as usize;
+            if rhs.shape.dims[1] as usize != k {
+                return Ok(None);
+            }
+            let mut elements = Vec::with_capacity(batch * rows * cols);
+            for batch_idx in 0..batch {
+                for row in 0..rows {
+                    for col in 0..cols {
+                        let mut sum = 0.0;
+                        for kk in 0..k {
+                            let lhs_idx = (batch_idx * rows + row) * k + kk;
+                            let rhs_idx = (batch_idx * k + kk) * cols + col;
+                            sum += f64_tensor_element(lhs, lhs_idx)?
+                                * f64_tensor_element(rhs, rhs_idx)?;
+                        }
+                        elements.push(Literal::from_f64(sum));
+                    }
+                }
+            }
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![batch as u32, rows as u32, cols as u32],
+                },
+                elements,
+            )
+        }
+        _ => return Ok(None),
+    }
+    .map_err(|e| BatchError::TensorError(e.to_string()))?;
+
+    Ok(Some(BatchTracer::batched(Value::Tensor(output), 0)))
+}
+
+fn f64_tensor_element(tensor: &TensorValue, index: usize) -> Result<f64, BatchError> {
+    tensor
+        .elements
+        .get(index)
+        .and_then(|literal| literal.as_f64())
+        .ok_or_else(|| {
+            BatchError::EvalError("type mismatch for dot: expected f64 tensor elements".to_owned())
+        })
 }
 
 fn dot_lhs_single_batch_can_eval_direct(lhs_value: &Value, rhs_value: &Value) -> bool {
@@ -3686,6 +3825,102 @@ mod tests {
 
         assert_dot_matches_slice_oracle(&result, &[lhs.clone(), lhs], &[rhs0, rhs1]);
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_batch_trace_dot_paired_batched_vectors_direct() {
+        let lhs0 = make_f64_vector(&[1.0, 2.0, 3.0]);
+        let lhs1 = make_f64_vector(&[7.0, 8.0, 9.0]);
+        let rhs0 = make_f64_vector(&[4.0, 5.0, 6.0]);
+        let rhs1 = make_f64_vector(&[1.0, 0.0, 2.0]);
+        let lhs = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0]), 0);
+        let rhs = BatchTracer::batched(make_f64_matrix(2, 3, &[4.0, 5.0, 6.0, 1.0, 0.0, 2.0]), 0);
+
+        let result = apply_batch_rule(Primitive::Dot, &[lhs, rhs], &BTreeMap::new()).unwrap();
+
+        assert_dot_matches_slice_oracle(&result, &[lhs0, lhs1], &[rhs0, rhs1]);
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2]);
+    }
+
+    #[test]
+    fn test_batch_trace_dot_paired_batched_matrix_vector_direct() {
+        let lhs0 = make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let lhs1 = make_f64_matrix(2, 3, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let rhs0 = make_f64_vector(&[1.0, 0.0, 2.0]);
+        let rhs1 = make_f64_vector(&[0.0, 1.0, 3.0]);
+        let lhs = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 3],
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // batch element 0
+                    7.0, 8.0, 9.0, 10.0, 11.0, 12.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+        let rhs = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 0.0, 2.0, 0.0, 1.0, 3.0]), 0);
+
+        let result = apply_batch_rule(Primitive::Dot, &[lhs, rhs], &BTreeMap::new()).unwrap();
+
+        assert_dot_matches_slice_oracle(&result, &[lhs0, lhs1], &[rhs0, rhs1]);
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_batch_trace_dot_paired_batched_vector_matrix_direct() {
+        let lhs0 = make_f64_vector(&[1.0, 2.0, 3.0]);
+        let lhs1 = make_f64_vector(&[7.0, 8.0, 9.0]);
+        let rhs0 = make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 2.0, 3.0]);
+        let rhs1 = make_f64_matrix(3, 2, &[2.0, 1.0, 1.0, 0.0, 0.0, 2.0]);
+        let lhs = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 7.0, 8.0, 9.0]), 0);
+        let rhs = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 3, 2],
+                &[
+                    1.0, 0.0, 0.0, 1.0, 2.0, 3.0, // batch element 0
+                    2.0, 1.0, 1.0, 0.0, 0.0, 2.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Dot, &[lhs, rhs], &BTreeMap::new()).unwrap();
+
+        assert_dot_matches_slice_oracle(&result, &[lhs0, lhs1], &[rhs0, rhs1]);
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+    }
+
+    #[test]
+    fn test_batch_trace_dot_paired_batched_matrix_matrix_direct() {
+        let lhs0 = make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let lhs1 = make_f64_matrix(2, 3, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]);
+        let rhs0 = make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 2.0, 3.0]);
+        let rhs1 = make_f64_matrix(3, 2, &[2.0, 1.0, 1.0, 0.0, 0.0, 2.0]);
+        let lhs = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 3],
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // batch element 0
+                    7.0, 8.0, 9.0, 10.0, 11.0, 12.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+        let rhs = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 3, 2],
+                &[
+                    1.0, 0.0, 0.0, 1.0, 2.0, 3.0, // batch element 0
+                    2.0, 1.0, 1.0, 0.0, 0.0, 2.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Dot, &[lhs, rhs], &BTreeMap::new()).unwrap();
+
+        assert_dot_matches_slice_oracle(&result, &[lhs0, lhs1], &[rhs0, rhs1]);
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2, 2]);
     }
 
     // ── Transpose Tests ────────────────────────────────────────
