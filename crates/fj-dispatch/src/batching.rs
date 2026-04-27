@@ -999,10 +999,15 @@ fn batch_pad(
     // Move batch to front
     let value = move_batch_dim_to_front(&input.value, batch_dim)?;
 
-    // Parse padding config: low, high, interior per dimension
+    // Parse padding config: low, high, interior per dimension.
+    // fj-lax and fj-trace default omitted interior padding to zero.
     let low = parse_param_i64_list(params, "padding_low")?;
     let high = parse_param_i64_list(params, "padding_high")?;
-    let interior = parse_param_i64_list(params, "padding_interior")?;
+    let interior = match params.get("padding_interior") {
+        None => vec![0_i64; low.len()],
+        Some(raw) if is_empty_list(raw) => vec![0_i64; low.len()],
+        Some(raw) => parse_i64_list(raw, "padding_interior")?,
+    };
 
     // Prepend zero padding for batch dimension
     let mut new_low = vec![0_i64];
@@ -2989,6 +2994,25 @@ mod tests {
         // Pad is complex — just verify it doesn't panic with trivial params
         // Real pad tests require matching padding config format
         assert!(input.batch_dim.is_some());
+    }
+
+    #[test]
+    fn test_batch_trace_pad_defaults_interior_padding() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let pad_value = BatchTracer::unbatched(Value::scalar_f64(0.0));
+        let params = BTreeMap::from([
+            ("padding_low".to_owned(), "1".to_owned()),
+            ("padding_high".to_owned(), "1".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::Pad, &[input, pad_value], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 5]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![0.0, 1.0, 2.0, 3.0, 0.0, 0.0, 4.0, 5.0, 6.0, 0.0]
+        );
     }
 
     // ── Nested Vmap Test ───────────────────────────────────────
