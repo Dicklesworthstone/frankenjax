@@ -4809,7 +4809,10 @@ fn jvp_rule(
         | Primitive::Lt
         | Primitive::Le
         | Primitive::Gt
-        | Primitive::Ge => Ok(zeros_like(&primals[0])),
+        | Primitive::Ge => {
+            let primal_out = ep(primitive, primals)?;
+            Ok(zeros_like(&primal_out))
+        }
 
         // ── Reduction: apply same reduction to tangent ──
         Primitive::ReduceSum => ep_p(Primitive::ReduceSum, &[tangents[0].clone()], params),
@@ -9719,6 +9722,56 @@ mod tests {
             .as_f64_scalar()
             .expect("should reduce to scalar");
         assert!((val - 0.6).abs() < 1e-10, "got {val}"); // 0.1 + 0.2 + 0.3
+    }
+
+    #[test]
+    fn test_jvp_comparison_scalar_tensor_zero_tangent_shape() {
+        let params = BTreeMap::new();
+
+        let rhs = Value::vector_f64(&[1.0, 3.0, 5.0]).expect("vector");
+        let drhs = Value::vector_f64(&[0.1, 0.2, 0.3]).expect("vector");
+
+        let tangent_out = jvp_rule(
+            Primitive::Lt,
+            &[Value::scalar_f64(2.0), rhs],
+            &[Value::scalar_f64(0.5), drhs],
+            &params,
+        )
+        .expect("jvp");
+
+        let tensor = tangent_out
+            .as_tensor()
+            .expect("comparison tangent should follow broadcast output shape");
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(
+            tensor.to_f64_vec().expect("f64 elements"),
+            vec![0.0, 0.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn test_jvp_comparison_tensor_scalar_zero_tangent_shape() {
+        let params = BTreeMap::new();
+
+        let lhs = Value::vector_f64(&[1.0, 3.0, 5.0]).expect("vector");
+        let dlhs = Value::vector_f64(&[0.1, 0.2, 0.3]).expect("vector");
+
+        let tangent_out = jvp_rule(
+            Primitive::Ge,
+            &[lhs, Value::scalar_f64(2.0)],
+            &[dlhs, Value::scalar_f64(0.5)],
+            &params,
+        )
+        .expect("jvp");
+
+        let tensor = tangent_out
+            .as_tensor()
+            .expect("comparison tangent should follow broadcast output shape");
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(
+            tensor.to_f64_vec().expect("f64 elements"),
+            vec![0.0, 0.0, 0.0]
+        );
     }
 
     #[test]
