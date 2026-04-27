@@ -3268,6 +3268,17 @@ fn cond_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
 /// For Mul: d(carry)/d(xs[i]) = g * carry_final / xs[i]
 ///          d(carry)/d(init) = g * prod(xs)
 /// General: chain rule through each step.
+fn scan_body_op_for_ad(body_op_name: &str) -> Option<Primitive> {
+    match body_op_name {
+        "add" => Some(Primitive::Add),
+        "sub" => Some(Primitive::Sub),
+        "mul" => Some(Primitive::Mul),
+        "max" => Some(Primitive::Max),
+        "min" => Some(Primitive::Min),
+        _ => None,
+    }
+}
+
 fn scan_vjp(
     inputs: &[Value],
     g: &Value,
@@ -3284,14 +3295,8 @@ fn scan_vjp(
     let xs = &inputs[1];
 
     let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
-    let body_op = match body_op_name {
-        "add" => Primitive::Add,
-        "sub" => Primitive::Sub,
-        "mul" => Primitive::Mul,
-        "max" => Primitive::Max,
-        "min" => Primitive::Min,
-        _ => return Err(AdError::UnsupportedPrimitive(Primitive::Scan)),
-    };
+    let body_op =
+        scan_body_op_for_ad(body_op_name).ok_or(AdError::UnsupportedPrimitive(Primitive::Scan))?;
 
     let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
 
@@ -3396,6 +3401,104 @@ fn scan_vjp(
     );
 
     Ok(vec![g_carry, g_xs])
+}
+
+fn scan_jvp(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    if primals.len() < 2 {
+        return Err(AdError::InputArity {
+            expected: 2,
+            actual: primals.len(),
+        });
+    }
+    if tangents.len() < 2 {
+        return Err(AdError::InputArity {
+            expected: 2,
+            actual: tangents.len(),
+        });
+    }
+
+    let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+    let body_op =
+        scan_body_op_for_ad(body_op_name).ok_or(AdError::UnsupportedPrimitive(Primitive::Scan))?;
+    let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
+
+    match (&primals[1], &tangents[1]) {
+        (Value::Scalar(_), _) => jvp_rule(
+            body_op,
+            &[primals[0].clone(), primals[1].clone()],
+            &[tangents[0].clone(), tangents[1].clone()],
+            &BTreeMap::new(),
+        ),
+        (Value::Tensor(xs), Value::Tensor(xs_tangent)) => {
+            if xs.shape != xs_tangent.shape {
+                return Err(AdError::EvalFailed(format!(
+                    "scan JVP tangent shape mismatch: primal {:?}, tangent {:?}",
+                    xs.shape.dims, xs_tangent.shape.dims
+                )));
+            }
+            if xs.shape.rank() == 0 {
+                return Err(AdError::EvalFailed(
+                    "scan JVP requires tensor xs to have a leading axis".to_owned(),
+                ));
+            }
+
+            let leading_dim = xs.shape.dims[0] as usize;
+            if leading_dim == 0 {
+                return Ok(tangents[0].clone());
+            }
+
+            let mut carry_primal = primals[0].clone();
+            let mut carry_tangent = tangents[0].clone();
+            if reverse {
+                for index in (0..leading_dim).rev() {
+                    let x_slice = xs
+                        .slice_axis0(index)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let x_tangent = xs_tangent
+                        .slice_axis0(index)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let next_tangent = jvp_rule(
+                        body_op,
+                        &[carry_primal.clone(), x_slice.clone()],
+                        &[carry_tangent, x_tangent],
+                        &BTreeMap::new(),
+                    )?;
+                    carry_primal =
+                        eval_primitive(body_op, &[carry_primal, x_slice], &BTreeMap::new())
+                            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    carry_tangent = next_tangent;
+                }
+            } else {
+                for index in 0..leading_dim {
+                    let x_slice = xs
+                        .slice_axis0(index)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let x_tangent = xs_tangent
+                        .slice_axis0(index)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    let next_tangent = jvp_rule(
+                        body_op,
+                        &[carry_primal.clone(), x_slice.clone()],
+                        &[carry_tangent, x_tangent],
+                        &BTreeMap::new(),
+                    )?;
+                    carry_primal =
+                        eval_primitive(body_op, &[carry_primal, x_slice], &BTreeMap::new())
+                            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    carry_tangent = next_tangent;
+                }
+            }
+            Ok(carry_tangent)
+        }
+        (Value::Tensor(xs), tangent) => Err(AdError::EvalFailed(format!(
+            "scan JVP expected tensor tangent for tensor xs with shape {:?}, got {tangent:?}",
+            xs.shape.dims
+        ))),
+    }
 }
 
 /// While loop VJP: reverse-propagate gradient through the iteration loop.
@@ -5231,13 +5334,7 @@ fn jvp_rule(
             }
         }
 
-        Primitive::Scan => {
-            if tangents.len() >= 2 {
-                ep(Primitive::Add, &[tangents[0].clone(), tangents[1].clone()])
-            } else {
-                Ok(tangents[0].clone())
-            }
-        }
+        Primitive::Scan => scan_jvp(primals, tangents, params),
 
         Primitive::While => {
             if tangents.len() >= 2 {
@@ -9475,6 +9572,12 @@ mod tests {
         p
     }
 
+    fn scan_params_reverse(body_op: &str) -> BTreeMap<String, String> {
+        let mut p = scan_params(body_op);
+        p.insert("reverse".to_owned(), "true".to_owned());
+        p
+    }
+
     #[test]
     fn scan_vjp_add_vector() {
         // scan(add, 0.0, [1,2,3]) => carry = 6.0
@@ -9528,6 +9631,42 @@ mod tests {
         let g = Value::scalar_f64(1.0);
         let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn scan_jvp_mul_vector_uses_body_rule() {
+        // d(init * 2 * 3 * 4) with init tangent 0.5 and xs tangents [0.1,0.2,0.3].
+        let init = Value::scalar_f64(1.0);
+        let xs = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
+        let init_tangent = Value::scalar_f64(0.5);
+        let xs_tangent = Value::vector_f64(&[0.1, 0.2, 0.3]).unwrap();
+        let tangent = jvp_rule(
+            Primitive::Scan,
+            &[init, xs],
+            &[init_tangent, xs_tangent],
+            &scan_params("mul"),
+        )
+        .expect("scan JVP should use body_op=mul");
+        let actual = tangent.as_f64_scalar().expect("scan JVP output");
+        assert!((actual - 16.6).abs() < 1e-10, "tangent = {actual}");
+    }
+
+    #[test]
+    fn scan_jvp_sub_reverse_respects_iteration_order() {
+        // reverse scan(sub, 10, [1,2,3]) applies 3, then 2, then 1.
+        let init = Value::scalar_f64(10.0);
+        let xs = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let init_tangent = Value::scalar_f64(0.5);
+        let xs_tangent = Value::vector_f64(&[0.1, 0.2, 0.3]).unwrap();
+        let tangent = jvp_rule(
+            Primitive::Scan,
+            &[init, xs],
+            &[init_tangent, xs_tangent],
+            &scan_params_reverse("sub"),
+        )
+        .expect("scan JVP should honor reverse body order");
+        let actual = tangent.as_f64_scalar().expect("scan JVP output");
+        assert!((actual + 0.1).abs() < 1e-10, "tangent = {actual}");
     }
 
     // ── While VJP tests ─────────────────────────────────────────────
