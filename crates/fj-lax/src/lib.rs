@@ -3842,7 +3842,7 @@ mod tests {
         let x = Value::vector_i64(&[10, 20, 30, 40, 50]).unwrap();
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".to_owned(), "2".to_owned());
-        // Negative start should be clamped to 0
+        // -5 is relative to the end, then lands at 0.
         let out = eval_primitive(
             Primitive::DynamicSlice,
             &[x, Value::scalar_i64(-5)],
@@ -3850,6 +3850,21 @@ mod tests {
         )
         .unwrap();
         let expected = Value::vector_i64(&[10, 20]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn dynamic_slice_negative_start_relative_to_end() {
+        let x = Value::vector_i64(&[10, 20, 30, 40, 50]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".to_owned(), "2".to_owned());
+        let out = eval_primitive(
+            Primitive::DynamicSlice,
+            &[x, Value::scalar_i64(-3)],
+            &params,
+        )
+        .unwrap();
+        let expected = Value::vector_i64(&[30, 40]).unwrap();
         assert_eq!(out, expected);
     }
 
@@ -4275,6 +4290,25 @@ mod tests {
         if let Value::Tensor(t) = &out {
             let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
             assert_eq!(vals, vec![1, 99, 88]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn dynamic_update_slice_negative_start_relative_to_end() {
+        let operand = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
+        let update = Value::vector_i64(&[99, 88]).unwrap();
+        let start = Value::scalar_i64(-3);
+        let out = eval_primitive(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, start],
+            &no_params(),
+        )
+        .unwrap();
+        if let Value::Tensor(t) = &out {
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(vals, vec![1, 2, 99, 88, 5]);
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

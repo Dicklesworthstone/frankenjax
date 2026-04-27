@@ -1467,12 +1467,18 @@ fn lit_to_usize(lit: &Literal, primitive: Primitive) -> Result<usize, EvalError>
     }
 }
 
+fn normalize_dynamic_start(raw: i64, dim: i64, window: i64) -> usize {
+    let adjusted = if raw < 0 { raw + dim } else { raw };
+    adjusted.max(0).min(dim - window) as usize
+}
+
 /// Dynamic slice: like slice but start indices are dynamic (runtime) values.
 ///
 /// Inputs: [operand, start_0, start_1, ...] where start_i are scalar indices.
 /// Params: `slice_sizes` — comma-separated sizes for the output slice along each axis.
 ///
-/// JAX semantics: start indices are clamped to valid range [0, dim - size].
+/// JAX semantics: negative start indices are interpreted relative to the end,
+/// then clamped to valid range [0, dim - size].
 pub(crate) fn eval_dynamic_slice(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -1555,12 +1561,9 @@ pub(crate) fn eval_dynamic_slice(
                         });
                     }
                 };
-                // Clamp to valid range [0, dim - size]
                 let dim = tensor.shape.dims[ax] as i64;
                 let size = slice_sizes[ax] as i64;
-                let max_start = dim - size;
-                let clamped = raw.max(0).min(max_start);
-                clamped as usize
+                normalize_dynamic_start(raw, dim, size)
             }
             Value::Tensor(_) => {
                 return Err(EvalError::Unsupported {
@@ -1695,7 +1698,7 @@ pub(crate) fn eval_dynamic_update_slice(
         });
     }
 
-    // Parse start indices (one scalar per axis), clamped to valid range
+    // Parse start indices (one scalar per axis), adjusted then clamped to valid range.
     let mut starts = Vec::with_capacity(rank);
     for ax in 0..rank {
         let start_val = match &inputs[2 + ax] {
@@ -1719,8 +1722,7 @@ pub(crate) fn eval_dynamic_update_slice(
                 };
                 let dim = operand.shape.dims[ax] as i64;
                 let upd_size = update.shape.dims[ax] as i64;
-                let max_start = dim - upd_size;
-                raw.max(0).min(max_start) as usize
+                normalize_dynamic_start(raw, dim, upd_size)
             }
             Value::Tensor(_) => {
                 return Err(EvalError::Unsupported {

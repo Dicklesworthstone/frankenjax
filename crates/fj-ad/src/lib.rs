@@ -2951,6 +2951,11 @@ fn increment_nd_index(idx: &mut [usize], dims: &[usize]) {
 /// g_operand = g with the update region zeroed out
 /// g_update = slice of g at the start positions with update's shape
 /// Start indices have zero gradient (discrete).
+fn normalize_dynamic_start(raw: i64, dim: i64, window: i64) -> usize {
+    let adjusted = if raw < 0 { raw + dim } else { raw };
+    adjusted.max(0).min(dim - window) as usize
+}
+
 fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
     let g_tensor = match g {
         Value::Tensor(t) => t,
@@ -2994,7 +2999,7 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
                 };
                 let dim = g_tensor.shape.dims[ax] as i64;
                 let upd_size = update.shape.dims[ax] as i64;
-                raw.max(0).min(dim - upd_size) as usize
+                normalize_dynamic_start(raw, dim, upd_size)
             }
             _ => 0,
         };
@@ -8754,6 +8759,46 @@ mod tests {
         assert!((g_upd[1] - 30.0).abs() < 1e-10);
 
         // Start index gradient should be zero
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn dynamic_update_slice_vjp_negative_start_relative_to_end() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![5] },
+                (1..=5).map(|i| Literal::from_f64(i as f64)).collect(),
+            )
+            .unwrap(),
+        );
+        let update = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f64(10.0), Literal::from_f64(20.0)],
+            )
+            .unwrap(),
+        );
+        let start = Value::scalar_i64(-3);
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![5] },
+                (1..=5)
+                    .map(|i| Literal::from_f64(i as f64 * 10.0))
+                    .collect(),
+            )
+            .unwrap(),
+        );
+
+        let grads = dynamic_update_slice_vjp(&[operand, update, start], &g).unwrap();
+
+        let g_op = tensor_f64_values(&grads[0]);
+        assert_eq!(g_op, vec![10.0, 20.0, 0.0, 0.0, 50.0]);
+
+        let g_upd = tensor_f64_values(&grads[1]);
+        assert_eq!(g_upd, vec![30.0, 40.0]);
         assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
     }
 
