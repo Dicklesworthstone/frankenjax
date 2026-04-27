@@ -433,7 +433,7 @@ pub fn apply_batch_rule(
         Primitive::Gather => batch_gather(inputs, params),
         Primitive::Scatter => batch_scatter(inputs, params),
         Primitive::Rev => batch_passthrough_leading(primitive, inputs, params),
-        Primitive::Squeeze => batch_passthrough_leading(primitive, inputs, params),
+        Primitive::Squeeze => batch_squeeze(inputs, params),
         Primitive::Split => batch_passthrough_leading(primitive, inputs, params),
         Primitive::ExpandDims => batch_passthrough_leading(primitive, inputs, params),
         Primitive::Cholesky
@@ -1153,6 +1153,59 @@ fn batch_scatter(
     }
 
     batch_passthrough_leading(Primitive::Scatter, inputs, params)
+}
+
+fn batch_squeeze(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let input = &inputs[0];
+    let batch_dim = match input.batch_dim {
+        None => {
+            let result = eval_primitive(
+                Primitive::Squeeze,
+                std::slice::from_ref(&input.value),
+                params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer::unbatched(result));
+        }
+        Some(bd) => bd,
+    };
+
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let Value::Tensor(tensor) = &value else {
+        return Ok(BatchTracer::batched(value, 0));
+    };
+
+    let squeeze_dims = match params.get("dimensions") {
+        None => tensor
+            .shape
+            .dims
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|&(_, &dim)| dim == 1)
+            .map(|(axis, _)| axis)
+            .collect::<Vec<_>>(),
+        Some(raw) => parse_usize_list(raw, "dimensions")?
+            .into_iter()
+            .map(|dim| {
+                dim.checked_add(1)
+                    .ok_or_else(|| BatchError::EvalError("squeeze dimension overflow".to_owned()))
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+
+    if squeeze_dims.is_empty() {
+        return Ok(BatchTracer::batched(value, 0));
+    }
+
+    let mut new_params = params.clone();
+    new_params.insert("dimensions".to_owned(), format_csv(&squeeze_dims));
+    let result = eval_primitive(Primitive::Squeeze, &[value], &new_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(BatchTracer::batched(result, 0))
 }
 
 // ── Cumulative Batching ────────────────────────────────────────────
@@ -3216,6 +3269,57 @@ mod tests {
         let tensor = result.value.as_tensor().unwrap();
         // Result: [2, 2] (batch=2, squeezed_len=2)
         assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_squeeze_default_preserves_singleton_batch() {
+        let input = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![1, 2, 1],
+                    },
+                    vec![1.0, 2.0].into_iter().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+
+        let result = apply_batch_rule(Primitive::Squeeze, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![1, 2]);
+        assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_squeeze_explicit_logical_axis_zero() {
+        let input = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![2, 1, 3],
+                    },
+                    (1..=6).map(|v| Literal::from_f64(f64::from(v))).collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let params = BTreeMap::from([("dimensions".to_owned(), "0".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Squeeze, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
     }
 
     #[test]
