@@ -12,7 +12,6 @@ __pycache__/
 *.pyo
 
 # Beads local state
-.beads/
 
 # BV local config and caches
 .bv/
