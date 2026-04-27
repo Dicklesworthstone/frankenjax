@@ -1036,6 +1036,11 @@ pub(crate) fn eval_slice(
             let limits = parse_usize_param(primitive, "limit_indices", params)?;
 
             let rank = tensor.shape.rank();
+            let slice_strides = if params.contains_key("strides") {
+                parse_usize_param(primitive, "strides", params)?
+            } else {
+                vec![1; rank]
+            };
             if starts.len() != rank || limits.len() != rank {
                 return Err(EvalError::Unsupported {
                     primitive,
@@ -1047,11 +1052,28 @@ pub(crate) fn eval_slice(
                     ),
                 });
             }
+            if slice_strides.len() != rank {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "strides rank mismatch: strides={} rank={}",
+                        slice_strides.len(),
+                        rank
+                    ),
+                });
+            }
 
             // Validate and compute output dims.
             let mut out_dims = Vec::with_capacity(rank);
             for ax in 0..rank {
                 let dim = tensor.shape.dims[ax] as usize;
+                let stride = slice_strides[ax];
+                if stride == 0 {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!("slice stride on axis {ax} must be positive"),
+                    });
+                }
                 if starts[ax] > limits[ax] || limits[ax] > dim {
                     return Err(EvalError::Unsupported {
                         primitive,
@@ -1061,7 +1083,8 @@ pub(crate) fn eval_slice(
                         ),
                     });
                 }
-                out_dims.push((limits[ax] - starts[ax]) as u32);
+                let span = limits[ax] - starts[ax];
+                out_dims.push(span.div_ceil(stride) as u32);
             }
 
             // Compute input strides (row-major).
@@ -1073,6 +1096,7 @@ pub(crate) fn eval_slice(
 
             let total: usize = out_dims.iter().map(|d| *d as usize).product();
             let has_contiguous_trailing_slice = rank > 0
+                && slice_strides.iter().all(|&stride| stride == 1)
                 && starts.iter().skip(1).all(|&start| start == 0)
                 && limits
                     .iter()
@@ -1096,7 +1120,7 @@ pub(crate) fn eval_slice(
                 // Map output coords to input coords by adding start offsets.
                 let mut in_flat = 0_usize;
                 for ax in 0..rank {
-                    in_flat += (out_coords[ax] + starts[ax]) * in_strides[ax];
+                    in_flat += (starts[ax] + out_coords[ax] * slice_strides[ax]) * in_strides[ax];
                 }
                 elements.push(tensor.elements[in_flat]);
 

@@ -2244,6 +2244,57 @@ mod tests {
     }
 
     #[test]
+    fn slice_with_stride_1d() {
+        let input = Value::vector_i64(&[10, 20, 30, 40, 50, 60]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".into(), "1".into());
+        params.insert("limit_indices".into(), "6".into());
+        params.insert("strides".into(), "2".into());
+
+        let out = eval_primitive(Primitive::Slice, &[input], &params).unwrap();
+        let expected = Value::vector_i64(&[20, 40, 60]).unwrap();
+        assert_eq!(out, expected);
+    }
+
+    #[test]
+    fn slice_with_strides_2d() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![4, 5] },
+                (0..20).map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".into(), "0,1".into());
+        params.insert("limit_indices".into(), "4,5".into());
+        params.insert("strides".into(), "2,2".into());
+
+        let out = eval_primitive(Primitive::Slice, &[input], &params).unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![2, 2]);
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(vals, vec![1, 3, 11, 13]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn slice_zero_stride_errors() {
+        let input = Value::vector_i64(&[10, 20, 30]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".into(), "0".into());
+        params.insert("limit_indices".into(), "3".into());
+        params.insert("strides".into(), "0".into());
+
+        let result = eval_primitive(Primitive::Slice, &[input], &params);
+        assert!(result.is_err(), "zero stride should error");
+    }
+
+    #[test]
     fn test_lax_test_log_schema_contract() {
         let fixture_id =
             fj_test_utils::fixture_id_from_json(&("lax", "add")).expect("fixture digest");

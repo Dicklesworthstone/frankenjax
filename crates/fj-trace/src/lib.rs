@@ -2618,6 +2618,8 @@ fn infer_slice(
     let input = &inputs[0];
     let starts = parse_u32_param_list(primitive, params, "start_indices")?;
     let limits = parse_u32_param_list(primitive, params, "limit_indices")?;
+    let strides =
+        parse_u32_param_list_for_rank(primitive, params, "strides", input.shape.rank(), Some(1))?;
 
     if starts.len() != input.shape.rank() || limits.len() != input.shape.rank() {
         return Err(TraceError::ShapeInferenceFailed {
@@ -2630,12 +2632,29 @@ fn infer_slice(
             ),
         });
     }
+    if strides.len() != input.shape.rank() {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "slice strides rank mismatch strides={} rank={}",
+                strides.len(),
+                input.shape.rank()
+            ),
+        });
+    }
 
     let mut dims = Vec::with_capacity(starts.len());
     for axis in 0..starts.len() {
         let start = starts[axis];
         let limit = limits[axis];
+        let stride = strides[axis];
         let bound = input.shape.dims[axis];
+        if stride == 0 {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: format!("slice stride on axis {axis} must be positive"),
+            });
+        }
         if start > limit || limit > bound {
             return Err(TraceError::ShapeInferenceFailed {
                 primitive,
@@ -2645,7 +2664,7 @@ fn infer_slice(
                 ),
             });
         }
-        dims.push(limit - start);
+        dims.push((limit - start).div_ceil(stride));
     }
 
     Ok(vec![ShapedArray {
@@ -3845,6 +3864,20 @@ mod tests {
                 assert_eq!(
                     ctx.tracer_aval(sliced[0]).expect("aval present").shape,
                     Shape { dims: vec![3, 4] }
+                );
+
+                let mut strided_slice_params = BTreeMap::new();
+                strided_slice_params.insert("start_indices".to_owned(), "0,1".to_owned());
+                strided_slice_params.insert("limit_indices".to_owned(), "5,7".to_owned());
+                strided_slice_params.insert("strides".to_owned(), "2,3".to_owned());
+                let strided_sliced = ctx
+                    .process_primitive(Primitive::Slice, &[x], strided_slice_params)
+                    .expect("strided slice inference should succeed");
+                assert_eq!(
+                    ctx.tracer_aval(strided_sliced[0])
+                        .expect("aval present")
+                        .shape,
+                    Shape { dims: vec![3, 2] }
                 );
 
                 let mut gather_params = BTreeMap::new();
