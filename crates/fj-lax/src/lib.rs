@@ -524,7 +524,7 @@ fn eval_scan(
             eval_primitive(body_op, &[init_carry.clone(), xs.clone()], &BTreeMap::new())
         }
         Value::Tensor(t) => {
-            let leading_dim = t.shape.dims[0] as usize;
+            let leading_dim = scan_leading_dim(t)?;
             if leading_dim == 0 {
                 return Ok(init_carry.clone());
             }
@@ -622,12 +622,24 @@ where
     Ok((carry, stacked_ys))
 }
 
+fn scan_leading_dim(tensor: &TensorValue) -> Result<usize, EvalError> {
+    tensor
+        .shape
+        .dims
+        .first()
+        .map(|dim| *dim as usize)
+        .ok_or(EvalError::TypeMismatch {
+            primitive: Primitive::Scan,
+            detail: "scan tensor xs must have a leading axis",
+        })
+}
+
 /// Extract per-element slices from the leading axis of a value.
 fn scan_extract_slices(xs: &Value) -> Result<Vec<Value>, EvalError> {
     match xs {
         Value::Scalar(_) => Ok(vec![xs.clone()]),
         Value::Tensor(t) => {
-            let leading_dim = t.shape.dims[0] as usize;
+            let leading_dim = scan_leading_dim(t)?;
             let mut slices = Vec::with_capacity(leading_dim);
             for i in 0..leading_dim {
                 slices.push(t.slice_axis0(i).map_err(EvalError::InvalidTensor)?);
@@ -5049,6 +5061,23 @@ mod tests {
         assert_eq!(out.as_f64_scalar().unwrap(), 42.0);
     }
 
+    #[test]
+    fn scan_scalar_tensor_xs_returns_error() {
+        let init = Value::scalar_f64(0.0);
+        let xs = Value::Tensor(
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(1.0)]).unwrap(),
+        );
+
+        let err = eval_primitive(Primitive::Scan, &[init, xs], &scan_params("add")).unwrap_err();
+        assert_eq!(
+            err,
+            EvalError::TypeMismatch {
+                primitive: Primitive::Scan,
+                detail: "scan tensor xs must have a leading axis"
+            }
+        );
+    }
+
     // ── Scan functional tests (bd-3eyv) ──────────────────────────────
 
     #[test]
@@ -5244,6 +5273,36 @@ mod tests {
         .unwrap();
         assert_eq!(carry[0].as_f64_scalar().unwrap(), 42.0);
         assert!(ys.is_empty());
+    }
+
+    #[test]
+    fn test_scan_functional_scalar_tensor_xs_returns_error() {
+        let init = vec![Value::scalar_f64(0.0)];
+        let xs = Value::Tensor(
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(1.0)]).unwrap(),
+        );
+
+        let mut body_calls = 0_usize;
+        let result = super::eval_scan_functional(
+            init,
+            &xs,
+            |carry, _x| {
+                body_calls += 1;
+                Ok((carry, vec![]))
+            },
+            false,
+        );
+        assert!(
+            matches!(
+                result,
+                Err(EvalError::TypeMismatch {
+                    primitive: Primitive::Scan,
+                    detail: "scan tensor xs must have a leading axis"
+                })
+            ),
+            "expected structured scan rank error, got {result:?}"
+        );
+        assert_eq!(body_calls, 0);
     }
 
     #[test]
