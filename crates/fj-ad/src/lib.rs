@@ -234,6 +234,41 @@ fn zeros_like(v: &Value) -> Value {
     }
 }
 
+fn parse_pad_i64_param_for_rank(
+    params: &BTreeMap<String, String>,
+    key: &str,
+    rank: usize,
+    default: i64,
+) -> Result<Vec<i64>, AdError> {
+    let Some(raw) = params.get(key) else {
+        return Ok(vec![default; rank]);
+    };
+    if raw.trim().is_empty() {
+        if rank == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(AdError::EvalFailed(format!(
+            "invalid empty pad param '{key}' for rank {rank}"
+        )));
+    }
+    let values = raw
+        .split(',')
+        .map(str::trim)
+        .map(|piece| {
+            piece.parse::<i64>().map_err(|_| {
+                AdError::EvalFailed(format!("invalid integer in pad param '{key}': '{piece}'"))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != rank {
+        return Err(AdError::EvalFailed(format!(
+            "padding rank mismatch for '{key}': rank={rank} values={}",
+            values.len()
+        )));
+    }
+    Ok(values)
+}
+
 fn ones_like(v: &Value) -> Value {
     match v {
         Value::Scalar(lit) => match lit {
@@ -1670,14 +1705,16 @@ pub fn vjp(
                     let rank = op_tensor.shape.rank();
 
                     // Parse padding params (same format as eval_pad).
-                    let lows: Vec<usize> = params
-                        .get("padding_low")
-                        .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
-                        .unwrap_or_else(|| vec![0; rank]);
-                    let interiors: Vec<usize> = params
-                        .get("padding_interior")
-                        .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
-                        .unwrap_or_else(|| vec![0; rank]);
+                    let lows = parse_pad_i64_param_for_rank(params, "padding_low", rank, 0)?;
+                    let interiors =
+                        parse_pad_i64_param_for_rank(params, "padding_interior", rank, 0)?;
+                    for (axis, interior) in interiors.iter().enumerate() {
+                        if *interior < 0 {
+                            return Err(AdError::EvalFailed(format!(
+                                "interior padding must be non-negative on axis {axis}: {interior}"
+                            )));
+                        }
+                    }
 
                     let g_tensor = match g {
                         Value::Tensor(t) => t,
@@ -1703,17 +1740,24 @@ pub fn vjp(
                     let mut op_grad_sum = 0.0_f64;
 
                     for _ in 0..op_total {
-                        let mut g_flat = 0_usize;
+                        let mut g_flat = Some(0_usize);
                         for ax in 0..rank {
-                            let stride = *interiors.get(ax).unwrap_or(&0) + 1;
-                            let pos = *lows.get(ax).unwrap_or(&0) + op_coords[ax] * stride;
-                            g_flat += pos * g_strides[ax];
+                            let stride = interiors[ax] + 1;
+                            let pos = lows[ax] + op_coords[ax] as i64 * stride;
+                            if pos < 0 || pos >= i64::from(g_dims[ax]) {
+                                g_flat = None;
+                                break;
+                            }
+                            if let Some(flat) = &mut g_flat {
+                                *flat += pos as usize * g_strides[ax];
+                            }
                         }
 
-                        let val = if g_flat < g_tensor.elements.len() {
-                            g_tensor.elements[g_flat].as_f64().unwrap_or(0.0)
-                        } else {
-                            0.0
+                        let val = match g_flat {
+                            Some(flat) if flat < g_tensor.elements.len() => {
+                                g_tensor.elements[flat].as_f64().unwrap_or(0.0)
+                            }
+                            _ => 0.0,
                         };
                         op_grad_sum += val;
                         op_grad_elements.push(Literal::from_f64(val));
@@ -8452,6 +8496,48 @@ mod tests {
             "pad_grad = {pad_grad}, expected {}",
             total_sum - op_sum
         );
+    }
+
+    #[test]
+    fn vjp_pad_negative_edge_padding_zeros_cropped_operand_gradient() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape::vector(4),
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let pad_val = Value::scalar_f64(0.0);
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape::vector(3),
+                vec![
+                    Literal::from_f64(10.0),
+                    Literal::from_f64(20.0),
+                    Literal::from_f64(30.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("padding_low".into(), "1".into());
+        params.insert("padding_high".into(), "-2".into());
+        params.insert("padding_interior".into(), "0".into());
+
+        let grads = vjp_single(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
+
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![20.0, 30.0, 0.0, 0.0]);
+
+        let pad_grad = grads[1].as_f64_scalar().unwrap();
+        assert!((pad_grad - 10.0).abs() < 1e-10, "pad_grad = {pad_grad}");
     }
 
     #[test]

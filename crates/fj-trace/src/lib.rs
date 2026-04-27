@@ -3043,8 +3043,8 @@ fn infer_pad(
     }
 
     let rank = operand.shape.rank();
-    let lows = parse_u32_param_list_for_rank(primitive, params, "padding_low", rank, None)?;
-    let highs = parse_u32_param_list_for_rank(primitive, params, "padding_high", rank, None)?;
+    let lows = parse_i64_param_list_for_rank(primitive, params, "padding_low", rank, None)?;
+    let highs = parse_i64_param_list_for_rank(primitive, params, "padding_high", rank, None)?;
     let interiors =
         parse_u32_param_list_for_rank(primitive, params, "padding_interior", rank, Some(0))?;
 
@@ -3063,13 +3063,17 @@ fn infer_pad(
 
     let mut out_dims = Vec::with_capacity(rank);
     for axis in 0..rank {
-        let dim = operand.shape.dims[axis];
-        let interior_span = dim.saturating_sub(1).checked_mul(interiors[axis]).ok_or(
-            TraceError::ShapeInferenceFailed {
-                primitive,
-                detail: format!("padding interior overflow on axis {axis}"),
-            },
-        )?;
+        let dim = i64::from(operand.shape.dims[axis]);
+        let interior_span = if dim == 0 {
+            0
+        } else {
+            (dim - 1).checked_mul(i64::from(interiors[axis])).ok_or(
+                TraceError::ShapeInferenceFailed {
+                    primitive,
+                    detail: format!("padding interior overflow on axis {axis}"),
+                },
+            )?
+        };
         let out_dim = lows[axis]
             .checked_add(dim)
             .and_then(|v| v.checked_add(interior_span))
@@ -3078,7 +3082,13 @@ fn infer_pad(
                 primitive,
                 detail: format!("padded dimension overflow on axis {axis}"),
             })?;
-        out_dims.push(out_dim);
+        if out_dim < 0 || out_dim > i64::from(u32::MAX) {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: format!("padded dimension overflow on axis {axis}: {out_dim}"),
+            });
+        }
+        out_dims.push(out_dim as u32);
     }
 
     Ok(vec![ShapedArray {
@@ -3172,6 +3182,25 @@ fn parse_u32_param_list_for_rank(
         return Err(TraceError::MissingPrimitiveParam { primitive, key });
     };
     parse_u32_list(primitive, key, raw)
+}
+
+fn parse_i64_param_list_for_rank(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    key: &'static str,
+    rank: usize,
+    missing_default: Option<i64>,
+) -> Result<Vec<i64>, TraceError> {
+    let Some(raw) = params.get(key) else {
+        if let Some(default) = missing_default {
+            return Ok(vec![default; rank]);
+        }
+        if rank == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(TraceError::MissingPrimitiveParam { primitive, key });
+    };
+    parse_i64_list(primitive, key, raw)
 }
 
 fn parse_u32_list(
@@ -5977,6 +6006,41 @@ mod tests {
                     }
                 ));
                 assert!(err.to_string().contains("dtype"), "unexpected error: {err}");
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_pad_negative_edge_padding_crops_shape() {
+        run_logged_test(
+            "test_trace_pad_negative_edge_padding_crops_shape",
+            fj_test_utils::fixture_id_from_json(&("pad", "negative-edge-crop"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::vector(5),
+                    },
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::scalar(),
+                    },
+                ]);
+                let mut params = BTreeMap::new();
+                params.insert("padding_low".to_owned(), "-1".to_owned());
+                params.insert("padding_high".to_owned(), "-2".to_owned());
+                params.insert("padding_interior".to_owned(), "0".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::Pad, &[TracerId(1), TracerId(2)], params)
+                    .expect("pad negative edge crop should infer");
+                assert_eq!(out.len(), 1);
+                assert_eq!(
+                    ctx.tracer_aval(out[0]).expect("output aval").shape.dims,
+                    vec![2]
+                );
                 Ok(Vec::new())
             },
         );

@@ -641,7 +641,7 @@ fn test_batch_rule_pad_negative() {
         }],
     );
 
-    let err = dispatch(make_vmap_request_with_axes(
+    let r = dispatch(make_vmap_request_with_axes(
         jaxpr,
         vec![
             make_i64_matrix(2, 3, &[1, 2, 3, 4, 5, 6]),
@@ -649,11 +649,11 @@ fn test_batch_rule_pad_negative() {
         ],
         "0,none",
     ))
-    .unwrap_err();
-    assert!(matches!(
-        err,
-        DispatchError::TransformExecution(TransformExecutionError::TensorBuild(_))
-    ));
+    .unwrap();
+    let out = r.outputs[0].as_tensor().unwrap();
+    assert_eq!(out.shape.dims, vec![2, 2]);
+    let elems: Vec<i64> = out.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+    assert_eq!(elems, vec![2, 3, 5, 6]);
 }
 
 #[test]
@@ -939,19 +939,24 @@ fn e2e_vmap_tensor_ops_oracle() {
         pad_args.clone(),
         "0,none",
     ));
-    let pad_pass = matches!(
-        pad_result,
-        Err(DispatchError::TransformExecution(
-            TransformExecutionError::TensorBuild(_)
-        ))
-    );
-    assert!(pad_pass, "pad oracle mismatch: expected TensorBuild error");
+    let (pad_pass, pad_output_shape) = match pad_result {
+        Ok(result) => {
+            let out = result.outputs[0].as_tensor().expect("pad output tensor");
+            let elems: Vec<i64> = out.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            (
+                out.shape.dims == vec![2, 2] && elems == vec![2, 3, 5, 6],
+                out.shape.dims.clone(),
+            )
+        }
+        Err(_) => (false, Vec::new()),
+    };
+    assert!(pad_pass, "pad oracle mismatch: expected cropped tensor");
     e2e_cases.push(json!({
         "primitive": "pad",
         "batch_size": 2,
         "input_shapes": pad_input_shapes,
         "batch_dims": ["0", "none"],
-        "output_shape": [],
+        "output_shape": pad_output_shape.clone(),
         "oracle_match": pad_pass,
         "pass": pad_pass,
     }));
@@ -960,7 +965,7 @@ fn e2e_vmap_tensor_ops_oracle() {
         "primitive": "pad",
         "batch_dim": "0,none",
         "input_shapes": pad_args.iter().map(value_shape).collect::<Vec<_>>(),
-        "output_shape": [],
+        "output_shape": pad_output_shape,
         "pass": pad_pass,
     }));
 
@@ -1449,14 +1454,11 @@ fn jit_add_one_vector() {
         vec![a],
     ))
     .unwrap();
-    if let Value::Tensor(t) = &r.outputs[0] {
-        let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-        assert!((vals[0] - 2.0).abs() < 1e-10);
-        assert!((vals[1] - 3.0).abs() < 1e-10);
-        assert!((vals[2] - 4.0).abs() < 1e-10);
-    } else {
-        panic!("expected tensor output");
-    }
+    let t = r.outputs[0].as_tensor().unwrap();
+    let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert!((vals[0] - 2.0).abs() < 1e-10);
+    assert!((vals[1] - 3.0).abs() < 1e-10);
+    assert!((vals[2] - 4.0).abs() < 1e-10);
 }
 
 #[test]
@@ -1468,14 +1470,11 @@ fn vmap_square_over_vector() {
         vec![a],
     ))
     .unwrap();
-    if let Value::Tensor(t) = &r.outputs[0] {
-        let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-        assert!((vals[0] - 1.0).abs() < 1e-10);
-        assert!((vals[1] - 4.0).abs() < 1e-10);
-        assert!((vals[2] - 9.0).abs() < 1e-10);
-    } else {
-        panic!("expected tensor output");
-    }
+    let t = r.outputs[0].as_tensor().unwrap();
+    let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert!((vals[0] - 1.0).abs() < 1e-10);
+    assert!((vals[1] - 4.0).abs() < 1e-10);
+    assert!((vals[2] - 9.0).abs() < 1e-10);
 }
 
 #[test]
@@ -1487,12 +1486,9 @@ fn vmap_add_one_over_vector() {
         vec![a],
     ))
     .unwrap();
-    if let Value::Tensor(t) = &r.outputs[0] {
-        let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
-        assert_eq!(vals, vec![11, 21, 31]);
-    } else {
-        panic!("expected tensor output");
-    }
+    let t = r.outputs[0].as_tensor().unwrap();
+    let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+    assert_eq!(vals, vec![11, 21, 31]);
 }
 
 #[test]

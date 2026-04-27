@@ -851,8 +851,8 @@ pub(crate) fn eval_concatenate(
 ///
 /// Inputs: `[operand, pad_value]`
 /// Params:
-/// - `padding_low`: comma-separated non-negative integers (one per axis)
-/// - `padding_high`: comma-separated non-negative integers (one per axis)
+/// - `padding_low`: comma-separated integers (one per axis; negative crops low edge)
+/// - `padding_high`: comma-separated integers (one per axis; negative crops high edge)
 /// - `padding_interior`: comma-separated non-negative integers (one per axis, optional; defaults to 0)
 pub(crate) fn eval_pad(
     inputs: &[Value],
@@ -936,12 +936,10 @@ pub(crate) fn eval_pad(
         let low = lows_raw[ax];
         let high = highs_raw[ax];
         let interior = interiors_raw[ax];
-        if low < 0 || high < 0 || interior < 0 {
+        if interior < 0 {
             return Err(EvalError::Unsupported {
                 primitive,
-                detail: format!(
-                    "padding values must be non-negative on axis {ax}: low={low} high={high} interior={interior}"
-                ),
+                detail: format!("interior padding must be non-negative on axis {ax}: {interior}"),
             });
         }
 
@@ -955,7 +953,7 @@ pub(crate) fn eval_pad(
             });
         }
 
-        lows.push(low as usize);
+        lows.push(low);
         interiors.push(interior as usize);
         out_dims.push(out_dim as u32);
     }
@@ -984,11 +982,18 @@ pub(crate) fn eval_pad(
     let mut in_coords = vec![0_usize; rank];
     for element in &operand.elements {
         let mut out_flat = 0_usize;
+        let mut place_element = true;
         for ax in 0..rank {
-            let coord = lows[ax] + in_coords[ax] * (interiors[ax] + 1);
-            out_flat += coord * out_strides[ax];
+            let coord = lows[ax] + (in_coords[ax] * (interiors[ax] + 1)) as i64;
+            if coord < 0 || coord >= i64::from(out_dims[ax]) {
+                place_element = false;
+                break;
+            }
+            out_flat += coord as usize * out_strides[ax];
         }
-        out_elements[out_flat] = *element;
+        if place_element {
+            out_elements[out_flat] = *element;
+        }
 
         for ax in (0..rank).rev() {
             in_coords[ax] += 1;

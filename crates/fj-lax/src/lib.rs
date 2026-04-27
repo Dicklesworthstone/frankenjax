@@ -2165,12 +2165,12 @@ mod tests {
     }
 
     #[test]
-    fn pad_rejects_negative_padding_values() {
-        let input = Value::vector_i64(&[1, 2, 3]).unwrap();
-        let params = pad_params("-1", "0", "0");
-        let err =
-            eval_primitive(Primitive::Pad, &[input, Value::scalar_i64(0)], &params).unwrap_err();
-        assert!(matches!(err, EvalError::Unsupported { .. }));
+    fn pad_negative_edge_padding_crops_operand() {
+        let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
+        let params = pad_params("-1", "-2", "0");
+        let out = eval_primitive(Primitive::Pad, &[input, Value::scalar_i64(0)], &params).unwrap();
+        let expected = Value::vector_i64(&[2, 3]).unwrap();
+        assert_eq!(out, expected);
     }
 
     #[test]
