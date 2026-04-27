@@ -1776,6 +1776,26 @@ pub(crate) fn eval_dynamic_update_slice(
     }
 
     let upd_total = update.elements.len();
+    let has_contiguous_trailing_update = rank > 0
+        && update
+            .shape
+            .dims
+            .iter()
+            .skip(1)
+            .zip(operand.shape.dims.iter().skip(1))
+            .all(|(&update_dim, &operand_dim)| update_dim == operand_dim)
+        && starts.iter().skip(1).all(|&start| start == 0);
+    if has_contiguous_trailing_update {
+        let start_offset = starts[0] * op_strides[0];
+        let end_offset = start_offset + upd_total;
+        elements[start_offset..end_offset].copy_from_slice(&update.elements);
+        return Ok(Value::Tensor(TensorValue::new(
+            operand.dtype,
+            operand.shape.clone(),
+            elements,
+        )?));
+    }
+
     let mut upd_coords = vec![0_usize; rank];
 
     for upd_flat in 0..upd_total {

@@ -171,6 +171,44 @@ fn bench_dynamic_slice_64_rows_16_cols(c: &mut Criterion) {
     });
 }
 
+fn bench_dynamic_update_slice_64_rows_16_cols(c: &mut Criterion) {
+    let operand = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 16],
+            },
+            vec![Literal::I64(0); 128 * 16],
+        )
+        .unwrap(),
+    );
+    let update = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![64, 16] },
+            (0..(64 * 16)).map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    );
+    let start0 = Value::scalar_i64(32);
+    let start1 = Value::scalar_i64(0);
+    let p = no_params();
+    c.bench_function("eval/dynamic_update_slice_64_rows_16_cols", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::DynamicUpdateSlice,
+                &[
+                    operand.clone(),
+                    update.clone(),
+                    start0.clone(),
+                    start1.clone(),
+                ],
+                &p,
+            )
+        })
+    });
+}
+
 fn bench_eq_1k(c: &mut Criterion) {
     let data: Vec<i64> = (0..1000).collect();
     let lhs = Value::vector_i64(&data).unwrap();
@@ -203,6 +241,7 @@ criterion_group!(
     bench_gather_128_rows_16_cols,
     bench_scatter_128_rows_16_cols,
     bench_dynamic_slice_64_rows_16_cols,
+    bench_dynamic_update_slice_64_rows_16_cols,
     bench_eq_1k,
 );
 criterion_main!(benches);

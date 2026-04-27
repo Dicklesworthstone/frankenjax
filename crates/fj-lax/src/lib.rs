@@ -4414,6 +4414,47 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_update_slice_full_trailing_rows() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![4, 3] },
+                (0..12).map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let update = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(90),
+                    Literal::I64(91),
+                    Literal::I64(92),
+                    Literal::I64(93),
+                    Literal::I64(94),
+                    Literal::I64(95),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(
+            Primitive::DynamicUpdateSlice,
+            &[operand, update, Value::scalar_i64(1), Value::scalar_i64(0)],
+            &no_params(),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(vals, vec![0, 1, 2, 90, 91, 92, 93, 94, 95, 9, 10, 11]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
     fn dynamic_update_slice_clamped_start() {
         // Start index out of range should be clamped
         // operand: [1, 2, 3], update: [99, 88], start: 10 → clamped to 1
