@@ -2504,18 +2504,15 @@ fn batch_svd_multi(
     let mut s_elements = Vec::with_capacity(batch_size * k);
     let mut vt_elements = Vec::with_capacity(batch_size * vt_rows * n);
 
+    let mut matrix = Vec::with_capacity(matrix_len);
     for batch in 0..batch_size {
         let base = batch * matrix_len;
-        let matrix = tensor.elements[base..base + matrix_len]
-            .iter()
-            .map(|lit| {
-                lit.as_f64().ok_or_else(|| {
-                    BatchError::EvalError(
-                        "type mismatch for svd: expected numeric elements".to_owned(),
-                    )
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        matrix.clear();
+        for lit in &tensor.elements[base..base + matrix_len] {
+            matrix.push(lit.as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?);
+        }
         let (u, s, vt) = svd_decompose_matrix(m, n, &matrix, full_matrices);
         u_elements.extend(u.into_iter().map(Literal::from_f64));
         s_elements.extend(s.into_iter().map(Literal::from_f64));

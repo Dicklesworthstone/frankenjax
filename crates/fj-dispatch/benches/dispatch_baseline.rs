@@ -453,6 +453,46 @@ fn bench_vmap_eigh(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_svd(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_svd");
+
+    let batched_matrix = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![512, 3, 2],
+            },
+            (0..512)
+                .flat_map(|batch| {
+                    let scale = 1.0 + f64::from(batch % 11) * 0.01;
+                    [
+                        Literal::F64Bits(scale.to_bits()),
+                        Literal::F64Bits(0.1_f64.to_bits()),
+                        Literal::F64Bits(0.0_f64.to_bits()),
+                        Literal::F64Bits((scale + 0.5).to_bits()),
+                        Literal::F64Bits(0.2_f64.to_bits()),
+                        Literal::F64Bits((scale + 1.0).to_bits()),
+                    ]
+                })
+                .collect(),
+        )
+        .expect("batched SVD input should build"),
+    );
+
+    group.bench_function("batched_matrix_3x2", |b| {
+        b.iter(|| {
+            dispatch(dispatch_request(
+                ProgramSpec::LaxSvd,
+                &[Transform::Vmap],
+                vec![batched_matrix.clone()],
+            ))
+            .expect("vmap SVD should succeed");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -728,6 +768,7 @@ criterion_group!(
     bench_vmap_dot_i64,
     bench_vmap_qr,
     bench_vmap_eigh,
+    bench_vmap_svd,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,
