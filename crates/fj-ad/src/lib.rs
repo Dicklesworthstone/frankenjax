@@ -3907,6 +3907,129 @@ fn reduce_prod_jvp_tensor(
     ))
 }
 
+fn parse_cumulative_axis(
+    params: &BTreeMap<String, String>,
+    rank: usize,
+    primitive: Primitive,
+) -> Result<usize, AdError> {
+    let axis = params
+        .get("axis")
+        .map(|raw| {
+            raw.trim().parse::<usize>().map_err(|_| {
+                AdError::EvalFailed(format!(
+                    "invalid axis value for {}: {}",
+                    primitive.as_str(),
+                    raw.trim()
+                ))
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if axis >= rank {
+        return Err(AdError::EvalFailed(format!(
+            "axis {axis} out of bounds for rank {rank}"
+        )));
+    }
+    Ok(axis)
+}
+
+fn cumprod_jvp_value(
+    primal: &Value,
+    tangent: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    match (primal, tangent) {
+        (Value::Scalar(_), Value::Scalar(tangent_literal)) => {
+            let tangent = tangent_literal
+                .as_f64()
+                .ok_or_else(|| AdError::EvalFailed("cumprod tangent must be numeric".to_owned()))?;
+            Ok(Value::scalar_f64(tangent))
+        }
+        (Value::Tensor(primal_tensor), Value::Tensor(tangent_tensor)) => {
+            cumprod_jvp_tensor(primal_tensor, tangent_tensor, params)
+        }
+        _ => Err(AdError::EvalFailed(
+            "cumprod primal and tangent must have matching scalar/tensor structure".to_owned(),
+        )),
+    }
+}
+
+fn cumprod_jvp_tensor(
+    primal: &TensorValue,
+    tangent: &TensorValue,
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    if primal.elements.len() != tangent.elements.len() || primal.shape != tangent.shape {
+        return Err(AdError::EvalFailed(format!(
+            "cumprod tangent shape mismatch: expected {:?} with {} elements, got {:?} with {} elements",
+            primal.shape,
+            primal.elements.len(),
+            tangent.shape,
+            tangent.elements.len()
+        )));
+    }
+
+    let rank = primal.shape.rank();
+    if rank == 0 {
+        let tangent = tangent
+            .elements
+            .first()
+            .and_then(|literal| literal.as_f64())
+            .ok_or_else(|| AdError::EvalFailed("cumprod tangent must be numeric".to_owned()))?;
+        return Ok(Value::scalar_f64(tangent));
+    }
+
+    let axis = parse_cumulative_axis(params, rank, Primitive::Cumprod)?;
+    let dims = primal
+        .shape
+        .dims
+        .iter()
+        .map(|dim| *dim as usize)
+        .collect::<Vec<_>>();
+    let strides = ad_row_major_strides(&primal.shape.dims);
+    let axis_len = dims[axis];
+    let axis_stride = strides[axis];
+    let total = primal.elements.len();
+    let outer_count = total.checked_div(axis_len).unwrap_or(0);
+    let mut output = vec![0.0_f64; total];
+
+    for outer in 0..outer_count {
+        let mut base = 0_usize;
+        let mut rem = outer;
+        for dim_idx in (0..rank).rev() {
+            if dim_idx == axis {
+                continue;
+            }
+            base += (rem % dims[dim_idx]) * strides[dim_idx];
+            rem /= dims[dim_idx];
+        }
+
+        let mut running_product = 1.0_f64;
+        let mut running_tangent = 0.0_f64;
+        for axis_idx in 0..axis_len {
+            let flat_idx = base + axis_idx * axis_stride;
+            let primal_value = primal.elements[flat_idx]
+                .as_f64()
+                .ok_or_else(|| AdError::EvalFailed("cumprod input must be numeric".to_owned()))?;
+            let tangent_value = tangent.elements[flat_idx]
+                .as_f64()
+                .ok_or_else(|| AdError::EvalFailed("cumprod tangent must be numeric".to_owned()))?;
+            running_tangent = running_tangent * primal_value + running_product * tangent_value;
+            running_product *= primal_value;
+            output[flat_idx] = running_tangent;
+        }
+    }
+
+    Ok(Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            primal.shape.clone(),
+            output.into_iter().map(Literal::from_f64).collect(),
+        )
+        .map_err(|err| AdError::EvalFailed(err.to_string()))?,
+    ))
+}
+
 fn to_f64(value: &Value) -> Result<f64, AdError> {
     value
         .as_f64_scalar()
@@ -4769,7 +4892,7 @@ fn jvp_rule(
         Primitive::ReducePrecision => Ok(tangents[0].clone()),
         Primitive::DynamicUpdateSlice => ep_p(Primitive::DynamicUpdateSlice, tangents, params),
         Primitive::Cumsum => ep_p(Primitive::Cumsum, &[tangents[0].clone()], params),
-        Primitive::Cumprod => ep_p(Primitive::Cumsum, &[tangents[0].clone()], params),
+        Primitive::Cumprod => cumprod_jvp_value(&primals[0], &tangents[0], params),
         Primitive::Sort => ep_p(Primitive::Sort, &[tangents[0].clone()], params),
         Primitive::Argsort => Ok(zeros_like(&primals[0])),
         Primitive::Conv => ep_p(Primitive::Conv, tangents, params),
@@ -9706,6 +9829,137 @@ mod tests {
             .expect("partial reduction should produce a tensor");
         assert_eq!(tensor.shape.dims, vec![2]);
         assert_eq!(tensor.to_f64_vec().expect("f64 elements"), vec![9.0, 72.0]);
+    }
+
+    #[test]
+    fn test_jvp_cumprod_scalar_passes_tangent() {
+        let params = BTreeMap::new();
+
+        let tangent_out = jvp_rule(
+            Primitive::Cumprod,
+            &[Value::scalar_f64(3.0)],
+            &[Value::scalar_f64(0.25)],
+            &params,
+        )
+        .expect("jvp");
+
+        let val = tangent_out
+            .as_f64_scalar()
+            .expect("scalar cumprod should produce scalar tangent");
+        assert!((val - 0.25).abs() < 1e-10, "got {val}");
+    }
+
+    #[test]
+    fn test_jvp_cumprod_vector_uses_product_recurrence() {
+        let params = BTreeMap::new();
+
+        let x = Value::vector_f64(&[2.0, 3.0, 4.0]).expect("vector");
+        let dx = Value::vector_f64(&[0.5, 1.0, 1.5]).expect("vector");
+
+        let tangent_out = jvp_rule(Primitive::Cumprod, &[x], &[dx], &params).expect("jvp");
+
+        let tensor = tangent_out.as_tensor().expect("cumprod tangent tensor");
+        assert_eq!(
+            tensor.to_f64_vec().expect("f64 elements"),
+            vec![0.5, 3.5, 23.0]
+        );
+    }
+
+    #[test]
+    fn test_jvp_cumprod_axis0_rank2() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(5.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(0.1),
+                    Literal::from_f64(0.2),
+                    Literal::from_f64(0.3),
+                    Literal::from_f64(0.4),
+                    Literal::from_f64(0.5),
+                    Literal::from_f64(0.6),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+
+        let tangent_out = jvp_rule(Primitive::Cumprod, &[x], &[dx], &params).expect("jvp");
+
+        let tensor = tangent_out.as_tensor().expect("cumprod tangent tensor");
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        let values = tensor.to_f64_vec().expect("f64 elements");
+        for (actual, expected) in values.iter().zip([0.1, 0.2, 0.3, 0.8, 2.0, 3.6]) {
+            assert!(
+                (*actual - expected).abs() < 1e-10,
+                "got {actual}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_jvp_cumprod_axis1_rank2_zero_aware() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(5.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(0.5),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(1.5),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "1".into());
+
+        let tangent_out = jvp_rule(Primitive::Cumprod, &[x], &[dx], &params).expect("jvp");
+
+        let tensor = tangent_out.as_tensor().expect("cumprod tangent tensor");
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_eq!(
+            tensor.to_f64_vec().expect("f64 elements"),
+            vec![0.5, 3.5, 23.0, 2.0, 3.0, 15.0]
+        );
     }
 
     #[test]
