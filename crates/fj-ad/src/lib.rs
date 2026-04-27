@@ -3501,6 +3501,37 @@ fn scan_jvp(
     }
 }
 
+fn while_body_op_for_ad(body_op_name: &str) -> Option<Primitive> {
+    match body_op_name {
+        "add" => Some(Primitive::Add),
+        "sub" => Some(Primitive::Sub),
+        "mul" => Some(Primitive::Mul),
+        "div" => Some(Primitive::Div),
+        "pow" => Some(Primitive::Pow),
+        _ => None,
+    }
+}
+
+fn while_cond_op_for_ad(cond_op_name: &str) -> Option<Primitive> {
+    match cond_op_name {
+        "lt" => Some(Primitive::Lt),
+        "le" => Some(Primitive::Le),
+        "gt" => Some(Primitive::Gt),
+        "ge" => Some(Primitive::Ge),
+        "ne" => Some(Primitive::Ne),
+        "eq" => Some(Primitive::Eq),
+        _ => None,
+    }
+}
+
+fn while_cond_value_to_bool(cond_result: &Value) -> bool {
+    match cond_result {
+        Value::Scalar(Literal::Bool(b)) => *b,
+        Value::Scalar(Literal::I64(v)) => *v != 0,
+        _ => false,
+    }
+}
+
 /// While loop VJP: reverse-propagate gradient through the iteration loop.
 ///
 /// inputs: [init_carry, step_value, threshold]
@@ -3524,25 +3555,12 @@ fn while_vjp(
     let threshold = &inputs[2];
 
     let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
-    let body_op = match body_op_name {
-        "add" => Primitive::Add,
-        "sub" => Primitive::Sub,
-        "mul" => Primitive::Mul,
-        "div" => Primitive::Div,
-        "pow" => Primitive::Pow,
-        _ => return Err(AdError::UnsupportedPrimitive(Primitive::While)),
-    };
+    let body_op = while_body_op_for_ad(body_op_name)
+        .ok_or(AdError::UnsupportedPrimitive(Primitive::While))?;
 
     let cond_op_name = params.get("cond_op").map(|s| s.as_str()).unwrap_or("lt");
-    let cond_op = match cond_op_name {
-        "lt" => Primitive::Lt,
-        "le" => Primitive::Le,
-        "gt" => Primitive::Gt,
-        "ge" => Primitive::Ge,
-        "ne" => Primitive::Ne,
-        "eq" => Primitive::Eq,
-        _ => return Err(AdError::UnsupportedPrimitive(Primitive::While)),
-    };
+    let cond_op = while_cond_op_for_ad(cond_op_name)
+        .ok_or(AdError::UnsupportedPrimitive(Primitive::While))?;
 
     let max_iter: usize = params
         .get("max_iter")
@@ -3560,12 +3578,7 @@ fn while_vjp(
             &BTreeMap::new(),
         )
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-        let continue_loop = match &cond_result {
-            Value::Scalar(Literal::Bool(b)) => *b,
-            Value::Scalar(Literal::I64(v)) => *v != 0,
-            _ => false,
-        };
-        if !continue_loop {
+        if !while_cond_value_to_bool(&cond_result) {
             break;
         }
         carry = eval_primitive(body_op, &[carry, step_value.clone()], &BTreeMap::new())
@@ -3596,6 +3609,75 @@ fn while_vjp(
     let g_threshold = zeros_like(threshold);
 
     Ok(vec![g_carry, g_step_accum, g_threshold])
+}
+
+fn while_jvp(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    if primals.len() < 3 {
+        return Err(AdError::InputArity {
+            expected: 3,
+            actual: primals.len(),
+        });
+    }
+    if tangents.len() < 3 {
+        return Err(AdError::InputArity {
+            expected: 3,
+            actual: tangents.len(),
+        });
+    }
+
+    let step_value = &primals[1];
+    let threshold = &primals[2];
+    let step_tangent = &tangents[1];
+
+    let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+    let body_op = while_body_op_for_ad(body_op_name)
+        .ok_or(AdError::UnsupportedPrimitive(Primitive::While))?;
+
+    let cond_op_name = params.get("cond_op").map(|s| s.as_str()).unwrap_or("lt");
+    let cond_op = while_cond_op_for_ad(cond_op_name)
+        .ok_or(AdError::UnsupportedPrimitive(Primitive::While))?;
+
+    let max_iter: usize = params
+        .get("max_iter")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+
+    let mut carry_primal = primals[0].clone();
+    let mut carry_tangent = tangents[0].clone();
+
+    for _ in 0..max_iter {
+        let cond_result = eval_primitive(
+            cond_op,
+            &[carry_primal.clone(), threshold.clone()],
+            &BTreeMap::new(),
+        )
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+        if !while_cond_value_to_bool(&cond_result) {
+            return Ok(carry_tangent);
+        }
+
+        let next_tangent = jvp_rule(
+            body_op,
+            &[carry_primal.clone(), step_value.clone()],
+            &[carry_tangent, step_tangent.clone()],
+            &BTreeMap::new(),
+        )?;
+        carry_primal = eval_primitive(
+            body_op,
+            &[carry_primal, step_value.clone()],
+            &BTreeMap::new(),
+        )
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+        carry_tangent = next_tangent;
+    }
+
+    Err(AdError::EvalFailed(format!(
+        "while JVP exceeded max_iter={max_iter}"
+    )))
 }
 
 /// Conv 1D VJP: compute proper gradients for both input and kernel.
@@ -5336,13 +5418,7 @@ fn jvp_rule(
 
         Primitive::Scan => scan_jvp(primals, tangents, params),
 
-        Primitive::While => {
-            if tangents.len() >= 2 {
-                ep(Primitive::Add, &[tangents[0].clone(), tangents[1].clone()])
-            } else {
-                Ok(tangents[0].clone())
-            }
-        }
+        Primitive::While => while_jvp(primals, tangents, params),
 
         Primitive::Switch => {
             if tangents.len() > 1 {
@@ -9835,6 +9911,66 @@ mod tests {
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
         assert_eq!(grads[1].as_f64_scalar().unwrap(), 1.0);
         assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
+    }
+
+    #[test]
+    fn while_jvp_mul_loop_uses_body_rule() {
+        // while carry < 100: carry *= 2 => seven body applications.
+        // Fixed-path tangent: dinit * 2^7 + dstep * 7 * 2^6.
+        let init = Value::scalar_f64(1.0);
+        let step = Value::scalar_f64(2.0);
+        let threshold = Value::scalar_f64(100.0);
+        let init_tangent = Value::scalar_f64(0.5);
+        let step_tangent = Value::scalar_f64(0.1);
+        let threshold_tangent = Value::scalar_f64(999.0);
+        let tangent = jvp_rule(
+            Primitive::While,
+            &[init, step, threshold],
+            &[init_tangent, step_tangent, threshold_tangent],
+            &while_params("mul", "lt"),
+        )
+        .expect("while JVP should use body_op=mul");
+        let actual = tangent.as_f64_scalar().expect("while JVP output");
+        assert!((actual - 108.8).abs() < 1e-10, "tangent = {actual}");
+    }
+
+    #[test]
+    fn while_jvp_sub_ne_condition_matches_loop_path() {
+        // while carry != 0: carry -= 1 => two iterations from 2 to 0.
+        let init = Value::scalar_f64(2.0);
+        let step = Value::scalar_f64(1.0);
+        let threshold = Value::scalar_f64(0.0);
+        let init_tangent = Value::scalar_f64(0.5);
+        let step_tangent = Value::scalar_f64(0.1);
+        let threshold_tangent = Value::scalar_f64(0.0);
+        let tangent = jvp_rule(
+            Primitive::While,
+            &[init, step, threshold],
+            &[init_tangent, step_tangent, threshold_tangent],
+            &while_params("sub", "ne"),
+        )
+        .expect("while JVP should use cond_op=ne");
+        let actual = tangent.as_f64_scalar().expect("while JVP output");
+        assert!((actual - 0.3).abs() < 1e-10, "tangent = {actual}");
+    }
+
+    #[test]
+    fn while_jvp_no_iterations_returns_init_tangent() {
+        let init = Value::scalar_f64(10.0);
+        let step = Value::scalar_f64(1.0);
+        let threshold = Value::scalar_f64(5.0);
+        let tangent = jvp_rule(
+            Primitive::While,
+            &[init, step, threshold],
+            &[
+                Value::scalar_f64(0.75),
+                Value::scalar_f64(100.0),
+                Value::scalar_f64(100.0),
+            ],
+            &while_params("add", "lt"),
+        )
+        .expect("while JVP should handle empty primal loop path");
+        assert_eq!(tangent.as_f64_scalar().unwrap(), 0.75);
     }
 
     // ── Task-specified control-flow AD coverage ───────────────────────
