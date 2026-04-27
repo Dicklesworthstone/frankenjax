@@ -98,6 +98,64 @@ fn resolve_equation_inputs(
     Ok(resolved)
 }
 
+fn scalar_literal_from_value(primitive: Primitive, value: &Value) -> Result<Literal, EvalError> {
+    match value {
+        Value::Scalar(literal) => Ok(*literal),
+        Value::Tensor(tensor) => {
+            if tensor.shape != Shape::scalar() {
+                return Err(EvalError::ShapeMismatch {
+                    primitive,
+                    left: tensor.shape.clone(),
+                    right: Shape::scalar(),
+                });
+            }
+            if tensor.elements.len() != 1 {
+                return Err(EvalError::InvalidTensor(ValueError::ElementCountMismatch {
+                    shape: tensor.shape.clone(),
+                    expected_count: 1,
+                    actual_count: tensor.elements.len(),
+                }));
+            }
+            Ok(tensor.elements[0])
+        }
+    }
+}
+
+fn predicate_value_to_bool(primitive: Primitive, value: &Value) -> Result<bool, EvalError> {
+    match scalar_literal_from_value(primitive, value)? {
+        Literal::Bool(value) => Ok(value),
+        Literal::I64(value) => Ok(value != 0),
+        Literal::U32(value) => Ok(value != 0),
+        Literal::U64(value) => Ok(value != 0),
+        Literal::BF16Bits(bits) => Ok(Literal::BF16Bits(bits)
+            .as_f64()
+            .is_some_and(|value| value != 0.0)),
+        Literal::F16Bits(bits) => Ok(Literal::F16Bits(bits)
+            .as_f64()
+            .is_some_and(|value| value != 0.0)),
+        Literal::F32Bits(bits) => Ok(f32::from_bits(bits) != 0.0),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "predicate must be boolean or numeric",
+        }),
+    }
+}
+
+fn value_shape(value: &Value) -> Shape {
+    match value {
+        Value::Scalar(_) => Shape::scalar(),
+        Value::Tensor(tensor) => tensor.shape.clone(),
+    }
+}
+
+fn map_sub_jaxpr_error(primitive: Primitive, context: &str, err: InterpreterError) -> EvalError {
+    EvalError::Unsupported {
+        primitive,
+        detail: format!("{context} sub_jaxpr failed: {err}"),
+    }
+}
+
 fn evaluate_switch_sub_jaxprs(
     equation: &Equation,
     resolved: &[Value],
@@ -112,28 +170,8 @@ fn evaluate_switch_sub_jaxprs(
             }));
         }
     };
-    let index_literal = match index_value {
-        Value::Scalar(literal) => *literal,
-        Value::Tensor(tensor) => {
-            if tensor.shape != Shape::scalar() {
-                return Err(InterpreterError::Primitive(EvalError::ShapeMismatch {
-                    primitive: Primitive::Switch,
-                    left: tensor.shape.clone(),
-                    right: Shape::scalar(),
-                }));
-            }
-            if tensor.elements.len() != 1 {
-                return Err(InterpreterError::Primitive(EvalError::InvalidTensor(
-                    ValueError::ElementCountMismatch {
-                        shape: tensor.shape.clone(),
-                        expected_count: 1,
-                        actual_count: tensor.elements.len(),
-                    },
-                )));
-            }
-            tensor.elements[0]
-        }
-    };
+    let index_literal = scalar_literal_from_value(Primitive::Switch, index_value)
+        .map_err(InterpreterError::Primitive)?;
     let index = match index_literal {
         Literal::I64(value) => value,
         Literal::U32(value) => i64::from(value),
@@ -217,48 +255,8 @@ fn evaluate_cond_sub_jaxprs(
         }));
     }
 
-    let predicate_literal = match predicate_value {
-        Value::Scalar(literal) => *literal,
-        Value::Tensor(tensor) => {
-            if tensor.shape != Shape::scalar() {
-                return Err(InterpreterError::Primitive(EvalError::ShapeMismatch {
-                    primitive: Primitive::Cond,
-                    left: tensor.shape.clone(),
-                    right: Shape::scalar(),
-                }));
-            }
-            if tensor.elements.len() != 1 {
-                return Err(InterpreterError::Primitive(EvalError::InvalidTensor(
-                    ValueError::ElementCountMismatch {
-                        shape: tensor.shape.clone(),
-                        expected_count: 1,
-                        actual_count: tensor.elements.len(),
-                    },
-                )));
-            }
-            tensor.elements[0]
-        }
-    };
-    let predicate = match predicate_literal {
-        Literal::Bool(value) => value,
-        Literal::I64(value) => value != 0,
-        Literal::U32(value) => value != 0,
-        Literal::U64(value) => value != 0,
-        Literal::BF16Bits(bits) => Literal::BF16Bits(bits)
-            .as_f64()
-            .is_some_and(|value| value != 0.0),
-        Literal::F16Bits(bits) => Literal::F16Bits(bits)
-            .as_f64()
-            .is_some_and(|value| value != 0.0),
-        Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
-        Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
-        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-            return Err(InterpreterError::Primitive(EvalError::TypeMismatch {
-                primitive: Primitive::Cond,
-                detail: "cond predicate must be boolean or numeric",
-            }));
-        }
-    };
+    let predicate = predicate_value_to_bool(Primitive::Cond, predicate_value)
+        .map_err(InterpreterError::Primitive)?;
 
     let selected_branch = if predicate {
         &equation.sub_jaxprs[0]
@@ -278,6 +276,128 @@ fn evaluate_cond_sub_jaxprs(
     eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
 }
 
+fn evaluate_while_sub_jaxprs(
+    equation: &Equation,
+    resolved: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
+    if equation.sub_jaxprs.len() != 2 {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::While,
+            detail: format!(
+                "while expects exactly 2 sub_jaxprs, got {}",
+                equation.sub_jaxprs.len()
+            ),
+        }));
+    }
+    let cond_jaxpr = &equation.sub_jaxprs[0];
+    let body_jaxpr = &equation.sub_jaxprs[1];
+
+    let max_iter: usize = match equation.params.get("max_iter") {
+        Some(raw) => raw.parse().map_err(|_| {
+            InterpreterError::Primitive(EvalError::Unsupported {
+                primitive: Primitive::While,
+                detail: format!("invalid max_iter value: {raw}"),
+            })
+        })?,
+        None => 1000,
+    };
+
+    let const_count = cond_jaxpr.constvars.len() + body_jaxpr.constvars.len();
+    if resolved.len() < const_count {
+        return Err(InterpreterError::InputArity {
+            expected: const_count,
+            actual: resolved.len(),
+        });
+    }
+    let (const_bindings, carry_bindings) = resolved.split_at(const_count);
+    let (cond_consts, body_consts) = const_bindings.split_at(cond_jaxpr.constvars.len());
+    if cond_jaxpr.invars.len() != carry_bindings.len() {
+        return Err(InterpreterError::InputArity {
+            expected: const_count + cond_jaxpr.invars.len(),
+            actual: resolved.len(),
+        });
+    }
+    if body_jaxpr.invars.len() != carry_bindings.len() {
+        return Err(InterpreterError::InputArity {
+            expected: const_count + body_jaxpr.invars.len(),
+            actual: resolved.len(),
+        });
+    }
+
+    let mut carry = carry_bindings.to_vec();
+    let init_shapes: Vec<Shape> = carry.iter().map(value_shape).collect();
+    let init_dtypes: Vec<_> = carry.iter().map(Value::dtype).collect();
+
+    for _ in 0..max_iter {
+        let cond_outputs =
+            eval_jaxpr_with_consts(cond_jaxpr, cond_consts, &carry).map_err(|err| {
+                InterpreterError::Primitive(map_sub_jaxpr_error(
+                    Primitive::While,
+                    "while cond",
+                    err,
+                ))
+            })?;
+        if cond_outputs.len() != 1 {
+            return Err(InterpreterError::InvariantViolation {
+                detail: format!(
+                    "while cond sub_jaxpr returned {} outputs; expected 1",
+                    cond_outputs.len()
+                ),
+            });
+        }
+        if !predicate_value_to_bool(Primitive::While, &cond_outputs[0])
+            .map_err(InterpreterError::Primitive)?
+        {
+            return Ok(carry);
+        }
+
+        let next_carry =
+            eval_jaxpr_with_consts(body_jaxpr, body_consts, &carry).map_err(|err| {
+                InterpreterError::Primitive(map_sub_jaxpr_error(
+                    Primitive::While,
+                    "while body",
+                    err,
+                ))
+            })?;
+        if next_carry.len() != carry.len() {
+            return Err(InterpreterError::InvariantViolation {
+                detail: format!(
+                    "while body sub_jaxpr returned {} carry values; expected {}",
+                    next_carry.len(),
+                    carry.len()
+                ),
+            });
+        }
+        for (idx, value) in next_carry.iter().enumerate() {
+            let new_shape = value_shape(value);
+            if new_shape != init_shapes[idx] {
+                return Err(InterpreterError::Primitive(EvalError::ShapeChanged {
+                    primitive: Primitive::While,
+                    detail: format!(
+                        "carry element {idx} changed shape from {:?} to {:?}",
+                        init_shapes[idx].dims, new_shape.dims
+                    ),
+                }));
+            }
+            let new_dtype = value.dtype();
+            if new_dtype != init_dtypes[idx] {
+                return Err(InterpreterError::Primitive(EvalError::TypeMismatch {
+                    primitive: Primitive::While,
+                    detail: "while body changed carry dtype",
+                }));
+            }
+        }
+        carry = next_carry;
+    }
+
+    Err(InterpreterError::Primitive(
+        EvalError::MaxIterationsExceeded {
+            primitive: Primitive::While,
+            max_iterations: max_iter,
+        },
+    ))
+}
+
 /// Evaluate a single equation against the current environment.
 ///
 /// This handles equation-level control-flow semantics that require access to
@@ -295,6 +415,10 @@ pub fn eval_equation_outputs(
             Primitive::Cond => {
                 let resolved = resolve_equation_inputs(equation, env)?;
                 evaluate_cond_sub_jaxprs(equation, &resolved)?
+            }
+            Primitive::While => {
+                let resolved = resolve_equation_inputs(equation, env)?;
+                evaluate_while_sub_jaxprs(equation, &resolved)?
             }
             Primitive::Switch => {
                 let resolved = resolve_equation_inputs(equation, env)?;
@@ -582,6 +706,164 @@ mod tests {
                 effects: vec![],
             }],
         )
+    }
+
+    fn make_while_cond_gt_zero_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Gt,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_while_body_sub_step_jaxpr(step: i64) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(step))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_while_cond_gt_const_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(2)],
+            vec![VarId(1)],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Gt,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_while_body_sub_const_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(2)],
+            vec![VarId(1)],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_while_control_flow_jaxpr(step: i64, max_iter: usize) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::While,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::from([("max_iter".to_owned(), max_iter.to_string())]),
+                sub_jaxprs: vec![
+                    make_while_cond_gt_zero_jaxpr(),
+                    make_while_body_sub_step_jaxpr(step),
+                ],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_while_control_flow_with_const_bindings_jaxpr(max_iter: usize) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4)],
+            vec![Equation {
+                primitive: Primitive::While,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4)],
+                params: BTreeMap::from([("max_iter".to_owned(), max_iter.to_string())]),
+                sub_jaxprs: vec![
+                    make_while_cond_gt_const_jaxpr(),
+                    make_while_body_sub_const_jaxpr(),
+                ],
+                effects: vec![],
+            }],
+        )
+    }
+
+    #[test]
+    fn eval_while_with_sub_jaxprs_runs_until_predicate_false() {
+        let jaxpr = make_while_control_flow_jaxpr(1, 10);
+        let outputs = eval_jaxpr(&jaxpr, &[Value::scalar_i64(3)])
+            .expect("while with sub_jaxprs should evaluate");
+        assert_eq!(outputs, vec![Value::scalar_i64(0)]);
+    }
+
+    #[test]
+    fn eval_while_with_sub_jaxprs_splits_cond_and_body_consts_from_carry() {
+        let jaxpr = make_while_control_flow_with_const_bindings_jaxpr(10);
+        let outputs = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::scalar_i64(0),
+                Value::scalar_i64(2),
+                Value::scalar_i64(5),
+            ],
+        )
+        .expect("while with sub_jaxpr const bindings should evaluate");
+        assert_eq!(outputs, vec![Value::scalar_i64(-1)]);
+    }
+
+    #[test]
+    fn eval_while_with_sub_jaxprs_enforces_max_iter() {
+        let jaxpr = make_while_control_flow_jaxpr(0, 2);
+        let err = eval_jaxpr(&jaxpr, &[Value::scalar_i64(3)])
+            .expect_err("non-converging while should hit max_iter");
+        let max_iterations = match &err {
+            InterpreterError::Primitive(fj_lax::EvalError::MaxIterationsExceeded {
+                max_iterations,
+                ..
+            }) => *max_iterations,
+            _ => usize::MAX,
+        };
+        assert_eq!(max_iterations, 2, "unexpected error: {err:?}");
+    }
+
+    #[test]
+    fn eval_while_with_sub_jaxprs_rejects_body_arity_change() {
+        let mut jaxpr = make_while_control_flow_jaxpr(1, 10);
+        jaxpr.equations[0].sub_jaxprs[1] =
+            Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1), VarId(1)], vec![]);
+        let err = eval_jaxpr(&jaxpr, &[Value::scalar_i64(3)])
+            .expect_err("while body arity change should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("returned 2 carry values; expected 1"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]
