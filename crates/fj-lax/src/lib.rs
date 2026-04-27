@@ -2152,6 +2152,19 @@ mod tests {
     }
 
     #[test]
+    fn pad_rejects_dtype_mismatch() {
+        let input = Value::vector_i64(&[1, 2, 3]).unwrap();
+        let params = pad_params("1", "0", "0");
+        let err =
+            eval_primitive(Primitive::Pad, &[input, Value::scalar_f64(0.0)], &params).unwrap_err();
+        let detail = match err {
+            EvalError::Unsupported { detail, .. } => detail,
+            other => format!("expected unsupported error, got {other:?}"),
+        };
+        assert!(detail.contains("dtype"), "detail: {detail}");
+    }
+
+    #[test]
     fn pad_rejects_negative_padding_values() {
         let input = Value::vector_i64(&[1, 2, 3]).unwrap();
         let params = pad_params("-1", "0", "0");

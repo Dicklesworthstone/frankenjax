@@ -3032,6 +3032,15 @@ fn infer_pad(
             detail: "pad value must be scalar-shaped".to_owned(),
         });
     }
+    if inputs[1].dtype != operand.dtype {
+        return Err(TraceError::ShapeInferenceFailed {
+            primitive,
+            detail: format!(
+                "pad value dtype {:?} must match operand dtype {:?}",
+                inputs[1].dtype, operand.dtype
+            ),
+        });
+    }
 
     let rank = operand.shape.rank();
     let lows = parse_u32_param_list_for_rank(primitive, params, "padding_low", rank, None)?;
@@ -3073,7 +3082,7 @@ fn infer_pad(
     }
 
     Ok(vec![ShapedArray {
-        dtype: promote_dtype(operand.dtype, inputs[1].dtype),
+        dtype: operand.dtype,
         shape: Shape { dims: out_dims },
     }])
 }
@@ -5934,6 +5943,40 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.dtype, DType::I64);
                 assert_eq!(aval.shape, Shape::scalar());
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_pad_rejects_dtype_mismatch() {
+        run_logged_test(
+            "test_trace_pad_rejects_dtype_mismatch",
+            fj_test_utils::fixture_id_from_json(&("pad", "dtype-mismatch"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::vector(3),
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::scalar(),
+                    },
+                ]);
+                let err = ctx
+                    .process_primitive(Primitive::Pad, &[TracerId(1), TracerId(2)], BTreeMap::new())
+                    .expect_err("pad inference should reject dtype mismatch");
+                assert!(matches!(
+                    err,
+                    TraceError::ShapeInferenceFailed {
+                        primitive: Primitive::Pad,
+                        ..
+                    }
+                ));
+                assert!(err.to_string().contains("dtype"), "unexpected error: {err}");
                 Ok(Vec::new())
             },
         );

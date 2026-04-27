@@ -867,6 +867,18 @@ pub(crate) fn eval_pad(
         });
     }
 
+    let operand_dtype = inputs[0].dtype();
+    let pad_value_dtype = inputs[1].dtype();
+    if pad_value_dtype != operand_dtype {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "pad value dtype {:?} must match operand dtype {:?}",
+                pad_value_dtype, operand_dtype
+            ),
+        });
+    }
+
     let pad_literal = match &inputs[1] {
         Value::Scalar(lit) => *lit,
         Value::Tensor(tensor) if tensor.elements.len() == 1 => tensor.elements[0],
