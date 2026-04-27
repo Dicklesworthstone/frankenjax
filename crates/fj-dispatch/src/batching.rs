@@ -909,10 +909,15 @@ fn batch_slice(
         .ok_or(BatchError::BatchDimMoveError("expected tensor".into()))?;
     let batch_size = tensor.shape.dims[0] as usize;
 
-    // Parse slice params: start_indices, limit_indices, strides
+    // Parse slice params: start_indices, limit_indices, strides.
+    // JAX treats omitted slice strides as one along every sliced axis.
     let starts = parse_param_usize_list(params, "start_indices")?;
     let limits = parse_param_usize_list(params, "limit_indices")?;
-    let strides = parse_param_usize_list(params, "strides")?;
+    let strides = match params.get("strides") {
+        None => vec![1_usize; starts.len()],
+        Some(raw) if is_empty_list(raw) => vec![1_usize; starts.len()],
+        Some(raw) => parse_usize_list(raw, "strides")?,
+    };
 
     // Prepend batch dimension (full slice)
     let mut new_starts = vec![0_usize];
@@ -3047,6 +3052,25 @@ mod tests {
         let vals = extract_f64_vec(&result.value);
         // Row 0: [1,2,3], Row 1: [6,7,8], Row 2: [11,12,13]
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 6.0, 7.0, 8.0, 11.0, 12.0, 13.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_slice_defaults_strides() {
+        // JAX defaults omitted slice strides to one; BatchTrace should preserve that.
+        let data: Vec<f64> = (0..15).map(|i| i as f64).collect();
+        let input = BatchTracer::batched(make_f64_matrix(3, 5, &data), 0);
+        let mut params = BTreeMap::new();
+        params.insert("start_indices".to_owned(), "1".to_owned());
+        params.insert("limit_indices".to_owned(), "4".to_owned());
+
+        let result = apply_batch_rule(Primitive::Slice, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![3, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 6.0, 7.0, 8.0, 11.0, 12.0, 13.0]
+        );
     }
 
     #[test]
