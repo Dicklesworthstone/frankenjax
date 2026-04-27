@@ -26,6 +26,46 @@ pub(crate) fn parse_i64_param(
         .collect()
 }
 
+fn parse_pad_i64_param(
+    primitive: Primitive,
+    key: &str,
+    params: &BTreeMap<String, String>,
+    rank: usize,
+    missing_default: Option<i64>,
+) -> Result<Vec<i64>, EvalError> {
+    let Some(raw) = params.get(key) else {
+        if let Some(default) = missing_default {
+            return Ok(vec![default; rank]);
+        }
+        if rank == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("missing required param '{key}'"),
+        });
+    };
+
+    if raw.trim().is_empty() {
+        if rank == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid empty param '{key}' for rank {rank}"),
+        });
+    }
+
+    raw.split(',')
+        .map(|s| {
+            s.trim().parse::<i64>().map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid integer in param '{key}': '{s}'"),
+            })
+        })
+        .collect()
+}
+
 /// Parse a comma-separated list of usize values from a param string.
 pub(crate) fn parse_usize_param(
     primitive: Primitive,
@@ -827,16 +867,6 @@ pub(crate) fn eval_pad(
         });
     }
 
-    let operand = match &inputs[0] {
-        Value::Tensor(t) => t,
-        Value::Scalar(_) => {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: "operand must be a tensor".into(),
-            });
-        }
-    };
-
     let pad_literal = match &inputs[1] {
         Value::Scalar(lit) => *lit,
         Value::Tensor(tensor) if tensor.elements.len() == 1 => tensor.elements[0],
@@ -848,14 +878,31 @@ pub(crate) fn eval_pad(
         }
     };
 
-    let rank = operand.shape.rank();
-    let lows_raw = parse_i64_param(primitive, "padding_low", params)?;
-    let highs_raw = parse_i64_param(primitive, "padding_high", params)?;
-    let interiors_raw = if params.contains_key("padding_interior") {
-        parse_i64_param(primitive, "padding_interior", params)?
-    } else {
-        vec![0_i64; rank]
+    let Value::Tensor(operand) = &inputs[0] else {
+        let rank = 0;
+        let lows_raw = parse_pad_i64_param(primitive, "padding_low", params, rank, None)?;
+        let highs_raw = parse_pad_i64_param(primitive, "padding_high", params, rank, None)?;
+        let interiors_raw =
+            parse_pad_i64_param(primitive, "padding_interior", params, rank, Some(0))?;
+        if !lows_raw.is_empty() || !highs_raw.is_empty() || !interiors_raw.is_empty() {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!(
+                    "padding params must match rank {rank}: low={} high={} interior={}",
+                    lows_raw.len(),
+                    highs_raw.len(),
+                    interiors_raw.len()
+                ),
+            });
+        }
+        return Ok(inputs[0].clone());
     };
+
+    let rank = operand.shape.rank();
+    let lows_raw = parse_pad_i64_param(primitive, "padding_low", params, rank, None)?;
+    let highs_raw = parse_pad_i64_param(primitive, "padding_high", params, rank, None)?;
+    let interiors_raw =
+        parse_pad_i64_param(primitive, "padding_interior", params, rank, Some(0_i64))?;
 
     if lows_raw.len() != rank || highs_raw.len() != rank || interiors_raw.len() != rank {
         return Err(EvalError::Unsupported {

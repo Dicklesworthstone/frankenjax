@@ -2113,6 +2113,45 @@ mod tests {
     }
 
     #[test]
+    fn pad_scalar_with_empty_padding_config_passes_through() {
+        let out = eval_primitive(
+            Primitive::Pad,
+            &[Value::scalar_f64(3.5), Value::scalar_f64(0.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out, Value::scalar_f64(3.5));
+    }
+
+    #[test]
+    fn pad_rank_zero_tensor_accepts_empty_padding_config() {
+        let input = Value::Tensor(
+            TensorValue::new(DType::I64, Shape::scalar(), vec![Literal::I64(7)]).unwrap(),
+        );
+        let params = pad_params("", "", "");
+        let out = eval_primitive(Primitive::Pad, &[input, Value::scalar_i64(0)], &params).unwrap();
+        let out_tensor = out.as_tensor().expect("pad output should be tensor");
+        assert_eq!(out_tensor.shape, Shape::scalar());
+        assert_eq!(out_tensor.elements, vec![Literal::I64(7)]);
+    }
+
+    #[test]
+    fn pad_scalar_rejects_nonempty_padding_config() {
+        let params = pad_params("1", "0", "0");
+        let err = eval_primitive(
+            Primitive::Pad,
+            &[Value::scalar_i64(7), Value::scalar_i64(0)],
+            &params,
+        )
+        .unwrap_err();
+        let detail = match err {
+            EvalError::Unsupported { detail, .. } => detail,
+            other => format!("expected unsupported error, got {other:?}"),
+        };
+        assert!(detail.contains("rank 0"), "detail: {detail}");
+    }
+
+    #[test]
     fn pad_rejects_negative_padding_values() {
         let input = Value::vector_i64(&[1, 2, 3]).unwrap();
         let params = pad_params("-1", "0", "0");
