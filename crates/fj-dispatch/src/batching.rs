@@ -1378,6 +1378,12 @@ fn batch_scatter(
 
     // Fast-path common vmap case: unbatched operand with batched indices/updates.
     if operand.batch_dim.is_none() && (indices.batch_dim.is_some() || updates.batch_dim.is_some()) {
+        if let Some(result) =
+            batch_scatter_unbatched_operand_direct(operand, indices, updates, params)?
+        {
+            return Ok(result);
+        }
+
         let (batch_size, batch_dim_source_value, batch_dim_source_axis) = if let Some(bd) =
             indices.batch_dim
         {
@@ -1431,6 +1437,190 @@ fn batch_scatter(
     }
 
     batch_passthrough_leading(Primitive::Scatter, inputs, params)
+}
+
+fn batch_scatter_unbatched_operand_direct(
+    operand: &BatchTracer,
+    indices: &BatchTracer,
+    updates: &BatchTracer,
+    params: &BTreeMap<String, String>,
+) -> Result<Option<BatchTracer>, BatchError> {
+    let Some(operand_tensor) = operand.value.as_tensor() else {
+        return Ok(None);
+    };
+    let Some(&operand_axis0_dim) = operand_tensor.shape.dims.first() else {
+        return Ok(None);
+    };
+    let operand_axis0 = operand_axis0_dim as usize;
+
+    let batch_size = if let Some(batch_dim) = indices.batch_dim {
+        get_batch_size(&indices.value, batch_dim)?
+    } else if let Some(batch_dim) = updates.batch_dim {
+        get_batch_size(&updates.value, batch_dim)?
+    } else {
+        return Ok(None);
+    };
+    if batch_size == 0 {
+        return Ok(None);
+    }
+    let batch_size_u32 = u32::try_from(batch_size)
+        .map_err(|_| BatchError::TensorError("scatter batch size exceeds u32".to_owned()))?;
+
+    let indices_value = match indices.batch_dim {
+        Some(batch_dim) => move_batch_dim_to_front(&indices.value, batch_dim)?,
+        None => broadcast_unbatched(&indices.value, batch_size, 0)?,
+    };
+    let updates_value = match updates.batch_dim {
+        Some(batch_dim) => move_batch_dim_to_front(&updates.value, batch_dim)?,
+        None => broadcast_unbatched(&updates.value, batch_size, 0)?,
+    };
+    let (Value::Tensor(indices_tensor), Value::Tensor(updates_tensor)) =
+        (&indices_value, &updates_value)
+    else {
+        return Ok(None);
+    };
+    if indices_tensor.leading_dim() != Some(batch_size_u32)
+        || updates_tensor.leading_dim() != Some(batch_size_u32)
+    {
+        return Ok(None);
+    }
+
+    let flat_axis0 = batch_size
+        .checked_mul(operand_axis0)
+        .ok_or_else(|| BatchError::TensorError("scatter flattened axis overflowed".to_owned()))?;
+    let flat_axis0_u32 = u32::try_from(flat_axis0).map_err(|_| {
+        BatchError::TensorError("scatter flattened axis exceeds u32 shape limit".to_owned())
+    })?;
+
+    let flat_operand_len = operand_tensor
+        .elements
+        .len()
+        .checked_mul(batch_size)
+        .ok_or_else(|| {
+            BatchError::TensorError("scatter operand replication overflowed".to_owned())
+        })?;
+    let mut flat_operand_elements = Vec::with_capacity(flat_operand_len);
+    for _ in 0..batch_size {
+        flat_operand_elements.extend_from_slice(&operand_tensor.elements);
+    }
+    let mut flat_operand_dims = Vec::with_capacity(operand_tensor.rank());
+    flat_operand_dims.push(flat_axis0_u32);
+    flat_operand_dims.extend_from_slice(&operand_tensor.shape.dims[1..]);
+    let flat_operand = Value::Tensor(
+        TensorValue::new(
+            operand_tensor.dtype,
+            Shape {
+                dims: flat_operand_dims,
+            },
+            flat_operand_elements,
+        )
+        .map_err(|e| BatchError::TensorError(e.to_string()))?,
+    );
+
+    let indices_per_batch = indices_tensor.elements.len() / batch_size;
+    let mut flat_indices_elements = Vec::with_capacity(indices_tensor.elements.len());
+    for (flat_pos, &literal) in indices_tensor.elements.iter().enumerate() {
+        let batch_idx = flat_pos / indices_per_batch;
+        let batch_offset = batch_idx
+            .checked_mul(operand_axis0)
+            .ok_or_else(|| BatchError::TensorError("scatter index offset overflowed".to_owned()))?;
+        let Some(adjusted) = offset_scatter_index_literal(literal, batch_offset, operand_axis0)?
+        else {
+            return Ok(None);
+        };
+        flat_indices_elements.push(adjusted);
+    }
+    let flat_indices = Value::Tensor(
+        TensorValue::new(
+            indices_tensor.dtype,
+            indices_tensor.shape.clone(),
+            flat_indices_elements,
+        )
+        .map_err(|e| BatchError::TensorError(e.to_string()))?,
+    );
+
+    let flat_result = eval_primitive(
+        Primitive::Scatter,
+        &[flat_operand, flat_indices, updates_value],
+        params,
+    )
+    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    let Value::Tensor(flat_tensor) = flat_result else {
+        return Ok(None);
+    };
+    let mut output_dims = Vec::with_capacity(operand_tensor.rank() + 1);
+    output_dims.push(batch_size_u32);
+    output_dims.extend_from_slice(&operand_tensor.shape.dims);
+    let output = TensorValue::new(
+        operand_tensor.dtype,
+        Shape { dims: output_dims },
+        flat_tensor.elements,
+    )
+    .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    Ok(Some(BatchTracer::batched(Value::Tensor(output), 0)))
+}
+
+fn offset_scatter_index_literal(
+    literal: Literal,
+    batch_offset: usize,
+    operand_axis0: usize,
+) -> Result<Option<Literal>, BatchError> {
+    let Some(raw_index) = scatter_index_literal_to_usize(literal)? else {
+        return Ok(None);
+    };
+    if raw_index >= operand_axis0 {
+        return Ok(None);
+    }
+    let adjusted = batch_offset
+        .checked_add(raw_index)
+        .ok_or_else(|| BatchError::TensorError("scatter adjusted index overflowed".to_owned()))?;
+
+    match literal {
+        Literal::I64(_) => i64::try_from(adjusted)
+            .map(Literal::I64)
+            .map(Some)
+            .map_err(|_| BatchError::TensorError("scatter adjusted index exceeds i64".to_owned())),
+        Literal::U32(_) => u32::try_from(adjusted)
+            .map(Literal::U32)
+            .map(Some)
+            .map_err(|_| BatchError::TensorError("scatter adjusted index exceeds u32".to_owned())),
+        Literal::U64(_) => u64::try_from(adjusted)
+            .map(Literal::U64)
+            .map(Some)
+            .map_err(|_| BatchError::TensorError("scatter adjusted index exceeds u64".to_owned())),
+        Literal::Bool(value) if batch_offset == 0 => Ok(Some(Literal::Bool(value))),
+        Literal::Bool(_) => Ok(None),
+        Literal::BF16Bits(_)
+        | Literal::F16Bits(_)
+        | Literal::F32Bits(_)
+        | Literal::F64Bits(_)
+        | Literal::Complex64Bits(..)
+        | Literal::Complex128Bits(..) => Ok(None),
+    }
+}
+
+fn scatter_index_literal_to_usize(literal: Literal) -> Result<Option<usize>, BatchError> {
+    match literal {
+        Literal::I64(value) => {
+            if value < 0 {
+                return Ok(None);
+            }
+            usize::try_from(value)
+                .map(Some)
+                .map_err(|_| BatchError::TensorError("scatter i64 index exceeds usize".to_owned()))
+        }
+        Literal::U32(value) => Ok(Some(value as usize)),
+        Literal::U64(value) => usize::try_from(value)
+            .map(Some)
+            .map_err(|_| BatchError::TensorError("scatter u64 index exceeds usize".to_owned())),
+        Literal::Bool(value) => Ok(Some(usize::from(value))),
+        Literal::BF16Bits(_)
+        | Literal::F16Bits(_)
+        | Literal::F32Bits(_)
+        | Literal::F64Bits(_)
+        | Literal::Complex64Bits(..)
+        | Literal::Complex128Bits(..) => Ok(None),
+    }
 }
 
 fn batch_squeeze(
@@ -5335,6 +5525,60 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
         assert_eq!(extract_i64_vec(&result.value), vec![10, 30, 20, 20, 10, 30]);
+    }
+
+    #[test]
+    fn test_batch_trace_scatter_batched_indices_updates_direct() {
+        let operand = BatchTracer::unbatched(make_i64_vector(&[0, 0, 0, 0]));
+        let indices = BatchTracer::batched(make_i64_matrix(2, 2, &[1, 3, 0, 2]), 0);
+        let updates = BatchTracer::batched(make_i64_matrix(2, 2, &[10, 20, 30, 40]), 0);
+
+        let result = apply_batch_rule(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 4]);
+        assert_eq!(
+            extract_i64_vec(&result.value),
+            vec![0, 10, 0, 20, 30, 0, 40, 0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_scatter_unbatched_index_batched_updates_direct() {
+        let operand = BatchTracer::unbatched(make_i64_vector(&[0, 0, 0]));
+        let index = BatchTracer::unbatched(Value::scalar_i64(1));
+        let updates = BatchTracer::batched(make_i64_vector(&[5, 7]), 0);
+
+        let result = apply_batch_rule(
+            Primitive::Scatter,
+            &[operand, index, updates],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
+        assert_eq!(extract_i64_vec(&result.value), vec![0, 5, 0, 0, 7, 0]);
+    }
+
+    #[test]
+    fn test_batch_trace_scatter_add_mode_keeps_batches_independent() {
+        let operand = BatchTracer::unbatched(make_i64_vector(&[1, 1, 1]));
+        let indices = BatchTracer::batched(make_i64_matrix(2, 2, &[1, 1, 0, 0]), 0);
+        let updates = BatchTracer::batched(make_i64_matrix(2, 2, &[2, 3, 4, 5]), 0);
+        let params = BTreeMap::from([("mode".to_owned(), "add".to_owned())]);
+
+        let result =
+            apply_batch_rule(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
+        assert_eq!(extract_i64_vec(&result.value), vec![1, 6, 1, 10, 1, 1]);
     }
 
     #[test]
