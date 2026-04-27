@@ -479,9 +479,8 @@ fn apply_batch_rule_multi(
 ) -> Result<Vec<BatchTracer>, BatchError> {
     match primitive {
         Primitive::Qr => batch_qr_multi(inputs, params),
-        Primitive::Svd | Primitive::Eigh => {
-            batch_passthrough_leading_multi(primitive, inputs, params)
-        }
+        Primitive::Eigh => batch_eigh_multi(inputs, params),
+        Primitive::Svd => batch_passthrough_leading_multi(primitive, inputs, params),
         _ => apply_batch_rule(primitive, inputs, params).map(|result| vec![result]),
     }
 }
@@ -1770,6 +1769,172 @@ fn qr_decompose_matrix(
     }
 
     (q, r_out)
+}
+
+fn batch_eigh_multi(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let Some((input, batch_dim)) = inputs
+        .iter()
+        .find_map(|t| t.batch_dim.map(|batch_dim| (t, batch_dim)))
+    else {
+        let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
+        return eval_primitive_multi(Primitive::Eigh, &values, params)
+            .map(|outputs| outputs.into_iter().map(BatchTracer::unbatched).collect())
+            .map_err(|e| BatchError::EvalError(e.to_string()));
+    };
+
+    if inputs.len() != 1 {
+        return batch_passthrough_leading_multi(Primitive::Eigh, inputs, params);
+    }
+
+    let batch_size = get_batch_size(&input.value, batch_dim)?;
+    let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+    let tensor = value
+        .as_tensor()
+        .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for eigh".to_owned()))?;
+
+    if tensor.rank() != 3 {
+        return batch_passthrough_leading_multi(Primitive::Eigh, inputs, params);
+    }
+
+    if tensor.shape.dims[0] as usize != batch_size {
+        return batch_passthrough_leading_multi(Primitive::Eigh, inputs, params);
+    }
+
+    let m = tensor.shape.dims[1] as usize;
+    let n = tensor.shape.dims[2] as usize;
+    if m != n {
+        return Err(BatchError::EvalError(format!(
+            "unsupported eigh behavior: Eigh requires a square matrix, got {m}x{n}"
+        )));
+    }
+
+    let matrix_len = m * n;
+    let mut w_elements = Vec::with_capacity(batch_size * m);
+    let mut v_elements = Vec::with_capacity(batch_size * m * m);
+
+    for batch in 0..batch_size {
+        let base = batch * matrix_len;
+        let mut matrix = tensor.elements[base..base + matrix_len]
+            .iter()
+            .map(|lit| {
+                lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for eigh: expected numeric elements".to_owned(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let (w, v) = eigh_decompose_matrix(&mut matrix, m);
+        w_elements.extend(w.into_iter().map(Literal::from_f64));
+        v_elements.extend(v.into_iter().map(Literal::from_f64));
+    }
+
+    let w_shape = Shape {
+        dims: vec![batch_size as u32, m as u32],
+    };
+    let v_shape = Shape {
+        dims: vec![batch_size as u32, m as u32, m as u32],
+    };
+    let w = TensorValue::new(tensor.dtype, w_shape, w_elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    let v = TensorValue::new(tensor.dtype, v_shape, v_elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    Ok(vec![w, v])
+}
+
+fn eigh_decompose_matrix(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let (eigenvalues, eigenvectors) = jacobi_eigendecomposition_matrix(a, n);
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_by(|&a_idx, &b_idx| eigenvalues[a_idx].total_cmp(&eigenvalues[b_idx]));
+
+    let mut w_sorted = vec![0.0_f64; n];
+    let mut v_sorted = vec![0.0_f64; n * n];
+    for (new_col, &old_col) in indices.iter().enumerate() {
+        w_sorted[new_col] = eigenvalues[old_col];
+        for row in 0..n {
+            v_sorted[row * n + new_col] = eigenvectors[row * n + old_col];
+        }
+    }
+
+    (w_sorted, v_sorted)
+}
+
+fn jacobi_eigendecomposition_matrix(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut v = vec![0.0_f64; n * n];
+    for i in 0..n {
+        v[i * n + i] = 1.0;
+    }
+
+    let max_iter = 100 * n * n;
+    let tol = f64::EPSILON * 1e2;
+
+    for _ in 0..max_iter {
+        let mut max_val = 0.0_f64;
+        let mut p = 0;
+        let mut q = 1;
+        for i in 0..n {
+            for j in (i + 1)..n {
+                let value = a[i * n + j].abs();
+                if value > max_val {
+                    max_val = value;
+                    p = i;
+                    q = j;
+                }
+            }
+        }
+
+        if max_val < tol {
+            break;
+        }
+
+        let app = a[p * n + p];
+        let aqq = a[q * n + q];
+        let apq = a[p * n + q];
+
+        let theta = if (app - aqq).abs() < f64::EPSILON {
+            std::f64::consts::FRAC_PI_4
+        } else {
+            0.5 * (2.0 * apq / (app - aqq)).atan()
+        };
+
+        let (sin_t, cos_t) = theta.sin_cos();
+
+        let mut new_row_p = vec![0.0; n];
+        let mut new_row_q = vec![0.0; n];
+        for i in 0..n {
+            new_row_p[i] = cos_t * a[p * n + i] + sin_t * a[q * n + i];
+            new_row_q[i] = -sin_t * a[p * n + i] + cos_t * a[q * n + i];
+        }
+
+        for i in 0..n {
+            a[p * n + i] = new_row_p[i];
+            a[q * n + i] = new_row_q[i];
+            a[i * n + p] = new_row_p[i];
+            a[i * n + q] = new_row_q[i];
+        }
+
+        a[p * n + p] = cos_t * new_row_p[p] + sin_t * new_row_p[q];
+        a[q * n + q] = -sin_t * new_row_q[p] + cos_t * new_row_q[q];
+        a[p * n + q] = 0.0;
+        a[q * n + p] = 0.0;
+
+        for i in 0..n {
+            let vip = v[i * n + p];
+            let viq = v[i * n + q];
+            v[i * n + p] = cos_t * vip + sin_t * viq;
+            v[i * n + q] = -sin_t * vip + cos_t * viq;
+        }
+    }
+
+    let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
+    (eigenvalues, v)
 }
 
 fn batch_triangular_solve(
@@ -3480,6 +3645,115 @@ mod tests {
         let input = BatchTracer::batched(make_f64_matrix(3, 2, &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0]), 0);
 
         let err = apply_batch_rule_multi(Primitive::Qr, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("expected rank-2 tensor"));
+    }
+
+    fn assert_eigh_matches_slice_oracle(outputs: &[BatchTracer], matrices: &[Value]) {
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(outputs[1].batch_dim, Some(0));
+
+        let mut expected_by_output = vec![Vec::new(), Vec::new()];
+        for matrix in matrices {
+            let slice_outputs = eval_primitive_multi(
+                Primitive::Eigh,
+                std::slice::from_ref(matrix),
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            assert_eq!(slice_outputs.len(), 2);
+            for (bucket, value) in expected_by_output.iter_mut().zip(slice_outputs) {
+                bucket.push(value);
+            }
+        }
+
+        for (actual, expected_slices) in outputs.iter().zip(expected_by_output) {
+            let expected = Value::Tensor(TensorValue::stack_axis0(&expected_slices).unwrap());
+            assert_eq!(
+                actual.value.as_tensor().unwrap().shape.dims,
+                expected.as_tensor().unwrap().shape.dims
+            );
+            assert_f64_close(&extract_f64_vec(&actual.value), &extract_f64_vec(&expected));
+        }
+    }
+
+    #[test]
+    fn test_batch_trace_eigh_multi_leading_batch_dim() {
+        let matrix0 = make_f64_matrix(2, 2, &[2.0, 0.0, 0.0, 3.0]);
+        let matrix1 = make_f64_matrix(2, 2, &[4.0, 1.0, 1.0, 4.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 2],
+                [
+                    2.0, 0.0, 0.0, 3.0, // batch element 0
+                    4.0, 1.0, 1.0, 4.0, // batch element 1
+                ]
+                .as_slice(),
+            ),
+            0,
+        );
+
+        let outputs = apply_batch_rule_multi(Primitive::Eigh, &[input], &BTreeMap::new()).unwrap();
+        assert_eigh_matches_slice_oracle(&outputs, &[matrix0, matrix1]);
+        assert_eq!(outputs[0].value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+        assert_eq!(
+            outputs[1].value.as_tensor().unwrap().shape.dims,
+            vec![2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_eigh_multi_nonleading_batch_dim() {
+        let matrix0 = make_f64_matrix(2, 2, &[2.0, 0.0, 0.0, 3.0]);
+        let matrix1 = make_f64_matrix(2, 2, &[4.0, 1.0, 1.0, 4.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 2],
+                [
+                    2.0, 4.0, // row 0 col 0, both batch lanes
+                    0.0, 1.0, // row 0 col 1, both batch lanes
+                    0.0, 1.0, // row 1 col 0, both batch lanes
+                    3.0, 4.0, // row 1 col 1, both batch lanes
+                ]
+                .as_slice(),
+            ),
+            2,
+        );
+
+        let outputs = apply_batch_rule_multi(Primitive::Eigh, &[input], &BTreeMap::new()).unwrap();
+        assert_eigh_matches_slice_oracle(&outputs, &[matrix0, matrix1]);
+        assert_eq!(outputs[0].value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+        assert_eq!(
+            outputs[1].value.as_tensor().unwrap().shape.dims,
+            vec![2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_eigh_multi_non_square_batched_matrix_rejects() {
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 3],
+                &[
+                    1.0, 0.0, 0.0, 0.0, 1.0, 0.0, // batch element 0
+                    2.0, 0.0, 0.0, 0.0, 2.0, 0.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+
+        let err = apply_batch_rule_multi(Primitive::Eigh, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Eigh requires a square matrix, got 2x3")
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_eigh_multi_matrix_rank_error_preserved() {
+        let input = BatchTracer::batched(make_f64_matrix(2, 2, &[2.0, 0.0, 0.0, 3.0]), 0);
+
+        let err = apply_batch_rule_multi(Primitive::Eigh, &[input], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("expected rank-2 tensor"));
     }
 
