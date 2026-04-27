@@ -1221,9 +1221,53 @@ fn batch_dynamic_slice(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    if let Some(result) = batch_dynamic_slice_static_starts(inputs, params)? {
+        return Ok(result);
+    }
+
     // Supports batched start indices and mixed batched/unbatched operands
     // via per-element fallback semantics.
     batch_passthrough_leading(Primitive::DynamicSlice, inputs, params)
+}
+
+fn batch_dynamic_slice_static_starts(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Option<BatchTracer>, BatchError> {
+    let Some(operand) = inputs.first() else {
+        return Ok(None);
+    };
+    let Some(batch_dim) = operand.batch_dim else {
+        return Ok(None);
+    };
+    if inputs.iter().skip(1).any(|input| input.batch_dim.is_some()) {
+        return Ok(None);
+    }
+
+    let value = move_batch_dim_to_front(&operand.value, batch_dim)?;
+    let Value::Tensor(tensor) = &value else {
+        return Ok(None);
+    };
+    let slice_sizes = parse_param_usize_list(params, "slice_sizes")?;
+    if slice_sizes.len() + 1 != tensor.rank() {
+        return Ok(None);
+    }
+
+    let batch_size = get_batch_size(&value, 0)?;
+    let mut batched_slice_sizes = Vec::with_capacity(slice_sizes.len() + 1);
+    batched_slice_sizes.push(batch_size);
+    batched_slice_sizes.extend_from_slice(&slice_sizes);
+
+    let mut values = Vec::with_capacity(inputs.len() + 1);
+    values.push(value);
+    values.push(Value::scalar_i64(0));
+    values.extend(inputs.iter().skip(1).map(|input| input.value.clone()));
+
+    let mut new_params = params.clone();
+    new_params.insert("slice_sizes".to_owned(), format_csv(&batched_slice_sizes));
+    let result = eval_primitive(Primitive::DynamicSlice, &values, &new_params)
+        .map_err(|e| BatchError::EvalError(e.to_string()))?;
+    Ok(Some(BatchTracer::batched(result, 0)))
 }
 
 fn batch_dynamic_update_slice(
@@ -4988,6 +5032,69 @@ mod tests {
         assert_eq!(
             extract_f64_vec(&result.value),
             vec![1.0, 2.0, 3.0, 6.0, 7.0, 8.0, 11.0, 12.0, 13.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_dynamic_slice_batched_operand_static_start_direct_1d() {
+        let data: Vec<f64> = (0..15).map(|i| i as f64).collect();
+        let input = BatchTracer::batched(make_f64_matrix(3, 5, &data), 0);
+        let start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "3".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::DynamicSlice, &[input, start], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![3, 3]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 6.0, 7.0, 8.0, 11.0, 12.0, 13.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_dynamic_slice_batched_operand_static_start_direct_2d() {
+        let data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 3, 4], &data), 0);
+        let row_start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let col_start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "2,2".to_owned())]);
+
+        let result = apply_batch_rule(
+            Primitive::DynamicSlice,
+            &[input, row_start, col_start],
+            &params,
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2, 2]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![5.0, 6.0, 9.0, 10.0, 17.0, 18.0, 21.0, 22.0]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_dynamic_slice_static_start_moves_nonleading_batch() {
+        let data: Vec<f64> = (0..24).map(|i| i as f64).collect();
+        let input = BatchTracer::batched(make_f64_tensor(&[3, 2, 4], &data), 1);
+        let row_start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let col_start = BatchTracer::unbatched(Value::scalar_i64(1));
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "2,2".to_owned())]);
+
+        let result = apply_batch_rule(
+            Primitive::DynamicSlice,
+            &[input, row_start, col_start],
+            &params,
+        )
+        .unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2, 2]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![9.0, 10.0, 17.0, 18.0, 13.0, 14.0, 21.0, 22.0]
         );
     }
 
