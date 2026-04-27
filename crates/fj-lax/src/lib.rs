@@ -530,15 +530,16 @@ fn eval_scan(
             }
 
             let mut carry = init_carry.clone();
-            let indices: Vec<usize> = if reverse {
-                (0..leading_dim).rev().collect()
+            if reverse {
+                for i in (0..leading_dim).rev() {
+                    let x_slice = t.slice_axis0(i).map_err(EvalError::InvalidTensor)?;
+                    carry = eval_primitive(body_op, &[carry, x_slice], &BTreeMap::new())?;
+                }
             } else {
-                (0..leading_dim).collect()
-            };
-
-            for i in indices {
-                let x_slice = t.slice_axis0(i).map_err(EvalError::InvalidTensor)?;
-                carry = eval_primitive(body_op, &[carry, x_slice], &BTreeMap::new())?;
+                for i in 0..leading_dim {
+                    let x_slice = t.slice_axis0(i).map_err(EvalError::InvalidTensor)?;
+                    carry = eval_primitive(body_op, &[carry, x_slice], &BTreeMap::new())?;
+                }
             }
 
             Ok(carry)
@@ -570,36 +571,37 @@ pub fn eval_scan_functional<B>(
 where
     B: FnMut(Vec<Value>, Value) -> Result<(Vec<Value>, Vec<Value>), EvalError>,
 {
-    let slices = scan_extract_slices(xs)?;
+    let scan_len = scan_input_len(xs)?;
 
-    if slices.is_empty() {
+    if scan_len == 0 {
         // Empty scan: return init carry, no outputs
         return Ok((init_carry, vec![]));
     }
 
-    let indices: Vec<usize> = if reverse {
-        (0..slices.len()).rev().collect()
-    } else {
-        (0..slices.len()).collect()
-    };
-
     let mut carry = init_carry;
     let mut per_output_values: Vec<Vec<Value>> = Vec::new();
 
-    for i in indices {
-        let x_slice = slices[i].clone();
-        let (new_carry, ys) = body_fn(carry, x_slice)?;
-        carry = new_carry;
-
-        // Initialize per-output collectors on first iteration
-        if per_output_values.is_empty() {
-            per_output_values = vec![Vec::with_capacity(slices.len()); ys.len()];
+    if reverse {
+        for i in (0..scan_len).rev() {
+            carry = eval_scan_functional_step(
+                xs,
+                i,
+                carry,
+                &mut body_fn,
+                &mut per_output_values,
+                scan_len,
+            )?;
         }
-
-        for (out_idx, y) in ys.into_iter().enumerate() {
-            if out_idx < per_output_values.len() {
-                per_output_values[out_idx].push(y);
-            }
+    } else {
+        for i in 0..scan_len {
+            carry = eval_scan_functional_step(
+                xs,
+                i,
+                carry,
+                &mut body_fn,
+                &mut per_output_values,
+                scan_len,
+            )?;
         }
     }
 
@@ -622,6 +624,41 @@ where
     Ok((carry, stacked_ys))
 }
 
+fn eval_scan_functional_step<B>(
+    xs: &Value,
+    index: usize,
+    carry: Vec<Value>,
+    body_fn: &mut B,
+    per_output_values: &mut Vec<Vec<Value>>,
+    output_capacity: usize,
+) -> Result<Vec<Value>, EvalError>
+where
+    B: FnMut(Vec<Value>, Value) -> Result<(Vec<Value>, Vec<Value>), EvalError>,
+{
+    let x_slice = scan_slice_at(xs, index)?;
+    let (new_carry, ys) = body_fn(carry, x_slice)?;
+
+    // Initialize per-output collectors on first iteration.
+    if per_output_values.is_empty() {
+        *per_output_values = vec![Vec::with_capacity(output_capacity); ys.len()];
+    }
+
+    for (out_idx, y) in ys.into_iter().enumerate() {
+        if out_idx < per_output_values.len() {
+            per_output_values[out_idx].push(y);
+        }
+    }
+
+    Ok(new_carry)
+}
+
+fn scan_input_len(xs: &Value) -> Result<usize, EvalError> {
+    match xs {
+        Value::Scalar(_) => Ok(1),
+        Value::Tensor(t) => scan_leading_dim(t),
+    }
+}
+
 fn scan_leading_dim(tensor: &TensorValue) -> Result<usize, EvalError> {
     tensor
         .shape
@@ -634,18 +671,10 @@ fn scan_leading_dim(tensor: &TensorValue) -> Result<usize, EvalError> {
         })
 }
 
-/// Extract per-element slices from the leading axis of a value.
-fn scan_extract_slices(xs: &Value) -> Result<Vec<Value>, EvalError> {
+fn scan_slice_at(xs: &Value, index: usize) -> Result<Value, EvalError> {
     match xs {
-        Value::Scalar(_) => Ok(vec![xs.clone()]),
-        Value::Tensor(t) => {
-            let leading_dim = scan_leading_dim(t)?;
-            let mut slices = Vec::with_capacity(leading_dim);
-            for i in 0..leading_dim {
-                slices.push(t.slice_axis0(i).map_err(EvalError::InvalidTensor)?);
-            }
-            Ok(slices)
-        }
+        Value::Scalar(_) => Ok(xs.clone()),
+        Value::Tensor(t) => t.slice_axis0(index).map_err(EvalError::InvalidTensor),
     }
 }
 
