@@ -1918,7 +1918,116 @@ fn dot_accumulate(
     }
 }
 
-/// Dot product: scalar multiply plus rank-1/rank-2 tensor dot.
+fn element_count_from_dims(dims: &[u32]) -> usize {
+    dims.iter()
+        .fold(1_usize, |count, &dim| count * dim as usize)
+}
+
+fn dot_output_value(
+    dtype: DType,
+    shape_dims: Vec<u32>,
+    elements: Vec<Literal>,
+) -> Result<Value, EvalError> {
+    if shape_dims.is_empty() {
+        Ok(Value::Scalar(elements[0]))
+    } else {
+        Ok(Value::Tensor(TensorValue::new(
+            dtype,
+            Shape { dims: shape_dims },
+            elements,
+        )?))
+    }
+}
+
+fn eval_tensor_dot(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+) -> Result<Value, EvalError> {
+    let lhs_rank = lhs.rank();
+    let rhs_rank = rhs.rank();
+    if lhs_rank == 0 || rhs_rank == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "tensor dot requires rank >= 1 tensors".to_owned(),
+        });
+    }
+
+    let output_kind = dot_output_kind(lhs, rhs);
+    let dtype = output_kind.tensor_dtype();
+    let lhs_inner = lhs.shape.dims[lhs_rank - 1] as usize;
+
+    if rhs_rank == 1 {
+        let rhs_inner = rhs.shape.dims[0] as usize;
+        if lhs_inner != rhs_inner {
+            return Err(EvalError::ShapeMismatch {
+                primitive,
+                left: lhs.shape.clone(),
+                right: rhs.shape.clone(),
+            });
+        }
+
+        let output_dims = lhs.shape.dims[..lhs_rank - 1].to_vec();
+        let output_count = element_count_from_dims(&output_dims);
+        let mut elements = Vec::with_capacity(output_count);
+        for lhs_prefix in 0..output_count {
+            let lhs_base = lhs_prefix * lhs_inner;
+            elements.push(dot_accumulate(
+                primitive,
+                output_kind,
+                lhs_inner,
+                |index| (lhs.elements[lhs_base + index], rhs.elements[index]),
+            )?);
+        }
+
+        return dot_output_value(dtype, output_dims, elements);
+    }
+
+    let rhs_inner = rhs.shape.dims[rhs_rank - 2] as usize;
+    if lhs_inner != rhs_inner {
+        return Err(EvalError::ShapeMismatch {
+            primitive,
+            left: lhs.shape.clone(),
+            right: rhs.shape.clone(),
+        });
+    }
+
+    let columns = rhs.shape.dims[rhs_rank - 1] as usize;
+    let lhs_prefix_dims = &lhs.shape.dims[..lhs_rank - 1];
+    let rhs_prefix_dims = &rhs.shape.dims[..rhs_rank - 2];
+    let lhs_prefix_count = element_count_from_dims(lhs_prefix_dims);
+    let rhs_prefix_count = element_count_from_dims(rhs_prefix_dims);
+
+    let mut output_dims = Vec::with_capacity(lhs_prefix_dims.len() + rhs_prefix_dims.len() + 1);
+    output_dims.extend_from_slice(lhs_prefix_dims);
+    output_dims.extend_from_slice(rhs_prefix_dims);
+    output_dims.push(columns as u32);
+
+    let mut elements = Vec::with_capacity(lhs_prefix_count * rhs_prefix_count * columns);
+    for lhs_prefix in 0..lhs_prefix_count {
+        let lhs_base = lhs_prefix * lhs_inner;
+        for rhs_prefix in 0..rhs_prefix_count {
+            let rhs_base = rhs_prefix * rhs_inner * columns;
+            for column in 0..columns {
+                elements.push(dot_accumulate(
+                    primitive,
+                    output_kind,
+                    lhs_inner,
+                    |index| {
+                        (
+                            lhs.elements[lhs_base + index],
+                            rhs.elements[rhs_base + index * columns + column],
+                        )
+                    },
+                )?);
+            }
+        }
+    }
+
+    dot_output_value(dtype, output_dims, elements)
+}
+
+/// Dot product: scalar multiply plus tensor dot contraction.
 pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
     let primitive = Primitive::Dot;
     if inputs.len() != 2 {
@@ -1952,118 +2061,7 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
         (Value::Scalar(_), Value::Tensor(_)) | (Value::Tensor(_), Value::Scalar(_)) => {
             eval_binary_elementwise(Primitive::Mul, inputs, |a, b| a * b, |a, b| a * b)
         }
-        (Value::Tensor(lhs), Value::Tensor(rhs)) => {
-            let output_kind = dot_output_kind(lhs, rhs);
-            let dtype = output_kind.tensor_dtype();
-
-            match (lhs.rank(), rhs.rank()) {
-                (1, 1) => {
-                    if lhs.shape != rhs.shape {
-                        return Err(EvalError::ShapeMismatch {
-                            primitive,
-                            left: lhs.shape.clone(),
-                            right: rhs.shape.clone(),
-                        });
-                    }
-                    let literal =
-                        dot_accumulate(primitive, output_kind, lhs.elements.len(), |index| {
-                            (lhs.elements[index], rhs.elements[index])
-                        })?;
-                    Ok(Value::Scalar(literal))
-                }
-                (2, 1) => {
-                    let rows = lhs.shape.dims[0] as usize;
-                    let inner = lhs.shape.dims[1] as usize;
-                    if inner != rhs.shape.dims[0] as usize {
-                        return Err(EvalError::ShapeMismatch {
-                            primitive,
-                            left: lhs.shape.clone(),
-                            right: rhs.shape.clone(),
-                        });
-                    }
-                    let mut elements = Vec::with_capacity(rows);
-                    for row in 0..rows {
-                        elements.push(dot_accumulate(primitive, output_kind, inner, |index| {
-                            (lhs.elements[row * inner + index], rhs.elements[index])
-                        })?);
-                    }
-                    Ok(Value::Tensor(TensorValue::new(
-                        dtype,
-                        Shape {
-                            dims: vec![rows as u32],
-                        },
-                        elements,
-                    )?))
-                }
-                (1, 2) => {
-                    let inner = lhs.shape.dims[0] as usize;
-                    let columns = rhs.shape.dims[1] as usize;
-                    if inner != rhs.shape.dims[0] as usize {
-                        return Err(EvalError::ShapeMismatch {
-                            primitive,
-                            left: lhs.shape.clone(),
-                            right: rhs.shape.clone(),
-                        });
-                    }
-                    let mut elements = Vec::with_capacity(columns);
-                    for column in 0..columns {
-                        elements.push(dot_accumulate(primitive, output_kind, inner, |index| {
-                            (lhs.elements[index], rhs.elements[index * columns + column])
-                        })?);
-                    }
-                    Ok(Value::Tensor(TensorValue::new(
-                        dtype,
-                        Shape {
-                            dims: vec![columns as u32],
-                        },
-                        elements,
-                    )?))
-                }
-                (2, 2) => {
-                    let rows = lhs.shape.dims[0] as usize;
-                    let inner = lhs.shape.dims[1] as usize;
-                    let columns = rhs.shape.dims[1] as usize;
-                    if inner != rhs.shape.dims[0] as usize {
-                        return Err(EvalError::ShapeMismatch {
-                            primitive,
-                            left: lhs.shape.clone(),
-                            right: rhs.shape.clone(),
-                        });
-                    }
-                    let mut elements = Vec::with_capacity(rows * columns);
-                    for row in 0..rows {
-                        for column in 0..columns {
-                            elements.push(dot_accumulate(
-                                primitive,
-                                output_kind,
-                                inner,
-                                |index| {
-                                    (
-                                        lhs.elements[row * inner + index],
-                                        rhs.elements[index * columns + column],
-                                    )
-                                },
-                            )?);
-                        }
-                    }
-                    Ok(Value::Tensor(TensorValue::new(
-                        dtype,
-                        Shape {
-                            dims: vec![rows as u32, columns as u32],
-                        },
-                        elements,
-                    )?))
-                }
-                _ => Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!(
-                        "dot supports rank combinations (1,1), (2,1), (1,2), (2,2); got ({},{})",
-                        lhs.rank(),
-                        rhs.rank()
-                    ),
-                }),
-            }
-        }
+        (Value::Tensor(lhs), Value::Tensor(rhs)) => eval_tensor_dot(primitive, lhs, rhs),
     }
 }
 
@@ -2305,6 +2303,26 @@ mod tests {
                 Shape {
                     dims: vec![rows, columns],
                 },
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn tensor_f64(dims: Vec<u32>, data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn tensor_i64(dims: Vec<u32>, data: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims },
                 data.iter().map(|&v| Literal::I64(v)).collect(),
             )
             .unwrap(),
@@ -2756,6 +2774,42 @@ mod tests {
         assert_eq!(tensor.dtype, DType::I64);
         assert_eq!(tensor.shape.dims, vec![2, 2]);
         assert_eq!(extract_i64_vec(&result), vec![58, 64, 139, 154]);
+    }
+
+    #[test]
+    fn dot_rank3_rhs_vector_keeps_lhs_prefix_axes() {
+        let result = eval_dot(&[
+            tensor_f64(
+                vec![2, 2, 3],
+                &[
+                    1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+                ],
+            ),
+            v_f64(&[1.0, 10.0, 100.0]),
+        ])
+        .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(extract_f64_vec(&result), vec![321.0, 654.0, 987.0, 1320.0]);
+    }
+
+    #[test]
+    fn dot_rank3_rank3_stacks_batch_axes() {
+        let result = eval_dot(&[
+            tensor_i64(vec![2, 2, 2], &[1, 2, 3, 4, 5, 6, 7, 8]),
+            tensor_i64(vec![2, 2, 2], &[10, 20, 30, 40, 1, 2, 3, 4]),
+        ])
+        .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape.dims, vec![2, 2, 2, 2]);
+        assert_eq!(
+            extract_i64_vec(&result),
+            vec![
+                70, 100, 7, 10, 150, 220, 15, 22, 230, 340, 23, 34, 310, 460, 31, 46
+            ]
+        );
     }
 
     #[test]
