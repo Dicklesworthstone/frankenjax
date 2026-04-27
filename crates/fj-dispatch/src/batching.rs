@@ -6,7 +6,7 @@
 
 use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_interpreters::{eval_equation_outputs, eval_jaxpr_with_consts};
-use fj_lax::{eval_primitive, eval_primitive_multi};
+use fj_lax::{eval_primitive, eval_primitive_multi, promote_dtype_public};
 use rustc_hash::FxHashMap;
 use std::collections::BTreeMap;
 
@@ -437,7 +437,8 @@ pub fn apply_batch_rule(
         Primitive::Split => batch_split(inputs, params),
         Primitive::ExpandDims => batch_expand_dims(inputs, params),
         Primitive::Cholesky => batch_cholesky(inputs, params),
-        Primitive::Qr | Primitive::Svd | Primitive::TriangularSolve | Primitive::Eigh => {
+        Primitive::TriangularSolve => batch_triangular_solve(inputs, params),
+        Primitive::Qr | Primitive::Svd | Primitive::Eigh => {
             batch_passthrough_leading(primitive, inputs, params)
         }
         Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
@@ -1607,6 +1608,185 @@ fn batch_cholesky(
         .map(Value::Tensor)
         .map(|result| BatchTracer::batched(result, 0))
         .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn batch_triangular_solve(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<BatchTracer, BatchError> {
+    let Some((batched, batch_dim)) = inputs
+        .iter()
+        .find_map(|t| t.batch_dim.map(|batch_dim| (t, batch_dim)))
+    else {
+        let values: Vec<Value> = inputs.iter().map(|t| t.value.clone()).collect();
+        let result = eval_primitive(Primitive::TriangularSolve, &values, params)
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+        return Ok(BatchTracer::unbatched(result));
+    };
+
+    if inputs.len() != 2 {
+        return batch_passthrough_leading(Primitive::TriangularSolve, inputs, params);
+    }
+
+    let batch_size = get_batch_size(&batched.value, batch_dim)?;
+    let values: Result<Vec<Value>, BatchError> = inputs
+        .iter()
+        .map(|t| match t.batch_dim {
+            Some(bd) => move_batch_dim_to_front(&t.value, bd),
+            None => broadcast_unbatched(&t.value, batch_size, 0),
+        })
+        .collect();
+    let values = values?;
+
+    let (Value::Tensor(a_tensor), Value::Tensor(b_tensor)) = (&values[0], &values[1]) else {
+        return batch_passthrough_leading(Primitive::TriangularSolve, inputs, params);
+    };
+
+    if a_tensor.rank() != 3 || b_tensor.rank() != 3 {
+        return batch_passthrough_leading(Primitive::TriangularSolve, inputs, params);
+    }
+
+    if a_tensor.shape.dims[0] as usize != batch_size
+        || b_tensor.shape.dims[0] as usize != batch_size
+    {
+        return batch_passthrough_leading(Primitive::TriangularSolve, inputs, params);
+    }
+
+    let m_a = a_tensor.shape.dims[1] as usize;
+    let n_a = a_tensor.shape.dims[2] as usize;
+    let m_b = b_tensor.shape.dims[1] as usize;
+    let n_b = b_tensor.shape.dims[2] as usize;
+
+    if m_a != n_a {
+        return Err(BatchError::EvalError(format!(
+            "unsupported triangular_solve behavior: A must be square, got {m_a}x{n_a}"
+        )));
+    }
+
+    if m_a != m_b {
+        return Err(BatchError::EvalError(format!(
+            "shape mismatch for triangular_solve: left={:?} right={:?}",
+            vec![m_a as u32, n_a as u32],
+            vec![m_b as u32, n_b as u32]
+        )));
+    }
+
+    let lower = params.get("lower").is_none_or(|v| v.trim() != "false");
+    let transpose_a = params
+        .get("transpose_a")
+        .is_some_and(|v| v.trim() == "true");
+    let unit_diagonal = params
+        .get("unit_diagonal")
+        .is_some_and(|v| v.trim() == "true");
+
+    let a_matrix_len = m_a * n_a;
+    let b_matrix_len = m_b * n_b;
+    let mut elements = Vec::with_capacity(batch_size * m_a * n_b);
+
+    for batch in 0..batch_size {
+        let a_base = batch * a_matrix_len;
+        let b_base = batch * b_matrix_len;
+        let a = a_tensor.elements[a_base..a_base + a_matrix_len]
+            .iter()
+            .map(|lit| {
+                lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for triangular_solve: expected numeric elements".to_owned(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let b = b_tensor.elements[b_base..b_base + b_matrix_len]
+            .iter()
+            .map(|lit| {
+                lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for triangular_solve: expected numeric elements".to_owned(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut x = vec![0.0_f64; m_a * n_b];
+
+        for col in 0..n_b {
+            let mut b_col: Vec<f64> = (0..m_a).map(|row| b[row * n_b + col]).collect();
+
+            if lower && !transpose_a {
+                for i in 0..m_a {
+                    for k in 0..i {
+                        let a_ik = a[row_major_index(i, k, n_a)];
+                        b_col[i] -= a_ik * x[k * n_b + col];
+                    }
+                    let diag = triangular_solve_diag(&a, i, n_a, unit_diagonal)?;
+                    x[i * n_b + col] = b_col[i] / diag;
+                }
+            } else if !lower && !transpose_a {
+                for i in (0..m_a).rev() {
+                    for k in (i + 1)..m_a {
+                        let a_ik = a[row_major_index(i, k, n_a)];
+                        b_col[i] -= a_ik * x[k * n_b + col];
+                    }
+                    let diag = triangular_solve_diag(&a, i, n_a, unit_diagonal)?;
+                    x[i * n_b + col] = b_col[i] / diag;
+                }
+            } else if lower && transpose_a {
+                for i in (0..m_a).rev() {
+                    for k in (i + 1)..m_a {
+                        let a_ki = a[row_major_index(k, i, n_a)];
+                        b_col[i] -= a_ki * x[k * n_b + col];
+                    }
+                    let diag = triangular_solve_diag(&a, i, n_a, unit_diagonal)?;
+                    x[i * n_b + col] = b_col[i] / diag;
+                }
+            } else {
+                for i in 0..m_a {
+                    for k in 0..i {
+                        let a_ki = a[row_major_index(k, i, n_a)];
+                        b_col[i] -= a_ki * x[k * n_b + col];
+                    }
+                    let diag = triangular_solve_diag(&a, i, n_a, unit_diagonal)?;
+                    x[i * n_b + col] = b_col[i] / diag;
+                }
+            }
+        }
+
+        elements.extend(x.into_iter().map(Literal::from_f64));
+    }
+
+    let out_dtype = promote_dtype_public(a_tensor.dtype, b_tensor.dtype);
+    let shape = Shape {
+        dims: vec![batch_size as u32, m_a as u32, n_b as u32],
+    };
+    TensorValue::new(out_dtype, shape, elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn row_major_index(row: usize, col: usize, cols: usize) -> usize {
+    row * cols + col
+}
+
+fn triangular_solve_diag(
+    a: &[f64],
+    i: usize,
+    cols: usize,
+    unit_diagonal: bool,
+) -> Result<f64, BatchError> {
+    let diag = if unit_diagonal {
+        1.0
+    } else {
+        a[row_major_index(i, i, cols)]
+    };
+
+    if diag.abs() < f64::EPSILON * 1e4 {
+        return Err(BatchError::EvalError(
+            "unsupported triangular_solve behavior: singular or near-singular triangular matrix"
+                .to_owned(),
+        ));
+    }
+
+    Ok(diag)
 }
 
 // ── FFT-Family Batching ────────────────────────────────────────────
@@ -3784,6 +3964,80 @@ mod tests {
         let input = BatchTracer::batched(make_f64_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]), 0);
 
         let err = apply_batch_rule(Primitive::Cholesky, &[input], &BTreeMap::new()).unwrap_err();
+        assert!(err.to_string().contains("expected rank-2 tensor"));
+    }
+
+    #[test]
+    fn test_batch_trace_triangular_solve_leading_batch_dim() {
+        let a = BatchTracer::batched(
+            make_f64_tensor(&[2, 2, 2], &[2.0, 0.0, 1.0, 3.0, 1.0, 0.0, 2.0, 1.0]),
+            0,
+        );
+        let b = BatchTracer::batched(make_f64_tensor(&[2, 2, 1], &[4.0, 7.0, 1.0, 4.0]), 0);
+
+        let result =
+            apply_batch_rule(Primitive::TriangularSolve, &[a, b], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 1]);
+        assert_f64_close(&extract_f64_vec(&result.value), &[2.0, 5.0 / 3.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_triangular_solve_nonleading_rhs_batch_dim() {
+        let a = BatchTracer::unbatched(make_f64_matrix(2, 2, &[2.0, 0.0, 1.0, 3.0]));
+        let b = BatchTracer::batched(make_f64_tensor(&[2, 2, 1], &[4.0, 5.0, 7.0, 6.0]), 1);
+
+        let result =
+            apply_batch_rule(Primitive::TriangularSolve, &[a, b], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 1]);
+        assert_f64_close(
+            &extract_f64_vec(&result.value),
+            &[2.0, 5.0 / 3.0, 2.5, 7.0 / 6.0],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_triangular_solve_upper_params() {
+        let a = BatchTracer::batched(
+            make_f64_tensor(&[2, 2, 2], &[2.0, 1.0, 0.0, 3.0, 4.0, 2.0, 0.0, 2.0]),
+            0,
+        );
+        let b = BatchTracer::batched(make_f64_tensor(&[2, 2, 1], &[5.0, 6.0, 10.0, 4.0]), 0);
+        let params = BTreeMap::from([("lower".to_owned(), "false".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::TriangularSolve, &[a, b], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 1]);
+        assert_f64_close(&extract_f64_vec(&result.value), &[1.5, 2.0, 1.5, 2.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_triangular_solve_broadcasts_unbatched_lhs() {
+        let a = BatchTracer::unbatched(make_f64_matrix(2, 2, &[2.0, 0.0, 1.0, 3.0]));
+        let b = BatchTracer::batched(make_f64_tensor(&[2, 2, 1], &[4.0, 7.0, 5.0, 6.0]), 0);
+
+        let result =
+            apply_batch_rule(Primitive::TriangularSolve, &[a, b], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2, 1]);
+        assert_f64_close(
+            &extract_f64_vec(&result.value),
+            &[2.0, 5.0 / 3.0, 2.5, 7.0 / 6.0],
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_triangular_solve_matrix_rank_error_preserved() {
+        let a = BatchTracer::batched(make_f64_matrix(2, 2, &[2.0, 0.0, 1.0, 3.0]), 0);
+        let b = BatchTracer::batched(make_f64_matrix(2, 1, &[4.0, 7.0]), 0);
+
+        let err =
+            apply_batch_rule(Primitive::TriangularSolve, &[a, b], &BTreeMap::new()).unwrap_err();
         assert!(err.to_string().contains("expected rank-2 tensor"));
     }
 
