@@ -1834,47 +1834,88 @@ fn dot_result_is_integral(lhs: &TensorValue, rhs: &TensorValue) -> bool {
         && rhs.elements.iter().all(|literal| literal.is_integral())
 }
 
+#[derive(Clone, Copy)]
+enum DotOutputKind {
+    Integral,
+    Real,
+    Complex(DType),
+}
+
+impl DotOutputKind {
+    fn tensor_dtype(self) -> DType {
+        match self {
+            Self::Integral => DType::I64,
+            Self::Real => DType::F64,
+            Self::Complex(dtype) => dtype,
+        }
+    }
+}
+
+fn dot_output_kind(lhs: &TensorValue, rhs: &TensorValue) -> DotOutputKind {
+    if matches!(lhs.dtype, DType::Complex64 | DType::Complex128)
+        || matches!(rhs.dtype, DType::Complex64 | DType::Complex128)
+    {
+        DotOutputKind::Complex(complex_binary_output_dtype(lhs.dtype, rhs.dtype))
+    } else if dot_result_is_integral(lhs, rhs) {
+        DotOutputKind::Integral
+    } else {
+        DotOutputKind::Real
+    }
+}
+
 fn dot_accumulate(
     primitive: Primitive,
-    integral: bool,
+    output_kind: DotOutputKind,
     len: usize,
     mut pair_at: impl FnMut(usize) -> (Literal, Literal),
 ) -> Result<Literal, EvalError> {
-    if integral {
-        let mut sum = 0_i64;
-        for index in 0..len {
-            let (left, right) = pair_at(index);
-            let left_i = left.as_i64().ok_or(EvalError::TypeMismatch {
-                primitive,
-                detail: "integral dot expected i64 elements",
-            })?;
-            let right_i = right.as_i64().ok_or(EvalError::TypeMismatch {
-                primitive,
-                detail: "integral dot expected i64 elements",
-            })?;
-            sum += left_i * right_i;
+    match output_kind {
+        DotOutputKind::Integral => {
+            let mut sum = 0_i64;
+            for index in 0..len {
+                let (left, right) = pair_at(index);
+                let left_i = left.as_i64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "integral dot expected i64 elements",
+                })?;
+                let right_i = right.as_i64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "integral dot expected i64 elements",
+                })?;
+                sum += left_i * right_i;
+            }
+            Ok(Literal::I64(sum))
         }
-        return Ok(Literal::I64(sum));
+        DotOutputKind::Real => {
+            let mut sum = 0.0_f64;
+            for index in 0..len {
+                let (left, right) = pair_at(index);
+                let left_f = left.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric lhs tensor",
+                })?;
+                let right_f = right.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric rhs tensor",
+                })?;
+                sum += left_f * right_f;
+            }
+            Ok(Literal::from_f64(sum))
+        }
+        DotOutputKind::Complex(dtype) => {
+            let mut sum = (0.0_f64, 0.0_f64);
+            for index in 0..len {
+                let (left, right) = pair_at(index);
+                let product = complex_mul(
+                    literal_to_complex_parts(primitive, left)?,
+                    literal_to_complex_parts(primitive, right)?,
+                );
+                sum.0 += product.0;
+                sum.1 += product.1;
+            }
+            Ok(complex_literal_from_f64_parts(dtype, sum.0, sum.1))
+        }
     }
-
-    let mut sum = 0.0_f64;
-    for index in 0..len {
-        let (left, right) = pair_at(index);
-        let left_f = left.as_f64().ok_or(EvalError::TypeMismatch {
-            primitive,
-            detail: "expected numeric lhs tensor",
-        })?;
-        let right_f = right.as_f64().ok_or(EvalError::TypeMismatch {
-            primitive,
-            detail: "expected numeric rhs tensor",
-        })?;
-        sum += left_f * right_f;
-    }
-    Ok(Literal::from_f64(sum))
-}
-
-fn dot_output_dtype(integral: bool) -> DType {
-    if integral { DType::I64 } else { DType::F64 }
 }
 
 /// Dot product: scalar-scalar plus rank-1/rank-2 tensor dot.
@@ -1889,6 +1930,18 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
     }
 
     match (&inputs[0], &inputs[1]) {
+        (Value::Scalar(lhs), Value::Scalar(rhs)) if lhs.is_complex() || rhs.is_complex() => {
+            let output_kind = DotOutputKind::Complex(complex_binary_output_dtype(
+                literal_dtype(*lhs),
+                literal_dtype(*rhs),
+            ));
+            Ok(Value::Scalar(dot_accumulate(
+                primitive,
+                output_kind,
+                1,
+                |_| (*lhs, *rhs),
+            )?))
+        }
         (Value::Scalar(lhs), Value::Scalar(rhs)) => Ok(Value::Scalar(binary_literal_op(
             *lhs,
             *rhs,
@@ -1897,8 +1950,8 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
             &|a, b| a * b,
         )?)),
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
-            let integral = dot_result_is_integral(lhs, rhs);
-            let dtype = dot_output_dtype(integral);
+            let output_kind = dot_output_kind(lhs, rhs);
+            let dtype = output_kind.tensor_dtype();
 
             match (lhs.rank(), rhs.rank()) {
                 (1, 1) => {
@@ -1910,7 +1963,7 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
                         });
                     }
                     let literal =
-                        dot_accumulate(primitive, integral, lhs.elements.len(), |index| {
+                        dot_accumulate(primitive, output_kind, lhs.elements.len(), |index| {
                             (lhs.elements[index], rhs.elements[index])
                         })?;
                     Ok(Value::Scalar(literal))
@@ -1927,7 +1980,7 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
                     }
                     let mut elements = Vec::with_capacity(rows);
                     for row in 0..rows {
-                        elements.push(dot_accumulate(primitive, integral, inner, |index| {
+                        elements.push(dot_accumulate(primitive, output_kind, inner, |index| {
                             (lhs.elements[row * inner + index], rhs.elements[index])
                         })?);
                     }
@@ -1951,7 +2004,7 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
                     }
                     let mut elements = Vec::with_capacity(columns);
                     for column in 0..columns {
-                        elements.push(dot_accumulate(primitive, integral, inner, |index| {
+                        elements.push(dot_accumulate(primitive, output_kind, inner, |index| {
                             (lhs.elements[index], rhs.elements[index * columns + column])
                         })?);
                     }
@@ -1977,12 +2030,17 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
                     let mut elements = Vec::with_capacity(rows * columns);
                     for row in 0..rows {
                         for column in 0..columns {
-                            elements.push(dot_accumulate(primitive, integral, inner, |index| {
-                                (
-                                    lhs.elements[row * inner + index],
-                                    rhs.elements[index * columns + column],
-                                )
-                            })?);
+                            elements.push(dot_accumulate(
+                                primitive,
+                                output_kind,
+                                inner,
+                                |index| {
+                                    (
+                                        lhs.elements[row * inner + index],
+                                        rhs.elements[index * columns + column],
+                                    )
+                                },
+                            )?);
                         }
                     }
                     Ok(Value::Tensor(TensorValue::new(
@@ -2253,6 +2311,48 @@ mod tests {
             .unwrap(),
         )
     }
+    fn v_complex64(data: &[(f32, f32)]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter()
+                    .map(|&(re, im)| Literal::from_complex64(re, im))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn v_complex128(data: &[(f64, f64)]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn matrix_complex128(rows: u32, columns: u32, data: &[(f64, f64)]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape {
+                    dims: vec![rows, columns],
+                },
+                data.iter()
+                    .map(|&(re, im)| Literal::from_complex128(re, im))
+                    .collect(),
+            )
+            .unwrap(),
+        )
+    }
     fn extract_f64(val: &Value) -> f64 {
         val.as_f64_scalar().unwrap()
     }
@@ -2271,6 +2371,29 @@ mod tests {
             .iter()
             .map(|l| l.as_i64().unwrap())
             .collect()
+    }
+    fn extract_complex_vec(val: &Value) -> Vec<(f64, f64)> {
+        val.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|literal| {
+                literal.as_complex128().unwrap_or_else(|| {
+                    let (re, im) = literal.as_complex64().unwrap();
+                    (f64::from(re), f64::from(im))
+                })
+            })
+            .collect()
+    }
+    fn assert_complex_close(actual: (f64, f64), expected: (f64, f64)) {
+        assert!(
+            (actual.0 - expected.0).abs() < 1e-9,
+            "real mismatch: actual={actual:?} expected={expected:?}"
+        );
+        assert!(
+            (actual.1 - expected.1).abs() < 1e-9,
+            "imag mismatch: actual={actual:?} expected={expected:?}"
+        );
     }
     // ── Binary elementwise: scalar-scalar ──
 
@@ -2601,6 +2724,55 @@ mod tests {
         assert_eq!(tensor.dtype, DType::I64);
         assert_eq!(tensor.shape.dims, vec![2, 2]);
         assert_eq!(extract_i64_vec(&result), vec![58, 64, 139, 154]);
+    }
+
+    #[test]
+    fn dot_complex_scalar_scalar() {
+        let result = eval_dot(&[
+            Value::scalar_complex128(1.0, 2.0),
+            Value::scalar_complex128(3.0, 4.0),
+        ])
+        .unwrap();
+        assert_complex_close(result.as_complex128_scalar().unwrap(), (-5.0, 10.0));
+    }
+
+    #[test]
+    fn dot_complex_vector_vector_does_not_conjugate() {
+        let result = eval_dot(&[
+            v_complex128(&[(1.0, 2.0), (3.0, -1.0)]),
+            v_complex128(&[(4.0, -2.0), (-1.0, 0.5)]),
+        ])
+        .unwrap();
+        assert_complex_close(result.as_complex128_scalar().unwrap(), (5.5, 8.5));
+    }
+
+    #[test]
+    fn dot_complex_matrix_vector() {
+        let result = eval_dot(&[
+            matrix_complex128(2, 2, &[(1.0, 1.0), (2.0, -1.0), (0.0, 3.0), (-1.0, 0.5)]),
+            v_complex128(&[(2.0, 0.0), (1.0, -1.0)]),
+        ])
+        .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::Complex128);
+        assert_eq!(tensor.shape.dims, vec![2]);
+        let values = extract_complex_vec(&result);
+        assert_complex_close(values[0], (3.0, -1.0));
+        assert_complex_close(values[1], (-0.5, 7.5));
+    }
+
+    #[test]
+    fn dot_complex64_vector_vector_preserves_complex64_output() {
+        let result = eval_dot(&[
+            v_complex64(&[(1.0, 2.0), (3.0, -1.0)]),
+            v_complex64(&[(4.0, -2.0), (-1.0, 0.5)]),
+        ])
+        .unwrap();
+        let literal = result.as_scalar_literal().unwrap();
+        assert!(matches!(literal, Literal::Complex64Bits(..)));
+        let (re, im) = literal.as_complex64().unwrap();
+        assert!((re - 5.5).abs() < 1e-6);
+        assert!((im - 8.5).abs() < 1e-6);
     }
 
     #[test]
