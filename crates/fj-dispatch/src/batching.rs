@@ -5589,6 +5589,34 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_trace_gather_batched_operand_shared_indices() {
+        let operand =
+            BatchTracer::batched(make_i64_matrix(2, 4, &[10, 20, 30, 40, 50, 60, 70, 80]), 0);
+        let indices = BatchTracer::unbatched(make_i64_vector(&[3, 1]));
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Gather, &[operand, indices], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+        assert_eq!(extract_i64_vec(&result.value), vec![40, 20, 80, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_gather_batched_operand_batched_indices() {
+        let operand =
+            BatchTracer::batched(make_i64_matrix(2, 4, &[10, 20, 30, 40, 50, 60, 70, 80]), 0);
+        let indices = BatchTracer::batched(make_i64_matrix(2, 2, &[0, 2, 3, 1]), 0);
+        let params = BTreeMap::from([("slice_sizes".to_owned(), "1".to_owned())]);
+
+        let result = apply_batch_rule(Primitive::Gather, &[operand, indices], &params).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+        assert_eq!(extract_i64_vec(&result.value), vec![10, 30, 80, 60]);
+    }
+
+    #[test]
     fn test_batch_trace_scatter_batched_indices_updates_direct() {
         let operand = BatchTracer::unbatched(make_i64_vector(&[0, 0, 0, 0]));
         let indices = BatchTracer::batched(make_i64_matrix(2, 2, &[1, 3, 0, 2]), 0);

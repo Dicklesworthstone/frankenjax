@@ -214,6 +214,68 @@ fn bench_vmap_gather(c: &mut Criterion) {
         });
     });
 
+    let batched_operand = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 4096],
+            },
+            (0..(128 * 4096))
+                .map(|idx| Literal::I64((idx % 4096) as i64))
+                .collect(),
+        )
+        .expect("batched operand should build"),
+    );
+    let shared_indices = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape::vector(16),
+            (0..16).map(|idx| Literal::I64((idx * 17) as i64)).collect(),
+        )
+        .expect("shared indices should build"),
+    );
+
+    group.bench_function("batched_operand_shared_indices", |b| {
+        b.iter(|| {
+            let mut request = dispatch_request(
+                ProgramSpec::LaxGather1d,
+                &[Transform::Vmap],
+                vec![batched_operand.clone(), shared_indices.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "0,none".to_owned());
+            dispatch(request).expect("vmap gather should succeed");
+        });
+    });
+
+    let batched_operand_indices = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 16],
+            },
+            (0..(128 * 16))
+                .map(|idx| Literal::I64(((idx * 17) % 4096) as i64))
+                .collect(),
+        )
+        .expect("batched operand indices should build"),
+    );
+
+    group.bench_function("batched_operand_batched_indices", |b| {
+        b.iter(|| {
+            let mut request = dispatch_request(
+                ProgramSpec::LaxGather1d,
+                &[Transform::Vmap],
+                vec![batched_operand.clone(), batched_operand_indices.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "0,0".to_owned());
+            dispatch(request).expect("vmap gather should succeed");
+        });
+    });
+
     group.finish();
 }
 
