@@ -3907,6 +3907,90 @@ fn reduce_prod_jvp_tensor(
     ))
 }
 
+fn reduce_chooser_jvp_value(
+    primitive: Primitive,
+    primal: &Value,
+    tangent: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    match (primal, tangent) {
+        (Value::Scalar(_), Value::Scalar(_)) => {
+            let _axes = parse_reduce_axes(params, 0, primitive)?;
+            Ok(tangent.clone())
+        }
+        (Value::Tensor(primal_tensor), Value::Tensor(tangent_tensor)) => {
+            if primal_tensor.shape != tangent_tensor.shape
+                || primal_tensor.elements.len() != tangent_tensor.elements.len()
+            {
+                return Err(AdError::EvalFailed(format!(
+                    "{} tangent shape mismatch: expected {:?} with {} elements, got {:?} with {} elements",
+                    primitive.as_str(),
+                    primal_tensor.shape,
+                    primal_tensor.elements.len(),
+                    tangent_tensor.shape,
+                    tangent_tensor.elements.len()
+                )));
+            }
+
+            let rank = primal_tensor.shape.rank();
+            let reduce_axes = match parse_reduce_axes(params, rank, primitive)? {
+                Some(axes) if axes.is_empty() => return Ok(tangent.clone()),
+                Some(axes) => axes,
+                None => (0..rank).collect(),
+            };
+            let mut reduced_axis = vec![false; rank];
+            for axis in &reduce_axes {
+                reduced_axis[*axis] = true;
+            }
+            let kept_axes = (0..rank)
+                .filter(|axis| !reduced_axis[*axis])
+                .collect::<Vec<_>>();
+
+            let primal_out = eval_primitive(primitive, std::slice::from_ref(primal), params)
+                .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+            let out_bcast =
+                broadcast_g_to_shape_with_axes(&primal_out, &primal_tensor.shape, &kept_axes)?;
+            let location_mask = eval_primitive(
+                Primitive::Eq,
+                &[primal.clone(), out_bcast],
+                &BTreeMap::new(),
+            )
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+            let location_indicators = eval_primitive(
+                Primitive::Select,
+                &[location_mask, scalar_value(1.0), scalar_value(0.0)],
+                &BTreeMap::new(),
+            )
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+            let masked_tangent = eval_primitive(
+                Primitive::Mul,
+                &[tangent.clone(), location_indicators.clone()],
+                &BTreeMap::new(),
+            )
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+            let numerator = eval_primitive(
+                Primitive::ReduceSum,
+                std::slice::from_ref(&masked_tangent),
+                params,
+            )
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+            let counts = eval_primitive(
+                Primitive::ReduceSum,
+                std::slice::from_ref(&location_indicators),
+                params,
+            )
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?;
+
+            eval_primitive(Primitive::Div, &[numerator, counts], &BTreeMap::new())
+                .map_err(|err| AdError::EvalFailed(err.to_string()))
+        }
+        _ => Err(AdError::EvalFailed(format!(
+            "{} primal and tangent must have matching scalar/tensor structure",
+            primitive.as_str()
+        ))),
+    }
+}
+
 fn parse_cumulative_axis(
     params: &BTreeMap<String, String>,
     rank: usize,
@@ -4817,9 +4901,7 @@ fn jvp_rule(
         // ── Reduction: apply same reduction to tangent ──
         Primitive::ReduceSum => ep_p(Primitive::ReduceSum, &[tangents[0].clone()], params),
         Primitive::ReduceMax | Primitive::ReduceMin => {
-            // Subgradient: tangent from the element(s) that are max/min
-            // Simplified: pass tangent through same reduction
-            ep_p(primitive, &[tangents[0].clone()], params)
+            reduce_chooser_jvp_value(primitive, &primals[0], &tangents[0], params)
         }
         Primitive::ReduceProd => reduce_prod_jvp_value(&primals[0], &tangents[0], params),
         Primitive::ReduceAnd | Primitive::ReduceOr | Primitive::ReduceXor => {
@@ -9772,6 +9854,129 @@ mod tests {
             tensor.to_f64_vec().expect("f64 elements"),
             vec![0.0, 0.0, 0.0]
         );
+    }
+
+    #[test]
+    fn test_jvp_reduce_max_selects_primal_winner_tangent() {
+        let params = BTreeMap::new();
+
+        let x = Value::vector_f64(&[2.0, 1.0]).expect("vector");
+        let dx = Value::vector_f64(&[0.0, 100.0]).expect("vector");
+
+        let tangent_out = jvp_rule(Primitive::ReduceMax, &[x], &[dx], &params).expect("jvp");
+
+        let val = tangent_out.as_f64_scalar().expect("full reduce is scalar");
+        assert!((val - 0.0).abs() < 1e-10, "got {val}");
+    }
+
+    #[test]
+    fn test_jvp_reduce_min_selects_primal_winner_tangent() {
+        let params = BTreeMap::new();
+
+        let x = Value::vector_f64(&[2.0, 1.0]).expect("vector");
+        let dx = Value::vector_f64(&[0.0, 100.0]).expect("vector");
+
+        let tangent_out = jvp_rule(Primitive::ReduceMin, &[x], &[dx], &params).expect("jvp");
+
+        let val = tangent_out.as_f64_scalar().expect("full reduce is scalar");
+        assert!((val - 100.0).abs() < 1e-10, "got {val}");
+    }
+
+    #[test]
+    fn test_jvp_reduce_max_ties_average_tangents() {
+        let params = BTreeMap::new();
+
+        let x = Value::vector_f64(&[2.0, 2.0]).expect("vector");
+        let dx = Value::vector_f64(&[0.0, 100.0]).expect("vector");
+
+        let tangent_out = jvp_rule(Primitive::ReduceMax, &[x], &[dx], &params).expect("jvp");
+
+        let val = tangent_out.as_f64_scalar().expect("full reduce is scalar");
+        assert!((val - 50.0).abs() < 1e-10, "got {val}");
+    }
+
+    #[test]
+    fn test_jvp_reduce_max_axis0_uses_primal_winners() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(7.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(5.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(10.0),
+                    Literal::from_f64(70.0),
+                    Literal::from_f64(30.0),
+                    Literal::from_f64(40.0),
+                    Literal::from_f64(100.0),
+                    Literal::from_f64(50.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let tangent_out = jvp_rule(Primitive::ReduceMax, &[x], &[dx], &params).expect("jvp");
+
+        assert_eq!(tensor_f64_values(&tangent_out), vec![40.0, 70.0, 50.0]);
+    }
+
+    #[test]
+    fn test_jvp_reduce_min_axis1_uses_primal_winners() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(5.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let dx = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(10.0),
+                    Literal::from_f64(100.0),
+                    Literal::from_f64(30.0),
+                    Literal::from_f64(40.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(50.0),
+                ],
+            )
+            .expect("tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1".to_owned());
+
+        let tangent_out = jvp_rule(Primitive::ReduceMin, &[x], &[dx], &params).expect("jvp");
+
+        assert_eq!(tensor_f64_values(&tangent_out), vec![100.0, 0.0]);
     }
 
     #[test]
