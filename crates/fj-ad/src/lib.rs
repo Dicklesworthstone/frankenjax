@@ -1212,48 +1212,7 @@ pub fn vjp(
             let input = &inputs[0];
             match input {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
-                Value::Tensor(t) => {
-                    if params.contains_key("axes") {
-                        return Err(AdError::EvalFailed(
-                            "partial reduce_prod VJP is unsupported in V1".to_owned(),
-                        ));
-                    }
-                    let output_val = eval_primitive(primitive, inputs, params)
-                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-                    let prod_val = output_val
-                        .as_f64_scalar()
-                        .ok_or_else(|| AdError::EvalFailed("non-scalar reduce output".into()))?;
-                    let g_scalar = g
-                        .as_f64_scalar()
-                        .ok_or_else(|| AdError::EvalFailed("non-scalar gradient".into()))?;
-
-                    let elements: Vec<Literal> = t
-                        .elements
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, lit)| {
-                            let v = lit.as_f64().unwrap_or(1.0);
-                            if v.abs() < f64::EPSILON {
-                                // Handle zero: recompute product excluding this element
-                                let partial_prod: f64 = t
-                                    .elements
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(j, _)| *j != idx)
-                                    .map(|(_, l)| l.as_f64().unwrap_or(1.0))
-                                    .product();
-                                Literal::from_f64(g_scalar * partial_prod)
-                            } else {
-                                Literal::from_f64(g_scalar * prod_val / v)
-                            }
-                        })
-                        .collect();
-
-                    Ok(vec![Value::Tensor(
-                        TensorValue::new(DType::F64, t.shape.clone(), elements)
-                            .map_err(|e| AdError::EvalFailed(e.to_string()))?,
-                    )])
-                }
+                Value::Tensor(t) => Ok(vec![reduce_prod_vjp_tensor(t, g, params)?]),
             }
         }
         Primitive::ReduceAnd | Primitive::ReduceOr | Primitive::ReduceXor => {
@@ -3684,6 +3643,161 @@ fn broadcast_g_to_shape_with_axes(
     }
     eval_primitive(Primitive::BroadcastInDim, std::slice::from_ref(g), &params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+fn parse_reduce_axes(
+    params: &BTreeMap<String, String>,
+    rank: usize,
+    primitive: Primitive,
+) -> Result<Option<Vec<usize>>, AdError> {
+    let Some(raw_axes) = params.get("axes") else {
+        return Ok(None);
+    };
+    if raw_axes.trim().is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut axes = raw_axes
+        .split(',')
+        .map(|axis| {
+            axis.trim().parse::<usize>().map_err(|_| {
+                AdError::EvalFailed(format!(
+                    "invalid axis value for {}: {}",
+                    primitive.as_str(),
+                    axis.trim()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for axis in &axes {
+        if *axis >= rank {
+            return Err(AdError::EvalFailed(format!(
+                "axis {axis} out of bounds for rank {rank}"
+            )));
+        }
+    }
+    axes.sort_unstable();
+    axes.dedup();
+    Ok(Some(axes))
+}
+
+fn ad_row_major_strides(dims: &[u32]) -> Vec<usize> {
+    let mut strides = vec![1_usize; dims.len()];
+    for idx in (0..dims.len().saturating_sub(1)).rev() {
+        strides[idx] = strides[idx + 1] * dims[idx + 1] as usize;
+    }
+    strides
+}
+
+fn ad_flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
+    let mut multi = Vec::with_capacity(strides.len());
+    let mut remainder = flat;
+    for stride in strides {
+        multi.push(remainder / *stride);
+        remainder %= *stride;
+    }
+    multi
+}
+
+fn ad_multi_to_kept_flat(multi: &[usize], kept_axes: &[usize], out_dims: &[u32]) -> usize {
+    let mut flat = 0_usize;
+    let mut stride = 1_usize;
+    for idx in (0..kept_axes.len()).rev() {
+        flat += multi[kept_axes[idx]] * stride;
+        stride *= out_dims[idx] as usize;
+    }
+    flat
+}
+
+fn reduce_prod_vjp_tensor(
+    tensor: &TensorValue,
+    g: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    let rank = tensor.shape.rank();
+    let reduce_axes = match parse_reduce_axes(params, rank, Primitive::ReduceProd)? {
+        Some(axes) if axes.is_empty() => return Ok(g.clone()),
+        Some(axes) => axes,
+        None => (0..rank).collect(),
+    };
+    let kept_axes = (0..rank)
+        .filter(|axis| !reduce_axes.contains(axis))
+        .collect::<Vec<_>>();
+    let out_dims = kept_axes
+        .iter()
+        .map(|axis| tensor.shape.dims[*axis])
+        .collect::<Vec<_>>();
+    let out_count = if out_dims.is_empty() {
+        1
+    } else {
+        out_dims.iter().map(|dim| *dim as usize).product()
+    };
+    let upstream = match g {
+        Value::Scalar(literal) => {
+            let value = literal.as_f64().ok_or_else(|| {
+                AdError::EvalFailed("reduce_prod gradient must be numeric".to_owned())
+            })?;
+            vec![value; out_count]
+        }
+        Value::Tensor(g_tensor) => {
+            if g_tensor.elements.len() != out_count {
+                return Err(AdError::EvalFailed(format!(
+                    "reduce_prod gradient shape mismatch: expected {out_count} elements, got {}",
+                    g_tensor.elements.len()
+                )));
+            }
+            g_tensor
+                .elements
+                .iter()
+                .map(|literal| {
+                    literal.as_f64().ok_or_else(|| {
+                        AdError::EvalFailed("reduce_prod gradient must be numeric".to_owned())
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    };
+
+    let strides = ad_row_major_strides(&tensor.shape.dims);
+    let mut product_nonzero = vec![1.0_f64; out_count];
+    let mut zero_counts = vec![0_usize; out_count];
+    let mut element_buckets = Vec::with_capacity(tensor.elements.len());
+
+    for (flat_idx, literal) in tensor.elements.iter().enumerate() {
+        let value = literal
+            .as_f64()
+            .ok_or_else(|| AdError::EvalFailed("reduce_prod input must be numeric".to_owned()))?;
+        let multi = ad_flat_to_multi(flat_idx, &strides);
+        let out_idx = ad_multi_to_kept_flat(&multi, &kept_axes, &out_dims);
+        element_buckets.push(out_idx);
+        if value.abs() < f64::EPSILON {
+            zero_counts[out_idx] += 1;
+        } else {
+            product_nonzero[out_idx] *= value;
+        }
+    }
+
+    let elements = tensor
+        .elements
+        .iter()
+        .zip(element_buckets)
+        .map(|(literal, out_idx)| {
+            let value = literal.as_f64().ok_or_else(|| {
+                AdError::EvalFailed("reduce_prod input must be numeric".to_owned())
+            })?;
+            let cotangent = match zero_counts[out_idx] {
+                0 => upstream[out_idx] * product_nonzero[out_idx] / value,
+                1 if value.abs() < f64::EPSILON => upstream[out_idx] * product_nonzero[out_idx],
+                _ => 0.0,
+            };
+            Ok(Literal::from_f64(cotangent))
+        })
+        .collect::<Result<Vec<_>, AdError>>()?;
+
+    Ok(Value::Tensor(
+        TensorValue::new(DType::F64, tensor.shape.clone(), elements)
+            .map_err(|err| AdError::EvalFailed(err.to_string()))?,
+    ))
 }
 
 fn to_f64(value: &Value) -> Result<f64, AdError> {
@@ -6778,6 +6892,66 @@ mod tests {
         assert!((vals[0] - 12.0).abs() < 1e-10, "got {}", vals[0]);
         assert!((vals[1] - 8.0).abs() < 1e-10, "got {}", vals[1]);
         assert!((vals[2] - 6.0).abs() < 1e-10, "got {}", vals[2]);
+    }
+
+    #[test]
+    fn vjp_reduce_prod_axis0_rank2_zero_aware() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(5.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::vector_f64(&[10.0, 20.0, 30.0]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let grads = vjp_single(Primitive::ReduceProd, &[input], &g, &params).unwrap();
+        assert_eq!(
+            tensor_f64_values(&grads[0]),
+            vec![40.0, 100.0, 180.0, 10.0, 40.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn vjp_reduce_prod_axis1_rank2_zero_aware() {
+        use fj_core::{DType, Literal, Shape, TensorValue};
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(6.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::vector_f64(&[7.0, 11.0]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1".to_owned());
+
+        let grads = vjp_single(Primitive::ReduceProd, &[input], &g, &params).unwrap();
+        assert_eq!(
+            tensor_f64_values(&grads[0]),
+            vec![42.0, 21.0, 14.0, 0.0, 264.0, 0.0]
+        );
     }
 
     #[test]
