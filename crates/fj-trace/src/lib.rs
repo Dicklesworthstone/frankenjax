@@ -6160,6 +6160,38 @@ mod tests {
         )
     }
 
+    fn make_while_cond_gt_zero_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Gt,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec::smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_while_body_decrement_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Sub,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(1))],
+                outputs: smallvec::smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
     #[test]
     fn test_infer_cond_rejects_branch_dtype_mismatch() {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
@@ -6385,6 +6417,46 @@ mod tests {
         )
         .expect("preserved switch sub_jaxprs should execute through the interpreter");
         assert_eq!(outputs, vec![Value::scalar_i64(49)]);
+    }
+
+    #[test]
+    fn test_trace_preserves_while_sub_jaxprs_for_control_flow_ir() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::I64,
+            shape: Shape::scalar(),
+        }]);
+        let output_ids = ctx
+            .process_control_flow_primitive(
+                Primitive::While,
+                &[TracerId(1)],
+                vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::scalar(),
+                }],
+                BTreeMap::from([("max_iter".to_owned(), "10".to_owned())]),
+                vec![
+                    make_while_cond_gt_zero_jaxpr(),
+                    make_while_body_decrement_jaxpr(),
+                ],
+            )
+            .expect("control-flow while tracing should succeed");
+        assert_eq!(output_ids.len(), 1);
+
+        let closed = ctx.finalize().expect("trace should finalize");
+        assert_eq!(closed.jaxpr.equations.len(), 1);
+        assert_eq!(closed.jaxpr.equations[0].primitive, Primitive::While);
+        assert_eq!(closed.jaxpr.equations[0].sub_jaxprs.len(), 2);
+        assert_eq!(
+            closed.jaxpr.equations[0]
+                .params
+                .get("max_iter")
+                .map(String::as_str),
+            Some("10")
+        );
+
+        let outputs = fj_interpreters::eval_jaxpr(&closed.jaxpr, &[Value::scalar_i64(3)])
+            .expect("preserved while sub_jaxprs should execute through the interpreter");
+        assert_eq!(outputs, vec![Value::scalar_i64(0)]);
     }
 
     // ── make_jaxpr tests ─────────────────────────────────────────────
