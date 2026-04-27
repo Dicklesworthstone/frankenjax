@@ -952,7 +952,6 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 
 - **CPU-only backend.** GPU/TPU backends are not yet implemented. The CPU backend uses rayon for wave-parallel execution.
 - **No F32 scalar literals.** All float scalars are stored as F64 internally. F32 tensor operations work via TensorValue, but scalar-level F32 promotion differs from JAX.
-- **Bool arithmetic.** FrankenJAX does not treat Bool as numeric in arithmetic operations (JAX does: `True + True = 2`).
 - **No XLA lowering.** FrankenJAX evaluates through its own interpreter, not through XLA. This means we match JAX's mathematical semantics but not its compilation/optimization pipeline.
 - **Partial `vmap` + control flow composition.** `vmap(scan(...))` and similar compositions need further work.
 

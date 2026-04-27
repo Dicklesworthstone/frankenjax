@@ -21,14 +21,13 @@ struct DtypeCase {
     lhs_dtype: String,
     rhs_dtype: String,
     result_dtype: Option<String>,
-    #[allow(dead_code)]
     result_value: Option<serde_json::Value>,
     #[allow(dead_code)]
     error: Option<String>,
 }
 
-fn dtype_from_name(name: &str) -> DType {
-    match name {
+fn dtype_from_name(name: &str) -> Option<DType> {
+    Some(match name {
         "bool" => DType::Bool,
         "i32" => DType::I32,
         "i64" => DType::I64,
@@ -38,12 +37,12 @@ fn dtype_from_name(name: &str) -> DType {
         "f32" => DType::F32,
         "f64" => DType::F64,
         "bf16" => DType::BF16,
-        _ => panic!("unknown dtype name: {name}"),
-    }
+        _ => return None,
+    })
 }
 
-fn jax_dtype_to_fj(jax_name: &str) -> DType {
-    match jax_name {
+fn jax_dtype_to_fj(jax_name: &str) -> Option<DType> {
+    Some(match jax_name {
         "bool" => DType::Bool,
         "int32" => DType::I32,
         "int64" => DType::I64,
@@ -53,12 +52,12 @@ fn jax_dtype_to_fj(jax_name: &str) -> DType {
         "float32" => DType::F32,
         "float64" => DType::F64,
         "bfloat16" => DType::BF16,
-        _ => panic!("unknown JAX dtype: {jax_name}"),
-    }
+        _ => return None,
+    })
 }
 
-fn make_typed_value(dtype: DType) -> Value {
-    match dtype {
+fn make_typed_value(dtype: DType) -> Option<Value> {
+    Some(match dtype {
         DType::Bool => Value::Scalar(Literal::Bool(true)),
         DType::I32 => Value::Scalar(Literal::I64(7)), // I32 stored as I64 internally
         DType::I64 => Value::Scalar(Literal::I64(7)),
@@ -68,11 +67,11 @@ fn make_typed_value(dtype: DType) -> Value {
         DType::F32 => Value::Scalar(Literal::from_f64(2.5)),   // stored as f64 bits internally
         DType::F64 => Value::Scalar(Literal::from_f64(2.5)),
         DType::BF16 => Value::Scalar(Literal::BF16Bits(0x4020)), // bf16 2.5 = 0x4020
-        _ => panic!("unsupported dtype for test value: {dtype:?}"),
-    }
+        _ => return None,
+    })
 }
 
-fn make_typed_tensor(dtype: DType) -> Value {
+fn make_typed_tensor(dtype: DType) -> Option<Value> {
     use fj_core::{Shape, TensorValue};
     let elements = match dtype {
         DType::Bool => vec![Literal::Bool(true)],
@@ -84,12 +83,11 @@ fn make_typed_tensor(dtype: DType) -> Value {
         DType::F32 => vec![Literal::from_f64(2.5)],
         DType::F64 => vec![Literal::from_f64(2.5)],
         DType::BF16 => vec![Literal::BF16Bits(0x4020)],
-        _ => panic!("unsupported dtype for tensor test: {dtype:?}"),
+        _ => return None,
     };
-    Value::Tensor(
-        TensorValue::new(dtype, Shape { dims: vec![1] }, elements)
-            .expect("test tensor should be valid"),
-    )
+    TensorValue::new(dtype, Shape { dims: vec![1] }, elements)
+        .ok()
+        .map(Value::Tensor)
 }
 
 fn result_dtype(val: &Value) -> DType {
@@ -109,11 +107,80 @@ fn result_dtype(val: &Value) -> DType {
     }
 }
 
+fn first_literal(val: &Value) -> Option<Literal> {
+    match val {
+        Value::Scalar(lit) => Some(*lit),
+        Value::Tensor(tensor) => tensor.elements.first().copied(),
+    }
+}
+
+fn literal_matches_dtype(literal: Literal, dtype: DType) -> bool {
+    match dtype {
+        DType::Bool => matches!(literal, Literal::Bool(_)),
+        DType::I32 | DType::I64 => matches!(literal, Literal::I64(_)),
+        DType::U32 => matches!(literal, Literal::U32(_)),
+        DType::U64 => matches!(literal, Literal::U64(_)),
+        DType::BF16 => matches!(literal, Literal::BF16Bits(_)),
+        DType::F16 => matches!(literal, Literal::F16Bits(_)),
+        // FrankenJAX has no native F32 scalar literal; F32 tensor values use
+        // the shared floating literal representation.
+        DType::F32 | DType::F64 => matches!(literal, Literal::F64Bits(_)),
+        DType::Complex64 => matches!(literal, Literal::Complex64Bits(..)),
+        DType::Complex128 => matches!(literal, Literal::Complex128Bits(..)),
+    }
+}
+
+fn dtype_value_tolerance(dtype: DType) -> f64 {
+    match dtype {
+        DType::BF16 => 0.02,
+        DType::F16 => 0.001,
+        DType::F32 => 1e-5,
+        DType::F64 | DType::Complex128 => 1e-12,
+        DType::Complex64 => 1e-5,
+        _ => 0.0,
+    }
+}
+
+fn oracle_value_mismatch(case: &DtypeCase, result: &Value, result_dtype: DType) -> Option<String> {
+    let expected = case.result_value.as_ref()?;
+    let literal = first_literal(result)?;
+
+    if !literal_matches_dtype(literal, result_dtype) {
+        return Some(format!(
+            "{}: result dtype {result_dtype:?} carried incompatible literal {literal:?}",
+            case.case_id
+        ));
+    }
+
+    match expected {
+        serde_json::Value::Bool(expected_bool) => match literal {
+            Literal::Bool(actual_bool) if actual_bool == *expected_bool => None,
+            _ => Some(format!(
+                "{}: value mismatch, FrankenJAX={literal:?}, JAX={expected}",
+                case.case_id
+            )),
+        },
+        serde_json::Value::Number(expected_num) => {
+            let expected_f64 = expected_num.as_f64()?;
+            let actual_f64 = literal.as_f64()?;
+            let tolerance = dtype_value_tolerance(result_dtype);
+            if (actual_f64 - expected_f64).abs() <= tolerance {
+                None
+            } else {
+                Some(format!(
+                    "{}: value mismatch, FrankenJAX={actual_f64}, JAX={expected_f64}, dtype={result_dtype:?}",
+                    case.case_id
+                ))
+            }
+        }
+        _ => None,
+    }
+}
+
 fn load_bundle() -> DtypeBundle {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/dtype_promotion_oracle.v1.json");
-    let data = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read dtype fixture: {e}"));
+    let data = std::fs::read_to_string(&path).expect("failed to read dtype fixture");
     serde_json::from_str(&data).expect("failed to parse dtype fixture")
 }
 
@@ -145,9 +212,30 @@ fn dtype_promotion_matches_jax() {
             continue;
         }
 
-        let jax_dtype = jax_dtype_to_fj(jax_result_dtype_str);
-        let lhs_dtype = dtype_from_name(&case.lhs_dtype);
-        let rhs_dtype = dtype_from_name(&case.rhs_dtype);
+        let Some(jax_dtype) = jax_dtype_to_fj(jax_result_dtype_str) else {
+            mismatches.push(format!(
+                "{}: unknown JAX result dtype {jax_result_dtype_str}",
+                case.case_id
+            ));
+            tested += 1;
+            continue;
+        };
+        let Some(lhs_dtype) = dtype_from_name(&case.lhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unknown lhs dtype {}",
+                case.case_id, case.lhs_dtype
+            ));
+            tested += 1;
+            continue;
+        };
+        let Some(rhs_dtype) = dtype_from_name(&case.rhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unknown rhs dtype {}",
+                case.case_id, case.rhs_dtype
+            ));
+            tested += 1;
+            continue;
+        };
 
         let prim = match case.operation.as_str() {
             "add" => Primitive::Add,
@@ -155,8 +243,22 @@ fn dtype_promotion_matches_jax() {
             _ => continue,
         };
 
-        let lhs = make_typed_value(lhs_dtype);
-        let rhs = make_typed_value(rhs_dtype);
+        let Some(lhs) = make_typed_value(lhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unsupported lhs scalar dtype {lhs_dtype:?}",
+                case.case_id
+            ));
+            tested += 1;
+            continue;
+        };
+        let Some(rhs) = make_typed_value(rhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unsupported rhs scalar dtype {rhs_dtype:?}",
+                case.case_id
+            ));
+            tested += 1;
+            continue;
+        };
 
         match eval_primitive(prim, &[lhs, rhs], &BTreeMap::new()) {
             Ok(result) => {
@@ -166,6 +268,9 @@ fn dtype_promotion_matches_jax() {
                         "{}: FrankenJAX={fj_dtype:?}, JAX={jax_dtype:?}",
                         case.case_id
                     ));
+                }
+                if let Some(mismatch) = oracle_value_mismatch(case, &result, fj_dtype) {
+                    mismatches.push(mismatch);
                 }
                 tested += 1;
             }
@@ -227,9 +332,30 @@ fn dtype_promotion_tensor_level() {
             continue;
         }
 
-        let jax_dtype = jax_dtype_to_fj(jax_result_dtype_str);
-        let lhs_dtype = dtype_from_name(&case.lhs_dtype);
-        let rhs_dtype = dtype_from_name(&case.rhs_dtype);
+        let Some(jax_dtype) = jax_dtype_to_fj(jax_result_dtype_str) else {
+            mismatches.push(format!(
+                "{}: unknown JAX result dtype {jax_result_dtype_str}",
+                case.case_id
+            ));
+            tested += 1;
+            continue;
+        };
+        let Some(lhs_dtype) = dtype_from_name(&case.lhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unknown lhs dtype {}",
+                case.case_id, case.lhs_dtype
+            ));
+            tested += 1;
+            continue;
+        };
+        let Some(rhs_dtype) = dtype_from_name(&case.rhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unknown rhs dtype {}",
+                case.case_id, case.rhs_dtype
+            ));
+            tested += 1;
+            continue;
+        };
 
         let prim = match case.operation.as_str() {
             "add" => Primitive::Add,
@@ -237,8 +363,22 @@ fn dtype_promotion_tensor_level() {
             _ => continue,
         };
 
-        let lhs = make_typed_tensor(lhs_dtype);
-        let rhs = make_typed_tensor(rhs_dtype);
+        let Some(lhs) = make_typed_tensor(lhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unsupported lhs tensor dtype {lhs_dtype:?}",
+                case.case_id
+            ));
+            tested += 1;
+            continue;
+        };
+        let Some(rhs) = make_typed_tensor(rhs_dtype) else {
+            mismatches.push(format!(
+                "{}: unsupported rhs tensor dtype {rhs_dtype:?}",
+                case.case_id
+            ));
+            tested += 1;
+            continue;
+        };
 
         match eval_primitive(prim, &[lhs, rhs], &BTreeMap::new()) {
             Ok(result) => {
@@ -248,6 +388,9 @@ fn dtype_promotion_tensor_level() {
                         "{}: {}({:?}, {:?}) => FJ={fj_dtype:?}, JAX={jax_dtype:?}",
                         case.case_id, case.operation, lhs_dtype, rhs_dtype
                     ));
+                }
+                if let Some(mismatch) = oracle_value_mismatch(case, &result, fj_dtype) {
+                    mismatches.push(mismatch);
                 }
                 tested += 1;
             }

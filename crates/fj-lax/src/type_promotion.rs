@@ -49,6 +49,15 @@ fn literal_to_numeric_f64(literal: Literal) -> Option<f64> {
     }
 }
 
+#[inline]
+fn literal_from_numeric_f64(dtype: DType, value: f64) -> Literal {
+    match dtype {
+        DType::BF16 => Literal::from_bf16_f32(value as f32),
+        DType::F16 => Literal::from_f16_f32(value as f32),
+        _ => Literal::from_f64(value),
+    }
+}
+
 /// Infer the DType from a slice of Literal elements.
 /// Returns I64 if all are I64, Bool if all are Bool, otherwise F64.
 #[inline]
@@ -179,7 +188,7 @@ pub(crate) fn binary_literal_op(
                         primitive,
                         detail: "expected numeric rhs",
                     })?;
-                    return Ok(Literal::from_f64(float_op(lhs_f, rhs_f)));
+                    return Ok(literal_from_numeric_f64(out_dtype, float_op(lhs_f, rhs_f)));
                 }
             };
 
@@ -209,7 +218,7 @@ pub(crate) fn binary_literal_op(
                     primitive,
                     detail: "expected numeric rhs",
                 })?;
-                Ok(Literal::from_f64(float_op(lhs_f, rhs_f)))
+                Ok(literal_from_numeric_f64(out_dtype, float_op(lhs_f, rhs_f)))
             }
         }
         _ => {
@@ -221,7 +230,7 @@ pub(crate) fn binary_literal_op(
                 primitive,
                 detail: "expected numeric rhs",
             })?;
-            Ok(Literal::from_f64(float_op(lhs_f, rhs_f)))
+            Ok(literal_from_numeric_f64(out_dtype, float_op(lhs_f, rhs_f)))
         }
     }
 }
@@ -316,5 +325,30 @@ mod tests {
         .expect("bool + f64 should evaluate");
 
         assert_eq!(out.as_f64(), Some(3.5));
+    }
+
+    #[test]
+    fn half_precision_outputs_preserve_literal_width() {
+        let bf16 = binary_literal_op(
+            Literal::Bool(true),
+            Literal::from_bf16_f32(2.5),
+            Primitive::Add,
+            &|a, b| a + b,
+            &|a, b| a + b,
+        )
+        .expect("bool + bf16 should evaluate");
+        assert!(matches!(bf16, Literal::BF16Bits(_)));
+        assert_eq!(bf16.as_f64(), Some(3.5));
+
+        let f16 = binary_literal_op(
+            Literal::Bool(true),
+            Literal::from_f16_f32(2.5),
+            Primitive::Add,
+            &|a, b| a + b,
+            &|a, b| a + b,
+        )
+        .expect("bool + f16 should evaluate");
+        assert!(matches!(f16, Literal::F16Bits(_)));
+        assert_eq!(f16.as_f64(), Some(3.5));
     }
 }
