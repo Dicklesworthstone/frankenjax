@@ -1829,7 +1829,55 @@ pub(crate) fn eval_erf_inv(primitive: Primitive, inputs: &[Value]) -> Result<Val
     eval_unary_elementwise(primitive, inputs, erf_inv_approx)
 }
 
-/// Dot product: scalar-scalar, vector-vector.
+fn dot_result_is_integral(lhs: &TensorValue, rhs: &TensorValue) -> bool {
+    lhs.elements.iter().all(|literal| literal.is_integral())
+        && rhs.elements.iter().all(|literal| literal.is_integral())
+}
+
+fn dot_accumulate(
+    primitive: Primitive,
+    integral: bool,
+    len: usize,
+    mut pair_at: impl FnMut(usize) -> (Literal, Literal),
+) -> Result<Literal, EvalError> {
+    if integral {
+        let mut sum = 0_i64;
+        for index in 0..len {
+            let (left, right) = pair_at(index);
+            let left_i = left.as_i64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "integral dot expected i64 elements",
+            })?;
+            let right_i = right.as_i64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: "integral dot expected i64 elements",
+            })?;
+            sum += left_i * right_i;
+        }
+        return Ok(Literal::I64(sum));
+    }
+
+    let mut sum = 0.0_f64;
+    for index in 0..len {
+        let (left, right) = pair_at(index);
+        let left_f = left.as_f64().ok_or(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected numeric lhs tensor",
+        })?;
+        let right_f = right.as_f64().ok_or(EvalError::TypeMismatch {
+            primitive,
+            detail: "expected numeric rhs tensor",
+        })?;
+        sum += left_f * right_f;
+    }
+    Ok(Literal::from_f64(sum))
+}
+
+fn dot_output_dtype(integral: bool) -> DType {
+    if integral { DType::I64 } else { DType::F64 }
+}
+
+/// Dot product: scalar-scalar plus rank-1/rank-2 tensor dot.
 pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
     let primitive = Primitive::Dot;
     if inputs.len() != 2 {
@@ -1849,55 +1897,115 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
             &|a, b| a * b,
         )?)),
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
-            if lhs.rank() != 1 || rhs.rank() != 1 {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: "dot currently supports only rank-1 tensors".to_owned(),
-                });
-            }
-            if lhs.shape != rhs.shape {
-                return Err(EvalError::ShapeMismatch {
-                    primitive,
-                    left: lhs.shape.clone(),
-                    right: rhs.shape.clone(),
-                });
-            }
+            let integral = dot_result_is_integral(lhs, rhs);
+            let dtype = dot_output_dtype(integral);
 
-            if lhs.elements.iter().all(|literal| literal.is_integral())
-                && rhs.elements.iter().all(|literal| literal.is_integral())
-            {
-                let mut sum = 0_i64;
-                for (left, right) in lhs.elements.iter().zip(rhs.elements.iter()) {
-                    let left_i = left.as_i64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "integral dot expected i64 elements",
-                    })?;
-                    let right_i = right.as_i64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "integral dot expected i64 elements",
-                    })?;
-                    sum += left_i * right_i;
+            match (lhs.rank(), rhs.rank()) {
+                (1, 1) => {
+                    if lhs.shape != rhs.shape {
+                        return Err(EvalError::ShapeMismatch {
+                            primitive,
+                            left: lhs.shape.clone(),
+                            right: rhs.shape.clone(),
+                        });
+                    }
+                    let literal =
+                        dot_accumulate(primitive, integral, lhs.elements.len(), |index| {
+                            (lhs.elements[index], rhs.elements[index])
+                        })?;
+                    Ok(Value::Scalar(literal))
                 }
-                return Ok(Value::scalar_i64(sum));
-            }
-
-            let mut sum = 0.0_f64;
-            for (left, right) in lhs.elements.iter().zip(rhs.elements.iter()) {
-                let left_f = left.as_f64().ok_or(EvalError::TypeMismatch {
+                (2, 1) => {
+                    let rows = lhs.shape.dims[0] as usize;
+                    let inner = lhs.shape.dims[1] as usize;
+                    if inner != rhs.shape.dims[0] as usize {
+                        return Err(EvalError::ShapeMismatch {
+                            primitive,
+                            left: lhs.shape.clone(),
+                            right: rhs.shape.clone(),
+                        });
+                    }
+                    let mut elements = Vec::with_capacity(rows);
+                    for row in 0..rows {
+                        elements.push(dot_accumulate(primitive, integral, inner, |index| {
+                            (lhs.elements[row * inner + index], rhs.elements[index])
+                        })?);
+                    }
+                    Ok(Value::Tensor(TensorValue::new(
+                        dtype,
+                        Shape {
+                            dims: vec![rows as u32],
+                        },
+                        elements,
+                    )?))
+                }
+                (1, 2) => {
+                    let inner = lhs.shape.dims[0] as usize;
+                    let columns = rhs.shape.dims[1] as usize;
+                    if inner != rhs.shape.dims[0] as usize {
+                        return Err(EvalError::ShapeMismatch {
+                            primitive,
+                            left: lhs.shape.clone(),
+                            right: rhs.shape.clone(),
+                        });
+                    }
+                    let mut elements = Vec::with_capacity(columns);
+                    for column in 0..columns {
+                        elements.push(dot_accumulate(primitive, integral, inner, |index| {
+                            (lhs.elements[index], rhs.elements[index * columns + column])
+                        })?);
+                    }
+                    Ok(Value::Tensor(TensorValue::new(
+                        dtype,
+                        Shape {
+                            dims: vec![columns as u32],
+                        },
+                        elements,
+                    )?))
+                }
+                (2, 2) => {
+                    let rows = lhs.shape.dims[0] as usize;
+                    let inner = lhs.shape.dims[1] as usize;
+                    let columns = rhs.shape.dims[1] as usize;
+                    if inner != rhs.shape.dims[0] as usize {
+                        return Err(EvalError::ShapeMismatch {
+                            primitive,
+                            left: lhs.shape.clone(),
+                            right: rhs.shape.clone(),
+                        });
+                    }
+                    let mut elements = Vec::with_capacity(rows * columns);
+                    for row in 0..rows {
+                        for column in 0..columns {
+                            elements.push(dot_accumulate(primitive, integral, inner, |index| {
+                                (
+                                    lhs.elements[row * inner + index],
+                                    rhs.elements[index * columns + column],
+                                )
+                            })?);
+                        }
+                    }
+                    Ok(Value::Tensor(TensorValue::new(
+                        dtype,
+                        Shape {
+                            dims: vec![rows as u32, columns as u32],
+                        },
+                        elements,
+                    )?))
+                }
+                _ => Err(EvalError::Unsupported {
                     primitive,
-                    detail: "expected numeric lhs tensor",
-                })?;
-                let right_f = right.as_f64().ok_or(EvalError::TypeMismatch {
-                    primitive,
-                    detail: "expected numeric rhs tensor",
-                })?;
-                sum += left_f * right_f;
+                    detail: format!(
+                        "dot supports rank combinations (1,1), (2,1), (1,2), (2,2); got ({},{})",
+                        lhs.rank(),
+                        rhs.rank()
+                    ),
+                }),
             }
-            Ok(Value::scalar_f64(sum))
         }
         _ => Err(EvalError::Unsupported {
             primitive,
-            detail: "dot expects either two scalars or two vectors".to_owned(),
+            detail: "dot expects either two scalars or tensor inputs".to_owned(),
         }),
     }
 }
@@ -2121,6 +2229,30 @@ mod tests {
             .unwrap(),
         )
     }
+    fn matrix_f64(rows: u32, columns: u32, data: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![rows, columns],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn matrix_i64(rows: u32, columns: u32, data: &[i64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![rows, columns],
+                },
+                data.iter().map(|&v| Literal::I64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
     fn extract_f64(val: &Value) -> f64 {
         val.as_f64_scalar().unwrap()
     }
@@ -2130,6 +2262,14 @@ mod tests {
             .elements
             .iter()
             .map(|l| l.as_f64().unwrap())
+            .collect()
+    }
+    fn extract_i64_vec(val: &Value) -> Vec<i64> {
+        val.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
             .collect()
     }
     // ── Binary elementwise: scalar-scalar ──
@@ -2411,6 +2551,65 @@ mod tests {
         // [1, 0] · [0, 1] = 0
         let result = eval_dot(&[v_f64(&[1.0, 0.0]), v_f64(&[0.0, 1.0])]).unwrap();
         assert!(extract_f64(&result).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dot_matrix_vector() {
+        // [[1, 2, 3], [4, 5, 6]] · [10, 20, 30] = [140, 320]
+        let result = eval_dot(&[
+            matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            v_f64(&[10.0, 20.0, 30.0]),
+        ])
+        .unwrap();
+        assert_eq!(result.as_tensor().unwrap().shape.dims, vec![2]);
+        assert_eq!(extract_f64_vec(&result), vec![140.0, 320.0]);
+    }
+
+    #[test]
+    fn dot_vector_matrix() {
+        // [1, 2] · [[10, 20, 30], [40, 50, 60]] = [90, 120, 150]
+        let result = eval_dot(&[
+            v_f64(&[1.0, 2.0]),
+            matrix_f64(2, 3, &[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]),
+        ])
+        .unwrap();
+        assert_eq!(result.as_tensor().unwrap().shape.dims, vec![3]);
+        assert_eq!(extract_f64_vec(&result), vec![90.0, 120.0, 150.0]);
+    }
+
+    #[test]
+    fn dot_matrix_matrix() {
+        // [[1, 2, 3], [4, 5, 6]] · [[7, 8], [9, 10], [11, 12]]
+        // = [[58, 64], [139, 154]]
+        let result = eval_dot(&[
+            matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            matrix_f64(3, 2, &[7.0, 8.0, 9.0, 10.0, 11.0, 12.0]),
+        ])
+        .unwrap();
+        assert_eq!(result.as_tensor().unwrap().shape.dims, vec![2, 2]);
+        assert_eq!(extract_f64_vec(&result), vec![58.0, 64.0, 139.0, 154.0]);
+    }
+
+    #[test]
+    fn dot_matrix_matrix_i64_preserves_integral_output() {
+        let result = eval_dot(&[
+            matrix_i64(2, 3, &[1, 2, 3, 4, 5, 6]),
+            matrix_i64(3, 2, &[7, 8, 9, 10, 11, 12]),
+        ])
+        .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(extract_i64_vec(&result), vec![58, 64, 139, 154]);
+    }
+
+    #[test]
+    fn dot_rank2_shape_mismatch_error() {
+        let result = eval_dot(&[
+            matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]),
+            v_f64(&[10.0, 20.0]),
+        ]);
+        assert!(matches!(result, Err(EvalError::ShapeMismatch { .. })));
     }
 
     // ── IsFinite ──
