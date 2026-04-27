@@ -2,8 +2,9 @@
 
 //! FFT primitives: Fft, Ifft, Rfft, Irfft.
 //!
-//! Uses the naive O(n²) DFT for correctness over speed. The 1D transform is
-//! applied along the last axis for each batch (all leading dimensions).
+//! Uses a radix-2 Cooley-Tukey fast path for power-of-two lengths and the
+//! direct O(n²) DFT fallback for other lengths. The 1D transform is applied
+//! along the last axis for each batch (all leading dimensions).
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::f64::consts::PI;
@@ -211,6 +212,93 @@ fn idft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     output
 }
 
+fn bit_reverse_permute(values: &mut [(f64, f64)]) {
+    let n = values.len();
+    let mut j = 0_usize;
+
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while bit != 0 && (j & bit) != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j ^= bit;
+
+        if i < j {
+            values.swap(i, j);
+        }
+    }
+}
+
+fn radix2_fft_1d(input: &[(f64, f64)], inverse: bool) -> Vec<(f64, f64)> {
+    let n = input.len();
+    if n <= 1 {
+        return input.to_vec();
+    }
+
+    let mut output = input.to_vec();
+    bit_reverse_permute(&mut output);
+
+    let mut len = 2_usize;
+    while len <= n {
+        let half = len / 2;
+        let angle = if inverse {
+            2.0 * PI / (len as f64)
+        } else {
+            -2.0 * PI / (len as f64)
+        };
+        let (sin_step, cos_step) = angle.sin_cos();
+
+        for start in (0..n).step_by(len) {
+            let mut twiddle_re = 1.0;
+            let mut twiddle_im = 0.0;
+
+            for offset in 0..half {
+                let even = output[start + offset];
+                let odd = output[start + offset + half];
+                let rotated_re = odd.0 * twiddle_re - odd.1 * twiddle_im;
+                let rotated_im = odd.0 * twiddle_im + odd.1 * twiddle_re;
+
+                output[start + offset] = (even.0 + rotated_re, even.1 + rotated_im);
+                output[start + offset + half] = (even.0 - rotated_re, even.1 - rotated_im);
+
+                let next_re = twiddle_re * cos_step - twiddle_im * sin_step;
+                let next_im = twiddle_re * sin_step + twiddle_im * cos_step;
+                twiddle_re = next_re;
+                twiddle_im = next_im;
+            }
+        }
+
+        len *= 2;
+    }
+
+    if inverse {
+        let inv_n = 1.0 / (n as f64);
+        for value in &mut output {
+            value.0 *= inv_n;
+            value.1 *= inv_n;
+        }
+    }
+
+    output
+}
+
+fn fft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    if input.len().is_power_of_two() {
+        radix2_fft_1d(input, false)
+    } else {
+        dft_1d(input)
+    }
+}
+
+fn ifft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    if input.len().is_power_of_two() {
+        radix2_fft_1d(input, true)
+    } else {
+        idft_1d(input)
+    }
+}
+
 // ── FFT ──────────────────────────────────────────────────────────────
 
 /// Compute the 1D FFT along the last axis.
@@ -247,7 +335,7 @@ pub(crate) fn eval_fft(
     for batch in 0..batch_size {
         let start = batch * n;
         let slice = &elements[start..start + n];
-        let transformed = dft_1d(slice);
+        let transformed = fft_1d(slice);
         for &(re, im) in &transformed {
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }
@@ -300,7 +388,7 @@ pub(crate) fn eval_ifft(
     for batch in 0..batch_size {
         let start = batch * n;
         let slice = &elements[start..start + n];
-        let transformed = idft_1d(slice);
+        let transformed = ifft_1d(slice);
         for &(re, im) in &transformed {
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }
@@ -374,7 +462,7 @@ pub(crate) fn eval_rfft(
         let copy_len = fft_length.min(input_last);
         padded[..copy_len].copy_from_slice(&batch_slice[..copy_len]);
 
-        let transformed = dft_1d(&padded);
+        let transformed = fft_1d(&padded);
 
         // Keep only the first fft_length/2 + 1 elements
         for &(re, im) in &transformed[..out_last] {
@@ -470,7 +558,7 @@ pub(crate) fn eval_irfft(
             }
         }
 
-        let transformed = idft_1d(&full);
+        let transformed = ifft_1d(&full);
 
         // Take real part only
         for &(re, _) in &transformed {
@@ -540,6 +628,50 @@ mod tests {
                 "element {i}: got ({ar}, {ai}), expected ({er}, {ei})"
             );
         }
+    }
+
+    #[test]
+    fn fft_power_of_two_fast_path_matches_dft_reference() {
+        let input = [
+            (1.0, 0.5),
+            (2.0, -1.0),
+            (-0.25, 3.0),
+            (0.0, 0.75),
+            (4.0, -2.0),
+            (-3.0, 1.25),
+            (0.5, -0.5),
+            (2.25, 0.0),
+        ];
+        assert_complex_close(&fft_1d(&input), &dft_1d(&input), 1e-10);
+    }
+
+    #[test]
+    fn ifft_power_of_two_fast_path_matches_idft_reference() {
+        let input = [
+            (1.0, 0.5),
+            (2.0, -1.0),
+            (-0.25, 3.0),
+            (0.0, 0.75),
+            (4.0, -2.0),
+            (-3.0, 1.25),
+            (0.5, -0.5),
+            (2.25, 0.0),
+        ];
+        assert_complex_close(&ifft_1d(&input), &idft_1d(&input), 1e-10);
+    }
+
+    #[test]
+    fn non_power_of_two_lengths_use_dft_reference() {
+        let input = [
+            (1.0, 0.5),
+            (2.0, -1.0),
+            (-0.25, 3.0),
+            (0.0, 0.75),
+            (4.0, -2.0),
+            (-3.0, 1.25),
+        ];
+        assert_eq!(fft_1d(&input), dft_1d(&input));
+        assert_eq!(ifft_1d(&input), idft_1d(&input));
     }
 
     // ── FFT tests ────────────────────────────────────────────

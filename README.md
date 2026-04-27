@@ -599,7 +599,7 @@ Cost: `2 × input_dim` gradient evaluations. Returns a symmetric `[input_dim, in
 
 ### FFT Implementation (fj-lax)
 
-The FFT primitives use a **naive O(n^2) DFT** (direct Fourier transform) rather than the O(n log n) Cooley-Tukey algorithm. This is a deliberate choice: correctness over speed for a reference implementation.
+The FFT primitives use a **radix-2 Cooley-Tukey fast path** for power-of-two lengths and keep the direct **O(n^2) DFT** fallback for non-power-of-two lengths. The fallback remains the simple reference path, while common FFT lengths get O(n log n) execution.
 
 ```
 X[k] = sum_{j=0}^{n-1} x[j] * e^{-2*pi*i*j*k/n}    (DFT)

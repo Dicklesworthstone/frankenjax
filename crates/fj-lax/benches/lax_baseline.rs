@@ -7,6 +7,38 @@ fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
 
+fn complex_vector(len: usize) -> Value {
+    let elements: Vec<Literal> = (0..len)
+        .map(|i| {
+            let x = i as f64;
+            Literal::from_complex128((x * 0.125).sin(), (x * 0.25).cos())
+        })
+        .collect();
+    Value::Tensor(TensorValue {
+        dtype: DType::Complex128,
+        shape: Shape {
+            dims: vec![len as u32],
+        },
+        elements,
+    })
+}
+
+fn real_vector(len: usize) -> Value {
+    let elements: Vec<Literal> = (0..len)
+        .map(|i| {
+            let x = i as f64;
+            Literal::from_f64((x * 0.125).sin() + (x * 0.03125).cos())
+        })
+        .collect();
+    Value::Tensor(TensorValue {
+        dtype: DType::F64,
+        shape: Shape {
+            dims: vec![len as u32],
+        },
+        elements,
+    })
+}
+
 fn bench_add_scalar(c: &mut Criterion) {
     let inputs = [Value::scalar_i64(42), Value::scalar_i64(17)];
     let p = no_params();
@@ -69,6 +101,39 @@ fn bench_exp_1k(c: &mut Criterion) {
     let p = no_params();
     c.bench_function("eval/exp_1k_f64", |bencher| {
         bencher.iter(|| eval_primitive(Primitive::Exp, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_fft_256(c: &mut Criterion) {
+    let input = complex_vector(256);
+    let p = no_params();
+    c.bench_function("eval/fft_256_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_ifft_256(c: &mut Criterion) {
+    let input = complex_vector(256);
+    let p = no_params();
+    c.bench_function("eval/ifft_256_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Ifft, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_rfft_256(c: &mut Criterion) {
+    let input = real_vector(256);
+    let p = no_params();
+    c.bench_function("eval/rfft_256_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_irfft_256(c: &mut Criterion) {
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "256".to_owned());
+    let full = eval_primitive(Primitive::Rfft, &[real_vector(256)], &params).unwrap();
+    c.bench_function("eval/irfft_256_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Irfft, std::slice::from_ref(&full), &params))
     });
 }
 
@@ -257,6 +322,10 @@ criterion_group!(
     bench_reduce_sum_1k,
     bench_sin_1k,
     bench_exp_1k,
+    bench_fft_256,
+    bench_ifft_256,
+    bench_rfft_256,
+    bench_irfft_256,
     bench_reshape,
     bench_gather_128_rows_16_cols,
     bench_scatter_128_rows_16_cols,
