@@ -5404,7 +5404,29 @@ mod tests {
         GUARD
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("custom derivative test guard lock should succeed")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[derive(Debug)]
+    struct TestAssertionFailure(String);
+
+    impl std::fmt::Display for TestAssertionFailure {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for TestAssertionFailure {}
+
+    fn fail_test(message: impl Into<String>) -> ! {
+        std::panic::panic_any(TestAssertionFailure(message.into()))
+    }
+
+    fn expect_tensor_ref<'a>(value: &'a Value, context: &str) -> &'a TensorValue {
+        match value {
+            Value::Tensor(tensor) => tensor,
+            other => fail_test(format!("{context}: expected tensor, got {other:?}")),
+        }
     }
 
     #[test]
@@ -5916,15 +5938,13 @@ mod tests {
         let jaxpr = make_binary_jaxpr(Primitive::BitwiseAnd);
         let err = grad_jaxpr(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(1)])
             .expect_err("invalid custom VJP arity should fail");
-        match err {
-            AdError::EvalFailed(message) => {
-                assert!(
-                    message.contains("cotangent arity mismatch"),
-                    "expected cotangent arity mismatch error, got: {message}"
-                );
-            }
-            other => panic!("expected EvalFailed, got: {other:?}"),
-        }
+        let AdError::EvalFailed(message) = err else {
+            fail_test(format!("expected EvalFailed, got: {err:?}"));
+        };
+        assert!(
+            message.contains("cotangent arity mismatch"),
+            "expected cotangent arity mismatch error, got: {message}"
+        );
 
         clear_custom_derivative_rules();
     }
@@ -5941,10 +5961,10 @@ mod tests {
                 .first()
                 .and_then(Value::as_i64_scalar)
                 .ok_or_else(|| AdError::EvalFailed("expected scalar i64 primal".to_owned()))?;
-            residuals_clone
+            let mut residuals = residuals_clone
                 .lock()
-                .expect("residual lock should succeed")
-                .push(x);
+                .map_err(|_| AdError::EvalFailed("residual lock poisoned".to_owned()))?;
+            residuals.push(x);
             let upstream = g.as_f64_scalar().ok_or_else(|| {
                 AdError::EvalFailed("expected scalar upstream cotangent".to_owned())
             })?;
@@ -5961,7 +5981,7 @@ mod tests {
 
         let stored = residuals
             .lock()
-            .expect("residual lock should succeed")
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
         assert_eq!(stored, vec![12], "expected one stored residual input");
 
@@ -5969,9 +5989,7 @@ mod tests {
     }
 
     fn tensor_f64_values(value: &Value) -> Vec<f64> {
-        value
-            .as_tensor()
-            .expect("expected tensor value")
+        expect_tensor_ref(value, "tensor_f64_values")
             .elements
             .iter()
             .map(|lit| lit.as_f64().expect("expected numeric literal"))
@@ -6733,14 +6751,10 @@ mod tests {
         let g = Value::scalar_f64(1.0);
         let params = BTreeMap::new();
         let grads = vjp_single(Primitive::ReduceMax, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert!((vals[0] - 0.0).abs() < 1e-10, "non-max should be 0");
-            assert!((vals[1] - 1.0).abs() < 1e-10, "max should get gradient");
-            assert!((vals[2] - 0.0).abs() < 1e-10, "non-max should be 0");
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert!((vals[0] - 0.0).abs() < 1e-10, "non-max should be 0");
+        assert!((vals[1] - 1.0).abs() < 1e-10, "max should get gradient");
+        assert!((vals[2] - 0.0).abs() < 1e-10, "non-max should be 0");
     }
 
     #[test]
@@ -6760,14 +6774,10 @@ mod tests {
         let g = Value::scalar_f64(1.0);
         let params = BTreeMap::new();
         let grads = vjp_single(Primitive::ReduceProd, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert!((vals[0] - 12.0).abs() < 1e-10, "got {}", vals[0]);
-            assert!((vals[1] - 8.0).abs() < 1e-10, "got {}", vals[1]);
-            assert!((vals[2] - 6.0).abs() < 1e-10, "got {}", vals[2]);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert!((vals[0] - 12.0).abs() < 1e-10, "got {}", vals[0]);
+        assert!((vals[1] - 8.0).abs() < 1e-10, "got {}", vals[1]);
+        assert!((vals[2] - 6.0).abs() < 1e-10, "got {}", vals[2]);
     }
 
     #[test]
@@ -6785,14 +6795,10 @@ mod tests {
         let g = Value::scalar_f64(2.0);
         let params = BTreeMap::new();
         let grads = vjp_single(Primitive::ReduceMin, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert!((vals[0] - 0.0).abs() < 1e-10);
-            assert!((vals[1] - 2.0).abs() < 1e-10, "min should get gradient");
-            assert!((vals[2] - 0.0).abs() < 1e-10);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert!((vals[0] - 0.0).abs() < 1e-10);
+        assert!((vals[1] - 2.0).abs() < 1e-10, "min should get gradient");
+        assert!((vals[2] - 0.0).abs() < 1e-10);
     }
 
     // ── BroadcastInDim VJP tests ───────────────────────────────
@@ -6872,15 +6878,12 @@ mod tests {
 
         let grads = vjp_single(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
         // Sum along axis 0: [1+4, 2+5, 3+6] = [5, 7, 9]
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(t.shape.dims, vec![3], "shape should be [3]");
-            assert!((vals[0] - 5.0).abs() < 1e-10, "got {}", vals[0]);
-            assert!((vals[1] - 7.0).abs() < 1e-10, "got {}", vals[1]);
-            assert!((vals[2] - 9.0).abs() < 1e-10, "got {}", vals[2]);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let t = expect_tensor_ref(&grads[0], "broadcast vector-to-matrix gradient");
+        let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+        assert_eq!(t.shape.dims, vec![3], "shape should be [3]");
+        assert!((vals[0] - 5.0).abs() < 1e-10, "got {}", vals[0]);
+        assert!((vals[1] - 7.0).abs() < 1e-10, "got {}", vals[1]);
+        assert!((vals[2] - 9.0).abs() < 1e-10, "got {}", vals[2]);
     }
 
     #[test]
@@ -6920,14 +6923,10 @@ mod tests {
         );
 
         let grads = vjp_single(Primitive::BroadcastInDim, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert!((vals[0] - 10.0).abs() < 1e-10);
-            assert!((vals[1] - 20.0).abs() < 1e-10);
-            assert!((vals[2] - 30.0).abs() < 1e-10);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert!((vals[0] - 10.0).abs() < 1e-10);
+        assert!((vals[1] - 20.0).abs() < 1e-10);
+        assert!((vals[2] - 30.0).abs() < 1e-10);
     }
 
     #[test]
@@ -6986,28 +6985,20 @@ mod tests {
         .unwrap();
 
         // grad_operand should be [[1,1],[0,0],[1,1]] — zeroed at index 1
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals.len(), 6);
-            assert!((vals[0] - 1.0).abs() < 1e-10, "row 0 should pass through");
-            assert!((vals[1] - 1.0).abs() < 1e-10, "row 0 should pass through");
-            assert!(vals[2].abs() < 1e-10, "row 1 should be zeroed");
-            assert!(vals[3].abs() < 1e-10, "row 1 should be zeroed");
-            assert!((vals[4] - 1.0).abs() < 1e-10, "row 2 should pass through");
-            assert!((vals[5] - 1.0).abs() < 1e-10, "row 2 should pass through");
-        } else {
-            panic!("expected tensor gradient for operand");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals.len(), 6);
+        assert!((vals[0] - 1.0).abs() < 1e-10, "row 0 should pass through");
+        assert!((vals[1] - 1.0).abs() < 1e-10, "row 0 should pass through");
+        assert!(vals[2].abs() < 1e-10, "row 1 should be zeroed");
+        assert!(vals[3].abs() < 1e-10, "row 1 should be zeroed");
+        assert!((vals[4] - 1.0).abs() < 1e-10, "row 2 should pass through");
+        assert!((vals[5] - 1.0).abs() < 1e-10, "row 2 should pass through");
 
         // grad_updates should be [[1,1]] — gathered from g at index 1
-        if let Value::Tensor(t) = &grads[1] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals.len(), 2);
-            assert!((vals[0] - 1.0).abs() < 1e-10);
-            assert!((vals[1] - 1.0).abs() < 1e-10);
-        } else {
-            panic!("expected tensor gradient for updates");
-        }
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals.len(), 2);
+        assert!((vals[0] - 1.0).abs() < 1e-10);
+        assert!((vals[1] - 1.0).abs() < 1e-10);
     }
 
     // ── Forward-mode JVP tests ──────────────────────────────────
@@ -7806,12 +7797,8 @@ mod tests {
         assert_eq!(grads.len(), 2);
 
         // Operand gradient: elements at positions 1, 2, 3 of g -> [20, 30, 40]
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![20.0, 30.0, 40.0]);
-        } else {
-            panic!("expected tensor grad for operand");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![20.0, 30.0, 40.0]);
 
         // Pad value gradient: sum of padding positions = 10 + 50 = 60
         let pad_grad = grads[1].as_f64_scalar().unwrap();
@@ -7858,12 +7845,8 @@ mod tests {
         let grads = vjp_single(Primitive::Pad, &[operand, pad_val], &g, &params).unwrap();
 
         // Operand gradient: positions 0, 2, 4 of g -> [10, 30, 50]
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![10.0, 30.0, 50.0]);
-        } else {
-            panic!("expected tensor grad for operand");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![10.0, 30.0, 50.0]);
 
         // Pad value gradient: positions 1, 3 of g -> 20 + 40 = 60
         let pad_grad = grads[1].as_f64_scalar().unwrap();
@@ -7903,13 +7886,10 @@ mod tests {
         // Interior of 4x4 at offset (1,1) with shape 2x2:
         // row 1: g[1][1]=6, g[1][2]=7
         // row 2: g[2][1]=10, g[2][2]=11
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![6.0, 7.0, 10.0, 11.0]);
-            assert_eq!(t.shape.dims, vec![2, 2]);
-        } else {
-            panic!("expected tensor grad for operand");
-        }
+        let t = expect_tensor_ref(&grads[0], "pad 2d operand gradient");
+        let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+        assert_eq!(vals, vec![6.0, 7.0, 10.0, 11.0]);
+        assert_eq!(t.shape.dims, vec![2, 2]);
 
         // Pad value gradient: sum(g) - sum(operand_grad) = 136 - 34 = 102
         let total_sum: f64 = (1..=16).map(|i| i as f64).sum();
@@ -7985,14 +7965,7 @@ mod tests {
         // Let's verify: for w=0: w_out=0,k=0 => g[0]*0.5 = 0.5
         //               for w=1: w_out=0,k=1 => g[0]*0.5 + w_out=1,k=0 => g[1]*0.5 = 1.0
         //               for w=2: w_out=1,k=1 => g[1]*0.5 = 0.5
-        let grad_lhs = match &grads[0] {
-            Value::Tensor(t) => t
-                .elements
-                .iter()
-                .map(|l| l.as_f64().unwrap())
-                .collect::<Vec<_>>(),
-            _ => panic!("expected tensor"),
-        };
+        let grad_lhs = tensor_f64_values(&grads[0]);
         assert!(
             (grad_lhs[0] - 0.5).abs() < 1e-10,
             "grad_lhs[0] = {}, expected 0.5",
@@ -8012,14 +7985,7 @@ mod tests {
         // grad_rhs[k=0] = sum_n sum_w_out lhs[n, w_out*1+0, 0] * g[n, w_out, 0]
         //                = lhs[0,0,0]*g[0,0,0] + lhs[0,1,0]*g[0,1,0] = 1*1 + 2*1 = 3
         // grad_rhs[k=1] = lhs[0,1,0]*g[0,0,0] + lhs[0,2,0]*g[0,1,0] = 2*1 + 3*1 = 5
-        let grad_rhs = match &grads[1] {
-            Value::Tensor(t) => t
-                .elements
-                .iter()
-                .map(|l| l.as_f64().unwrap())
-                .collect::<Vec<_>>(),
-            _ => panic!("expected tensor"),
-        };
+        let grad_rhs = tensor_f64_values(&grads[1]);
         assert!(
             (grad_rhs[0] - 3.0).abs() < 1e-10,
             "grad_rhs[0] = {}, expected 3.0",
@@ -8064,10 +8030,7 @@ mod tests {
         let params = BTreeMap::new();
         let fwd = eval_primitive(Primitive::Conv, &[lhs.clone(), rhs.clone()], &params).unwrap();
         // output = [1-2, 2-3, 3-4] = [-1, -1, -1], shape [1,3,1]
-        let out_vals: Vec<f64> = match &fwd {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let out_vals = tensor_f64_values(&fwd);
         for v in &out_vals {
             assert!((*v - (-1.0)).abs() < 1e-10);
         }
@@ -8090,15 +8053,15 @@ mod tests {
 
         let grads = vjp_single(Primitive::Conv, &[lhs, rhs], &g, &params).unwrap();
         // Verify grad_lhs has correct shape
-        match &grads[0] {
-            Value::Tensor(t) => assert_eq!(t.shape.dims, vec![1, 4, 1]),
-            _ => panic!("expected tensor"),
-        }
+        assert_eq!(
+            expect_tensor_ref(&grads[0], "conv lhs gradient").shape.dims,
+            vec![1, 4, 1]
+        );
         // Verify grad_rhs has correct shape
-        match &grads[1] {
-            Value::Tensor(t) => assert_eq!(t.shape.dims, vec![2, 1, 1]),
-            _ => panic!("expected tensor"),
-        }
+        assert_eq!(
+            expect_tensor_ref(&grads[1], "conv rhs gradient").shape.dims,
+            vec![2, 1, 1]
+        );
     }
 
     // ── DynamicUpdateSlice VJP tests ──────────────────────────────
@@ -8140,10 +8103,7 @@ mod tests {
         let grads = dynamic_update_slice_vjp(&[operand, update, start], &g).unwrap();
 
         // grad_operand should be [10, 0, 0, 40, 50]
-        let g_op: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let g_op = tensor_f64_values(&grads[0]);
         assert!((g_op[0] - 10.0).abs() < 1e-10);
         assert!((g_op[1] - 0.0).abs() < 1e-10);
         assert!((g_op[2] - 0.0).abs() < 1e-10);
@@ -8151,10 +8111,7 @@ mod tests {
         assert!((g_op[4] - 50.0).abs() < 1e-10);
 
         // grad_update should be [20, 30] (g at positions 1,2)
-        let g_upd: Vec<f64> = match &grads[1] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let g_upd = tensor_f64_values(&grads[1]);
         assert!((g_upd[0] - 20.0).abs() < 1e-10);
         assert!((g_upd[1] - 30.0).abs() < 1e-10);
 
@@ -8197,10 +8154,7 @@ mod tests {
         params.insert("axis".to_string(), "0".to_string());
 
         let grads = vjp_single(Primitive::Cumsum, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         // reverse cumsum of [1,1,1] = [3, 2, 1]
         assert!((result[0] - 3.0).abs() < 1e-10, "got {}", result[0]);
         assert!((result[1] - 2.0).abs() < 1e-10, "got {}", result[1]);
@@ -8239,10 +8193,7 @@ mod tests {
         params.insert("axis".to_string(), "0".to_string());
 
         let grads = vjp_single(Primitive::Cumsum, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert!((result[0] - 6.0).abs() < 1e-10, "got {}", result[0]);
         assert!((result[1] - 5.0).abs() < 1e-10, "got {}", result[1]);
         assert!((result[2] - 3.0).abs() < 1e-10, "got {}", result[2]);
@@ -8287,10 +8238,7 @@ mod tests {
         params.insert("axis".to_string(), "0".to_string());
 
         let grads = vjp_single(Primitive::Cumprod, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert!((result[0] - 16.0).abs() < 1e-10, "got {}", result[0]);
         assert!((result[1] - 10.0).abs() < 1e-10, "got {}", result[1]);
         assert!((result[2] - 6.0).abs() < 1e-10, "got {}", result[2]);
@@ -8331,10 +8279,7 @@ mod tests {
 
         let params = BTreeMap::new();
         let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert!((result[0] - 30.0).abs() < 1e-10, "got {}", result[0]);
         assert!((result[1] - 10.0).abs() < 1e-10, "got {}", result[1]);
         assert!((result[2] - 20.0).abs() < 1e-10, "got {}", result[2]);
@@ -8372,10 +8317,7 @@ mod tests {
 
         let params = BTreeMap::new();
         let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert!((result[0] - 10.0).abs() < 1e-10);
         assert!((result[1] - 20.0).abs() < 1e-10);
         assert!((result[2] - 30.0).abs() < 1e-10);
@@ -8414,10 +8356,7 @@ mod tests {
         params.insert("descending".to_string(), "true".to_string());
 
         let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert_eq!(result, vec![9.0, 7.0, 8.0]);
     }
 
@@ -8453,10 +8392,7 @@ mod tests {
         );
 
         let grads = vjp_single(Primitive::Sort, &[x], &g, &BTreeMap::new()).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert_eq!(result, vec![6.0, 6.0, 6.0]);
     }
 
@@ -8500,10 +8436,7 @@ mod tests {
         params.insert("axis".to_string(), "0".to_string());
 
         let grads = vjp_single(Primitive::Sort, &[x], &g, &params).unwrap();
-        let result: Vec<f64> = match &grads[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let result = tensor_f64_values(&grads[0]);
         assert_eq!(result, vec![50.0, 20.0, 10.0, 40.0, 30.0, 60.0]);
     }
 
@@ -8553,19 +8486,11 @@ mod tests {
         let params = BTreeMap::new();
         let grads = vjp_single(Primitive::Cond, &[pred, true_val, false_val], &g, &params).unwrap();
         // true_val gets [10, 20]
-        if let Value::Tensor(t) = &grads[1] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![10.0, 20.0]);
-        } else {
-            panic!("expected tensor for true branch grad");
-        }
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![10.0, 20.0]);
         // false_val gets zeros
-        if let Value::Tensor(t) = &grads[2] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![0.0, 0.0]);
-        } else {
-            panic!("expected tensor for false branch grad");
-        }
+        let vals = tensor_f64_values(&grads[2]);
+        assert_eq!(vals, vec![0.0, 0.0]);
     }
 
     // ── Scan VJP tests ──────────────────────────────────────────────
@@ -8586,12 +8511,8 @@ mod tests {
         let g = Value::scalar_f64(1.0);
         let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 1.0);
-        if let Value::Tensor(t) = &grads[1] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![1.0, 1.0, 1.0]);
-        } else {
-            panic!("expected tensor for xs gradient");
-        }
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![1.0, 1.0, 1.0]);
     }
 
     #[test]
@@ -8607,12 +8528,8 @@ mod tests {
         let g = Value::scalar_f64(1.0);
         let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("mul")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 24.0);
-        if let Value::Tensor(t) = &grads[1] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![12.0, 8.0, 6.0]);
-        } else {
-            panic!("expected tensor for xs gradient");
-        }
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![12.0, 8.0, 6.0]);
     }
 
     #[test]
@@ -8624,12 +8541,8 @@ mod tests {
         let g = Value::scalar_f64(5.0);
         let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("add")).unwrap();
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 5.0);
-        if let Value::Tensor(t) = &grads[1] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![5.0, 5.0]);
-        } else {
-            panic!("expected tensor for xs gradient");
-        }
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![5.0, 5.0]);
     }
 
     #[test]
@@ -8999,12 +8912,8 @@ mod tests {
         params.insert("reduce_op".into(), "sum".into());
 
         let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![1.0, 2.0, 3.0, 2.0, 1.0]);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 2.0, 1.0]);
     }
 
     #[test]
@@ -9047,12 +8956,8 @@ mod tests {
         params.insert("reduce_op".into(), "max".into());
 
         let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![0.0, 30.0, 30.0, 0.0]);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![0.0, 30.0, 30.0, 0.0]);
     }
 
     #[test]
@@ -9095,12 +9000,8 @@ mod tests {
         params.insert("reduce_op".into(), "min".into());
 
         let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![0.0, 30.0, 0.0, 30.0]);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![0.0, 30.0, 0.0, 30.0]);
     }
 
     #[test]
@@ -9145,12 +9046,8 @@ mod tests {
         params.insert("reduce_op".into(), "sum".into());
 
         let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
-        if let Value::Tensor(t) = &grads[0] {
-            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-            assert_eq!(vals, vec![1.0, 1.0, 10.0, 10.0, 100.0, 100.0]);
-        } else {
-            panic!("expected tensor gradient");
-        }
+        let vals = tensor_f64_values(&grads[0]);
+        assert_eq!(vals, vec![1.0, 1.0, 10.0, 10.0, 100.0, 100.0]);
     }
 
     #[test]
@@ -9190,10 +9087,7 @@ mod tests {
             .unwrap(),
         );
         let analytical = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
-        let analytical_vals: Vec<f64> = match &analytical[0] {
-            Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-            _ => panic!("expected tensor"),
-        };
+        let analytical_vals = tensor_f64_values(&analytical[0]);
 
         // For each input position, compute finite difference
         for i in 0..5 {
