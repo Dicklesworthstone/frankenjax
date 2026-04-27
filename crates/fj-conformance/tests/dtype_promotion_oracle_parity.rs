@@ -177,16 +177,18 @@ fn oracle_value_mismatch(case: &DtypeCase, result: &Value, result_dtype: DType) 
     }
 }
 
-fn load_bundle() -> DtypeBundle {
+fn load_bundle() -> Result<DtypeBundle, String> {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/dtype_promotion_oracle.v1.json");
-    let data = std::fs::read_to_string(&path).expect("failed to read dtype fixture");
-    serde_json::from_str(&data).expect("failed to parse dtype fixture")
+    let data = std::fs::read_to_string(&path)
+        .map_err(|err| format!("failed to read dtype fixture {}: {err}", path.display()))?;
+    serde_json::from_str(&data)
+        .map_err(|err| format!("failed to parse dtype fixture {}: {err}", path.display()))
 }
 
 #[test]
-fn dtype_promotion_matches_jax() {
-    let bundle = load_bundle();
+fn dtype_promotion_matches_jax() -> Result<(), String> {
+    let bundle = load_bundle()?;
     assert!(!bundle.cases.is_empty());
 
     // Core scalar types that FrankenJAX fully supports at scalar level.
@@ -299,12 +301,13 @@ fn dtype_promotion_matches_jax() {
             mismatches.join("\n")
         );
     }
+    Ok(())
 }
 
 /// Test dtype promotion at the tensor level, including half-precision tensor cases.
 #[test]
-fn dtype_promotion_tensor_level() {
-    let bundle = load_bundle();
+fn dtype_promotion_tensor_level() -> Result<(), String> {
+    let bundle = load_bundle()?;
     assert!(!bundle.cases.is_empty());
 
     // Expand to float types that need tensor representation
@@ -423,6 +426,7 @@ fn dtype_promotion_tensor_level() {
         mismatches.len(),
         mismatches.join("\n")
     );
+    Ok(())
 }
 
 // ============================================================================

@@ -91,8 +91,8 @@ fn assert_value_close(actual: &Value, expected: &FixtureValue, tol: f64, context
     }
 }
 
-fn build_jaxpr_for_program(program: &str) -> Jaxpr {
-    match program {
+fn build_jaxpr_for_program(program: &str) -> Result<Jaxpr, String> {
+    let jaxpr = match program {
         "x^2+3x" => {
             // y = x*x + 3*x — using Atom::Lit for the inline constant 3.0
             Jaxpr::new(
@@ -179,16 +179,17 @@ fn build_jaxpr_for_program(program: &str) -> Jaxpr {
                 sub_jaxprs: vec![],
             }],
         ),
-        _ => panic!("unsupported program: {program}"),
-    }
+        _ => return Err(format!("unsupported program: {program}")),
+    };
+    Ok(jaxpr)
 }
 
-fn run_composition_case(case: &CompositionCase) {
+fn run_composition_case(case: &CompositionCase) -> Result<(), String> {
     let tol = 1e-10;
 
     match case.composition.as_str() {
         "jit(grad)" => {
-            let jaxpr = build_jaxpr_for_program(&case.program);
+            let jaxpr = build_jaxpr_for_program(&case.program)?;
             let args: Vec<Value> = case.args.iter().map(fixture_to_value).collect();
             let response = dispatch(DispatchRequest {
                 mode: fj_core::CompatibilityMode::Strict,
@@ -204,7 +205,7 @@ fn run_composition_case(case: &CompositionCase) {
                 custom_hook: None,
                 unknown_incompatible_features: vec![],
             })
-            .unwrap();
+            .map_err(|err| format!("{} dispatch failed: {err}", case.case_id))?;
             assert!(
                 !response.outputs.is_empty(),
                 "{}: empty output",
@@ -213,7 +214,7 @@ fn run_composition_case(case: &CompositionCase) {
             assert_value_close(&response.outputs[0], &case.expected[0], tol, &case.case_id);
         }
         "grad(grad)" => {
-            let jaxpr = build_jaxpr_for_program(&case.program);
+            let jaxpr = build_jaxpr_for_program(&case.program)?;
             let args: Vec<Value> = case.args.iter().map(fixture_to_value).collect();
             // For grad(grad(f)), dispatch with Grad twice
             let response = dispatch(DispatchRequest {
@@ -230,13 +231,13 @@ fn run_composition_case(case: &CompositionCase) {
                 custom_hook: None,
                 unknown_incompatible_features: vec![],
             })
-            .unwrap();
+            .map_err(|err| format!("{} dispatch failed: {err}", case.case_id))?;
             // Second derivatives have slightly lower precision due to
             // double application of reverse-mode AD
             assert_value_close(&response.outputs[0], &case.expected[0], 1e-8, &case.case_id);
         }
         "vmap(grad)" => {
-            let jaxpr = build_jaxpr_for_program(&case.program);
+            let jaxpr = build_jaxpr_for_program(&case.program)?;
             let args: Vec<Value> = case.args.iter().map(fixture_to_value).collect();
             let mut compile_options = BTreeMap::new();
             compile_options.insert("vmap_in_axes".to_owned(), "0".to_owned());
@@ -254,7 +255,7 @@ fn run_composition_case(case: &CompositionCase) {
                 custom_hook: None,
                 unknown_incompatible_features: vec![],
             })
-            .unwrap();
+            .map_err(|err| format!("{} dispatch failed: {err}", case.case_id))?;
             assert!(
                 !response.outputs.is_empty(),
                 "{}: empty output",
@@ -266,21 +267,31 @@ fn run_composition_case(case: &CompositionCase) {
             // These compositions are tested via the fj-ad and fj-api public APIs
             // which are already covered by other test files.
         }
-        other => panic!("unsupported composition: {other}"),
+        other => return Err(format!("unsupported composition: {other}")),
     }
+    Ok(())
 }
 
-fn load_bundle() -> CompositionBundle {
+fn load_bundle() -> Result<CompositionBundle, String> {
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/composition_oracle.v1.json");
-    let data = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read composition fixture: {e}"));
-    serde_json::from_str(&data).expect("failed to parse composition fixture")
+    let data = std::fs::read_to_string(&path).map_err(|err| {
+        format!(
+            "failed to read composition fixture {}: {err}",
+            path.display()
+        )
+    })?;
+    serde_json::from_str(&data).map_err(|err| {
+        format!(
+            "failed to parse composition fixture {}: {err}",
+            path.display()
+        )
+    })
 }
 
 #[test]
-fn composition_oracle_jit_grad() {
-    let bundle = load_bundle();
+fn composition_oracle_jit_grad() -> Result<(), String> {
+    let bundle = load_bundle()?;
     let cases: Vec<_> = bundle
         .cases
         .iter()
@@ -288,13 +299,14 @@ fn composition_oracle_jit_grad() {
         .collect();
     assert!(!cases.is_empty(), "expected jit(grad) cases");
     for case in cases {
-        run_composition_case(case);
+        run_composition_case(case)?;
     }
+    Ok(())
 }
 
 #[test]
-fn composition_oracle_grad_grad() {
-    let bundle = load_bundle();
+fn composition_oracle_grad_grad() -> Result<(), String> {
+    let bundle = load_bundle()?;
     let cases: Vec<_> = bundle
         .cases
         .iter()
@@ -302,13 +314,14 @@ fn composition_oracle_grad_grad() {
         .collect();
     assert!(!cases.is_empty(), "expected grad(grad) cases");
     for case in cases {
-        run_composition_case(case);
+        run_composition_case(case)?;
     }
+    Ok(())
 }
 
 #[test]
-fn composition_oracle_vmap_grad() {
-    let bundle = load_bundle();
+fn composition_oracle_vmap_grad() -> Result<(), String> {
+    let bundle = load_bundle()?;
     let cases: Vec<_> = bundle
         .cases
         .iter()
@@ -316,16 +329,17 @@ fn composition_oracle_vmap_grad() {
         .collect();
     if cases.is_empty() {
         // No vmap(grad) fixture cases yet — skip gracefully
-        return;
+        return Ok(());
     }
     for case in cases {
-        run_composition_case(case);
+        run_composition_case(case)?;
     }
+    Ok(())
 }
 
 #[test]
-fn fixture_covers_all_composition_types() {
-    let bundle = load_bundle();
+fn fixture_covers_all_composition_types() -> Result<(), String> {
+    let bundle = load_bundle()?;
     let types: std::collections::HashSet<_> = bundle
         .cases
         .iter()
@@ -336,4 +350,5 @@ fn fixture_covers_all_composition_types() {
     assert!(types.contains("vmap(grad)"), "missing vmap(grad)");
     assert!(types.contains("jacobian"), "missing jacobian");
     assert!(types.contains("hessian"), "missing hessian");
+    Ok(())
 }

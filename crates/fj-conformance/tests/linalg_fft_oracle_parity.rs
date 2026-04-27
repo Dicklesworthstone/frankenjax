@@ -101,14 +101,15 @@ fn extract_f64_vec(val: &Value) -> Vec<f64> {
         .collect()
 }
 
-fn extract_complex_vec(val: &Value) -> Vec<(f64, f64)> {
+fn extract_complex_vec(val: &Value) -> Result<Vec<(f64, f64)>, String> {
     val.as_tensor()
-        .unwrap()
+        .ok_or_else(|| "expected tensor output".to_owned())?
         .elements
         .iter()
-        .map(|l| match l {
-            Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
-            _ => panic!("expected complex element"),
+        .enumerate()
+        .map(|(idx, l)| match l {
+            Literal::Complex128Bits(re, im) => Ok((f64::from_bits(*re), f64::from_bits(*im))),
+            other => Err(format!("expected complex element at {idx}, got {other:?}")),
         })
         .collect()
 }
@@ -134,14 +135,15 @@ fn assert_complex_close(actual: &[(f64, f64)], expected: &[(f64, f64)], tol: f64
     }
 }
 
-fn load_oracle_bundle() -> OracleBundle {
+fn load_oracle_bundle() -> Result<OracleBundle, String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/linalg_fft_oracle.v1.json");
     let data = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read oracle fixture at {}: {e}", path.display()));
-    serde_json::from_str(&data).expect("failed to parse oracle fixture JSON")
+        .map_err(|err| format!("failed to read oracle fixture {}: {err}", path.display()))?;
+    serde_json::from_str(&data)
+        .map_err(|err| format!("failed to parse oracle fixture {}: {err}", path.display()))
 }
 
-fn run_case(case: &OracleCase) {
+fn run_case(case: &OracleCase) -> Result<(), String> {
     let inputs: Vec<Value> = case.inputs.iter().map(oracle_value_to_fj).collect();
 
     let prim = match case.operation.as_str() {
@@ -154,7 +156,7 @@ fn run_case(case: &OracleCase) {
         "ifft" => Primitive::Ifft,
         "rfft" => Primitive::Rfft,
         "irfft" => Primitive::Irfft,
-        other => panic!("unknown operation: {other}"),
+        other => return Err(format!("unknown operation: {other}")),
     };
 
     let is_multi_output = matches!(
@@ -169,7 +171,8 @@ fn run_case(case: &OracleCase) {
     let tol = 1e-10;
 
     if is_multi_output {
-        let outputs = eval_primitive_multi(prim, &inputs, &case.params).unwrap();
+        let outputs = eval_primitive_multi(prim, &inputs, &case.params)
+            .map_err(|err| format!("{} multi-output eval failed: {err}", case.case_id))?;
         assert_eq!(
             outputs.len(),
             case.expected_outputs.len(),
@@ -206,11 +209,11 @@ fn run_case(case: &OracleCase) {
                     assert_f64_close(&actual_vals, values, tol, &context);
                 }
                 OracleValue::ComplexVector { values, .. } => {
-                    let actual_vals = extract_complex_vec(actual);
+                    let actual_vals = extract_complex_vec(actual)?;
                     assert_complex_close(&actual_vals, values, tol, &context);
                 }
                 OracleValue::TensorComplex128 { reals, imags, .. } => {
-                    let actual_vals = extract_complex_vec(actual);
+                    let actual_vals = extract_complex_vec(actual)?;
                     let expected_vals: Vec<(f64, f64)> =
                         reals.iter().copied().zip(imags.iter().copied()).collect();
                     assert_complex_close(&actual_vals, &expected_vals, tol, &context);
@@ -218,7 +221,8 @@ fn run_case(case: &OracleCase) {
             }
         }
     } else {
-        let output = eval_primitive(prim, &inputs, &case.params).unwrap();
+        let output = eval_primitive(prim, &inputs, &case.params)
+            .map_err(|err| format!("{} eval failed: {err}", case.case_id))?;
         assert_eq!(
             case.expected_outputs.len(),
             1,
@@ -233,20 +237,21 @@ fn run_case(case: &OracleCase) {
                 assert_f64_close(&extract_f64_vec(&output), values, tol, context);
             }
             OracleValue::ComplexVector { values, .. } => {
-                assert_complex_close(&extract_complex_vec(&output), values, tol, context);
+                assert_complex_close(&extract_complex_vec(&output)?, values, tol, context);
             }
             OracleValue::TensorComplex128 { reals, imags, .. } => {
                 let expected_vals: Vec<(f64, f64)> =
                     reals.iter().copied().zip(imags.iter().copied()).collect();
-                assert_complex_close(&extract_complex_vec(&output), &expected_vals, tol, context);
+                assert_complex_close(&extract_complex_vec(&output)?, &expected_vals, tol, context);
             }
         }
     }
+    Ok(())
 }
 
 #[test]
-fn all_linalg_fft_oracle_cases_pass() {
-    let bundle = load_oracle_bundle();
+fn all_linalg_fft_oracle_cases_pass() -> Result<(), String> {
+    let bundle = load_oracle_bundle()?;
     assert!(
         !bundle.cases.is_empty(),
         "expected at least one oracle case"
@@ -254,15 +259,19 @@ fn all_linalg_fft_oracle_cases_pass() {
 
     let mut failures = Vec::new();
     for case in &bundle.cases {
-        if let Err(e) = std::panic::catch_unwind(|| run_case(case)) {
-            failures.push(format!(
-                "{}: {:?}",
-                case.case_id,
-                e.downcast_ref::<String>()
-                    .cloned()
-                    .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
-                    .unwrap_or_else(|| "unknown panic".to_owned())
-            ));
+        match std::panic::catch_unwind(|| run_case(case)) {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => failures.push(format!("{}: {err}", case.case_id)),
+            Err(e) => {
+                failures.push(format!(
+                    "{}: {:?}",
+                    case.case_id,
+                    e.downcast_ref::<String>()
+                        .cloned()
+                        .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                        .unwrap_or_else(|| "unknown panic".to_owned())
+                ));
+            }
         }
     }
 
@@ -273,4 +282,5 @@ fn all_linalg_fft_oracle_cases_pass() {
         bundle.cases.len(),
         failures.join("\n")
     );
+    Ok(())
 }

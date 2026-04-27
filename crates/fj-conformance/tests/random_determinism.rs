@@ -164,27 +164,42 @@ fn verify_case(case: &RngFixtureCase) -> Result<(), String> {
     Ok(())
 }
 
-fn load_rng_fixture_bundle() -> RngFixtureBundle {
+fn load_rng_fixture_bundle() -> Result<RngFixtureBundle, String> {
     let cfg = HarnessConfig::default_paths();
     let fixture_path = cfg.fixture_root.join("rng").join("rng_determinism.v1.json");
-    assert!(
-        Path::new(&fixture_path).exists(),
-        "expected RNG fixture bundle at {}",
-        fixture_path.display()
-    );
+    if !Path::new(&fixture_path).exists() {
+        return Err(format!(
+            "expected RNG fixture bundle at {}",
+            fixture_path.display()
+        ));
+    }
 
-    let raw =
-        std::fs::read_to_string(&fixture_path).expect("rng fixture bundle should be readable");
-    let bundle: RngFixtureBundle =
-        serde_json::from_str(&raw).expect("rng fixture bundle should parse");
+    let raw = std::fs::read_to_string(&fixture_path).map_err(|err| {
+        format!(
+            "failed to read RNG fixture {}: {err}",
+            fixture_path.display()
+        )
+    })?;
+    let bundle: RngFixtureBundle = serde_json::from_str(&raw).map_err(|err| {
+        format!(
+            "failed to parse RNG fixture {}: {err}",
+            fixture_path.display()
+        )
+    })?;
 
-    assert_eq!(bundle.schema_version, "frankenjax.rng-fixtures.v1");
-    assert!(
-        bundle.cases.len() >= 20,
-        "expected at least 20 RNG fixture cases, got {}",
-        bundle.cases.len()
-    );
-    bundle
+    if bundle.schema_version != "frankenjax.rng-fixtures.v1" {
+        return Err(format!(
+            "unexpected RNG fixture schema_version {}",
+            bundle.schema_version
+        ));
+    }
+    if bundle.cases.len() < 20 {
+        return Err(format!(
+            "expected at least 20 RNG fixture cases, got {}",
+            bundle.cases.len()
+        ));
+    }
+    Ok(bundle)
 }
 
 fn operation_cases<'a>(bundle: &'a RngFixtureBundle, operation: &str) -> Vec<&'a RngFixtureCase> {
@@ -213,18 +228,18 @@ fn assert_cases_match(cases: &[&RngFixtureCase], label: &str) {
     );
 }
 
-fn evaluate_case(case: &RngFixtureCase) -> (JsonValue, bool, bool) {
+fn evaluate_case(case: &RngFixtureCase) -> Result<(JsonValue, bool, bool), String> {
     match case.operation.as_str() {
         "key" => {
             let actual = random_key(case.seed).0.to_vec();
             let exact_match = actual == case.expected_key_bits;
-            (json!(actual), exact_match, exact_match)
+            Ok((json!(actual), exact_match, exact_match))
         }
         "split" => {
             let (left, right) = random_split(random_key(case.seed));
             let actual = vec![left.0.to_vec(), right.0.to_vec()];
             let exact_match = actual == case.expected_split_keys;
-            (json!(actual), exact_match, exact_match)
+            Ok((json!(actual), exact_match, exact_match))
         }
         "fold_in" => {
             let fold_in_data = case
@@ -234,7 +249,7 @@ fn evaluate_case(case: &RngFixtureCase) -> (JsonValue, bool, bool) {
                 .0
                 .to_vec();
             let exact_match = actual == case.expected_key_bits;
-            (json!(actual), exact_match, exact_match)
+            Ok((json!(actual), exact_match, exact_match))
         }
         "uniform" => {
             let minval = case.minval.expect("uniform fixtures must include minval");
@@ -247,7 +262,7 @@ fn evaluate_case(case: &RngFixtureCase) -> (JsonValue, bool, bool) {
                     .zip(case.expected_values.iter())
                     .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits());
             let pass = verify_case(case).is_ok();
-            (json!(actual), bitwise_match, pass)
+            Ok((json!(actual), bitwise_match, pass))
         }
         "normal" => {
             let count = element_count(&case.shape);
@@ -258,78 +273,85 @@ fn evaluate_case(case: &RngFixtureCase) -> (JsonValue, bool, bool) {
                     .zip(case.expected_values.iter())
                     .all(|(lhs, rhs)| lhs.to_bits() == rhs.to_bits());
             let pass = verify_case(case).is_ok();
-            (json!(actual), bitwise_match, pass)
+            Ok((json!(actual), bitwise_match, pass))
         }
-        other => panic!("unsupported operation {other}"),
+        other => Err(format!("unsupported operation {other}")),
     }
 }
 
-fn expected_output(case: &RngFixtureCase) -> JsonValue {
+fn expected_output(case: &RngFixtureCase) -> Result<JsonValue, String> {
     match case.operation.as_str() {
-        "key" | "fold_in" => json!(case.expected_key_bits),
-        "split" => json!(case.expected_split_keys),
-        "uniform" | "normal" => json!(case.expected_values),
-        other => panic!("unsupported operation {other}"),
+        "key" | "fold_in" => Ok(json!(case.expected_key_bits)),
+        "split" => Ok(json!(case.expected_split_keys)),
+        "uniform" | "normal" => Ok(json!(case.expected_values)),
+        other => Err(format!("unsupported operation {other}")),
     }
 }
 
 #[test]
-fn rng_fixture_bundle_exists_and_parses() {
-    let _ = load_rng_fixture_bundle();
+fn rng_fixture_bundle_exists_and_parses() -> Result<(), String> {
+    let _ = load_rng_fixture_bundle()?;
+    Ok(())
 }
 
 #[test]
-fn rng_fixture_bundle_matches_threefry_engine() {
-    let bundle = load_rng_fixture_bundle();
+fn rng_fixture_bundle_matches_threefry_engine() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let cases: Vec<&RngFixtureCase> = bundle.cases.iter().collect();
     assert_cases_match(&cases, "rng fixture bundle");
+    Ok(())
 }
 
 #[test]
-fn test_rng_fixture_threefry_vectors() {
-    let bundle = load_rng_fixture_bundle();
+fn test_rng_fixture_threefry_vectors() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let cases = operation_cases(&bundle, "key");
     assert_cases_match(&cases, "threefry key vectors");
+    Ok(())
 }
 
 #[test]
-fn test_rng_fixture_uniform_determinism() {
-    let bundle = load_rng_fixture_bundle();
+fn test_rng_fixture_uniform_determinism() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let cases = operation_cases(&bundle, "uniform");
     assert_cases_match(&cases, "uniform determinism");
+    Ok(())
 }
 
 #[test]
-fn test_rng_fixture_normal_determinism() {
-    let bundle = load_rng_fixture_bundle();
+fn test_rng_fixture_normal_determinism() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let cases = operation_cases(&bundle, "normal");
     assert_cases_match(&cases, "normal determinism");
+    Ok(())
 }
 
 #[test]
-fn test_rng_fixture_key_split_matches() {
-    let bundle = load_rng_fixture_bundle();
+fn test_rng_fixture_key_split_matches() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let cases = operation_cases(&bundle, "split");
     assert_cases_match(&cases, "key split fixtures");
+    Ok(())
 }
 
 #[test]
-fn test_rng_fixture_fold_in_matches() {
-    let bundle = load_rng_fixture_bundle();
+fn test_rng_fixture_fold_in_matches() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let cases = operation_cases(&bundle, "fold_in");
     assert_cases_match(&cases, "fold_in fixtures");
+    Ok(())
 }
 
 #[test]
-fn e2e_rng_determinism_full() {
-    let bundle = load_rng_fixture_bundle();
+fn e2e_rng_determinism_full() -> Result<(), String> {
+    let bundle = load_rng_fixture_bundle()?;
     let mut records = Vec::with_capacity(bundle.cases.len());
     let mut forensic_rows = Vec::with_capacity(bundle.cases.len());
     let mut passed = 0usize;
 
     for case in &bundle.cases {
-        let expected = expected_output(case);
-        let (actual, bitwise_match, pass) = evaluate_case(case);
+        let expected = expected_output(case)?;
+        let (actual, bitwise_match, pass) = evaluate_case(case)?;
         if pass {
             passed += 1;
         }
@@ -419,4 +441,5 @@ fn e2e_rng_determinism_full() {
         passed,
         bundle.cases.len()
     );
+    Ok(())
 }
