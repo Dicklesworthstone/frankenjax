@@ -1382,6 +1382,7 @@ pub(crate) fn eval_scatter(
             detail: format!("unknown scatter mode \"{mode}\", expected \"overwrite\" or \"add\""),
         });
     }
+    let add_mode = mode == "add";
 
     if updates.shape != expected_update_shape {
         return Err(EvalError::ShapeMismatch {
@@ -1418,20 +1419,24 @@ pub(crate) fn eval_scatter(
         let base_offset = idx * op_strides[0];
         let update_offset = i * slice_elems;
 
+        if !add_mode {
+            let result_end = base_offset + slice_elems;
+            let update_end = update_offset + slice_elems;
+            result_elements[base_offset..result_end]
+                .copy_from_slice(&updates.elements[update_offset..update_end]);
+            continue;
+        }
+
         for j in 0..slice_elems {
             let current = &result_elements[base_offset + j];
             let update = &updates.elements[update_offset + j];
-            if mode == "add" {
-                result_elements[base_offset + j] = binary_literal_op(
-                    *current,
-                    *update,
-                    Primitive::Add,
-                    &|a, b| a.wrapping_add(b),
-                    &|a, b| a + b,
-                )?;
-            } else {
-                result_elements[base_offset + j] = *update;
-            }
+            result_elements[base_offset + j] = binary_literal_op(
+                *current,
+                *update,
+                Primitive::Add,
+                &|a, b| a.wrapping_add(b),
+                &|a, b| a + b,
+            )?;
         }
     }
 

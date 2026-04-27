@@ -3587,6 +3587,46 @@ mod tests {
     }
 
     #[test]
+    fn scatter_duplicate_row_overwrite_last_wins() {
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3, 2] },
+                vec![Literal::I64(0); 6],
+            )
+            .unwrap(),
+        );
+        let indices = Value::vector_i64(&[1, 1]).unwrap();
+        let updates = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::I64(10),
+                    Literal::I64(20),
+                    Literal::I64(30),
+                    Literal::I64(40),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &no_params(),
+        )
+        .unwrap();
+        let tensor = out.as_tensor().expect("scatter output should be tensor");
+        let values: Vec<i64> = tensor
+            .elements
+            .iter()
+            .map(|literal| literal.as_i64().expect("i64 scatter output"))
+            .collect();
+        assert_eq!(values, vec![0, 0, 30, 40, 0, 0]);
+    }
+
+    #[test]
     fn scatter_unknown_mode_rejected() {
         let operand = Value::vector_f64(&[1.0, 2.0]).unwrap();
         let indices = Value::vector_i64(&[0]).unwrap();
