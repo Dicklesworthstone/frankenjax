@@ -3167,9 +3167,14 @@ fn batch_switch(
         };
     }
 
-    // Batched index: per-element fallback (proper vectorization would require
-    // evaluating all branches and selecting per-element with an index mask).
-    batch_control_flow_fallback(Primitive::Switch, inputs, params)
+    let index_bd = inputs[0].batch_dim.ok_or_else(|| {
+        BatchError::InterpreterError("batched switch index missing batch dimension".to_owned())
+    })?;
+    let index = move_batch_dim_to_front(&inputs[0].value, index_bd)?;
+    let batch_size = get_batch_size(&inputs[0].value, index_bd)?;
+    let branch_values = switch_branch_values(&inputs[1..], batch_size)?;
+    select_batched_switch_value(&index, &branch_values, batch_size)
+        .map(|value| BatchTracer::batched(value, 0))
 }
 
 fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
@@ -3240,6 +3245,114 @@ fn scalar_to_switch_index(value: &Value, branch_count: usize) -> Result<usize, B
             value.dtype()
         ))),
     }
+}
+
+fn batched_switch_index_at(
+    index: &Value,
+    batch_idx: usize,
+    batch_size: usize,
+    branch_count: usize,
+) -> Result<usize, BatchError> {
+    match index {
+        Value::Scalar(_) => scalar_to_switch_index(index, branch_count),
+        Value::Tensor(tensor) => {
+            if tensor.rank() != 1
+                || tensor.leading_dim() != Some(batch_size as u32)
+                || tensor.elements.len() != batch_size
+            {
+                return Err(BatchError::InterpreterError(
+                    "batched switch index must contain one scalar index per batch element"
+                        .to_owned(),
+                ));
+            }
+            scalar_to_switch_index(&Value::Scalar(tensor.elements[batch_idx]), branch_count)
+        }
+    }
+}
+
+fn switch_branch_values(
+    branches: &[BatchTracer],
+    batch_size: usize,
+) -> Result<Vec<Value>, BatchError> {
+    branches
+        .iter()
+        .map(|branch| match branch.batch_dim {
+            Some(batch_dim) => move_batch_dim_to_front(&branch.value, batch_dim),
+            None => broadcast_unbatched(&branch.value, batch_size, 0),
+        })
+        .collect()
+}
+
+fn select_batched_switch_value(
+    index: &Value,
+    branches: &[Value],
+    batch_size: usize,
+) -> Result<Value, BatchError> {
+    let first = match branches.first() {
+        Some(Value::Tensor(tensor)) => tensor,
+        Some(Value::Scalar(_)) => {
+            return Err(BatchError::InterpreterError(
+                "batched switch branch values must carry a leading batch axis".to_owned(),
+            ));
+        }
+        None => {
+            return Err(BatchError::InterpreterError(
+                "switch requires at least one branch".to_owned(),
+            ));
+        }
+    };
+
+    if first.leading_dim() != Some(batch_size as u32) {
+        return Err(BatchError::InterpreterError(format!(
+            "switch branch leading dimension must match batch size {batch_size}"
+        )));
+    }
+
+    for branch in &branches[1..] {
+        let Value::Tensor(tensor) = branch else {
+            return Err(BatchError::InterpreterError(
+                "batched switch branch values must carry a leading batch axis".to_owned(),
+            ));
+        };
+        if tensor.dtype != first.dtype {
+            return Err(BatchError::InterpreterError(
+                "switch branches must have same dtype".to_owned(),
+            ));
+        }
+        if tensor.shape != first.shape {
+            return Err(BatchError::InterpreterError(
+                "switch branches must have same shape".to_owned(),
+            ));
+        }
+    }
+
+    let slice_len = first.elements.len().checked_div(batch_size).unwrap_or(0);
+    let mut elements = Vec::with_capacity(first.elements.len());
+    for batch_idx in 0..batch_size {
+        let branch_idx = batched_switch_index_at(index, batch_idx, batch_size, branches.len())?;
+        let Value::Tensor(branch) = &branches[branch_idx] else {
+            return Err(BatchError::InterpreterError(
+                "batched switch branch values must carry a leading batch axis".to_owned(),
+            ));
+        };
+        let start = batch_idx * slice_len;
+        let end = start + slice_len;
+        elements.extend_from_slice(&branch.elements[start..end]);
+    }
+
+    TensorValue::new(first.dtype, first.shape.clone(), elements)
+        .map(Value::Tensor)
+        .map_err(|error| BatchError::TensorError(error.to_string()))
+}
+
+fn select_batched_switch_tracer(
+    index: &Value,
+    branches: &[BatchTracer],
+    batch_size: usize,
+) -> Result<BatchTracer, BatchError> {
+    let branch_values = switch_branch_values(branches, batch_size)?;
+    select_batched_switch_value(index, &branch_values, batch_size)
+        .map(|value| BatchTracer::batched(value, 0))
 }
 
 fn batch_size_from_inputs(inputs: &[BatchTracer]) -> Result<Option<usize>, BatchError> {
@@ -3414,6 +3527,75 @@ fn batch_switch_sub_jaxprs(
             "switch with batched index requires a resolvable batch size".to_owned(),
         )
     })?;
+    let index_bd = inputs[0].batch_dim.ok_or_else(|| {
+        BatchError::InterpreterError("batched switch index missing batch dimension".to_owned())
+    })?;
+    let index = move_batch_dim_to_front(&inputs[0].value, index_bd)?;
+    if let Some(outputs) =
+        batch_switch_sub_jaxprs_vectorized(equation, &inputs[1..], &index, batch_size)?
+    {
+        return Ok(outputs);
+    }
+
+    batch_switch_sub_jaxprs_by_slices(equation, inputs, batch_size)
+}
+
+fn batch_switch_sub_jaxprs_vectorized(
+    equation: &Equation,
+    provided_bindings: &[BatchTracer],
+    index: &Value,
+    batch_size: usize,
+) -> Result<Option<Vec<BatchTracer>>, BatchError> {
+    let mut per_branch_outputs = Vec::with_capacity(equation.sub_jaxprs.len());
+    for branch in &equation.sub_jaxprs {
+        let expected_bindings = branch.constvars.len() + branch.invars.len();
+        if provided_bindings.len() != expected_bindings {
+            return Ok(None);
+        }
+        let (const_values, branch_args) = provided_bindings.split_at(branch.constvars.len());
+        per_branch_outputs.push(batch_eval_jaxpr_with_consts(
+            branch,
+            const_values,
+            branch_args,
+        )?);
+    }
+
+    let Some(first_branch_outputs) = per_branch_outputs.first() else {
+        return Err(BatchError::InterpreterError(
+            "switch requires at least one branch".to_owned(),
+        ));
+    };
+    let output_count = first_branch_outputs.len();
+    for branch_outputs in &per_branch_outputs[1..] {
+        if branch_outputs.len() != output_count {
+            return Err(BatchError::InterpreterError(format!(
+                "switch branches must return the same output arity: expected {output_count}, got {}",
+                branch_outputs.len()
+            )));
+        }
+    }
+
+    let mut selected_outputs = Vec::with_capacity(output_count);
+    for output_idx in 0..output_count {
+        let branch_outputs = per_branch_outputs
+            .iter()
+            .map(|outputs| outputs[output_idx].clone())
+            .collect::<Vec<_>>();
+        selected_outputs.push(select_batched_switch_tracer(
+            index,
+            &branch_outputs,
+            batch_size,
+        )?);
+    }
+
+    Ok(Some(selected_outputs))
+}
+
+fn batch_switch_sub_jaxprs_by_slices(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+    batch_size: usize,
+) -> Result<Vec<BatchTracer>, BatchError> {
     let values: Result<Vec<Value>, BatchError> = inputs
         .iter()
         .map(|tracer| match tracer.batch_dim {
@@ -5033,6 +5215,22 @@ mod tests {
         .unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![11, 11, 11]);
+    }
+
+    #[test]
+    fn test_batch_trace_switch_batched_index_vectorizes_value_branches() {
+        let idx = BatchTracer::batched(make_i64_vector(&[-1, 0, 1, 2, 99]), 0);
+        let on_zero = BatchTracer::unbatched(Value::scalar_i64(10));
+        let on_one = BatchTracer::batched(make_i64_vector(&[1, 2, 3, 4, 5]), 0);
+        let on_two = BatchTracer::batched(make_i64_vector(&[10, 20, 30, 40, 50]), 0);
+        let result = apply_batch_rule(
+            Primitive::Switch,
+            &[idx, on_zero, on_one, on_two],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![10, 10, 3, 40, 50]);
     }
 
     #[test]

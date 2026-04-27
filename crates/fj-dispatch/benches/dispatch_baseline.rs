@@ -35,6 +35,26 @@ fn dispatch_request(
     }
 }
 
+fn dispatch_jaxpr_request(
+    jaxpr: Jaxpr,
+    transforms: &[Transform],
+    args: Vec<Value>,
+) -> DispatchRequest {
+    let mut ledger = TraceTransformLedger::new(jaxpr);
+    for (idx, transform) in transforms.iter().enumerate() {
+        ledger.push_transform(*transform, format!("ev-{idx}"));
+    }
+    DispatchRequest {
+        mode: CompatibilityMode::Strict,
+        ledger,
+        args,
+        backend: "cpu".to_owned(),
+        compile_options: BTreeMap::new(),
+        custom_hook: None,
+        unknown_incompatible_features: vec![],
+    }
+}
+
 /// Build a synthetic Jaxpr with `n` equations chaining add operations.
 fn build_chain_jaxpr(n: usize) -> Jaxpr {
     let mut equations = Vec::with_capacity(n);
@@ -56,6 +76,46 @@ fn build_chain_jaxpr(n: usize) -> Jaxpr {
         vec![],
         vec![VarId((n + 1) as u32)],
         equations,
+    )
+}
+
+fn switch_branch_identity_jaxpr() -> Jaxpr {
+    Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
+}
+
+fn switch_branch_self_binary_jaxpr(primitive: Primitive) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
+fn switch_control_flow_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3)],
+        vec![Equation {
+            primitive: Primitive::Switch,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec::smallvec![VarId(3)],
+            params: BTreeMap::from([("num_branches".to_owned(), "3".to_owned())]),
+            sub_jaxprs: vec![
+                switch_branch_identity_jaxpr(),
+                switch_branch_self_binary_jaxpr(Primitive::Add),
+                switch_branch_self_binary_jaxpr(Primitive::Mul),
+            ],
+            effects: vec![],
+        }],
     )
 }
 
@@ -493,6 +553,37 @@ fn bench_vmap_svd(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_switch(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_switch");
+
+    let jaxpr = switch_control_flow_jaxpr();
+    let indices: Vec<i64> = (0..128)
+        .map(|idx| match idx % 5 {
+            0 => -1,
+            1 => 0,
+            2 => 1,
+            3 => 2,
+            _ => 99,
+        })
+        .collect();
+    let operands: Vec<i64> = (1..=128).collect();
+    let index_value = Value::vector_i64(&indices).expect("switch index vector should build");
+    let operand_value = Value::vector_i64(&operands).expect("switch operand vector should build");
+
+    group.bench_function("batched_index_128", |b| {
+        b.iter(|| {
+            dispatch(dispatch_jaxpr_request(
+                jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![index_value.clone(), operand_value.clone()],
+            ))
+            .expect("vmap(switch) should dispatch");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -769,6 +860,7 @@ criterion_group!(
     bench_vmap_qr,
     bench_vmap_eigh,
     bench_vmap_svd,
+    bench_vmap_switch,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,
