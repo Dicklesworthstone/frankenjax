@@ -16,7 +16,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 // The scan scheduler stays faster for medium/wide DAGs; dependency counts win
 // once repeated ready scans dominate long pure segments.
-const DEPENDENCY_COUNT_MIN_SEGMENT_LEN: usize = 256;
+const DEPENDENCY_COUNT_MIN_SEGMENT_LEN: usize = 128;
 
 fn equation_inputs_ready(equation: &Equation, env: &HashMap<VarId, Value>) -> bool {
     equation.inputs.iter().all(|atom| match atom {
@@ -91,9 +91,8 @@ fn execute_ready_wave(
     executed: &mut [bool],
     remaining: &mut usize,
     ready_indices: &[usize],
-) -> Result<Vec<VarId>, InterpreterError> {
+) -> Result<(), InterpreterError> {
     let should_parallelize = ready_indices.len() > 1 && rayon::current_num_threads() > 1;
-    let mut produced_vars = Vec::with_capacity(ready_indices.len());
 
     if should_parallelize {
         // No env.clone() needed: the parallel phase only reads from env.
@@ -114,7 +113,6 @@ fn execute_ready_wave(
             env.insert(out_var, out_value);
             executed[idx] = true;
             *remaining -= 1;
-            produced_vars.push(out_var);
         }
     } else {
         for idx in ready_indices {
@@ -124,11 +122,10 @@ fn execute_ready_wave(
             env.insert(out_var, output);
             executed[*idx] = true;
             *remaining -= 1;
-            produced_vars.push(out_var);
         }
     }
 
-    Ok(produced_vars)
+    Ok(())
 }
 
 fn first_missing_input_in_segment(
@@ -214,9 +211,17 @@ fn execute_pure_segment(
     max_ready_wave: &mut usize,
 ) -> Result<(), InterpreterError> {
     let segment_len = segment_end - segment_start;
-    let mut pending_inputs = vec![0_usize; segment_len];
-    let mut consumers: HashMap<VarId, Vec<usize>> =
+    let mut producer_local_by_var: HashMap<VarId, usize> =
         HashMap::with_capacity_and_hasher(segment_len, Default::default());
+    for idx in segment_start..segment_end {
+        producer_local_by_var.insert(
+            single_output_var(&jaxpr.equations[idx])?,
+            idx - segment_start,
+        );
+    }
+
+    let mut pending_inputs = vec![0_usize; segment_len];
+    let mut consumers_by_producer = vec![Vec::new(); segment_len];
     let mut ready_indices = Vec::new();
 
     for idx in segment_start..segment_end {
@@ -228,7 +233,9 @@ fn execute_pure_segment(
                     continue;
                 }
                 pending_inputs[local_idx] += 1;
-                consumers.entry(*var).or_default().push(local_idx);
+                if let Some(producer_local_idx) = producer_local_by_var.get(var) {
+                    consumers_by_producer[*producer_local_idx].push(local_idx);
+                }
             }
         }
 
@@ -247,20 +254,19 @@ fn execute_pure_segment(
 
         *max_ready_wave = (*max_ready_wave).max(ready_indices.len());
         let ready_len = ready_indices.len();
-        let produced_vars = execute_ready_wave(jaxpr, env, executed, remaining, &ready_indices)?;
+        execute_ready_wave(jaxpr, env, executed, remaining, &ready_indices)?;
         segment_remaining -= ready_len;
 
         let mut next_ready = Vec::new();
-        for produced_var in produced_vars {
-            if let Some(waiters) = consumers.get(&produced_var) {
-                for &local_idx in waiters {
-                    if executed[segment_start + local_idx] || pending_inputs[local_idx] == 0 {
-                        continue;
-                    }
-                    pending_inputs[local_idx] -= 1;
-                    if pending_inputs[local_idx] == 0 {
-                        next_ready.push(segment_start + local_idx);
-                    }
+        for idx in &ready_indices {
+            let producer_local_idx = *idx - segment_start;
+            for &local_idx in &consumers_by_producer[producer_local_idx] {
+                if executed[segment_start + local_idx] || pending_inputs[local_idx] == 0 {
+                    continue;
+                }
+                pending_inputs[local_idx] -= 1;
+                if pending_inputs[local_idx] == 0 {
+                    next_ready.push(segment_start + local_idx);
                 }
             }
         }
@@ -668,6 +674,47 @@ mod tests {
         )
     }
 
+    fn make_dependency_chain_jaxpr(length: usize) -> Jaxpr {
+        let input = VarId(1);
+        let mut current = input;
+        let mut equations = Vec::with_capacity(length);
+
+        for next_var in (2_u32..).take(length) {
+            let out = VarId(next_var);
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(current), Atom::Lit(Literal::I64(1))].into(),
+                outputs: vec![out].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            });
+            current = out;
+        }
+
+        Jaxpr::new(vec![input], vec![], vec![current], equations)
+    }
+
+    fn make_long_missing_dependency_jaxpr(length: usize) -> Jaxpr {
+        let mut equations = Vec::with_capacity(length);
+        let mut current = VarId(99);
+
+        for next_var in (2_u32..).take(length) {
+            let out = VarId(next_var);
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(current), Atom::Lit(Literal::I64(1))].into(),
+                outputs: vec![out].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            });
+            current = out;
+        }
+
+        Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
+    }
+
     #[test]
     fn cpu_backend_name() {
         let backend = CpuBackend::new();
@@ -830,6 +877,28 @@ mod tests {
     #[test]
     fn dependency_scheduler_reports_missing_segment_input() {
         let jaxpr = make_missing_dependency_jaxpr();
+        let mut max_ready_wave = 0_usize;
+        let err =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(1)], &mut max_ready_wave);
+
+        assert_eq!(err, Err(InterpreterError::MissingVariable(VarId(99))));
+    }
+
+    #[test]
+    fn dependency_scheduler_executes_long_chain_with_dependency_counts() {
+        let length = DEPENDENCY_COUNT_MIN_SEGMENT_LEN;
+        let jaxpr = make_dependency_chain_jaxpr(length);
+        let mut max_ready_wave = 0_usize;
+        let result =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(7)], &mut max_ready_wave);
+
+        assert_eq!(result, Ok(vec![Value::scalar_i64(7 + length as i64)]));
+        assert_eq!(max_ready_wave, 1);
+    }
+
+    #[test]
+    fn dependency_scheduler_reports_missing_input_in_long_dependency_segment() {
+        let jaxpr = make_long_missing_dependency_jaxpr(DEPENDENCY_COUNT_MIN_SEGMENT_LEN);
         let mut max_ready_wave = 0_usize;
         let err =
             evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(1)], &mut max_ready_wave);

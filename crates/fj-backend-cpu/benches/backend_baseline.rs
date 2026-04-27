@@ -1,6 +1,6 @@
 //! Baseline benchmarks for the CPU backend.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use fj_backend_cpu::CpuBackend;
 use fj_core::{
     Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Value, VarId, build_program,
@@ -124,6 +124,23 @@ fn bench_execute_dependency_chain(c: &mut Criterion) {
     });
 }
 
+fn bench_scheduler_cutover(c: &mut Criterion) {
+    let backend = CpuBackend::new();
+    let args = vec![Value::scalar_i64(7)];
+    let mut group = c.benchmark_group("backend_scheduler_cutover");
+
+    for length in [128_usize, 255, 256, 512, 1000] {
+        let jaxpr = make_dependency_chain_jaxpr(length);
+        group.bench_with_input(
+            BenchmarkId::new("dependency_chain", length),
+            &jaxpr,
+            |b, jaxpr| b.iter(|| backend.execute(jaxpr, &args, DeviceId(0))),
+        );
+    }
+
+    group.finish();
+}
+
 fn bench_interpreter_wide_parallel(c: &mut Criterion) {
     let jaxpr = make_wide_parallel_jaxpr(64);
     let args = vec![Value::scalar_i64(7)];
@@ -161,6 +178,7 @@ criterion_group!(
     bench_execute_10eqn,
     bench_execute_wide_parallel,
     bench_execute_dependency_chain,
+    bench_scheduler_cutover,
     bench_interpreter_wide_parallel,
     bench_allocate,
     bench_transfer,
