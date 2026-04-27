@@ -3242,12 +3242,7 @@ fn cond_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
         });
     }
 
-    let pred = match &inputs[0] {
-        Value::Scalar(Literal::Bool(b)) => *b,
-        Value::Scalar(Literal::I64(v)) => *v != 0,
-        Value::Scalar(Literal::F64Bits(bits)) => f64::from_bits(*bits) != 0.0,
-        _ => true, // default to true branch
-    };
+    let pred = scalar_predicate_for_ad(Primitive::Cond, "predicate", &inputs[0])?;
 
     let zero_pred = Value::scalar_f64(0.0);
     if pred {
@@ -3259,23 +3254,56 @@ fn cond_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
     }
 }
 
-fn switch_scalar_literal(value: &Value) -> Result<Literal, AdError> {
+fn scalar_literal_for_ad(
+    primitive: Primitive,
+    context: &str,
+    value: &Value,
+) -> Result<Literal, AdError> {
     match value {
         Value::Scalar(lit) => Ok(*lit),
         Value::Tensor(tensor) => {
             if tensor.shape != Shape::scalar() {
                 return Err(AdError::EvalFailed(format!(
-                    "switch index must be scalar, got shape {:?}",
+                    "{} {context} must be scalar, got shape {:?}",
+                    primitive.as_str(),
                     tensor.shape.dims
                 )));
             }
             if tensor.elements.len() != 1 {
                 return Err(AdError::EvalFailed(format!(
-                    "switch scalar index has {} elements",
+                    "{} scalar {context} has {} elements",
+                    primitive.as_str(),
                     tensor.elements.len()
                 )));
             }
             Ok(tensor.elements[0])
+        }
+    }
+}
+
+fn scalar_predicate_for_ad(
+    primitive: Primitive,
+    context: &str,
+    value: &Value,
+) -> Result<bool, AdError> {
+    match scalar_literal_for_ad(primitive, context, value)? {
+        Literal::Bool(value) => Ok(value),
+        Literal::I64(value) => Ok(value != 0),
+        Literal::U32(value) => Ok(value != 0),
+        Literal::U64(value) => Ok(value != 0),
+        Literal::BF16Bits(bits) => Ok(Literal::BF16Bits(bits)
+            .as_f64()
+            .is_some_and(|value| value != 0.0)),
+        Literal::F16Bits(bits) => Ok(Literal::F16Bits(bits)
+            .as_f64()
+            .is_some_and(|value| value != 0.0)),
+        Literal::F32Bits(bits) => Ok(f32::from_bits(bits) != 0.0),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+            Err(AdError::EvalFailed(format!(
+                "{} {context} must be boolean or numeric",
+                primitive.as_str()
+            )))
         }
     }
 }
@@ -3304,7 +3332,7 @@ fn switch_branch_index(
         )));
     }
 
-    let index = match switch_scalar_literal(&inputs[0])? {
+    let index = match scalar_literal_for_ad(Primitive::Switch, "index", &inputs[0])? {
         Literal::Bool(value) => u64::from(value),
         Literal::I64(value) => {
             if value < 0 {
@@ -5476,19 +5504,24 @@ fn jvp_rule(
 
         // ── Control flow ──
         Primitive::Cond => {
-            if primals.len() >= 3 {
-                let pred = match &primals[0] {
-                    Value::Scalar(Literal::Bool(b)) => *b,
-                    _ => true,
-                };
-                Ok(if pred {
-                    tangents[1].clone()
-                } else {
-                    tangents[2].clone()
-                })
-            } else {
-                Ok(tangents[0].clone())
+            if primals.len() < 3 {
+                return Err(AdError::InputArity {
+                    expected: 3,
+                    actual: primals.len(),
+                });
             }
+            if tangents.len() < 3 {
+                return Err(AdError::InputArity {
+                    expected: 3,
+                    actual: tangents.len(),
+                });
+            }
+            let pred = scalar_predicate_for_ad(Primitive::Cond, "predicate", &primals[0])?;
+            Ok(if pred {
+                tangents[1].clone()
+            } else {
+                tangents[2].clone()
+            })
         }
 
         Primitive::Scan => scan_jvp(primals, tangents, params),
@@ -10047,6 +10080,70 @@ mod tests {
         )
         .expect("while JVP should handle empty primal loop path");
         assert_eq!(tangent.as_f64_scalar().unwrap(), 0.75);
+    }
+
+    #[test]
+    fn cond_vjp_scalar_tensor_zero_selects_false_branch() {
+        let pred = Value::Tensor(
+            TensorValue::new(DType::F64, Shape::scalar(), vec![Literal::from_f64(0.0)])
+                .expect("scalar tensor predicate"),
+        );
+        let grads = vjp_single(
+            Primitive::Cond,
+            &[pred, Value::scalar_f64(10.0), Value::scalar_f64(20.0)],
+            &Value::scalar_f64(4.0),
+            &BTreeMap::new(),
+        )
+        .expect("cond VJP should accept scalar tensor numeric predicates");
+
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), 0.0);
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 4.0);
+    }
+
+    #[test]
+    fn cond_jvp_u32_zero_selects_false_tangent() {
+        let tangent = jvp_rule(
+            Primitive::Cond,
+            &[
+                Value::scalar_u32(0),
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(20.0),
+            ],
+            &[
+                Value::scalar_f64(0.0),
+                Value::scalar_f64(0.5),
+                Value::scalar_f64(1.5),
+            ],
+            &BTreeMap::new(),
+        )
+        .expect("cond JVP should use numeric predicate truthiness");
+
+        assert_eq!(tangent.as_f64_scalar().unwrap(), 1.5);
+    }
+
+    #[test]
+    fn cond_jvp_rejects_complex_predicate() {
+        let result = jvp_rule(
+            Primitive::Cond,
+            &[
+                Value::scalar_complex128(1.0, 0.0),
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(20.0),
+            ],
+            &[
+                Value::scalar_f64(0.0),
+                Value::scalar_f64(0.5),
+                Value::scalar_f64(1.5),
+            ],
+            &BTreeMap::new(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(AdError::EvalFailed(ref detail))
+                if detail.contains("cond predicate must be boolean or numeric")
+        ));
     }
 
     #[test]
