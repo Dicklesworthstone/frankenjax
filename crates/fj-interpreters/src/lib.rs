@@ -172,26 +172,6 @@ fn evaluate_switch_sub_jaxprs(
     };
     let index_literal = scalar_literal_from_value(Primitive::Switch, index_value)
         .map_err(InterpreterError::Primitive)?;
-    let index = match index_literal {
-        Literal::I64(value) => value,
-        Literal::U32(value) => i64::from(value),
-        Literal::U64(value) => i64::try_from(value).map_err(|_| {
-            InterpreterError::Primitive(EvalError::Unsupported {
-                primitive: Primitive::Switch,
-                detail: format!("switch index {value} does not fit in i64"),
-            })
-        })?,
-        Literal::Bool(value) => i64::from(value),
-        _ => {
-            return Err(InterpreterError::Primitive(EvalError::Unsupported {
-                primitive: Primitive::Switch,
-                detail: format!(
-                    "switch index must be integer, got {:?}",
-                    index_value.dtype()
-                ),
-            }));
-        }
-    };
 
     let expected_branches = equation
         .params
@@ -207,17 +187,15 @@ fn evaluate_switch_sub_jaxprs(
             ),
         }));
     }
-    if index < 0 || index as usize >= equation.sub_jaxprs.len() {
-        return Err(InterpreterError::Primitive(EvalError::Unsupported {
-            primitive: Primitive::Switch,
-            detail: format!(
-                "switch index {index} out of bounds for {} branches",
-                equation.sub_jaxprs.len()
-            ),
-        }));
-    }
 
-    let selected_branch = &equation.sub_jaxprs[index as usize];
+    let branch_idx = clamped_switch_index(index_literal, equation.sub_jaxprs.len(), index_value)?;
+    let selected_branch = equation.sub_jaxprs.get(branch_idx).ok_or_else(|| {
+        InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Switch,
+            detail: "switch requires at least one branch".to_owned(),
+        })
+    })?;
+
     let provided_bindings = &resolved[1..];
     let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
     if provided_bindings.len() != expected_bindings {
@@ -229,6 +207,40 @@ fn evaluate_switch_sub_jaxprs(
 
     let (const_values, branch_args) = provided_bindings.split_at(selected_branch.constvars.len());
     eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
+}
+
+fn clamped_switch_index(
+    literal: Literal,
+    branch_count: usize,
+    original_value: &Value,
+) -> Result<usize, InterpreterError> {
+    if branch_count == 0 {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Switch,
+            detail: "switch requires at least one branch".to_owned(),
+        }));
+    }
+
+    let last_branch = branch_count - 1;
+    match literal {
+        Literal::I64(value) => {
+            if value <= 0 {
+                Ok(0)
+            } else {
+                Ok((value as u64).min(last_branch as u64) as usize)
+            }
+        }
+        Literal::U32(value) => Ok((value as usize).min(last_branch)),
+        Literal::U64(value) => Ok(value.min(last_branch as u64) as usize),
+        Literal::Bool(value) => Ok(usize::from(value).min(last_branch)),
+        _ => Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Switch,
+            detail: format!(
+                "switch index must be integer, got {:?}",
+                original_value.dtype()
+            ),
+        })),
+    }
 }
 
 fn evaluate_cond_sub_jaxprs(
@@ -968,12 +980,16 @@ mod tests {
     }
 
     #[test]
-    fn eval_switch_with_sub_jaxprs_rejects_out_of_bounds_index() {
+    fn eval_switch_with_sub_jaxprs_clamps_out_of_bounds_indices() {
         let jaxpr = make_switch_control_flow_jaxpr();
-        let err = eval_jaxpr(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(5)])
-            .expect_err("out-of-bounds switch index should fail");
-        let msg = err.to_string();
-        assert!(msg.contains("out of bounds"), "unexpected error: {msg}");
+
+        let high_outputs = eval_jaxpr(&jaxpr, &[Value::scalar_i64(3), Value::scalar_i64(5)])
+            .expect("high switch index should clamp to the last branch");
+        assert_eq!(high_outputs, vec![Value::scalar_i64(25)]);
+
+        let low_outputs = eval_jaxpr(&jaxpr, &[Value::scalar_i64(-1), Value::scalar_i64(5)])
+            .expect("negative switch index should clamp to the first branch");
+        assert_eq!(low_outputs, vec![Value::scalar_i64(5)]);
     }
 
     #[test]

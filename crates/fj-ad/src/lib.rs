@@ -3332,33 +3332,22 @@ fn switch_branch_index(
         )));
     }
 
-    let index = match scalar_literal_for_ad(Primitive::Switch, "index", &inputs[0])? {
-        Literal::Bool(value) => u64::from(value),
+    let last_branch = num_branches.saturating_sub(1);
+    match scalar_literal_for_ad(Primitive::Switch, "index", &inputs[0])? {
+        Literal::Bool(value) => Ok(usize::from(value).min(last_branch)),
         Literal::I64(value) => {
-            if value < 0 {
-                return Err(AdError::EvalFailed(
-                    "switch index must be non-negative".to_owned(),
-                ));
+            if value <= 0 {
+                Ok(0)
+            } else {
+                Ok((value as u64).min(last_branch as u64) as usize)
             }
-            value as u64
         }
-        Literal::U32(value) => u64::from(value),
-        Literal::U64(value) => value,
-        _ => {
-            return Err(AdError::EvalFailed(
-                "switch index must be integer or bool".to_owned(),
-            ));
-        }
-    };
-
-    if index >= num_branches as u64 {
-        return Err(AdError::EvalFailed(format!(
-            "switch index {index} out of bounds for {num_branches} branches"
-        )));
+        Literal::U32(value) => Ok((value as usize).min(last_branch)),
+        Literal::U64(value) => Ok(value.min(last_branch as u64) as usize),
+        _ => Err(AdError::EvalFailed(
+            "switch index must be integer or bool".to_owned(),
+        )),
     }
-
-    usize::try_from(index)
-        .map_err(|_| AdError::EvalFailed(format!("switch index {index} does not fit in usize")))
 }
 
 /// Scan VJP: reverse-propagate gradient through the scan loop.
@@ -10223,8 +10212,8 @@ mod tests {
     }
 
     #[test]
-    fn switch_jvp_rejects_negative_index() {
-        let result = jvp_rule(
+    fn switch_jvp_negative_index_clamps_to_first_branch_tangent() {
+        let tangent = jvp_rule(
             Primitive::Switch,
             &[
                 Value::scalar_i64(-1),
@@ -10237,13 +10226,29 @@ mod tests {
                 Value::scalar_f64(1.5),
             ],
             &switch_params(2),
-        );
+        )
+        .expect("switch JVP should clamp negative branch indices");
 
-        assert!(matches!(
-            result,
-            Err(AdError::EvalFailed(ref detail))
-                if detail.contains("switch index must be non-negative")
-        ));
+        assert_eq!(tangent.as_f64_scalar().unwrap(), 0.5);
+    }
+
+    #[test]
+    fn switch_vjp_high_index_clamps_to_last_branch() {
+        let grads = vjp_single(
+            Primitive::Switch,
+            &[
+                Value::scalar_u64(u64::MAX),
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(20.0),
+            ],
+            &Value::scalar_f64(3.0),
+            &switch_params(2),
+        )
+        .expect("switch VJP should clamp high branch indices");
+
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
+        assert_eq!(grads[1].as_f64_scalar().unwrap(), 0.0);
+        assert_eq!(grads[2].as_f64_scalar().unwrap(), 3.0);
     }
 
     // ── Task-specified control-flow AD coverage ───────────────────────

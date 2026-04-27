@@ -904,21 +904,24 @@ fn value_to_bool(primitive: Primitive, value: &Value) -> Result<bool, EvalError>
     literal_to_bool(primitive, literal)
 }
 
-fn literal_to_index(primitive: Primitive, literal: Literal) -> Result<u64, EvalError> {
+fn literal_to_switch_index(
+    primitive: Primitive,
+    literal: Literal,
+    num_branches: usize,
+) -> Result<usize, EvalError> {
+    let last_branch = num_branches.saturating_sub(1);
     match literal {
-        Literal::Bool(b) => Ok(u64::from(b)),
+        Literal::Bool(b) => Ok(usize::from(b).min(last_branch)),
         Literal::I64(v) => {
-            if v < 0 {
-                Err(EvalError::Unsupported {
-                    primitive,
-                    detail: "switch index must be non-negative".to_owned(),
-                })
+            let clamped = if v <= 0 {
+                0
             } else {
-                Ok(v as u64)
-            }
+                (v as u64).min(last_branch as u64) as usize
+            };
+            Ok(clamped)
         }
-        Literal::U32(v) => Ok(u64::from(v)),
-        Literal::U64(v) => Ok(v),
+        Literal::U32(v) => Ok((v as usize).min(last_branch)),
+        Literal::U64(v) => Ok(v.min(last_branch as u64) as usize),
         Literal::BF16Bits(..)
         | Literal::F16Bits(..)
         | Literal::F32Bits(..)
@@ -931,9 +934,13 @@ fn literal_to_index(primitive: Primitive, literal: Literal) -> Result<u64, EvalE
     }
 }
 
-fn value_to_index(primitive: Primitive, value: &Value) -> Result<u64, EvalError> {
+fn value_to_switch_index(
+    primitive: Primitive,
+    value: &Value,
+    num_branches: usize,
+) -> Result<usize, EvalError> {
     let literal = scalar_literal(primitive, value)?;
-    literal_to_index(primitive, literal)
+    literal_to_switch_index(primitive, literal, num_branches)
 }
 
 /// Compute a simple shape fingerprint for shape-preservation checks.
@@ -1019,28 +1026,8 @@ fn eval_switch(
         });
     }
 
-    let index_u64 = value_to_index(primitive, &inputs[0])?;
-
-    let num_branches_u64 = num_branches as u64;
-    if index_u64 >= num_branches_u64 {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail: format!("switch index {index_u64} out of bounds for {num_branches} branches"),
-        });
-    }
-
     // Branch values start at inputs[1]
-    let branch_idx = index_u64 as usize;
-    if branch_idx + 1 >= inputs.len() {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail: format!(
-                "switch index {branch_idx} but only {} branch values provided",
-                inputs.len() - 1
-            ),
-        });
-    }
-
+    let branch_idx = value_to_switch_index(primitive, &inputs[0], num_branches)?;
     Ok(inputs[branch_idx + 1].clone())
 }
 
@@ -7470,7 +7457,7 @@ mod prop_tests {
     }
 
     #[test]
-    fn test_switch_out_of_bounds_error() {
+    fn test_switch_high_index_clamps_to_last_branch() {
         let mut params = no_params();
         params.insert("num_branches".into(), "2".into());
 
@@ -7482,15 +7469,13 @@ mod prop_tests {
                 Value::scalar_f64(20.0),
             ],
             &params,
-        );
-        assert!(
-            result.is_err(),
-            "Switch with out-of-bounds index should fail"
-        );
+        )
+        .unwrap();
+        assert_eq!(result, Value::scalar_f64(20.0));
     }
 
     #[test]
-    fn test_switch_negative_index_error() {
+    fn test_switch_negative_index_clamps_to_first_branch() {
         let mut params = no_params();
         params.insert("num_branches".into(), "2".into());
 
@@ -7502,8 +7487,27 @@ mod prop_tests {
                 Value::scalar_f64(20.0),
             ],
             &params,
-        );
-        assert!(result.is_err(), "Switch with negative index should fail");
+        )
+        .unwrap();
+        assert_eq!(result, Value::scalar_f64(10.0));
+    }
+
+    #[test]
+    fn test_switch_u64_max_index_clamps_to_last_branch() {
+        let mut params = no_params();
+        params.insert("num_branches".into(), "2".into());
+
+        let result = eval_primitive(
+            Primitive::Switch,
+            &[
+                Value::scalar_u64(u64::MAX),
+                Value::scalar_f64(10.0),
+                Value::scalar_f64(20.0),
+            ],
+            &params,
+        )
+        .unwrap();
+        assert_eq!(result, Value::scalar_f64(20.0));
     }
 
     #[test]

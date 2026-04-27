@@ -1535,45 +1535,32 @@ fn batch_switch(
 
     // Fast path: scalar index selects one branch for the entire batch.
     if inputs[0].batch_dim.is_none() {
-        let idx = scalar_to_i64(&inputs[0].value, Primitive::Switch)?;
-        if idx < 0 {
-            return Err(BatchError::InterpreterError(format!(
-                "switch index {idx} out of bounds for {} branches",
-                inputs.len().saturating_sub(1)
-            )));
-        }
-        let idx = idx as usize;
-        if idx + 1 < inputs.len() {
-            let selected = &inputs[idx + 1];
-            return match selected.batch_dim {
-                Some(bd) => {
-                    let moved = move_batch_dim_to_front(&selected.value, bd)?;
-                    Ok(BatchTracer::batched(moved, 0))
-                }
-                None => {
-                    let mut batch_size = None;
-                    for (branch_idx, tracer) in inputs.iter().enumerate() {
-                        if branch_idx == idx + 1 {
-                            continue;
-                        }
-                        if let Some(bd) = tracer.batch_dim {
-                            batch_size = Some(get_batch_size(&tracer.value, bd)?);
-                            break;
-                        }
+        let idx = scalar_to_switch_index(&inputs[0].value, provided_branches)?;
+        let selected = &inputs[idx + 1];
+        return match selected.batch_dim {
+            Some(bd) => {
+                let moved = move_batch_dim_to_front(&selected.value, bd)?;
+                Ok(BatchTracer::batched(moved, 0))
+            }
+            None => {
+                let mut batch_size = None;
+                for (branch_idx, tracer) in inputs.iter().enumerate() {
+                    if branch_idx == idx + 1 {
+                        continue;
                     }
-                    if let Some(batch_size) = batch_size {
-                        let broadcasted = broadcast_unbatched(&selected.value, batch_size, 0)?;
-                        Ok(BatchTracer::batched(broadcasted, 0))
-                    } else {
-                        Ok(BatchTracer::unbatched(selected.value.clone()))
+                    if let Some(bd) = tracer.batch_dim {
+                        batch_size = Some(get_batch_size(&tracer.value, bd)?);
+                        break;
                     }
                 }
-            };
-        }
-        return Err(BatchError::InterpreterError(format!(
-            "switch index {idx} out of bounds for {} branches",
-            inputs.len().saturating_sub(1)
-        )));
+                if let Some(batch_size) = batch_size {
+                    let broadcasted = broadcast_unbatched(&selected.value, batch_size, 0)?;
+                    Ok(BatchTracer::batched(broadcasted, 0))
+                } else {
+                    Ok(BatchTracer::unbatched(selected.value.clone()))
+                }
+            }
+        };
     }
 
     // Batched index: per-element fallback (proper vectorization would require
@@ -1612,33 +1599,40 @@ fn scalar_to_bool(value: &Value) -> Result<bool, BatchError> {
     }
 }
 
-fn scalar_to_i64(value: &Value, primitive: Primitive) -> Result<i64, BatchError> {
+fn scalar_to_switch_index(value: &Value, branch_count: usize) -> Result<usize, BatchError> {
     let literal = match value {
         Value::Scalar(lit) => *lit,
         Value::Tensor(tensor) => {
             if tensor.shape != Shape::scalar() || tensor.elements.len() != 1 {
                 return Err(BatchError::InterpreterError(format!(
                     "{} index must be scalar",
-                    primitive.as_str()
+                    Primitive::Switch.as_str()
                 )));
             }
             tensor.elements[0]
         }
     };
+    if branch_count == 0 {
+        return Err(BatchError::InterpreterError(
+            "switch requires at least one branch".to_owned(),
+        ));
+    }
+
+    let last_branch = branch_count - 1;
     match literal {
-        fj_core::Literal::I64(v) => Ok(v),
-        fj_core::Literal::U32(v) => Ok(i64::from(v)),
-        fj_core::Literal::U64(v) => i64::try_from(v).map_err(|_| {
-            BatchError::InterpreterError(format!(
-                "{} index {} does not fit in i64",
-                primitive.as_str(),
-                v
-            ))
-        }),
-        fj_core::Literal::Bool(v) => Ok(i64::from(v)),
+        fj_core::Literal::I64(v) => {
+            if v <= 0 {
+                Ok(0)
+            } else {
+                Ok((v as u64).min(last_branch as u64) as usize)
+            }
+        }
+        fj_core::Literal::U32(v) => Ok((v as usize).min(last_branch)),
+        fj_core::Literal::U64(v) => Ok(v.min(last_branch as u64) as usize),
+        fj_core::Literal::Bool(v) => Ok(usize::from(v).min(last_branch)),
         _ => Err(BatchError::InterpreterError(format!(
             "{} index must be integer, got {:?}",
-            primitive.as_str(),
+            Primitive::Switch.as_str(),
             value.dtype()
         ))),
     }
@@ -1761,7 +1755,10 @@ fn batch_sub_jaxpr_by_slices(
         .collect()
 }
 
-fn select_switch_branch(equation: &Equation, index: i64) -> Result<&Jaxpr, BatchError> {
+fn select_switch_branch<'a>(
+    equation: &'a Equation,
+    index_value: &Value,
+) -> Result<&'a Jaxpr, BatchError> {
     let expected_branches = equation
         .params
         .get("num_branches")
@@ -1773,13 +1770,11 @@ fn select_switch_branch(equation: &Equation, index: i64) -> Result<&Jaxpr, Batch
             equation.sub_jaxprs.len()
         )));
     }
-    if index < 0 || index as usize >= equation.sub_jaxprs.len() {
-        return Err(BatchError::InterpreterError(format!(
-            "switch index {index} out of bounds for {} branches",
-            equation.sub_jaxprs.len()
-        )));
-    }
-    Ok(&equation.sub_jaxprs[index as usize])
+
+    let branch_idx = scalar_to_switch_index(index_value, equation.sub_jaxprs.len())?;
+    equation.sub_jaxprs.get(branch_idx).ok_or_else(|| {
+        BatchError::InterpreterError("switch requires at least one branch".to_owned())
+    })
 }
 
 fn batch_switch_sub_jaxprs(
@@ -1795,8 +1790,7 @@ fn batch_switch_sub_jaxprs(
     let batch_size = batch_size_from_inputs(inputs)?;
 
     if inputs[0].batch_dim.is_none() {
-        let index = scalar_to_i64(&inputs[0].value, Primitive::Switch)?;
-        let selected_branch = select_switch_branch(equation, index)?;
+        let selected_branch = select_switch_branch(equation, &inputs[0].value)?;
         let provided_bindings = &inputs[1..];
         let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
         if provided_bindings.len() != expected_bindings {
@@ -1837,8 +1831,7 @@ fn batch_switch_sub_jaxprs(
             })
             .collect();
         let slices = slices?;
-        let index = scalar_to_i64(&slices[0], Primitive::Switch)?;
-        let selected_branch = select_switch_branch(equation, index)?;
+        let selected_branch = select_switch_branch(equation, &slices[0])?;
         let provided_bindings = &slices[1..];
         let expected_bindings = selected_branch.constvars.len() + selected_branch.invars.len();
         if provided_bindings.len() != expected_bindings {
@@ -2731,6 +2724,39 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_trace_switch_scalar_index_clamps_to_valid_branches() {
+        let on_zero = BatchTracer::batched(make_i64_vector(&[1, 2, 3]), 0);
+        let on_one = BatchTracer::batched(make_i64_vector(&[4, 5, 6]), 0);
+        let on_two = BatchTracer::batched(make_i64_vector(&[40, 50, 60]), 0);
+
+        let low = apply_batch_rule(
+            Primitive::Switch,
+            &[
+                BatchTracer::unbatched(Value::scalar_i64(-1)),
+                on_zero.clone(),
+                on_one.clone(),
+                on_two.clone(),
+            ],
+            &BTreeMap::new(),
+        )
+        .expect("negative switch index should clamp to the first branch");
+        assert_eq!(extract_i64_vec(&low.value), vec![1, 2, 3]);
+
+        let high = apply_batch_rule(
+            Primitive::Switch,
+            &[
+                BatchTracer::unbatched(Value::scalar_u64(u64::MAX)),
+                on_zero,
+                on_one,
+                on_two,
+            ],
+            &BTreeMap::new(),
+        )
+        .expect("high switch index should clamp to the last branch");
+        assert_eq!(extract_i64_vec(&high.value), vec![40, 50, 60]);
+    }
+
+    #[test]
     fn test_batch_trace_switch_rejects_num_branches_mismatch() -> Result<(), BatchError> {
         let idx = BatchTracer::unbatched(Value::scalar_i64(0));
         let on_zero = BatchTracer::unbatched(Value::scalar_i64(11));
@@ -2814,6 +2840,22 @@ mod tests {
             ],
         )
         .expect("batched switch index should select branches per element");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![5, 12, 49]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_switch_sub_jaxprs_clamps_batched_indices() {
+        let jaxpr = make_switch_control_flow_jaxpr();
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::batched(make_i64_vector(&[-1, 1, 99]), 0),
+                BatchTracer::batched(make_i64_vector(&[5, 6, 7]), 0),
+            ],
+        )
+        .expect("batched switch indices should clamp per element");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&outputs[0].value), vec![5, 12, 49]);
