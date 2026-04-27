@@ -3034,13 +3034,10 @@ fn infer_pad(
     }
 
     let rank = operand.shape.rank();
-    let lows = parse_u32_param_list(primitive, params, "padding_low")?;
-    let highs = parse_u32_param_list(primitive, params, "padding_high")?;
-    let interiors = if let Some(raw) = params.get("padding_interior") {
-        parse_u32_list(primitive, "padding_interior", raw)?
-    } else {
-        vec![0_u32; rank]
-    };
+    let lows = parse_u32_param_list_for_rank(primitive, params, "padding_low", rank, None)?;
+    let highs = parse_u32_param_list_for_rank(primitive, params, "padding_high", rank, None)?;
+    let interiors =
+        parse_u32_param_list_for_rank(primitive, params, "padding_interior", rank, Some(0))?;
 
     if lows.len() != rank || highs.len() != rank || interiors.len() != rank {
         return Err(TraceError::ShapeInferenceFailed {
@@ -3146,6 +3143,25 @@ fn parse_u32_param_list(
     let raw = params
         .get(key)
         .ok_or(TraceError::MissingPrimitiveParam { primitive, key })?;
+    parse_u32_list(primitive, key, raw)
+}
+
+fn parse_u32_param_list_for_rank(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    key: &'static str,
+    rank: usize,
+    missing_default: Option<u32>,
+) -> Result<Vec<u32>, TraceError> {
+    let Some(raw) = params.get(key) else {
+        if let Some(default) = missing_default {
+            return Ok(vec![default; rank]);
+        }
+        if rank == 0 {
+            return Ok(Vec::new());
+        }
+        return Err(TraceError::MissingPrimitiveParam { primitive, key });
+    };
     parse_u32_list(primitive, key, raw)
 }
 
@@ -5856,6 +5872,68 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.dtype, DType::I64);
                 assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_pad_rank_zero_accepts_omitted_padding_config() {
+        run_logged_test(
+            "test_trace_pad_rank_zero_accepts_omitted_padding_config",
+            fj_test_utils::fixture_id_from_json(&("pad", "rank-zero-omitted-config"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::scalar(),
+                    },
+                    ShapedArray {
+                        dtype: DType::F64,
+                        shape: Shape::scalar(),
+                    },
+                ]);
+                let out = ctx
+                    .process_primitive(Primitive::Pad, &[TracerId(1), TracerId(2)], BTreeMap::new())
+                    .expect("rank-zero pad inference should accept omitted config");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::F64);
+                assert_eq!(aval.shape, Shape::scalar());
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_trace_pad_rank_zero_accepts_empty_padding_config() {
+        run_logged_test(
+            "test_trace_pad_rank_zero_accepts_empty_padding_config",
+            fj_test_utils::fixture_id_from_json(&("pad", "rank-zero-empty-config"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::scalar(),
+                    },
+                    ShapedArray {
+                        dtype: DType::I64,
+                        shape: Shape::scalar(),
+                    },
+                ]);
+                let mut params = BTreeMap::new();
+                params.insert("padding_low".to_owned(), String::new());
+                params.insert("padding_high".to_owned(), String::new());
+                params.insert("padding_interior".to_owned(), String::new());
+                let out = ctx
+                    .process_primitive(Primitive::Pad, &[TracerId(1), TracerId(2)], params)
+                    .expect("rank-zero pad inference should accept empty config");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::I64);
+                assert_eq!(aval.shape, Shape::scalar());
                 Ok(Vec::new())
             },
         );
