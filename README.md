@@ -953,7 +953,7 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 
 - **CPU-only backend.** GPU/TPU backends are not yet implemented. The CPU backend uses rayon for wave-parallel execution.
 - **No XLA lowering.** FrankenJAX evaluates through its own interpreter, not through XLA. This means we match JAX's mathematical semantics but not its compilation/optimization pipeline.
-- **Partial `vmap` + iterative control flow composition.** `vmap(scan(...))`, `vmap(while_loop(...))`, and similar iterative compositions need further work. Batched-index `vmap(switch(...))` uses branch-once batched evaluation with row-wise selection.
+- **Partial `vmap` + iterative control flow composition.** General functional `vmap(scan(...))`, `vmap(while_loop(...))`, and similar iterative compositions need further work. Primitive scalar-sequence `vmap(scan(...))` uses direct batched row folds, and batched-index `vmap(switch(...))` uses branch-once batched evaluation with row-wise selection.
 
 ## FAQ
 

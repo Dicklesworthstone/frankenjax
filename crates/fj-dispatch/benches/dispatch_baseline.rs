@@ -119,6 +119,22 @@ fn switch_control_flow_jaxpr() -> Jaxpr {
     )
 }
 
+fn scan_control_flow_jaxpr(body_op: &str) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3)],
+        vec![Equation {
+            primitive: Primitive::Scan,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec::smallvec![VarId(3)],
+            params: BTreeMap::from([("body_op".to_owned(), body_op.to_owned())]),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // 1. Dispatch Latency — jit/grad/vmap x scalar/vector
 // ---------------------------------------------------------------------------
@@ -584,6 +600,40 @@ fn bench_vmap_switch(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_scan(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_scan");
+
+    let jaxpr = scan_control_flow_jaxpr("add");
+    let xs = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![128, 64],
+            },
+            (0..(128 * 64))
+                .map(|idx| Literal::I64((idx % 17) as i64))
+                .collect(),
+        )
+        .expect("scan xs should build"),
+    );
+
+    group.bench_function("shared_init_batched_xs_128x64", |b| {
+        b.iter(|| {
+            let mut request = dispatch_jaxpr_request(
+                jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![Value::scalar_i64(0), xs.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
+            dispatch(request).expect("vmap(scan) should dispatch");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -861,6 +911,7 @@ criterion_group!(
     bench_vmap_eigh,
     bench_vmap_svd,
     bench_vmap_switch,
+    bench_vmap_scan,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,

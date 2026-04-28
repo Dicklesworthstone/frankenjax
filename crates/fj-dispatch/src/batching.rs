@@ -3100,9 +3100,153 @@ fn batch_scan(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
-    // Per-element fallback semantics currently match vmapped scan behavior:
-    // each batch element runs an independent scan with its corresponding carry/xs.
+    if let Some(result) = batch_scan_scalar_sequences(inputs, params)? {
+        return Ok(result);
+    }
+
+    // General fallback semantics match vmapped scan behavior: each batch
+    // element runs an independent scan with its corresponding carry/xs.
     batch_control_flow_fallback(Primitive::Scan, inputs, params)
+}
+
+#[derive(Clone, Copy)]
+enum ScanScalarOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+fn batch_scan_scalar_sequences(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Option<BatchTracer>, BatchError> {
+    if inputs.len() != 2 {
+        return Ok(None);
+    }
+    let Some(xs_batch_dim) = inputs[1].batch_dim else {
+        return Ok(None);
+    };
+
+    let Some(op) = scan_scalar_op(params) else {
+        return Ok(None);
+    };
+    let xs_value = move_batch_dim_to_front(&inputs[1].value, xs_batch_dim)?;
+    let Some(xs) = xs_value.as_tensor() else {
+        return Ok(None);
+    };
+    if xs.rank() > 2 {
+        return Ok(None);
+    }
+
+    let batch_size = xs.shape.dims[0] as usize;
+    let scan_len = if xs.rank() == 1 {
+        1
+    } else {
+        xs.shape.dims[1] as usize
+    };
+    let init_values = scan_scalar_initial_values(&inputs[0], batch_size)?;
+    if init_values.len() != batch_size {
+        return Ok(None);
+    }
+    let reverse = params.get("reverse").is_some_and(|value| value == "true");
+
+    let mut outputs = Vec::with_capacity(batch_size);
+    for (batch_idx, mut carry) in init_values.into_iter().enumerate() {
+        if reverse {
+            for scan_idx in (0..scan_len).rev() {
+                let Some(next) =
+                    apply_scan_scalar_op(op, carry, scan_scalar_xs_at(xs, batch_idx, scan_idx))
+                else {
+                    return Ok(None);
+                };
+                carry = next;
+            }
+        } else {
+            for scan_idx in 0..scan_len {
+                let Some(next) =
+                    apply_scan_scalar_op(op, carry, scan_scalar_xs_at(xs, batch_idx, scan_idx))
+                else {
+                    return Ok(None);
+                };
+                carry = next;
+            }
+        }
+        outputs.push(carry);
+    }
+    let dtype = outputs
+        .first()
+        .map(|literal| Value::Scalar(*literal).dtype())
+        .unwrap_or(xs.dtype);
+
+    TensorValue::new(dtype, Shape::vector(batch_size as u32), outputs)
+        .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
+        .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn scan_scalar_op(params: &BTreeMap<String, String>) -> Option<ScanScalarOp> {
+    match params.get("body_op").map(String::as_str).unwrap_or("add") {
+        "add" => Some(ScanScalarOp::Add),
+        "sub" => Some(ScanScalarOp::Sub),
+        "mul" => Some(ScanScalarOp::Mul),
+        _ => None,
+    }
+}
+
+fn scan_scalar_initial_values(
+    init: &BatchTracer,
+    batch_size: usize,
+) -> Result<Vec<Literal>, BatchError> {
+    match init.batch_dim {
+        None => match &init.value {
+            Value::Scalar(literal) => Ok(vec![*literal; batch_size]),
+            Value::Tensor(tensor)
+                if tensor.shape == Shape::scalar() && tensor.elements.len() == 1 =>
+            {
+                Ok(vec![tensor.elements[0]; batch_size])
+            }
+            _ => Ok(Vec::new()),
+        },
+        Some(batch_dim) => {
+            let value = move_batch_dim_to_front(&init.value, batch_dim)?;
+            let Some(tensor) = value.as_tensor() else {
+                return Ok(Vec::new());
+            };
+            if tensor.rank() == 1 && tensor.elements.len() == batch_size {
+                Ok(tensor.elements.clone())
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+}
+
+fn scan_scalar_xs_at(xs: &TensorValue, batch_idx: usize, scan_idx: usize) -> Literal {
+    if xs.rank() == 1 {
+        xs.elements[batch_idx]
+    } else {
+        xs.elements[batch_idx * xs.shape.dims[1] as usize + scan_idx]
+    }
+}
+
+fn apply_scan_scalar_op(op: ScanScalarOp, carry: Literal, x: Literal) -> Option<Literal> {
+    match (carry, x) {
+        (Literal::I64(carry), Literal::I64(x)) => Some(match op {
+            ScanScalarOp::Add => Literal::I64(carry.wrapping_add(x)),
+            ScanScalarOp::Sub => Literal::I64(carry.wrapping_sub(x)),
+            ScanScalarOp::Mul => Literal::I64(carry.wrapping_mul(x)),
+        }),
+        (Literal::F64Bits(carry), Literal::F64Bits(x)) => {
+            let carry = f64::from_bits(carry);
+            let x = f64::from_bits(x);
+            let result = match op {
+                ScanScalarOp::Add => carry + x,
+                ScanScalarOp::Sub => carry - x,
+                ScanScalarOp::Mul => carry * x,
+            };
+            Some(Literal::from_f64(result))
+        }
+        _ => None,
+    }
 }
 
 fn batch_while(
@@ -5338,6 +5482,38 @@ mod tests {
         let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![6, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_scan_batched_xs_nonzero_axis() {
+        // Shape is [scan_len, batch]; each mapped element scans one column.
+        let init = BatchTracer::unbatched(Value::scalar_i64(0));
+        let xs = BatchTracer::batched(make_i64_matrix(3, 2, &[1, 10, 2, 20, 3, 30]), 1);
+        let params = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
+        let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![6, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_scan_batched_scalar_xs() {
+        // vmap(scan) over scalar xs should run one body step per batch element.
+        let init = BatchTracer::batched(make_i64_vector(&[10, 20, 30]), 0);
+        let xs = BatchTracer::batched(make_i64_vector(&[1, 2, 3]), 0);
+        let params = BTreeMap::from([("body_op".to_owned(), "add".to_owned())]);
+        let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![11, 22, 33]);
+    }
+
+    #[test]
+    fn test_batch_trace_scan_batched_xs_f64_mul() {
+        let init = BatchTracer::unbatched(Value::scalar_f64(2.0));
+        let xs = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params = BTreeMap::from([("body_op".to_owned(), "mul".to_owned())]);
+        let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_f64_close(&extract_f64_vec(&result.value), &[12.0, 240.0]);
     }
 
     #[test]
