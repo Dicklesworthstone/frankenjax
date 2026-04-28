@@ -145,7 +145,6 @@ fn oracle_sort_with_negatives() {
 }
 
 #[test]
-#[ignore = "frankenjax-sort-nan: NaN ordering differs from JAX (NaN at start vs end)"]
 fn oracle_sort_f64_with_special_values() {
     // NaN handling: JAX sorts NaN to the end
     let input = make_f64_tensor(&[4u32], vec![f64::NAN, 1.0, f64::NEG_INFINITY, 2.0]);
