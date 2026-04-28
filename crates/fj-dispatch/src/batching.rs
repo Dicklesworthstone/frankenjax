@@ -3249,13 +3249,245 @@ fn apply_scan_scalar_op(op: ScanScalarOp, carry: Literal, x: Literal) -> Option<
     }
 }
 
+#[derive(Clone, Copy)]
+enum WhileScalarOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+}
+
+#[derive(Clone, Copy)]
+enum WhileCondOp {
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    Ne,
+    Eq,
+}
+
 fn batch_while(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    if let Some(result) = batch_while_scalar_loop(inputs, params)? {
+        return Ok(result);
+    }
+
     // Per-element fallback semantics currently match vmapped while behavior:
     // each batch element runs an independent loop until its own condition is false.
     batch_control_flow_fallback(Primitive::While, inputs, params)
+}
+
+fn batch_while_scalar_loop(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Option<BatchTracer>, BatchError> {
+    if inputs.len() != 3 {
+        return Ok(None);
+    }
+    let Some(batch_size) = while_scalar_batch_size(inputs)? else {
+        return Ok(None);
+    };
+    let Some(body_op) = while_scalar_op(params) else {
+        return Ok(None);
+    };
+    let Some(cond_op) = while_cond_op(params) else {
+        return Ok(None);
+    };
+
+    let Some(mut carry_values) = while_scalar_values(&inputs[0], batch_size)? else {
+        return Ok(None);
+    };
+    let Some(step_values) = while_scalar_values(&inputs[1], batch_size)? else {
+        return Ok(None);
+    };
+    let Some(threshold_values) = while_scalar_values(&inputs[2], batch_size)? else {
+        return Ok(None);
+    };
+    let output_dtype = while_scalar_output_dtype(&inputs[0]);
+
+    let max_iter: usize = params
+        .get("max_iter")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1000);
+    let mut active = vec![true; batch_size];
+
+    for _ in 0..max_iter {
+        let mut any_active = false;
+        for ((carry, threshold), is_active) in carry_values
+            .iter()
+            .zip(threshold_values.iter())
+            .zip(active.iter_mut())
+        {
+            if !*is_active {
+                continue;
+            }
+            let Some(keep_running) = apply_while_scalar_cond(cond_op, *carry, *threshold) else {
+                return Ok(None);
+            };
+            *is_active = keep_running;
+            any_active |= keep_running;
+        }
+
+        if !any_active {
+            let tensor =
+                TensorValue::new(output_dtype, Shape::vector(batch_size as u32), carry_values)
+                    .map_err(|e| BatchError::TensorError(e.to_string()))?;
+            return Ok(Some(BatchTracer::batched(Value::Tensor(tensor), 0)));
+        }
+
+        for ((carry, step), is_active) in carry_values
+            .iter_mut()
+            .zip(step_values.iter())
+            .zip(active.iter())
+        {
+            if !*is_active {
+                continue;
+            }
+            let Some(next) = apply_while_scalar_op(body_op, *carry, *step) else {
+                return Ok(None);
+            };
+            *carry = next;
+        }
+    }
+
+    if active.iter().any(|is_active| *is_active) {
+        return Err(BatchError::EvalError(format!(
+            "{} exceeded max iterations ({max_iter})",
+            Primitive::While.as_str()
+        )));
+    }
+
+    let tensor = TensorValue::new(output_dtype, Shape::vector(batch_size as u32), carry_values)
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    Ok(Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
+}
+
+fn while_scalar_batch_size(inputs: &[BatchTracer]) -> Result<Option<usize>, BatchError> {
+    let mut batch_size = None;
+    for input in inputs {
+        let Some(batch_dim) = input.batch_dim else {
+            continue;
+        };
+        let size = get_batch_size(&input.value, batch_dim)?;
+        if batch_size.is_some_and(|existing| existing != size) {
+            return Ok(None);
+        }
+        batch_size = Some(size);
+    }
+    Ok(batch_size)
+}
+
+fn while_scalar_values(
+    input: &BatchTracer,
+    batch_size: usize,
+) -> Result<Option<Vec<Literal>>, BatchError> {
+    match input.batch_dim {
+        None => match &input.value {
+            Value::Scalar(literal) => Ok(Some(vec![*literal; batch_size])),
+            Value::Tensor(tensor)
+                if tensor.shape == Shape::scalar() && tensor.elements.len() == 1 =>
+            {
+                Ok(Some(vec![tensor.elements[0]; batch_size]))
+            }
+            _ => Ok(None),
+        },
+        Some(batch_dim) => {
+            let value = move_batch_dim_to_front(&input.value, batch_dim)?;
+            let Some(tensor) = value.as_tensor() else {
+                return Ok(None);
+            };
+            if tensor.rank() == 1 && tensor.elements.len() == batch_size {
+                Ok(Some(tensor.elements.clone()))
+            } else {
+                Ok(None)
+            }
+        }
+    }
+}
+
+fn while_scalar_output_dtype(input: &BatchTracer) -> DType {
+    match &input.value {
+        Value::Scalar(literal) => Value::Scalar(*literal).dtype(),
+        Value::Tensor(tensor) => tensor.dtype,
+    }
+}
+
+fn while_scalar_op(params: &BTreeMap<String, String>) -> Option<WhileScalarOp> {
+    match params.get("body_op").map(String::as_str).unwrap_or("add") {
+        "add" => Some(WhileScalarOp::Add),
+        "sub" => Some(WhileScalarOp::Sub),
+        "mul" => Some(WhileScalarOp::Mul),
+        "div" => Some(WhileScalarOp::Div),
+        "pow" => Some(WhileScalarOp::Pow),
+        _ => None,
+    }
+}
+
+fn while_cond_op(params: &BTreeMap<String, String>) -> Option<WhileCondOp> {
+    match params.get("cond_op").map(String::as_str).unwrap_or("lt") {
+        "lt" => Some(WhileCondOp::Lt),
+        "le" => Some(WhileCondOp::Le),
+        "gt" => Some(WhileCondOp::Gt),
+        "ge" => Some(WhileCondOp::Ge),
+        "ne" => Some(WhileCondOp::Ne),
+        "eq" => Some(WhileCondOp::Eq),
+        _ => None,
+    }
+}
+
+fn apply_while_scalar_op(op: WhileScalarOp, carry: Literal, step: Literal) -> Option<Literal> {
+    match (carry, step) {
+        (Literal::I64(carry), Literal::I64(step)) => Some(match op {
+            WhileScalarOp::Add => Literal::I64(carry.wrapping_add(step)),
+            WhileScalarOp::Sub => Literal::I64(carry.wrapping_sub(step)),
+            WhileScalarOp::Mul => Literal::I64(carry.wrapping_mul(step)),
+            WhileScalarOp::Div => Literal::I64(carry.checked_div(step).unwrap_or(0)),
+            WhileScalarOp::Pow => Literal::I64((carry as f64).powf(step as f64) as i64),
+        }),
+        (Literal::F64Bits(carry), Literal::F64Bits(step)) => {
+            let carry = f64::from_bits(carry);
+            let step = f64::from_bits(step);
+            let result = match op {
+                WhileScalarOp::Add => carry + step,
+                WhileScalarOp::Sub => carry - step,
+                WhileScalarOp::Mul => carry * step,
+                WhileScalarOp::Div => carry / step,
+                WhileScalarOp::Pow => carry.powf(step),
+            };
+            Some(Literal::from_f64(result))
+        }
+        _ => None,
+    }
+}
+
+fn apply_while_scalar_cond(op: WhileCondOp, carry: Literal, threshold: Literal) -> Option<bool> {
+    match (carry, threshold) {
+        (Literal::I64(carry), Literal::I64(threshold)) => Some(match op {
+            WhileCondOp::Lt => carry < threshold,
+            WhileCondOp::Le => carry <= threshold,
+            WhileCondOp::Gt => carry > threshold,
+            WhileCondOp::Ge => carry >= threshold,
+            WhileCondOp::Ne => carry != threshold,
+            WhileCondOp::Eq => carry == threshold,
+        }),
+        (Literal::F64Bits(carry), Literal::F64Bits(threshold)) => {
+            let carry = f64::from_bits(carry);
+            let threshold = f64::from_bits(threshold);
+            Some(match op {
+                WhileCondOp::Lt => carry < threshold,
+                WhileCondOp::Le => carry <= threshold,
+                WhileCondOp::Gt => carry > threshold,
+                WhileCondOp::Ge => carry >= threshold,
+                WhileCondOp::Ne => carry != threshold,
+                WhileCondOp::Eq => carry == threshold,
+            })
+        }
+        _ => None,
+    }
 }
 
 fn batch_switch(
@@ -5556,6 +5788,54 @@ mod tests {
         let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![6, 25]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_batched_step_and_threshold() {
+        let init = BatchTracer::batched(make_i64_vector(&[0, 10, 4]), 0);
+        let step = BatchTracer::batched(make_i64_vector(&[2, 3, 5]), 0);
+        let threshold = BatchTracer::batched(make_i64_vector(&[5, 25, 20]), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "32".to_owned()),
+        ]);
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&result.value), vec![6, 25, 24]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_batched_f64_mul() {
+        let init = BatchTracer::batched(make_f64_vector(&[1.0, 2.0, 3.0]), 0);
+        let step = BatchTracer::batched(make_f64_vector(&[2.0, 2.0, 3.0]), 0);
+        let threshold = BatchTracer::unbatched(Value::scalar_f64(10.0));
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "mul".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "16".to_owned()),
+        ]);
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_f64_close(&extract_f64_vec(&result.value), &[16.0, 16.0, 27.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_scalar_fast_path_preserves_max_iter_error() {
+        let init = BatchTracer::batched(make_i64_vector(&[0, 1]), 0);
+        let step = BatchTracer::unbatched(Value::scalar_i64(1));
+        let threshold = BatchTracer::unbatched(Value::scalar_i64(10));
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "3".to_owned()),
+        ]);
+        let err =
+            apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("while_loop exceeded max iterations (3)")
+        );
     }
 
     // ── Concatenate Test ───────────────────────────────────────

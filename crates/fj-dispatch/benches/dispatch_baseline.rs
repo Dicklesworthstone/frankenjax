@@ -135,6 +135,30 @@ fn scan_control_flow_jaxpr(body_op: &str) -> Jaxpr {
     )
 }
 
+fn while_control_flow_jaxpr(body_op: &str, cond_op: &str, max_iter: usize) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2), VarId(3)],
+        vec![],
+        vec![VarId(4)],
+        vec![Equation {
+            primitive: Primitive::While,
+            inputs: smallvec::smallvec![
+                Atom::Var(VarId(1)),
+                Atom::Var(VarId(2)),
+                Atom::Var(VarId(3))
+            ],
+            outputs: smallvec::smallvec![VarId(4)],
+            params: BTreeMap::from([
+                ("body_op".to_owned(), body_op.to_owned()),
+                ("cond_op".to_owned(), cond_op.to_owned()),
+                ("max_iter".to_owned(), max_iter.to_string()),
+            ]),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // 1. Dispatch Latency — jit/grad/vmap x scalar/vector
 // ---------------------------------------------------------------------------
@@ -634,6 +658,39 @@ fn bench_vmap_scan(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_vmap_while(c: &mut Criterion) {
+    let mut group = c.benchmark_group("vmap_while");
+
+    let jaxpr = while_control_flow_jaxpr("add", "lt", 256);
+    let init = Value::vector_i64(&(0..128).map(|idx| (idx % 8) as i64).collect::<Vec<_>>())
+        .expect("while init vector should build");
+    let step = Value::vector_i64(
+        &(0..128)
+            .map(|idx| ((idx % 4) + 1) as i64)
+            .collect::<Vec<_>>(),
+    )
+    .expect("while step vector should build");
+    let threshold = Value::vector_i64(
+        &(0..128)
+            .map(|idx| (96 + (idx % 16)) as i64)
+            .collect::<Vec<_>>(),
+    )
+    .expect("while threshold vector should build");
+
+    group.bench_function("batched_scalar_add_128", |b| {
+        b.iter(|| {
+            dispatch(dispatch_jaxpr_request(
+                jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![init.clone(), step.clone(), threshold.clone()],
+            ))
+            .expect("vmap(while_loop) should dispatch");
+        });
+    });
+
+    group.finish();
+}
+
 // ---------------------------------------------------------------------------
 // 2. eval_jaxpr Throughput — 10, 100, 1000 equation programs
 // ---------------------------------------------------------------------------
@@ -912,6 +969,7 @@ criterion_group!(
     bench_vmap_svd,
     bench_vmap_switch,
     bench_vmap_scan,
+    bench_vmap_while,
     bench_eval_jaxpr_throughput,
     bench_transform_composition,
     bench_cache_key_generation,

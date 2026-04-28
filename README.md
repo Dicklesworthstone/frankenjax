@@ -8,7 +8,7 @@
   Semantic fidelity. Mathematical rigor. Operational safety. Profile-proven performance.
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
-  ![Tests](https://img.shields.io/badge/tests-2179_passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2182_passing-brightgreen)
   ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
   ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
   ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-846_cases-purple)
@@ -35,7 +35,7 @@
 | 846 JAX oracle fixture cases for differential conformance | All green |
 | RaptorQ erasure-coded durability for all long-lived artifacts | All green |
 | Strict/Hardened compatibility-security mode split | All green |
-| 2,179 `#[test]` cases + proptest suites | All passing |
+| 2,182 `#[test]` cases + proptest suites | All passing |
 
 ## Comparison vs Alternatives
 
@@ -190,7 +190,7 @@ Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
 - **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support
 - **846 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
-- **2,179 `#[test]` cases** plus proptest/property-based suites
+- **2,182 `#[test]` cases** plus proptest/property-based suites
 - **RaptorQ durability pipeline** for all long-lived evidence artifacts
 
 ## The Canonical IR: Jaxpr
@@ -953,7 +953,7 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 
 - **CPU-only backend.** GPU/TPU backends are not yet implemented. The CPU backend uses rayon for wave-parallel execution.
 - **No XLA lowering.** FrankenJAX evaluates through its own interpreter, not through XLA. This means we match JAX's mathematical semantics but not its compilation/optimization pipeline.
-- **Partial `vmap` + iterative control flow composition.** General functional `vmap(scan(...))`, `vmap(while_loop(...))`, and similar iterative compositions need further work. Primitive scalar-sequence `vmap(scan(...))` uses direct batched row folds, and batched-index `vmap(switch(...))` uses branch-once batched evaluation with row-wise selection.
+- **Partial `vmap` + iterative control flow composition.** General functional `vmap(scan(...))`, `vmap(while_loop(...))`, and similar iterative compositions need further work. Primitive scalar-sequence `vmap(scan(...))` uses direct batched row folds, primitive scalar `vmap(while_loop(...))` keeps supported scalar lanes in one batched active-mask loop, and batched-index `vmap(switch(...))` uses branch-once batched evaluation with row-wise selection.
 
 ## FAQ
 
