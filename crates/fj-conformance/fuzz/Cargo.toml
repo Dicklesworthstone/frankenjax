@@ -93,6 +93,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "primitive_eval_fuzzer"
+path = "fuzz_targets/primitive_eval_fuzzer.rs"
+test = false
+doc = false
+bench = false
+
 # Keep fuzzing package separate from the workspace package graph.
 [workspace]
 members = ["."]
