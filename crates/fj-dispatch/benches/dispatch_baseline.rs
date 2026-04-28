@@ -745,6 +745,21 @@ fn bench_vmap_scan(c: &mut Criterion) {
         });
     });
 
+    let max_jaxpr = scan_control_flow_jaxpr("max");
+    group.bench_function("shared_init_batched_xs_max_128x64", |b| {
+        b.iter(|| {
+            let mut request = dispatch_jaxpr_request(
+                max_jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![Value::scalar_i64(0), xs.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
+            dispatch(request).expect("vmap(scan max) should dispatch");
+        });
+    });
+
     let functional_jaxpr = scan_sub_jaxpr_control_flow_jaxpr();
     group.bench_function("functional_sub_jaxpr_add_emit_128x64", |b| {
         b.iter(|| {
