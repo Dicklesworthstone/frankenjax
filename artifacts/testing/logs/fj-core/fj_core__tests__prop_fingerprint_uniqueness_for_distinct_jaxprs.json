@@ -7,8 +7,8 @@
   "env": {
     "rust_version": "rustc 1.97.0-nightly (17584a181 2026-04-13)",
     "os": "linux",
-    "cargo_target_dir": "/tmp/frankenjax-target-dtype-all",
-    "timestamp_unix_ms": 1777404211306
+    "cargo_target_dir": "/tmp/frankenjax-target-while-subjaxpr",
+    "timestamp_unix_ms": 1777406068371
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -16,11 +16,11 @@
     "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__prop_fingerprint_uniqueness_for_distinct_jaxprs.json"
   ],
   "result": "pass",
-  "duration_ms": 61,
+  "duration_ms": 41,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-core;result=pass",
   "phase_timings": {
-    "setup_ms": 40,
-    "execute_ms": 20,
+    "setup_ms": 30,
+    "execute_ms": 11,
     "verify_ms": 0,
     "teardown_ms": 0
   }
