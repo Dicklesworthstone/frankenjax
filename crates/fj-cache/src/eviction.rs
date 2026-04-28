@@ -10,7 +10,7 @@
 use crate::CacheKey;
 use crate::backend::{CacheBackend, CacheStats, CachedArtifact};
 use std::collections::VecDeque;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// Configuration for LRU eviction.
 #[derive(Debug, Clone)]
@@ -41,7 +41,7 @@ pub struct LruCache<B: CacheBackend> {
     config: LruConfig,
     /// Access-ordered queue: front = least recently used, back = most recent.
     /// Wrapped in Mutex so `get(&self)` can update recency.
-    pub(crate) order: Mutex<VecDeque<String>>,
+    pub(crate) order: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl<B: CacheBackend> std::fmt::Debug for LruCache<B> {
@@ -59,7 +59,27 @@ impl<B: CacheBackend> LruCache<B> {
         Self {
             inner,
             config,
-            order: Mutex::new(VecDeque::new()),
+            order: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    fn order_key_to_cache_key(order_key: &str) -> Option<CacheKey> {
+        let (_namespace, digest_hex) = order_key.split_once('-')?;
+        Some(CacheKey {
+            namespace: "fjx",
+            digest_hex: digest_hex.to_owned(),
+        })
+    }
+
+    fn pop_oldest_cache_key(&self) -> Option<CacheKey> {
+        loop {
+            let oldest_key_str = {
+                let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+                order.pop_front()
+            }?;
+            if let Some(evict_key) = Self::order_key_to_cache_key(&oldest_key_str) {
+                return Some(evict_key);
+            }
         }
     }
 
@@ -75,39 +95,34 @@ impl<B: CacheBackend> LruCache<B> {
 
     /// Evict least-recently-used entries until within budget.
     fn enforce_budget(&mut self) {
-        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        let entry_count_evictions = {
+            let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+            let mut evict_keys = Vec::new();
 
-        // Evict by entry count.
-        while order.len() > self.config.max_entries {
-            if let Some(oldest_key_str) = order.pop_front() {
-                // Construct a temporary CacheKey for eviction.
-                if let Some((ns, hex)) = oldest_key_str.split_once('-') {
-                    let evict_key = CacheKey {
-                        namespace: match ns {
-                            "fjx" => "fjx",
-                            _ => "fjx", // V1: only fjx namespace
-                        },
-                        digest_hex: hex.to_owned(),
-                    };
-                    self.inner.evict(&evict_key);
+            while order.len() > self.config.max_entries {
+                if let Some(oldest_key_str) = order.pop_front() {
+                    if let Some(evict_key) = Self::order_key_to_cache_key(&oldest_key_str) {
+                        evict_keys.push(evict_key);
+                    }
+                } else {
+                    break;
                 }
             }
+
+            evict_keys
+        };
+
+        for evict_key in entry_count_evictions {
+            self.inner.evict(&evict_key);
         }
 
         // Evict by byte budget (if configured).
         if self.config.max_bytes > 0 {
             while self.inner.stats().total_bytes > self.config.max_bytes {
-                if let Some(oldest_key_str) = order.pop_front() {
-                    if let Some((_ns, hex)) = oldest_key_str.split_once('-') {
-                        let evict_key = CacheKey {
-                            namespace: "fjx",
-                            digest_hex: hex.to_owned(),
-                        };
-                        self.inner.evict(&evict_key);
-                    }
-                } else {
-                    break; // No more keys to evict
-                }
+                let Some(evict_key) = self.pop_oldest_cache_key() else {
+                    break;
+                };
+                self.inner.evict(&evict_key);
             }
         }
     }
@@ -222,9 +237,10 @@ impl<B: CacheBackend> TtlLruCache<B> {
 
         // Prevent memory leak by cleaning up keys silently evicted by the underlying LRU
         if self.insert_times.len() > self.inner.config.max_entries.saturating_mul(2).max(1024) {
-            let order = self.inner.order.lock().unwrap_or_else(|e| e.into_inner());
-            let active_keys: std::collections::HashSet<&str> =
-                order.iter().map(|s| s.as_str()).collect();
+            let active_keys: std::collections::HashSet<String> = {
+                let order = self.inner.order.lock().unwrap_or_else(|e| e.into_inner());
+                order.iter().cloned().collect()
+            };
             self.insert_times
                 .retain(|k, _| active_keys.contains(k.as_str()));
         }
@@ -289,6 +305,8 @@ impl<B: CacheBackend> CacheBackend for TtlLruCache<B> {
 mod tests {
     use super::*;
     use crate::backend::InMemoryCache;
+    use std::collections::HashMap;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn test_key(digest: &str) -> CacheKey {
         CacheKey {
@@ -301,6 +319,58 @@ mod tests {
         CachedArtifact {
             data: data.to_vec(),
             integrity_sha256_hex: crate::sha256_hex(data),
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct ReentrantAuditBackend {
+        entries: HashMap<String, CachedArtifact>,
+        order: Option<Arc<Mutex<VecDeque<String>>>>,
+        evict_observed_unlocked: Arc<AtomicBool>,
+        stats_observed_unlocked: Arc<AtomicBool>,
+    }
+
+    impl ReentrantAuditBackend {
+        fn with_order(&mut self, order: Arc<Mutex<VecDeque<String>>>) {
+            self.order = Some(order);
+        }
+
+        fn assert_order_unlocked(&self, method: &str) {
+            if let Some(order) = &self.order {
+                assert!(
+                    order.try_lock().is_ok(),
+                    "LRU order lock held during backend {method}"
+                );
+            }
+        }
+    }
+
+    impl CacheBackend for ReentrantAuditBackend {
+        fn get(&self, key: &CacheKey) -> Option<CachedArtifact> {
+            self.entries.get(&key.as_string()).cloned()
+        }
+
+        fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
+            self.entries.insert(key.as_string(), artifact);
+        }
+
+        fn evict(&mut self, key: &CacheKey) -> bool {
+            self.assert_order_unlocked("evict");
+            self.evict_observed_unlocked.store(true, Ordering::SeqCst);
+            self.entries.remove(&key.as_string()).is_some()
+        }
+
+        fn stats(&self) -> CacheStats {
+            self.assert_order_unlocked("stats");
+            self.stats_observed_unlocked.store(true, Ordering::SeqCst);
+            CacheStats {
+                entry_count: self.entries.len(),
+                total_bytes: self.entries.values().map(|a| a.data.len() as u64).sum(),
+            }
+        }
+
+        fn clear(&mut self) {
+            self.entries.clear();
         }
     }
 
@@ -342,6 +412,32 @@ mod tests {
         // Adding more should trigger eviction to stay under 10 bytes.
         cache.put(&test_key("c"), test_artifact(b"XXXXX")); // 5 more bytes
         assert!(cache.stats().total_bytes <= 10);
+    }
+
+    #[test]
+    fn lru_releases_order_lock_before_backend_budget_calls() {
+        let config = LruConfig {
+            max_entries: 1,
+            max_bytes: 5,
+        };
+        let mut cache = LruCache::new(ReentrantAuditBackend::default(), config);
+        cache.inner.with_order(Arc::clone(&cache.order));
+
+        let evict_observed = Arc::clone(&cache.inner.evict_observed_unlocked);
+        let stats_observed = Arc::clone(&cache.inner.stats_observed_unlocked);
+
+        cache.put(&test_key("a"), test_artifact(b"12345"));
+        cache.put(&test_key("b"), test_artifact(b"67890"));
+
+        assert!(
+            evict_observed.load(Ordering::SeqCst),
+            "entry-count eviction should call backend evict"
+        );
+        assert!(
+            stats_observed.load(Ordering::SeqCst),
+            "byte-budget enforcement should call backend stats"
+        );
+        assert_eq!(cache.stats().entry_count, 1);
     }
 
     #[test]
