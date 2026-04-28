@@ -38,6 +38,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "value_deserializer"
+path = "fuzz_targets/value_deserializer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "shape_inference_engine"
 path = "fuzz_targets/shape_inference_engine.rs"
 test = false
