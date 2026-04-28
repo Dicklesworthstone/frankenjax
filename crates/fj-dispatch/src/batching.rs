@@ -4330,6 +4330,8 @@ fn while_body_op_from_primitive(primitive: Primitive) -> Option<WhileScalarOp> {
         Primitive::Add => Some(WhileScalarOp::Add),
         Primitive::Sub => Some(WhileScalarOp::Sub),
         Primitive::Mul => Some(WhileScalarOp::Mul),
+        Primitive::Div => Some(WhileScalarOp::Div),
+        Primitive::Pow => Some(WhileScalarOp::Pow),
         _ => None,
     }
 }
@@ -5052,14 +5054,34 @@ mod tests {
         )
     }
 
-    fn make_while_cond_gt_zero_jaxpr() -> Jaxpr {
+    fn make_while_cond_scalar_jaxpr(primitive: Primitive, threshold: Literal) -> Jaxpr {
         Jaxpr::new(
             vec![VarId(1)],
             vec![],
             vec![VarId(2)],
             vec![Equation {
-                primitive: Primitive::Gt,
-                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(0))],
+                primitive,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(threshold)],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_while_cond_gt_zero_jaxpr() -> Jaxpr {
+        make_while_cond_scalar_jaxpr(Primitive::Gt, Literal::I64(0))
+    }
+
+    fn make_while_body_scalar_jaxpr(primitive: Primitive, operand: Literal) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(operand)],
                 outputs: smallvec![VarId(2)],
                 params: BTreeMap::new(),
                 effects: vec![],
@@ -5069,22 +5091,22 @@ mod tests {
     }
 
     fn make_while_body_sub_two_jaxpr() -> Jaxpr {
-        Jaxpr::new(
-            vec![VarId(1)],
-            vec![],
-            vec![VarId(2)],
-            vec![Equation {
-                primitive: Primitive::Sub,
-                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(2))],
-                outputs: smallvec![VarId(2)],
-                params: BTreeMap::new(),
-                effects: vec![],
-                sub_jaxprs: vec![],
-            }],
-        )
+        make_while_body_scalar_jaxpr(Primitive::Sub, Literal::I64(2))
     }
 
     fn make_while_control_flow_jaxpr() -> Jaxpr {
+        make_while_control_flow_jaxpr_with_sub_jaxprs(
+            make_while_cond_gt_zero_jaxpr(),
+            make_while_body_sub_two_jaxpr(),
+            8,
+        )
+    }
+
+    fn make_while_control_flow_jaxpr_with_sub_jaxprs(
+        cond_jaxpr: Jaxpr,
+        body_jaxpr: Jaxpr,
+        max_iter: usize,
+    ) -> Jaxpr {
         Jaxpr::new(
             vec![VarId(0)],
             vec![],
@@ -5093,12 +5115,9 @@ mod tests {
                 primitive: Primitive::While,
                 inputs: smallvec![Atom::Var(VarId(0))],
                 outputs: smallvec![VarId(1)],
-                params: BTreeMap::from([("max_iter".to_owned(), "8".to_owned())]),
+                params: BTreeMap::from([("max_iter".to_owned(), max_iter.to_string())]),
                 effects: vec![],
-                sub_jaxprs: vec![
-                    make_while_cond_gt_zero_jaxpr(),
-                    make_while_body_sub_two_jaxpr(),
-                ],
+                sub_jaxprs: vec![cond_jaxpr, body_jaxpr],
             }],
         )
     }
@@ -6338,6 +6357,37 @@ mod tests {
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&outputs[0].value), vec![-1, 0, -1]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_while_sub_jaxprs_batched_carry_supports_div_pow_body_ops() {
+        let div_jaxpr = make_while_control_flow_jaxpr_with_sub_jaxprs(
+            make_while_cond_scalar_jaxpr(Primitive::Gt, Literal::I64(1)),
+            make_while_body_scalar_jaxpr(Primitive::Div, Literal::I64(2)),
+            8,
+        );
+        let div_outputs = batch_eval_jaxpr(
+            &div_jaxpr,
+            &[BatchTracer::batched(make_i64_vector(&[64, 32, 8]), 0)],
+        )
+        .expect("while sub_jaxpr body div should batch independent scalar lanes");
+        assert_eq!(div_outputs.len(), 1);
+        assert_eq!(div_outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&div_outputs[0].value), vec![1, 1, 1]);
+
+        let pow_jaxpr = make_while_control_flow_jaxpr_with_sub_jaxprs(
+            make_while_cond_scalar_jaxpr(Primitive::Lt, Literal::I64(100)),
+            make_while_body_scalar_jaxpr(Primitive::Pow, Literal::I64(2)),
+            4,
+        );
+        let pow_outputs = batch_eval_jaxpr(
+            &pow_jaxpr,
+            &[BatchTracer::batched(make_i64_vector(&[2, 3]), 0)],
+        )
+        .expect("while sub_jaxpr body pow should batch independent scalar lanes");
+        assert_eq!(pow_outputs.len(), 1);
+        assert_eq!(pow_outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&pow_outputs[0].value), vec![256, 6_561]);
     }
 
     #[test]
