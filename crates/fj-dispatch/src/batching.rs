@@ -3740,6 +3740,37 @@ fn batch_size_from_inputs(inputs: &[BatchTracer]) -> Result<Option<usize>, Batch
     Ok(None)
 }
 
+fn and_bool_tensors(a: &Value, b: &Value) -> Result<Value, BatchError> {
+    match (a, b) {
+        (Value::Tensor(ta), Value::Tensor(tb)) if ta.dtype == DType::Bool && tb.dtype == DType::Bool => {
+            if ta.shape != tb.shape {
+                return Err(BatchError::TensorError(format!(
+                    "shape mismatch in and_bool_tensors: {:?} vs {:?}",
+                    ta.shape, tb.shape
+                )));
+            }
+            let elements: Vec<Literal> = ta
+                .elements
+                .iter()
+                .zip(tb.elements.iter())
+                .map(|(ea, eb)| match (ea, eb) {
+                    (Literal::Bool(va), Literal::Bool(vb)) => Literal::Bool(*va && *vb),
+                    _ => Literal::Bool(false),
+                })
+                .collect();
+            TensorValue::new(DType::Bool, ta.shape.clone(), elements)
+                .map(Value::Tensor)
+                .map_err(|e| BatchError::TensorError(e.to_string()))
+        }
+        (Value::Scalar(Literal::Bool(va)), Value::Scalar(Literal::Bool(vb))) => {
+            Ok(Value::Scalar(Literal::Bool(*va && *vb)))
+        }
+        _ => Err(BatchError::InterpreterError(
+            "and_bool_tensors requires boolean inputs".to_owned(),
+        )),
+    }
+}
+
 fn broadcast_unbatched_outputs(
     outputs: Vec<BatchTracer>,
     batch_size: Option<usize>,
@@ -3791,7 +3822,126 @@ fn batch_while_sub_jaxpr(
         return Ok(outputs);
     }
 
+    if let Some(outputs) = batch_while_sub_jaxpr_general(equation, inputs)? {
+        return Ok(outputs);
+    }
+
     batch_sub_jaxpr_by_slices(equation, inputs)
+}
+
+fn batch_while_sub_jaxpr_general(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+) -> Result<Option<Vec<BatchTracer>>, BatchError> {
+    if equation.sub_jaxprs.len() != 2 {
+        return Ok(None);
+    }
+    let cond_jaxpr = &equation.sub_jaxprs[0];
+    let body_jaxpr = &equation.sub_jaxprs[1];
+
+    let Some(batch_size) = batch_size_from_inputs(inputs)? else {
+        return Ok(None);
+    };
+
+    let max_iter: usize = equation
+        .params
+        .get("max_iter")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+
+    let const_count = cond_jaxpr.constvars.len() + body_jaxpr.constvars.len();
+    if inputs.len() < const_count {
+        return Ok(None);
+    }
+    let (const_inputs, carry_inputs) = inputs.split_at(const_count);
+    let (cond_const_inputs, body_const_inputs) = const_inputs.split_at(cond_jaxpr.constvars.len());
+
+    if carry_inputs.is_empty() {
+        return Ok(None);
+    }
+    if cond_jaxpr.invars.len() != carry_inputs.len() {
+        return Ok(None);
+    }
+    if body_jaxpr.invars.len() != carry_inputs.len() {
+        return Ok(None);
+    }
+
+    let cond_consts: Vec<Value> = cond_const_inputs.iter().map(|t| t.value.clone()).collect();
+    let body_consts: Vec<Value> = body_const_inputs.iter().map(|t| t.value.clone()).collect();
+
+    let mut carry: Vec<Value> = carry_inputs
+        .iter()
+        .map(|tracer| match tracer.batch_dim {
+            Some(bd) => move_batch_dim_to_front(&tracer.value, bd),
+            None => broadcast_unbatched(&tracer.value, batch_size, 0),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut active_mask = Value::Tensor(
+        TensorValue::new(DType::Bool, Shape::vector(batch_size as u32), vec![Literal::Bool(true); batch_size])
+            .map_err(|e| BatchError::TensorError(e.to_string()))?,
+    );
+
+    for _ in 0..max_iter {
+        let cond_result = eval_jaxpr_with_consts(cond_jaxpr, &cond_consts, &carry)
+            .map_err(|e| BatchError::InterpreterError(format!("while cond: {e}")))?;
+        if cond_result.len() != 1 {
+            return Ok(None);
+        }
+
+        let cond_pred = &cond_result[0];
+        let new_active = and_bool_tensors(&active_mask, cond_pred)?;
+
+        let any_active = match &new_active {
+            Value::Tensor(t) if t.dtype == DType::Bool => t.elements.iter().any(|lit| matches!(lit, Literal::Bool(true))),
+            Value::Scalar(Literal::Bool(b)) => *b,
+            _ => return Ok(None),
+        };
+
+        if !any_active {
+            return Ok(Some(
+                carry
+                    .into_iter()
+                    .map(|v| BatchTracer::batched(v, 0))
+                    .collect(),
+            ));
+        }
+
+        let body_result = eval_jaxpr_with_consts(body_jaxpr, &body_consts, &carry)
+            .map_err(|e| BatchError::InterpreterError(format!("while body: {e}")))?;
+        if body_result.len() != carry.len() {
+            return Ok(None);
+        }
+
+        for (old_carry, new_carry) in carry.iter_mut().zip(body_result) {
+            *old_carry = eval_primitive(
+                Primitive::Select,
+                &[new_active.clone(), new_carry, old_carry.clone()],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+        }
+
+        active_mask = new_active;
+    }
+
+    let still_active = match &active_mask {
+        Value::Tensor(t) if t.dtype == DType::Bool => t.elements.iter().any(|lit| matches!(lit, Literal::Bool(true))),
+        Value::Scalar(Literal::Bool(b)) => *b,
+        _ => false,
+    };
+    if still_active {
+        return Err(BatchError::EvalError(format!(
+            "while exceeded max iterations ({max_iter})"
+        )));
+    }
+
+    Ok(Some(
+        carry
+            .into_iter()
+            .map(|v| BatchTracer::batched(v, 0))
+            .collect(),
+    ))
 }
 
 fn batch_while_sub_jaxpr_scalar_loop(
