@@ -8,7 +8,7 @@
   Semantic fidelity. Mathematical rigor. Operational safety. Profile-proven performance.
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
-  ![Tests](https://img.shields.io/badge/tests-2522_passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2567_passing-brightgreen)
   ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
   ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
   ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-846_cases-purple)
