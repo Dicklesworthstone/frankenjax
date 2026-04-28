@@ -4,7 +4,7 @@ pub mod partial_eval;
 pub mod staging;
 
 use fj_core::{
-    Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
+    Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
 use fj_lax::{EvalError, eval_primitive_multi};
 use rustc_hash::FxHashMap;
@@ -477,52 +477,34 @@ fn evaluate_scan_sub_jaxprs(
         .params
         .get("reverse")
         .is_some_and(|value| value == "true");
-    let scan_indices: Box<dyn Iterator<Item = usize>> = if reverse {
-        Box::new((0..scan_len).rev())
-    } else {
-        Box::new(0..scan_len)
+
+    let scan_context = ScanIterationContext {
+        body_jaxpr,
+        const_values,
+        xs,
+        init_shapes: &init_shapes,
+        init_dtypes: &init_dtypes,
     };
-
-    for scan_idx in scan_indices {
-        let x_slice = scan_slice_at(xs, scan_idx)?;
-        let mut body_args = carry.clone();
-        body_args.push(x_slice);
-        let body_outputs =
-            eval_jaxpr_with_consts(body_jaxpr, const_values, &body_args).map_err(|err| {
-                InterpreterError::Primitive(map_sub_jaxpr_error(Primitive::Scan, "scan body", err))
-            })?;
-        if body_outputs.len() != carry_count + y_count {
-            return Err(InterpreterError::InvariantViolation {
-                detail: format!(
-                    "scan body sub_jaxpr returned {} outputs; expected {}",
-                    body_outputs.len(),
-                    carry_count + y_count
-                ),
-            });
+    let mut body_args = Vec::with_capacity(carry_count + 1);
+    if reverse {
+        for scan_idx in (0..scan_len).rev() {
+            evaluate_scan_iteration(
+                &scan_context,
+                scan_idx,
+                &mut carry,
+                &mut per_y,
+                &mut body_args,
+            )?;
         }
-
-        for (idx, value) in body_outputs[..carry_count].iter().enumerate() {
-            let new_shape = value_shape(value);
-            if new_shape != init_shapes[idx] {
-                return Err(InterpreterError::Primitive(EvalError::ShapeChanged {
-                    primitive: Primitive::Scan,
-                    detail: format!(
-                        "carry element {idx} changed shape from {:?} to {:?}",
-                        init_shapes[idx].dims, new_shape.dims
-                    ),
-                }));
-            }
-            if value.dtype() != init_dtypes[idx] {
-                return Err(InterpreterError::Primitive(EvalError::TypeMismatch {
-                    primitive: Primitive::Scan,
-                    detail: "scan body changed carry dtype",
-                }));
-            }
-        }
-
-        carry = body_outputs[..carry_count].to_vec();
-        for (bucket, y_value) in per_y.iter_mut().zip(body_outputs[carry_count..].iter()) {
-            bucket.push(y_value.clone());
+    } else {
+        for scan_idx in 0..scan_len {
+            evaluate_scan_iteration(
+                &scan_context,
+                scan_idx,
+                &mut carry,
+                &mut per_y,
+                &mut body_args,
+            )?;
         }
     }
 
@@ -539,6 +521,71 @@ fn evaluate_scan_sub_jaxprs(
         outputs.push(Value::Tensor(stacked));
     }
     Ok(outputs)
+}
+
+struct ScanIterationContext<'a> {
+    body_jaxpr: &'a Jaxpr,
+    const_values: &'a [Value],
+    xs: &'a Value,
+    init_shapes: &'a [Shape],
+    init_dtypes: &'a [DType],
+}
+
+fn evaluate_scan_iteration(
+    context: &ScanIterationContext<'_>,
+    scan_idx: usize,
+    carry: &mut [Value],
+    per_y: &mut [Vec<Value>],
+    body_args: &mut Vec<Value>,
+) -> Result<(), InterpreterError> {
+    let x_slice = scan_slice_at(context.xs, scan_idx)?;
+    body_args.clear();
+    body_args.extend(carry.iter().cloned());
+    body_args.push(x_slice);
+
+    let carry_count = carry.len();
+    let y_count = per_y.len();
+    let body_outputs = eval_jaxpr_with_consts(context.body_jaxpr, context.const_values, body_args)
+        .map_err(|err| {
+            InterpreterError::Primitive(map_sub_jaxpr_error(Primitive::Scan, "scan body", err))
+        })?;
+    if body_outputs.len() != carry_count + y_count {
+        return Err(InterpreterError::InvariantViolation {
+            detail: format!(
+                "scan body sub_jaxpr returned {} outputs; expected {}",
+                body_outputs.len(),
+                carry_count + y_count
+            ),
+        });
+    }
+
+    for (idx, value) in body_outputs[..carry_count].iter().enumerate() {
+        let new_shape = value_shape(value);
+        if new_shape != context.init_shapes[idx] {
+            return Err(InterpreterError::Primitive(EvalError::ShapeChanged {
+                primitive: Primitive::Scan,
+                detail: format!(
+                    "carry element {idx} changed shape from {:?} to {:?}",
+                    context.init_shapes[idx].dims, new_shape.dims
+                ),
+            }));
+        }
+        if value.dtype() != context.init_dtypes[idx] {
+            return Err(InterpreterError::Primitive(EvalError::TypeMismatch {
+                primitive: Primitive::Scan,
+                detail: "scan body changed carry dtype",
+            }));
+        }
+    }
+
+    for (slot, value) in carry.iter_mut().zip(body_outputs[..carry_count].iter()) {
+        *slot = value.clone();
+    }
+    for (bucket, y_value) in per_y.iter_mut().zip(body_outputs[carry_count..].iter()) {
+        bucket.push(y_value.clone());
+    }
+
+    Ok(())
 }
 
 fn scan_input_len(xs: &Value) -> Result<usize, InterpreterError> {

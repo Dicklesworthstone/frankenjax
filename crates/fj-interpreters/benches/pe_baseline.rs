@@ -2,9 +2,11 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use fj_core::{
     Atom, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Value, VarId, build_program,
 };
+use fj_interpreters::eval_jaxpr;
 use fj_interpreters::partial_eval::{dce_jaxpr, partial_eval_jaxpr};
 use fj_interpreters::staging::{execute_staged, stage_jaxpr};
 use std::collections::BTreeMap;
+use std::hint::black_box;
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -54,6 +56,53 @@ fn make_neg_mul_jaxpr() -> Jaxpr {
                 sub_jaxprs: vec![],
             },
         ],
+    )
+}
+
+fn make_scan_body_add_emit_carry_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3), VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec::smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec::smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+fn make_scan_sub_jaxpr_eval_jaxpr(reverse: bool) -> Jaxpr {
+    let params = if reverse {
+        BTreeMap::from([("reverse".to_owned(), "true".to_owned())])
+    } else {
+        BTreeMap::new()
+    };
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3), VarId(4)],
+        vec![Equation {
+            primitive: Primitive::Scan,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec::smallvec![VarId(3), VarId(4)],
+            params,
+            effects: vec![],
+            sub_jaxprs: vec![make_scan_body_add_emit_carry_jaxpr()],
+        }],
     )
 }
 
@@ -184,5 +233,34 @@ fn bench_staging(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_partial_eval, bench_dce, bench_staging);
+// ── 4. Interpreter Eval Benchmarks ──────────────────────────────────
+
+fn bench_eval(c: &mut Criterion) {
+    let mut group = c.benchmark_group("eval");
+
+    group.bench_function("scan_sub_jaxpr_add_emit_128", |b| {
+        let jaxpr = make_scan_sub_jaxpr_eval_jaxpr(false);
+        let xs_values: Vec<i64> = (0..128).collect();
+        let inputs = vec![
+            Value::scalar_i64(0),
+            Value::vector_i64(&xs_values).expect("xs vector should build"),
+        ];
+        b.iter(|| {
+            black_box(
+                eval_jaxpr(black_box(&jaxpr), black_box(&inputs))
+                    .expect("scan eval should succeed"),
+            );
+        });
+    });
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_partial_eval,
+    bench_dce,
+    bench_staging,
+    bench_eval
+);
 criterion_main!(benches);
