@@ -578,11 +578,12 @@ fn evaluate_scan_iteration(
         }
     }
 
-    for (slot, value) in carry.iter_mut().zip(body_outputs[..carry_count].iter()) {
-        *slot = value.clone();
+    let mut outputs = body_outputs.into_iter();
+    for (slot, value) in carry.iter_mut().zip(outputs.by_ref().take(carry_count)) {
+        *slot = value;
     }
-    for (bucket, y_value) in per_y.iter_mut().zip(body_outputs[carry_count..].iter()) {
-        bucket.push(y_value.clone());
+    for (bucket, y_value) in per_y.iter_mut().zip(outputs) {
+        bucket.push(y_value);
     }
 
     Ok(())
