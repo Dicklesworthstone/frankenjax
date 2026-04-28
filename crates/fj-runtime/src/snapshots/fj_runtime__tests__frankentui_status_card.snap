@@ -1,0 +1,8 @@
+---
+source: crates/fj-runtime/src/lib.rs
+assertion_line: 206
+expression: super::frankentui_bridge::render_status_card(&card)
+---
+[FrankenJAX Runtime]
+mode: hardened
+confidence: 87%
