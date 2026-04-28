@@ -3917,12 +3917,14 @@ fn batch_scan_sub_jaxpr(
             )));
         }
 
-        carry = body_outputs[..carry_count]
-            .iter()
-            .map(|tracer| scan_state_to_batch_front(tracer, batch_size))
+        let mut body_outputs = body_outputs.into_iter();
+        carry = body_outputs
+            .by_ref()
+            .take(carry_count)
+            .map(|tracer| scan_state_into_batch_front(tracer, batch_size))
             .collect::<Result<Vec<_>, _>>()?;
-        for (bucket, y_tracer) in per_y.iter_mut().zip(body_outputs[carry_count..].iter()) {
-            bucket.push(scan_state_to_batch_front(y_tracer, batch_size)?.value);
+        for (bucket, y_tracer) in per_y.iter_mut().zip(body_outputs) {
+            bucket.push(scan_state_into_batch_front(y_tracer, batch_size)?.value);
         }
     }
 
@@ -3954,6 +3956,23 @@ fn scan_state_to_batch_front(
     batch_size: usize,
 ) -> Result<BatchTracer, BatchError> {
     match tracer.batch_dim {
+        Some(batch_dim) => Ok(BatchTracer::batched(
+            move_batch_dim_to_front(&tracer.value, batch_dim)?,
+            0,
+        )),
+        None => Ok(BatchTracer::batched(
+            broadcast_unbatched(&tracer.value, batch_size, 0)?,
+            0,
+        )),
+    }
+}
+
+fn scan_state_into_batch_front(
+    tracer: BatchTracer,
+    batch_size: usize,
+) -> Result<BatchTracer, BatchError> {
+    match tracer.batch_dim {
+        Some(0) => Ok(tracer),
         Some(batch_dim) => Ok(BatchTracer::batched(
             move_batch_dim_to_front(&tracer.value, batch_dim)?,
             0,
