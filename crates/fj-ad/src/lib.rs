@@ -9774,6 +9774,43 @@ mod tests {
     }
 
     #[test]
+    fn scan_vjp_max_routes_gradient_to_winning_xs() {
+        // scan(max, 0.0, [1,3,2]) => 3.0, with the gradient flowing to xs[1].
+        let init = Value::scalar_f64(0.0);
+        let xs = Value::vector_f64(&[1.0, 3.0, 2.0]).unwrap();
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("max")).unwrap();
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![0.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn scan_vjp_max_ties_split_through_carry_chain() {
+        // Two max ties split the cotangent first between carry/xs[1], then
+        // between init/xs[0] through the propagated carry cotangent.
+        let init = Value::scalar_f64(1.0);
+        let xs = Value::vector_f64(&[1.0, 1.0]).unwrap();
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("max")).unwrap();
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.25);
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![0.25, 0.5]);
+    }
+
+    #[test]
+    fn scan_vjp_min_routes_gradient_to_winning_xs() {
+        // scan(min, 5.0, [3,4,2]) => 2.0, with the gradient flowing to xs[2].
+        let init = Value::scalar_f64(5.0);
+        let xs = Value::vector_f64(&[3.0, 4.0, 2.0]).unwrap();
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("min")).unwrap();
+        assert_eq!(grads[0].as_f64_scalar().unwrap(), 0.0);
+        let vals = tensor_f64_values(&grads[1]);
+        assert_eq!(vals, vec![0.0, 0.0, 1.0]);
+    }
+
+    #[test]
     fn scan_vjp_add_with_gradient_scaling() {
         // scan(add, 0.0, [1,2]) with g=5.0
         // grad_init = 5.0, grad_xs = [5, 5]
@@ -9813,6 +9850,57 @@ mod tests {
         .expect("scan JVP should use body_op=mul");
         let actual = tangent.as_f64_scalar().expect("scan JVP output");
         assert!((actual - 16.6).abs() < 1e-10, "tangent = {actual}");
+    }
+
+    #[test]
+    fn scan_jvp_max_routes_tangent_to_winner() {
+        let init = Value::scalar_f64(0.0);
+        let xs = Value::vector_f64(&[1.0, 3.0, 2.0]).unwrap();
+        let init_tangent = Value::scalar_f64(10.0);
+        let xs_tangent = Value::vector_f64(&[0.1, 0.2, 0.3]).unwrap();
+        let tangent = jvp_rule(
+            Primitive::Scan,
+            &[init, xs],
+            &[init_tangent, xs_tangent],
+            &scan_params("max"),
+        )
+        .expect("scan JVP should use body_op=max");
+        let actual = tangent.as_f64_scalar().expect("scan JVP output");
+        assert!((actual - 0.2).abs() < 1e-10, "tangent = {actual}");
+    }
+
+    #[test]
+    fn scan_jvp_max_ties_average_tangent_chain() {
+        let init = Value::scalar_f64(1.0);
+        let xs = Value::vector_f64(&[1.0, 1.0]).unwrap();
+        let init_tangent = Value::scalar_f64(2.0);
+        let xs_tangent = Value::vector_f64(&[6.0, 10.0]).unwrap();
+        let tangent = jvp_rule(
+            Primitive::Scan,
+            &[init, xs],
+            &[init_tangent, xs_tangent],
+            &scan_params("max"),
+        )
+        .expect("scan JVP should split max ties through scan");
+        let actual = tangent.as_f64_scalar().expect("scan JVP output");
+        assert!((actual - 7.0).abs() < 1e-10, "tangent = {actual}");
+    }
+
+    #[test]
+    fn scan_jvp_min_routes_tangent_to_winner() {
+        let init = Value::scalar_f64(5.0);
+        let xs = Value::vector_f64(&[3.0, 4.0, 2.0]).unwrap();
+        let init_tangent = Value::scalar_f64(10.0);
+        let xs_tangent = Value::vector_f64(&[0.1, 0.2, 0.3]).unwrap();
+        let tangent = jvp_rule(
+            Primitive::Scan,
+            &[init, xs],
+            &[init_tangent, xs_tangent],
+            &scan_params("min"),
+        )
+        .expect("scan JVP should use body_op=min");
+        let actual = tangent.as_f64_scalar().expect("scan JVP output");
+        assert!((actual - 0.3).abs() < 1e-10, "tangent = {actual}");
     }
 
     #[test]
