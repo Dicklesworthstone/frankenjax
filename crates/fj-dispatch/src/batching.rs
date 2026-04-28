@@ -3261,6 +3261,20 @@ fn apply_scan_scalar_op(op: ScanScalarOp, carry: Literal, x: Literal) -> Option<
             };
             Some(Literal::from_f64(result))
         }
+        (Literal::F32Bits(carry), Literal::F32Bits(x)) => {
+            let carry = f32::from_bits(carry);
+            let x = f32::from_bits(x);
+            let result = match op {
+                ScanScalarOp::Add => carry + x,
+                ScanScalarOp::Sub => carry - x,
+                ScanScalarOp::Mul => carry * x,
+                ScanScalarOp::Div => carry / x,
+                ScanScalarOp::Pow => carry.powf(x),
+                ScanScalarOp::Max => carry.max(x),
+                ScanScalarOp::Min => carry.min(x),
+            };
+            Some(Literal::from_f32(result))
+        }
         _ => None,
     }
 }
@@ -3491,6 +3505,21 @@ fn apply_while_scalar_op(op: WhileScalarOp, carry: Literal, step: Literal) -> Op
             };
             Some(Literal::from_f64(result))
         }
+        (Literal::F32Bits(carry), Literal::F32Bits(step)) => {
+            let carry = f32::from_bits(carry);
+            let step = f32::from_bits(step);
+            let result = match op {
+                WhileScalarOp::Add => carry + step,
+                WhileScalarOp::Sub => carry - step,
+                WhileScalarOp::ReverseSub => step - carry,
+                WhileScalarOp::Mul => carry * step,
+                WhileScalarOp::Div => carry / step,
+                WhileScalarOp::ReverseDiv => step / carry,
+                WhileScalarOp::Pow => carry.powf(step),
+                WhileScalarOp::ReversePow => step.powf(carry),
+            };
+            Some(Literal::from_f32(result))
+        }
         _ => None,
     }
 }
@@ -3508,6 +3537,18 @@ fn apply_while_scalar_cond(op: WhileCondOp, carry: Literal, threshold: Literal) 
         (Literal::F64Bits(carry), Literal::F64Bits(threshold)) => {
             let carry = f64::from_bits(carry);
             let threshold = f64::from_bits(threshold);
+            Some(match op {
+                WhileCondOp::Lt => carry < threshold,
+                WhileCondOp::Le => carry <= threshold,
+                WhileCondOp::Gt => carry > threshold,
+                WhileCondOp::Ge => carry >= threshold,
+                WhileCondOp::Ne => carry != threshold,
+                WhileCondOp::Eq => carry == threshold,
+            })
+        }
+        (Literal::F32Bits(carry), Literal::F32Bits(threshold)) => {
+            let carry = f32::from_bits(carry);
+            let threshold = f32::from_bits(threshold);
             Some(match op {
                 WhileCondOp::Lt => carry < threshold,
                 WhileCondOp::Le => carry <= threshold,
@@ -4900,6 +4941,30 @@ mod tests {
         )
     }
 
+    fn make_f32_vector(data: &[f32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape::vector(data.len() as u32),
+                data.iter().map(|&x| Literal::from_f32(x)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn make_f32_matrix(rows: usize, cols: usize, data: &[f32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.iter().map(|&x| Literal::from_f32(x)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
     fn make_f64_tensor(dims: &[u32], data: &[f64]) -> Value {
         Value::Tensor(
             TensorValue::new(
@@ -4961,6 +5026,21 @@ mod tests {
         }
     }
 
+    fn extract_f32_vec(value: &Value) -> Vec<f32> {
+        match value {
+            Value::Tensor(t) => t
+                .elements
+                .iter()
+                .map(|lit| match lit {
+                    Literal::F32Bits(bits) => f32::from_bits(*bits),
+                    other => panic!("expected F32Bits, got {other:?}"),
+                })
+                .collect(),
+            Value::Scalar(Literal::F32Bits(bits)) => vec![f32::from_bits(*bits)],
+            Value::Scalar(other) => panic!("expected F32Bits, got {other:?}"),
+        }
+    }
+
     fn extract_i64_vec(value: &Value) -> Vec<i64> {
         match value {
             Value::Tensor(t) => t.elements.iter().map(|lit| lit.as_i64().unwrap()).collect(),
@@ -4991,6 +5071,13 @@ mod tests {
         assert_eq!(actual.len(), expected.len());
         for (a, e) in actual.iter().zip(expected) {
             assert!((a - e).abs() <= 1e-10, "{a} != {e}");
+        }
+    }
+
+    fn assert_f32_close(actual: &[f32], expected: &[f32]) {
+        assert_eq!(actual.len(), expected.len());
+        for (a, e) in actual.iter().zip(expected) {
+            assert!((a - e).abs() <= 1e-5, "{a} != {e}");
         }
     }
 
@@ -6697,6 +6784,22 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_trace_scan_batched_xs_f32_add_preserves_literal_width() {
+        let result = apply_batch_rule(
+            Primitive::Scan,
+            &[
+                BatchTracer::unbatched(Value::scalar_f32(0.5)),
+                BatchTracer::batched(make_f32_matrix(2, 3, &[1.0, 2.0, 3.0, 10.0, 20.0, 30.0]), 0),
+            ],
+            &BTreeMap::from([("body_op".to_owned(), "add".to_owned())]),
+        )
+        .expect("f32 scan scalar fast path should batch rows");
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.dtype(), DType::F32);
+        assert_f32_close(&extract_f32_vec(&result.value), &[6.5, 60.5]);
+    }
+
+    #[test]
     fn test_batch_trace_scan_batched_xs_i64_max_min() {
         let xs = BatchTracer::batched(make_i64_matrix(2, 3, &[1, 7, 3, 10, 2, 8]), 0);
 
@@ -6816,6 +6919,23 @@ mod tests {
         let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_f64_close(&extract_f64_vec(&result.value), &[16.0, 16.0, 27.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_batched_f32_add_preserves_literal_width() {
+        let init = BatchTracer::batched(make_f32_vector(&[0.0, 10.0]), 0);
+        let step = BatchTracer::batched(make_f32_vector(&[2.0, 3.0]), 0);
+        let threshold = BatchTracer::batched(make_f32_vector(&[5.0, 25.0]), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "32".to_owned()),
+        ]);
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params)
+            .expect("f32 while scalar fast path should batch lanes");
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.dtype(), DType::F32);
+        assert_f32_close(&extract_f32_vec(&result.value), &[6.0, 25.0]);
     }
 
     #[test]
