@@ -1142,39 +1142,47 @@ pub fn run_transform_fixture_bundle_batched(
     bundle: &TransformFixtureBundle,
     batch: &BatchRunnerConfig,
 ) -> TransformParityReport {
-    let mut pending = Vec::with_capacity(bundle.cases.len());
+    let mut reports = Vec::with_capacity(bundle.cases.len());
+    let mut timed_out_handles = Vec::new();
 
-    for case in bundle.cases.clone() {
+    for case in &bundle.cases {
         let expected_json = serde_json::to_string(&case.expected)
             .unwrap_or_else(|err| format!("<expected serialization error: {err}>"));
         let case_for_timeout = case.clone();
         let (tx, rx) = mpsc::channel::<TransformCaseReport>();
-        std::thread::spawn(move || {
-            let report = run_transform_fixture_case(&case);
+        let case_for_worker = case.clone();
+        let handle = std::thread::spawn(move || {
+            let report = run_transform_fixture_case(&case_for_worker);
             let _ = tx.send(report);
         });
-        pending.push((case_for_timeout, expected_json, rx));
+
+        match rx.recv_timeout(batch.case_timeout) {
+            Ok(report) => {
+                let _ = handle.join();
+                reports.push(report);
+            }
+            Err(_) => {
+                timed_out_handles.push(handle);
+                reports.push(TransformCaseReport {
+                    case_id: case_for_timeout.case_id,
+                    family: case_for_timeout.family,
+                    mode: case_for_timeout.mode,
+                    comparator: case_for_timeout.comparator,
+                    drift_classification: DriftClassification::Timeout,
+                    matched: false,
+                    expected_json,
+                    actual_json: None,
+                    error: Some(format!(
+                        "timeout waiting for case result after {}ms",
+                        batch.case_timeout.as_millis()
+                    )),
+                });
+            }
+        }
     }
 
-    let mut reports = Vec::with_capacity(pending.len());
-    for (case, expected_json, rx) in pending {
-        match rx.recv_timeout(batch.case_timeout) {
-            Ok(report) => reports.push(report),
-            Err(_) => reports.push(TransformCaseReport {
-                case_id: case.case_id,
-                family: case.family,
-                mode: case.mode,
-                comparator: case.comparator,
-                drift_classification: DriftClassification::Timeout,
-                matched: false,
-                expected_json,
-                actual_json: None,
-                error: Some(format!(
-                    "timeout waiting for case result after {}ms",
-                    batch.case_timeout.as_millis()
-                )),
-            }),
-        }
+    for handle in timed_out_handles {
+        let _ = handle.join();
     }
 
     let matched_cases = reports.iter().filter(|report| report.matched).count();
@@ -2095,36 +2103,62 @@ mod tests {
             schema_version: "frankenjax.transform-fixtures.v1".to_owned(),
             generated_by: "unit-test".to_owned(),
             generated_at_unix_ms: 0,
-            cases: vec![TransformFixtureCase {
-                case_id: "batch_timeout".to_owned(),
-                family: FixtureFamily::Jit,
-                mode: FixtureMode::Strict,
-                program: FixtureProgram::Add2,
-                transforms: vec![FixtureTransform::Jit],
-                comparator: ComparatorKind::ApproxAtolRtol,
-                baseline_mismatch: false,
-                flaky: false,
-                simulated_delay_ms: 50,
-                args: vec![
-                    FixtureValue::ScalarI64 { value: 1 },
-                    FixtureValue::ScalarI64 { value: 2 },
-                ],
-                expected: vec![FixtureValue::ScalarI64 { value: 3 }],
-                atol: 1e-6,
-                rtol: 1e-6,
-            }],
+            cases: vec![
+                TransformFixtureCase {
+                    case_id: "batch_timeout".to_owned(),
+                    family: FixtureFamily::Jit,
+                    mode: FixtureMode::Strict,
+                    program: FixtureProgram::Add2,
+                    transforms: vec![FixtureTransform::Jit],
+                    comparator: ComparatorKind::ApproxAtolRtol,
+                    baseline_mismatch: false,
+                    flaky: false,
+                    simulated_delay_ms: 200,
+                    args: vec![
+                        FixtureValue::ScalarI64 { value: 1 },
+                        FixtureValue::ScalarI64 { value: 2 },
+                    ],
+                    expected: vec![FixtureValue::ScalarI64 { value: 3 }],
+                    atol: 1e-6,
+                    rtol: 1e-6,
+                },
+                TransformFixtureCase {
+                    case_id: "batch_fast_after_timeout".to_owned(),
+                    family: FixtureFamily::Jit,
+                    mode: FixtureMode::Strict,
+                    program: FixtureProgram::Add2,
+                    transforms: vec![FixtureTransform::Jit],
+                    comparator: ComparatorKind::ApproxAtolRtol,
+                    baseline_mismatch: false,
+                    flaky: false,
+                    simulated_delay_ms: 0,
+                    args: vec![
+                        FixtureValue::ScalarI64 { value: 2 },
+                        FixtureValue::ScalarI64 { value: 5 },
+                    ],
+                    expected: vec![FixtureValue::ScalarI64 { value: 7 }],
+                    atol: 1e-6,
+                    rtol: 1e-6,
+                },
+            ],
         };
         let report = run_transform_fixture_bundle_batched(
             &cfg,
             &bundle,
             &BatchRunnerConfig {
-                case_timeout: std::time::Duration::from_millis(5),
+                case_timeout: std::time::Duration::from_millis(50),
             },
         );
-        assert_eq!(report.total_cases, 1);
+        assert_eq!(report.total_cases, 2);
+        assert_eq!(report.reports[0].case_id, "batch_timeout");
         assert_eq!(
             report.reports[0].drift_classification,
             DriftClassification::Timeout
+        );
+        assert_eq!(report.reports[1].case_id, "batch_fast_after_timeout");
+        assert_eq!(
+            report.reports[1].drift_classification,
+            DriftClassification::Pass
         );
     }
 
