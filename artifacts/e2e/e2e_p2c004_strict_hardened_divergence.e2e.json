@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-strict_hardened_divergence",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777406067588,
+  "ts_utc_unix_ms": 1777408071706,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -38,6 +38,6 @@
     "strict": "rejected"
   },
   "result": "PASS",
-  "duration_ms": 6,
+  "duration_ms": 7,
   "details": null
 }
