@@ -193,4 +193,19 @@ mod tests {
         // Hardened should have higher keep_if_abandoned (more penalty for keeping abandoned)
         assert!(effective.keep_if_abandoned >= default.keep_if_abandoned);
     }
+
+    #[cfg(feature = "frankentui-integration")]
+    #[test]
+    fn frankentui_status_card_rendering_matches_snapshot() {
+        let card = super::frankentui_bridge::StatusCard {
+            title: "FrankenJAX Runtime".to_owned(),
+            mode: "hardened".to_owned(),
+            confidence_percent: 87,
+        };
+
+        insta::assert_snapshot!(
+            "frankentui_status_card",
+            super::frankentui_bridge::render_status_card(&card)
+        );
+    }
 }

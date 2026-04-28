@@ -16,3 +16,4 @@ ftui = { version = "0.2.1", default-features = false, optional = true }
 
 [dev-dependencies]
 fj-test-utils = { path = "../fj-test-utils" }
+insta = "1.47.2"
