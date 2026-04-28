@@ -309,7 +309,9 @@ fn dtype_promotion_tensor_level() -> Result<(), String> {
     assert!(!bundle.cases.is_empty());
 
     // Expand to float types that need tensor representation
-    let tensor_dtypes = ["bool", "i64", "u32", "u64", "f16", "f32", "f64", "bf16"];
+    let tensor_dtypes = [
+        "bool", "i32", "i64", "u32", "u64", "f16", "f32", "f64", "bf16",
+    ];
 
     let mut mismatches = Vec::new();
     let mut tested = 0;
