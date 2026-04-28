@@ -94,11 +94,12 @@ impl<'a> BufferView<'a> {
     /// Returns None if the range is out of bounds.
     #[must_use]
     pub fn slice(&self, offset: usize, len: usize) -> Option<Self> {
-        if offset + len > self.data.len() {
+        let end = offset.checked_add(len)?;
+        if end > self.data.len() {
             return None;
         }
         Some(Self {
-            data: &self.data[offset..offset + len],
+            data: &self.data[offset..end],
             device: self.device,
         })
     }
@@ -242,6 +243,15 @@ mod tests {
         assert_eq!(last.as_bytes(), &[30]);
         // Just past boundary
         assert!(view.slice(2, 2).is_none());
+    }
+
+    #[test]
+    fn buffer_view_slice_overflow_returns_none() {
+        let buf = Buffer::new(vec![10, 20, 30], DeviceId(0));
+        let view = BufferView::from_buffer(&buf);
+
+        assert!(view.slice(usize::MAX, 1).is_none());
+        assert!(view.slice(1, usize::MAX).is_none());
     }
 
     #[test]
