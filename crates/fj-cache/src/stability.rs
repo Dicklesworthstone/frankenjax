@@ -187,7 +187,11 @@ mod tests {
     #[test]
     fn verify_golden_keys_rejects_truncated_snapshots() {
         let mut golden = capture_golden_keys();
-        let removed = golden.pop().expect("fixture should contain multiple refs");
+        assert!(
+            !golden.is_empty(),
+            "fixture should contain at least one golden ref"
+        );
+        let removed = golden.remove(golden.len() - 1);
         let mismatches = verify_golden_keys(&golden);
 
         assert!(
