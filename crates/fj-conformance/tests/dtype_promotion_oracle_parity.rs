@@ -302,13 +302,13 @@ fn dtype_promotion_matches_jax() -> Result<(), String> {
     Ok(())
 }
 
-/// Test dtype promotion at the tensor level, including half-precision tensor cases.
+/// Test dtype promotion at the tensor level, including every supported tensor dtype pair.
 #[test]
 fn dtype_promotion_tensor_level() -> Result<(), String> {
     let bundle = load_bundle()?;
     assert!(!bundle.cases.is_empty());
 
-    // Expand to float types that need tensor representation
+    // Tensor values carry explicit dtypes, including i32.
     let tensor_dtypes = [
         "bool", "i32", "i64", "u32", "u64", "f16", "f32", "f64", "bf16",
     ];
@@ -321,12 +321,6 @@ fn dtype_promotion_tensor_level() -> Result<(), String> {
             continue;
         };
 
-        // Test pairs where at least one operand is a half-precision type
-        let lhs_is_half = matches!(case.lhs_dtype.as_str(), "f16" | "f32" | "bf16");
-        let rhs_is_half = matches!(case.rhs_dtype.as_str(), "f16" | "f32" | "bf16");
-        if !lhs_is_half && !rhs_is_half {
-            continue;
-        }
         if !tensor_dtypes.contains(&case.lhs_dtype.as_str())
             || !tensor_dtypes.contains(&case.rhs_dtype.as_str())
         {
