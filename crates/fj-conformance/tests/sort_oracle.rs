@@ -21,7 +21,7 @@ fn axis_params(axis: i64) -> BTreeMap<String, String> {
 
 fn descending_params() -> BTreeMap<String, String> {
     let mut p = BTreeMap::new();
-    p.insert("is_ascending".to_string(), "false".to_string());
+    p.insert("descending".to_string(), "true".to_string());
     p
 }
 
@@ -84,7 +84,6 @@ fn oracle_sort_1d_f64_ascending() {
 }
 
 #[test]
-#[ignore = "frankenjax-sort-desc: is_ascending param not yet implemented"]
 fn oracle_sort_1d_descending() {
     // JAX: jax.lax.sort(x, is_ascending=False) => [5, 4, 3, 1, 1]
     let input = make_i64_tensor(&[5u32], vec![3, 1, 4, 1, 5]);
@@ -190,7 +189,6 @@ fn oracle_argsort_1d_f64() {
 }
 
 #[test]
-#[ignore = "frankenjax-sort-desc: is_ascending param not yet implemented"]
 fn oracle_argsort_descending() {
     let input = make_i64_tensor(&[5u32], vec![3, 1, 4, 1, 5]);
     let result = eval_primitive(Primitive::Argsort, &[input], &descending_params()).unwrap();
