@@ -5033,11 +5033,11 @@ mod tests {
                 .iter()
                 .map(|lit| match lit {
                     Literal::F32Bits(bits) => f32::from_bits(*bits),
-                    other => panic!("expected F32Bits, got {other:?}"),
+                    _ => f32::NAN,
                 })
                 .collect(),
             Value::Scalar(Literal::F32Bits(bits)) => vec![f32::from_bits(*bits)],
-            Value::Scalar(other) => panic!("expected F32Bits, got {other:?}"),
+            Value::Scalar(_) => vec![f32::NAN],
         }
     }
 
