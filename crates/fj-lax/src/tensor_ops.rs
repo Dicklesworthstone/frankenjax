@@ -2556,6 +2556,18 @@ fn sort_along_axis(
     let rank = tensor.shape.rank();
     let axis_dim = tensor.shape.dims[axis] as usize;
 
+    if axis_dim == 0 || tensor.elements.is_empty() {
+        let result_dtype = if return_indices {
+            DType::I64
+        } else {
+            tensor.dtype
+        };
+        return Ok(Value::Tensor(
+            TensorValue::new(result_dtype, tensor.shape.clone(), vec![])
+                .map_err(|e| format!("empty sort result: {e}"))?,
+        ));
+    }
+
     let mut strides = vec![1_usize; rank];
     for i in (0..rank.saturating_sub(1)).rev() {
         strides[i] = strides[i + 1] * tensor.shape.dims[i + 1] as usize;

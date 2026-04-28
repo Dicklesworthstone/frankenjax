@@ -112,7 +112,6 @@ fn oracle_sort_2d_first_axis() {
 }
 
 #[test]
-#[ignore = "frankenjax-sort-empty: panics on empty array (divide by zero)"]
 fn oracle_sort_empty_array() {
     let input = make_i64_tensor(&[0u32], vec![]);
     let result = eval_primitive(Primitive::Sort, &[input], &no_params()).unwrap();
@@ -215,7 +214,6 @@ fn oracle_argsort_2d_last_axis() {
 }
 
 #[test]
-#[ignore = "frankenjax-sort-empty: panics on empty array (divide by zero)"]
 fn oracle_argsort_empty() {
     let input = make_i64_tensor(&[0u32], vec![]);
     let result = eval_primitive(Primitive::Argsort, &[input], &no_params()).unwrap();
