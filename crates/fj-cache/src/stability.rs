@@ -94,12 +94,39 @@ pub fn verify_golden_keys(golden: &[(String, String)]) -> Vec<String> {
     let current = capture_golden_keys();
     let mut mismatches = Vec::new();
 
-    for ((desc, expected), (_desc2, actual)) in golden.iter().zip(current.iter()) {
-        if expected != actual {
+    if golden.len() != current.len() {
+        mismatches.push(format!(
+            "GOLDEN_REF_COUNT_MISMATCH: snapshot_entries={}, current_refs={}",
+            golden.len(),
+            current.len()
+        ));
+    }
+
+    for (index, ((desc, expected), (current_desc, actual))) in
+        golden.iter().zip(current.iter()).enumerate()
+    {
+        if desc != current_desc {
             mismatches.push(format!(
-                "DRIFT: {desc}: expected={expected}, actual={actual}"
+                "GOLDEN_REF_DESCRIPTION_MISMATCH[{index}]: snapshot={desc}, current={current_desc}"
             ));
         }
+        if expected != actual {
+            mismatches.push(format!(
+                "DRIFT[{index}]: {current_desc}: expected={expected}, actual={actual}"
+            ));
+        }
+    }
+
+    for (index, (desc, actual)) in current.iter().enumerate().skip(golden.len()) {
+        mismatches.push(format!(
+            "MISSING_GOLDEN_REF[{index}]: {desc}: actual={actual}"
+        ));
+    }
+
+    for (index, (desc, expected)) in golden.iter().enumerate().skip(current.len()) {
+        mismatches.push(format!(
+            "EXTRA_GOLDEN_REF[{index}]: {desc}: expected={expected}"
+        ));
     }
 
     mismatches
@@ -155,6 +182,58 @@ mod tests {
                 g.description, g.expected_digest_hex, key.digest_hex
             );
         }
+    }
+
+    #[test]
+    fn verify_golden_keys_rejects_truncated_snapshots() {
+        let mut golden = capture_golden_keys();
+        let removed = golden.pop().expect("fixture should contain multiple refs");
+        let mismatches = verify_golden_keys(&golden);
+
+        assert!(
+            mismatches
+                .iter()
+                .any(|message| message.contains("GOLDEN_REF_COUNT_MISMATCH")),
+            "truncated snapshot should report a count mismatch: {mismatches:?}"
+        );
+        assert!(
+            mismatches.iter().any(|message| {
+                message.contains("MISSING_GOLDEN_REF") && message.contains(&removed.0)
+            }),
+            "truncated snapshot should name the missing ref: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn verify_golden_keys_rejects_renamed_snapshots() {
+        let mut golden = capture_golden_keys();
+        let original = golden[0].0.clone();
+        golden[0].0 = "renamed cache-key fixture".to_owned();
+
+        let mismatches = verify_golden_keys(&golden);
+
+        assert!(
+            mismatches.iter().any(|message| {
+                message.contains("GOLDEN_REF_DESCRIPTION_MISMATCH[0]")
+                    && message.contains(&original)
+            }),
+            "renamed snapshot should report the description mismatch: {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn verify_golden_keys_rejects_extra_snapshots() {
+        let mut golden = capture_golden_keys();
+        golden.push(("retired cache-key fixture".to_owned(), "0".repeat(64)));
+
+        let mismatches = verify_golden_keys(&golden);
+
+        assert!(
+            mismatches
+                .iter()
+                .any(|message| message.contains("EXTRA_GOLDEN_REF")),
+            "extra snapshot should be rejected: {mismatches:?}"
+        );
     }
 
     #[test]
