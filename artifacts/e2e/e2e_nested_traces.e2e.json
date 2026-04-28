@@ -45,7 +45,7 @@
       ]
     }
   ],
-  "generated_at_unix_ms": 1777366752332,
+  "generated_at_unix_ms": 1777403807023,
   "scenario": "e2e_nested_traces_oracle",
   "schema_version": "frankenjax.e2e.nested_traces.v1"
 }
