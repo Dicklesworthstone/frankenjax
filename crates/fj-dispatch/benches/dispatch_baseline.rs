@@ -159,6 +159,54 @@ fn while_control_flow_jaxpr(body_op: &str, cond_op: &str, max_iter: usize) -> Ja
     )
 }
 
+fn while_cond_gt_zero_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::Gt,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(0))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
+fn while_body_sub_two_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::Sub,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(2))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
+fn while_sub_jaxpr_control_flow_jaxpr(max_iter: usize) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::While,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::from([("max_iter".to_owned(), max_iter.to_string())]),
+            sub_jaxprs: vec![while_cond_gt_zero_jaxpr(), while_body_sub_two_jaxpr()],
+            effects: vec![],
+        }],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // 1. Dispatch Latency — jit/grad/vmap x scalar/vector
 // ---------------------------------------------------------------------------
@@ -685,6 +733,25 @@ fn bench_vmap_while(c: &mut Criterion) {
                 vec![init.clone(), step.clone(), threshold.clone()],
             ))
             .expect("vmap(while_loop) should dispatch");
+        });
+    });
+
+    let functional_jaxpr = while_sub_jaxpr_control_flow_jaxpr(256);
+    let functional_init = Value::vector_i64(
+        &(0..128)
+            .map(|idx| (64 + (idx % 32)) as i64)
+            .collect::<Vec<_>>(),
+    )
+    .expect("functional while init vector should build");
+
+    group.bench_function("functional_sub_jaxpr_sub_two_128", |b| {
+        b.iter(|| {
+            dispatch(dispatch_jaxpr_request(
+                functional_jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![functional_init.clone()],
+            ))
+            .expect("vmap(functional while_loop) should dispatch");
         });
     });
 

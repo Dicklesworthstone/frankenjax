@@ -3783,6 +3783,162 @@ fn eval_sub_jaxpr_equation_values(
     eval_equation_outputs(equation, &env).map_err(|e| BatchError::InterpreterError(e.to_string()))
 }
 
+fn batch_while_sub_jaxpr(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+) -> Result<Vec<BatchTracer>, BatchError> {
+    if let Some(outputs) = batch_while_sub_jaxpr_scalar_loop(equation, inputs)? {
+        return Ok(outputs);
+    }
+
+    batch_sub_jaxpr_by_slices(equation, inputs)
+}
+
+fn batch_while_sub_jaxpr_scalar_loop(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+) -> Result<Option<Vec<BatchTracer>>, BatchError> {
+    if equation.sub_jaxprs.len() != 2 || equation.outputs.len() != 1 || inputs.len() != 1 {
+        return Ok(None);
+    }
+
+    let Some((cond_op, cond_threshold)) = while_sub_jaxpr_scalar_cond(&equation.sub_jaxprs[0])
+    else {
+        return Ok(None);
+    };
+    let Some((body_op, body_operand)) = while_sub_jaxpr_scalar_body(&equation.sub_jaxprs[1]) else {
+        return Ok(None);
+    };
+    let Some(batch_size) = batch_size_from_inputs(inputs)? else {
+        return Ok(None);
+    };
+    let Some(mut carry_values) = while_scalar_values(&inputs[0], batch_size)? else {
+        return Ok(None);
+    };
+
+    let output_dtype = while_scalar_output_dtype(&inputs[0]);
+    let Some(max_iter) = parse_while_sub_jaxpr_max_iter(&equation.params) else {
+        return Ok(None);
+    };
+    let mut active = vec![true; batch_size];
+
+    for _ in 0..max_iter {
+        let mut any_active = false;
+        for (carry, is_active) in carry_values.iter().zip(active.iter_mut()) {
+            if !*is_active {
+                continue;
+            }
+            let Some(keep_running) = apply_while_scalar_cond(cond_op, *carry, cond_threshold)
+            else {
+                return Ok(None);
+            };
+            *is_active = keep_running;
+            any_active |= keep_running;
+        }
+
+        if !any_active {
+            return build_batched_scalar_while_outputs(output_dtype, batch_size, carry_values);
+        }
+
+        for (carry, is_active) in carry_values.iter_mut().zip(active.iter()) {
+            if !*is_active {
+                continue;
+            }
+            let Some(next) = apply_while_scalar_op(body_op, *carry, body_operand) else {
+                return Ok(None);
+            };
+            *carry = next;
+        }
+    }
+
+    if active.iter().any(|is_active| *is_active) {
+        return Err(BatchError::EvalError(format!(
+            "{} exceeded max iterations ({max_iter})",
+            Primitive::While.as_str()
+        )));
+    }
+
+    build_batched_scalar_while_outputs(output_dtype, batch_size, carry_values)
+}
+
+fn build_batched_scalar_while_outputs(
+    dtype: DType,
+    batch_size: usize,
+    values: Vec<Literal>,
+) -> Result<Option<Vec<BatchTracer>>, BatchError> {
+    TensorValue::new(dtype, Shape::vector(batch_size as u32), values)
+        .map(|tensor| Some(vec![BatchTracer::batched(Value::Tensor(tensor), 0)]))
+        .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn parse_while_sub_jaxpr_max_iter(params: &BTreeMap<String, String>) -> Option<usize> {
+    match params.get("max_iter") {
+        Some(raw) => raw.parse::<usize>().ok(),
+        None => Some(1000),
+    }
+}
+
+fn while_sub_jaxpr_scalar_cond(jaxpr: &Jaxpr) -> Option<(WhileCondOp, Literal)> {
+    let (primitive, literal) = single_var_literal_jaxpr(jaxpr)?;
+    let cond_op = while_cond_op_from_primitive(primitive)?;
+    Some((cond_op, literal))
+}
+
+fn while_sub_jaxpr_scalar_body(jaxpr: &Jaxpr) -> Option<(WhileScalarOp, Literal)> {
+    let (primitive, literal) = single_var_literal_jaxpr(jaxpr)?;
+    let body_op = while_body_op_from_primitive(primitive)?;
+    Some((body_op, literal))
+}
+
+fn single_var_literal_jaxpr(jaxpr: &Jaxpr) -> Option<(Primitive, Literal)> {
+    if !jaxpr.constvars.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 1
+    {
+        return None;
+    }
+
+    let equation = &jaxpr.equations[0];
+    if !equation.params.is_empty()
+        || !equation.effects.is_empty()
+        || !equation.sub_jaxprs.is_empty()
+        || equation.inputs.len() != 2
+        || equation.outputs.len() != 1
+        || equation.outputs[0] != jaxpr.outvars[0]
+    {
+        return None;
+    }
+
+    match (&equation.inputs[0], &equation.inputs[1]) {
+        (Atom::Var(var), Atom::Lit(literal)) if *var == jaxpr.invars[0] => {
+            Some((equation.primitive, *literal))
+        }
+        _ => None,
+    }
+}
+
+fn while_cond_op_from_primitive(primitive: Primitive) -> Option<WhileCondOp> {
+    match primitive {
+        Primitive::Lt => Some(WhileCondOp::Lt),
+        Primitive::Le => Some(WhileCondOp::Le),
+        Primitive::Gt => Some(WhileCondOp::Gt),
+        Primitive::Ge => Some(WhileCondOp::Ge),
+        Primitive::Ne => Some(WhileCondOp::Ne),
+        Primitive::Eq => Some(WhileCondOp::Eq),
+        _ => None,
+    }
+}
+
+fn while_body_op_from_primitive(primitive: Primitive) -> Option<WhileScalarOp> {
+    match primitive {
+        Primitive::Add => Some(WhileScalarOp::Add),
+        Primitive::Sub => Some(WhileScalarOp::Sub),
+        Primitive::Mul => Some(WhileScalarOp::Mul),
+        _ => None,
+    }
+}
+
 fn batch_sub_jaxpr_by_slices(
     equation: &Equation,
     inputs: &[BatchTracer],
@@ -4053,7 +4209,8 @@ fn batch_eval_equation_outputs(
 
     match equation.primitive {
         Primitive::Switch => batch_switch_sub_jaxprs(equation, &inputs),
-        Primitive::Cond | Primitive::While => batch_sub_jaxpr_by_slices(equation, &inputs),
+        Primitive::Cond => batch_sub_jaxpr_by_slices(equation, &inputs),
+        Primitive::While => batch_while_sub_jaxpr(equation, &inputs),
         primitive => Err(BatchError::InterpreterError(format!(
             "sub_jaxpr execution is not implemented for {} in BatchTrace",
             primitive.as_str()
@@ -5674,16 +5831,32 @@ mod tests {
     }
 
     #[test]
-    fn test_batch_eval_jaxpr_while_sub_jaxprs_batched_carry_runs_per_element_loop() {
+    fn test_batch_eval_jaxpr_while_sub_jaxprs_batched_carry_uses_active_mask_loop() {
         let jaxpr = make_while_control_flow_jaxpr();
         let outputs = batch_eval_jaxpr(
             &jaxpr,
             &[BatchTracer::batched(make_i64_vector(&[1, 2, 5]), 0)],
         )
-        .expect("while with sub_jaxprs should run each batch element independently");
+        .expect("while with sub_jaxprs should batch independent scalar lanes");
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&outputs[0].value), vec![-1, 0, -1]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_while_sub_jaxprs_active_mask_preserves_max_iter_error() {
+        let mut jaxpr = make_while_control_flow_jaxpr();
+        jaxpr.equations[0]
+            .params
+            .insert("max_iter".to_owned(), "1".to_owned());
+
+        let err = batch_eval_jaxpr(&jaxpr, &[BatchTracer::batched(make_i64_vector(&[4, 1]), 0)])
+            .expect_err("still-active scalar lanes should preserve max_iter failure");
+
+        assert!(
+            err.to_string()
+                .contains("while_loop exceeded max iterations (1)")
+        );
     }
 
     // ── Control Flow Batching Tests ───────────────────────────
