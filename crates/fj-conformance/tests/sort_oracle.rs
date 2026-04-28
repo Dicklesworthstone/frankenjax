@@ -15,7 +15,7 @@ fn no_params() -> BTreeMap<String, String> {
 
 fn axis_params(axis: i64) -> BTreeMap<String, String> {
     let mut p = BTreeMap::new();
-    p.insert("dimension".to_string(), axis.to_string());
+    p.insert("axis".to_string(), axis.to_string());
     p
 }
 
@@ -100,7 +100,6 @@ fn oracle_sort_2d_last_axis() {
 }
 
 #[test]
-#[ignore = "frankenjax-sort-axis: axis 0 sorting not yet correct for 2D"]
 fn oracle_sort_2d_first_axis() {
     // JAX: jax.lax.sort(jnp.array([[3,1],[4,2]]), dimension=0) => [[3,1],[4,2]]
     // Actually sorts along axis 0: [[3,1],[4,2]] => for col 0: [3,4] sorted is [3,4]
