@@ -4610,7 +4610,7 @@ fn batch_eval_equation_outputs(
         Primitive::Scan => batch_scan_sub_jaxpr(equation, &inputs),
         Primitive::While => batch_while_sub_jaxpr(equation, &inputs),
         primitive => Err(BatchError::InterpreterError(format!(
-            "sub_jaxpr execution is not implemented for {} in BatchTrace",
+            "invalid BatchTrace IR: sub_jaxprs are only valid on cond, scan, switch, and while; {} cannot carry sub_jaxprs",
             primitive.as_str()
         ))),
     }

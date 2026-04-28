@@ -1,13 +1,17 @@
+use fj_ad::AdError;
 use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
+use fj_dispatch::batching::{BatchTracer, batch_eval_jaxpr};
 use fj_egraph::{EGraphLoweringError, ExclusionReason, jaxpr_to_egraph};
+use fj_interpreters::eval_jaxpr;
 use fj_lax::{EvalError, eval_primitive};
 use smallvec::smallvec;
 use std::collections::BTreeMap;
 
 const BANNED_SUBSTRINGS: &[&str] = &[
     "not yet implemented",
+    "not implemented",
     "not yet supported",
     "default placeholder",
     "stub",
@@ -427,6 +431,22 @@ fn make_lowering_jaxpr(primitive: Primitive) -> Jaxpr {
     )
 }
 
+fn make_invalid_batchtrace_sub_jaxpr_carrier() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3)],
+        vec![Equation {
+            primitive: Primitive::Add,
+            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec![VarId(3)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![make_lowering_jaxpr(Primitive::Neg)],
+        }],
+    )
+}
+
 fn assert_no_banned_substrings(context: &str, message: &str) {
     let normalized = message.to_ascii_lowercase();
     for banned in BANNED_SUBSTRINGS {
@@ -543,11 +563,27 @@ fn no_stub_regression_matrix() {
             reason: ExclusionReason::ShapeManipulation,
         }
         .to_string(),
+        AdError::UnsupportedPrimitive(Primitive::Scan).to_string(),
     ];
 
     for rendered in display_cases {
         assert_no_banned_substrings("display", &rendered);
     }
+
+    let batchtrace_error = batch_eval_jaxpr(
+        &make_invalid_batchtrace_sub_jaxpr_carrier(),
+        &[
+            BatchTracer::batched(Value::vector_i64(&[1, 2]).unwrap(), 0),
+            BatchTracer::batched(Value::vector_i64(&[3, 4]).unwrap(), 0),
+        ],
+    )
+    .expect_err("non-control-flow primitive carrying sub_jaxprs should be rejected")
+    .to_string();
+    assert!(
+        batchtrace_error.contains("invalid BatchTrace IR"),
+        "BatchTrace error should use permanent validation wording: {batchtrace_error}"
+    );
+    assert_no_banned_substrings("BatchTrace sub_jaxpr carrier", &batchtrace_error);
 
     println!("primitive | dtype | result | error_msg_snippet");
     for row in &eval_rows {
@@ -569,4 +605,30 @@ fn no_stub_regression_handles_complex_tensor_value_error_display() {
         .unwrap_err(),
     );
     assert_no_banned_substrings("complex tensor invalid display", &err.to_string());
+}
+
+#[test]
+fn no_stub_regression_covers_interpreter_invalid_sub_jaxpr_error() {
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3)],
+        vec![Equation {
+            primitive: Primitive::Add,
+            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec![VarId(3)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![Jaxpr::new(vec![], vec![], vec![], vec![])],
+        }],
+    );
+
+    let err = eval_jaxpr(&jaxpr, &[Value::scalar_i64(1), Value::scalar_i64(2)])
+        .expect_err("non-control-flow sub_jaxprs should be rejected");
+    let rendered = err.to_string();
+    assert_no_banned_substrings("interpreter invalid sub_jaxpr display", &rendered);
+    assert!(
+        rendered.contains("sub_jaxprs are only valid for cond, scan, while, or switch"),
+        "interpreter error should describe the permanent validation rule: {rendered}"
+    );
 }

@@ -643,7 +643,10 @@ pub fn eval_equation_outputs(
             primitive => {
                 return Err(InterpreterError::Primitive(EvalError::Unsupported {
                     primitive,
-                    detail: "sub_jaxpr execution is not implemented for this primitive".to_owned(),
+                    detail: format!(
+                        "sub_jaxprs are only valid for cond, scan, while, or switch; {} received sub_jaxprs",
+                        primitive.as_str()
+                    ),
                 }));
             }
         }

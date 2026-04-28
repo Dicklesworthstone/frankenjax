@@ -18,7 +18,7 @@ impl std::fmt::Display for AdError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnsupportedPrimitive(p) => {
-                write!(f, "AD not implemented for primitive: {}", p.as_str())
+                write!(f, "AD unsupported for primitive: {}", p.as_str())
             }
             Self::NonScalarGradientOutput => write!(f, "grad requires scalar output"),
             Self::EvalFailed(detail) => write!(f, "forward eval failed: {detail}"),
@@ -6326,6 +6326,13 @@ mod tests {
             .get_or_init(|| Mutex::new(()))
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn unsupported_primitive_display_uses_permanent_unsupported_wording() {
+        let rendered = AdError::UnsupportedPrimitive(Primitive::Scan).to_string();
+        assert!(rendered.contains("unsupported"));
+        assert!(!rendered.contains("not implemented"));
     }
 
     #[derive(Debug)]
