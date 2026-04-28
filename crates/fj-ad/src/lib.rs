@@ -215,7 +215,7 @@ fn zeros_like(v: &Value) -> Value {
             Literal::U32(_) | Literal::U64(_) => Value::scalar_f64(0.0),
             Literal::Bool(_) => Value::scalar_f64(0.0),
             Literal::BF16Bits(_) | Literal::F16Bits(_) => Value::scalar_f64(0.0),
-            Literal::F32Bits(_) => Value::scalar_f64(0.0),
+            Literal::F32Bits(_) => Value::scalar_f32(0.0),
             Literal::F64Bits(_) => Value::scalar_f64(0.0),
             Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Value::scalar_f64(0.0),
         },
@@ -225,7 +225,8 @@ fn zeros_like(v: &Value) -> Value {
                 DType::U32 | DType::U64 => (Literal::from_f64(0.0), DType::F64),
                 DType::Bool => (Literal::from_f64(0.0), DType::F64),
                 DType::BF16 | DType::F16 => (Literal::from_f64(0.0), DType::F64),
-                DType::F64 | DType::F32 => (Literal::from_f64(0.0), DType::F64),
+                DType::F32 => (Literal::from_f32(0.0), DType::F32),
+                DType::F64 => (Literal::from_f64(0.0), DType::F64),
                 DType::Complex64 | DType::Complex128 => (Literal::from_f64(0.0), DType::F64),
             };
             let elements = vec![zero_lit; t.elements.len()];
@@ -276,13 +277,17 @@ fn ones_like(v: &Value) -> Value {
             Literal::U32(_) | Literal::U64(_) => Value::scalar_f64(1.0),
             Literal::Bool(_) => Value::scalar_f64(1.0),
             Literal::BF16Bits(_) | Literal::F16Bits(_) => Value::scalar_f64(1.0),
-            Literal::F32Bits(_) => Value::scalar_f64(1.0),
+            Literal::F32Bits(_) => Value::scalar_f32(1.0),
             Literal::F64Bits(_) => Value::scalar_f64(1.0),
             Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Value::scalar_f64(1.0),
         },
         Value::Tensor(t) => {
-            let elements = vec![Literal::from_f64(1.0); t.elements.len()];
-            Value::Tensor(tensor_with_existing_shape(DType::F64, t, elements))
+            let (one_lit, out_dtype) = match t.dtype {
+                DType::F32 => (Literal::from_f32(1.0), DType::F32),
+                _ => (Literal::from_f64(1.0), DType::F64),
+            };
+            let elements = vec![one_lit; t.elements.len()];
+            Value::Tensor(tensor_with_existing_shape(out_dtype, t, elements))
         }
     }
 }
@@ -6335,6 +6340,52 @@ mod tests {
         assert!(!rendered.contains("not implemented"));
     }
 
+    #[test]
+    fn f32_zero_one_helpers_preserve_literal_width() {
+        let scalar_zero = zeros_like(&Value::scalar_f32(2.5));
+        assert_eq!(scalar_zero.dtype(), DType::F32);
+        assert!(matches!(scalar_zero, Value::Scalar(Literal::F32Bits(_))));
+
+        let scalar_one = ones_like(&Value::scalar_f32(2.5));
+        assert_eq!(scalar_one.dtype(), DType::F32);
+        assert!(matches!(scalar_one, Value::Scalar(Literal::F32Bits(_))));
+
+        let tensor = match TensorValue::new(
+            DType::F32,
+            Shape::vector(2),
+            vec![Literal::from_f32(1.25), Literal::from_f32(-3.5)],
+        ) {
+            Ok(tensor) => Value::Tensor(tensor),
+            Err(error) => fail_test(format!("f32 tensor should build: {error}")),
+        };
+
+        let tensor_zero = zeros_like(&tensor);
+        let zero_tensor = match tensor_zero.as_tensor() {
+            Some(tensor) => tensor,
+            None => fail_test("zero should be tensor"),
+        };
+        assert_eq!(zero_tensor.dtype, DType::F32);
+        assert!(
+            zero_tensor
+                .elements
+                .iter()
+                .all(|lit| matches!(lit, Literal::F32Bits(_)))
+        );
+
+        let tensor_one = ones_like(&tensor);
+        let one_tensor = match tensor_one.as_tensor() {
+            Some(tensor) => tensor,
+            None => fail_test("one should be tensor"),
+        };
+        assert_eq!(one_tensor.dtype, DType::F32);
+        assert!(
+            one_tensor
+                .elements
+                .iter()
+                .all(|lit| matches!(lit, Literal::F32Bits(_)))
+        );
+    }
+
     #[derive(Debug)]
     struct TestAssertionFailure(String);
 
@@ -8138,6 +8189,42 @@ mod tests {
         assert!(result.primals[0].as_f64_scalar().unwrap().abs() < 1e-10);
         let tangent = result.tangents[0].as_f64_scalar().unwrap();
         assert!((tangent - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn jvp_floor_f32_zero_tangent_preserves_f32_width() {
+        use fj_core::{Equation, Jaxpr, VarId};
+        use smallvec::smallvec;
+        use std::collections::BTreeMap;
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Floor,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        );
+        let result = match jvp(
+            &jaxpr,
+            &[Value::scalar_f32(1.75)],
+            &[Value::scalar_f32(1.0)],
+        ) {
+            Ok(result) => result,
+            Err(error) => fail_test(format!("jvp should succeed: {error}")),
+        };
+
+        assert_eq!(result.tangents[0].dtype(), DType::F32);
+        let bits = match result.tangents[0] {
+            Value::Scalar(Literal::F32Bits(bits)) => bits,
+            _ => fail_test("f32 tangent should stay F32Bits"),
+        };
+        assert_eq!(bits, 0.0_f32.to_bits());
     }
 
     #[test]
