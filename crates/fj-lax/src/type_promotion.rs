@@ -70,7 +70,7 @@ pub fn promote_dtype(lhs: DType, rhs: DType) -> DType {
     // - BF16 + F16 promotes to F32 (cross-half promotion)
     // - Same half type stays: BF16+BF16→BF16, F16+F16→F16
     // - F32 absorbs half types; F64 absorbs everything
-    // - U64+I64 → F64 (no common integer type)
+    // - U64+I32/I64 → F64 (no common integer type)
     // - U32+F32 → F32 (JAX lattice; F32 absorbs U32)
     match (lhs, rhs) {
         // Complex128 absorbs everything
@@ -94,7 +94,7 @@ pub fn promote_dtype(lhs: DType, rhs: DType) -> DType {
         (BF16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, BF16) => BF16,
         (F16, Bool | I32 | I64 | U32 | U64) | (Bool | I32 | I64 | U32 | U64, F16) => F16,
         // Integer promotion
-        (U64, I64) | (I64, U64) => F64,
+        (U64, I32 | I64) | (I32 | I64, U64) => F64,
         (I32, U32) | (U32, I32) => I64,
         (I64, U32) | (U32, I64) => I64,
         (I64, _) | (_, I64) => I64,
@@ -293,6 +293,8 @@ mod tests {
     fn test_type_promotion_matrix_unsigned() {
         assert_eq!(promote_dtype(DType::Bool, DType::U32), DType::U32);
         assert_eq!(promote_dtype(DType::U32, DType::U64), DType::U64);
+        assert_eq!(promote_dtype(DType::U64, DType::I32), DType::F64);
+        assert_eq!(promote_dtype(DType::I32, DType::U64), DType::F64);
         assert_eq!(promote_dtype(DType::U64, DType::I64), DType::F64);
         assert_eq!(promote_dtype(DType::U32, DType::I64), DType::I64);
     }
