@@ -3887,7 +3887,7 @@ fn batch_scan_sub_jaxpr(
 
     let body_consts = const_inputs
         .iter()
-        .map(|tracer| scan_const_to_body_tracer(tracer))
+        .map(scan_const_to_body_tracer)
         .collect::<Result<Vec<_>, _>>()?;
     let mut carry = carry_inputs
         .iter()
