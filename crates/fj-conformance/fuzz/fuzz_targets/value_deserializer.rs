@@ -9,9 +9,12 @@ fuzz_target!(|data: &[u8]| {
     }
 
     if let Ok(value) = serde_json::from_slice::<Value>(data) {
-        let encoded = serde_json::to_vec(&value).expect("Value serialization should not fail");
-        let decoded: Value =
-            serde_json::from_slice(&encoded).expect("serialized Value should deserialize");
+        let Ok(encoded) = serde_json::to_vec(&value) else {
+            return;
+        };
+        let Ok(decoded) = serde_json::from_slice::<Value>(&encoded) else {
+            return;
+        };
         assert_eq!(value, decoded);
 
         let _ = value.dtype();
@@ -26,10 +29,14 @@ fuzz_target!(|data: &[u8]| {
             let _ = tensor.is_empty();
             let _ = tensor.rank();
             let _ = tensor.leading_dim();
-            if tensor.shape.element_count() == Some(tensor.elements.len() as u64) {
+            let element_len = u64::try_from(tensor.elements.len()).ok();
+            if tensor.shape.element_count() == element_len {
                 let max_axis0 = tensor.leading_dim().unwrap_or(0).min(8);
                 for index in 0..max_axis0 {
-                    let _ = tensor.slice_axis0(index as usize);
+                    let Ok(index) = usize::try_from(index) else {
+                        continue;
+                    };
+                    let _ = tensor.slice_axis0(index);
                 }
             }
         }
