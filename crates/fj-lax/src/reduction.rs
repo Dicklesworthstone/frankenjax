@@ -526,10 +526,17 @@ pub(crate) fn eval_cumulative(
                 return Ok(Value::Scalar(tensor.elements[0]));
             }
 
-            let axis: usize = params
-                .get("axis")
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(0);
+            let axis: usize = {
+                let raw: i64 = params
+                    .get("axis")
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0);
+                if raw < 0 {
+                    (rank as i64 + raw) as usize
+                } else {
+                    raw as usize
+                }
+            };
 
             if axis >= rank {
                 return Err(EvalError::Unsupported {

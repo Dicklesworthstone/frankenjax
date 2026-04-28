@@ -739,6 +739,7 @@ dependencies = [
  "fj-lax",
  "fj-runtime",
  "fj-test-utils",
+ "insta",
  "jsonschema",
  "serde",
  "serde_json",
