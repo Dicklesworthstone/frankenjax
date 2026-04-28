@@ -3742,7 +3742,9 @@ fn batch_size_from_inputs(inputs: &[BatchTracer]) -> Result<Option<usize>, Batch
 
 fn and_bool_tensors(a: &Value, b: &Value) -> Result<Value, BatchError> {
     match (a, b) {
-        (Value::Tensor(ta), Value::Tensor(tb)) if ta.dtype == DType::Bool && tb.dtype == DType::Bool => {
+        (Value::Tensor(ta), Value::Tensor(tb))
+            if ta.dtype == DType::Bool && tb.dtype == DType::Bool =>
+        {
             if ta.shape != tb.shape {
                 return Err(BatchError::TensorError(format!(
                     "shape mismatch in and_bool_tensors: {:?} vs {:?}",
@@ -3829,6 +3831,204 @@ fn batch_while_sub_jaxpr(
     batch_sub_jaxpr_by_slices(equation, inputs)
 }
 
+fn batch_scan_sub_jaxpr(
+    equation: &Equation,
+    inputs: &[BatchTracer],
+) -> Result<Vec<BatchTracer>, BatchError> {
+    if equation.sub_jaxprs.len() != 1 {
+        return Err(BatchError::InterpreterError(format!(
+            "scan with sub_jaxprs expects exactly one body jaxpr, got {}",
+            equation.sub_jaxprs.len()
+        )));
+    }
+    let body_jaxpr = &equation.sub_jaxprs[0];
+    let Some(carry_count) = body_jaxpr.invars.len().checked_sub(1) else {
+        return Err(BatchError::InterpreterError(
+            "scan body requires carry inputs plus one xs input".to_owned(),
+        ));
+    };
+    if body_jaxpr.outvars.len() < carry_count {
+        return Err(BatchError::InterpreterError(format!(
+            "scan body returns {} values for {carry_count} carries",
+            body_jaxpr.outvars.len()
+        )));
+    }
+    if equation.outputs.len() != body_jaxpr.outvars.len() {
+        return Err(BatchError::InterpreterError(format!(
+            "scan equation binds {} outputs but body returns {}",
+            equation.outputs.len(),
+            body_jaxpr.outvars.len()
+        )));
+    }
+
+    let const_count = body_jaxpr.constvars.len();
+    if inputs.len() != const_count + carry_count + 1 {
+        return Err(BatchError::InterpreterError(format!(
+            "scan body expects {const_count} consts, {carry_count} carries, and one xs input, got {} bindings",
+            inputs.len()
+        )));
+    }
+    let Some(batch_size) = batch_size_from_inputs(inputs)? else {
+        return Err(BatchError::InterpreterError(
+            "scan with sub_jaxprs in BatchTrace requires at least one batched input".to_owned(),
+        ));
+    };
+
+    let (const_inputs, state_inputs) = inputs.split_at(const_count);
+    let (carry_inputs, xs_input) = state_inputs.split_at(carry_count);
+    let xs = scan_xs_to_batch_front(&xs_input[0], batch_size)?;
+    let scan_len = batched_scan_len(&xs)?;
+    let y_count = body_jaxpr.outvars.len() - carry_count;
+    if scan_len == 0 && y_count > 0 {
+        return Err(BatchError::InterpreterError(
+            "zero-length functional scan outputs require abstract output shapes".to_owned(),
+        ));
+    }
+
+    let body_consts = const_inputs
+        .iter()
+        .map(|tracer| scan_const_to_body_tracer(tracer))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut carry = carry_inputs
+        .iter()
+        .map(|tracer| scan_state_to_batch_front(tracer, batch_size))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut per_y = vec![Vec::with_capacity(scan_len); y_count];
+    let reverse = equation
+        .params
+        .get("reverse")
+        .is_some_and(|value| value == "true");
+
+    let scan_indices: Box<dyn Iterator<Item = usize>> = if reverse {
+        Box::new((0..scan_len).rev())
+    } else {
+        Box::new(0..scan_len)
+    };
+    for scan_idx in scan_indices {
+        let x_slice = batched_scan_xs_at(&xs, scan_idx)?;
+        let mut body_args = carry.clone();
+        body_args.push(BatchTracer::batched(x_slice, 0));
+        let body_outputs = batch_eval_jaxpr_with_consts(body_jaxpr, &body_consts, &body_args)?;
+        if body_outputs.len() != carry_count + y_count {
+            return Err(BatchError::InterpreterError(format!(
+                "scan body returned {} outputs, expected {}",
+                body_outputs.len(),
+                carry_count + y_count
+            )));
+        }
+
+        carry = body_outputs[..carry_count]
+            .iter()
+            .map(|tracer| scan_state_to_batch_front(tracer, batch_size))
+            .collect::<Result<Vec<_>, _>>()?;
+        for (bucket, y_tracer) in per_y.iter_mut().zip(body_outputs[carry_count..].iter()) {
+            bucket.push(scan_state_to_batch_front(y_tracer, batch_size)?.value);
+        }
+    }
+
+    if reverse {
+        for values in &mut per_y {
+            values.reverse();
+        }
+    }
+
+    let mut outputs = carry;
+    for values in per_y {
+        outputs.push(stack_batched_scan_outputs(values)?);
+    }
+    Ok(outputs)
+}
+
+fn scan_const_to_body_tracer(tracer: &BatchTracer) -> Result<BatchTracer, BatchError> {
+    match tracer.batch_dim {
+        Some(batch_dim) => Ok(BatchTracer::batched(
+            move_batch_dim_to_front(&tracer.value, batch_dim)?,
+            0,
+        )),
+        None => Ok(tracer.clone()),
+    }
+}
+
+fn scan_state_to_batch_front(
+    tracer: &BatchTracer,
+    batch_size: usize,
+) -> Result<BatchTracer, BatchError> {
+    match tracer.batch_dim {
+        Some(batch_dim) => Ok(BatchTracer::batched(
+            move_batch_dim_to_front(&tracer.value, batch_dim)?,
+            0,
+        )),
+        None => Ok(BatchTracer::batched(
+            broadcast_unbatched(&tracer.value, batch_size, 0)?,
+            0,
+        )),
+    }
+}
+
+fn scan_xs_to_batch_front(tracer: &BatchTracer, batch_size: usize) -> Result<Value, BatchError> {
+    match tracer.batch_dim {
+        Some(batch_dim) => move_batch_dim_to_front(&tracer.value, batch_dim),
+        None => broadcast_unbatched(&tracer.value, batch_size, 0),
+    }
+}
+
+fn batched_scan_len(xs: &Value) -> Result<usize, BatchError> {
+    match xs {
+        Value::Scalar(_) => Ok(1),
+        Value::Tensor(tensor) if tensor.rank() <= 1 => Ok(1),
+        Value::Tensor(tensor) => Ok(tensor.shape.dims[1] as usize),
+    }
+}
+
+fn batched_scan_xs_at(xs: &Value, scan_idx: usize) -> Result<Value, BatchError> {
+    let Value::Tensor(tensor) = xs else {
+        return Ok(xs.clone());
+    };
+    if tensor.rank() <= 1 {
+        if scan_idx == 0 {
+            return Ok(Value::Tensor(tensor.clone()));
+        }
+        return Err(BatchError::TensorError(format!(
+            "scan index {scan_idx} out of bounds for length-1 batched xs"
+        )));
+    }
+
+    let batch_size = tensor.shape.dims[0] as usize;
+    let scan_len = tensor.shape.dims[1] as usize;
+    if scan_idx >= scan_len {
+        return Err(BatchError::TensorError(format!(
+            "scan index {scan_idx} out of bounds for length {scan_len}"
+        )));
+    }
+
+    let inner_count = tensor.shape.dims[2..]
+        .iter()
+        .map(|dim| *dim as usize)
+        .product::<usize>()
+        .max(1);
+    let mut elements = Vec::with_capacity(batch_size * inner_count);
+    for batch_idx in 0..batch_size {
+        let start = (batch_idx * scan_len + scan_idx) * inner_count;
+        let end = start + inner_count;
+        elements.extend_from_slice(&tensor.elements[start..end]);
+    }
+
+    let mut dims = Vec::with_capacity(tensor.rank() - 1);
+    dims.push(tensor.shape.dims[0]);
+    dims.extend_from_slice(&tensor.shape.dims[2..]);
+    TensorValue::new(tensor.dtype, Shape { dims }, elements)
+        .map(Value::Tensor)
+        .map_err(|error| BatchError::TensorError(error.to_string()))
+}
+
+fn stack_batched_scan_outputs(values: Vec<Value>) -> Result<BatchTracer, BatchError> {
+    let stacked = TensorValue::stack_axis0(&values)
+        .map(Value::Tensor)
+        .map_err(|error| BatchError::TensorError(error.to_string()))?;
+    let batched = move_batch_dim_to_front(&stacked, 1)?;
+    Ok(BatchTracer::batched(batched, 0))
+}
+
 fn batch_while_sub_jaxpr_general(
     equation: &Equation,
     inputs: &[BatchTracer],
@@ -3878,8 +4078,12 @@ fn batch_while_sub_jaxpr_general(
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut active_mask = Value::Tensor(
-        TensorValue::new(DType::Bool, Shape::vector(batch_size as u32), vec![Literal::Bool(true); batch_size])
-            .map_err(|e| BatchError::TensorError(e.to_string()))?,
+        TensorValue::new(
+            DType::Bool,
+            Shape::vector(batch_size as u32),
+            vec![Literal::Bool(true); batch_size],
+        )
+        .map_err(|e| BatchError::TensorError(e.to_string()))?,
     );
 
     for _ in 0..max_iter {
@@ -3893,7 +4097,10 @@ fn batch_while_sub_jaxpr_general(
         let new_active = and_bool_tensors(&active_mask, cond_pred)?;
 
         let any_active = match &new_active {
-            Value::Tensor(t) if t.dtype == DType::Bool => t.elements.iter().any(|lit| matches!(lit, Literal::Bool(true))),
+            Value::Tensor(t) if t.dtype == DType::Bool => t
+                .elements
+                .iter()
+                .any(|lit| matches!(lit, Literal::Bool(true))),
             Value::Scalar(Literal::Bool(b)) => *b,
             _ => return Ok(None),
         };
@@ -3926,7 +4133,10 @@ fn batch_while_sub_jaxpr_general(
     }
 
     let still_active = match &active_mask {
-        Value::Tensor(t) if t.dtype == DType::Bool => t.elements.iter().any(|lit| matches!(lit, Literal::Bool(true))),
+        Value::Tensor(t) if t.dtype == DType::Bool => t
+            .elements
+            .iter()
+            .any(|lit| matches!(lit, Literal::Bool(true))),
         Value::Scalar(Literal::Bool(b)) => *b,
         _ => false,
     };
@@ -4360,6 +4570,7 @@ fn batch_eval_equation_outputs(
     match equation.primitive {
         Primitive::Switch => batch_switch_sub_jaxprs(equation, &inputs),
         Primitive::Cond => batch_sub_jaxpr_by_slices(equation, &inputs),
+        Primitive::Scan => batch_scan_sub_jaxpr(equation, &inputs),
         Primitive::While => batch_while_sub_jaxpr(equation, &inputs),
         primitive => Err(BatchError::InterpreterError(format!(
             "sub_jaxpr execution is not implemented for {} in BatchTrace",
@@ -4853,6 +5064,53 @@ mod tests {
                     make_while_cond_gt_zero_jaxpr(),
                     make_while_body_sub_two_jaxpr(),
                 ],
+            }],
+        )
+    }
+
+    fn make_scan_body_add_emit_carry_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn make_scan_sub_jaxpr_control_flow_jaxpr(reverse: bool) -> Jaxpr {
+        let params = if reverse {
+            BTreeMap::from([("reverse".to_owned(), "true".to_owned())])
+        } else {
+            BTreeMap::new()
+        };
+        Jaxpr::new(
+            vec![VarId(0), VarId(1)],
+            vec![],
+            vec![VarId(2), VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2), VarId(3)],
+                params,
+                effects: vec![],
+                sub_jaxprs: vec![make_scan_body_add_emit_carry_jaxpr()],
             }],
         )
     }
@@ -6006,6 +6264,50 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("while_loop exceeded max iterations (1)")
+        );
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_scan_sub_jaxprs_batched_xs_emits_batched_ys() {
+        let jaxpr = make_scan_sub_jaxpr_control_flow_jaxpr(false);
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::unbatched(Value::scalar_i64(0)),
+                BatchTracer::batched(make_i64_matrix(2, 3, &[1, 2, 3, 10, 20, 30]), 0),
+            ],
+        )
+        .expect("scan with body sub_jaxpr should batch xs lanes");
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![6, 60]);
+        assert_eq!(outputs[1].batch_dim, Some(0));
+        assert_eq!(
+            extract_i64_vec(&outputs[1].value),
+            vec![1, 3, 6, 10, 30, 60]
+        );
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_scan_sub_jaxprs_reverse_matches_input_order_ys() {
+        let jaxpr = make_scan_sub_jaxpr_control_flow_jaxpr(true);
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::unbatched(Value::scalar_i64(0)),
+                BatchTracer::batched(make_i64_matrix(2, 3, &[1, 2, 3, 10, 20, 30]), 0),
+            ],
+        )
+        .expect("reverse scan should preserve input-order ys after reverse iteration");
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![6, 60]);
+        assert_eq!(outputs[1].batch_dim, Some(0));
+        assert_eq!(
+            extract_i64_vec(&outputs[1].value),
+            vec![6, 5, 3, 60, 50, 30]
         );
     }
 
