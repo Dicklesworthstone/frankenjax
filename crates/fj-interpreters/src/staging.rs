@@ -7,7 +7,7 @@
 
 use fj_core::{Jaxpr, ProgramSpec, Value, build_program};
 
-use crate::partial_eval::{PartialEvalError, PartialEvalResult, partial_eval_jaxpr};
+use crate::partial_eval::{PartialEvalError, PartialEvalResult, partial_eval_jaxpr_with_consts};
 use crate::{InterpreterError, eval_jaxpr, eval_jaxpr_with_consts};
 
 /// A staged program ready for execution with partial evaluation applied.
@@ -109,8 +109,23 @@ pub fn stage_jaxpr(
     unknowns: &[bool],
     known_values: &[Value],
 ) -> Result<StagedProgram, StagingError> {
+    stage_jaxpr_with_consts(jaxpr, &[], unknowns, known_values)
+}
+
+/// Stage a closed Jaxpr with explicit external const bindings.
+///
+/// `const_values` must align one-to-one with `jaxpr.constvars`. Constvars are
+/// treated as closed-over known values; if the residual Jaxpr needs them, they
+/// are evaluated once by the known Jaxpr and passed as residual inputs.
+pub fn stage_jaxpr_with_consts(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    unknowns: &[bool],
+    known_values: &[Value],
+) -> Result<StagedProgram, StagingError> {
     let pe_result: PartialEvalResult =
-        partial_eval_jaxpr(jaxpr, unknowns).map_err(StagingError::PartialEval)?;
+        partial_eval_jaxpr_with_consts(jaxpr, const_values, unknowns)
+            .map_err(StagingError::PartialEval)?;
 
     // Evaluate known sub-jaxpr and split known outputs vs residuals.
     let known_output_count = pe_result
@@ -386,6 +401,33 @@ mod tests {
         )
     }
 
+    /// { c; a, b -> d = add(c, a); e = mul(d, b) -> e }
+    fn make_const_mixed_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![VarId(10)],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(10)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
     // ── make_jaxpr tests ────────────────────────────────────────────
 
     #[test]
@@ -492,6 +534,88 @@ mod tests {
                 assert_eq!(staged.jaxpr_unknown.equations.len(), 1);
                 assert!(staged.known_outputs.is_empty());
                 assert!(!staged.residuals.is_empty());
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_staging_constvars_all_known_captures_known_outputs() {
+        run_logged_test(
+            "test_staging_constvars_all_known_captures_known_outputs",
+            &("staging", "constvars", "all_known"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_const_mixed_jaxpr();
+                let staged = stage_jaxpr_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[false, false],
+                    &[Value::scalar_i64(5), Value::scalar_i64(3)],
+                )
+                .unwrap();
+
+                assert!(staged.jaxpr_unknown.equations.is_empty());
+                assert_eq!(staged.known_outputs, vec![Value::scalar_i64(21)]);
+                assert!(staged.residuals.is_empty());
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_staging_constvars_all_unknown_residualizes_consts() {
+        run_logged_test(
+            "test_staging_constvars_all_unknown_residualizes_consts",
+            &("staging", "constvars", "all_unknown"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_const_mixed_jaxpr();
+                let staged =
+                    stage_jaxpr_with_consts(&jaxpr, &[Value::scalar_i64(2)], &[true, true], &[])
+                        .unwrap();
+
+                assert_eq!(staged.residuals, vec![Value::scalar_i64(2)]);
+                assert!(staged.jaxpr_unknown.constvars.is_empty());
+                let result =
+                    execute_staged(&staged, &[Value::scalar_i64(5), Value::scalar_i64(3)]).unwrap();
+                let full = eval_jaxpr_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[Value::scalar_i64(5), Value::scalar_i64(3)],
+                )
+                .unwrap();
+                assert_eq!(result, full);
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_staging_constvars_mixed_known_unknown_roundtrip() {
+        run_logged_test(
+            "test_staging_constvars_mixed_known_unknown_roundtrip",
+            &("staging", "constvars", "mixed"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_const_mixed_jaxpr();
+                let staged = stage_jaxpr_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[false, true],
+                    &[Value::scalar_i64(5)],
+                )
+                .unwrap();
+
+                assert_eq!(staged.residuals, vec![Value::scalar_i64(7)]);
+                let result = execute_staged(&staged, &[Value::scalar_i64(3)]).unwrap();
+                let full = eval_jaxpr_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[Value::scalar_i64(5), Value::scalar_i64(3)],
+                )
+                .unwrap();
+                assert_eq!(result, full);
                 Ok(vec![])
             },
         );
@@ -659,17 +783,20 @@ mod tests {
     }
 
     #[test]
-    fn test_staging_rejects_constvar_jaxpr() {
+    fn test_staging_constvars_require_const_values() {
         run_logged_test(
-            "test_staging_rejects_constvar_jaxpr",
-            &("staging", "constvars", "unsupported"),
+            "test_staging_constvars_require_const_values",
+            &("staging", "constvars", "arity"),
             fj_test_utils::TestMode::Strict,
             || {
-                let jaxpr = Jaxpr::new(vec![VarId(1)], vec![VarId(2)], vec![VarId(1)], vec![]);
-                let err = stage_jaxpr(&jaxpr, &[false], &[Value::scalar_i64(1)]).unwrap_err();
+                let jaxpr = make_const_mixed_jaxpr();
+                let err = stage_jaxpr(&jaxpr, &[false, true], &[Value::scalar_i64(1)]).unwrap_err();
                 assert!(matches!(
                     err,
-                    StagingError::PartialEval(PartialEvalError::UnsupportedConstvars { count: 1 })
+                    StagingError::PartialEval(PartialEvalError::ConstArity {
+                        expected: 1,
+                        actual: 0
+                    })
                 ));
                 Ok(vec![])
             },

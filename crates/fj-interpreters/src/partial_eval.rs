@@ -71,8 +71,8 @@ pub struct PartialEvalResult {
 pub enum PartialEvalError {
     /// Input mask length doesn't match Jaxpr input count.
     InputMaskMismatch { expected: usize, actual: usize },
-    /// Staging currently cannot evaluate Jaxprs that require external const values.
-    UnsupportedConstvars { count: usize },
+    /// Const value count doesn't match Jaxpr constvar count.
+    ConstArity { expected: usize, actual: usize },
     /// A variable referenced in an equation was not defined.
     UndefinedVariable(VarId),
     /// Residual type mismatch between known outputs and unknown inputs.
@@ -89,10 +89,11 @@ impl std::fmt::Display for PartialEvalError {
                     expected, actual
                 )
             }
-            Self::UnsupportedConstvars { count } => {
+            Self::ConstArity { expected, actual } => {
                 write!(
                     f,
-                    "partial eval does not support jaxprs with {count} external constvars"
+                    "const value count mismatch: jaxpr has {} constvars, values has {} entries",
+                    expected, actual
                 )
             }
             Self::UndefinedVariable(var) => write!(f, "undefined variable v{}", var.0),
@@ -121,7 +122,19 @@ pub fn partial_eval_jaxpr(
     jaxpr: &Jaxpr,
     unknowns: &[bool],
 ) -> Result<PartialEvalResult, PartialEvalError> {
-    partial_eval_jaxpr_typed(jaxpr, unknowns, None)
+    partial_eval_jaxpr_typed_with_consts(jaxpr, &[], unknowns, None)
+}
+
+/// Partially evaluate a Jaxpr with explicit external const values.
+///
+/// Use this for closed Jaxprs produced by tracing: the `const_values` slice must
+/// align one-to-one with `jaxpr.constvars`.
+pub fn partial_eval_jaxpr_with_consts(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    unknowns: &[bool],
+) -> Result<PartialEvalResult, PartialEvalError> {
+    partial_eval_jaxpr_typed_with_consts(jaxpr, const_values, unknowns, None)
 }
 
 /// Partially evaluate a Jaxpr with optional input abstract values for proper
@@ -135,9 +148,21 @@ pub fn partial_eval_jaxpr_typed(
     unknowns: &[bool],
     in_avals: Option<&[AbstractValue]>,
 ) -> Result<PartialEvalResult, PartialEvalError> {
-    if !jaxpr.constvars.is_empty() {
-        return Err(PartialEvalError::UnsupportedConstvars {
-            count: jaxpr.constvars.len(),
+    partial_eval_jaxpr_typed_with_consts(jaxpr, &[], unknowns, in_avals)
+}
+
+/// Partially evaluate a Jaxpr with explicit external const values and optional
+/// input abstract values for residual typing.
+pub fn partial_eval_jaxpr_typed_with_consts(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    unknowns: &[bool],
+    in_avals: Option<&[AbstractValue]>,
+) -> Result<PartialEvalResult, PartialEvalError> {
+    if const_values.len() != jaxpr.constvars.len() {
+        return Err(PartialEvalError::ConstArity {
+            expected: jaxpr.constvars.len(),
+            actual: const_values.len(),
         });
     }
 
@@ -160,7 +185,7 @@ pub fn partial_eval_jaxpr_typed(
                 jaxpr.outvars.clone(),
                 jaxpr.equations.clone(),
             ),
-            known_consts: vec![],
+            known_consts: const_values.to_vec(),
             jaxpr_unknown: Jaxpr::new(vec![], vec![], vec![], vec![]),
             out_unknowns,
             residual_avals: vec![],
@@ -191,6 +216,9 @@ pub fn partial_eval_jaxpr_typed(
 
     // Build optional var→aval map for residual typing.
     let mut var_aval: Vec<Option<AbstractValue>> = vec![None; bitset_len];
+    for (var, value) in jaxpr.constvars.iter().zip(const_values.iter()) {
+        var_aval[var.0 as usize] = Some(abstract_value_of(value));
+    }
     if let Some(avals) = in_avals {
         for (var, aval) in jaxpr.invars.iter().zip(avals.iter()) {
             var_aval[var.0 as usize] = Some(aval.clone());
@@ -368,7 +396,7 @@ pub fn partial_eval_jaxpr_typed(
 
     Ok(PartialEvalResult {
         jaxpr_known,
-        known_consts: vec![],
+        known_consts: const_values.to_vec(),
         jaxpr_unknown,
         out_unknowns,
         residual_avals,
@@ -1100,6 +1128,41 @@ mod tests {
         )
     }
 
+    /// { c; a, b -> d = add(c, a); e = mul(c, b); f = add(d, e) -> f }
+    fn make_const_mixed_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![VarId(10)],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(10)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(10)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
     /// Empty Jaxpr: { a -> a } (identity, no equations)
     fn make_empty_jaxpr() -> Jaxpr {
         Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
@@ -1264,6 +1327,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_pe_constvars_all_known_threads_known_consts() {
+        run_logged_test(
+            "test_pe_constvars_all_known_threads_known_consts",
+            &("pe", "constvars", "all_known"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_const_mixed_jaxpr();
+                let consts = vec![Value::scalar_i64(2)];
+                let pe = partial_eval_jaxpr_with_consts(&jaxpr, &consts, &[false, false]).unwrap();
+
+                assert_eq!(pe.jaxpr_known.constvars, vec![VarId(10)]);
+                assert_eq!(pe.known_consts, consts);
+                assert!(pe.jaxpr_unknown.equations.is_empty());
+
+                let known = crate::eval_jaxpr_with_consts(
+                    &pe.jaxpr_known,
+                    &pe.known_consts,
+                    &[Value::scalar_i64(5), Value::scalar_i64(3)],
+                )
+                .unwrap();
+                assert_eq!(known, vec![Value::scalar_i64(13)]);
+                Ok(vec![])
+            },
+        );
+    }
+
     // ══════════════════════════════════════════════════════════════════
     // Category 2: Full Residual (all-unknown → residual matches original)
     // ══════════════════════════════════════════════════════════════════
@@ -1367,6 +1457,41 @@ mod tests {
                         spec
                     );
                 }
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_constvars_all_unknown_residualizes_consts() {
+        run_logged_test(
+            "test_pe_constvars_all_unknown_residualizes_consts",
+            &("pe", "constvars", "all_unknown"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_const_mixed_jaxpr();
+                let pe =
+                    partial_eval_jaxpr_with_consts(&jaxpr, &[Value::scalar_i64(2)], &[true, true])
+                        .unwrap();
+
+                assert!(pe.jaxpr_known.equations.is_empty());
+                assert_eq!(pe.jaxpr_known.outvars, vec![VarId(10)]);
+                assert!(pe.jaxpr_unknown.constvars.is_empty());
+                assert_eq!(pe.jaxpr_unknown.invars, vec![VarId(10), VarId(1), VarId(2)]);
+                assert_eq!(pe.residual_avals[0].dtype, DType::I64);
+
+                let residuals =
+                    crate::eval_jaxpr_with_consts(&pe.jaxpr_known, &pe.known_consts, &[]).unwrap();
+                let mut unknown_inputs = residuals;
+                unknown_inputs.extend([Value::scalar_i64(5), Value::scalar_i64(3)]);
+                let staged = crate::eval_jaxpr(&pe.jaxpr_unknown, &unknown_inputs).unwrap();
+                let full = crate::eval_jaxpr_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[Value::scalar_i64(5), Value::scalar_i64(3)],
+                )
+                .unwrap();
+                assert_eq!(staged, full);
                 Ok(vec![])
             },
         );
@@ -1545,6 +1670,65 @@ mod tests {
                     "comparison residual should have Bool dtype, got: {:?}",
                     result.residual_avals
                 );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_constvars_mixed_residualizes_const_and_known_output() {
+        run_logged_test(
+            "test_pe_constvars_mixed_residualizes_const_and_known_output",
+            &("pe", "constvars", "mixed"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let jaxpr = make_const_mixed_jaxpr();
+                let in_avals = vec![
+                    AbstractValue {
+                        dtype: DType::I64,
+                        shape: Shape::scalar(),
+                    },
+                    AbstractValue {
+                        dtype: DType::I64,
+                        shape: Shape::scalar(),
+                    },
+                ];
+                let pe = partial_eval_jaxpr_typed_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[false, true],
+                    Some(&in_avals),
+                )
+                .unwrap();
+
+                assert_eq!(pe.jaxpr_known.equations.len(), 1);
+                assert_eq!(pe.jaxpr_unknown.equations.len(), 2);
+                assert_eq!(pe.jaxpr_unknown.invars, vec![VarId(10), VarId(3), VarId(2)]);
+                assert_eq!(pe.residual_avals.len(), 2);
+                assert!(
+                    pe.residual_avals
+                        .iter()
+                        .all(|aval| aval.dtype == DType::I64)
+                );
+
+                let known_outs = crate::eval_jaxpr_with_consts(
+                    &pe.jaxpr_known,
+                    &pe.known_consts,
+                    &[Value::scalar_i64(5)],
+                )
+                .unwrap();
+                assert_eq!(known_outs, vec![Value::scalar_i64(2), Value::scalar_i64(7)]);
+
+                let mut unknown_inputs = known_outs;
+                unknown_inputs.push(Value::scalar_i64(3));
+                let staged = crate::eval_jaxpr(&pe.jaxpr_unknown, &unknown_inputs).unwrap();
+                let full = crate::eval_jaxpr_with_consts(
+                    &jaxpr,
+                    &[Value::scalar_i64(2)],
+                    &[Value::scalar_i64(5), Value::scalar_i64(3)],
+                )
+                .unwrap();
+                assert_eq!(staged, full);
                 Ok(vec![])
             },
         );
@@ -1984,9 +2168,13 @@ mod tests {
                 let e2 = PartialEvalError::UndefinedVariable(VarId(42));
                 assert!(format!("{e2}").contains("42"));
 
-                let e3 = PartialEvalError::UnsupportedConstvars { count: 2 };
+                let e3 = PartialEvalError::ConstArity {
+                    expected: 2,
+                    actual: 1,
+                };
                 assert!(format!("{e3}").contains("2"));
-                assert!(format!("{e3}").contains("constvars"));
+                assert!(format!("{e3}").contains("1"));
+                assert!(format!("{e3}").contains("const"));
 
                 let e4 = PartialEvalError::ResidualTypeMismatch { index: 7 };
                 assert!(format!("{e4}").contains("7"));
@@ -1999,18 +2187,21 @@ mod tests {
     }
 
     #[test]
-    fn test_pe_rejects_constvar_jaxpr() {
+    fn test_pe_constvars_require_const_values() {
         run_logged_test(
-            "test_pe_rejects_constvar_jaxpr",
-            &("pe", "constvars", "unsupported"),
+            "test_pe_constvars_require_const_values",
+            &("pe", "constvars", "arity"),
             fj_test_utils::TestMode::Strict,
             || {
-                let jaxpr = Jaxpr::new(vec![VarId(1)], vec![VarId(2)], vec![VarId(1)], vec![]);
-                let err = partial_eval_jaxpr(&jaxpr, &[false]).unwrap_err();
-                assert!(matches!(
+                let jaxpr = make_const_mixed_jaxpr();
+                let err = partial_eval_jaxpr(&jaxpr, &[false, true]).unwrap_err();
+                assert_eq!(
                     err,
-                    PartialEvalError::UnsupportedConstvars { count: 1 }
-                ));
+                    PartialEvalError::ConstArity {
+                        expected: 1,
+                        actual: 0,
+                    }
+                );
                 Ok(vec![])
             },
         );
