@@ -191,11 +191,9 @@ fn dtype_promotion_matches_jax() -> Result<(), String> {
     let bundle = load_bundle()?;
     assert!(!bundle.cases.is_empty());
 
-    // Core scalar types that FrankenJAX fully supports at scalar level.
-    // Known gaps:
-    // - i32: stored as i64 internally
-    // - bf16/f16: half-precision scalar ops limited
-    let core_dtypes = ["bool", "i64", "u32", "u64", "f32", "f64"];
+    // Core scalar types that FrankenJAX supports at scalar level.
+    // Known gap: i32 is stored as i64 internally.
+    let core_dtypes = ["bool", "i64", "u32", "u64", "f16", "f32", "f64", "bf16"];
 
     let mut mismatches = Vec::new();
     let mut tested = 0;
