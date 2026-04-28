@@ -3269,9 +3269,12 @@ fn apply_scan_scalar_op(op: ScanScalarOp, carry: Literal, x: Literal) -> Option<
 enum WhileScalarOp {
     Add,
     Sub,
+    ReverseSub,
     Mul,
     Div,
+    ReverseDiv,
     Pow,
+    ReversePow,
 }
 
 #[derive(Clone, Copy)]
@@ -3282,6 +3285,12 @@ enum WhileCondOp {
     Ge,
     Ne,
     Eq,
+}
+
+#[derive(Clone, Copy)]
+enum LiteralSide {
+    Left,
+    Right,
 }
 
 fn batch_while(
@@ -3460,9 +3469,12 @@ fn apply_while_scalar_op(op: WhileScalarOp, carry: Literal, step: Literal) -> Op
         (Literal::I64(carry), Literal::I64(step)) => Some(match op {
             WhileScalarOp::Add => Literal::I64(carry.wrapping_add(step)),
             WhileScalarOp::Sub => Literal::I64(carry.wrapping_sub(step)),
+            WhileScalarOp::ReverseSub => Literal::I64(step.wrapping_sub(carry)),
             WhileScalarOp::Mul => Literal::I64(carry.wrapping_mul(step)),
             WhileScalarOp::Div => Literal::I64(carry.checked_div(step).unwrap_or(0)),
+            WhileScalarOp::ReverseDiv => Literal::I64(step.checked_div(carry).unwrap_or(0)),
             WhileScalarOp::Pow => Literal::I64((carry as f64).powf(step as f64) as i64),
+            WhileScalarOp::ReversePow => Literal::I64((step as f64).powf(carry as f64) as i64),
         }),
         (Literal::F64Bits(carry), Literal::F64Bits(step)) => {
             let carry = f64::from_bits(carry);
@@ -3470,9 +3482,12 @@ fn apply_while_scalar_op(op: WhileScalarOp, carry: Literal, step: Literal) -> Op
             let result = match op {
                 WhileScalarOp::Add => carry + step,
                 WhileScalarOp::Sub => carry - step,
+                WhileScalarOp::ReverseSub => step - carry,
                 WhileScalarOp::Mul => carry * step,
                 WhileScalarOp::Div => carry / step,
+                WhileScalarOp::ReverseDiv => step / carry,
                 WhileScalarOp::Pow => carry.powf(step),
+                WhileScalarOp::ReversePow => step.powf(carry),
             };
             Some(Literal::from_f64(result))
         }
@@ -4274,18 +4289,18 @@ fn parse_while_sub_jaxpr_max_iter(params: &BTreeMap<String, String>) -> Option<u
 }
 
 fn while_sub_jaxpr_scalar_cond(jaxpr: &Jaxpr) -> Option<(WhileCondOp, Literal)> {
-    let (primitive, literal) = single_var_literal_jaxpr(jaxpr)?;
-    let cond_op = while_cond_op_from_primitive(primitive)?;
+    let (primitive, literal, literal_side) = single_var_literal_jaxpr(jaxpr)?;
+    let cond_op = while_cond_op_from_primitive(primitive, literal_side)?;
     Some((cond_op, literal))
 }
 
 fn while_sub_jaxpr_scalar_body(jaxpr: &Jaxpr) -> Option<(WhileScalarOp, Literal)> {
-    let (primitive, literal) = single_var_literal_jaxpr(jaxpr)?;
-    let body_op = while_body_op_from_primitive(primitive)?;
+    let (primitive, literal, literal_side) = single_var_literal_jaxpr(jaxpr)?;
+    let body_op = while_body_op_from_primitive(primitive, literal_side)?;
     Some((body_op, literal))
 }
 
-fn single_var_literal_jaxpr(jaxpr: &Jaxpr) -> Option<(Primitive, Literal)> {
+fn single_var_literal_jaxpr(jaxpr: &Jaxpr) -> Option<(Primitive, Literal, LiteralSide)> {
     if !jaxpr.constvars.is_empty()
         || jaxpr.invars.len() != 1
         || jaxpr.outvars.len() != 1
@@ -4307,31 +4322,47 @@ fn single_var_literal_jaxpr(jaxpr: &Jaxpr) -> Option<(Primitive, Literal)> {
 
     match (&equation.inputs[0], &equation.inputs[1]) {
         (Atom::Var(var), Atom::Lit(literal)) if *var == jaxpr.invars[0] => {
-            Some((equation.primitive, *literal))
+            Some((equation.primitive, *literal, LiteralSide::Right))
+        }
+        (Atom::Lit(literal), Atom::Var(var)) if *var == jaxpr.invars[0] => {
+            Some((equation.primitive, *literal, LiteralSide::Left))
         }
         _ => None,
     }
 }
 
-fn while_cond_op_from_primitive(primitive: Primitive) -> Option<WhileCondOp> {
-    match primitive {
-        Primitive::Lt => Some(WhileCondOp::Lt),
-        Primitive::Le => Some(WhileCondOp::Le),
-        Primitive::Gt => Some(WhileCondOp::Gt),
-        Primitive::Ge => Some(WhileCondOp::Ge),
-        Primitive::Ne => Some(WhileCondOp::Ne),
-        Primitive::Eq => Some(WhileCondOp::Eq),
+fn while_cond_op_from_primitive(
+    primitive: Primitive,
+    literal_side: LiteralSide,
+) -> Option<WhileCondOp> {
+    match (primitive, literal_side) {
+        (Primitive::Lt, LiteralSide::Right) => Some(WhileCondOp::Lt),
+        (Primitive::Le, LiteralSide::Right) => Some(WhileCondOp::Le),
+        (Primitive::Gt, LiteralSide::Right) => Some(WhileCondOp::Gt),
+        (Primitive::Ge, LiteralSide::Right) => Some(WhileCondOp::Ge),
+        (Primitive::Lt, LiteralSide::Left) => Some(WhileCondOp::Gt),
+        (Primitive::Le, LiteralSide::Left) => Some(WhileCondOp::Ge),
+        (Primitive::Gt, LiteralSide::Left) => Some(WhileCondOp::Lt),
+        (Primitive::Ge, LiteralSide::Left) => Some(WhileCondOp::Le),
+        (Primitive::Ne, _) => Some(WhileCondOp::Ne),
+        (Primitive::Eq, _) => Some(WhileCondOp::Eq),
         _ => None,
     }
 }
 
-fn while_body_op_from_primitive(primitive: Primitive) -> Option<WhileScalarOp> {
-    match primitive {
-        Primitive::Add => Some(WhileScalarOp::Add),
-        Primitive::Sub => Some(WhileScalarOp::Sub),
-        Primitive::Mul => Some(WhileScalarOp::Mul),
-        Primitive::Div => Some(WhileScalarOp::Div),
-        Primitive::Pow => Some(WhileScalarOp::Pow),
+fn while_body_op_from_primitive(
+    primitive: Primitive,
+    literal_side: LiteralSide,
+) -> Option<WhileScalarOp> {
+    match (primitive, literal_side) {
+        (Primitive::Add, _) => Some(WhileScalarOp::Add),
+        (Primitive::Sub, LiteralSide::Right) => Some(WhileScalarOp::Sub),
+        (Primitive::Sub, LiteralSide::Left) => Some(WhileScalarOp::ReverseSub),
+        (Primitive::Mul, _) => Some(WhileScalarOp::Mul),
+        (Primitive::Div, LiteralSide::Right) => Some(WhileScalarOp::Div),
+        (Primitive::Div, LiteralSide::Left) => Some(WhileScalarOp::ReverseDiv),
+        (Primitive::Pow, LiteralSide::Right) => Some(WhileScalarOp::Pow),
+        (Primitive::Pow, LiteralSide::Left) => Some(WhileScalarOp::ReversePow),
         _ => None,
     }
 }
@@ -5082,6 +5113,41 @@ mod tests {
             vec![Equation {
                 primitive,
                 inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(operand)],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_while_body_literal_left_scalar_jaxpr(primitive: Primitive, operand: Literal) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![Atom::Lit(operand), Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
+    fn make_while_cond_literal_left_scalar_jaxpr(
+        primitive: Primitive,
+        threshold: Literal,
+    ) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive,
+                inputs: smallvec![Atom::Lit(threshold), Atom::Var(VarId(1))],
                 outputs: smallvec![VarId(2)],
                 params: BTreeMap::new(),
                 effects: vec![],
@@ -6388,6 +6454,72 @@ mod tests {
         assert_eq!(pow_outputs.len(), 1);
         assert_eq!(pow_outputs[0].batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&pow_outputs[0].value), vec![256, 6_561]);
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_while_sub_jaxprs_literal_left_scalar_fast_path() {
+        let jaxpr = make_while_control_flow_jaxpr_with_sub_jaxprs(
+            make_while_cond_literal_left_scalar_jaxpr(Primitive::Lt, Literal::I64(0)),
+            make_while_body_literal_left_scalar_jaxpr(Primitive::Sub, Literal::I64(0)),
+            4,
+        );
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[BatchTracer::batched(make_i64_vector(&[1, 2, 5]), 0)],
+        )
+        .expect("literal-left while sub_jaxprs should batch independent scalar lanes");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![-1, -2, -5]);
+    }
+
+    #[test]
+    fn test_while_sub_jaxpr_scalar_recognizers_preserve_literal_left_order() {
+        let (cond_op, cond_literal) = while_sub_jaxpr_scalar_cond(
+            &make_while_cond_literal_left_scalar_jaxpr(Primitive::Lt, Literal::I64(0)),
+        )
+        .expect("literal-left lt should map to carry gt literal");
+        assert_eq!(cond_literal, Literal::I64(0));
+        assert_eq!(
+            apply_while_scalar_cond(cond_op, Literal::I64(3), cond_literal),
+            Some(true)
+        );
+        assert_eq!(
+            apply_while_scalar_cond(cond_op, Literal::I64(0), cond_literal),
+            Some(false)
+        );
+
+        let cases = [
+            (
+                Primitive::Sub,
+                Literal::I64(0),
+                Literal::I64(5),
+                Literal::I64(-5),
+            ),
+            (
+                Primitive::Div,
+                Literal::I64(12),
+                Literal::I64(3),
+                Literal::I64(4),
+            ),
+            (
+                Primitive::Pow,
+                Literal::I64(2),
+                Literal::I64(4),
+                Literal::I64(16),
+            ),
+        ];
+        for (primitive, operand, carry, expected) in cases {
+            let (body_op, body_operand) = while_sub_jaxpr_scalar_body(
+                &make_while_body_literal_left_scalar_jaxpr(primitive, operand),
+            )
+            .expect("literal-left body op should preserve operand order");
+            assert_eq!(body_operand, operand);
+            assert_eq!(
+                apply_while_scalar_op(body_op, carry, body_operand),
+                Some(expected)
+            );
+        }
     }
 
     #[test]

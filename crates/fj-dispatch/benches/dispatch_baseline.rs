@@ -233,6 +233,38 @@ fn while_body_sub_two_jaxpr() -> Jaxpr {
     )
 }
 
+fn while_cond_zero_lt_var_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::Lt,
+            inputs: smallvec::smallvec![Atom::Lit(Literal::I64(0)), Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
+fn while_body_zero_sub_var_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::Sub,
+            inputs: smallvec::smallvec![Atom::Lit(Literal::I64(0)), Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
 fn while_sub_jaxpr_control_flow_jaxpr(max_iter: usize) -> Jaxpr {
     Jaxpr::new(
         vec![VarId(1)],
@@ -244,6 +276,25 @@ fn while_sub_jaxpr_control_flow_jaxpr(max_iter: usize) -> Jaxpr {
             outputs: smallvec::smallvec![VarId(2)],
             params: BTreeMap::from([("max_iter".to_owned(), max_iter.to_string())]),
             sub_jaxprs: vec![while_cond_gt_zero_jaxpr(), while_body_sub_two_jaxpr()],
+            effects: vec![],
+        }],
+    )
+}
+
+fn while_literal_left_sub_jaxpr_control_flow_jaxpr(max_iter: usize) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::While,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::from([("max_iter".to_owned(), max_iter.to_string())]),
+            sub_jaxprs: vec![
+                while_cond_zero_lt_var_jaxpr(),
+                while_body_zero_sub_var_jaxpr(),
+            ],
             effects: vec![],
         }],
     )
@@ -824,6 +875,25 @@ fn bench_vmap_while(c: &mut Criterion) {
                 vec![functional_init.clone()],
             ))
             .expect("vmap(functional while_loop) should dispatch");
+        });
+    });
+
+    let literal_left_jaxpr = while_literal_left_sub_jaxpr_control_flow_jaxpr(8);
+    let literal_left_init = Value::vector_i64(
+        &(0..128)
+            .map(|idx| 1 + (idx % 32) as i64)
+            .collect::<Vec<_>>(),
+    )
+    .expect("literal-left while init vector should build");
+
+    group.bench_function("functional_sub_jaxpr_literal_left_negate_128", |b| {
+        b.iter(|| {
+            dispatch(dispatch_jaxpr_request(
+                literal_left_jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![literal_left_init.clone()],
+            ))
+            .expect("vmap(functional literal-left while_loop) should dispatch");
         });
     });
 
