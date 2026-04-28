@@ -3,7 +3,9 @@
 pub mod partial_eval;
 pub mod staging;
 
-use fj_core::{Atom, Equation, Jaxpr, Literal, Primitive, Shape, Value, ValueError, VarId};
+use fj_core::{
+    Atom, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
+};
 use fj_lax::{EvalError, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 
@@ -410,6 +412,156 @@ fn evaluate_while_sub_jaxprs(
     ))
 }
 
+fn evaluate_scan_sub_jaxprs(
+    equation: &Equation,
+    resolved: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
+    if equation.sub_jaxprs.len() != 1 {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Scan,
+            detail: format!(
+                "scan expects exactly 1 body sub_jaxpr, got {}",
+                equation.sub_jaxprs.len()
+            ),
+        }));
+    }
+    let body_jaxpr = &equation.sub_jaxprs[0];
+    let carry_count = body_jaxpr.invars.len().checked_sub(1).ok_or_else(|| {
+        InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Scan,
+            detail: "scan body requires carry inputs plus one xs input".to_owned(),
+        })
+    })?;
+    if body_jaxpr.outvars.len() < carry_count {
+        return Err(InterpreterError::InvariantViolation {
+            detail: format!(
+                "scan body sub_jaxpr returned {} values for {carry_count} carries",
+                body_jaxpr.outvars.len()
+            ),
+        });
+    }
+
+    let const_count = body_jaxpr.constvars.len();
+    let expected_bindings = const_count + carry_count + 1;
+    if resolved.len() != expected_bindings {
+        return Err(InterpreterError::InputArity {
+            expected: expected_bindings,
+            actual: resolved.len(),
+        });
+    }
+    if equation.outputs.len() != body_jaxpr.outvars.len() {
+        return Err(InterpreterError::UnexpectedOutputArity {
+            primitive: Primitive::Scan,
+            expected: equation.outputs.len(),
+            actual: body_jaxpr.outvars.len(),
+        });
+    }
+
+    let (const_values, state_inputs) = resolved.split_at(const_count);
+    let (carry_inputs, xs_inputs) = state_inputs.split_at(carry_count);
+    let xs = &xs_inputs[0];
+    let scan_len = scan_input_len(xs)?;
+    let y_count = body_jaxpr.outvars.len() - carry_count;
+    if scan_len == 0 && y_count > 0 {
+        return Err(InterpreterError::Primitive(EvalError::Unsupported {
+            primitive: Primitive::Scan,
+            detail: "zero-length functional scan outputs require abstract output shapes".to_owned(),
+        }));
+    }
+
+    let mut carry = carry_inputs.to_vec();
+    let init_shapes: Vec<Shape> = carry.iter().map(value_shape).collect();
+    let init_dtypes: Vec<_> = carry.iter().map(Value::dtype).collect();
+    let mut per_y = vec![Vec::with_capacity(scan_len); y_count];
+    let reverse = equation
+        .params
+        .get("reverse")
+        .is_some_and(|value| value == "true");
+    let scan_indices: Box<dyn Iterator<Item = usize>> = if reverse {
+        Box::new((0..scan_len).rev())
+    } else {
+        Box::new(0..scan_len)
+    };
+
+    for scan_idx in scan_indices {
+        let x_slice = scan_slice_at(xs, scan_idx)?;
+        let mut body_args = carry.clone();
+        body_args.push(x_slice);
+        let body_outputs =
+            eval_jaxpr_with_consts(body_jaxpr, const_values, &body_args).map_err(|err| {
+                InterpreterError::Primitive(map_sub_jaxpr_error(Primitive::Scan, "scan body", err))
+            })?;
+        if body_outputs.len() != carry_count + y_count {
+            return Err(InterpreterError::InvariantViolation {
+                detail: format!(
+                    "scan body sub_jaxpr returned {} outputs; expected {}",
+                    body_outputs.len(),
+                    carry_count + y_count
+                ),
+            });
+        }
+
+        for (idx, value) in body_outputs[..carry_count].iter().enumerate() {
+            let new_shape = value_shape(value);
+            if new_shape != init_shapes[idx] {
+                return Err(InterpreterError::Primitive(EvalError::ShapeChanged {
+                    primitive: Primitive::Scan,
+                    detail: format!(
+                        "carry element {idx} changed shape from {:?} to {:?}",
+                        init_shapes[idx].dims, new_shape.dims
+                    ),
+                }));
+            }
+            if value.dtype() != init_dtypes[idx] {
+                return Err(InterpreterError::Primitive(EvalError::TypeMismatch {
+                    primitive: Primitive::Scan,
+                    detail: "scan body changed carry dtype",
+                }));
+            }
+        }
+
+        carry = body_outputs[..carry_count].to_vec();
+        for (bucket, y_value) in per_y.iter_mut().zip(body_outputs[carry_count..].iter()) {
+            bucket.push(y_value.clone());
+        }
+    }
+
+    if reverse {
+        for values in &mut per_y {
+            values.reverse();
+        }
+    }
+
+    let mut outputs = carry;
+    for values in per_y {
+        let stacked = TensorValue::stack_axis0(&values)
+            .map_err(|error| InterpreterError::Primitive(EvalError::InvalidTensor(error)))?;
+        outputs.push(Value::Tensor(stacked));
+    }
+    Ok(outputs)
+}
+
+fn scan_input_len(xs: &Value) -> Result<usize, InterpreterError> {
+    match xs {
+        Value::Scalar(_) => Ok(1),
+        Value::Tensor(tensor) => tensor.shape.dims.first().map(|dim| *dim as usize).ok_or({
+            InterpreterError::Primitive(EvalError::TypeMismatch {
+                primitive: Primitive::Scan,
+                detail: "scan tensor xs must have a leading axis",
+            })
+        }),
+    }
+}
+
+fn scan_slice_at(xs: &Value, index: usize) -> Result<Value, InterpreterError> {
+    match xs {
+        Value::Scalar(_) => Ok(xs.clone()),
+        Value::Tensor(tensor) => tensor
+            .slice_axis0(index)
+            .map_err(|error| InterpreterError::Primitive(EvalError::InvalidTensor(error))),
+    }
+}
+
 /// Evaluate a single equation against the current environment.
 ///
 /// This handles equation-level control-flow semantics that require access to
@@ -427,6 +579,10 @@ pub fn eval_equation_outputs(
             Primitive::Cond => {
                 let resolved = resolve_equation_inputs(equation, env)?;
                 evaluate_cond_sub_jaxprs(equation, &resolved)?
+            }
+            Primitive::Scan => {
+                let resolved = resolve_equation_inputs(equation, env)?;
+                evaluate_scan_sub_jaxprs(equation, &resolved)?
             }
             Primitive::While => {
                 let resolved = resolve_equation_inputs(equation, env)?;
@@ -720,6 +876,107 @@ mod tests {
         )
     }
 
+    fn make_scan_body_add_emit_carry_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    fn make_scan_sub_jaxpr_control_flow_jaxpr(reverse: bool) -> Jaxpr {
+        let params = if reverse {
+            BTreeMap::from([("reverse".to_owned(), "true".to_owned())])
+        } else {
+            BTreeMap::new()
+        };
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3), VarId(4)],
+                params,
+                sub_jaxprs: vec![make_scan_body_add_emit_carry_jaxpr()],
+                effects: vec![],
+            }],
+        )
+    }
+
+    fn make_scan_multi_carry_body_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4), VarId(5), VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    fn make_scan_multi_carry_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4), VarId(5), VarId(6)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2)),
+                    Atom::Var(VarId(3))
+                ],
+                outputs: smallvec![VarId(4), VarId(5), VarId(6)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![make_scan_multi_carry_body_jaxpr()],
+                effects: vec![],
+            }],
+        )
+    }
+
     fn make_while_cond_gt_zero_jaxpr() -> Jaxpr {
         Jaxpr::new(
             vec![VarId(1)],
@@ -875,6 +1132,68 @@ mod tests {
         assert!(
             msg.contains("returned 2 carry values; expected 1"),
             "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn eval_scan_with_sub_jaxprs_returns_final_carry_and_stacked_ys() {
+        let jaxpr = make_scan_sub_jaxpr_control_flow_jaxpr(false);
+        let outputs = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::scalar_i64(0),
+                Value::vector_i64(&[1, 2, 3]).expect("xs vector should build"),
+            ],
+        )
+        .expect("scan with body sub_jaxpr should evaluate");
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], Value::scalar_i64(6));
+        assert_eq!(
+            outputs[1],
+            Value::vector_i64(&[1, 3, 6]).expect("ys vector should build")
+        );
+    }
+
+    #[test]
+    fn eval_scan_with_sub_jaxprs_reverse_preserves_input_order_ys() {
+        let jaxpr = make_scan_sub_jaxpr_control_flow_jaxpr(true);
+        let outputs = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::scalar_i64(0),
+                Value::vector_i64(&[1, 2, 3]).expect("xs vector should build"),
+            ],
+        )
+        .expect("reverse scan with body sub_jaxpr should evaluate");
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], Value::scalar_i64(6));
+        assert_eq!(
+            outputs[1],
+            Value::vector_i64(&[6, 5, 3]).expect("ys vector should build")
+        );
+    }
+
+    #[test]
+    fn eval_scan_with_sub_jaxprs_handles_multi_carry_and_ys() {
+        let jaxpr = make_scan_multi_carry_control_flow_jaxpr();
+        let outputs = eval_jaxpr(
+            &jaxpr,
+            &[
+                Value::scalar_i64(0),
+                Value::scalar_i64(1),
+                Value::vector_i64(&[1, 2, 3]).expect("xs vector should build"),
+            ],
+        )
+        .expect("multi-carry scan with body sub_jaxpr should evaluate");
+
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0], Value::scalar_i64(6));
+        assert_eq!(outputs[1], Value::scalar_i64(6));
+        assert_eq!(
+            outputs[2],
+            Value::vector_i64(&[2, 5, 12]).expect("ys vector should build")
         );
     }
 
