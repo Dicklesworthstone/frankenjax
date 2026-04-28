@@ -135,6 +135,48 @@ fn scan_control_flow_jaxpr(body_op: &str) -> Jaxpr {
     )
 }
 
+fn scan_body_add_emit_carry_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3), VarId(4)],
+        vec![
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec::smallvec![VarId(3)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec::smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec::smallvec![VarId(4)],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            },
+        ],
+    )
+}
+
+fn scan_sub_jaxpr_control_flow_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1), VarId(2)],
+        vec![],
+        vec![VarId(3), VarId(4)],
+        vec![Equation {
+            primitive: Primitive::Scan,
+            inputs: smallvec::smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+            outputs: smallvec::smallvec![VarId(3), VarId(4)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![scan_body_add_emit_carry_jaxpr()],
+            effects: vec![],
+        }],
+    )
+}
+
 fn while_control_flow_jaxpr(body_op: &str, cond_op: &str, max_iter: usize) -> Jaxpr {
     Jaxpr::new(
         vec![VarId(1), VarId(2), VarId(3)],
@@ -700,6 +742,21 @@ fn bench_vmap_scan(c: &mut Criterion) {
                 .compile_options
                 .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
             dispatch(request).expect("vmap(scan) should dispatch");
+        });
+    });
+
+    let functional_jaxpr = scan_sub_jaxpr_control_flow_jaxpr();
+    group.bench_function("functional_sub_jaxpr_add_emit_128x64", |b| {
+        b.iter(|| {
+            let mut request = dispatch_jaxpr_request(
+                functional_jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![Value::scalar_i64(0), xs.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
+            dispatch(request).expect("vmap(functional scan) should dispatch");
         });
     });
 
