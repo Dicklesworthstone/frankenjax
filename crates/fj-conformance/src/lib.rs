@@ -1801,10 +1801,10 @@ mod tests {
     use super::{
         BatchRunnerConfig, ComparatorKind, DriftClassification, FixtureFamily, FixtureMode,
         FixtureProgram, FixtureTransform, FixtureValue, HarnessConfig, OracleCaptureRequest,
-        ParityCase, TransformFixtureBundle, TransformFixtureCase,
-        capture_transform_fixture_bundle_with_oracle, classify_drift, collect_json_fixtures,
-        default_fixture_manifest, emit_parity_json, emit_parity_markdown, evaluate_parity,
-        read_fixture_note, run_smoke, run_transform_fixture_bundle,
+        ParityCase, TransformCaseReport, TransformFixtureBundle, TransformFixtureCase,
+        TransformParityReport, capture_transform_fixture_bundle_with_oracle, classify_drift,
+        collect_json_fixtures, default_fixture_manifest, emit_parity_json, emit_parity_markdown,
+        evaluate_parity, read_fixture_note, run_smoke, run_transform_fixture_bundle,
         run_transform_fixture_bundle_batched,
     };
     use tempfile::tempdir;
@@ -1971,6 +1971,53 @@ mod tests {
         let markdown = emit_parity_markdown(&report);
         assert!(markdown.contains("Transform Parity Report"));
         assert!(markdown.contains("jit_add_scalar_markdown"));
+    }
+
+    #[test]
+    fn test_parity_markdown_snapshot() {
+        let report = TransformParityReport {
+            schema_version: "frankenjax.transform-parity-report.v1".to_owned(),
+            total_cases: 3,
+            matched_cases: 2,
+            mismatched_cases: 1,
+            reports: vec![
+                TransformCaseReport {
+                    case_id: "add_scalars".to_owned(),
+                    family: FixtureFamily::Jit,
+                    mode: FixtureMode::Strict,
+                    comparator: ComparatorKind::Exact,
+                    drift_classification: DriftClassification::Pass,
+                    matched: true,
+                    expected_json: "[3]".to_owned(),
+                    actual_json: Some("[3]".to_owned()),
+                    error: None,
+                },
+                TransformCaseReport {
+                    case_id: "mul_vectors".to_owned(),
+                    family: FixtureFamily::Grad,
+                    mode: FixtureMode::Hardened,
+                    comparator: ComparatorKind::ApproxAtolRtol,
+                    drift_classification: DriftClassification::Pass,
+                    matched: true,
+                    expected_json: "[6.0]".to_owned(),
+                    actual_json: Some("[6.0]".to_owned()),
+                    error: None,
+                },
+                TransformCaseReport {
+                    case_id: "div_by_zero".to_owned(),
+                    family: FixtureFamily::Vmap,
+                    mode: FixtureMode::Strict,
+                    comparator: ComparatorKind::ApproxAtolRtol,
+                    drift_classification: DriftClassification::Regression,
+                    matched: false,
+                    expected_json: "[Inf]".to_owned(),
+                    actual_json: Some("[NaN]".to_owned()),
+                    error: Some("value mismatch".to_owned()),
+                },
+            ],
+        };
+        let markdown = emit_parity_markdown(&report);
+        insta::assert_snapshot!(markdown);
     }
 
     #[test]

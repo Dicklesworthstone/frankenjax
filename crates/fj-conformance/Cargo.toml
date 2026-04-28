@@ -23,6 +23,7 @@ fj-ffi = { path = "../fj-ffi" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-runtime = { path = "../fj-runtime" }
 fj-test-utils = { path = "../fj-test-utils" }
+insta = "1.47"
 jsonschema = "0.42"
 smallvec = { workspace = true }
 tempfile = "3.25"

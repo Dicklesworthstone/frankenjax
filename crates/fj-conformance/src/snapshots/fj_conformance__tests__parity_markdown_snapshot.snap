@@ -1,0 +1,18 @@
+---
+source: crates/fj-conformance/src/lib.rs
+expression: markdown
+---
+# Transform Parity Report
+
+| Metric | Value |
+|---|---|
+| Schema | `frankenjax.transform-parity-report.v1` |
+| Total Cases | 3 |
+| Matched Cases | 2 |
+| Mismatched Cases | 1 |
+
+| Case ID | Family | Mode | Comparator | Drift | Matched |
+|---|---|---|---|---|---|
+| add_scalars | Jit | Strict | Exact | Pass | true |
+| mul_vectors | Grad | Hardened | ApproxAtolRtol | Pass | true |
+| div_by_zero | Vmap | Strict | ApproxAtolRtol | Regression | false |
