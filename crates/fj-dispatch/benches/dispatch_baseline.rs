@@ -811,6 +811,33 @@ fn bench_vmap_scan(c: &mut Criterion) {
         });
     });
 
+    let f32_jaxpr = scan_control_flow_jaxpr("add");
+    let xs_f32 = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: vec![128, 64],
+            },
+            (0..(128 * 64))
+                .map(|idx| Literal::from_f32(1.0 + (idx % 17) as f32 * 0.25))
+                .collect(),
+        )
+        .expect("f32 scan xs should build"),
+    );
+    group.bench_function("shared_init_batched_xs_f32_add_128x64", |b| {
+        b.iter(|| {
+            let mut request = dispatch_jaxpr_request(
+                f32_jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![Value::scalar_f32(0.5), xs_f32.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
+            dispatch(request).expect("vmap(scan f32 add) should dispatch");
+        });
+    });
+
     let functional_jaxpr = scan_sub_jaxpr_control_flow_jaxpr();
     group.bench_function("functional_sub_jaxpr_add_emit_128x64", |b| {
         b.iter(|| {
@@ -856,6 +883,47 @@ fn bench_vmap_while(c: &mut Criterion) {
                 vec![init.clone(), step.clone(), threshold.clone()],
             ))
             .expect("vmap(while_loop) should dispatch");
+        });
+    });
+
+    let f32_init = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape { dims: vec![128] },
+            (0..128)
+                .map(|idx| Literal::from_f32((idx % 8) as f32))
+                .collect(),
+        )
+        .expect("f32 while init vector should build"),
+    );
+    let f32_step = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape { dims: vec![128] },
+            (0..128)
+                .map(|idx| Literal::from_f32(((idx % 4) + 1) as f32))
+                .collect(),
+        )
+        .expect("f32 while step vector should build"),
+    );
+    let f32_threshold = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape { dims: vec![128] },
+            (0..128)
+                .map(|idx| Literal::from_f32(96.0 + (idx % 16) as f32))
+                .collect(),
+        )
+        .expect("f32 while threshold vector should build"),
+    );
+    group.bench_function("batched_scalar_f32_add_128", |b| {
+        b.iter(|| {
+            dispatch(dispatch_jaxpr_request(
+                jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![f32_init.clone(), f32_step.clone(), f32_threshold.clone()],
+            ))
+            .expect("vmap(f32 while_loop) should dispatch");
         });
     });
 
