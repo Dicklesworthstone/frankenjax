@@ -185,8 +185,8 @@
       "values_match": true
     },
     {
-      "actual_output_dtype": "error",
-      "expected_output_dtype": "error",
+      "actual_output_dtype": "f64",
+      "expected_output_dtype": "f64",
       "fixture_id": "md_expr_add_then_mul_bool_vector",
       "input_dtypes": [
         "i64",
@@ -197,8 +197,8 @@
       "values_match": true
     },
     {
-      "actual_output_dtype": "error",
-      "expected_output_dtype": "error",
+      "actual_output_dtype": "f64",
+      "expected_output_dtype": "f64",
       "fixture_id": "md_expr_add_then_mul_bool_matrix",
       "input_dtypes": [
         "i64",
@@ -241,7 +241,7 @@
     }
   ],
   "failed_cases": 0,
-  "generated_at_unix_ms": 1775063980708,
+  "generated_at_unix_ms": 1777366750848,
   "passed_cases": 22,
   "scenario": "e2e_mixed_dtype_conformance",
   "total_cases": 22

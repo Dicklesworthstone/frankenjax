@@ -185,27 +185,27 @@
       "test_name": "md_reduce_sum_bool_error"
     },
     {
-      "actual_dtype": "error",
-      "expected_dtype": "error",
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
       "input_dtypes": [
         "i64",
         "f64",
         "bool"
       ],
       "pass": true,
-      "promotion_rule": "(i64 + f64) * bool -> error",
+      "promotion_rule": "(i64 + f64) * bool -> f64",
       "test_name": "md_expr_add_then_mul_bool_vector"
     },
     {
-      "actual_dtype": "error",
-      "expected_dtype": "error",
+      "actual_dtype": "f64",
+      "expected_dtype": "f64",
       "input_dtypes": [
         "i64",
         "f64",
         "bool"
       ],
       "pass": true,
-      "promotion_rule": "(i64 + f64) * bool -> error",
+      "promotion_rule": "(i64 + f64) * bool -> f64",
       "test_name": "md_expr_add_then_mul_bool_matrix"
     },
     {
@@ -240,6 +240,6 @@
       "test_name": "md_lt_f32_i32_vector"
     }
   ],
-  "generated_at_unix_ms": 1775063980708,
+  "generated_at_unix_ms": 1777366750848,
   "test_name": "e2e_mixed_dtype_conformance"
 }

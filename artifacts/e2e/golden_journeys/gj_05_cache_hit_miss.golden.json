@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_05_cache_hit_miss",
   "scenario_category": "cache_hit_miss",
-  "ts_utc_unix_ms": 1775063980644,
+  "ts_utc_unix_ms": 1777366750774,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_05 --exact --nocapture",
   "input_capture": {
     "programs": [
@@ -32,5 +32,5 @@
     "cache_key_sample": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8"
   },
   "result": "pass",
-  "duration_ms": 0
+  "duration_ms": 6
 }

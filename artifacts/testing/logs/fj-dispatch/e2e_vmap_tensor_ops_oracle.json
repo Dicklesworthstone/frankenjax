@@ -1,5 +1,5 @@
 {
-  "generated_at_unix_ms": 1775063980921,
+  "generated_at_unix_ms": 1777366751176,
   "records": [
     {
       "batch_dim": "none,0",
@@ -76,7 +76,10 @@
         ],
         []
       ],
-      "output_shape": [],
+      "output_shape": [
+        2,
+        2
+      ],
       "pass": true,
       "primitive": "pad",
       "test_name": "e2e_vmap_tensor_ops_oracle"
