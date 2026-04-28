@@ -5115,6 +5115,60 @@ mod tests {
         )
     }
 
+    fn make_scan_multi_carry_body_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(4), VarId(5), VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn make_scan_multi_carry_control_flow_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(0), VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3), VarId(4), VarId(5)],
+            vec![Equation {
+                primitive: Primitive::Scan,
+                inputs: smallvec![
+                    Atom::Var(VarId(0)),
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(2))
+                ],
+                outputs: smallvec![VarId(3), VarId(4), VarId(5)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![make_scan_multi_carry_body_jaxpr()],
+            }],
+        )
+    }
+
     // ── Unary Elementwise Tests ────────────────────────────────
 
     #[test]
@@ -6308,6 +6362,31 @@ mod tests {
         assert_eq!(
             extract_i64_vec(&outputs[1].value),
             vec![6, 5, 3, 60, 50, 30]
+        );
+    }
+
+    #[test]
+    fn test_batch_eval_jaxpr_scan_sub_jaxprs_multi_carry_batches_outputs() {
+        let jaxpr = make_scan_multi_carry_control_flow_jaxpr();
+        let outputs = batch_eval_jaxpr(
+            &jaxpr,
+            &[
+                BatchTracer::unbatched(Value::scalar_i64(0)),
+                BatchTracer::unbatched(Value::scalar_i64(1)),
+                BatchTracer::batched(make_i64_matrix(2, 3, &[1, 2, 3, 2, 3, 4]), 0),
+            ],
+        )
+        .expect("multi-carry functional scan should batch all carries and ys");
+
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(outputs[0].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[0].value), vec![6, 9]);
+        assert_eq!(outputs[1].batch_dim, Some(0));
+        assert_eq!(extract_i64_vec(&outputs[1].value), vec![6, 24]);
+        assert_eq!(outputs[2].batch_dim, Some(0));
+        assert_eq!(
+            extract_i64_vec(&outputs[2].value),
+            vec![2, 5, 12, 4, 11, 33]
         );
     }
 
