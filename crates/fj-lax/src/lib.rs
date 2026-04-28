@@ -477,7 +477,7 @@ fn value_shape(value: &Value) -> Shape {
 ///   - xs_tensor: tensor whose leading axis is scanned over
 ///
 /// params:
-///   - "body_op": the primitive to apply per iteration, e.g. "add", "mul"
+///   - "body_op": the primitive to apply per iteration, e.g. "add", "mul", "div", "pow"
 ///     The body computes: new_carry = body_op(carry, x_slice)
 ///   - "length": optional explicit scan length (inferred from xs if absent)
 ///   - "reverse": "true" to scan in reverse order (default: "false")
@@ -505,6 +505,8 @@ fn eval_scan(
         "add" => Primitive::Add,
         "sub" => Primitive::Sub,
         "mul" => Primitive::Mul,
+        "div" => Primitive::Div,
+        "pow" => Primitive::Pow,
         "max" => Primitive::Max,
         "min" => Primitive::Min,
         other => {
@@ -5224,6 +5226,24 @@ mod tests {
         let xs = Value::vector_f64(&[2.0, 3.0, 4.0]).unwrap();
         let out = eval_primitive(Primitive::Scan, &[init, xs], &scan_params("mul")).unwrap();
         assert_eq!(out.as_f64_scalar().unwrap(), 24.0);
+    }
+
+    #[test]
+    fn scan_div_vector() {
+        // scan(div, 100.0, [2,5]) => (100/2)/5 = 10
+        let init = Value::scalar_f64(100.0);
+        let xs = Value::vector_f64(&[2.0, 5.0]).unwrap();
+        let out = eval_primitive(Primitive::Scan, &[init, xs], &scan_params("div")).unwrap();
+        assert_eq!(out.as_f64_scalar().unwrap(), 10.0);
+    }
+
+    #[test]
+    fn scan_pow_vector() {
+        // scan(pow, 2.0, [3,2]) => (2^3)^2 = 64
+        let init = Value::scalar_f64(2.0);
+        let xs = Value::vector_f64(&[3.0, 2.0]).unwrap();
+        let out = eval_primitive(Primitive::Scan, &[init, xs], &scan_params("pow")).unwrap();
+        assert_eq!(out.as_f64_scalar().unwrap(), 64.0);
     }
 
     #[test]

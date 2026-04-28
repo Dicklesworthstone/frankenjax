@@ -3114,6 +3114,8 @@ enum ScanScalarOp {
     Add,
     Sub,
     Mul,
+    Div,
+    Pow,
     Max,
     Min,
 }
@@ -3190,6 +3192,8 @@ fn scan_scalar_op(params: &BTreeMap<String, String>) -> Option<ScanScalarOp> {
         "add" => Some(ScanScalarOp::Add),
         "sub" => Some(ScanScalarOp::Sub),
         "mul" => Some(ScanScalarOp::Mul),
+        "div" => Some(ScanScalarOp::Div),
+        "pow" => Some(ScanScalarOp::Pow),
         "max" => Some(ScanScalarOp::Max),
         "min" => Some(ScanScalarOp::Min),
         _ => None,
@@ -3238,6 +3242,8 @@ fn apply_scan_scalar_op(op: ScanScalarOp, carry: Literal, x: Literal) -> Option<
             ScanScalarOp::Add => Literal::I64(carry.wrapping_add(x)),
             ScanScalarOp::Sub => Literal::I64(carry.wrapping_sub(x)),
             ScanScalarOp::Mul => Literal::I64(carry.wrapping_mul(x)),
+            ScanScalarOp::Div => Literal::I64(carry.checked_div(x).unwrap_or(0)),
+            ScanScalarOp::Pow => Literal::I64((carry as f64).powf(x as f64) as i64),
             ScanScalarOp::Max => Literal::I64(carry.max(x)),
             ScanScalarOp::Min => Literal::I64(carry.min(x)),
         }),
@@ -3248,6 +3254,8 @@ fn apply_scan_scalar_op(op: ScanScalarOp, carry: Literal, x: Literal) -> Option<
                 ScanScalarOp::Add => carry + x,
                 ScanScalarOp::Sub => carry - x,
                 ScanScalarOp::Mul => carry * x,
+                ScanScalarOp::Div => carry / x,
+                ScanScalarOp::Pow => carry.powf(x),
                 ScanScalarOp::Max => carry.max(x),
                 ScanScalarOp::Min => carry.min(x),
             };
@@ -6477,6 +6485,33 @@ mod tests {
         let result = apply_batch_rule(Primitive::Scan, &[init, xs], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_f64_close(&extract_f64_vec(&result.value), &[12.0, 240.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_scan_batched_xs_f64_div_pow() {
+        let div_result = apply_batch_rule(
+            Primitive::Scan,
+            &[
+                BatchTracer::unbatched(Value::scalar_f64(120.0)),
+                BatchTracer::batched(make_f64_matrix(2, 3, &[2.0, 3.0, 4.0, 5.0, 2.0, 3.0]), 0),
+            ],
+            &BTreeMap::from([("body_op".to_owned(), "div".to_owned())]),
+        )
+        .unwrap();
+        assert_eq!(div_result.batch_dim, Some(0));
+        assert_f64_close(&extract_f64_vec(&div_result.value), &[5.0, 4.0]);
+
+        let pow_result = apply_batch_rule(
+            Primitive::Scan,
+            &[
+                BatchTracer::unbatched(Value::scalar_f64(2.0)),
+                BatchTracer::batched(make_f64_matrix(2, 2, &[2.0, 2.0, 3.0, 1.0]), 0),
+            ],
+            &BTreeMap::from([("body_op".to_owned(), "pow".to_owned())]),
+        )
+        .unwrap();
+        assert_eq!(pow_result.batch_dim, Some(0));
+        assert_f64_close(&extract_f64_vec(&pow_result.value), &[16.0, 8.0]);
     }
 
     #[test]

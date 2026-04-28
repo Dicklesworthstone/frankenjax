@@ -3365,6 +3365,8 @@ fn scan_body_op_for_ad(body_op_name: &str) -> Option<Primitive> {
         "add" => Some(Primitive::Add),
         "sub" => Some(Primitive::Sub),
         "mul" => Some(Primitive::Mul),
+        "div" => Some(Primitive::Div),
+        "pow" => Some(Primitive::Pow),
         "max" => Some(Primitive::Max),
         "min" => Some(Primitive::Min),
         _ => None,
@@ -9771,6 +9773,35 @@ mod tests {
         assert_eq!(grads[0].as_f64_scalar().unwrap(), 24.0);
         let vals = tensor_f64_values(&grads[1]);
         assert_eq!(vals, vec![12.0, 8.0, 6.0]);
+    }
+
+    #[test]
+    fn scan_vjp_div_vector() {
+        let init = Value::scalar_f64(120.0);
+        let xs = Value::vector_f64(&[2.0, 3.0]).unwrap();
+        let g = Value::scalar_f64(1.0);
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("div")).unwrap();
+        assert!((grads[0].as_f64_scalar().unwrap() - (1.0 / 6.0)).abs() < 1e-10);
+        let vals = tensor_f64_values(&grads[1]);
+        assert!((vals[0] + 10.0).abs() < 1e-10, "vals = {vals:?}");
+        assert!((vals[1] + (20.0 / 3.0)).abs() < 1e-10, "vals = {vals:?}");
+    }
+
+    #[test]
+    fn scan_jvp_pow_vector_uses_body_rule() {
+        let init = Value::scalar_f64(2.0);
+        let xs = Value::vector_f64(&[3.0, 2.0]).unwrap();
+        let init_tangent = Value::scalar_f64(0.5);
+        let xs_tangent = Value::vector_f64(&[0.0, 0.0]).unwrap();
+        let tangent = jvp_rule(
+            Primitive::Scan,
+            &[init, xs],
+            &[init_tangent, xs_tangent],
+            &scan_params("pow"),
+        )
+        .expect("scan JVP should use body_op=pow");
+        let actual = tangent.as_f64_scalar().expect("scan JVP output");
+        assert!((actual - 96.0).abs() < 1e-10, "tangent = {actual}");
     }
 
     #[test]
