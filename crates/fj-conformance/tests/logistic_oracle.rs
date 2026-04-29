@@ -96,14 +96,24 @@ fn oracle_logistic_one() {
     // logistic(1) = 1/(1+e^-1) ≈ 0.7310586
     let input = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Logistic, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), sigmoid(1.0), 1e-14, "logistic(1)");
+    assert_close(
+        extract_f64_scalar(&result),
+        sigmoid(1.0),
+        1e-14,
+        "logistic(1)",
+    );
 }
 
 #[test]
 fn oracle_logistic_two() {
     let input = make_f64_tensor(&[], vec![2.0]);
     let result = eval_primitive(Primitive::Logistic, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), sigmoid(2.0), 1e-14, "logistic(2)");
+    assert_close(
+        extract_f64_scalar(&result),
+        sigmoid(2.0),
+        1e-14,
+        "logistic(2)",
+    );
 }
 
 #[test]
@@ -211,10 +221,7 @@ fn oracle_logistic_neg_infinity() {
 fn oracle_logistic_nan() {
     let input = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::Logistic, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "logistic(NaN) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "logistic(NaN) = NaN");
 }
 
 // ======================== Bounds: output in (0, 1) ========================
@@ -345,7 +352,12 @@ fn oracle_logistic_identity() {
         let result = eval_primitive(Primitive::Logistic, &[input], &no_params()).unwrap();
         let val = extract_f64_scalar(&result);
         let expected = 1.0 / (1.0 + (-x).exp());
-        assert_close(val, expected, 1e-14, &format!("logistic({}) = 1/(1+e^-{})", x, x));
+        assert_close(
+            val,
+            expected,
+            1e-14,
+            &format!("logistic({}) = 1/(1+e^-{})", x, x),
+        );
     }
 }
 
@@ -376,7 +388,10 @@ fn oracle_logistic_very_small() {
     let input = make_f64_tensor(&[], vec![1e-10]);
     let result = eval_primitive(Primitive::Logistic, &[input], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
-    assert!(val >= 0.5 && val < 0.6, "logistic(1e-10) should be >= 0.5");
+    assert!(
+        (0.5..0.6).contains(&val),
+        "logistic(1e-10) should be >= 0.5"
+    );
 }
 
 #[test]
