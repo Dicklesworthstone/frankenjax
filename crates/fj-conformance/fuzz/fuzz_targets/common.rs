@@ -172,7 +172,7 @@ impl<'a> ByteCursor<'a> {
 
     #[must_use]
     pub fn take_bool(&mut self) -> bool {
-        self.take_raw_u8() % 2 == 0
+        self.take_raw_u8().is_multiple_of(2)
     }
 
     #[must_use]
@@ -488,7 +488,7 @@ pub fn sample_unknown_features(cursor: &mut ByteCursor<'_>, max_entries: usize) 
 
 #[must_use]
 pub fn sample_evidence_id(cursor: &mut ByteCursor<'_>, index: usize) -> String {
-    if cursor.take_u8() % 5 == 0 {
+    if cursor.take_u8().is_multiple_of(5) {
         return String::new();
     }
 
@@ -540,15 +540,15 @@ pub fn sample_primitive_params(
         | Primitive::ReduceProd
         | Primitive::ReduceAnd
         | Primitive::ReduceOr
-        | Primitive::ReduceXor => {
-            if cursor.take_bool() {
-                let axis_count = 1 + cursor.take_usize(2);
-                let axes = (0..axis_count)
-                    .map(|_| cursor.take_usize(3).to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                params.insert("axes".to_owned(), axes);
-            }
+        | Primitive::ReduceXor
+            if cursor.take_bool() =>
+        {
+            let axis_count = 1 + cursor.take_usize(2);
+            let axes = (0..axis_count)
+                .map(|_| cursor.take_usize(3).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            params.insert("axes".to_owned(), axes);
         }
         Primitive::Reshape => {
             let rank = 1 + cursor.take_usize(3);
@@ -579,15 +579,13 @@ pub fn sample_primitive_params(
                 .join(",");
             params.insert("slice_sizes".to_owned(), sizes);
         }
-        Primitive::Gather => {
-            if cursor.take_bool() {
-                let rank = 1 + cursor.take_usize(3);
-                let sizes = (0..rank)
-                    .map(|_| (1 + cursor.take_usize(3)).to_string())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                params.insert("slice_sizes".to_owned(), sizes);
-            }
+        Primitive::Gather if cursor.take_bool() => {
+            let rank = 1 + cursor.take_usize(3);
+            let sizes = (0..rank)
+                .map(|_| (1 + cursor.take_usize(3)).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            params.insert("slice_sizes".to_owned(), sizes);
         }
         Primitive::Transpose => {
             let rank = 1 + cursor.take_usize(3);
