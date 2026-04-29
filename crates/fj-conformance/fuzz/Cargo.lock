@@ -421,6 +421,7 @@ dependencies = [
  "fj-conformance",
  "fj-core",
  "fj-dispatch",
+ "fj-interpreters",
  "fj-lax",
  "fj-trace",
  "libfuzzer-sys",
