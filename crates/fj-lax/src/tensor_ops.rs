@@ -3581,12 +3581,6 @@ pub(crate) fn eval_split(
                 });
             }
 
-            // Compute strides (row-major)
-            let mut strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                strides[i] = strides[i + 1] * dims[i + 1] as usize;
-            }
-
             // For now, Split returns the first section as a single Value.
             // Multi-output support: we return a Tensor containing concatenated sections.
             // Since our Value type doesn't support tuples, we return the first section only
@@ -3630,18 +3624,46 @@ pub(crate) fn eval_split(
                 let mut new_dims = dims.to_vec();
                 new_dims[axis] = section_size as u32;
 
-                let elements_per_slice: usize = strides[axis] * section_size;
+                let strides = checked_row_major_strides(primitive, "split", dims)?;
+                let elements_per_slice: usize = strides[axis]
+                    .checked_mul(section_size)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "split section size overflows usize".to_owned(),
+                    })?;
                 let outer_size: usize = if axis == 0 {
                     1
                 } else {
-                    dims[..axis].iter().map(|&d| d as usize).product()
+                    checked_shape_element_count(primitive, "split outer", &dims[..axis])?
                 };
+                let axis_stride_span =
+                    strides[axis]
+                        .checked_mul(axis_size)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "split axis span overflows usize".to_owned(),
+                        })?;
 
                 let mut result = Vec::new();
                 for outer in 0..outer_size {
-                    let base = outer * strides[axis] * axis_size;
+                    let base = outer.checked_mul(axis_stride_span).ok_or_else(|| {
+                        EvalError::Unsupported {
+                            primitive,
+                            detail: "split base offset overflows usize".to_owned(),
+                        }
+                    })?;
                     for i in 0..elements_per_slice {
-                        result.push(tensor.elements[base + i]);
+                        let index = base.checked_add(i).ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "split element index overflows usize".to_owned(),
+                        })?;
+                        result.push(*tensor.elements.get(index).ok_or_else(|| {
+                            EvalError::Unsupported {
+                                primitive,
+                                detail: "split element index exceeds input element count"
+                                    .to_owned(),
+                            }
+                        })?);
                     }
                 }
 

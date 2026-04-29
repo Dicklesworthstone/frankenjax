@@ -7303,6 +7303,30 @@ mod tests {
     }
 
     #[test]
+    fn test_split_empty_huge_equal_section_returns_empty_tensor() {
+        let huge = u32::MAX;
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+        params.insert("num_sections".into(), "1".into());
+
+        let out = eval_primitive(Primitive::Split, &[input], &params).unwrap();
+        let tensor = out.as_tensor().unwrap();
+
+        assert_eq!(tensor.shape.dims, vec![1, 0, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn test_split_unequal() {
         // split [1,2,3,4,5] with sizes [2,3] — first section = [1,2]
         let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
