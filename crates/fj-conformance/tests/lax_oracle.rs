@@ -12,6 +12,12 @@ fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
 
+fn axes_params(axes: &str) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::new();
+    params.insert("axes".to_owned(), axes.to_owned());
+    params
+}
+
 fn assert_f64_close(actual: f64, expected: f64, tol: f64, context: &str) {
     if expected.is_nan() {
         assert!(actual.is_nan(), "{context}: expected NaN, got {actual}");
@@ -654,6 +660,68 @@ fn oracle_reduce_min() {
 fn oracle_reduce_prod() {
     let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
     assert_eq!(eval_i64(Primitive::ReduceProd, &[input], &no_params()), 120);
+}
+
+#[test]
+fn oracle_reduce_sum_negative_axis_rank2() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![2, 3] },
+            vec![
+                Literal::I64(1),
+                Literal::I64(2),
+                Literal::I64(3),
+                Literal::I64(4),
+                Literal::I64(5),
+                Literal::I64(6),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let out = eval_primitive(Primitive::ReduceSum, &[input], &axes_params("-1")).unwrap();
+    assert_eq!(out, Value::vector_i64(&[6, 15]).unwrap());
+}
+
+#[test]
+fn oracle_reduce_or_negative_axis_rank2() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape { dims: vec![2, 3] },
+            vec![
+                Literal::Bool(false),
+                Literal::Bool(false),
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::Bool(false),
+                Literal::Bool(false),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let out = eval_primitive(Primitive::ReduceOr, &[input], &axes_params("-1")).unwrap();
+    let expected = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape { dims: vec![2] },
+            vec![Literal::Bool(true), Literal::Bool(false)],
+        )
+        .unwrap(),
+    );
+    assert_eq!(out, expected);
+}
+
+#[test]
+fn oracle_reduce_negative_axis_out_of_bounds_errors() {
+    let input = Value::vector_i64(&[1, 2, 3]).unwrap();
+    let err = eval_primitive(Primitive::ReduceSum, &[input], &axes_params("-2")).unwrap_err();
+    assert!(
+        err.to_string().contains("axis -2 out of bounds"),
+        "unexpected error: {err}"
+    );
 }
 
 // ======================== Oracle: Shape Operations ========================

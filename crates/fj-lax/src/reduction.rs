@@ -28,6 +28,31 @@ fn complex_literal_from_parts(dtype: DType, re: f64, im: f64) -> Literal {
     }
 }
 
+fn parse_reduction_axes(
+    primitive: Primitive,
+    raw_axes: &str,
+    rank: usize,
+) -> Result<Vec<usize>, EvalError> {
+    raw_axes
+        .split(',')
+        .map(|raw_axis| {
+            let trimmed = raw_axis.trim();
+            let axis = trimmed.parse::<i64>().map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid axis value: {trimmed}"),
+            })?;
+            let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+            if normalized < 0 || normalized >= rank as i64 {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("axis {axis} out of bounds for rank {rank}"),
+                });
+            }
+            Ok(normalized as usize)
+        })
+        .collect()
+}
+
 /// Generic reduction: reduces elements of a tensor along specified axes (or all axes).
 pub(crate) fn eval_reduce(
     primitive: Primitive,
@@ -139,29 +164,7 @@ pub(crate) fn eval_reduce_axes(
         Value::Scalar(_) => Ok(inputs[0].clone()),
         Value::Tensor(tensor) => {
             let rank = tensor.shape.rank();
-            let axes: Vec<usize> = axes_str
-                .split(',')
-                .map(|s| {
-                    s.trim()
-                        .parse::<usize>()
-                        .map_err(|_| EvalError::Unsupported {
-                            primitive,
-                            detail: format!("invalid axis value: {}", s.trim()),
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            // Validate axes
-            for &axis in &axes {
-                if axis >= rank {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!("axis {} out of bounds for rank {}", axis, rank),
-                    });
-                }
-            }
-
-            let mut axes_sorted = axes.clone();
+            let mut axes_sorted = parse_reduction_axes(primitive, axes_str, rank)?;
             axes_sorted.sort_unstable();
             axes_sorted.dedup();
 
@@ -320,27 +323,8 @@ pub(crate) fn eval_reduce_bitwise_axes(
                     primitive,
                     detail: "missing axes parameter".to_owned(),
                 })?;
-                raw_axes
-                    .split(',')
-                    .map(|s| {
-                        s.trim()
-                            .parse::<usize>()
-                            .map_err(|_| EvalError::Unsupported {
-                                primitive,
-                                detail: format!("invalid axis value: {}", s.trim()),
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
+                parse_reduction_axes(primitive, raw_axes, rank)?
             };
-
-            for &axis in &axes_sorted {
-                if axis >= rank {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!("axis {} out of bounds for rank {}", axis, rank),
-                    });
-                }
-            }
             axes_sorted.sort_unstable();
             axes_sorted.dedup();
 
