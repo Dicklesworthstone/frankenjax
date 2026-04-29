@@ -8,7 +8,7 @@
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "os": "linux",
     "cargo_target_dir": "/tmp/frankenjax-target-codex-bhuo-workspace",
-    "timestamp_unix_ms": 1777453392461
+    "timestamp_unix_ms": 1777492182058
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -16,11 +16,11 @@
     "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__prop_transform_composition_proof_idempotent.json"
   ],
   "result": "pass",
-  "duration_ms": 63,
+  "duration_ms": 73,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-core;result=pass",
   "phase_timings": {
-    "setup_ms": 49,
-    "execute_ms": 13,
+    "setup_ms": 60,
+    "execute_ms": 12,
     "verify_ms": 0,
     "teardown_ms": 0
   }

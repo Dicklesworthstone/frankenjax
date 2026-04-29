@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-adversarial_dispatch_inputs",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777453391589,
+  "ts_utc_unix_ms": 1777492181117,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -42,6 +42,6 @@
     "total": 4
   },
   "result": "PASS",
-  "duration_ms": 7,
+  "duration_ms": 5,
   "details": null
 }
