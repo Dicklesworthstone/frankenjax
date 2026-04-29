@@ -256,10 +256,7 @@ fn oracle_log1p_neg_infinity() {
     // log1p(-inf) = NaN (out of domain)
     let input = make_f64_tensor(&[], vec![f64::NEG_INFINITY]);
     let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "log1p(-inf) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "log1p(-inf) = NaN");
 }
 
 // ======================== NaN ========================
@@ -361,7 +358,12 @@ fn oracle_log1p_identity() {
         let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
         let val = extract_f64_scalar(&result);
         let expected = (1.0 + x).ln();
-        assert_close(val, expected, 1e-14, &format!("log1p({}) = log(1+{})", x, x));
+        assert_close(
+            val,
+            expected,
+            1e-14,
+            &format!("log1p({}) = log(1+{})", x, x),
+        );
     }
 }
 

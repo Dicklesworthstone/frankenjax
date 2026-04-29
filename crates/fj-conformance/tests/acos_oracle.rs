@@ -219,20 +219,14 @@ fn oracle_acos_less_than_neg_one() {
 fn oracle_acos_pos_infinity() {
     let input = make_f64_tensor(&[], vec![f64::INFINITY]);
     let result = eval_primitive(Primitive::Acos, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "acos(+inf) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "acos(+inf) = NaN");
 }
 
 #[test]
 fn oracle_acos_neg_infinity() {
     let input = make_f64_tensor(&[], vec![f64::NEG_INFINITY]);
     let result = eval_primitive(Primitive::Acos, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "acos(-inf) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "acos(-inf) = NaN");
 }
 
 // ======================== NaN ========================
@@ -309,7 +303,12 @@ fn oracle_acos_1d() {
     let vals = extract_f64_vec(&result);
 
     assert_close(vals[0], std::f64::consts::PI, 1e-14, "acos(-1)");
-    assert_close(vals[1], 2.0 * std::f64::consts::FRAC_PI_3, 1e-14, "acos(-0.5)");
+    assert_close(
+        vals[1],
+        2.0 * std::f64::consts::FRAC_PI_3,
+        1e-14,
+        "acos(-0.5)",
+    );
     assert_close(vals[2], std::f64::consts::FRAC_PI_2, 1e-14, "acos(0)");
     assert_close(vals[3], std::f64::consts::FRAC_PI_3, 1e-14, "acos(0.5)");
     assert_close(vals[4], 0.0, 1e-14, "acos(1)");
@@ -346,10 +345,7 @@ fn oracle_acos_2d() {
 
 #[test]
 fn oracle_acos_3d() {
-    let input = make_f64_tensor(
-        &[2, 2, 2],
-        vec![-1.0, -0.5, 0.0, 0.5, -0.9, -0.1, 0.1, 0.9],
-    );
+    let input = make_f64_tensor(&[2, 2, 2], vec![-1.0, -0.5, 0.0, 0.5, -0.9, -0.1, 0.1, 0.9]);
     let result = eval_primitive(Primitive::Acos, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -381,7 +377,8 @@ fn oracle_acos_cos_identity() {
 fn oracle_acos_asin_relationship() {
     for x in [-0.9, -0.5, 0.0, 0.5, 0.9] {
         let input = make_f64_tensor(&[], vec![x]);
-        let acos_result = eval_primitive(Primitive::Acos, &[input.clone()], &no_params()).unwrap();
+        let acos_result =
+            eval_primitive(Primitive::Acos, std::slice::from_ref(&input), &no_params()).unwrap();
         let asin_result = eval_primitive(Primitive::Asin, &[input], &no_params()).unwrap();
 
         let acos_val = extract_f64_scalar(&acos_result);
