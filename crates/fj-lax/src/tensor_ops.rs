@@ -775,6 +775,24 @@ fn checked_shape_element_count(
     })
 }
 
+fn checked_row_major_strides(
+    primitive: Primitive,
+    op_name: &str,
+    dims: &[u32],
+) -> Result<Vec<usize>, EvalError> {
+    let rank = dims.len();
+    let mut strides = vec![1_usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1]
+            .checked_mul(dims[i + 1] as usize)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("{op_name} input strides overflow usize"),
+            })?;
+    }
+    Ok(strides)
+}
+
 /// Concatenate: join multiple tensors along an axis.
 /// Params: `dimension` (axis index, default 0).
 pub(crate) fn eval_concatenate(
@@ -1173,14 +1191,19 @@ pub(crate) fn eval_slice(
                 out_dims.push(span.div_ceil(stride) as u32);
             }
 
-            // Compute input strides (row-major).
-            let in_dims = &tensor.shape.dims;
-            let mut in_strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                in_strides[i] = in_strides[i + 1] * in_dims[i + 1] as usize;
+            let total = checked_shape_element_count(primitive, "slice", &out_dims)?;
+            if total == 0 {
+                return Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    Shape { dims: out_dims },
+                    Vec::new(),
+                )?));
             }
 
-            let total: usize = out_dims.iter().map(|d| *d as usize).product();
+            // Compute input strides (row-major).
+            let in_dims = &tensor.shape.dims;
+            let in_strides = checked_row_major_strides(primitive, "slice", in_dims)?;
+
             let has_contiguous_trailing_slice = rank > 0
                 && slice_strides.iter().all(|&stride| stride == 1)
                 && starts.iter().skip(1).all(|&start| start == 0)
@@ -1190,8 +1213,20 @@ pub(crate) fn eval_slice(
                     .zip(in_dims.iter().skip(1))
                     .all(|(&limit, &dim)| limit == dim as usize);
             if has_contiguous_trailing_slice {
-                let start_offset = starts[0] * in_strides[0];
-                let end_offset = start_offset + total;
+                let start_offset =
+                    starts[0]
+                        .checked_mul(in_strides[0])
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "slice start offset overflows usize".to_owned(),
+                        })?;
+                let end_offset =
+                    start_offset
+                        .checked_add(total)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "slice end offset overflows usize".to_owned(),
+                        })?;
                 return Ok(Value::Tensor(TensorValue::new(
                     tensor.dtype,
                     Shape { dims: out_dims },
@@ -1206,7 +1241,33 @@ pub(crate) fn eval_slice(
                 // Map output coords to input coords by adding start offsets.
                 let mut in_flat = 0_usize;
                 for ax in 0..rank {
-                    in_flat += (starts[ax] + out_coords[ax] * slice_strides[ax]) * in_strides[ax];
+                    let stepped =
+                        out_coords[ax]
+                            .checked_mul(slice_strides[ax])
+                            .ok_or_else(|| EvalError::Unsupported {
+                                primitive,
+                                detail: format!("slice coordinate overflows usize on axis {ax}"),
+                            })?;
+                    let coord =
+                        starts[ax]
+                            .checked_add(stepped)
+                            .ok_or_else(|| EvalError::Unsupported {
+                                primitive,
+                                detail: format!("slice coordinate overflows usize on axis {ax}"),
+                            })?;
+                    let offset = coord.checked_mul(in_strides[ax]).ok_or_else(|| {
+                        EvalError::Unsupported {
+                            primitive,
+                            detail: format!("slice offset overflows usize on axis {ax}"),
+                        }
+                    })?;
+                    in_flat =
+                        in_flat
+                            .checked_add(offset)
+                            .ok_or_else(|| EvalError::Unsupported {
+                                primitive,
+                                detail: "slice flat offset overflows usize".to_owned(),
+                            })?;
                 }
                 elements.push(tensor.elements[in_flat]);
 
@@ -3583,6 +3644,33 @@ mod tests {
         let p = params(&[("start_indices", "0"), ("limit_indices", "2")]);
         let result = eval_slice(&[x], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![10.0, 20.0]);
+    }
+
+    #[test]
+    fn slice_empty_huge_trailing_shape_returns_empty() {
+        let huge = u32::MAX;
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[
+            ("start_indices", "0,0,0,0,0"),
+            (
+                "limit_indices",
+                "0,4294967295,4294967295,4294967295,4294967295",
+            ),
+        ]);
+
+        let result = eval_slice(&[x], &p).unwrap();
+
+        assert_eq!(extract_shape(&result), vec![0, huge, huge, huge, huge]);
+        assert!(result.as_tensor().unwrap().elements.is_empty());
     }
 
     // ── Concatenate ──
