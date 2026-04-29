@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::EvalError;
@@ -86,6 +87,36 @@ pub(crate) fn parse_usize_param(
                 })
         })
         .collect()
+}
+
+fn parse_axis_param(
+    primitive: Primitive,
+    key: &str,
+    params: &BTreeMap<String, String>,
+    rank: usize,
+    default: usize,
+) -> Result<usize, EvalError> {
+    let Some(raw) = params.get(key) else {
+        return Ok(default);
+    };
+
+    let axis = raw
+        .trim()
+        .parse::<i64>()
+        .map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid integer in param '{key}': '{raw}'"),
+        })?;
+    let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+
+    if normalized < 0 || normalized >= rank as i64 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("axis {axis} out of bounds for rank {rank}"),
+        });
+    }
+
+    Ok(normalized as usize)
 }
 
 fn parse_dtype_param(
@@ -2479,17 +2510,7 @@ pub(crate) fn eval_sort(
                 return Ok(Value::Scalar(tensor.elements[0]));
             }
 
-            let axis: usize = params
-                .get("axis")
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(rank - 1);
-
-            if axis >= rank {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("axis {} out of bounds for rank {}", axis, rank),
-                });
-            }
+            let axis = parse_axis_param(primitive, "axis", params, rank, rank - 1)?;
 
             sort_along_axis(tensor, axis, descending, false).map_err(|e| EvalError::Unsupported {
                 primitive,
@@ -2526,17 +2547,7 @@ pub(crate) fn eval_argsort(
                 return Ok(Value::scalar_i64(0));
             }
 
-            let axis: usize = params
-                .get("axis")
-                .and_then(|s| s.trim().parse().ok())
-                .unwrap_or(rank - 1);
-
-            if axis >= rank {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("axis {} out of bounds for rank {}", axis, rank),
-                });
-            }
+            let axis = parse_axis_param(primitive, "axis", params, rank, rank - 1)?;
 
             sort_along_axis(tensor, axis, descending, true).map_err(|e| EvalError::Unsupported {
                 primitive,
@@ -2576,7 +2587,6 @@ fn sort_along_axis(
     let total = tensor.elements.len();
     let outer_count = total / axis_dim;
 
-    let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
     let mut result_elements = if return_indices {
         vec![Literal::I64(0); total]
     } else {
@@ -2598,35 +2608,26 @@ fn sort_along_axis(
             flat
         };
 
-        let mut indexed: Vec<(usize, f64)> = (0..axis_dim)
+        let mut indexed: Vec<(usize, SortKey)> = (0..axis_dim)
             .map(|i| {
                 let flat_idx = base + i * axis_stride;
-                let val = if is_integral {
-                    tensor.elements[flat_idx]
-                        .as_i64()
-                        .map(|v| v as f64)
-                        .unwrap_or(0.0)
-                } else {
-                    tensor.elements[flat_idx].as_f64().unwrap_or(0.0)
-                };
-                (i, val)
+                sort_key(tensor.elements[flat_idx]).map(|key| (i, key))
             })
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
 
         if descending {
-            indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
+            indexed.sort_by(|a, b| compare_sort_keys(b.1, a.1));
         } else {
-            indexed.sort_by(|a, b| a.1.total_cmp(&b.1));
+            indexed.sort_by(|a, b| compare_sort_keys(a.1, b.1));
         }
 
-        for (out_pos, &(orig_idx, val)) in indexed.iter().enumerate() {
+        for (out_pos, &(orig_idx, _)) in indexed.iter().enumerate() {
             let flat_idx = base + out_pos * axis_stride;
             if return_indices {
                 result_elements[flat_idx] = Literal::I64(orig_idx as i64);
-            } else if is_integral {
-                result_elements[flat_idx] = Literal::I64(val as i64);
             } else {
-                result_elements[flat_idx] = Literal::from_f64(val);
+                let source_idx = base + orig_idx * axis_stride;
+                result_elements[flat_idx] = tensor.elements[source_idx];
             }
         }
     }
@@ -2640,6 +2641,51 @@ fn sort_along_axis(
         TensorValue::new(out_dtype, tensor.shape.clone(), result_elements)
             .map_err(|e| e.to_string())?,
     ))
+}
+
+#[derive(Clone, Copy)]
+enum SortKey {
+    Bool(bool),
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+}
+
+fn sort_key(literal: Literal) -> Result<SortKey, String> {
+    match literal {
+        Literal::Bool(value) => Ok(SortKey::Bool(value)),
+        Literal::I64(value) => Ok(SortKey::Signed(value)),
+        Literal::U32(value) => Ok(SortKey::Unsigned(u64::from(value))),
+        Literal::U64(value) => Ok(SortKey::Unsigned(value)),
+        Literal::BF16Bits(_) | Literal::F16Bits(_) | Literal::F32Bits(_) | Literal::F64Bits(_) => {
+            literal
+                .as_f64()
+                .map(SortKey::Float)
+                .ok_or_else(|| format!("sort requires orderable numeric literals, got {literal:?}"))
+        }
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Err(format!(
+            "sort does not support complex literals: {literal:?}"
+        )),
+    }
+}
+
+fn compare_sort_keys(lhs: SortKey, rhs: SortKey) -> Ordering {
+    match (lhs, rhs) {
+        (SortKey::Bool(lhs), SortKey::Bool(rhs)) => lhs.cmp(&rhs),
+        (SortKey::Signed(lhs), SortKey::Signed(rhs)) => lhs.cmp(&rhs),
+        (SortKey::Unsigned(lhs), SortKey::Unsigned(rhs)) => lhs.cmp(&rhs),
+        (SortKey::Float(lhs), SortKey::Float(rhs)) => lhs.total_cmp(&rhs),
+        (lhs, rhs) => sort_key_rank(lhs).cmp(&sort_key_rank(rhs)),
+    }
+}
+
+fn sort_key_rank(key: SortKey) -> u8 {
+    match key {
+        SortKey::Bool(_) => 0,
+        SortKey::Signed(_) => 1,
+        SortKey::Unsigned(_) => 2,
+        SortKey::Float(_) => 3,
+    }
 }
 
 /// Conv: N-dimensional convolution.

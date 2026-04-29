@@ -4,7 +4,7 @@
 //! - Creates 1D tensor with incrementing values [0, 1, 2, ..., length-1]
 //! - Supports multiple dtypes
 
-use fj_core::{DType, Primitive, Shape, Value};
+use fj_core::{DType, Primitive, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
 
@@ -128,8 +128,8 @@ fn oracle_iota_large() {
     assert_eq!(vals.len(), 100);
     assert_eq!(vals[0], 0);
     assert_eq!(vals[99], 99);
-    for i in 0..100 {
-        assert_eq!(vals[i], i as i64);
+    for (i, value) in vals.iter().enumerate() {
+        assert_eq!(*value, i as i64);
     }
 }
 

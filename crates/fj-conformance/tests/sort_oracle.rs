@@ -29,7 +29,9 @@ fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::I64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::I64).collect(),
         )
         .unwrap(),
@@ -40,7 +42,9 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::from_f64).collect(),
         )
         .unwrap(),
@@ -110,6 +114,24 @@ fn oracle_sort_2d_first_axis() {
 }
 
 #[test]
+fn oracle_sort_2d_negative_first_axis() {
+    // JAX: jax.lax.sort(jnp.array([[4,3],[1,2]]), dimension=-2) => [[1,2],[4,3]]
+    let input = make_i64_tensor(&[2u32, 2], vec![4, 3, 1, 2]);
+    let result = eval_primitive(Primitive::Sort, &[input], &axis_params(-2)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![1, 2, 4, 3]);
+}
+
+#[test]
+fn oracle_sort_negative_axis_out_of_bounds_errors() {
+    let input = make_i64_tensor(&[2u32, 2], vec![4, 3, 1, 2]);
+    let err = eval_primitive(Primitive::Sort, &[input], &axis_params(-3)).unwrap_err();
+    assert!(
+        err.to_string().contains("axis -3 out of bounds"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn oracle_sort_empty_array() {
     let input = make_i64_tensor(&[0u32], vec![]);
     let result = eval_primitive(Primitive::Sort, &[input], &no_params()).unwrap();
@@ -145,6 +167,17 @@ fn oracle_sort_with_negatives() {
 }
 
 #[test]
+fn oracle_sort_i64_large_values_preserves_exact_literals() {
+    // Values above 2^53 must not be rounded through f64 during sort.
+    let input = make_i64_tensor(&[2u32], vec![9_007_199_254_740_993, 9_007_199_254_740_992]);
+    let result = eval_primitive(Primitive::Sort, &[input], &no_params()).unwrap();
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![9_007_199_254_740_992, 9_007_199_254_740_993]
+    );
+}
+
+#[test]
 fn oracle_sort_f64_with_special_values() {
     // NaN handling: JAX sorts NaN to the end
     let input = make_f64_tensor(&[4u32], vec![f64::NAN, 1.0, f64::NEG_INFINITY, 2.0]);
@@ -167,7 +200,7 @@ fn oracle_argsort_1d_i64() {
     let indices = extract_i64_vec(&result);
 
     // Verify: applying indices to original yields sorted array
-    let original = vec![3i64, 1, 4, 1, 5];
+    let original = [3i64, 1, 4, 1, 5];
     let sorted_via_indices: Vec<i64> = indices.iter().map(|&i| original[i as usize]).collect();
     assert_eq!(sorted_via_indices, vec![1, 1, 3, 4, 5]);
 }
@@ -178,7 +211,7 @@ fn oracle_argsort_1d_f64() {
     let result = eval_primitive(Primitive::Argsort, &[input], &no_params()).unwrap();
     let indices = extract_i64_vec(&result);
 
-    let original = vec![3.5, 1.2, 4.8, 1.1];
+    let original = [3.5, 1.2, 4.8, 1.1];
     let sorted_via_indices: Vec<f64> = indices.iter().map(|&i| original[i as usize]).collect();
     assert!((sorted_via_indices[0] - 1.1).abs() < 1e-10);
     assert!((sorted_via_indices[1] - 1.2).abs() < 1e-10);
@@ -192,7 +225,7 @@ fn oracle_argsort_descending() {
     let result = eval_primitive(Primitive::Argsort, &[input], &descending_params()).unwrap();
     let indices = extract_i64_vec(&result);
 
-    let original = vec![3i64, 1, 4, 1, 5];
+    let original = [3i64, 1, 4, 1, 5];
     let sorted_via_indices: Vec<i64> = indices.iter().map(|&i| original[i as usize]).collect();
     assert_eq!(sorted_via_indices, vec![5, 4, 3, 1, 1]);
 }
@@ -207,6 +240,28 @@ fn oracle_argsort_2d_last_axis() {
     // Row 0: [3,1] -> argsort -> [1,0] (index 1 has smaller value)
     // Row 1: [4,2] -> argsort -> [1,0]
     assert_eq!(indices, vec![1, 0, 1, 0]);
+}
+
+#[test]
+fn oracle_argsort_2d_negative_first_axis() {
+    // JAX: jnp.argsort(jnp.array([[4,3],[1,2]]), axis=-2) => [[1,1],[0,0]]
+    let input = make_i64_tensor(&[2u32, 2], vec![4, 3, 1, 2]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &axis_params(-2)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![1, 1, 0, 0]);
+}
+
+#[test]
+fn oracle_argsort_i64_large_values_uses_exact_integer_ordering() {
+    let input = make_i64_tensor(
+        &[3u32],
+        vec![
+            9_007_199_254_740_993,
+            9_007_199_254_740_992,
+            9_007_199_254_740_994,
+        ],
+    );
+    let result = eval_primitive(Primitive::Argsort, &[input], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![1, 0, 2]);
 }
 
 #[test]
@@ -248,7 +303,8 @@ fn oracle_sort_argsort_consistency() {
     let data = vec![7i64, 2, 9, 1, 5, 3, 8, 4, 6];
     let input = make_i64_tensor(&[9u32], data.clone());
 
-    let sorted = eval_primitive(Primitive::Sort, &[input.clone()], &no_params()).unwrap();
+    let sorted =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
     let indices = eval_primitive(Primitive::Argsort, &[input], &no_params()).unwrap();
 
     let sorted_vals = extract_i64_vec(&sorted);

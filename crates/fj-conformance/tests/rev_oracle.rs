@@ -12,7 +12,9 @@ fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::I64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::I64).collect(),
         )
         .unwrap(),
@@ -23,7 +25,9 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::from_f64).collect(),
         )
         .unwrap(),
@@ -55,7 +59,10 @@ fn axes_params(axes: &[usize]) -> BTreeMap<String, String> {
     let mut p = BTreeMap::new();
     p.insert(
         "axes".to_string(),
-        axes.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+        axes.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     p
 }
@@ -165,7 +172,12 @@ fn oracle_rev_3d_all_axes() {
 fn oracle_rev_single_axis_twice() {
     // Reversing same axis twice gives back original
     let input = make_i64_tensor(&[3], vec![1, 2, 3]);
-    let result = eval_primitive(Primitive::Rev, &[input.clone()], &axes_params(&[0])).unwrap();
+    let result = eval_primitive(
+        Primitive::Rev,
+        std::slice::from_ref(&input),
+        &axes_params(&[0]),
+    )
+    .unwrap();
     let result2 = eval_primitive(Primitive::Rev, &[result], &axes_params(&[0])).unwrap();
     assert_eq!(extract_i64_vec(&result2), vec![1, 2, 3]);
 }

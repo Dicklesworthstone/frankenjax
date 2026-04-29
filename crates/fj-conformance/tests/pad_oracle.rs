@@ -13,7 +13,9 @@ fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::I64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::I64).collect(),
         )
         .unwrap(),
@@ -24,7 +26,9 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::from_f64).collect(),
         )
         .unwrap(),
@@ -56,15 +60,25 @@ fn pad_params(low: &[i64], high: &[i64], interior: &[i64]) -> BTreeMap<String, S
     let mut p = BTreeMap::new();
     p.insert(
         "padding_low".to_string(),
-        low.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+        low.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     p.insert(
         "padding_high".to_string(),
-        high.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+        high.iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     p.insert(
         "padding_interior".to_string(),
-        interior.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+        interior
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     p
 }

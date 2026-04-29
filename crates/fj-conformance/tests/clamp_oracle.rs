@@ -16,7 +16,9 @@ fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::I64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::I64).collect(),
         )
         .unwrap(),
@@ -27,7 +29,9 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter().map(Literal::from_f64).collect(),
         )
         .unwrap(),
