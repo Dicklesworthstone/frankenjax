@@ -2169,6 +2169,30 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_in_dim_empty_huge_tensor_returns_empty_tensor() {
+        let huge = u32::MAX;
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), format!("0,{huge},{huge},{huge}"));
+        params.insert("broadcast_dimensions".into(), "0,1,2,3".into());
+
+        let out = eval_primitive(Primitive::BroadcastInDim, &[input], &params).unwrap();
+        let tensor = out.as_tensor().unwrap();
+
+        assert_eq!(tensor.shape.dims, vec![0, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn broadcast_in_dim_rejects_duplicate_axes() {
         let input = Value::vector_i64(&[1, 2]).unwrap();
         let mut params = BTreeMap::new();

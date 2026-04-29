@@ -694,6 +694,13 @@ pub(crate) fn eval_broadcast_in_dim(
                 }
             }
             let total = checked_shape_element_count(primitive, "broadcast_in_dim", &target_dims)?;
+            if total == 0 {
+                return Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    Shape { dims: target_dims },
+                    Vec::new(),
+                )?));
+            }
 
             // Build mapping: for each output axis, which input axis maps to it (if any).
             let mut out_to_in: Vec<Option<usize>> = vec![None; out_rank];
@@ -703,10 +710,7 @@ pub(crate) fn eval_broadcast_in_dim(
 
             // Compute input strides (row-major).
             let in_dims = &tensor.shape.dims;
-            let mut in_strides = vec![1_usize; tensor.shape.rank()];
-            for i in (0..tensor.shape.rank().saturating_sub(1)).rev() {
-                in_strides[i] = in_strides[i + 1] * in_dims[i + 1] as usize;
-            }
+            let in_strides = checked_row_major_strides(primitive, "broadcast_in_dim", in_dims)?;
 
             let mut elements = Vec::with_capacity(total);
             let mut out_coords = vec![0_usize; out_rank];
