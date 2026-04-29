@@ -2900,7 +2900,7 @@ fn sort_along_axis(
     let strides = checked_row_major_strides(primitive, "sort", &tensor.shape.dims)?;
     let axis_stride = strides[axis];
     let total = tensor.elements.len();
-    if total % axis_dim != 0 {
+    if !total.is_multiple_of(axis_dim) {
         return Err(EvalError::Unsupported {
             primitive,
             detail: format!(
