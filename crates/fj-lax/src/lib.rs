@@ -7425,6 +7425,22 @@ mod tests {
     }
 
     #[test]
+    fn test_broadcasted_iota_empty_huge_shape_returns_empty_tensor() {
+        let huge = u32::MAX;
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), format!("{huge},{huge},{huge},0"));
+        params.insert("dimension".to_owned(), "2".to_owned());
+        params.insert("dtype".to_owned(), "i64".to_owned());
+
+        let out = eval_primitive(Primitive::BroadcastedIota, &[], &params)
+            .expect("empty broadcasted_iota should succeed before huge products overflow");
+        let tensor = out.as_tensor().expect("tensor output expected");
+
+        assert_eq!(tensor.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn test_reduce_precision_identity_with_full_bits() {
         let input = Value::scalar_f64(1.0000001);
         let mut params = BTreeMap::new();

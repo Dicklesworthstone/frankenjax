@@ -2436,15 +2436,23 @@ pub(crate) fn eval_broadcasted_iota(
         });
     }
 
-    let total = shape_usize.iter().try_fold(1_usize, |acc, dim| {
-        acc.checked_mul(*dim).ok_or(EvalError::Unsupported {
-            primitive,
-            detail: "broadcasted_iota shape overflows usize".to_owned(),
-        })
-    })?;
+    let total = checked_shape_element_count(primitive, "broadcasted_iota", &shape_u32)?;
+    if total == 0 {
+        return Ok(Value::Tensor(TensorValue::new(
+            dtype,
+            Shape { dims: shape_u32 },
+            Vec::new(),
+        )?));
+    }
+
     let stride = shape_usize[(dimension + 1)..]
         .iter()
-        .fold(1_usize, |acc, dim| acc.saturating_mul(*dim));
+        .try_fold(1_usize, |acc, dim| {
+            acc.checked_mul(*dim).ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "broadcasted_iota stride overflows usize".to_owned(),
+            })
+        })?;
     let axis_extent = shape_usize[dimension];
 
     let mut elements = Vec::with_capacity(total);
