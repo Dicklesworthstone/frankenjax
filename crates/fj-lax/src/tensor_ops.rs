@@ -2835,10 +2835,7 @@ pub(crate) fn eval_sort(
 
             let axis = parse_axis_param(primitive, "axis", params, rank, rank - 1)?;
 
-            sort_along_axis(tensor, axis, descending, false).map_err(|e| EvalError::Unsupported {
-                primitive,
-                detail: e,
-            })
+            sort_along_axis(primitive, tensor, axis, descending, false)
         }
     }
 }
@@ -2872,21 +2869,19 @@ pub(crate) fn eval_argsort(
 
             let axis = parse_axis_param(primitive, "axis", params, rank, rank - 1)?;
 
-            sort_along_axis(tensor, axis, descending, true).map_err(|e| EvalError::Unsupported {
-                primitive,
-                detail: e,
-            })
+            sort_along_axis(primitive, tensor, axis, descending, true)
         }
     }
 }
 
 /// Sort or argsort a tensor along a given axis.
 fn sort_along_axis(
+    primitive: Primitive,
     tensor: &TensorValue,
     axis: usize,
     descending: bool,
     return_indices: bool,
-) -> Result<Value, String> {
+) -> Result<Value, EvalError> {
     let rank = tensor.shape.rank();
     let axis_dim = tensor.shape.dims[axis] as usize;
 
@@ -2898,16 +2893,21 @@ fn sort_along_axis(
         };
         return Ok(Value::Tensor(
             TensorValue::new(result_dtype, tensor.shape.clone(), vec![])
-                .map_err(|e| format!("empty sort result: {e}"))?,
+                .map_err(EvalError::InvalidTensor)?,
         ));
     }
 
-    let mut strides = vec![1_usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * tensor.shape.dims[i + 1] as usize;
-    }
+    let strides = checked_row_major_strides(primitive, "sort", &tensor.shape.dims)?;
     let axis_stride = strides[axis];
     let total = tensor.elements.len();
+    if total % axis_dim != 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "sort axis dimension {axis_dim} does not divide {total} input elements"
+            ),
+        });
+    }
     let outer_count = total / axis_dim;
 
     let mut result_elements = if return_indices {
@@ -2916,6 +2916,7 @@ fn sort_along_axis(
         tensor.elements.clone()
     };
 
+    let mut indexed = Vec::with_capacity(axis_dim);
     for outer in 0..outer_count {
         let base = {
             let mut idx = outer;
@@ -2925,18 +2926,53 @@ fn sort_along_axis(
                     continue;
                 }
                 let dim = tensor.shape.dims[ax] as usize;
-                flat += (idx % dim) * strides[ax];
+                if dim == 0 {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "sort encountered zero non-axis dimension in non-empty tensor"
+                            .to_owned(),
+                    });
+                }
+                let offset =
+                    (idx % dim)
+                        .checked_mul(strides[ax])
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "sort flat offset multiplication overflowed usize".to_owned(),
+                        })?;
+                flat = flat
+                    .checked_add(offset)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "sort flat offset addition overflowed usize".to_owned(),
+                    })?;
                 idx /= dim;
             }
             flat
         };
 
-        let mut indexed: Vec<(usize, SortKey)> = (0..axis_dim)
-            .map(|i| {
-                let flat_idx = base + i * axis_stride;
-                sort_key(tensor.elements[flat_idx]).map(|key| (i, key))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        indexed.clear();
+        for i in 0..axis_dim {
+            let flat_idx = i
+                .checked_mul(axis_stride)
+                .and_then(|offset| base.checked_add(offset))
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "sort axis offset overflowed usize".to_owned(),
+                })?;
+            let literal = *tensor
+                .elements
+                .get(flat_idx)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "sort flat index {flat_idx} out of bounds for {total} elements"
+                    ),
+                })?;
+            let key =
+                sort_key(literal).map_err(|detail| EvalError::Unsupported { primitive, detail })?;
+            indexed.push((i, key));
+        }
 
         if descending {
             indexed.sort_by(|a, b| compare_sort_keys(b.1, a.1));
@@ -2945,12 +2981,48 @@ fn sort_along_axis(
         }
 
         for (out_pos, &(orig_idx, _)) in indexed.iter().enumerate() {
-            let flat_idx = base + out_pos * axis_stride;
+            let flat_idx = out_pos
+                .checked_mul(axis_stride)
+                .and_then(|offset| base.checked_add(offset))
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "sort output offset overflowed usize".to_owned(),
+                })?;
             if return_indices {
-                result_elements[flat_idx] = Literal::I64(orig_idx as i64);
+                *result_elements
+                    .get_mut(flat_idx)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "sort output index {flat_idx} out of bounds for {total} elements"
+                        ),
+                    })? = Literal::I64(orig_idx as i64);
             } else {
-                let source_idx = base + orig_idx * axis_stride;
-                result_elements[flat_idx] = tensor.elements[source_idx];
+                let source_idx = orig_idx
+                    .checked_mul(axis_stride)
+                    .and_then(|offset| base.checked_add(offset))
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "sort source offset overflowed usize".to_owned(),
+                    })?;
+                let source =
+                    *tensor
+                        .elements
+                        .get(source_idx)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: format!(
+                                "sort source index {source_idx} out of bounds for {total} elements"
+                            ),
+                        })?;
+                *result_elements
+                    .get_mut(flat_idx)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "sort output index {flat_idx} out of bounds for {total} elements"
+                        ),
+                    })? = source;
             }
         }
     }
@@ -2962,7 +3034,7 @@ fn sort_along_axis(
     };
     Ok(Value::Tensor(
         TensorValue::new(out_dtype, tensor.shape.clone(), result_elements)
-            .map_err(|e| e.to_string())?,
+            .map_err(EvalError::InvalidTensor)?,
     ))
 }
 
@@ -4044,6 +4116,83 @@ mod tests {
             .map(|l| l.as_i64().expect("expected integer index"))
             .collect();
         assert_eq!(indices, vec![1, 2, 0]);
+    }
+
+    #[test]
+    fn sort_and_argsort_empty_huge_shape_return_empty_tensor() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![u32::MAX, 0, u32::MAX],
+                },
+                vec![],
+            )
+            .unwrap(),
+        );
+        let p = params(&[("dimension", "2")]);
+
+        let sorted = eval_sort(Primitive::Sort, std::slice::from_ref(&input), &p).unwrap();
+        let sorted_tensor = sorted.as_tensor().unwrap();
+        assert_eq!(sorted_tensor.dtype, DType::F64);
+        assert_eq!(sorted_tensor.shape.dims, vec![u32::MAX, 0, u32::MAX]);
+        assert!(sorted_tensor.elements.is_empty());
+
+        let argsorted = eval_argsort(Primitive::Argsort, &[input], &p).unwrap();
+        let argsorted_tensor = argsorted.as_tensor().unwrap();
+        assert_eq!(argsorted_tensor.dtype, DType::I64);
+        assert_eq!(argsorted_tensor.shape.dims, vec![u32::MAX, 0, u32::MAX]);
+        assert!(argsorted_tensor.elements.is_empty());
+    }
+
+    #[test]
+    fn sort_and_argsort_reject_malformed_huge_shapes_without_panic() {
+        let input = Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape: Shape {
+                dims: vec![u32::MAX, u32::MAX, u32::MAX, u32::MAX],
+            },
+            elements: vec![Literal::from_f64(1.0)],
+        });
+        let p = params(&[("dimension", "3")]);
+
+        let sort_err = eval_sort(Primitive::Sort, std::slice::from_ref(&input), &p)
+            .expect_err("sort should reject overflowing adversarial strides");
+        assert!(
+            sort_err
+                .to_string()
+                .contains("sort input strides overflow usize"),
+            "unexpected sort error: {sort_err}"
+        );
+
+        let argsort_err = eval_argsort(Primitive::Argsort, &[input], &p)
+            .expect_err("argsort should reject overflowing adversarial strides");
+        assert!(
+            argsort_err
+                .to_string()
+                .contains("sort input strides overflow usize"),
+            "unexpected argsort error: {argsort_err}"
+        );
+
+        let mismatched = Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape: Shape {
+                dims: vec![u32::MAX],
+            },
+            elements: vec![Literal::from_f64(1.0)],
+        });
+        let mismatch_err = eval_sort(
+            Primitive::Sort,
+            &[mismatched],
+            &params(&[("dimension", "0")]),
+        )
+        .expect_err("sort should reject impossible axis lengths before allocation");
+        assert!(
+            mismatch_err
+                .to_string()
+                .contains("does not divide 1 input elements"),
+            "unexpected mismatch error: {mismatch_err}"
+        );
     }
 
     // ── Copy ──
