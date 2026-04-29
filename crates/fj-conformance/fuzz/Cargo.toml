@@ -30,6 +30,9 @@ path = "../../fj-lax"
 [dependencies.fj-trace]
 path = "../../fj-trace"
 
+[dependencies.fj-interpreters]
+path = "../../fj-interpreters"
+
 [[bin]]
 name = "ir_deserializer"
 path = "fuzz_targets/ir_deserializer.rs"
@@ -103,6 +106,13 @@ bench = false
 [[bin]]
 name = "smoke_harness_json"
 path = "fuzz_targets/smoke_harness_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "partial_eval_fuzzer"
+path = "fuzz_targets/partial_eval_fuzzer.rs"
 test = false
 doc = false
 bench = false
