@@ -7146,6 +7146,29 @@ mod tests {
         assert_eq!(vals, vec![3, 2, 1, 6, 5, 4]);
     }
 
+    #[test]
+    fn test_rev_empty_huge_shape_returns_empty_tensor() {
+        let huge = u32::MAX;
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".into(), "1,2,3".into());
+
+        let out = eval_primitive(Primitive::Rev, &[input], &params).unwrap();
+        let tensor = out.as_tensor().unwrap();
+
+        assert_eq!(tensor.shape.dims, vec![0, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
     // ── Squeeze tests ────────────────────────────────────────────
 
     #[test]

@@ -3132,7 +3132,9 @@ fn eval_conv_1d(
                 if width < kernel_w {
                     return Err(EvalError::Unsupported {
                         primitive,
-                        detail: format!("input width {width} < kernel {kernel_w} with valid padding"),
+                        detail: format!(
+                            "input width {width} < kernel {kernel_w} with valid padding"
+                        ),
                     });
                 }
                 ((width - kernel_w) / stride + 1, 0)
@@ -3377,13 +3379,13 @@ pub(crate) fn eval_rev(
                 }
             }
 
-            // Compute strides (row-major)
-            let mut strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                strides[i] = strides[i + 1] * dims[i + 1] as usize;
+            let total = tensor.elements.len();
+            if total == 0 {
+                return Ok(Value::Tensor(tensor.clone()));
             }
 
-            let total = tensor.elements.len();
+            // Compute strides (row-major)
+            let strides = checked_row_major_strides(primitive, "rev", dims)?;
             let mut result = vec![Literal::I64(0); total];
 
             for (flat_idx, elem) in result.iter_mut().enumerate() {
