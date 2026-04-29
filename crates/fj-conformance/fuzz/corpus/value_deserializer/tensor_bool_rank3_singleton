@@ -1,0 +1,1 @@
+{"Tensor":{"dtype":"Bool","shape":{"dims":[1,2,2]},"elements":[{"Bool":true},{"Bool":false},{"Bool":false},{"Bool":true}]}}
