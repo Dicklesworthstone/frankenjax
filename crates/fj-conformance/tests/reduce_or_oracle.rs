@@ -47,11 +47,11 @@ fn extract_bool_scalar(v: &Value) -> bool {
             assert!(t.shape.dims.is_empty(), "expected scalar");
             match &t.elements[0] {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool"),
+                _ => unreachable!("expected bool"),
             }
         }
         Value::Scalar(Literal::Bool(b)) => *b,
-        _ => panic!("expected bool"),
+        _ => unreachable!("expected bool"),
     }
 }
 
@@ -62,11 +62,11 @@ fn extract_bool_vec(v: &Value) -> Vec<bool> {
             .iter()
             .map(|l| match l {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool"),
+                _ => unreachable!("expected bool"),
             })
             .collect(),
         Value::Scalar(Literal::Bool(b)) => vec![*b],
-        _ => panic!("expected bool"),
+        _ => unreachable!("expected bool"),
     }
 }
 
@@ -114,7 +114,7 @@ fn oracle_reduce_or_bool_all_false() {
     let input = make_bool_tensor(&[4], vec![false, false, false, false]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), Vec::<u32>::new());
-    assert_eq!(extract_bool_scalar(&result), false);
+    assert!(!extract_bool_scalar(&result));
 }
 
 #[test]
@@ -122,7 +122,7 @@ fn oracle_reduce_or_bool_all_true() {
     // OR of all true = true
     let input = make_bool_tensor(&[4], vec![true, true, true, true]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
-    assert_eq!(extract_bool_scalar(&result), true);
+    assert!(extract_bool_scalar(&result));
 }
 
 #[test]
@@ -130,7 +130,7 @@ fn oracle_reduce_or_bool_mixed() {
     // OR with at least one true = true
     let input = make_bool_tensor(&[4], vec![false, true, false, false]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
-    assert_eq!(extract_bool_scalar(&result), true);
+    assert!(extract_bool_scalar(&result));
 }
 
 #[test]
@@ -138,7 +138,7 @@ fn oracle_reduce_or_bool_single_true() {
     // Single true among many false = true
     let input = make_bool_tensor(&[5], vec![false, false, false, false, true]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
-    assert_eq!(extract_bool_scalar(&result), true);
+    assert!(extract_bool_scalar(&result));
 }
 
 // ====================== BOOLEAN 2D ======================
@@ -167,14 +167,14 @@ fn oracle_reduce_or_bool_2d_full() {
     let input = make_bool_tensor(&[2, 2], vec![false, false, false, true]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0, 1])).unwrap();
     assert_eq!(extract_shape(&result), Vec::<u32>::new());
-    assert_eq!(extract_bool_scalar(&result), true);
+    assert!(extract_bool_scalar(&result));
 }
 
 #[test]
 fn oracle_reduce_or_bool_2d_full_all_false() {
     let input = make_bool_tensor(&[2, 2], vec![false, false, false, false]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0, 1])).unwrap();
-    assert_eq!(extract_bool_scalar(&result), false);
+    assert!(!extract_bool_scalar(&result));
 }
 
 // ====================== INTEGER BITWISE OR ======================

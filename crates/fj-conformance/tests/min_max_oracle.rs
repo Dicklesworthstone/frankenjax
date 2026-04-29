@@ -370,7 +370,8 @@ fn oracle_min_max_relationship() {
         let a = make_f64_tensor(&[], vec![a_val]);
         let b = make_f64_tensor(&[], vec![b_val]);
 
-        let min_result = eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let min_result =
+            eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &no_params()).unwrap();
         let max_result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
 
         let min_val = extract_f64_scalar(&min_result);
@@ -397,7 +398,8 @@ fn oracle_min_max_ordering() {
         let a = make_f64_tensor(&[], vec![a_val]);
         let b = make_f64_tensor(&[], vec![b_val]);
 
-        let min_result = eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let min_result =
+            eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &no_params()).unwrap();
         let max_result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
 
         let min_val = extract_f64_scalar(&min_result);

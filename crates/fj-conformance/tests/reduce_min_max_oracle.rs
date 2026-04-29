@@ -102,7 +102,8 @@ fn oracle_reduce_min_full_1d() {
 #[test]
 fn oracle_reduce_min_full_2d() {
     let input = make_f64_tensor(&[2, 3], vec![5.0, 2.0, 8.0, 1.0, 9.0, 3.0]);
-    let result = eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0, 1])).unwrap();
+    let result =
+        eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0, 1])).unwrap();
     assert_eq!(extract_shape(&result), Vec::<u32>::new());
     assert_eq!(extract_f64_scalar(&result), 1.0);
 }
@@ -210,7 +211,8 @@ fn oracle_reduce_max_full_1d() {
 #[test]
 fn oracle_reduce_max_full_2d() {
     let input = make_f64_tensor(&[2, 3], vec![5.0, 2.0, 8.0, 1.0, 9.0, 3.0]);
-    let result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0, 1])).unwrap();
+    let result =
+        eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0, 1])).unwrap();
     assert_eq!(extract_shape(&result), Vec::<u32>::new());
     assert_eq!(extract_f64_scalar(&result), 9.0);
 }
@@ -310,9 +312,14 @@ fn oracle_reduce_max_i64_negative() {
 fn oracle_reduce_min_max_relationship() {
     // For same input: reduce_min <= reduce_max
     let input = make_f64_tensor(&[5], vec![3.0, 1.0, 4.0, 1.0, 5.0]);
-    let min_result =
-        eval_primitive(Primitive::ReduceMin, &[input.clone()], &params_with_axes(&[0])).unwrap();
-    let max_result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
+    let min_result = eval_primitive(
+        Primitive::ReduceMin,
+        std::slice::from_ref(&input),
+        &params_with_axes(&[0]),
+    )
+    .unwrap();
+    let max_result =
+        eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
 
     let min_val = extract_f64_scalar(&min_result);
     let max_val = extract_f64_scalar(&max_result);
@@ -326,9 +333,14 @@ fn oracle_reduce_min_max_relationship() {
 fn oracle_reduce_min_max_single_element() {
     // For single element, min == max
     let input = make_f64_tensor(&[1], vec![42.0]);
-    let min_result =
-        eval_primitive(Primitive::ReduceMin, &[input.clone()], &params_with_axes(&[0])).unwrap();
-    let max_result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
+    let min_result = eval_primitive(
+        Primitive::ReduceMin,
+        std::slice::from_ref(&input),
+        &params_with_axes(&[0]),
+    )
+    .unwrap();
+    let max_result =
+        eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
 
     assert_eq!(extract_f64_scalar(&min_result), 42.0);
     assert_eq!(extract_f64_scalar(&max_result), 42.0);
@@ -338,9 +350,14 @@ fn oracle_reduce_min_max_single_element() {
 fn oracle_reduce_min_max_all_same() {
     // All same values: min == max
     let input = make_f64_tensor(&[4], vec![7.0, 7.0, 7.0, 7.0]);
-    let min_result =
-        eval_primitive(Primitive::ReduceMin, &[input.clone()], &params_with_axes(&[0])).unwrap();
-    let max_result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
+    let min_result = eval_primitive(
+        Primitive::ReduceMin,
+        std::slice::from_ref(&input),
+        &params_with_axes(&[0]),
+    )
+    .unwrap();
+    let max_result =
+        eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
 
     assert_eq!(extract_f64_scalar(&min_result), 7.0);
     assert_eq!(extract_f64_scalar(&max_result), 7.0);
@@ -362,7 +379,8 @@ fn oracle_reduce_min_multi_axis() {
             2.0, 3.0, // [1, 2, :]
         ],
     );
-    let result = eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0, 2])).unwrap();
+    let result =
+        eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     // For each position in axis 1, find min across axes 0 and 2
     // axis 1 = 0: min(1, 5, 6, 9) = 1
@@ -375,11 +393,10 @@ fn oracle_reduce_min_multi_axis() {
 fn oracle_reduce_max_multi_axis() {
     let input = make_f64_tensor(
         &[2, 3, 2],
-        vec![
-            1.0, 5.0, 3.0, 2.0, 8.0, 4.0, 6.0, 9.0, 7.0, 1.0, 2.0, 3.0,
-        ],
+        vec![1.0, 5.0, 3.0, 2.0, 8.0, 4.0, 6.0, 9.0, 7.0, 1.0, 2.0, 3.0],
     );
-    let result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0, 2])).unwrap();
+    let result =
+        eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     // For each position in axis 1, find max across axes 0 and 2
     // axis 1 = 0: max(1, 5, 6, 9) = 9

@@ -241,11 +241,7 @@ fn oracle_ceil_floor_relationship() {
         let ceil_val = extract_f64_scalar(&ceil_result);
         let floor_neg_val = -extract_f64_scalar(&floor_result);
 
-        assert_eq!(
-            ceil_val, floor_neg_val,
-            "ceil({}) = -floor(-{})",
-            x, x
-        );
+        assert_eq!(ceil_val, floor_neg_val, "ceil({}) = -floor(-{})", x, x);
     }
 }
 

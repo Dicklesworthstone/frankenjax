@@ -238,7 +238,7 @@ fn oracle_dot_distributive() {
         extract_f64_scalar(&a_bc),
         ab_plus_ac,
         1e-12,
-        "distributive property"
+        "distributive property",
     );
 }
 
@@ -257,7 +257,7 @@ fn oracle_dot_scalar_mult_factor() {
         extract_f64_scalar(&ka_b),
         k * extract_f64_scalar(&ab),
         1e-12,
-        "scalar multiplication factor"
+        "scalar multiplication factor",
     );
 }
 

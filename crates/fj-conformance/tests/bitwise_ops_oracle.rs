@@ -116,7 +116,11 @@ fn oracle_bitwise_and_basic() {
     let a = make_i64_tensor(&[], vec![0b1100]);
     let b = make_i64_tensor(&[], vec![0b1010]);
     let result = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_i64_scalar(&result), 0b1000, "0b1100 & 0b1010 = 0b1000");
+    assert_eq!(
+        extract_i64_scalar(&result),
+        0b1000,
+        "0b1100 & 0b1010 = 0b1000"
+    );
 }
 
 #[test]
@@ -146,8 +150,7 @@ fn oracle_bitwise_and_idempotent() {
     // x & x = x
     for x in [0, 1, -1, 42, 0xFF] {
         let a = make_i64_tensor(&[], vec![x]);
-        let result =
-            eval_primitive(Primitive::BitwiseAnd, &[a.clone(), a], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::BitwiseAnd, &[a.clone(), a], &no_params()).unwrap();
         assert_eq!(extract_i64_scalar(&result), x, "x & x = x");
     }
 }
@@ -195,7 +198,11 @@ fn oracle_bitwise_or_basic() {
     let a = make_i64_tensor(&[], vec![0b1100]);
     let b = make_i64_tensor(&[], vec![0b1010]);
     let result = eval_primitive(Primitive::BitwiseOr, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_i64_scalar(&result), 0b1110, "0b1100 | 0b1010 = 0b1110");
+    assert_eq!(
+        extract_i64_scalar(&result),
+        0b1110,
+        "0b1100 | 0b1010 = 0b1110"
+    );
 }
 
 #[test]
@@ -264,7 +271,11 @@ fn oracle_bitwise_xor_basic() {
     let a = make_i64_tensor(&[], vec![0b1100]);
     let b = make_i64_tensor(&[], vec![0b1010]);
     let result = eval_primitive(Primitive::BitwiseXor, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_i64_scalar(&result), 0b0110, "0b1100 ^ 0b1010 = 0b0110");
+    assert_eq!(
+        extract_i64_scalar(&result),
+        0b0110,
+        "0b1100 ^ 0b1010 = 0b0110"
+    );
 }
 
 #[test]
@@ -283,8 +294,7 @@ fn oracle_bitwise_xor_self_cancel() {
     // x ^ x = 0 for all x
     for x in [0, 1, -1, 42, 0xFF, i64::MAX, i64::MIN] {
         let a = make_i64_tensor(&[], vec![x]);
-        let result =
-            eval_primitive(Primitive::BitwiseXor, &[a.clone(), a], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::BitwiseXor, &[a.clone(), a], &no_params()).unwrap();
         assert_eq!(extract_i64_scalar(&result), 0, "x ^ x = 0");
     }
 }
@@ -344,14 +354,12 @@ fn oracle_de_morgan_and() {
         // ~(a & b)
         let and_result =
             eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b.clone()], &no_params()).unwrap();
-        let not_and =
-            eval_primitive(Primitive::BitwiseNot, &[and_result], &no_params()).unwrap();
+        let not_and = eval_primitive(Primitive::BitwiseNot, &[and_result], &no_params()).unwrap();
 
         // (~a) | (~b)
         let not_a = eval_primitive(Primitive::BitwiseNot, &[a], &no_params()).unwrap();
         let not_b = eval_primitive(Primitive::BitwiseNot, &[b], &no_params()).unwrap();
-        let or_nots =
-            eval_primitive(Primitive::BitwiseOr, &[not_a, not_b], &no_params()).unwrap();
+        let or_nots = eval_primitive(Primitive::BitwiseOr, &[not_a, not_b], &no_params()).unwrap();
 
         assert_eq!(
             extract_i64_scalar(&not_and),
@@ -404,8 +412,7 @@ fn oracle_and_distributes_over_or() {
             eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b_or_c], &no_params()).unwrap();
 
         // (a & b) | (a & c)
-        let a_and_b =
-            eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b], &no_params()).unwrap();
+        let a_and_b = eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b], &no_params()).unwrap();
         let a_and_c = eval_primitive(Primitive::BitwiseAnd, &[a, c], &no_params()).unwrap();
         let rhs = eval_primitive(Primitive::BitwiseOr, &[a_and_b, a_and_c], &no_params()).unwrap();
 
@@ -434,8 +441,7 @@ fn oracle_or_distributes_over_and() {
         // (a | b) & (a | c)
         let a_or_b = eval_primitive(Primitive::BitwiseOr, &[a.clone(), b], &no_params()).unwrap();
         let a_or_c = eval_primitive(Primitive::BitwiseOr, &[a, c], &no_params()).unwrap();
-        let rhs =
-            eval_primitive(Primitive::BitwiseAnd, &[a_or_b, a_or_c], &no_params()).unwrap();
+        let rhs = eval_primitive(Primitive::BitwiseAnd, &[a_or_b, a_or_c], &no_params()).unwrap();
 
         assert_eq!(
             extract_i64_scalar(&lhs),
@@ -454,16 +460,11 @@ fn oracle_absorption_and_or() {
         let a = make_i64_tensor(&[], vec![a_val]);
         let b = make_i64_tensor(&[], vec![b_val]);
 
-        let a_or_b =
-            eval_primitive(Primitive::BitwiseOr, &[a.clone(), b], &no_params()).unwrap();
+        let a_or_b = eval_primitive(Primitive::BitwiseOr, &[a.clone(), b], &no_params()).unwrap();
         let result =
             eval_primitive(Primitive::BitwiseAnd, &[a.clone(), a_or_b], &no_params()).unwrap();
 
-        assert_eq!(
-            extract_i64_scalar(&result),
-            a_val,
-            "a & (a | b) = a"
-        );
+        assert_eq!(extract_i64_scalar(&result), a_val, "a & (a | b) = a");
     }
 }
 
@@ -474,16 +475,11 @@ fn oracle_absorption_or_and() {
         let a = make_i64_tensor(&[], vec![a_val]);
         let b = make_i64_tensor(&[], vec![b_val]);
 
-        let a_and_b =
-            eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b], &no_params()).unwrap();
+        let a_and_b = eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b], &no_params()).unwrap();
         let result =
             eval_primitive(Primitive::BitwiseOr, &[a.clone(), a_and_b], &no_params()).unwrap();
 
-        assert_eq!(
-            extract_i64_scalar(&result),
-            a_val,
-            "a | (a & b) = a"
-        );
+        assert_eq!(extract_i64_scalar(&result), a_val, "a | (a & b) = a");
     }
 }
 
@@ -548,8 +544,14 @@ fn oracle_xor_toggle_bits() {
 
 #[test]
 fn oracle_bitwise_and_3d() {
-    let a = make_i64_tensor(&[2, 2, 2], vec![0xFF, 0xF0, 0x0F, 0x00, 0xAA, 0x55, 0x33, 0xCC]);
-    let b = make_i64_tensor(&[2, 2, 2], vec![0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F]);
+    let a = make_i64_tensor(
+        &[2, 2, 2],
+        vec![0xFF, 0xF0, 0x0F, 0x00, 0xAA, 0x55, 0x33, 0xCC],
+    );
+    let b = make_i64_tensor(
+        &[2, 2, 2],
+        vec![0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F],
+    );
     let result = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     assert_eq!(

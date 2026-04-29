@@ -59,7 +59,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -76,7 +76,7 @@ fn extract_i64_scalar(v: &Value) -> i64 {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -200,7 +200,8 @@ fn oracle_reduce_sum_3d_axis2() {
 #[test]
 fn oracle_reduce_sum_3d_full() {
     let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
-    let result = eval_primitive(Primitive::ReduceSum, &[input], &reduce_params(&[0, 1, 2])).unwrap();
+    let result =
+        eval_primitive(Primitive::ReduceSum, &[input], &reduce_params(&[0, 1, 2])).unwrap();
     assert_eq!(extract_shape(&result), Vec::<u32>::new());
     assert_eq!(extract_f64_scalar(&result), 36.0);
 }
@@ -318,12 +319,17 @@ fn oracle_reduce_sum_axis_order_independent() {
     let input1 = make_f64_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let input2 = make_f64_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
 
-    let result_01 =
-        extract_f64_scalar(&eval_primitive(Primitive::ReduceSum, &[input1], &reduce_params(&[0, 1])).unwrap());
-    let result_10 =
-        extract_f64_scalar(&eval_primitive(Primitive::ReduceSum, &[input2], &reduce_params(&[1, 0])).unwrap());
+    let result_01 = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceSum, &[input1], &reduce_params(&[0, 1])).unwrap(),
+    );
+    let result_10 = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceSum, &[input2], &reduce_params(&[1, 0])).unwrap(),
+    );
 
-    assert_eq!(result_01, result_10, "sum should be independent of axis order");
+    assert_eq!(
+        result_01, result_10,
+        "sum should be independent of axis order"
+    );
 }
 
 // ====================== MULTI-AXIS PARTIAL REDUCTIONS ======================

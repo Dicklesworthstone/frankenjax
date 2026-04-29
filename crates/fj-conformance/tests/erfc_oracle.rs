@@ -134,7 +134,12 @@ fn oracle_erfc_two() {
 fn oracle_erfc_half() {
     let input = make_f64_tensor(&[], vec![0.5]);
     let result = eval_primitive(Primitive::Erfc, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), ref_erfc(0.5), 1e-14, "erfc(0.5)");
+    assert_close(
+        extract_f64_scalar(&result),
+        ref_erfc(0.5),
+        1e-14,
+        "erfc(0.5)",
+    );
 }
 
 // ======================== Negative Values ========================
@@ -289,7 +294,8 @@ fn oracle_erfc_erf_relationship() {
     for x in [-2.0, -1.0, 0.0, 1.0, 2.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let erfc_result = eval_primitive(Primitive::Erfc, &[input.clone()], &no_params()).unwrap();
+        let erfc_result =
+            eval_primitive(Primitive::Erfc, std::slice::from_ref(&input), &no_params()).unwrap();
         let erf_result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
 
         let erfc_val = extract_f64_scalar(&erfc_result);

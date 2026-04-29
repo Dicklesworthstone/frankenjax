@@ -55,7 +55,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
             match &t.elements[0] {
                 Literal::F32Bits(bits) => f32::from_bits(*bits) as f64,
                 Literal::F64Bits(bits) => f64::from_bits(*bits),
-                _ => panic!("expected float"),
+                _ => unreachable!("expected float"),
             }
         }
         Value::Scalar(Literal::F32Bits(bits)) => f32::from_bits(*bits) as f64,
@@ -71,10 +71,10 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
             .map(|l| match l {
                 Literal::F32Bits(bits) => f32::from_bits(*bits) as f64,
                 Literal::F64Bits(bits) => f64::from_bits(*bits),
-                _ => panic!("expected float"),
+                _ => unreachable!("expected float"),
             })
             .collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -264,7 +264,10 @@ fn oracle_imag_1d_c64() {
 
 #[test]
 fn oracle_real_2d_c128() {
-    let input = make_complex128_tensor(&[2, 2], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+    let input = make_complex128_tensor(
+        &[2, 2],
+        vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)],
+    );
     let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_f64_vec(&result);
@@ -276,7 +279,10 @@ fn oracle_real_2d_c128() {
 
 #[test]
 fn oracle_imag_2d_c128() {
-    let input = make_complex128_tensor(&[2, 2], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+    let input = make_complex128_tensor(
+        &[2, 2],
+        vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)],
+    );
     let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_f64_vec(&result);
@@ -293,7 +299,8 @@ fn oracle_real_imag_magnitude() {
     // |z|^2 = Real(z)^2 + Imag(z)^2
     let z = (3.0, 4.0); // |z| = 5
     let input = make_complex64_tensor(&[], vec![z]);
-    let real_result = eval_primitive(Primitive::Real, &[input.clone()], &no_params()).unwrap();
+    let real_result =
+        eval_primitive(Primitive::Real, std::slice::from_ref(&input), &no_params()).unwrap();
     let imag_result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
     let re = extract_f64_scalar(&real_result);
     let im = extract_f64_scalar(&imag_result);
@@ -312,10 +319,26 @@ fn oracle_real_imag_conjugate_property() {
     let z_input = make_complex64_tensor(&[], vec![z]);
     let conj_input = make_complex64_tensor(&[], vec![conj_z]);
 
-    let real_z = extract_f64_scalar(&eval_primitive(Primitive::Real, &[z_input.clone()], &no_params()).unwrap());
-    let real_conj = extract_f64_scalar(&eval_primitive(Primitive::Real, &[conj_input.clone()], &no_params()).unwrap());
-    let imag_z = extract_f64_scalar(&eval_primitive(Primitive::Imag, &[z_input], &no_params()).unwrap());
-    let imag_conj = extract_f64_scalar(&eval_primitive(Primitive::Imag, &[conj_input], &no_params()).unwrap());
+    let real_z = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::Real,
+            std::slice::from_ref(&z_input),
+            &no_params(),
+        )
+        .unwrap(),
+    );
+    let real_conj = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::Real,
+            std::slice::from_ref(&conj_input),
+            &no_params(),
+        )
+        .unwrap(),
+    );
+    let imag_z =
+        extract_f64_scalar(&eval_primitive(Primitive::Imag, &[z_input], &no_params()).unwrap());
+    let imag_conj =
+        extract_f64_scalar(&eval_primitive(Primitive::Imag, &[conj_input], &no_params()).unwrap());
 
     assert_close_f64(real_z, real_conj, 1e-6, "Real(z) = Real(conj(z))");
     assert_close_f64(imag_z, -imag_conj, 1e-6, "Imag(z) = -Imag(conj(z))");

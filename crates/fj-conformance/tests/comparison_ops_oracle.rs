@@ -55,7 +55,7 @@ fn extract_bool_vec(v: &Value) -> Vec<bool> {
             .iter()
             .map(|l| match l {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool literal"),
+                _ => unreachable!("expected bool literal"),
             })
             .collect(),
         Value::Scalar(Literal::Bool(b)) => vec![*b],
@@ -69,11 +69,11 @@ fn extract_bool_scalar(v: &Value) -> bool {
             assert_eq!(t.shape.dims.len(), 0, "expected scalar");
             match &t.elements[0] {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool literal"),
+                _ => unreachable!("expected bool literal"),
             }
         }
         Value::Scalar(Literal::Bool(b)) => *b,
-        _ => panic!("expected bool"),
+        _ => unreachable!("expected bool"),
     }
 }
 
@@ -531,10 +531,11 @@ fn oracle_trichotomy() {
         let eq_val = extract_bool_scalar(&eq);
         let gt_val = extract_bool_scalar(&gt);
 
-        let count = [lt_val, eq_val, gt_val]
-            .iter()
-            .filter(|&&x| x)
-            .count();
-        assert_eq!(count, 1, "exactly one of <, ==, > is true for {} vs {}", a_val, b_val);
+        let count = [lt_val, eq_val, gt_val].iter().filter(|&&x| x).count();
+        assert_eq!(
+            count, 1,
+            "exactly one of <, ==, > is true for {} vs {}",
+            a_val, b_val
+        );
     }
 }

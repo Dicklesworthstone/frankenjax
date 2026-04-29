@@ -75,7 +75,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -92,7 +92,7 @@ fn extract_i64_scalar(v: &Value) -> i64 {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -245,10 +245,15 @@ fn oracle_abs_multiplicative() {
         let abs_x_input = make_f64_tensor(&[], vec![x]);
         let abs_y_input = make_f64_tensor(&[], vec![y]);
 
-        let abs_product =
-            extract_f64_scalar(&eval_primitive(Primitive::Abs, &[abs_product_input], &no_params()).unwrap());
-        let abs_x = extract_f64_scalar(&eval_primitive(Primitive::Abs, &[abs_x_input], &no_params()).unwrap());
-        let abs_y = extract_f64_scalar(&eval_primitive(Primitive::Abs, &[abs_y_input], &no_params()).unwrap());
+        let abs_product = extract_f64_scalar(
+            &eval_primitive(Primitive::Abs, &[abs_product_input], &no_params()).unwrap(),
+        );
+        let abs_x = extract_f64_scalar(
+            &eval_primitive(Primitive::Abs, &[abs_x_input], &no_params()).unwrap(),
+        );
+        let abs_y = extract_f64_scalar(
+            &eval_primitive(Primitive::Abs, &[abs_y_input], &no_params()).unwrap(),
+        );
 
         assert_close(
             abs_product,
@@ -357,7 +362,8 @@ fn oracle_abs_idempotent() {
     for x in [-5.0, -1.0, 0.0, 1.0, 5.0] {
         let input = make_f64_tensor(&[], vec![x]);
         let abs1 = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
-        let abs2 = eval_primitive(Primitive::Abs, &[abs1.clone()], &no_params()).unwrap();
+        let abs2 =
+            eval_primitive(Primitive::Abs, std::slice::from_ref(&abs1), &no_params()).unwrap();
         assert_eq!(
             extract_f64_scalar(&abs1),
             extract_f64_scalar(&abs2),
@@ -383,13 +389,28 @@ fn oracle_abs_triangle_inequality_check() {
     for (x, y) in test_pairs {
         let sum = x + y;
         let abs_sum = extract_f64_scalar(
-            &eval_primitive(Primitive::Abs, &[make_f64_tensor(&[], vec![sum])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Abs,
+                &[make_f64_tensor(&[], vec![sum])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let abs_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Abs, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Abs,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let abs_y = extract_f64_scalar(
-            &eval_primitive(Primitive::Abs, &[make_f64_tensor(&[], vec![y])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Abs,
+                &[make_f64_tensor(&[], vec![y])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert!(
             abs_sum <= abs_x + abs_y + 1e-14,

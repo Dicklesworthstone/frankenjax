@@ -48,7 +48,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -223,10 +223,20 @@ fn oracle_sin_odd() {
     // sin(-x) = -sin(x)
     for x in [0.1, 0.5, 1.0, std::f64::consts::FRAC_PI_4, 2.0] {
         let pos = extract_f64_scalar(
-            &eval_primitive(Primitive::Sin, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sin,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let neg = extract_f64_scalar(
-            &eval_primitive(Primitive::Sin, &[make_f64_tensor(&[], vec![-x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sin,
+                &[make_f64_tensor(&[], vec![-x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(neg, -pos, 1e-14, &format!("sin(-{}) = -sin({})", x, x));
     }
@@ -239,10 +249,20 @@ fn oracle_cos_even() {
     // cos(-x) = cos(x)
     for x in [0.1, 0.5, 1.0, std::f64::consts::FRAC_PI_4, 2.0] {
         let pos = extract_f64_scalar(
-            &eval_primitive(Primitive::Cos, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Cos,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let neg = extract_f64_scalar(
-            &eval_primitive(Primitive::Cos, &[make_f64_tensor(&[], vec![-x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Cos,
+                &[make_f64_tensor(&[], vec![-x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(neg, pos, 1e-14, &format!("cos(-{}) = cos({})", x, x));
     }
@@ -255,10 +275,20 @@ fn oracle_sin_cos_pythagorean() {
     // sin^2(x) + cos^2(x) = 1
     for x in [0.0, 0.5, 1.0, std::f64::consts::PI, 2.5, -1.0] {
         let sin_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Sin, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sin,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let cos_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Cos, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Cos,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let sum = sin_x * sin_x + cos_x * cos_x;
         assert_close(sum, 1.0, 1e-14, &format!("sin^2({}) + cos^2({}) = 1", x, x));
@@ -272,7 +302,12 @@ fn oracle_sin_periodic() {
     // sin(x + 2π) = sin(x)
     for x in [0.0, 0.5, 1.0, 2.0] {
         let sin_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Sin, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sin,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let sin_x_2pi = extract_f64_scalar(
             &eval_primitive(
@@ -282,7 +317,12 @@ fn oracle_sin_periodic() {
             )
             .unwrap(),
         );
-        assert_close(sin_x_2pi, sin_x, 1e-13, &format!("sin({} + 2π) = sin({})", x, x));
+        assert_close(
+            sin_x_2pi,
+            sin_x,
+            1e-13,
+            &format!("sin({} + 2π) = sin({})", x, x),
+        );
     }
 }
 
@@ -291,7 +331,12 @@ fn oracle_cos_periodic() {
     // cos(x + 2π) = cos(x)
     for x in [0.0, 0.5, 1.0, 2.0] {
         let cos_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Cos, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Cos,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let cos_x_2pi = extract_f64_scalar(
             &eval_primitive(
@@ -301,7 +346,12 @@ fn oracle_cos_periodic() {
             )
             .unwrap(),
         );
-        assert_close(cos_x_2pi, cos_x, 1e-13, &format!("cos({} + 2π) = cos({})", x, x));
+        assert_close(
+            cos_x_2pi,
+            cos_x,
+            1e-13,
+            &format!("cos({} + 2π) = cos({})", x, x),
+        );
     }
 }
 
@@ -312,7 +362,12 @@ fn oracle_cos_sin_phase_shift() {
     // cos(x) = sin(x + π/2)
     for x in [0.0, 0.5, 1.0, -0.5] {
         let cos_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Cos, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Cos,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let sin_x_plus = extract_f64_scalar(
             &eval_primitive(
@@ -322,7 +377,12 @@ fn oracle_cos_sin_phase_shift() {
             )
             .unwrap(),
         );
-        assert_close(cos_x, sin_x_plus, 1e-14, &format!("cos({}) = sin({} + π/2)", x, x));
+        assert_close(
+            cos_x,
+            sin_x_plus,
+            1e-14,
+            &format!("cos({}) = sin({} + π/2)", x, x),
+        );
     }
 }
 
@@ -363,10 +423,15 @@ fn oracle_sin_range() {
     // sin(x) is always in [-1, 1]
     for x in [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, -1.0, -5.0] {
         let val = extract_f64_scalar(
-            &eval_primitive(Primitive::Sin, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sin,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert!(
-            val >= -1.0 && val <= 1.0,
+            (-1.0..=1.0).contains(&val),
             "sin({}) = {} should be in [-1, 1]",
             x,
             val
@@ -379,10 +444,15 @@ fn oracle_cos_range() {
     // cos(x) is always in [-1, 1]
     for x in [0.0, 0.5, 1.0, 2.0, 5.0, 10.0, -1.0, -5.0] {
         let val = extract_f64_scalar(
-            &eval_primitive(Primitive::Cos, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Cos,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert!(
-            val >= -1.0 && val <= 1.0,
+            (-1.0..=1.0).contains(&val),
             "cos({}) = {} should be in [-1, 1]",
             x,
             val
@@ -424,7 +494,8 @@ fn oracle_cos_1d() {
 fn oracle_sincos_2d() {
     let pi = std::f64::consts::PI;
     let input = make_f64_tensor(&[2, 2], vec![0.0, pi / 2.0, pi, 3.0 * pi / 2.0]);
-    let sin_result = eval_primitive(Primitive::Sin, &[input.clone()], &no_params()).unwrap();
+    let sin_result =
+        eval_primitive(Primitive::Sin, std::slice::from_ref(&input), &no_params()).unwrap();
     let cos_result = eval_primitive(Primitive::Cos, &[input], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&sin_result), vec![2, 2]);

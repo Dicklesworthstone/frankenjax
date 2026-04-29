@@ -96,21 +96,36 @@ fn oracle_tanh_neg_zero() {
 fn oracle_tanh_one() {
     let input = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Tanh, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 1.0_f64.tanh(), 1e-14, "tanh(1)");
+    assert_close(
+        extract_f64_scalar(&result),
+        1.0_f64.tanh(),
+        1e-14,
+        "tanh(1)",
+    );
 }
 
 #[test]
 fn oracle_tanh_two() {
     let input = make_f64_tensor(&[], vec![2.0]);
     let result = eval_primitive(Primitive::Tanh, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 2.0_f64.tanh(), 1e-14, "tanh(2)");
+    assert_close(
+        extract_f64_scalar(&result),
+        2.0_f64.tanh(),
+        1e-14,
+        "tanh(2)",
+    );
 }
 
 #[test]
 fn oracle_tanh_half() {
     let input = make_f64_tensor(&[], vec![0.5]);
     let result = eval_primitive(Primitive::Tanh, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 0.5_f64.tanh(), 1e-14, "tanh(0.5)");
+    assert_close(
+        extract_f64_scalar(&result),
+        0.5_f64.tanh(),
+        1e-14,
+        "tanh(0.5)",
+    );
 }
 
 // ======================== Negative Values ========================
@@ -364,10 +379,5 @@ fn oracle_tanh_derivative_at_zero() {
     let result = eval_primitive(Primitive::Tanh, &[input], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
     let approx_derivative = val / h;
-    assert_close(
-        approx_derivative,
-        1.0,
-        1e-6,
-        "tanh'(0) ≈ 1",
-    );
+    assert_close(approx_derivative, 1.0, 1e-6, "tanh'(0) ≈ 1");
 }

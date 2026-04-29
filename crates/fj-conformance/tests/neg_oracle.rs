@@ -17,6 +17,8 @@
 //! - Mathematical properties
 //! - Tensor shapes
 
+#![allow(clippy::approx_constant)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -75,7 +77,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -92,7 +94,7 @@ fn extract_i64_scalar(v: &Value) -> i64 {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -102,11 +104,13 @@ fn extract_complex_scalar(v: &Value) -> (f64, f64) {
             assert!(t.shape.dims.is_empty(), "expected scalar");
             match &t.elements[0] {
                 Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
-                _ => panic!("expected complex128"),
+                _ => unreachable!("expected complex128"),
             }
         }
-        Value::Scalar(Literal::Complex128Bits(re, im)) => (f64::from_bits(*re), f64::from_bits(*im)),
-        _ => panic!("expected complex128"),
+        Value::Scalar(Literal::Complex128Bits(re, im)) => {
+            (f64::from_bits(*re), f64::from_bits(*im))
+        }
+        _ => unreachable!("expected complex128"),
     }
 }
 
@@ -221,7 +225,15 @@ fn oracle_neg_nan() {
 #[test]
 fn oracle_neg_involution() {
     // neg(neg(x)) = x
-    for x in [1.0, -1.0, 0.0, 3.14, -2.718, f64::INFINITY, f64::NEG_INFINITY] {
+    for x in [
+        1.0,
+        -1.0,
+        0.0,
+        3.14,
+        -2.718,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ] {
         let input = make_f64_tensor(&[], vec![x]);
         let neg1 = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
         let neg2 = eval_primitive(Primitive::Neg, &[neg1], &no_params()).unwrap();
@@ -241,7 +253,8 @@ fn oracle_neg_additive_inverse() {
     // x + neg(x) = 0
     for x in [1.0, -1.0, 3.14, -2.718, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_x = extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
+        let neg_x =
+            extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
         let sum = x + neg_x;
         assert_close(sum, 0.0, 1e-14, &format!("{} + neg({}) = 0", x, x));
     }
@@ -256,13 +269,28 @@ fn oracle_neg_distributes_over_sum() {
     for (x, y) in test_pairs {
         let sum = x + y;
         let neg_sum = extract_f64_scalar(
-            &eval_primitive(Primitive::Neg, &[make_f64_tensor(&[], vec![sum])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Neg,
+                &[make_f64_tensor(&[], vec![sum])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let neg_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Neg, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Neg,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let neg_y = extract_f64_scalar(
-            &eval_primitive(Primitive::Neg, &[make_f64_tensor(&[], vec![y])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Neg,
+                &[make_f64_tensor(&[], vec![y])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(
             neg_sum,
@@ -328,7 +356,10 @@ fn oracle_neg_2d_f64() {
     let input = make_f64_tensor(&[2, 3], vec![-1.0, -2.0, -3.0, 4.0, 5.0, 6.0]);
     let result = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0, -4.0, -5.0, -6.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![1.0, 2.0, 3.0, -4.0, -5.0, -6.0]
+    );
 }
 
 // ====================== RELATIONSHIP WITH OTHER OPS ======================
@@ -338,9 +369,15 @@ fn oracle_neg_vs_mul_minus_one() {
     // neg(x) = x * (-1)
     for x in [1.0, -1.0, 0.0, 3.14, -2.718] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_result = extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
-        let expected = x * -1.0;
-        assert_close(neg_result, expected, 1e-14, &format!("neg({}) = {} * (-1)", x, x));
+        let neg_result =
+            extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
+        let expected = -x;
+        assert_close(
+            neg_result,
+            expected,
+            1e-14,
+            &format!("neg({}) = {} * (-1)", x, x),
+        );
     }
 }
 
@@ -351,7 +388,8 @@ fn oracle_neg_flips_sign() {
     // sign(neg(x)) = -sign(x) for x != 0
     for x in [1.0, -1.0, 100.0, -100.0, 0.001, -0.001] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_result = extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
+        let neg_result =
+            extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
         assert_eq!(
             neg_result.signum(),
             -(x.signum()),

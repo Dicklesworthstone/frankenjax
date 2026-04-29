@@ -170,7 +170,7 @@ fn oracle_erf_range() {
         let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
         let val = extract_f64_scalar(&result);
         assert!(
-            val >= -1.0 && val <= 1.0,
+            (-1.0..=1.0).contains(&val),
             "erf({}) = {} should be in [-1, 1]",
             x,
             val
@@ -240,7 +240,12 @@ fn oracle_erf_small_values() {
         let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
         let val = extract_f64_scalar(&result);
         let expected = coeff * x;
-        assert_close(val, expected, expected.abs() * 0.01, &format!("erf({}) ≈ 2x/sqrt(π)", x));
+        assert_close(
+            val,
+            expected,
+            expected.abs() * 0.01,
+            &format!("erf({}) ≈ 2x/sqrt(π)", x),
+        );
     }
 }
 

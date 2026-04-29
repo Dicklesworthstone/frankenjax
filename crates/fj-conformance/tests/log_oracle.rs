@@ -66,7 +66,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -76,11 +76,13 @@ fn extract_complex_scalar(v: &Value) -> (f64, f64) {
             assert!(t.shape.dims.is_empty(), "expected scalar");
             match &t.elements[0] {
                 Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
-                _ => panic!("expected complex128"),
+                _ => unreachable!("expected complex128"),
             }
         }
-        Value::Scalar(Literal::Complex128Bits(re, im)) => (f64::from_bits(*re), f64::from_bits(*im)),
-        _ => panic!("expected complex128"),
+        Value::Scalar(Literal::Complex128Bits(re, im)) => {
+            (f64::from_bits(*re), f64::from_bits(*im))
+        }
+        _ => unreachable!("expected complex128"),
     }
 }
 
@@ -166,7 +168,11 @@ fn oracle_log_zero() {
     // log(0) = -infinity
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Log, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), f64::NEG_INFINITY, "log(0) = -inf");
+    assert_eq!(
+        extract_f64_scalar(&result),
+        f64::NEG_INFINITY,
+        "log(0) = -inf"
+    );
 }
 
 #[test]
@@ -220,13 +226,28 @@ fn oracle_log_product_rule() {
     for (x, y) in test_pairs {
         let product = x * y;
         let log_product = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![product])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![product])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let log_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let log_y = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![y])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![y])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(
             log_product,
@@ -246,13 +267,28 @@ fn oracle_log_quotient_rule() {
     for (x, y) in test_pairs {
         let quotient = x / y;
         let log_quotient = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![quotient])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![quotient])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let log_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let log_y = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![y])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![y])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(
             log_quotient,
@@ -272,10 +308,20 @@ fn oracle_log_power_rule() {
     for n in [2, 3, 4, 5] {
         let x_pow_n = x.powi(n);
         let log_x_pow_n = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![x_pow_n])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![x_pow_n])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let log_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(
             log_x_pow_n,
@@ -293,10 +339,20 @@ fn oracle_log_exp_inverse() {
     // log(exp(x)) = x
     for x in [-2.0, -1.0, 0.0, 1.0, 2.0, 10.0] {
         let exp_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let log_exp_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![exp_x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![exp_x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(log_exp_x, x, 1e-14, &format!("log(exp({})) = {}", x, x));
     }

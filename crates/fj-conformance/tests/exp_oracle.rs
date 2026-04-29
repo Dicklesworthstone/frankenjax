@@ -63,7 +63,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -73,11 +73,13 @@ fn extract_complex_scalar(v: &Value) -> (f64, f64) {
             assert!(t.shape.dims.is_empty(), "expected scalar");
             match &t.elements[0] {
                 Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
-                _ => panic!("expected complex128"),
+                _ => unreachable!("expected complex128"),
             }
         }
-        Value::Scalar(Literal::Complex128Bits(re, im)) => (f64::from_bits(*re), f64::from_bits(*im)),
-        _ => panic!("expected complex128"),
+        Value::Scalar(Literal::Complex128Bits(re, im)) => {
+            (f64::from_bits(*re), f64::from_bits(*im))
+        }
+        _ => unreachable!("expected complex128"),
     }
 }
 
@@ -241,12 +243,30 @@ fn oracle_exp_additive() {
     let test_pairs = [(1.0, 2.0), (0.5, 0.5), (-1.0, 2.0), (0.0, 1.0)];
     for (x, y) in test_pairs {
         let sum = x + y;
-        let exp_sum =
-            extract_f64_scalar(&eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![sum])], &no_params()).unwrap());
-        let exp_x =
-            extract_f64_scalar(&eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap());
-        let exp_y =
-            extract_f64_scalar(&eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![y])], &no_params()).unwrap());
+        let exp_sum = extract_f64_scalar(
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![sum])],
+                &no_params(),
+            )
+            .unwrap(),
+        );
+        let exp_x = extract_f64_scalar(
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
+        );
+        let exp_y = extract_f64_scalar(
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![y])],
+                &no_params(),
+            )
+            .unwrap(),
+        );
 
         assert_close_rel(
             exp_sum,
@@ -264,12 +284,27 @@ fn oracle_exp_inverse() {
     // exp(-x) = 1 / exp(x)
     for x in [0.5, 1.0, 2.0, 3.0] {
         let exp_neg_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![-x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![-x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let exp_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
-        assert_close_rel(exp_neg_x, 1.0 / exp_x, 1e-14, &format!("exp(-{}) = 1/exp({})", x, x));
+        assert_close_rel(
+            exp_neg_x,
+            1.0 / exp_x,
+            1e-14,
+            &format!("exp(-{}) = 1/exp({})", x, x),
+        );
     }
 }
 
@@ -280,10 +315,20 @@ fn oracle_exp_log_inverse() {
     // exp(log(x)) = x for x > 0
     for x in [0.5, 1.0, 2.0, 10.0, 100.0] {
         let log_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Log, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Log,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let exp_log_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![log_x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![log_x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close_rel(exp_log_x, x, 1e-14, &format!("exp(log({})) = {}", x, x));
     }
@@ -296,9 +341,19 @@ fn oracle_exp_always_positive() {
     // exp(x) > 0 for all finite x
     for x in [-100.0, -10.0, -1.0, 0.0, 1.0, 10.0, 100.0] {
         let result = extract_f64_scalar(
-            &eval_primitive(Primitive::Exp, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Exp,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
-        assert!(result >= 0.0, "exp({}) = {} should be non-negative", x, result);
+        assert!(
+            result >= 0.0,
+            "exp({}) = {} should be non-negative",
+            x,
+            result
+        );
     }
 }
 

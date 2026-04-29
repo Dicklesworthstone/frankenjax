@@ -94,21 +94,36 @@ fn oracle_sinh_neg_zero() {
 fn oracle_sinh_one() {
     let input = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Sinh, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 1.0_f64.sinh(), 1e-14, "sinh(1)");
+    assert_close(
+        extract_f64_scalar(&result),
+        1.0_f64.sinh(),
+        1e-14,
+        "sinh(1)",
+    );
 }
 
 #[test]
 fn oracle_sinh_two() {
     let input = make_f64_tensor(&[], vec![2.0]);
     let result = eval_primitive(Primitive::Sinh, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 2.0_f64.sinh(), 1e-14, "sinh(2)");
+    assert_close(
+        extract_f64_scalar(&result),
+        2.0_f64.sinh(),
+        1e-14,
+        "sinh(2)",
+    );
 }
 
 #[test]
 fn oracle_sinh_half() {
     let input = make_f64_tensor(&[], vec![0.5]);
     let result = eval_primitive(Primitive::Sinh, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 0.5_f64.sinh(), 1e-14, "sinh(0.5)");
+    assert_close(
+        extract_f64_scalar(&result),
+        0.5_f64.sinh(),
+        1e-14,
+        "sinh(0.5)",
+    );
 }
 
 // ======================== Negative Values ========================
@@ -220,7 +235,8 @@ fn oracle_sinh_cosh_identity() {
     for x in [-2.0, -1.0, 0.0, 1.0, 2.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let cosh_result = eval_primitive(Primitive::Cosh, &[input.clone()], &no_params()).unwrap();
+        let cosh_result =
+            eval_primitive(Primitive::Cosh, std::slice::from_ref(&input), &no_params()).unwrap();
         let sinh_result = eval_primitive(Primitive::Sinh, &[input], &no_params()).unwrap();
 
         let cosh_val = extract_f64_scalar(&cosh_result);

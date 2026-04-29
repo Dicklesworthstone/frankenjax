@@ -230,7 +230,12 @@ fn oracle_tan_sin_cos_relationship() {
         let sin_val = extract_f64_scalar(&sin_result);
         let cos_val = extract_f64_scalar(&cos_result);
 
-        assert_close(tan_val, sin_val / cos_val, 1e-14, &format!("tan({}) = sin({})/cos({})", x, x, x));
+        assert_close(
+            tan_val,
+            sin_val / cos_val,
+            1e-14,
+            &format!("tan({}) = sin({})/cos({})", x, x, x),
+        );
     }
 }
 

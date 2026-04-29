@@ -129,7 +129,12 @@ fn oracle_pow_x_to_one() {
         let base = make_f64_tensor(&[], vec![x]);
         let exp = make_f64_tensor(&[], vec![1.0]);
         let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
-        assert_close(extract_f64_scalar(&result), x, 1e-14, &format!("{}^1 = {}", x, x));
+        assert_close(
+            extract_f64_scalar(&result),
+            x,
+            1e-14,
+            &format!("{}^1 = {}", x, x),
+        );
     }
 }
 

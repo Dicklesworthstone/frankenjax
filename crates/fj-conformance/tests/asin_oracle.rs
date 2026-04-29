@@ -215,20 +215,14 @@ fn oracle_asin_less_than_neg_one() {
 fn oracle_asin_pos_infinity() {
     let input = make_f64_tensor(&[], vec![f64::INFINITY]);
     let result = eval_primitive(Primitive::Asin, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "asin(+inf) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "asin(+inf) = NaN");
 }
 
 #[test]
 fn oracle_asin_neg_infinity() {
     let input = make_f64_tensor(&[], vec![f64::NEG_INFINITY]);
     let result = eval_primitive(Primitive::Asin, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "asin(-inf) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "asin(-inf) = NaN");
 }
 
 // ======================== NaN ========================
@@ -248,11 +242,7 @@ fn oracle_asin_range() {
         let input = make_f64_tensor(&[], vec![x]);
         let result = eval_primitive(Primitive::Asin, &[input], &no_params()).unwrap();
         let val = extract_f64_scalar(&result);
-        assert!(
-            val >= -std::f64::consts::FRAC_PI_2,
-            "asin({}) >= -π/2",
-            x
-        );
+        assert!(val >= -std::f64::consts::FRAC_PI_2, "asin({}) >= -π/2", x);
         assert!(val <= std::f64::consts::FRAC_PI_2, "asin({}) <= π/2", x);
     }
 }
@@ -344,10 +334,7 @@ fn oracle_asin_2d() {
 
 #[test]
 fn oracle_asin_3d() {
-    let input = make_f64_tensor(
-        &[2, 2, 2],
-        vec![-1.0, -0.5, 0.0, 0.5, -0.9, -0.1, 0.1, 0.9],
-    );
+    let input = make_f64_tensor(&[2, 2, 2], vec![-1.0, -0.5, 0.0, 0.5, -0.9, -0.1, 0.1, 0.9]);
     let result = eval_primitive(Primitive::Asin, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -379,7 +366,8 @@ fn oracle_asin_sin_identity() {
 fn oracle_asin_acos_relationship() {
     for x in [-0.9, -0.5, 0.0, 0.5, 0.9] {
         let input = make_f64_tensor(&[], vec![x]);
-        let asin_result = eval_primitive(Primitive::Asin, &[input.clone()], &no_params()).unwrap();
+        let asin_result =
+            eval_primitive(Primitive::Asin, std::slice::from_ref(&input), &no_params()).unwrap();
         let acos_result = eval_primitive(Primitive::Acos, &[input], &no_params()).unwrap();
 
         let asin_val = extract_f64_scalar(&asin_result);

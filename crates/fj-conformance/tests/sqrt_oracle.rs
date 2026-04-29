@@ -49,7 +49,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -125,14 +125,24 @@ fn oracle_sqrt_hundred() {
 fn oracle_sqrt_two() {
     let input = make_f64_tensor(&[], vec![2.0]);
     let result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), std::f64::consts::SQRT_2, 1e-14, "sqrt(2)");
+    assert_close(
+        extract_f64_scalar(&result),
+        std::f64::consts::SQRT_2,
+        1e-14,
+        "sqrt(2)",
+    );
 }
 
 #[test]
 fn oracle_sqrt_three() {
     let input = make_f64_tensor(&[], vec![3.0]);
     let result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 3.0_f64.sqrt(), 1e-14, "sqrt(3)");
+    assert_close(
+        extract_f64_scalar(&result),
+        3.0_f64.sqrt(),
+        1e-14,
+        "sqrt(3)",
+    );
 }
 
 // ====================== SPECIAL VALUES ======================
@@ -141,7 +151,11 @@ fn oracle_sqrt_three() {
 fn oracle_sqrt_infinity() {
     let input = make_f64_tensor(&[], vec![f64::INFINITY]);
     let result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), f64::INFINITY, "sqrt(inf) = inf");
+    assert_eq!(
+        extract_f64_scalar(&result),
+        f64::INFINITY,
+        "sqrt(inf) = inf"
+    );
 }
 
 #[test]
@@ -166,7 +180,12 @@ fn oracle_sqrt_squared() {
     // sqrt(x)^2 = x for x >= 0
     for x in [0.0, 0.25, 1.0, 2.0, 10.0, 100.0] {
         let sqrt_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Sqrt, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sqrt,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let squared = sqrt_x * sqrt_x;
         assert_close(squared, x, 1e-14, &format!("sqrt({})^2 = {}", x, x));
@@ -181,13 +200,28 @@ fn oracle_sqrt_multiplicative() {
     let test_pairs = [(4.0, 9.0), (2.0, 8.0), (1.0, 16.0), (0.25, 4.0)];
     for (x, y) in test_pairs {
         let sqrt_xy = extract_f64_scalar(
-            &eval_primitive(Primitive::Sqrt, &[make_f64_tensor(&[], vec![x * y])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sqrt,
+                &[make_f64_tensor(&[], vec![x * y])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let sqrt_x = extract_f64_scalar(
-            &eval_primitive(Primitive::Sqrt, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sqrt,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         let sqrt_y = extract_f64_scalar(
-            &eval_primitive(Primitive::Sqrt, &[make_f64_tensor(&[], vec![y])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sqrt,
+                &[make_f64_tensor(&[], vec![y])],
+                &no_params(),
+            )
+            .unwrap(),
         );
         assert_close(
             sqrt_xy,
@@ -205,9 +239,19 @@ fn oracle_sqrt_non_negative() {
     // sqrt(x) >= 0 for all x >= 0
     for x in [0.0, 0.001, 1.0, 10.0, 100.0] {
         let result = extract_f64_scalar(
-            &eval_primitive(Primitive::Sqrt, &[make_f64_tensor(&[], vec![x])], &no_params()).unwrap(),
+            &eval_primitive(
+                Primitive::Sqrt,
+                &[make_f64_tensor(&[], vec![x])],
+                &no_params(),
+            )
+            .unwrap(),
         );
-        assert!(result >= 0.0, "sqrt({}) = {} should be non-negative", x, result);
+        assert!(
+            result >= 0.0,
+            "sqrt({}) = {} should be non-negative",
+            x,
+            result
+        );
     }
 }
 
@@ -270,5 +314,10 @@ fn oracle_sqrt_small() {
     let x = 1e-100;
     let input = make_f64_tensor(&[], vec![x]);
     let result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 1e-50, 1e-60, "sqrt(1e-100) = 1e-50");
+    assert_close(
+        extract_f64_scalar(&result),
+        1e-50,
+        1e-60,
+        "sqrt(1e-100) = 1e-50",
+    );
 }

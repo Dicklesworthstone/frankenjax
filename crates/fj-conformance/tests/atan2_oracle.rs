@@ -93,7 +93,12 @@ fn oracle_atan2_q1_y_greater() {
     let y = make_f64_tensor(&[], vec![2.0]);
     let x = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), 2.0_f64.atan(), 1e-14, "atan2(2, 1)");
+    assert_close(
+        extract_f64_scalar(&result),
+        2.0_f64.atan(),
+        1e-14,
+        "atan2(2, 1)",
+    );
 }
 
 // ======================== Quadrant II (x < 0, y > 0) ========================
@@ -335,9 +340,19 @@ fn oracle_atan2_2d() {
     let vals = extract_f64_vec(&result);
 
     assert_eq!(vals[0], 0.0, "positive x-axis");
-    assert_close(vals[1], std::f64::consts::FRAC_PI_2, 1e-14, "positive y-axis");
+    assert_close(
+        vals[1],
+        std::f64::consts::FRAC_PI_2,
+        1e-14,
+        "positive y-axis",
+    );
     assert_close(vals[2], std::f64::consts::PI, 1e-14, "negative x-axis");
-    assert_close(vals[3], -std::f64::consts::FRAC_PI_2, 1e-14, "negative y-axis");
+    assert_close(
+        vals[3],
+        -std::f64::consts::FRAC_PI_2,
+        1e-14,
+        "negative y-axis",
+    );
 }
 
 // ======================== Identity: tan(atan2(y, x)) = y/x for x > 0 ========================
@@ -354,6 +369,11 @@ fn oracle_atan2_tan_identity() {
         let tan_result = eval_primitive(Primitive::Tan, &[tan_input], &no_params()).unwrap();
         let tan_val = extract_f64_scalar(&tan_result);
 
-        assert_close(tan_val, y / x, 1e-14, &format!("tan(atan2({}, {})) = {}/{}", y, x, y, x));
+        assert_close(
+            tan_val,
+            y / x,
+            1e-14,
+            &format!("tan(atan2({}, {})) = {}/{}", y, x, y, x),
+        );
     }
 }

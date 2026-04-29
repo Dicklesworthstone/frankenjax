@@ -109,12 +109,7 @@ fn oracle_popcount_power_of_two_i64() {
         let val = 1i64 << exp;
         let input = make_i64_tensor(&[], vec![val]);
         let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-        assert_eq!(
-            extract_i64_scalar(&result),
-            1,
-            "popcount(2^{}) = 1",
-            exp
-        );
+        assert_eq!(extract_i64_scalar(&result), 1, "popcount(2^{}) = 1", exp);
     }
 }
 
@@ -124,12 +119,7 @@ fn oracle_popcount_power_of_two_u64() {
         let val = 1u64 << exp;
         let input = make_u64_tensor(&[], vec![val]);
         let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-        assert_eq!(
-            extract_u64_scalar(&result),
-            1,
-            "popcount(2^{}) = 1",
-            exp
-        );
+        assert_eq!(extract_u64_scalar(&result), 1, "popcount(2^{}) = 1", exp);
     }
 }
 
@@ -146,14 +136,22 @@ fn oracle_popcount_all_ones_byte() {
 fn oracle_popcount_all_ones_u64() {
     let input = make_u64_tensor(&[], vec![0xFFFFFFFFFFFFFFFF]);
     let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-    assert_eq!(extract_u64_scalar(&result), 64, "popcount(0xFFFFFFFFFFFFFFFF) = 64");
+    assert_eq!(
+        extract_u64_scalar(&result),
+        64,
+        "popcount(0xFFFFFFFFFFFFFFFF) = 64"
+    );
 }
 
 #[test]
 fn oracle_popcount_all_ones_i64() {
     let input = make_i64_tensor(&[], vec![-1i64]); // All 64 bits set
     let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-    assert_eq!(extract_i64_scalar(&result), 64, "popcount(-1) = 64 bits set");
+    assert_eq!(
+        extract_i64_scalar(&result),
+        64,
+        "popcount(-1) = 64 bits set"
+    );
 }
 
 // ====================== SPECIFIC BIT PATTERNS ======================

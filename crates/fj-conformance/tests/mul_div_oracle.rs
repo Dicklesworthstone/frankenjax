@@ -18,6 +18,8 @@
 //! - Complex numbers
 //! - Tensor shapes
 
+#![allow(clippy::approx_constant)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -61,7 +63,7 @@ fn extract_f64_scalar(v: &Value) -> f64 {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -78,7 +80,7 @@ fn extract_i64_scalar(v: &Value) -> i64 {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -159,8 +161,11 @@ fn oracle_mul_commutative() {
     for (x, y) in test_pairs {
         let a = make_f64_tensor(&[], vec![x]);
         let b = make_f64_tensor(&[], vec![y]);
-        let xy = extract_f64_scalar(&eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &no_params()).unwrap());
-        let yx = extract_f64_scalar(&eval_primitive(Primitive::Mul, &[b, a], &no_params()).unwrap());
+        let xy = extract_f64_scalar(
+            &eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &no_params()).unwrap(),
+        );
+        let yx =
+            extract_f64_scalar(&eval_primitive(Primitive::Mul, &[b, a], &no_params()).unwrap());
         assert_eq!(xy, yx, "{} * {} = {} * {}", x, y, y, x);
     }
 }
@@ -320,7 +325,12 @@ fn oracle_mul_div_inverse() {
         let b = make_f64_tensor(&[], vec![y]);
         let xy = eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &no_params()).unwrap();
         let result = eval_primitive(Primitive::Div, &[xy, b], &no_params()).unwrap();
-        assert_close(extract_f64_scalar(&result), x, 1e-14, &format!("({} * {}) / {} = {}", x, y, y, x));
+        assert_close(
+            extract_f64_scalar(&result),
+            x,
+            1e-14,
+            &format!("({} * {}) / {} = {}", x, y, y, x),
+        );
     }
 }
 
