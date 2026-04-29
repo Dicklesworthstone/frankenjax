@@ -380,6 +380,72 @@ fn bytes_to_literal(
 
 /// Reshape: change the shape of a tensor without changing its data.
 /// Params: `new_shape` (comma-separated dims, -1 for a single inferred axis).
+fn resolve_reshape_dims(
+    primitive: Primitive,
+    shape_spec: &[i64],
+    elem_count: usize,
+    input_shape: Shape,
+) -> Result<Vec<u32>, EvalError> {
+    let mut inferred_axis: Option<usize> = None;
+    let mut known_product = 1_usize;
+    let mut dims = Vec::with_capacity(shape_spec.len());
+
+    for (idx, d) in shape_spec.iter().enumerate() {
+        if *d == -1 {
+            if inferred_axis.is_some() {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "only one -1 inferred axis allowed in new_shape".into(),
+                });
+            }
+            inferred_axis = Some(idx);
+            dims.push(0_u32); // temporary slot filled after the inferred extent is known
+        } else if *d >= 0 {
+            let du = u32::try_from(*d).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("new_shape dim {d} exceeds u32 range"),
+            })?;
+            known_product =
+                known_product
+                    .checked_mul(du as usize)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "reshape known dimension product overflows usize".to_owned(),
+                    })?;
+            dims.push(du);
+        } else {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid dim {d} in new_shape"),
+            });
+        }
+    }
+
+    if let Some(axis) = inferred_axis {
+        if known_product == 0 || !elem_count.is_multiple_of(known_product) {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!(
+                    "cannot infer dim: elem_count={elem_count} known_product={known_product}"
+                ),
+            });
+        }
+        let inferred = elem_count / known_product;
+        dims[axis] = u32::try_from(inferred).map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("inferred reshape dim {inferred} exceeds u32 range"),
+        })?;
+    } else if known_product != elem_count {
+        return Err(EvalError::ShapeMismatch {
+            primitive,
+            left: input_shape,
+            right: Shape { dims },
+        });
+    }
+
+    Ok(dims)
+}
+
 pub(crate) fn eval_reshape(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -397,28 +463,7 @@ pub(crate) fn eval_reshape(
 
     match &inputs[0] {
         Value::Scalar(lit) => {
-            // Scalar -> rank-N tensor (all dims must multiply to 1)
-            let mut dims = Vec::with_capacity(shape_spec.len());
-            for d in &shape_spec {
-                if *d == -1 {
-                    dims.push(1_u32);
-                } else if *d >= 0 {
-                    dims.push(*d as u32);
-                } else {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!("invalid dim {d} in new_shape"),
-                    });
-                }
-            }
-            let total: u64 = dims.iter().map(|d| u64::from(*d)).product();
-            if total != 1 {
-                return Err(EvalError::ShapeMismatch {
-                    primitive,
-                    left: Shape::scalar(),
-                    right: Shape { dims },
-                });
-            }
+            let dims = resolve_reshape_dims(primitive, &shape_spec, 1, Shape::scalar())?;
             Ok(Value::Tensor(TensorValue::new(
                 match lit {
                     Literal::I64(_) => DType::I64,
@@ -437,53 +482,12 @@ pub(crate) fn eval_reshape(
             )?))
         }
         Value::Tensor(tensor) => {
-            let elem_count = tensor.elements.len() as u64;
-            let mut inferred_axis: Option<usize> = None;
-            let mut known_product = 1_u64;
-            let mut dims = Vec::with_capacity(shape_spec.len());
-
-            for (idx, d) in shape_spec.iter().enumerate() {
-                if *d == -1 {
-                    if inferred_axis.is_some() {
-                        return Err(EvalError::Unsupported {
-                            primitive,
-                            detail: "only one -1 inferred axis allowed in new_shape".into(),
-                        });
-                    }
-                    inferred_axis = Some(idx);
-                    dims.push(0_u32); // temporary slot filled after the inferred extent is known
-                } else if *d >= 0 {
-                    let du = *d as u32;
-                    known_product *= u64::from(du);
-                    dims.push(du);
-                } else {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!("invalid dim {d} in new_shape"),
-                    });
-                }
-            }
-
-            if let Some(axis) = inferred_axis {
-                if known_product == 0 || !elem_count.is_multiple_of(known_product) {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!(
-                            "cannot infer dim: elem_count={elem_count} known_product={known_product}"
-                        ),
-                    });
-                }
-                dims[axis] = (elem_count / known_product) as u32;
-            } else {
-                let total: u64 = dims.iter().map(|d| u64::from(*d)).product();
-                if total != elem_count {
-                    return Err(EvalError::ShapeMismatch {
-                        primitive,
-                        left: tensor.shape.clone(),
-                        right: Shape { dims },
-                    });
-                }
-            }
+            let dims = resolve_reshape_dims(
+                primitive,
+                &shape_spec,
+                tensor.elements.len(),
+                tensor.shape.clone(),
+            )?;
 
             Ok(Value::Tensor(TensorValue::new(
                 tensor.dtype,
@@ -3502,6 +3506,45 @@ mod tests {
         let p = params(&[("new_shape", "6")]);
         let result = eval_reshape(&[x], &p).unwrap();
         assert_eq!(extract_shape(&result), vec![6]);
+    }
+
+    #[test]
+    fn reshape_rejects_tensor_dim_above_u32() {
+        let x =
+            Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap());
+        let p = params(&[("new_shape", "4294967296")]);
+        let err = eval_reshape(&[x], &p).unwrap_err().to_string();
+
+        assert!(
+            err.contains("new_shape dim 4294967296 exceeds u32 range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn reshape_rejects_scalar_dim_above_u32() {
+        let p = params(&[("new_shape", "4294967296")]);
+        let err = eval_reshape(&[Value::scalar_i64(1)], &p)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("new_shape dim 4294967296 exceeds u32 range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn reshape_rejects_shape_product_overflow() {
+        let x =
+            Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap());
+        let p = params(&[("new_shape", "4294967295,4294967295,4294967295")]);
+        let err = eval_reshape(&[x], &p).unwrap_err().to_string();
+
+        assert!(
+            err.contains("reshape known dimension product overflows usize"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── Transpose ──
