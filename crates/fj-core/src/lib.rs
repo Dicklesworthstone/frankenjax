@@ -53,6 +53,10 @@ impl Shape {
 
     #[must_use]
     pub fn element_count(&self) -> Option<u64> {
+        if self.dims.contains(&0) {
+            return Some(0);
+        }
+
         self.dims
             .iter()
             .try_fold(1_u64, |acc, dim| acc.checked_mul(u64::from(*dim)))
@@ -4283,6 +4287,14 @@ mod tests {
     fn shape_zero_dim_element_count() {
         let s = Shape {
             dims: vec![3, 0, 4],
+        };
+        assert_eq!(s.element_count(), Some(0));
+    }
+
+    #[test]
+    fn shape_zero_dim_short_circuits_huge_prefix() {
+        let s = Shape {
+            dims: vec![u32::MAX, u32::MAX, u32::MAX, 0],
         };
         assert_eq!(s.element_count(), Some(0));
     }

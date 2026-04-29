@@ -2117,6 +2117,27 @@ mod tests {
     }
 
     #[test]
+    fn transpose_empty_huge_shape_returns_empty() {
+        let huge = u32::MAX;
+        let input = fj_core::TensorValue::new(
+            DType::I64,
+            fj_core::Shape {
+                dims: vec![0, huge, huge, huge],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("permutation".into(), "1,2,3,0".into());
+
+        let out = eval_primitive(Primitive::Transpose, &[Value::Tensor(input)], &params).unwrap();
+
+        let tensor = out.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn broadcast_in_dim_scalar_to_vector() {
         let mut params = BTreeMap::new();
         params.insert("shape".into(), "3".into());

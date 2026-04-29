@@ -548,40 +548,43 @@ pub(crate) fn eval_transpose(
 
             let old_dims = &tensor.shape.dims;
             let new_dims: Vec<u32> = permutation.iter().map(|&p| old_dims[p]).collect();
+            let total = tensor.elements.len();
 
-            // Compute strides for the original tensor (row-major).
-            let mut old_strides = vec![1_usize; rank];
-            for i in (0..rank.saturating_sub(1)).rev() {
-                old_strides[i] = old_strides[i + 1] * old_dims[i + 1] as usize;
+            if total == 0 {
+                return Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    Shape { dims: new_dims },
+                    Vec::new(),
+                )?));
             }
 
-            let total = tensor.elements.len();
-            let mut new_elements = vec![Literal::I64(0); total];
+            let old_strides = checked_row_major_strides(primitive, "transpose", old_dims)?;
+            let new_strides = checked_row_major_strides(primitive, "transpose", &new_dims)?;
+            let mut new_elements = Vec::with_capacity(total);
 
-            for (flat_idx, elem) in new_elements.iter_mut().enumerate() {
+            for flat_idx in 0..total {
                 // Convert flat index to multi-index in new layout.
                 let mut remaining = flat_idx;
                 let mut old_flat = 0_usize;
                 for (new_axis, &perm_axis) in permutation.iter().enumerate() {
-                    let new_dim = new_dims[new_axis] as usize;
-                    let coord = remaining / {
-                        let mut stride = 1;
-                        for d in &new_dims[(new_axis + 1)..] {
-                            stride *= *d as usize;
+                    let stride = new_strides[new_axis];
+                    let coord = remaining / stride;
+                    remaining %= stride;
+                    let offset = coord.checked_mul(old_strides[perm_axis]).ok_or_else(|| {
+                        EvalError::Unsupported {
+                            primitive,
+                            detail: format!("transpose offset overflows usize on axis {new_axis}"),
                         }
-                        stride
-                    };
-                    remaining %= {
-                        let mut stride = 1;
-                        for d in &new_dims[(new_axis + 1)..] {
-                            stride *= *d as usize;
-                        }
-                        stride
-                    };
-                    let _ = new_dim; // used for bounds
-                    old_flat += coord * old_strides[perm_axis];
+                    })?;
+                    old_flat =
+                        old_flat
+                            .checked_add(offset)
+                            .ok_or_else(|| EvalError::Unsupported {
+                                primitive,
+                                detail: "transpose flat offset overflows usize".to_owned(),
+                            })?;
                 }
-                *elem = tensor.elements[old_flat];
+                new_elements.push(tensor.elements[old_flat]);
             }
 
             Ok(Value::Tensor(TensorValue::new(
@@ -766,6 +769,10 @@ fn checked_shape_element_count(
     op_name: &str,
     dims: &[u32],
 ) -> Result<usize, EvalError> {
+    if dims.contains(&0) {
+        return Ok(0);
+    }
+
     dims.iter().try_fold(1_usize, |acc, dim| {
         acc.checked_mul(*dim as usize)
             .ok_or_else(|| EvalError::Unsupported {
