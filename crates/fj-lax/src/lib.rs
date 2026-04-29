@@ -4329,6 +4329,42 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_slice_empty_huge_trailing_shape_returns_empty() {
+        let huge = u32::MAX;
+        let t = TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![0, huge, huge, huge, huge],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        let x = Value::Tensor(t);
+        let mut params = BTreeMap::new();
+        params.insert(
+            "slice_sizes".to_owned(),
+            "0,4294967295,4294967295,4294967295,4294967295".to_owned(),
+        );
+        let out = eval_primitive(
+            Primitive::DynamicSlice,
+            &[
+                x,
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+            ],
+            &params,
+        )
+        .unwrap();
+
+        let tensor = out.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![0, huge, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn dynamic_slice_scalar_error() {
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".to_owned(), "1".to_owned());

@@ -1793,13 +1793,19 @@ pub(crate) fn eval_dynamic_slice(
         }
     }
 
-    // Compute strides
-    let mut in_strides = vec![1_usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        in_strides[i] = in_strides[i + 1] * tensor.shape.dims[i + 1] as usize;
+    let out_dims: Vec<u32> = slice_sizes.iter().map(|&s| s as u32).collect();
+    let total = checked_shape_element_count(primitive, "dynamic_slice", &out_dims)?;
+    if total == 0 {
+        return Ok(Value::Tensor(TensorValue::new(
+            tensor.dtype,
+            Shape { dims: out_dims },
+            Vec::new(),
+        )?));
     }
 
-    let total: usize = slice_sizes.iter().product();
+    // Compute strides
+    let in_strides = checked_row_major_strides(primitive, "dynamic_slice", &tensor.shape.dims)?;
+
     let has_contiguous_trailing_slice = rank > 0
         && slice_sizes
             .iter()
@@ -1808,9 +1814,19 @@ pub(crate) fn eval_dynamic_slice(
             .all(|(&slice_size, &dim)| slice_size == dim as usize)
         && starts.iter().skip(1).all(|&start| start == 0);
     if has_contiguous_trailing_slice {
-        let start_offset = starts[0] * in_strides[0];
-        let end_offset = start_offset + total;
-        let out_dims: Vec<u32> = slice_sizes.iter().map(|&s| s as u32).collect();
+        let start_offset =
+            starts[0]
+                .checked_mul(in_strides[0])
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "dynamic_slice start offset overflows usize".to_owned(),
+                })?;
+        let end_offset = start_offset
+            .checked_add(total)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "dynamic_slice end offset overflows usize".to_owned(),
+            })?;
         return Ok(Value::Tensor(TensorValue::new(
             tensor.dtype,
             Shape { dims: out_dims },
@@ -1824,7 +1840,26 @@ pub(crate) fn eval_dynamic_slice(
     for _ in 0..total {
         let mut in_flat = 0_usize;
         for ax in 0..rank {
-            in_flat += (out_coords[ax] + starts[ax]) * in_strides[ax];
+            let coord =
+                out_coords[ax]
+                    .checked_add(starts[ax])
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: format!("dynamic_slice coordinate overflows usize on axis {ax}"),
+                    })?;
+            let offset =
+                coord
+                    .checked_mul(in_strides[ax])
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: format!("dynamic_slice offset overflows usize on axis {ax}"),
+                    })?;
+            in_flat = in_flat
+                .checked_add(offset)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "dynamic_slice flat offset overflows usize".to_owned(),
+                })?;
         }
         elements.push(tensor.elements[in_flat]);
 
@@ -1838,7 +1873,6 @@ pub(crate) fn eval_dynamic_slice(
         }
     }
 
-    let out_dims: Vec<u32> = slice_sizes.iter().map(|&s| s as u32).collect();
     Ok(Value::Tensor(TensorValue::new(
         tensor.dtype,
         Shape { dims: out_dims },
