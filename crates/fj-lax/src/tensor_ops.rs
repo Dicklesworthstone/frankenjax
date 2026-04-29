@@ -3539,6 +3539,12 @@ pub(crate) fn eval_split(
             } else if params.contains_key("num_sections") {
                 let num_sections_vec = parse_usize_param(primitive, "num_sections", params)?;
                 let num_sections = num_sections_vec[0];
+                if num_sections == 0 {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "num_sections must be positive".into(),
+                    });
+                }
                 if !axis_size.is_multiple_of(num_sections) {
                     return Err(EvalError::Unsupported {
                         primitive,

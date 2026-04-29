@@ -250,3 +250,40 @@ fn oracle_split_preserves_data() {
     assert_eq!(extract_shape(&result), vec![4, 2]);
     assert_eq!(extract_i64_vec(&result), (1..=8).collect::<Vec<_>>());
 }
+
+// ======================== Error Cases ========================
+
+#[test]
+fn oracle_split_rejects_zero_num_sections() {
+    // num_sections=0 must be rejected, not cause divide-by-zero panic
+    let input = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
+    let result = eval_primitive(Primitive::Split, &[input], &split_params(0, 0));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("positive"),
+        "error should mention positive: {err}"
+    );
+}
+
+#[test]
+fn oracle_split_rejects_zero_num_sections_empty_axis() {
+    // Even for empty axis, num_sections=0 must be rejected
+    let input = make_i64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Split, &[input], &split_params(0, 0));
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("positive"),
+        "error should mention positive: {err}"
+    );
+}
+
+#[test]
+fn oracle_split_rejects_indivisible() {
+    // axis_size=5 is not divisible by num_sections=2
+    let input = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
+    let result = eval_primitive(Primitive::Split, &[input], &split_params(0, 2));
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("divisible"));
+}
