@@ -3929,6 +3929,65 @@ mod tests {
     }
 
     #[test]
+    fn scatter_empty_huge_trailing_slice_returns_operand() {
+        let huge = u32::MAX;
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![1, 0, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let updates = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+
+        let result = eval_primitive(
+            Primitive::Scatter,
+            &[operand, Value::scalar_i64(0), updates],
+            &no_params(),
+        )
+        .unwrap();
+
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![1, 0, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
+    fn scatter_empty_slice_still_checks_index_bounds() {
+        let operand = Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![1, 0] }, Vec::new()).unwrap(),
+        );
+        let updates = Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![0] }, Vec::new()).unwrap(),
+        );
+
+        let err = eval_primitive(
+            Primitive::Scatter,
+            &[operand, Value::scalar_i64(2), updates],
+            &no_params(),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(
+            err.contains("scatter index 2 out of bounds"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn scatter_duplicate_row_overwrite_last_wins() {
         let operand = Value::Tensor(
             TensorValue::new(

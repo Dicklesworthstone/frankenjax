@@ -1601,20 +1601,10 @@ pub(crate) fn eval_scatter(
         },
     };
 
-    let rank = operand.shape.rank();
     let op_dims = &operand.shape.dims;
 
-    // Compute operand strides (row-major)
-    let mut op_strides = vec![1_usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        op_strides[i] = op_strides[i + 1] * op_dims[i + 1] as usize;
-    }
-
     // Number of elements per slice (product of dims[1..])
-    let slice_elems: usize = op_dims[1..].iter().map(|d| *d as usize).product::<usize>();
-
-    // Clone operand elements to create output
-    let mut result_elements = operand.elements.clone();
+    let slice_elems = checked_shape_element_count(primitive, "scatter slice", &op_dims[1..])?;
 
     let mode = params
         .get("mode")
@@ -1637,7 +1627,8 @@ pub(crate) fn eval_scatter(
         });
     }
 
-    let expected_update_elems = index_vals.len() * slice_elems;
+    let expected_update_elems =
+        checked_shape_element_count(primitive, "scatter updates", &expected_update_dims)?;
     if updates.elements.len() != expected_update_elems {
         return Err(EvalError::Unsupported {
             primitive,
@@ -1650,7 +1641,7 @@ pub(crate) fn eval_scatter(
         });
     }
 
-    for (i, &idx) in index_vals.iter().enumerate() {
+    for &idx in &index_vals {
         if idx >= op_dims[0] as usize {
             return Err(EvalError::Unsupported {
                 primitive,
@@ -1660,24 +1651,94 @@ pub(crate) fn eval_scatter(
                 ),
             });
         }
+    }
 
-        let base_offset = idx * op_strides[0];
-        let update_offset = i * slice_elems;
+    if expected_update_elems == 0 {
+        return Ok(Value::Tensor(operand.clone()));
+    }
+
+    let op_strides = checked_row_major_strides(primitive, "scatter", op_dims)?;
+    let mut result_elements = operand.elements.clone();
+
+    for (i, &idx) in index_vals.iter().enumerate() {
+        let base_offset = idx
+            .checked_mul(op_strides[0])
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "scatter base offset overflows usize".to_owned(),
+            })?;
+        let update_offset = i
+            .checked_mul(slice_elems)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "scatter update offset overflows usize".to_owned(),
+            })?;
 
         if !add_mode {
-            let result_end = base_offset + slice_elems;
-            let update_end = update_offset + slice_elems;
+            let result_end =
+                base_offset
+                    .checked_add(slice_elems)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "scatter result slice end overflows usize".to_owned(),
+                    })?;
+            let update_end =
+                update_offset
+                    .checked_add(slice_elems)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "scatter update slice end overflows usize".to_owned(),
+                    })?;
+            if result_end > result_elements.len() {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "scatter result slice exceeds operand element count".to_owned(),
+                });
+            }
+            if update_end > updates.elements.len() {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "scatter update slice exceeds update element count".to_owned(),
+                });
+            }
             result_elements[base_offset..result_end]
                 .copy_from_slice(&updates.elements[update_offset..update_end]);
             continue;
         }
 
         for j in 0..slice_elems {
-            let current = &result_elements[base_offset + j];
-            let update = &updates.elements[update_offset + j];
-            result_elements[base_offset + j] = binary_literal_op(
-                *current,
-                *update,
+            let result_index =
+                base_offset
+                    .checked_add(j)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "scatter result index overflows usize".to_owned(),
+                    })?;
+            let update_index =
+                update_offset
+                    .checked_add(j)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "scatter update index overflows usize".to_owned(),
+                    })?;
+            let current =
+                *result_elements
+                    .get(result_index)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "scatter result index exceeds operand element count".to_owned(),
+                    })?;
+            let update =
+                *updates
+                    .elements
+                    .get(update_index)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "scatter update index exceeds update element count".to_owned(),
+                    })?;
+            result_elements[result_index] = binary_literal_op(
+                current,
+                update,
                 Primitive::Add,
                 &|a, b| a.wrapping_add(b),
                 &|a, b| a + b,

@@ -8,7 +8,7 @@
   Semantic fidelity. Mathematical rigor. Operational safety. Profile-proven performance.
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
-  ![Tests](https://img.shields.io/badge/tests-2770_passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-2917_passing-brightgreen)
   ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
   ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
   ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-846_cases-purple)
@@ -35,7 +35,7 @@
 | 846 JAX oracle fixture cases for differential conformance | All green |
 | RaptorQ erasure-coded durability for all long-lived artifacts | All green |
 | Strict/Hardened compatibility-security mode split | All green |
-| 2,770 `#[test]` cases + proptest suites | All passing |
+| 2,917 `#[test]` cases + proptest suites | All passing |
 
 ## Comparison vs Alternatives
 
@@ -190,7 +190,7 @@ Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
 - **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support
 - **846 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
-- **2,770 `#[test]` cases** plus proptest/property-based suites
+- **2,917 `#[test]` cases** plus proptest/property-based suites
 - **RaptorQ durability pipeline** for all long-lived evidence artifacts
 
 ## The Canonical IR: Jaxpr
