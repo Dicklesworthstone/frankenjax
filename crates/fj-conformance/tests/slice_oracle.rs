@@ -384,10 +384,7 @@ fn oracle_slice_3d_middle_axis() {
 #[test]
 fn oracle_slice_3d_all_axes() {
     // Shape [3, 3, 3], slice [1:2, 1:3, 0:2]
-    let input = make_i64_tensor(
-        &[3, 3, 3],
-        (1..=27).collect::<Vec<i64>>(),
-    );
+    let input = make_i64_tensor(&[3, 3, 3], (1..=27).collect::<Vec<i64>>());
     let result = eval_primitive(
         Primitive::Slice,
         &[input],

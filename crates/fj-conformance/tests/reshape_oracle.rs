@@ -85,8 +85,7 @@ fn oracle_reshape_1d_to_2d() {
 fn oracle_reshape_1d_to_3d() {
     // JAX: lax.reshape(jnp.array([1..12]), (2, 2, 3))
     let input = make_i64_tensor(&[12], (1..=12).collect());
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[2, 2, 3])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[2, 2, 3])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 3]);
     assert_eq!(extract_i64_vec(&result), (1..=12).collect::<Vec<_>>());
 }
@@ -114,8 +113,7 @@ fn oracle_reshape_2d_to_2d() {
 fn oracle_reshape_2d_to_3d() {
     // JAX: lax.reshape(jnp.array([[1, 2, 3, 4], [5, 6, 7, 8]]), (2, 2, 2))
     let input = make_i64_tensor(&[2, 4], vec![1, 2, 3, 4, 5, 6, 7, 8]);
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[2, 2, 2])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[2, 2, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3, 4, 5, 6, 7, 8]);
 }
@@ -216,8 +214,7 @@ fn oracle_reshape_identity_2d() {
 fn oracle_reshape_add_unit_dims() {
     // JAX: lax.reshape(jnp.array([1, 2, 3]), (1, 3, 1))
     let input = make_i64_tensor(&[3], vec![1, 2, 3]);
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[1, 3, 1])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[1, 3, 1])).unwrap();
     assert_eq!(extract_shape(&result), vec![1, 3, 1]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3]);
 }
@@ -246,8 +243,7 @@ fn oracle_reshape_to_higher_rank() {
 #[test]
 fn oracle_reshape_f64_2d_to_3d() {
     let input = make_f64_tensor(&[2, 3], vec![1.1, 2.2, 3.3, 4.4, 5.5, 6.6]);
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[3, 2])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[3, 2])).unwrap();
     let vals = extract_f64_vec(&result);
     assert_eq!(extract_shape(&result), vec![3, 2]);
     assert!((vals[0] - 1.1).abs() < 1e-10);
@@ -257,8 +253,7 @@ fn oracle_reshape_f64_2d_to_3d() {
 #[test]
 fn oracle_reshape_f64_with_inference() {
     let input = make_f64_tensor(&[12], (1..=12).map(|x| x as f64).collect());
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[3, -1])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[3, -1])).unwrap();
     assert_eq!(extract_shape(&result), vec![3, 4]);
 }
 
@@ -267,8 +262,7 @@ fn oracle_reshape_f64_with_inference() {
 #[test]
 fn oracle_reshape_single_element() {
     let input = make_i64_tensor(&[1], vec![42]);
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[1, 1, 1])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[1, 1, 1])).unwrap();
     assert_eq!(extract_shape(&result), vec![1, 1, 1]);
     assert_eq!(extract_i64_vec(&result), vec![42]);
 }
@@ -292,8 +286,7 @@ fn oracle_reshape_with_negatives() {
 #[test]
 fn oracle_reshape_large_tensor() {
     let input = make_i64_tensor(&[100], (0..100).collect());
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[10, 10])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[10, 10])).unwrap();
     assert_eq!(extract_shape(&result), vec![10, 10]);
     let vals = extract_i64_vec(&result);
     assert_eq!(vals.len(), 100);
@@ -332,8 +325,7 @@ fn oracle_reshape_scalar_to_1d() {
 #[test]
 fn oracle_reshape_scalar_to_3d() {
     let input = Value::scalar_i64(99);
-    let result =
-        eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[1, 1, 1])).unwrap();
+    let result = eval_primitive(Primitive::Reshape, &[input], &reshape_params(&[1, 1, 1])).unwrap();
     assert_eq!(extract_shape(&result), vec![1, 1, 1]);
     assert_eq!(extract_i64_vec(&result), vec![99]);
 }

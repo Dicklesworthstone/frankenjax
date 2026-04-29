@@ -147,8 +147,12 @@ fn oracle_transpose_3d_swap_first_two() {
     // Permutation (1, 0, 2): swap first two axes
     // Shape [2, 3, 4] -> [3, 2, 4]
     let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 0, 2])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[1, 0, 2]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![3, 2, 4]);
 }
 
@@ -157,8 +161,12 @@ fn oracle_transpose_3d_swap_last_two() {
     // Permutation (0, 2, 1): swap last two axes
     // Shape [2, 3, 4] -> [2, 4, 3]
     let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0, 2, 1])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[0, 2, 1]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 4, 3]);
 }
 
@@ -167,8 +175,12 @@ fn oracle_transpose_3d_rotate_left() {
     // Permutation (1, 2, 0): rotate axes left
     // Shape [2, 3, 4] -> [3, 4, 2]
     let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 2, 0])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[1, 2, 0]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![3, 4, 2]);
 }
 
@@ -177,8 +189,12 @@ fn oracle_transpose_3d_rotate_right() {
     // Permutation (2, 0, 1): rotate axes right
     // Shape [2, 3, 4] -> [4, 2, 3]
     let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[2, 0, 1])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[2, 0, 1]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![4, 2, 3]);
 }
 
@@ -186,8 +202,12 @@ fn oracle_transpose_3d_rotate_right() {
 fn oracle_transpose_3d_identity() {
     // Permutation (0, 1, 2): identity
     let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0, 1, 2])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[0, 1, 2]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3, 4]);
     assert_eq!(extract_i64_vec(&result), (1..=24).collect::<Vec<_>>());
 }
@@ -196,8 +216,12 @@ fn oracle_transpose_3d_identity() {
 fn oracle_transpose_3d_small() {
     // Small 3D tensor [2, 2, 2] with (2, 1, 0) permutation
     let input = make_i64_tensor(&[2, 2, 2], vec![1, 2, 3, 4, 5, 6, 7, 8]);
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[2, 1, 0])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[2, 1, 0]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     // Original: [[[1,2],[3,4]], [[5,6],[7,8]]]
     // Transposed (2,1,0): [[[1,5],[3,7]], [[2,6],[4,8]]]
@@ -219,8 +243,12 @@ fn oracle_transpose_4d_swap_middle() {
     // Permutation (0, 2, 1, 3): swap middle two axes
     // Shape [2, 3, 4, 5] -> [2, 4, 3, 5]
     let input = make_i64_tensor(&[2, 3, 4, 5], (1..=120).collect());
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0, 2, 1, 3])).unwrap();
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[0, 2, 1, 3]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 4, 3, 5]);
 }
 
@@ -239,8 +267,7 @@ fn oracle_transpose_1d_default() {
 fn oracle_transpose_1d_explicit() {
     // Explicit identity permutation
     let input = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
-    let result =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0])).unwrap();
+    let result = eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3, 4, 5]);
 }
@@ -295,11 +322,19 @@ fn oracle_transpose_double_is_identity() {
 fn oracle_transpose_inverse_permutation() {
     // Applying inverse permutation gives original
     let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
-    let result1 =
-        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 2, 0])).unwrap();
+    let result1 = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[1, 2, 0]),
+    )
+    .unwrap();
     // Inverse of (1, 2, 0) is (2, 0, 1)
-    let result2 =
-        eval_primitive(Primitive::Transpose, &[result1], &transpose_params(&[2, 0, 1])).unwrap();
+    let result2 = eval_primitive(
+        Primitive::Transpose,
+        &[result1],
+        &transpose_params(&[2, 0, 1]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result2), vec![2, 3, 4]);
     assert_eq!(extract_i64_vec(&result2), (1..=24).collect::<Vec<_>>());
 }

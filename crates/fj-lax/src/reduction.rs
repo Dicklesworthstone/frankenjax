@@ -538,6 +538,13 @@ pub(crate) fn eval_cumulative(
 
             let total = tensor.elements.len();
             let mut elements = tensor.elements.clone();
+            if axis_dim == 0 {
+                return Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    tensor.shape.clone(),
+                    elements,
+                )?));
+            }
 
             // For each "line" along the axis, do a prefix scan
             // A line is identified by all indices except the axis index
@@ -625,6 +632,9 @@ mod tests {
             )
             .unwrap(),
         )
+    }
+    fn empty_i64(dims: Vec<u32>) -> Value {
+        Value::Tensor(TensorValue::new(DType::I64, Shape { dims }, vec![]).unwrap())
     }
     fn mat_f64(rows: u32, cols: u32, data: &[f64]) -> Value {
         Value::Tensor(
@@ -832,6 +842,48 @@ mod tests {
         .unwrap();
         let vals = extract_f64_vec(&result);
         assert_eq!(vals, vec![1.0, 2.0, 6.0, 24.0]);
+    }
+
+    #[test]
+    fn cumsum_empty_selected_axis_returns_empty_tensor() {
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), "-1".to_owned());
+        let result = eval_cumulative(
+            Primitive::Cumsum,
+            &[empty_i64(vec![0])],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape.dims, vec![0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
+    fn cumprod_empty_selected_axis_returns_empty_matrix() {
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), "1".to_owned());
+        let result = eval_cumulative(
+            Primitive::Cumprod,
+            &[empty_i64(vec![2, 0])],
+            &params,
+            1,
+            1.0,
+            |a, b| a * b,
+            |a, b| a * b,
+        )
+        .unwrap();
+
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape.dims, vec![2, 0]);
+        assert!(tensor.elements.is_empty());
     }
 
     #[test]
