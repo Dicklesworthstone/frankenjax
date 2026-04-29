@@ -2160,6 +2160,50 @@ mod tests {
     }
 
     #[test]
+    fn pad_rejects_output_dimension_arithmetic_overflow() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![u32::MAX, 0],
+                },
+                vec![],
+            )
+            .unwrap(),
+        );
+        let params = pad_params("0,0", "0,0", &format!("{},0", i64::MAX));
+        let result = eval_primitive(Primitive::Pad, &[input, Value::scalar_i64(0)], &params);
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("padded dimension overflow on axis 0"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pad_rejects_output_shape_product_overflow() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, 0, 0],
+                },
+                vec![],
+            )
+            .unwrap(),
+        );
+        let params = pad_params("4294967295,4294967295,4294967295", "0,0,0", "0,0,0");
+        let result = eval_primitive(Primitive::Pad, &[input, Value::scalar_i64(0)], &params);
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("shape overflows usize"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn pad_rank2_tensor_preserves_layout() {
         let input = Value::Tensor(
             TensorValue::new(

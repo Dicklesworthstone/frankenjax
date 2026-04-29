@@ -1003,8 +1003,24 @@ pub(crate) fn eval_pad(
         }
 
         let dim = i64::from(operand.shape.dims[ax]);
-        let interior_span = if dim == 0 { 0 } else { (dim - 1) * interior };
-        let out_dim = low + dim + interior_span + high;
+        let interior_span = if dim == 0 {
+            0
+        } else {
+            (dim - 1)
+                .checked_mul(interior)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("padded dimension overflow on axis {ax}"),
+                })?
+        };
+        let out_dim = low
+            .checked_add(dim)
+            .and_then(|value| value.checked_add(interior_span))
+            .and_then(|value| value.checked_add(high))
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("padded dimension overflow on axis {ax}"),
+            })?;
         if out_dim < 0 || out_dim > i64::from(u32::MAX) {
             return Err(EvalError::Unsupported {
                 primitive,
@@ -1017,13 +1033,20 @@ pub(crate) fn eval_pad(
         out_dims.push(out_dim as u32);
     }
 
-    let out_total: usize = out_dims.iter().map(|d| *d as usize).product();
+    let out_total = checked_shape_element_count(primitive, "pad", &out_dims)?;
     let mut out_elements = vec![pad_literal; out_total];
 
     if rank == 0 {
         if !out_elements.is_empty() {
             out_elements[0] = operand.elements[0];
         }
+        return Ok(Value::Tensor(TensorValue::new(
+            operand.dtype,
+            Shape { dims: out_dims },
+            out_elements,
+        )?));
+    }
+    if operand.elements.is_empty() {
         return Ok(Value::Tensor(TensorValue::new(
             operand.dtype,
             Shape { dims: out_dims },
