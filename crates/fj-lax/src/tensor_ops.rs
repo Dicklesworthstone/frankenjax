@@ -2814,10 +2814,7 @@ fn eval_conv_1d(
         });
     }
 
-    let stride: usize = params
-        .get("strides")
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(1);
+    let stride = parse_positive_stride(primitive, params.get("strides").map(String::as_str))?;
 
     let (out_w, pad_left) = match padding_mode {
         "same" | "SAME" => {
@@ -2905,7 +2902,7 @@ fn eval_conv_2d(
     }
 
     // Parse strides: either single value or "h,w" pair
-    let (stride_h, stride_w) = parse_stride_pair(params);
+    let (stride_h, stride_w) = parse_stride_pair(primitive, params)?;
 
     let (out_h, pad_top) = compute_output_and_pad(height, kernel_h, stride_h, padding_mode);
     let (out_w, pad_left) = compute_output_and_pad(width, kernel_w, stride_w, padding_mode);
@@ -2973,16 +2970,44 @@ fn eval_conv_2d(
     )?))
 }
 
-fn parse_stride_pair(params: &BTreeMap<String, String>) -> (usize, usize) {
+fn parse_positive_stride(primitive: Primitive, stride: Option<&str>) -> Result<usize, EvalError> {
+    let raw = stride.unwrap_or("1").trim();
+    let parsed = raw.parse::<usize>().map_err(|_| EvalError::Unsupported {
+        primitive,
+        detail: format!("invalid conv stride {raw:?}"),
+    })?;
+    if parsed == 0 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "conv stride must be positive".to_owned(),
+        });
+    }
+    Ok(parsed)
+}
+
+fn parse_stride_pair(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<(usize, usize), EvalError> {
     let strides_str = params.get("strides").map(String::as_str).unwrap_or("1");
-    let parts: Vec<&str> = strides_str.split(',').collect();
-    if parts.len() >= 2 {
-        let sh = parts[0].trim().parse().unwrap_or(1);
-        let sw = parts[1].trim().parse().unwrap_or(1);
-        (sh, sw)
-    } else {
-        let s = parts[0].trim().parse().unwrap_or(1);
-        (s, s)
+    let mut parts = strides_str.split(',');
+    let first = parts.next().unwrap_or("1");
+    let second = parts.next();
+    if parts.next().is_some() {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid conv strides {strides_str:?}"),
+        });
+    }
+    match second {
+        Some(width) => Ok((
+            parse_positive_stride(primitive, Some(first))?,
+            parse_positive_stride(primitive, Some(width))?,
+        )),
+        None => {
+            let stride = parse_positive_stride(primitive, Some(first))?;
+            Ok((stride, stride))
+        }
     }
 }
 

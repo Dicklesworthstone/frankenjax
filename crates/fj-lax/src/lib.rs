@@ -4809,6 +4809,56 @@ mod tests {
         p
     }
 
+    fn conv_1d_single_channel_values(lhs_values: &[f64], rhs_values: &[f64]) -> [Value; 2] {
+        [
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![1, lhs_values.len() as u32, 1],
+                    },
+                    lhs_values.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            ),
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![rhs_values.len() as u32, 1, 1],
+                    },
+                    rhs_values.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            ),
+        ]
+    }
+
+    fn conv_2d_single_channel_values(side: u32, lhs_values: &[f64]) -> [Value; 2] {
+        [
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![1, side, side, 1],
+                    },
+                    lhs_values.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            ),
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![1, 1, 1, 1],
+                    },
+                    vec![Literal::from_f64(1.0)],
+                )
+                .unwrap(),
+            ),
+        ]
+    }
+
     #[test]
     fn conv_1d_valid_single_channel() {
         // lhs=[1, 4, 1] (batch=1, width=4, channels=1)
@@ -4847,6 +4897,30 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn conv_1d_valid_rejects_zero_stride() {
+        let inputs = conv_1d_single_channel_values(&[1.0, 2.0, 3.0], &[1.0]);
+        let result = eval_primitive(Primitive::Conv, &inputs, &conv_params("valid", "0"));
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("conv stride must be positive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn conv_1d_same_rejects_zero_stride() {
+        let inputs = conv_1d_single_channel_values(&[1.0, 2.0, 3.0], &[1.0]);
+        let result = eval_primitive(Primitive::Conv, &inputs, &conv_params("same", "0"));
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("conv stride must be positive"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -5008,6 +5082,19 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn conv_2d_rejects_zero_stride() {
+        let inputs =
+            conv_2d_single_channel_values(3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+        let result = eval_primitive(Primitive::Conv, &inputs, &conv_params("valid", "0"));
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("conv stride must be positive"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
