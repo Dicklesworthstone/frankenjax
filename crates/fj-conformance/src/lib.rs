@@ -1054,13 +1054,47 @@ const fn default_case_timeout() -> Duration {
     Duration::from_secs(2)
 }
 
+const MAX_EXTERNAL_TRANSFORM_FIXTURE_CASES: usize = 4096;
+
 pub fn read_transform_fixture_bundle(
     path: &Path,
 ) -> Result<TransformFixtureBundle, std::io::Error> {
     let raw = fs::read_to_string(path)?;
     let parsed =
         serde_json::from_str::<TransformFixtureBundle>(&raw).map_err(std::io::Error::other)?;
+    validate_external_transform_fixture_bundle(&parsed)?;
     Ok(parsed)
+}
+
+fn validate_external_transform_fixture_bundle(
+    bundle: &TransformFixtureBundle,
+) -> Result<(), std::io::Error> {
+    if bundle.cases.len() > MAX_EXTERNAL_TRANSFORM_FIXTURE_CASES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "too many transform fixture cases: {} > {}",
+                bundle.cases.len(),
+                MAX_EXTERNAL_TRANSFORM_FIXTURE_CASES
+            ),
+        ));
+    }
+
+    if let Some(case) = bundle
+        .cases
+        .iter()
+        .find(|case| case.simulated_delay_ms != 0)
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "external transform fixture case {} sets simulated_delay_ms={}; simulated delays are test-only",
+                case.case_id, case.simulated_delay_ms
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 #[must_use]
@@ -1147,6 +1181,15 @@ pub fn run_transform_fixture_bundle_batched(
     for case in &bundle.cases {
         let expected_json = serde_json::to_string(&case.expected)
             .unwrap_or_else(|err| format!("<expected serialization error: {err}>"));
+        if simulated_delay_exceeds_timeout(case, batch.case_timeout) {
+            reports.push(timeout_case_report(
+                case.clone(),
+                expected_json,
+                batch.case_timeout,
+            ));
+            continue;
+        }
+
         let case_for_timeout = case.clone();
         let (tx, rx) = mpsc::channel::<TransformCaseReport>();
         let case_for_worker = case.clone();
@@ -1164,20 +1207,11 @@ pub fn run_transform_fixture_bundle_batched(
                 // Detach the worker so a timeout remains a wall-clock bound
                 // even if the underlying fixture code is slow or stuck.
                 drop(handle);
-                reports.push(TransformCaseReport {
-                    case_id: case_for_timeout.case_id,
-                    family: case_for_timeout.family,
-                    mode: case_for_timeout.mode,
-                    comparator: case_for_timeout.comparator,
-                    drift_classification: DriftClassification::Timeout,
-                    matched: false,
+                reports.push(timeout_case_report(
+                    case_for_timeout,
                     expected_json,
-                    actual_json: None,
-                    error: Some(format!(
-                        "timeout waiting for case result after {}ms",
-                        batch.case_timeout.as_millis()
-                    )),
-                });
+                    batch.case_timeout,
+                ));
             }
         }
     }
@@ -1189,6 +1223,31 @@ pub fn run_transform_fixture_bundle_batched(
         matched_cases,
         mismatched_cases: reports.len().saturating_sub(matched_cases),
         reports,
+    }
+}
+
+fn simulated_delay_exceeds_timeout(case: &TransformFixtureCase, case_timeout: Duration) -> bool {
+    case.simulated_delay_ms > 0 && Duration::from_millis(case.simulated_delay_ms) >= case_timeout
+}
+
+fn timeout_case_report(
+    case: TransformFixtureCase,
+    expected_json: String,
+    case_timeout: Duration,
+) -> TransformCaseReport {
+    TransformCaseReport {
+        case_id: case.case_id,
+        family: case.family,
+        mode: case.mode,
+        comparator: case.comparator,
+        drift_classification: DriftClassification::Timeout,
+        matched: false,
+        expected_json,
+        actual_json: None,
+        error: Some(format!(
+            "timeout waiting for case result after {}ms",
+            case_timeout.as_millis()
+        )),
     }
 }
 
@@ -2251,6 +2310,124 @@ mod tests {
         assert!(
             elapsed < std::time::Duration::from_millis(500),
             "batch timeout waited for delayed worker: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_batch_runner_preclassifies_impossible_simulated_delays() {
+        let cfg = HarnessConfig::default_paths();
+        let cases = (0..128)
+            .map(|i| TransformFixtureCase {
+                case_id: format!("batch_timeout_{i}"),
+                family: FixtureFamily::Jit,
+                mode: FixtureMode::Strict,
+                program: FixtureProgram::Add2,
+                transforms: vec![FixtureTransform::Jit],
+                comparator: ComparatorKind::ApproxAtolRtol,
+                baseline_mismatch: false,
+                flaky: false,
+                simulated_delay_ms: 60_000,
+                args: vec![
+                    FixtureValue::ScalarI64 { value: 1 },
+                    FixtureValue::ScalarI64 { value: 2 },
+                ],
+                expected: vec![FixtureValue::ScalarI64 { value: 3 }],
+                atol: 1e-6,
+                rtol: 1e-6,
+            })
+            .collect();
+        let bundle = TransformFixtureBundle {
+            schema_version: "frankenjax.transform-fixtures.v1".to_owned(),
+            generated_by: "unit-test".to_owned(),
+            generated_at_unix_ms: 0,
+            cases,
+        };
+
+        let started = std::time::Instant::now();
+        let report = run_transform_fixture_bundle_batched(
+            &cfg,
+            &bundle,
+            &BatchRunnerConfig {
+                case_timeout: std::time::Duration::from_millis(5),
+            },
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.total_cases, 128);
+        assert!(report.reports.iter().all(|report| {
+            report.drift_classification == DriftClassification::Timeout && !report.matched
+        }));
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "preclassified simulated delays should not spawn sleeping workers: {elapsed:?}"
+        );
+    }
+
+    fn add2_case(case_id: String, simulated_delay_ms: u64) -> TransformFixtureCase {
+        TransformFixtureCase {
+            case_id,
+            family: FixtureFamily::Jit,
+            mode: FixtureMode::Strict,
+            program: FixtureProgram::Add2,
+            transforms: vec![FixtureTransform::Jit],
+            comparator: ComparatorKind::ApproxAtolRtol,
+            baseline_mismatch: false,
+            flaky: false,
+            simulated_delay_ms,
+            args: vec![
+                FixtureValue::ScalarI64 { value: 1 },
+                FixtureValue::ScalarI64 { value: 2 },
+            ],
+            expected: vec![FixtureValue::ScalarI64 { value: 3 }],
+            atol: 1e-6,
+            rtol: 1e-6,
+        }
+    }
+
+    #[test]
+    fn test_read_transform_fixture_bundle_rejects_external_simulated_delay() {
+        let tmp = tempdir().expect("tempdir should build");
+        let fixture_path = tmp.path().join("delayed-bundle.json");
+        let bundle = TransformFixtureBundle {
+            schema_version: "frankenjax.transform-fixtures.v1".to_owned(),
+            generated_by: "unit-test".to_owned(),
+            generated_at_unix_ms: 0,
+            cases: vec![add2_case("delayed_case".to_owned(), 1)],
+        };
+        std::fs::write(&fixture_path, serde_json::to_vec(&bundle).unwrap())
+            .expect("fixture should write");
+
+        let err = super::read_transform_fixture_bundle(&fixture_path).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("simulated_delay_ms"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn test_read_transform_fixture_bundle_rejects_excessive_case_count() {
+        let tmp = tempdir().expect("tempdir should build");
+        let fixture_path = tmp.path().join("large-bundle.json");
+        let cases = (0..=super::MAX_EXTERNAL_TRANSFORM_FIXTURE_CASES)
+            .map(|i| add2_case(format!("case_{i}"), 0))
+            .collect();
+        let bundle = TransformFixtureBundle {
+            schema_version: "frankenjax.transform-fixtures.v1".to_owned(),
+            generated_by: "unit-test".to_owned(),
+            generated_at_unix_ms: 0,
+            cases,
+        };
+        std::fs::write(&fixture_path, serde_json::to_vec(&bundle).unwrap())
+            .expect("fixture should write");
+
+        let err = super::read_transform_fixture_bundle(&fixture_path).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("too many transform fixture cases"),
+            "unexpected error: {err}"
         );
     }
 
