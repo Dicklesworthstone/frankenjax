@@ -3855,6 +3855,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn gather_empty_huge_trailing_slice_returns_empty() {
+        let huge = u32::MAX;
+        let operand = Value::Tensor(
+            fj_core::TensorValue::new(
+                fj_core::DType::I64,
+                fj_core::Shape {
+                    dims: vec![1, 0, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".into(), format!("1,0,{huge},{huge},{huge}"));
+
+        let result =
+            eval_primitive(Primitive::Gather, &[operand, Value::scalar_i64(0)], &params).unwrap();
+
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![0, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
+    fn gather_empty_slice_still_checks_index_bounds() {
+        let operand = Value::Tensor(
+            fj_core::TensorValue::new(
+                fj_core::DType::I64,
+                fj_core::Shape { dims: vec![1, 0] },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("slice_sizes".into(), "1,0".into());
+
+        let err = eval_primitive(Primitive::Gather, &[operand, Value::scalar_i64(2)], &params)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("gather index 2 out of bounds"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ===================================================================
     // Scatter edge cases
     // ===================================================================

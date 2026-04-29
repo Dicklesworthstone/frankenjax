@@ -1373,7 +1373,6 @@ pub(crate) fn eval_gather(
         ),
     };
 
-    let num_indices = index_vals.len();
     let rank = operand.shape.rank();
 
     // Compute operand strides (row-major)
@@ -1388,26 +1387,24 @@ pub(crate) fn eval_gather(
         }
     }
 
-    let mut op_strides = vec![1_usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        op_strides[i] = op_strides[i + 1] * op_dims[i + 1] as usize;
-    }
-
     // Output shape: indices.shape ++ slice_sizes[1..]
     let mut out_dims: Vec<u32> = index_shape;
-    out_dims.extend(slice_sizes.iter().skip(1).map(|&s| s as u32));
-
-    // Number of elements per gathered slice (product of slice_sizes[1..])
-    let slice_elems: usize = slice_sizes[1..].iter().product::<usize>();
-
-    let total = num_indices * slice_elems;
-    let mut elements = Vec::with_capacity(total);
-    let trailing_slice_is_contiguous = slice_sizes
+    let trailing_slice_dims: Vec<u32> = slice_sizes
         .iter()
         .skip(1)
-        .zip(op_dims.iter().skip(1))
-        .all(|(&slice_size, &dim)| slice_size == dim as usize);
+        .map(|&s| {
+            u32::try_from(s).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("slice size {s} exceeds u32 range"),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    out_dims.extend(trailing_slice_dims.iter().copied());
 
+    // Number of elements per gathered slice (product of slice_sizes[1..])
+    let slice_elems = checked_shape_element_count(primitive, "gather slice", &trailing_slice_dims)?;
+
+    let total = checked_shape_element_count(primitive, "gather output", &out_dims)?;
     for &idx in &index_vals {
         if idx >= op_dims[0] as usize {
             return Err(EvalError::Unsupported {
@@ -1418,11 +1415,46 @@ pub(crate) fn eval_gather(
                 ),
             });
         }
+    }
 
+    if total == 0 {
+        return Ok(Value::Tensor(TensorValue::new(
+            operand.dtype,
+            Shape { dims: out_dims },
+            Vec::new(),
+        )?));
+    }
+
+    let op_strides = checked_row_major_strides(primitive, "gather", op_dims)?;
+    let mut elements = Vec::with_capacity(total);
+    let trailing_slice_is_contiguous = slice_sizes
+        .iter()
+        .skip(1)
+        .zip(op_dims.iter().skip(1))
+        .all(|(&slice_size, &dim)| slice_size == dim as usize);
+
+    for &idx in &index_vals {
         // Base offset for this index along axis 0
-        let base_offset = idx * op_strides[0];
+        let base_offset = idx
+            .checked_mul(op_strides[0])
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "gather base offset overflows usize".to_owned(),
+            })?;
         if trailing_slice_is_contiguous {
-            let end = base_offset + slice_elems;
+            let end =
+                base_offset
+                    .checked_add(slice_elems)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "gather contiguous slice end overflows usize".to_owned(),
+                    })?;
+            if end > operand.elements.len() {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "gather contiguous slice exceeds operand element count".to_owned(),
+                });
+            }
             elements.extend_from_slice(&operand.elements[base_offset..end]);
             continue;
         }
@@ -1432,9 +1464,27 @@ pub(crate) fn eval_gather(
         for _ in 0..slice_elems {
             let mut flat = base_offset;
             for (ax, &coord) in slice_coords.iter().enumerate() {
-                flat += coord * op_strides[ax + 1];
+                let offset = coord.checked_mul(op_strides[ax + 1]).ok_or_else(|| {
+                    EvalError::Unsupported {
+                        primitive,
+                        detail: format!("gather offset overflows usize on axis {}", ax + 1),
+                    }
+                })?;
+                flat = flat
+                    .checked_add(offset)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "gather flat offset overflows usize".to_owned(),
+                    })?;
             }
-            elements.push(operand.elements[flat]);
+            let element = operand
+                .elements
+                .get(flat)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "gather offset exceeds operand element count".to_owned(),
+                })?;
+            elements.push(*element);
 
             // Increment slice coordinates
             if rank > 1 {
