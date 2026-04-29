@@ -1992,12 +1992,18 @@ pub(crate) fn eval_dynamic_update_slice(
     // Copy operand elements, overwriting the update region
     let mut elements = operand.elements.clone();
 
-    let mut op_strides = vec![1_usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        op_strides[i] = op_strides[i + 1] * operand.shape.dims[i + 1] as usize;
+    let upd_total = update.elements.len();
+    if upd_total == 0 {
+        return Ok(Value::Tensor(TensorValue::new(
+            operand.dtype,
+            operand.shape.clone(),
+            elements,
+        )?));
     }
 
-    let upd_total = update.elements.len();
+    let op_strides =
+        checked_row_major_strides(primitive, "dynamic_update_slice", &operand.shape.dims)?;
+
     let has_contiguous_trailing_update = rank > 0
         && update
             .shape
@@ -2008,8 +2014,20 @@ pub(crate) fn eval_dynamic_update_slice(
             .all(|(&update_dim, &operand_dim)| update_dim == operand_dim)
         && starts.iter().skip(1).all(|&start| start == 0);
     if has_contiguous_trailing_update {
-        let start_offset = starts[0] * op_strides[0];
-        let end_offset = start_offset + upd_total;
+        let start_offset =
+            starts[0]
+                .checked_mul(op_strides[0])
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "dynamic_update_slice start offset overflows usize".to_owned(),
+                })?;
+        let end_offset =
+            start_offset
+                .checked_add(upd_total)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "dynamic_update_slice end offset overflows usize".to_owned(),
+                })?;
         elements[start_offset..end_offset].copy_from_slice(&update.elements);
         return Ok(Value::Tensor(TensorValue::new(
             operand.dtype,
@@ -2023,7 +2041,28 @@ pub(crate) fn eval_dynamic_update_slice(
     for upd_flat in 0..upd_total {
         let mut op_flat = 0_usize;
         for ax in 0..rank {
-            op_flat += (upd_coords[ax] + starts[ax]) * op_strides[ax];
+            let coord =
+                upd_coords[ax]
+                    .checked_add(starts[ax])
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "dynamic_update_slice coordinate overflows usize on axis {ax}"
+                        ),
+                    })?;
+            let offset =
+                coord
+                    .checked_mul(op_strides[ax])
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: format!("dynamic_update_slice offset overflows usize on axis {ax}"),
+                    })?;
+            op_flat = op_flat
+                .checked_add(offset)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "dynamic_update_slice flat offset overflows usize".to_owned(),
+                })?;
         }
         if op_flat < elements.len() {
             elements[op_flat] = update.elements[upd_flat];

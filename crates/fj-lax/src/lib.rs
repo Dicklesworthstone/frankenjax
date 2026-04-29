@@ -4765,6 +4765,49 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_update_slice_empty_huge_trailing_shape_returns_operand() {
+        let huge = u32::MAX;
+        let operand = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let update = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![0, huge, huge, huge, huge],
+                },
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::DynamicUpdateSlice,
+            &[
+                operand,
+                update,
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+
+        let tensor = out.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![0, huge, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn dynamic_update_slice_clamped_start() {
         // Start index out of range should be clamped
         // operand: [1, 2, 3], update: [99, 88], start: 10 → clamped to 1
