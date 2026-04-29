@@ -82,7 +82,8 @@ fn oracle_cond_true_scalar() {
     let pred = Value::scalar_bool(true);
     let true_val = Value::Scalar(Literal::from_f64(1.0));
     let false_val = Value::Scalar(Literal::from_f64(2.0));
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 1.0).abs() < 1e-10);
 }
@@ -93,7 +94,8 @@ fn oracle_cond_false_scalar() {
     let pred = Value::scalar_bool(false);
     let true_val = Value::Scalar(Literal::from_f64(1.0));
     let false_val = Value::Scalar(Literal::from_f64(2.0));
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 2.0).abs() < 1e-10);
 }
@@ -103,7 +105,8 @@ fn oracle_cond_true_tensor() {
     let pred = Value::scalar_bool(true);
     let true_val = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let false_val = make_f64_tensor(&[3], vec![4.0, 5.0, 6.0]);
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     let vals = extract_f64_vec(&result);
     assert_eq!(vals, vec![1.0, 2.0, 3.0]);
@@ -114,7 +117,8 @@ fn oracle_cond_false_tensor() {
     let pred = Value::scalar_bool(false);
     let true_val = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let false_val = make_f64_tensor(&[3], vec![4.0, 5.0, 6.0]);
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     assert_eq!(vals, vec![4.0, 5.0, 6.0]);
 }
@@ -124,7 +128,8 @@ fn oracle_cond_2d_tensor() {
     let pred = Value::scalar_bool(true);
     let true_val = make_f64_tensor(&[2, 2], vec![1.0, 2.0, 3.0, 4.0]);
     let false_val = make_f64_tensor(&[2, 2], vec![5.0, 6.0, 7.0, 8.0]);
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
 }
 
@@ -133,7 +138,8 @@ fn oracle_cond_negative_values() {
     let pred = Value::scalar_bool(false);
     let true_val = Value::Scalar(Literal::from_f64(-1.0));
     let false_val = Value::Scalar(Literal::from_f64(-2.0));
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - (-2.0)).abs() < 1e-10);
 }
@@ -143,7 +149,8 @@ fn oracle_cond_integer_values() {
     let pred = Value::scalar_bool(true);
     let true_val = Value::scalar_i64(42);
     let false_val = Value::scalar_i64(99);
-    let result = eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Cond, &[pred, true_val, false_val], &no_params()).unwrap();
     let vals = extract_i64_vec(&result);
     assert_eq!(vals[0], 42);
 }

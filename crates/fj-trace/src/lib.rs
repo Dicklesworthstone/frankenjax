@@ -1778,7 +1778,7 @@ impl SimpleTraceContext {
                             ),
                         });
                     }
-                    if dims.iter().any(|&d| d == 0) {
+                    if dims.contains(&0) {
                         return Err(TraceError::ShapeInferenceFailed {
                             primitive,
                             detail: "window_dimensions must be positive".to_owned(),
@@ -1812,7 +1812,7 @@ impl SimpleTraceContext {
                             ),
                         });
                     }
-                    if st.iter().any(|&s| s == 0) {
+                    if st.contains(&0) {
                         return Err(TraceError::ShapeInferenceFailed {
                             primitive,
                             detail: "window_strides must be positive".to_owned(),
@@ -7930,11 +7930,15 @@ mod tests {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 5, 1] }, // [N, W, C_in]
+                shape: Shape {
+                    dims: vec![1, 5, 1],
+                }, // [N, W, C_in]
             },
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![2, 1, 1] }, // [K, C_in, C_out]
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                }, // [K, C_in, C_out]
             },
         ]);
         let mut params = BTreeMap::new();
@@ -7962,11 +7966,15 @@ mod tests {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 3, 3, 1] }, // [N, H, W, C_in]
+                shape: Shape {
+                    dims: vec![1, 3, 3, 1],
+                }, // [N, H, W, C_in]
             },
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 1, 1, 1] }, // [KH, KW, C_in, C_out]
+                shape: Shape {
+                    dims: vec![1, 1, 1, 1],
+                }, // [KH, KW, C_in, C_out]
             },
         ]);
         let mut params = BTreeMap::new();
@@ -7994,11 +8002,15 @@ mod tests {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 3, 3, 1] },
+                shape: Shape {
+                    dims: vec![1, 3, 3, 1],
+                },
             },
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 1, 1, 1] },
+                shape: Shape {
+                    dims: vec![1, 1, 1, 1],
+                },
             },
         ]);
         let mut params = BTreeMap::new();
@@ -8022,11 +8034,15 @@ mod tests {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 3, 3, 1] },
+                shape: Shape {
+                    dims: vec![1, 3, 3, 1],
+                },
             },
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 1, 1, 1] },
+                shape: Shape {
+                    dims: vec![1, 1, 1, 1],
+                },
             },
         ]);
         let mut params = BTreeMap::new();
@@ -8050,11 +8066,15 @@ mod tests {
         let mut ctx = SimpleTraceContext::with_inputs(vec![
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![1, 6, 1] },
+                shape: Shape {
+                    dims: vec![1, 6, 1],
+                },
             },
             ShapedArray {
                 dtype: DType::F64,
-                shape: Shape { dims: vec![2, 1, 1] },
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
             },
         ]);
         let mut params = BTreeMap::new();

@@ -4,6 +4,8 @@
 //! - Returns an identical copy of the input
 //! - Preserves dtype, shape, and all elements
 
+#![allow(clippy::approx_constant)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -68,11 +70,11 @@ fn extract_bool_vec(v: &Value) -> Vec<bool> {
             .iter()
             .map(|l| match l {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool"),
+                _ => unreachable!("expected bool"),
             })
             .collect(),
         Value::Scalar(Literal::Bool(b)) => vec![*b],
-        _ => panic!("expected bool"),
+        _ => unreachable!("expected bool"),
     }
 }
 

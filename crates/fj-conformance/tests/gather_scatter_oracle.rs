@@ -42,7 +42,7 @@ fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
         Value::Scalar(Literal::I64(v)) => vec![*v],
-        _ => panic!("expected i64"),
+        _ => unreachable!("expected i64"),
     }
 }
 
@@ -86,7 +86,8 @@ fn oracle_gather_1d_single_index() {
     let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
     let indices = make_i64_tensor(&[1], vec![2]);
     // slice_sizes must match operand rank (1 element)
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     // Output shape = indices.shape ++ slice_sizes[1..] = [1] ++ [] = [1]
     assert_eq!(extract_shape(&result), vec![1]);
     assert_eq!(extract_i64_vec(&result), vec![30]);
@@ -98,7 +99,8 @@ fn oracle_gather_1d_multiple_indices() {
     // operand=[10, 20, 30, 40], indices=[0, 2, 3] -> [10, 30, 40]
     let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
     let indices = make_i64_tensor(&[3], vec![0, 2, 3]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     assert_eq!(extract_i64_vec(&result), vec![10, 30, 40]);
 }
@@ -107,7 +109,8 @@ fn oracle_gather_1d_multiple_indices() {
 fn oracle_gather_1d_first_element() {
     let operand = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
     let indices = make_i64_tensor(&[1], vec![0]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![1]);
 }
 
@@ -115,7 +118,8 @@ fn oracle_gather_1d_first_element() {
 fn oracle_gather_1d_last_element() {
     let operand = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
     let indices = make_i64_tensor(&[1], vec![4]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![5]);
 }
 
@@ -129,7 +133,12 @@ fn oracle_gather_2d_row_select() {
     let operand = make_i64_tensor(&[3, 3], vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
     let indices = make_i64_tensor(&[2], vec![0, 2]);
     // slice_sizes = [1, 3] (select 1 row at a time, keep all 3 columns)
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1, 3])).unwrap();
+    let result = eval_primitive(
+        Primitive::Gather,
+        &[operand, indices],
+        &gather_params(&[1, 3]),
+    )
+    .unwrap();
     // Output shape = [2] ++ [3] = [2, 3]
     assert_eq!(extract_shape(&result), vec![2, 3]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3, 7, 8, 9]);
@@ -139,7 +148,12 @@ fn oracle_gather_2d_row_select() {
 fn oracle_gather_2d_single_row() {
     let operand = make_i64_tensor(&[3, 2], vec![1, 2, 3, 4, 5, 6]);
     let indices = make_i64_tensor(&[1], vec![1]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1, 2])).unwrap();
+    let result = eval_primitive(
+        Primitive::Gather,
+        &[operand, indices],
+        &gather_params(&[1, 2]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![1, 2]);
     assert_eq!(extract_i64_vec(&result), vec![3, 4]);
 }
@@ -150,7 +164,8 @@ fn oracle_gather_2d_single_row() {
 fn oracle_gather_f64_values() {
     let operand = make_f64_tensor(&[4], vec![1.1, 2.2, 3.3, 4.4]);
     let indices = make_i64_tensor(&[2], vec![1, 3]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 2.2).abs() < 1e-10);
     assert!((vals[1] - 4.4).abs() < 1e-10);
@@ -160,7 +175,8 @@ fn oracle_gather_f64_values() {
 fn oracle_gather_negative_values() {
     let operand = make_i64_tensor(&[4], vec![-10, -20, 30, 40]);
     let indices = make_i64_tensor(&[2], vec![0, 1]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![-10, -20]);
 }
 
@@ -168,7 +184,8 @@ fn oracle_gather_negative_values() {
 fn oracle_gather_duplicate_indices() {
     let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
     let indices = make_i64_tensor(&[3], vec![1, 1, 1]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![20, 20, 20]);
 }
 
@@ -176,7 +193,8 @@ fn oracle_gather_duplicate_indices() {
 fn oracle_gather_single_element_operand() {
     let operand = make_i64_tensor(&[1], vec![42]);
     let indices = make_i64_tensor(&[1], vec![0]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![42]);
 }
 
@@ -184,7 +202,8 @@ fn oracle_gather_single_element_operand() {
 fn oracle_gather_zeros() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[2], vec![0, 3]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![0, 0]);
 }
 
@@ -192,7 +211,8 @@ fn oracle_gather_zeros() {
 fn oracle_gather_large_values() {
     let operand = make_i64_tensor(&[3], vec![i64::MAX, i64::MIN, 0]);
     let indices = make_i64_tensor(&[2], vec![0, 1]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![i64::MAX, i64::MIN]);
 }
 
@@ -200,10 +220,11 @@ fn oracle_gather_large_values() {
 fn oracle_gather_preserves_dtype() {
     let operand = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
     let indices = make_i64_tensor(&[2], vec![0, 1]);
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
     match &result {
         Value::Tensor(t) => assert_eq!(t.dtype, DType::F64),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -222,7 +243,11 @@ fn oracle_gather_slice_sizes_must_match_rank() {
     let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
     let indices = make_i64_tensor(&[1], vec![0]);
     // slice_sizes has 2 elements but operand rank is 1
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1, 1]));
+    let result = eval_primitive(
+        Primitive::Gather,
+        &[operand, indices],
+        &gather_params(&[1, 1]),
+    );
     assert!(result.is_err());
 }
 
@@ -236,7 +261,12 @@ fn oracle_scatter_1d_single_update() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[1], vec![2]);
     let updates = make_i64_tensor(&[1], vec![99]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     assert_eq!(extract_i64_vec(&result), vec![0, 0, 99, 0]);
 }
@@ -247,7 +277,12 @@ fn oracle_scatter_1d_multiple_updates() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[3], vec![0, 2, 3]);
     let updates = make_i64_tensor(&[3], vec![10, 20, 30]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![10, 0, 20, 30]);
 }
 
@@ -256,7 +291,12 @@ fn oracle_scatter_1d_first_position() {
     let operand = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
     let indices = make_i64_tensor(&[1], vec![0]);
     let updates = make_i64_tensor(&[1], vec![99]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![99, 2, 3, 4, 5]);
 }
 
@@ -265,7 +305,12 @@ fn oracle_scatter_1d_last_position() {
     let operand = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
     let indices = make_i64_tensor(&[1], vec![4]);
     let updates = make_i64_tensor(&[1], vec![99]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3, 4, 99]);
 }
 
@@ -274,7 +319,12 @@ fn oracle_scatter_all_positions() {
     let operand = make_i64_tensor(&[3], vec![0, 0, 0]);
     let indices = make_i64_tensor(&[3], vec![0, 1, 2]);
     let updates = make_i64_tensor(&[3], vec![10, 20, 30]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![10, 20, 30]);
 }
 
@@ -289,7 +339,12 @@ fn oracle_scatter_2d_row_update() {
     let operand = make_i64_tensor(&[3, 2], vec![0, 0, 0, 0, 0, 0]);
     let indices = make_i64_tensor(&[1], vec![1]);
     let updates = make_i64_tensor(&[1, 2], vec![99, 88]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![3, 2]);
     assert_eq!(extract_i64_vec(&result), vec![0, 0, 99, 88, 0, 0]);
 }
@@ -299,7 +354,12 @@ fn oracle_scatter_2d_multiple_rows() {
     let operand = make_i64_tensor(&[3, 2], vec![0, 0, 0, 0, 0, 0]);
     let indices = make_i64_tensor(&[2], vec![0, 2]);
     let updates = make_i64_tensor(&[2, 2], vec![1, 2, 5, 6]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 0, 0, 5, 6]);
 }
 
@@ -310,7 +370,12 @@ fn oracle_scatter_f64_values() {
     let operand = make_f64_tensor(&[4], vec![0.0, 0.0, 0.0, 0.0]);
     let indices = make_i64_tensor(&[2], vec![1, 3]);
     let updates = make_f64_tensor(&[2], vec![1.5, 2.5]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 0.0).abs() < 1e-10);
     assert!((vals[1] - 1.5).abs() < 1e-10);
@@ -323,7 +388,12 @@ fn oracle_scatter_negative_values() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[2], vec![0, 2]);
     let updates = make_i64_tensor(&[2], vec![-10, -20]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![-10, 0, -20, 0]);
 }
 
@@ -332,7 +402,12 @@ fn oracle_scatter_preserves_untouched() {
     let operand = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
     let indices = make_i64_tensor(&[1], vec![2]);
     let updates = make_i64_tensor(&[1], vec![99]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 99, 4, 5]);
 }
 
@@ -341,7 +416,12 @@ fn oracle_scatter_single_element_operand() {
     let operand = make_i64_tensor(&[1], vec![0]);
     let indices = make_i64_tensor(&[1], vec![0]);
     let updates = make_i64_tensor(&[1], vec![99]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![99]);
 }
 
@@ -350,7 +430,12 @@ fn oracle_scatter_to_zeros() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[2], vec![1, 2]);
     let updates = make_i64_tensor(&[2], vec![0, 0]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![0, 0, 0, 0]);
 }
 
@@ -359,7 +444,12 @@ fn oracle_scatter_large_values() {
     let operand = make_i64_tensor(&[3], vec![0, 0, 0]);
     let indices = make_i64_tensor(&[2], vec![0, 2]);
     let updates = make_i64_tensor(&[2], vec![i64::MAX, i64::MIN]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&result), vec![i64::MAX, 0, i64::MIN]);
 }
 
@@ -368,10 +458,15 @@ fn oracle_scatter_preserves_dtype() {
     let operand = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
     let indices = make_i64_tensor(&[1], vec![0]);
     let updates = make_f64_tensor(&[1], vec![99.0]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     match &result {
         Value::Tensor(t) => assert_eq!(t.dtype, DType::F64),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -380,7 +475,12 @@ fn oracle_scatter_output_matches_operand_shape() {
     let operand = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
     let indices = make_i64_tensor(&[2], vec![0, 2]);
     let updates = make_i64_tensor(&[2], vec![10, 30]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
 }
 
@@ -391,7 +491,11 @@ fn oracle_scatter_out_of_bounds() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[1], vec![5]); // out of bounds
     let updates = make_i64_tensor(&[1], vec![99]);
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params());
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    );
     assert!(result.is_err());
 }
 
@@ -400,7 +504,11 @@ fn oracle_scatter_dtype_mismatch() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[1], vec![0]);
     let updates = make_f64_tensor(&[1], vec![1.5]); // wrong dtype
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params());
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    );
     assert!(result.is_err());
 }
 
@@ -409,6 +517,10 @@ fn oracle_scatter_wrong_update_shape() {
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
     let indices = make_i64_tensor(&[2], vec![0, 1]);
     let updates = make_i64_tensor(&[3], vec![1, 2, 3]); // should be [2] to match indices
-    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params());
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    );
     assert!(result.is_err());
 }

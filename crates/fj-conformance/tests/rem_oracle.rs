@@ -38,21 +38,21 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
     match v {
         Value::Tensor(t) => t.shape.dims.clone(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -320,7 +320,7 @@ fn oracle_rem_large_values() {
     let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
     let vals = extract_i64_vec(&result);
     assert_eq!(vals[0], 1_000_000_007 % 1000);
-    assert_eq!(vals[1], (i64::MAX - 1) % i64::MAX);
+    assert_eq!(vals[1], i64::MAX - 1);
 }
 
 #[test]
@@ -368,9 +368,15 @@ fn oracle_rem_division_identity_f64() {
     for i in 0..4 {
         // Sign of remainder matches sign of dividend
         if dividends[i] >= 0.0 {
-            assert!(remainders[i] >= 0.0, "positive dividend should give non-negative remainder");
+            assert!(
+                remainders[i] >= 0.0,
+                "positive dividend should give non-negative remainder"
+            );
         } else {
-            assert!(remainders[i] <= 0.0, "negative dividend should give non-positive remainder");
+            assert!(
+                remainders[i] <= 0.0,
+                "negative dividend should give non-positive remainder"
+            );
         }
         // |remainder| < |divisor|
         assert!(

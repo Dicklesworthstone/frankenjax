@@ -194,10 +194,7 @@ fn oracle_conv_2d_multi_channel() {
     // lhs=[1, 2, 2, 2] (2 input channels)
     // rhs=[1, 1, 2, 1] (pointwise, 2->1 channels)
     // kernel sums both channels
-    let lhs = make_f64_tensor(
-        &[1, 2, 2, 2],
-        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
-    );
+    let lhs = make_f64_tensor(&[1, 2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
     let rhs = make_f64_tensor(&[1, 1, 2, 1], vec![1.0, 1.0]);
     let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
     assert_eq!(extract_shape(&result), vec![1, 2, 2, 1]);

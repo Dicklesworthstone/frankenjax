@@ -42,14 +42,14 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -60,7 +60,6 @@ fn extract_i64_scalar(v: &Value) -> i64 {
             t.elements[0].as_i64().unwrap()
         }
         Value::Scalar(l) => l.as_i64().unwrap(),
-        _ => panic!("expected scalar"),
     }
 }
 
@@ -71,14 +70,13 @@ fn extract_f64_scalar(v: &Value) -> f64 {
             t.elements[0].as_f64().unwrap()
         }
         Value::Scalar(l) => l.as_f64().unwrap(),
-        _ => panic!("expected scalar"),
     }
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
     match v {
         Value::Tensor(t) => t.shape.dims.clone(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -241,7 +239,10 @@ fn oracle_sign_f64_negative_zero() {
 fn oracle_sign_f64_nan() {
     let input = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::Sign, &[input], &no_params()).unwrap();
-    assert!(extract_f64_scalar(&result).is_nan(), "sign(NaN) should be NaN");
+    assert!(
+        extract_f64_scalar(&result).is_nan(),
+        "sign(NaN) should be NaN"
+    );
 }
 
 // ======================== 1D Tensor Integer ========================

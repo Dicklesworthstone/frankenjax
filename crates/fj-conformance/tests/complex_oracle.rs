@@ -4,6 +4,8 @@
 //! - Takes two inputs: real part and imaginary part
 //! - Creates complex128 output
 
+#![allow(clippy::approx_constant)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -31,7 +33,7 @@ fn extract_complex_vec(v: &Value) -> Vec<(f64, f64)> {
                 Literal::Complex64Bits(re, im) => {
                     (f32::from_bits(*re) as f64, f32::from_bits(*im) as f64)
                 }
-                _ => panic!("expected complex"),
+                _ => unreachable!("expected complex"),
             })
             .collect(),
         Value::Scalar(Literal::Complex128Bits(re, im)) => {
@@ -40,7 +42,7 @@ fn extract_complex_vec(v: &Value) -> Vec<(f64, f64)> {
         Value::Scalar(Literal::Complex64Bits(re, im)) => {
             vec![(f32::from_bits(*re) as f64, f32::from_bits(*im) as f64)]
         }
-        _ => panic!("expected complex"),
+        _ => unreachable!("expected complex"),
     }
 }
 

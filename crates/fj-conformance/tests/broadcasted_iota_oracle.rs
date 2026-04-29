@@ -12,14 +12,14 @@ use std::collections::BTreeMap;
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
     match v {
         Value::Tensor(t) => t.shape.dims.clone(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -107,7 +107,8 @@ fn oracle_broadcasted_iota_2d_square_dim1() {
 #[test]
 fn oracle_broadcasted_iota_3d_dim0() {
     // shape [2, 3, 4], dimension 0 -> indices [0, 0, ..., 1, 1, ...]
-    let result = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 3, 4], 0)).unwrap();
+    let result =
+        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 3, 4], 0)).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3, 4]);
     let vals = extract_i64_vec(&result);
     // First half (12 elements): all 0s
@@ -119,20 +120,22 @@ fn oracle_broadcasted_iota_3d_dim0() {
 #[test]
 fn oracle_broadcasted_iota_3d_dim1() {
     // shape [2, 3, 4], dimension 1 -> row indices within each slice
-    let result = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 3, 4], 1)).unwrap();
+    let result =
+        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 3, 4], 1)).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3, 4]);
     let vals = extract_i64_vec(&result);
     // Within each 2D slice (12 elements), we have rows 0, 1, 2
     // First slice
-    assert_eq!(&vals[0..4], &[0, 0, 0, 0]);   // row 0
-    assert_eq!(&vals[4..8], &[1, 1, 1, 1]);   // row 1
-    assert_eq!(&vals[8..12], &[2, 2, 2, 2]);  // row 2
+    assert_eq!(&vals[0..4], &[0, 0, 0, 0]); // row 0
+    assert_eq!(&vals[4..8], &[1, 1, 1, 1]); // row 1
+    assert_eq!(&vals[8..12], &[2, 2, 2, 2]); // row 2
 }
 
 #[test]
 fn oracle_broadcasted_iota_3d_dim2() {
     // shape [2, 3, 4], dimension 2 -> column indices
-    let result = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 3, 4], 2)).unwrap();
+    let result =
+        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 3, 4], 2)).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3, 4]);
     let vals = extract_i64_vec(&result);
     // Each row has [0, 1, 2, 3]

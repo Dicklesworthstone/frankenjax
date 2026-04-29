@@ -31,7 +31,7 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -42,14 +42,13 @@ fn extract_f64_scalar(v: &Value) -> f64 {
             t.elements[0].as_f64().unwrap()
         }
         Value::Scalar(l) => l.as_f64().unwrap(),
-        _ => panic!("expected scalar"),
     }
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
     match v {
         Value::Tensor(t) => t.shape.dims.clone(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -310,7 +309,10 @@ fn oracle_rsqrt_2d() {
 
 #[test]
 fn oracle_rsqrt_3d() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![1.0, 4.0, 9.0, 16.0, 25.0, 36.0, 49.0, 64.0],
+    );
     let result = eval_primitive(Primitive::Rsqrt, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -328,7 +330,12 @@ fn oracle_rsqrt_identity() {
         let result = eval_primitive(Primitive::Rsqrt, &[input], &no_params()).unwrap();
         let rsqrt_val = extract_f64_scalar(&result);
         let product = rsqrt_val * x.sqrt();
-        assert_close(product, 1.0, 1e-14, &format!("rsqrt({}) * sqrt({}) = 1", x, x));
+        assert_close(
+            product,
+            1.0,
+            1e-14,
+            &format!("rsqrt({}) * sqrt({}) = 1", x, x),
+        );
     }
 }
 
@@ -342,6 +349,11 @@ fn oracle_rsqrt_squared_identity() {
         let result = eval_primitive(Primitive::Rsqrt, &[input], &no_params()).unwrap();
         let rsqrt_val = extract_f64_scalar(&result);
         let squared = rsqrt_val * rsqrt_val;
-        assert_close(squared, 1.0 / x, 1e-14, &format!("rsqrt({})^2 = 1/{}", x, x));
+        assert_close(
+            squared,
+            1.0 / x,
+            1e-14,
+            &format!("rsqrt({})^2 = 1/{}", x, x),
+        );
     }
 }

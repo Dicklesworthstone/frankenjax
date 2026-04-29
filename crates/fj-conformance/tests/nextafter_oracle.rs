@@ -149,10 +149,10 @@ fn oracle_nextafter_2d() {
     let result = eval_primitive(Primitive::Nextafter, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_f64_vec(&result);
-    assert!(vals[0] > 0.0);   // 0 towards 1
-    assert!(vals[1] < 1.0);   // 1 towards 0
-    assert!(vals[2] > -1.0);  // -1 towards 0
-    assert!(vals[3] > 2.0);   // 2 towards 3
+    assert!(vals[0] > 0.0); // 0 towards 1
+    assert!(vals[1] < 1.0); // 1 towards 0
+    assert!(vals[2] > -1.0); // -1 towards 0
+    assert!(vals[3] > 2.0); // 2 towards 3
 }
 
 // ======================== Edge Cases ========================

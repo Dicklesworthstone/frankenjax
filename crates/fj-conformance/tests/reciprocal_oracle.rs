@@ -30,7 +30,7 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -41,14 +41,13 @@ fn extract_f64_scalar(v: &Value) -> f64 {
             t.elements[0].as_f64().unwrap()
         }
         Value::Scalar(l) => l.as_f64().unwrap(),
-        _ => panic!("expected scalar"),
     }
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
     match v {
         Value::Tensor(t) => t.shape.dims.clone(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -301,7 +300,10 @@ fn oracle_reciprocal_2d() {
 
 #[test]
 fn oracle_reciprocal_3d() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0],
+    );
     let result = eval_primitive(Primitive::Reciprocal, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -342,7 +344,12 @@ fn oracle_reciprocal_product_identity() {
         let result = eval_primitive(Primitive::Reciprocal, &[input], &no_params()).unwrap();
         let recip = extract_f64_scalar(&result);
         let product = x * recip;
-        assert_close(product, 1.0, 1e-14, &format!("{} * reciprocal({}) = 1", x, x));
+        assert_close(
+            product,
+            1.0,
+            1e-14,
+            &format!("{} * reciprocal({}) = 1", x, x),
+        );
     }
 }
 

@@ -38,13 +38,13 @@ fn extract_complex_vec(v: &Value) -> Vec<(f64, f64)> {
             .iter()
             .map(|l| match l {
                 Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
-                _ => panic!("expected complex128"),
+                _ => unreachable!("expected complex128"),
             })
             .collect(),
         Value::Scalar(Literal::Complex128Bits(re, im)) => {
             vec![(f64::from_bits(*re), f64::from_bits(*im))]
         }
-        _ => panic!("expected complex"),
+        _ => unreachable!("expected complex"),
     }
 }
 
@@ -101,7 +101,10 @@ fn oracle_real_1d() {
 
 #[test]
 fn oracle_real_2d() {
-    let input = make_complex128_tensor(&[2, 2], vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)]);
+    let input = make_complex128_tensor(
+        &[2, 2],
+        vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)],
+    );
     let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_f64_vec(&result);
@@ -151,7 +154,10 @@ fn oracle_imag_1d() {
 
 #[test]
 fn oracle_imag_2d() {
-    let input = make_complex128_tensor(&[2, 2], vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)]);
+    let input = make_complex128_tensor(
+        &[2, 2],
+        vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)],
+    );
     let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_f64_vec(&result);
@@ -217,7 +223,10 @@ fn oracle_conj_1d() {
 
 #[test]
 fn oracle_conj_2d() {
-    let input = make_complex128_tensor(&[2, 2], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]);
+    let input = make_complex128_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)],
+    );
     let result = eval_primitive(Primitive::Conj, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_complex_vec(&result);

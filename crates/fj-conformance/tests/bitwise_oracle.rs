@@ -96,7 +96,10 @@ fn oracle_bitwise_and_1d() {
     let b = make_i64_tensor(&[4], vec![0b1010, 0b1010, 0b1010, 0b1010]);
     let result = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
-    assert_eq!(extract_i64_vec(&result), vec![0b1000, 0b1010, 0b1010, 0b0000]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![0b1000, 0b1010, 0b1010, 0b0000]
+    );
 }
 
 #[test]
@@ -113,7 +116,10 @@ fn oracle_bitwise_and_u32() {
     let a = make_u32_tensor(&[3], vec![0xFFFF_FFFF, 0x0000_FFFF, 0xFFFF_0000]);
     let b = make_u32_tensor(&[3], vec![0x0000_FFFF, 0xFFFF_FFFF, 0xFFFF_0000]);
     let result = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_u32_vec(&result), vec![0x0000_FFFF, 0x0000_FFFF, 0xFFFF_0000]);
+    assert_eq!(
+        extract_u32_vec(&result),
+        vec![0x0000_FFFF, 0x0000_FFFF, 0xFFFF_0000]
+    );
 }
 
 // ======================== BitwiseOr Tests ========================
@@ -140,7 +146,10 @@ fn oracle_bitwise_or_1d() {
     let a = make_i64_tensor(&[4], vec![0b1000, 0b0100, 0b0010, 0b0001]);
     let b = make_i64_tensor(&[4], vec![0b0001, 0b0010, 0b0100, 0b1000]);
     let result = eval_primitive(Primitive::BitwiseOr, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&result), vec![0b1001, 0b0110, 0b0110, 0b1001]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![0b1001, 0b0110, 0b0110, 0b1001]
+    );
 }
 
 #[test]
@@ -322,7 +331,8 @@ fn oracle_bitwise_demorgan() {
     let b = make_i64_tensor(&[3], vec![0b1010, 0b1010, 0b0000]);
 
     // !(a & b)
-    let and_result = eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let and_result =
+        eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b.clone()], &no_params()).unwrap();
     let not_and = eval_primitive(Primitive::BitwiseNot, &[and_result], &no_params()).unwrap();
 
     // !a | !b

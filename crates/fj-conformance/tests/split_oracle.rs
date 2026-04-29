@@ -39,21 +39,21 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
     match v {
         Value::Tensor(t) => t.shape.dims.clone(),
-        _ => panic!("expected tensor"),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -199,7 +199,8 @@ fn oracle_split_3d_axis2() {
 fn oracle_split_unequal_two_three() {
     // Split [5] with sizes [2, 3] - returns first section
     let input = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
-    let result = eval_primitive(Primitive::Split, &[input], &split_params_sizes(0, &[2, 3])).unwrap();
+    let result =
+        eval_primitive(Primitive::Split, &[input], &split_params_sizes(0, &[2, 3])).unwrap();
     assert_eq!(extract_shape(&result), vec![2]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2]);
 }
@@ -208,7 +209,8 @@ fn oracle_split_unequal_two_three() {
 fn oracle_split_unequal_three_two() {
     // Split [5] with sizes [3, 2] - returns first section
     let input = make_i64_tensor(&[5], vec![1, 2, 3, 4, 5]);
-    let result = eval_primitive(Primitive::Split, &[input], &split_params_sizes(0, &[3, 2])).unwrap();
+    let result =
+        eval_primitive(Primitive::Split, &[input], &split_params_sizes(0, &[3, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3]);
 }

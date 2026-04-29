@@ -42,11 +42,11 @@ fn extract_bool_vec(v: &Value) -> Vec<bool> {
             .iter()
             .map(|l| match l {
                 Literal::Bool(b) => *b,
-                _ => panic!("expected bool"),
+                _ => unreachable!("expected bool"),
             })
             .collect(),
         Value::Scalar(Literal::Bool(b)) => vec![*b],
-        _ => panic!("expected bool"),
+        _ => unreachable!("expected bool"),
     }
 }
 
@@ -127,7 +127,10 @@ fn oracle_is_finite_1d_all_finite() {
 fn oracle_is_finite_1d_mixed() {
     let input = make_f64_tensor(&[5], vec![1.0, f64::NAN, 2.0, f64::INFINITY, 3.0]);
     let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
-    assert_eq!(extract_bool_vec(&result), vec![true, false, true, false, true]);
+    assert_eq!(
+        extract_bool_vec(&result),
+        vec![true, false, true, false, true]
+    );
 }
 
 #[test]
@@ -164,10 +167,7 @@ fn oracle_is_finite_2d_all_finite() {
 
 #[test]
 fn oracle_is_finite_2d_mixed() {
-    let input = make_f64_tensor(
-        &[2, 2],
-        vec![1.0, f64::NAN, f64::INFINITY, -10.0],
-    );
+    let input = make_f64_tensor(&[2, 2], vec![1.0, f64::NAN, f64::INFINITY, -10.0]);
     let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_eq!(extract_bool_vec(&result), vec![true, false, false, true]);
@@ -180,17 +180,26 @@ fn oracle_is_finite_2d_row_with_inf() {
         vec![1.0, 2.0, 3.0, f64::INFINITY, f64::INFINITY, f64::INFINITY],
     );
     let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
-    assert_eq!(extract_bool_vec(&result), vec![true, true, true, false, false, false]);
+    assert_eq!(
+        extract_bool_vec(&result),
+        vec![true, true, true, false, false, false]
+    );
 }
 
 // ======================== 3D Tests ========================
 
 #[test]
 fn oracle_is_finite_3d() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, f64::NAN, 3.0, 4.0, 5.0, 6.0, f64::INFINITY, 8.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![1.0, f64::NAN, 3.0, 4.0, 5.0, 6.0, f64::INFINITY, 8.0],
+    );
     let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
-    assert_eq!(extract_bool_vec(&result), vec![true, false, true, true, true, true, false, true]);
+    assert_eq!(
+        extract_bool_vec(&result),
+        vec![true, false, true, true, true, true, false, true]
+    );
 }
 
 // ======================== Edge Cases ========================

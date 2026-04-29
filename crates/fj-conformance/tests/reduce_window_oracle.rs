@@ -70,8 +70,12 @@ fn oracle_reduce_window_1d_sum_basic() {
     // input=[1,2,3,4,5], window=2, stride=1, valid
     // output = [1+2, 2+3, 3+4, 4+5] = [3, 5, 7, 9]
     let input = make_f64_tensor(&[5], vec![1.0, 2.0, 3.0, 4.0, 5.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("2", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 3.0).abs() < 1e-10);
@@ -85,8 +89,12 @@ fn oracle_reduce_window_1d_sum_stride2() {
     // input=[1,2,3,4,5,6], window=2, stride=2, valid
     // output = [1+2, 3+4, 5+6] = [3, 7, 11]
     let input = make_f64_tensor(&[6], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("2", "2", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "2", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 3.0).abs() < 1e-10);
@@ -99,8 +107,12 @@ fn oracle_reduce_window_1d_sum_window3() {
     // input=[1,2,3,4], window=3, stride=1, valid
     // output = [1+2+3, 2+3+4] = [6, 9]
     let input = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("3", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("3", "1", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 6.0).abs() < 1e-10);
@@ -114,8 +126,12 @@ fn oracle_reduce_window_1d_max_basic() {
     // input=[1,3,2,5,4], window=2, stride=1, valid
     // output = [max(1,3), max(3,2), max(2,5), max(5,4)] = [3, 3, 5, 5]
     let input = make_f64_tensor(&[5], vec![1.0, 3.0, 2.0, 5.0, 4.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &max_window("2", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &max_window("2", "1", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 3.0).abs() < 1e-10);
@@ -129,8 +145,12 @@ fn oracle_reduce_window_1d_max_stride2() {
     // input=[1,3,2,5,4,6], window=2, stride=2, valid
     // output = [max(1,3), max(2,5), max(4,6)] = [3, 5, 6]
     let input = make_f64_tensor(&[6], vec![1.0, 3.0, 2.0, 5.0, 4.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &max_window("2", "2", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &max_window("2", "2", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 3.0).abs() < 1e-10);
@@ -145,8 +165,12 @@ fn oracle_reduce_window_1d_min_basic() {
     // input=[3,1,4,1,5], window=2, stride=1, valid
     // output = [min(3,1), min(1,4), min(4,1), min(1,5)] = [1, 1, 1, 1]
     let input = make_f64_tensor(&[5], vec![3.0, 1.0, 4.0, 1.0, 5.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &min_window("2", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &min_window("2", "1", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_f64_vec(&result);
     assert!(vals.iter().all(|v| (v - 1.0).abs() < 1e-10));
@@ -157,8 +181,12 @@ fn oracle_reduce_window_1d_min_stride2() {
     // input=[5,2,8,3,1,7], window=2, stride=2, valid
     // output = [min(5,2), min(8,3), min(1,7)] = [2, 3, 1]
     let input = make_f64_tensor(&[6], vec![5.0, 2.0, 8.0, 3.0, 1.0, 7.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &min_window("2", "2", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &min_window("2", "2", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 2.0).abs() < 1e-10);
@@ -282,8 +310,12 @@ fn oracle_reduce_window_2d_min_basic() {
 fn oracle_reduce_window_1d_same_padding() {
     // With same padding, output length equals input length
     let input = make_f64_tensor(&[5], vec![1.0, 2.0, 3.0, 4.0, 5.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("3", "1", "same")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("3", "1", "same"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
 }
 
@@ -306,8 +338,12 @@ fn oracle_reduce_window_2d_same_padding() {
 fn oracle_reduce_window_window_equals_input() {
     // Window size = input size -> single output element
     let input = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("4", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("4", "1", "valid"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![1]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 10.0).abs() < 1e-10);
@@ -316,8 +352,12 @@ fn oracle_reduce_window_window_equals_input() {
 #[test]
 fn oracle_reduce_window_negative_values() {
     let input = make_f64_tensor(&[4], vec![-2.0, -1.0, 1.0, 2.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("2", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "valid"),
+    )
+    .unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - (-3.0)).abs() < 1e-10); // -2 + -1
     assert!((vals[1] - 0.0).abs() < 1e-10); // -1 + 1
@@ -327,8 +367,12 @@ fn oracle_reduce_window_negative_values() {
 #[test]
 fn oracle_reduce_window_max_negative() {
     let input = make_f64_tensor(&[4], vec![-5.0, -2.0, -3.0, -1.0]);
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &max_window("2", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &max_window("2", "1", "valid"),
+    )
+    .unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - (-2.0)).abs() < 1e-10);
     assert!((vals[1] - (-2.0)).abs() < 1e-10);
@@ -338,8 +382,12 @@ fn oracle_reduce_window_max_negative() {
 #[test]
 fn oracle_reduce_window_scalar_passthrough() {
     let input = Value::Scalar(Literal::from_f64(42.0));
-    let result =
-        eval_primitive(Primitive::ReduceWindow, &[input], &sum_window("1", "1", "valid")).unwrap();
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("1", "1", "valid"),
+    )
+    .unwrap();
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 42.0).abs() < 1e-10);
 }

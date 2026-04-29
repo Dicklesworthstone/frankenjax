@@ -4,6 +4,8 @@
 //! - axis: position to insert new dimension of size 1
 //! - Preserves data, only changes shape
 
+#![allow(clippy::approx_constant)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;

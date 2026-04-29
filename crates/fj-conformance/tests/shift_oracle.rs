@@ -119,7 +119,10 @@ fn oracle_shift_left_u32() {
     let a = make_u32_tensor(&[3], vec![1, 0x0000_0001, 0x0001_0000]);
     let b = make_u32_tensor(&[3], vec![16, 31, 15]);
     let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_u32_vec(&result), vec![0x0001_0000, 0x8000_0000, 0x8000_0000]);
+    assert_eq!(
+        extract_u32_vec(&result),
+        vec![0x0001_0000, 0x8000_0000, 0x8000_0000]
+    );
 }
 
 #[test]
@@ -258,7 +261,12 @@ fn oracle_shift_arithmetic_vs_logical_positive() {
     // For positive numbers, arithmetic and logical shift are the same
     let a = make_i64_tensor(&[3], vec![100, 200, 300]);
     let b = make_i64_tensor(&[3], vec![2, 2, 2]);
-    let arith = eval_primitive(Primitive::ShiftRightArithmetic, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let arith = eval_primitive(
+        Primitive::ShiftRightArithmetic,
+        &[a.clone(), b.clone()],
+        &no_params(),
+    )
+    .unwrap();
     let logic = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_i64_vec(&arith), extract_i64_vec(&logic));
 }
@@ -268,7 +276,12 @@ fn oracle_shift_arithmetic_vs_logical_negative() {
     // For negative numbers, they differ
     let a = Value::scalar_i64(-100);
     let b = Value::scalar_i64(2);
-    let arith = eval_primitive(Primitive::ShiftRightArithmetic, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let arith = eval_primitive(
+        Primitive::ShiftRightArithmetic,
+        &[a.clone(), b.clone()],
+        &no_params(),
+    )
+    .unwrap();
     let logic = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
     let arith_val = extract_i64_vec(&arith)[0];
     let logic_val = extract_i64_vec(&logic)[0];
@@ -282,6 +295,11 @@ fn oracle_shift_left_right_inverse() {
     let a = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
     let b = make_i64_tensor(&[4], vec![5, 5, 5, 5]);
     let shifted_left = eval_primitive(Primitive::ShiftLeft, &[a, b.clone()], &no_params()).unwrap();
-    let shifted_back = eval_primitive(Primitive::ShiftRightArithmetic, &[shifted_left, b], &no_params()).unwrap();
+    let shifted_back = eval_primitive(
+        Primitive::ShiftRightArithmetic,
+        &[shifted_left, b],
+        &no_params(),
+    )
+    .unwrap();
     assert_eq!(extract_i64_vec(&shifted_back), vec![1, 2, 3, 4]);
 }

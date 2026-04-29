@@ -109,7 +109,7 @@ fn oracle_erf_inv_close_to_neg_one() {
 #[test]
 fn oracle_erf_inv_inverse_property() {
     // erfinv(erf(x)) ≈ x for small x
-    let x_values = vec![0.0, 0.1, 0.5, 1.0, -0.1, -0.5, -1.0];
+    let x_values = [0.0, 0.1, 0.5, 1.0, -0.1, -0.5, -1.0];
     let erf_values: Vec<f64> = x_values.iter().map(|&x| erf_approx(x)).collect();
     let input = make_f64_tensor(&[7], erf_values);
     let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
