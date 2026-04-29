@@ -1143,7 +1143,6 @@ pub fn run_transform_fixture_bundle_batched(
     batch: &BatchRunnerConfig,
 ) -> TransformParityReport {
     let mut reports = Vec::with_capacity(bundle.cases.len());
-    let mut timed_out_handles = Vec::new();
 
     for case in &bundle.cases {
         let expected_json = serde_json::to_string(&case.expected)
@@ -1162,7 +1161,9 @@ pub fn run_transform_fixture_bundle_batched(
                 reports.push(report);
             }
             Err(_) => {
-                timed_out_handles.push(handle);
+                // Detach the worker so a timeout remains a wall-clock bound
+                // even if the underlying fixture code is slow or stuck.
+                drop(handle);
                 reports.push(TransformCaseReport {
                     case_id: case_for_timeout.case_id,
                     family: case_for_timeout.family,
@@ -1179,10 +1180,6 @@ pub fn run_transform_fixture_bundle_batched(
                 });
             }
         }
-    }
-
-    for handle in timed_out_handles {
-        let _ = handle.join();
     }
 
     let matched_cases = reports.iter().filter(|report| report.matched).count();
@@ -2206,6 +2203,54 @@ mod tests {
         assert_eq!(
             report.reports[1].drift_classification,
             DriftClassification::Pass
+        );
+    }
+
+    #[test]
+    fn test_batch_runner_timeout_returns_before_delayed_worker_finishes() {
+        let cfg = HarnessConfig::default_paths();
+        let bundle = TransformFixtureBundle {
+            schema_version: "frankenjax.transform-fixtures.v1".to_owned(),
+            generated_by: "unit-test".to_owned(),
+            generated_at_unix_ms: 0,
+            cases: vec![TransformFixtureCase {
+                case_id: "batch_long_timeout".to_owned(),
+                family: FixtureFamily::Jit,
+                mode: FixtureMode::Strict,
+                program: FixtureProgram::Add2,
+                transforms: vec![FixtureTransform::Jit],
+                comparator: ComparatorKind::ApproxAtolRtol,
+                baseline_mismatch: false,
+                flaky: false,
+                simulated_delay_ms: 5_000,
+                args: vec![
+                    FixtureValue::ScalarI64 { value: 1 },
+                    FixtureValue::ScalarI64 { value: 2 },
+                ],
+                expected: vec![FixtureValue::ScalarI64 { value: 3 }],
+                atol: 1e-6,
+                rtol: 1e-6,
+            }],
+        };
+
+        let started = std::time::Instant::now();
+        let report = run_transform_fixture_bundle_batched(
+            &cfg,
+            &bundle,
+            &BatchRunnerConfig {
+                case_timeout: std::time::Duration::from_millis(1),
+            },
+        );
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.total_cases, 1);
+        assert_eq!(
+            report.reports[0].drift_classification,
+            DriftClassification::Timeout
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "batch timeout waited for delayed worker: {elapsed:?}"
         );
     }
 
