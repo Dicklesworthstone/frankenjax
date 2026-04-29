@@ -1431,7 +1431,13 @@ impl SimpleTraceContext {
                             ),
                         });
                     }
-                    let stride = strides[0].max(1);
+                    let stride = strides[0];
+                    if stride == 0 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "conv strides must be positive".to_owned(),
+                        });
+                    }
                     let out_w = match padding_mode {
                         "same" | "SAME" => width.div_ceil(stride),
                         _ => {
@@ -1500,6 +1506,12 @@ impl SimpleTraceContext {
                             });
                         }
                     };
+                    if stride_h == 0 || stride_w == 0 {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "conv strides must be positive".to_owned(),
+                        });
+                    }
                     if padding_mode != "same" && padding_mode != "SAME" {
                         if height < kernel_h {
                             return Err(TraceError::ShapeInferenceFailed {
@@ -7909,5 +7921,151 @@ mod tests {
         assert_eq!(aval.dtype, DType::F64);
         // valid padding: (6 - 2) / 2 + 1 = 3
         assert_eq!(aval.shape.dims, vec![3]);
+    }
+
+    // ======================== Conv trace stride validation ========================
+
+    #[test]
+    fn test_infer_conv_1d_rejects_zero_stride() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 5, 1] }, // [N, W, C_in]
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![2, 1, 1] }, // [K, C_in, C_out]
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "same".to_owned());
+        params.insert("strides".to_owned(), "0".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect_err("zero stride should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Conv,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("positive"),
+            "error should mention positive: {err}"
+        );
+    }
+
+    #[test]
+    fn test_infer_conv_2d_rejects_zero_stride_h() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 3, 3, 1] }, // [N, H, W, C_in]
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 1, 1, 1] }, // [KH, KW, C_in, C_out]
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "same".to_owned());
+        params.insert("strides".to_owned(), "0,1".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect_err("zero stride_h should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Conv,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("positive"),
+            "error should mention positive: {err}"
+        );
+    }
+
+    #[test]
+    fn test_infer_conv_2d_rejects_zero_stride_w() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 3, 3, 1] },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 1, 1, 1] },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "same".to_owned());
+        params.insert("strides".to_owned(), "1,0".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect_err("zero stride_w should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Conv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_infer_conv_2d_rejects_zero_both_strides() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 3, 3, 1] },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 1, 1, 1] },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "same".to_owned());
+        params.insert("strides".to_owned(), "0,0".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect_err("zero strides should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::Conv,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_infer_conv_1d_valid_stride() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![1, 6, 1] },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![2, 1, 1] },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "valid".to_owned());
+        params.insert("strides".to_owned(), "2".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("valid stride should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        // valid padding: (6 - 2) / 2 + 1 = 3
+        assert_eq!(aval.shape.dims, vec![1, 3, 1]);
     }
 }
