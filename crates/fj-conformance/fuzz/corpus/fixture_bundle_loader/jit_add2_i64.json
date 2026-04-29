@@ -1,0 +1,22 @@
+{
+  "schema_version": "frankenjax.transform-fixtures.v1",
+  "generated_by": "fixture_bundle_loader_fuzz_seed",
+  "generated_at_unix_ms": 2,
+  "cases": [
+    {
+      "case_id": "seed_jit_add2_i64",
+      "family": "jit",
+      "mode": "strict",
+      "program": "add2",
+      "transforms": ["jit"],
+      "comparator": "exact",
+      "args": [
+        {"kind": "scalar_i64", "value": 42},
+        {"kind": "scalar_i64", "value": -7}
+      ],
+      "expected": [{"kind": "scalar_i64", "value": 35}],
+      "atol": 0.0,
+      "rtol": 0.0
+    }
+  ]
+}

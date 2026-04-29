@@ -1,0 +1,19 @@
+{
+  "schema_version": "frankenjax.transform-fixtures.v1",
+  "generated_by": "fixture_bundle_loader_fuzz_seed",
+  "generated_at_unix_ms": 4,
+  "cases": [
+    {
+      "case_id": "seed_vmap_add_one_vector",
+      "family": "vmap",
+      "mode": "strict",
+      "program": "add_one",
+      "transforms": ["vmap"],
+      "comparator": "exact",
+      "args": [{"kind": "vector_i64", "values": [1, 2, 3]}],
+      "expected": [{"kind": "vector_i64", "values": [2, 3, 4]}],
+      "atol": 0.0,
+      "rtol": 0.0
+    }
+  ]
+}

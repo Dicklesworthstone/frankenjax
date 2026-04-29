@@ -1,0 +1,22 @@
+{
+  "schema_version": "frankenjax.transform-fixtures.v1",
+  "generated_by": "fixture_bundle_loader_fuzz_seed",
+  "generated_at_unix_ms": 6,
+  "cases": [
+    {
+      "case_id": "seed_lax_concatenate_vectors",
+      "family": "lax",
+      "mode": "strict",
+      "program": "lax_concatenate",
+      "transforms": ["jit"],
+      "comparator": "exact",
+      "args": [
+        {"kind": "vector_f64", "values": [1.0, 2.0]},
+        {"kind": "vector_f64", "values": [3.0, 4.0]}
+      ],
+      "expected": [{"kind": "vector_f64", "values": [1.0, 2.0, 3.0, 4.0]}],
+      "atol": 0.0,
+      "rtol": 0.0
+    }
+  ]
+}

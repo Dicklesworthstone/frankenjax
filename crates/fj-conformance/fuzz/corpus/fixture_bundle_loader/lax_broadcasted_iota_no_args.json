@@ -1,0 +1,21 @@
+{
+  "schema_version": "frankenjax.transform-fixtures.v1",
+  "generated_by": "fixture_bundle_loader_fuzz_seed",
+  "generated_at_unix_ms": 7,
+  "cases": [
+    {
+      "case_id": "seed_lax_broadcasted_iota_no_args",
+      "family": "lax",
+      "mode": "strict",
+      "program": "lax_broadcasted_iota2x3",
+      "transforms": ["jit"],
+      "comparator": "exact",
+      "args": [],
+      "expected": [
+        {"kind": "tensor_i64", "shape": [2, 3], "values": [0, 1, 2, 0, 1, 2]}
+      ],
+      "atol": 0.0,
+      "rtol": 0.0
+    }
+  ]
+}
