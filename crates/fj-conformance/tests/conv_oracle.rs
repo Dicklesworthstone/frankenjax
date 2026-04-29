@@ -272,3 +272,100 @@ fn oracle_conv_zeros() {
     let vals = extract_f64_vec(&result);
     assert!(vals.iter().all(|v| v.abs() < 1e-10));
 }
+
+// ======================== Empty Spatial Dimension Tests ========================
+
+#[test]
+fn oracle_conv_1d_empty_width_same_padding() {
+    // 1D conv with width=0, SAME padding should produce empty output, not panic
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![1, 0, 1],
+            },
+            vec![],
+        )
+        .unwrap(),
+    );
+    let rhs = make_f64_tensor(&[1, 1, 1], vec![1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("same", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0, 1]);
+    assert!(extract_f64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_conv_1d_empty_width_valid_padding() {
+    // 1D conv with width=0, valid padding should produce empty output
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![1, 0, 1],
+            },
+            vec![],
+        )
+        .unwrap(),
+    );
+    let rhs = make_f64_tensor(&[1, 1, 1], vec![1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0, 1]);
+    assert!(extract_f64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_conv_2d_empty_height_same_padding() {
+    // 2D conv with height=0, SAME padding should produce empty output, not panic
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![1, 0, 3, 1],
+            },
+            vec![],
+        )
+        .unwrap(),
+    );
+    let rhs = make_f64_tensor(&[1, 1, 1, 1], vec![1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("same", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0, 3, 1]);
+    assert!(extract_f64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_conv_2d_empty_width_same_padding() {
+    // 2D conv with width=0, SAME padding should produce empty output, not panic
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![1, 3, 0, 1],
+            },
+            vec![],
+        )
+        .unwrap(),
+    );
+    let rhs = make_f64_tensor(&[1, 1, 1, 1], vec![1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("same", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 3, 0, 1]);
+    assert!(extract_f64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_conv_2d_empty_both_same_padding() {
+    // 2D conv with height=0 and width=0, SAME padding should produce empty output
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![1, 0, 0, 1],
+            },
+            vec![],
+        )
+        .unwrap(),
+    );
+    let rhs = make_f64_tensor(&[1, 1, 1, 1], vec![1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("same", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0, 0, 1]);
+    assert!(extract_f64_vec(&result).is_empty());
+}

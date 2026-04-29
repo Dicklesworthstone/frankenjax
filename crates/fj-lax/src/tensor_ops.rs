@@ -3117,20 +3117,26 @@ fn eval_conv_1d(
 
     let stride = parse_positive_stride(primitive, params.get("strides").map(String::as_str))?;
 
-    let (out_w, pad_left) = match padding_mode {
-        "same" | "SAME" => {
-            let out_w = width.div_ceil(stride);
-            let pad_total = ((out_w - 1) * stride + kernel_w).saturating_sub(width);
-            (out_w, pad_total / 2)
-        }
-        _ => {
-            if width < kernel_w {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("input width {width} < kernel {kernel_w} with valid padding"),
-                });
+    let (out_w, pad_left) = if width == 0 {
+        // Empty input produces empty output with no padding
+        (0, 0)
+    } else {
+        match padding_mode {
+            "same" | "SAME" => {
+                let out_w = width.div_ceil(stride);
+                // out_w >= 1 since width >= 1 and stride >= 1
+                let pad_total = ((out_w - 1) * stride + kernel_w).saturating_sub(width);
+                (out_w, pad_total / 2)
             }
-            ((width - kernel_w) / stride + 1, 0)
+            _ => {
+                if width < kernel_w {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!("input width {width} < kernel {kernel_w} with valid padding"),
+                    });
+                }
+                ((width - kernel_w) / stride + 1, 0)
+            }
         }
     };
 
@@ -3318,9 +3324,14 @@ fn compute_output_and_pad(
     stride: usize,
     padding_mode: &str,
 ) -> (usize, usize) {
+    // Empty input produces empty output with no padding
+    if input_size == 0 {
+        return (0, 0);
+    }
     match padding_mode {
         "same" | "SAME" => {
             let out = input_size.div_ceil(stride);
+            // out >= 1 since input_size >= 1 and stride >= 1
             let pad_total = ((out - 1) * stride + kernel_size).saturating_sub(input_size);
             (out, pad_total / 2)
         }
