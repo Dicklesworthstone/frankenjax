@@ -164,8 +164,7 @@ fn oracle_squeeze_explicit_middle() {
 fn oracle_squeeze_explicit_multiple() {
     // Shape [1, 2, 1, 3], squeeze axes 0 and 2
     let input = make_i64_tensor(&[1, 2, 1, 3], (1..=6).collect());
-    let result =
-        eval_primitive(Primitive::Squeeze, &[input], &squeeze_params(&[0, 2])).unwrap();
+    let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params(&[0, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
 }
 

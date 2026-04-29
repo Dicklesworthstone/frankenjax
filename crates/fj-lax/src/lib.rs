@@ -1344,6 +1344,28 @@ fn parse_reduce_window_param(
     Ok(values)
 }
 
+fn reduce_window_same_geometry(
+    primitive: Primitive,
+    input_dim: usize,
+    window_dim: usize,
+    stride: usize,
+) -> Result<(usize, usize), EvalError> {
+    let out_dim = input_dim.div_ceil(stride);
+    if out_dim == 0 {
+        return Ok((0, 0));
+    }
+
+    let covered = (out_dim - 1)
+        .checked_mul(stride)
+        .and_then(|base| base.checked_add(window_dim))
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "reduce_window SAME padding geometry overflow".to_owned(),
+        })?;
+    let total_padding = covered.saturating_sub(input_dim);
+    Ok((out_dim, total_padding / 2))
+}
+
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
 ///
 /// inputs: [tensor]
@@ -1384,25 +1406,38 @@ fn eval_reduce_window(
 
     // Calculate output dimensions
     let mut out_dims: Vec<u32> = Vec::with_capacity(rank);
+    let mut pad_lows: Vec<usize> = Vec::with_capacity(rank);
     for d in 0..rank {
         let input_dim = tensor.shape.dims[d] as usize;
         let win = window_dims[d];
         let stride = strides[d];
-        let out_dim = match padding {
-            "same" => input_dim.div_ceil(stride),
+        let (out_dim, pad_low) = match padding {
+            "same" => reduce_window_same_geometry(primitive, input_dim, win, stride)?,
             _ => {
                 // "valid"
-                if input_dim >= win {
+                let out_dim = if input_dim >= win {
                     (input_dim - win) / stride + 1
                 } else {
                     0
-                }
+                };
+                (out_dim, 0)
             }
         };
-        out_dims.push(out_dim as u32);
+        let out_dim = u32::try_from(out_dim).map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("reduce_window output dimension {out_dim} exceeds u32::MAX"),
+        })?;
+        out_dims.push(out_dim);
+        pad_lows.push(pad_low);
     }
 
-    let total_output: usize = out_dims.iter().map(|d| *d as usize).product();
+    let total_output: usize = out_dims.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim as usize)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "reduce_window output element count overflow".to_owned(),
+            })
+    })?;
     if total_output == 0 {
         return Ok(Value::Tensor(
             TensorValue::new(
@@ -1437,7 +1472,12 @@ fn eval_reduce_window(
 
         // Iterate over all positions within the window
         let mut win_idx = vec![0usize; rank];
-        let win_total: usize = window_dims.iter().product();
+        let win_total: usize = window_dims.iter().try_fold(1usize, |acc, dim| {
+            acc.checked_mul(*dim).ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "reduce_window window element count overflow".to_owned(),
+            })
+        })?;
 
         for _ in 0..win_total {
             // Compute input index for this window position
@@ -1446,13 +1486,41 @@ fn eval_reduce_window(
             let mut stride_mult = 1usize;
 
             for d in (0..rank).rev() {
-                let input_pos = out_idx[d] * strides[d] + win_idx[d];
+                let padded_pos = out_idx[d]
+                    .checked_mul(strides[d])
+                    .and_then(|base| base.checked_add(win_idx[d]))
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "reduce_window window index overflow".to_owned(),
+                    })?;
+                if padded_pos < pad_lows[d] {
+                    in_bounds = false;
+                    break;
+                }
+                let input_pos = padded_pos - pad_lows[d];
                 if input_pos >= input_dims[d] {
                     in_bounds = false;
                     break;
                 }
-                flat_input_idx += input_pos * stride_mult;
-                stride_mult *= input_dims[d];
+                let flat_increment =
+                    input_pos
+                        .checked_mul(stride_mult)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "reduce_window flat index overflow".to_owned(),
+                        })?;
+                flat_input_idx = flat_input_idx.checked_add(flat_increment).ok_or_else(|| {
+                    EvalError::Unsupported {
+                        primitive,
+                        detail: "reduce_window flat index overflow".to_owned(),
+                    }
+                })?;
+                stride_mult = stride_mult.checked_mul(input_dims[d]).ok_or_else(|| {
+                    EvalError::Unsupported {
+                        primitive,
+                        detail: "reduce_window stride multiplier overflow".to_owned(),
+                    }
+                })?;
             }
 
             if in_bounds {
@@ -6510,6 +6578,17 @@ mod tests {
         p
     }
 
+    fn rw_params_with_padding(
+        reduce_op: &str,
+        window: &str,
+        strides: &str,
+        padding: &str,
+    ) -> BTreeMap<String, String> {
+        let mut p = rw_params(reduce_op, window, strides);
+        p.insert("padding".to_owned(), padding.to_owned());
+        p
+    }
+
     #[test]
     fn reduce_window_sum_1d() {
         // [1, 2, 3, 4, 5], window=3, stride=1, valid => [6, 9, 12]
@@ -6606,6 +6685,73 @@ mod tests {
         if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 1.0, 1.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_same_padding_centers_odd_window_1d() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0, 5.0]).unwrap();
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "3", "1", "same"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![5]);
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![3.0, 6.0, 9.0, 12.0, 9.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_same_padding_centers_even_window_1d() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "2", "1", "same"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![4]);
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![3.0, 5.0, 7.0, 4.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_same_padding_centers_rank2_window() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3, 3] },
+                (1..=9).map(|v| Literal::from_f64(v as f64)).collect(),
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "2,2", "1,1", "same"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![3, 3]);
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(
+                vals,
+                vec![12.0, 16.0, 9.0, 24.0, 28.0, 15.0, 15.0, 17.0, 9.0]
+            );
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
