@@ -1741,22 +1741,83 @@ impl SimpleTraceContext {
                     });
                 }
                 let input = &inputs[0];
-                // Calculate output shape from window_dimensions and strides
-                let window_dims: Vec<usize> = params
-                    .get("window_dimensions")
-                    .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-                    .unwrap_or_else(|| vec![2; input.shape.rank()]);
-                let strides: Vec<usize> = params
-                    .get("window_strides")
-                    .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-                    .unwrap_or_else(|| vec![1; input.shape.rank()]);
+                let rank = input.shape.rank();
+
+                // Parse window_dimensions with strict validation
+                let window_dims: Vec<usize> = if let Some(s) = params.get("window_dimensions") {
+                    let parsed: Result<Vec<usize>, _> = s
+                        .split(',')
+                        .map(|x| {
+                            x.trim()
+                                .parse::<usize>()
+                                .map_err(|_| format!("invalid window_dimensions token: '{x}'"))
+                        })
+                        .collect();
+                    let dims = parsed.map_err(|e| TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: e,
+                    })?;
+                    if dims.len() != rank {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "window_dimensions length {} != input rank {rank}",
+                                dims.len()
+                            ),
+                        });
+                    }
+                    if dims.iter().any(|&d| d == 0) {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "window_dimensions must be positive".to_owned(),
+                        });
+                    }
+                    dims
+                } else {
+                    vec![2; rank]
+                };
+
+                // Parse window_strides with strict validation
+                let strides: Vec<usize> = if let Some(s) = params.get("window_strides") {
+                    let parsed: Result<Vec<usize>, _> = s
+                        .split(',')
+                        .map(|x| {
+                            x.trim()
+                                .parse::<usize>()
+                                .map_err(|_| format!("invalid window_strides token: '{x}'"))
+                        })
+                        .collect();
+                    let st = parsed.map_err(|e| TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: e,
+                    })?;
+                    if st.len() != rank {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: format!(
+                                "window_strides length {} != input rank {rank}",
+                                st.len()
+                            ),
+                        });
+                    }
+                    if st.iter().any(|&s| s == 0) {
+                        return Err(TraceError::ShapeInferenceFailed {
+                            primitive,
+                            detail: "window_strides must be positive".to_owned(),
+                        });
+                    }
+                    st
+                } else {
+                    vec![1; rank]
+                };
+
                 let padding = params.get("padding").map(|s| s.as_str()).unwrap_or("valid");
 
-                let mut out_dims = Vec::with_capacity(input.shape.rank());
-                for d in 0..input.shape.rank() {
+                let mut out_dims = Vec::with_capacity(rank);
+                for d in 0..rank {
                     let input_dim = input.shape.dims[d] as usize;
-                    let win = *window_dims.get(d).unwrap_or(&2);
-                    let stride = *strides.get(d).unwrap_or(&1);
+                    let win = window_dims[d];
+                    let stride = strides[d];
                     let out_dim = match padding {
                         "same" => input_dim.div_ceil(stride),
                         _ => {
@@ -7729,5 +7790,124 @@ mod tests {
         let sum1 = result[1].as_tensor().unwrap().to_f64_vec().unwrap();
         assert_eq!(sum0, vec![5.0, 7.0, 9.0]);
         assert_eq!(sum1, vec![6.0, 15.0]);
+    }
+
+    // ======================== ReduceWindow trace validation ========================
+
+    #[test]
+    fn test_infer_reduce_window_rejects_zero_stride() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(5),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "0".to_owned());
+        params.insert("padding".to_owned(), "same".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect_err("zero stride should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::ReduceWindow,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("positive"),
+            "error should mention positive: {err}"
+        );
+    }
+
+    #[test]
+    fn test_infer_reduce_window_rejects_zero_window() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(5),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "0".to_owned());
+        params.insert("window_strides".to_owned(), "1".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect_err("zero window should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::ReduceWindow,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_infer_reduce_window_rejects_malformed_stride() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(5),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "abc".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect_err("malformed stride should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::ReduceWindow,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_infer_reduce_window_rejects_short_strides() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![4, 4] }, // rank 2
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2,2".to_owned());
+        params.insert("window_strides".to_owned(), "1".to_owned()); // only 1 stride for rank 2
+
+        let err = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect_err("short strides should be rejected");
+        assert!(matches!(
+            err,
+            TraceError::ShapeInferenceFailed {
+                primitive: Primitive::ReduceWindow,
+                ..
+            }
+        ));
+        assert!(
+            err.to_string().contains("rank"),
+            "error should mention rank mismatch: {err}"
+        );
+    }
+
+    #[test]
+    fn test_infer_reduce_window_valid_params() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(6),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "2".to_owned());
+        params.insert("padding".to_owned(), "valid".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect("valid params should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.dtype, DType::F64);
+        // valid padding: (6 - 2) / 2 + 1 = 3
+        assert_eq!(aval.shape.dims, vec![3]);
     }
 }
