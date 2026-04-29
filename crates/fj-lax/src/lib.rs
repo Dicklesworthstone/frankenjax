@@ -1289,6 +1289,61 @@ fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, E
     }
 }
 
+fn parse_reduce_window_param(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    key: &str,
+    rank: usize,
+    default: usize,
+) -> Result<Vec<usize>, EvalError> {
+    let values = if let Some(raw) = params.get(key) {
+        if raw.trim().is_empty() {
+            if rank == 0 {
+                Vec::new()
+            } else {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("{key} must match tensor rank {rank}"),
+                });
+            }
+        } else {
+            raw.split(',')
+                .enumerate()
+                .map(|(idx, item)| {
+                    let trimmed = item.trim();
+                    let value = trimmed
+                        .parse::<usize>()
+                        .map_err(|_| EvalError::Unsupported {
+                            primitive,
+                            detail: format!("invalid {key}[{idx}]: '{trimmed}'"),
+                        })?;
+                    if value == 0 {
+                        return Err(EvalError::Unsupported {
+                            primitive,
+                            detail: format!("{key}[{idx}] must be positive"),
+                        });
+                    }
+                    Ok(value)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+    } else {
+        vec![default; rank]
+    };
+
+    if values.len() != rank {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "{key} length {} doesn't match tensor rank {rank}",
+                values.len()
+            ),
+        });
+    }
+
+    Ok(values)
+}
+
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
 ///
 /// inputs: [tensor]
@@ -1319,28 +1374,8 @@ fn eval_reduce_window(
 
     let rank = tensor.shape.rank();
 
-    // Parse window dimensions
-    let window_dims: Vec<usize> = params
-        .get("window_dimensions")
-        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-        .unwrap_or_else(|| vec![2; rank]);
-
-    if window_dims.len() != rank {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail: format!(
-                "window_dimensions length {} doesn't match tensor rank {}",
-                window_dims.len(),
-                rank
-            ),
-        });
-    }
-
-    // Parse strides
-    let strides: Vec<usize> = params
-        .get("window_strides")
-        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
-        .unwrap_or_else(|| vec![1; rank]);
+    let window_dims = parse_reduce_window_param(primitive, params, "window_dimensions", rank, 2)?;
+    let strides = parse_reduce_window_param(primitive, params, "window_strides", rank, 1)?;
 
     // Determine reduction operation
     let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
@@ -6586,6 +6621,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.as_f64_scalar().unwrap(), 42.0);
+    }
+
+    #[test]
+    fn reduce_window_rejects_zero_stride() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let result = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "2", "0"),
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("window_strides[0] must be positive"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn reduce_window_rejects_short_stride_list() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                (1..=4).map(|v| Literal::from_f64(v as f64)).collect(),
+            )
+            .unwrap(),
+        );
+        let result = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "1,1", "1"),
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("window_strides length 1 doesn't match tensor rank 2"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn reduce_window_rejects_malformed_window_dimension() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0]).unwrap();
+        let result = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "two", "1"),
+        );
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("invalid window_dimensions[0]: 'two'"),
+            "unexpected error: {err}"
+        );
     }
 
     // ── Rev tests ────────────────────────────────────────────────
