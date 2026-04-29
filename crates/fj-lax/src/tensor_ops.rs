@@ -846,11 +846,17 @@ pub(crate) fn eval_concatenate(
 
     // Build output shape.
     let mut out_dims = tensors[0].shape.dims.clone();
-    let concat_size: u32 = tensors.iter().map(|t| t.shape.dims[axis]).sum();
+    let concat_size = tensors.iter().try_fold(0_u32, |acc, tensor| {
+        acc.checked_add(tensor.shape.dims[axis])
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "concatenate axis size overflows u32".to_owned(),
+            })
+    })?;
     out_dims[axis] = concat_size;
 
     // For concatenation, iterate over all output coordinates.
-    let total: usize = out_dims.iter().map(|d| *d as usize).product();
+    let total = checked_shape_element_count(primitive, "concatenate", &out_dims)?;
     let mut elements = Vec::with_capacity(total);
     let mut out_coords = vec![0_usize; rank];
 

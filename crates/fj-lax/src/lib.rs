@@ -2116,6 +2116,32 @@ mod tests {
     }
 
     #[test]
+    fn concatenate_rejects_output_axis_overflow() {
+        let a = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![u32::MAX, 0],
+                },
+                vec![],
+            )
+            .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![1, 0] }, vec![]).unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("dimension".to_owned(), "0".to_owned());
+        let result = eval_primitive(Primitive::Concatenate, &[a, b], &params);
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("axis size overflows u32"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn pad_vector_with_edge_padding() {
         let input = Value::vector_i64(&[1, 2, 3]).unwrap();
         let params = pad_params("1", "2", "0");
