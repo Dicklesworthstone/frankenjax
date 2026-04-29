@@ -604,26 +604,13 @@ pub(crate) fn eval_broadcast_in_dim(
         });
     }
 
-    let target_dims = parse_i64_param(primitive, "shape", params)?;
-    let target_dims: Vec<u32> = target_dims
-        .into_iter()
-        .map(|d| {
-            if d >= 0 {
-                Ok(d as u32)
-            } else {
-                Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("invalid target dim {d}"),
-                })
-            }
-        })
-        .collect::<Result<_, _>>()?;
+    let target_dims = parse_broadcast_target_dims(primitive, params)?;
 
     match &inputs[0] {
         Value::Scalar(lit) => {
             // Broadcast scalar to target shape.
-            let total: u64 = target_dims.iter().map(|d| u64::from(*d)).product();
-            let elements = vec![*lit; total as usize];
+            let total = checked_shape_element_count(primitive, "broadcast_in_dim", &target_dims)?;
+            let elements = vec![*lit; total];
             let dtype = match lit {
                 Literal::I64(_) => DType::I64,
                 Literal::U32(_) => DType::U32,
@@ -699,7 +686,7 @@ pub(crate) fn eval_broadcast_in_dim(
                     });
                 }
             }
-            let total: usize = target_dims.iter().map(|d| *d as usize).product();
+            let total = checked_shape_element_count(primitive, "broadcast_in_dim", &target_dims)?;
 
             // Build mapping: for each output axis, which input axis maps to it (if any).
             let mut out_to_in: Vec<Option<usize>> = vec![None; out_rank];
@@ -747,6 +734,41 @@ pub(crate) fn eval_broadcast_in_dim(
             )?))
         }
     }
+}
+
+fn parse_broadcast_target_dims(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<u32>, EvalError> {
+    parse_i64_param(primitive, "shape", params)?
+        .into_iter()
+        .map(|d| {
+            if d < 0 {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("invalid target dim {d}"),
+                });
+            }
+            u32::try_from(d).map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("target dim {d} exceeds u32 range"),
+            })
+        })
+        .collect()
+}
+
+fn checked_shape_element_count(
+    primitive: Primitive,
+    op_name: &str,
+    dims: &[u32],
+) -> Result<usize, EvalError> {
+    dims.iter().try_fold(1_usize, |acc, dim| {
+        acc.checked_mul(*dim as usize)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("{op_name} shape overflows usize"),
+            })
+    })
 }
 
 /// Concatenate: join multiple tensors along an axis.

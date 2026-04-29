@@ -2084,6 +2084,29 @@ mod tests {
     }
 
     #[test]
+    fn broadcast_in_dim_rejects_dim_above_u32_range() {
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "4294967296".into());
+        let result = eval_primitive(Primitive::BroadcastInDim, &[Value::scalar_i64(1)], &params);
+
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("exceeds u32 range"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn broadcast_in_dim_rejects_shape_product_overflow() {
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "4294967295,4294967295,4294967295".into());
+        let result = eval_primitive(Primitive::BroadcastInDim, &[Value::scalar_i64(1)], &params);
+
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("shape overflows usize"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn concatenate_vectors() {
         let a = Value::vector_i64(&[1, 2]).unwrap();
         let b = Value::vector_i64(&[3, 4, 5]).unwrap();
