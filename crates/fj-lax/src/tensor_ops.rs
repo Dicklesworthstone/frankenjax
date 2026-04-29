@@ -1079,6 +1079,13 @@ pub(crate) fn eval_pad(
             out_elements,
         )?));
     }
+    if out_total == 0 {
+        return Ok(Value::Tensor(TensorValue::new(
+            operand.dtype,
+            Shape { dims: out_dims },
+            out_elements,
+        )?));
+    }
     if operand.elements.is_empty() {
         return Ok(Value::Tensor(TensorValue::new(
             operand.dtype,
@@ -1089,10 +1096,7 @@ pub(crate) fn eval_pad(
 
     // Row-major strides.
     let in_dims = &operand.shape.dims;
-    let mut out_strides = vec![1_usize; rank];
-    for ax in (0..rank.saturating_sub(1)).rev() {
-        out_strides[ax] = out_strides[ax + 1] * out_dims[ax + 1] as usize;
-    }
+    let out_strides = checked_row_major_strides(primitive, "pad", &out_dims)?;
 
     let mut in_coords = vec![0_usize; rank];
     for element in &operand.elements {

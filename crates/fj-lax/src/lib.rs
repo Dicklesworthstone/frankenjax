@@ -2352,6 +2352,33 @@ mod tests {
     }
 
     #[test]
+    fn pad_empty_huge_output_returns_empty_tensor() {
+        let huge = u32::MAX;
+        let low_huge = huge - 1;
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![1, 1, 1, 1],
+                },
+                vec![Literal::I64(1)],
+            )
+            .unwrap(),
+        );
+        let params = pad_params(
+            &format!("-1,{low_huge},{low_huge},{low_huge}"),
+            "0,0,0,0",
+            "0,0,0,0",
+        );
+
+        let out = eval_primitive(Primitive::Pad, &[input, Value::scalar_i64(0)], &params).unwrap();
+        let tensor = out.as_tensor().unwrap();
+
+        assert_eq!(tensor.shape.dims, vec![0, huge, huge, huge]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn pad_rank2_tensor_preserves_layout() {
         let input = Value::Tensor(
             TensorValue::new(
