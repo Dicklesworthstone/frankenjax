@@ -1350,6 +1350,7 @@ fn reduce_window_same_geometry(
     input_dim: usize,
     window_dim: usize,
     stride: usize,
+    lower: bool,
 ) -> Result<(usize, usize), EvalError> {
     let out_dim = input_dim.div_ceil(stride);
     if out_dim == 0 {
@@ -1364,7 +1365,41 @@ fn reduce_window_same_geometry(
             detail: "reduce_window SAME padding geometry overflow".to_owned(),
         })?;
     let total_padding = covered.saturating_sub(input_dim);
-    Ok((out_dim, total_padding / 2))
+    let pad_low = if lower {
+        total_padding.div_ceil(2)
+    } else {
+        total_padding / 2
+    };
+    Ok((out_dim, pad_low))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReduceWindowPadding {
+    Valid,
+    Same,
+    SameLower,
+}
+
+fn parse_reduce_window_padding(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<ReduceWindowPadding, EvalError> {
+    let Some(raw) = params.get("padding") else {
+        return Ok(ReduceWindowPadding::Valid);
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("VALID") {
+        Ok(ReduceWindowPadding::Valid)
+    } else if trimmed.eq_ignore_ascii_case("SAME") {
+        Ok(ReduceWindowPadding::Same)
+    } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
+        Ok(ReduceWindowPadding::SameLower)
+    } else {
+        Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("unsupported reduce_window padding mode {raw:?}"),
+        })
+    }
 }
 
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
@@ -1403,7 +1438,7 @@ fn eval_reduce_window(
     // Determine reduction operation
     let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
 
-    let padding = params.get("padding").map(|s| s.as_str()).unwrap_or("valid");
+    let padding = parse_reduce_window_padding(primitive, params)?;
 
     // Calculate output dimensions
     let mut out_dims: Vec<u32> = Vec::with_capacity(rank);
@@ -1413,9 +1448,13 @@ fn eval_reduce_window(
         let win = window_dims[d];
         let stride = strides[d];
         let (out_dim, pad_low) = match padding {
-            "same" => reduce_window_same_geometry(primitive, input_dim, win, stride)?,
-            _ => {
-                // "valid"
+            ReduceWindowPadding::Same => {
+                reduce_window_same_geometry(primitive, input_dim, win, stride, false)?
+            }
+            ReduceWindowPadding::SameLower => {
+                reduce_window_same_geometry(primitive, input_dim, win, stride, true)?
+            }
+            ReduceWindowPadding::Valid => {
                 let out_dim = if input_dim >= win {
                     (input_dim - win) / stride + 1
                 } else {
@@ -7130,6 +7169,62 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn reduce_window_uppercase_same_padding() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "2", "1", "SAME"),
+        )
+        .unwrap();
+
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.shape.dims, vec![4]);
+        let vals: Vec<f64> = tensor
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+        assert_eq!(vals, vec![3.0, 5.0, 7.0, 4.0]);
+    }
+
+    #[test]
+    fn reduce_window_same_lower_padding_puts_extra_pad_low() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "2", "1", "SAME_LOWER"),
+        )
+        .unwrap();
+
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.shape.dims, vec![4]);
+        let vals: Vec<f64> = tensor
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+        assert_eq!(vals, vec![1.0, 3.0, 5.0, 7.0]);
+    }
+
+    #[test]
+    fn reduce_window_rejects_unknown_padding() {
+        let input = Value::vector_f64(&[1.0, 2.0, 3.0, 4.0]).unwrap();
+        let result = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "2", "1", "mirror"),
+        );
+
+        let err = result.expect_err("unknown padding should fail").to_string();
+        assert!(
+            err.contains("unsupported reduce_window padding mode"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! - reduce_op: "sum", "max", "min"
 //! - window_dimensions: comma-separated sizes per dim
 //! - window_strides: comma-separated strides (default: 1)
-//! - padding: "valid" or "same"
+//! - padding: "VALID", "SAME", or "SAME_LOWER"
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -330,6 +330,50 @@ fn oracle_reduce_window_2d_same_padding() {
     )
     .unwrap();
     assert_eq!(extract_shape(&result), vec![4, 4]);
+}
+
+#[test]
+fn oracle_reduce_window_uppercase_same_padding() {
+    let input = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "SAME"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![3.0, 5.0, 7.0, 4.0]);
+}
+
+#[test]
+fn oracle_reduce_window_same_lower_padding() {
+    let input = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "SAME_LOWER"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![1.0, 3.0, 5.0, 7.0]);
+}
+
+#[test]
+fn oracle_reduce_window_unknown_padding_rejected() {
+    let input = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let err = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "MIRROR"),
+    )
+    .expect_err("unknown padding should fail closed");
+    assert!(
+        err.to_string()
+            .contains("unsupported reduce_window padding mode"),
+        "unexpected error: {err}"
+    );
 }
 
 // ======================== Edge Cases ========================

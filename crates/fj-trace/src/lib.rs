@@ -1849,7 +1849,7 @@ impl SimpleTraceContext {
                     vec![1; rank]
                 };
 
-                let padding = params.get("padding").map(|s| s.as_str()).unwrap_or("valid");
+                let padding = parse_reduce_window_padding_param(primitive, params)?;
 
                 let mut out_dims = Vec::with_capacity(rank);
                 for d in 0..rank {
@@ -1857,8 +1857,10 @@ impl SimpleTraceContext {
                     let win = window_dims[d];
                     let stride = strides[d];
                     let out_dim = match padding {
-                        "same" => input_dim.div_ceil(stride),
-                        _ => {
+                        ReduceWindowPadding::Same | ReduceWindowPadding::SameLower => {
+                            input_dim.div_ceil(stride)
+                        }
+                        ReduceWindowPadding::Valid => {
                             if input_dim >= win {
                                 (input_dim - win) / stride + 1
                             } else {
@@ -2240,6 +2242,36 @@ fn parse_bool_param(
             key,
             value: raw.clone(),
         }),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReduceWindowPadding {
+    Valid,
+    Same,
+    SameLower,
+}
+
+fn parse_reduce_window_padding_param(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<ReduceWindowPadding, TraceError> {
+    let Some(raw) = params.get("padding") else {
+        return Ok(ReduceWindowPadding::Valid);
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("VALID") {
+        Ok(ReduceWindowPadding::Valid)
+    } else if trimmed.eq_ignore_ascii_case("SAME") {
+        Ok(ReduceWindowPadding::Same)
+    } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
+        Ok(ReduceWindowPadding::SameLower)
+    } else {
+        Err(TraceError::InvalidPrimitiveParam {
+            primitive,
+            key: "padding",
+            value: raw.clone(),
+        })
     }
 }
 
@@ -8149,6 +8181,68 @@ mod tests {
         assert_eq!(aval.dtype, DType::F64);
         // valid padding: (6 - 2) / 2 + 1 = 3
         assert_eq!(aval.shape.dims, vec![3]);
+    }
+
+    #[test]
+    fn test_infer_reduce_window_uppercase_same_padding() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(6),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "2".to_owned());
+        params.insert("padding".to_owned(), "SAME".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect("uppercase SAME padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.dtype, DType::F64);
+        assert_eq!(aval.shape.dims, vec![3]);
+    }
+
+    #[test]
+    fn test_infer_reduce_window_same_lower_padding() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(6),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "2".to_owned());
+        params.insert("padding".to_owned(), "SAME_LOWER".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect("SAME_LOWER padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.dtype, DType::F64);
+        assert_eq!(aval.shape.dims, vec![3]);
+    }
+
+    #[test]
+    fn test_infer_reduce_window_rejects_unknown_padding() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::vector(6),
+        }]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".to_owned(), "2".to_owned());
+        params.insert("window_strides".to_owned(), "2".to_owned());
+        params.insert("padding".to_owned(), "mirror".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::ReduceWindow, &[TracerId(1)], params)
+            .expect_err("unknown padding should fail");
+        assert!(matches!(
+            err,
+            TraceError::InvalidPrimitiveParam {
+                primitive: Primitive::ReduceWindow,
+                key: "padding",
+                ..
+            }
+        ));
     }
 
     // ======================== Conv trace stride validation ========================
