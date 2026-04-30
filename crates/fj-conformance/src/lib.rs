@@ -2216,7 +2216,7 @@ mod tests {
                     comparator: ComparatorKind::ApproxAtolRtol,
                     baseline_mismatch: false,
                     flaky: false,
-                    simulated_delay_ms: 200,
+                    simulated_delay_ms: 500,
                     args: vec![
                         FixtureValue::ScalarI64 { value: 1 },
                         FixtureValue::ScalarI64 { value: 2 },
@@ -2249,7 +2249,7 @@ mod tests {
             &cfg,
             &bundle,
             &BatchRunnerConfig {
-                case_timeout: std::time::Duration::from_millis(50),
+                case_timeout: std::time::Duration::from_millis(200),
             },
         );
         assert_eq!(report.total_cases, 2);
