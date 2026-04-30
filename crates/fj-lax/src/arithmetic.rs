@@ -1189,23 +1189,19 @@ pub(crate) fn eval_unary_elementwise(
                 _ => DType::F64,
             };
 
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(|literal| -> Result<Literal, EvalError> {
-                    let mapped = literal.as_f64().map(&op).ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected numeric tensor elements",
-                    })?;
-                    let out = match out_dtype {
-                        DType::BF16 => Literal::from_bf16_f32(mapped as f32),
-                        DType::F16 => Literal::from_f16_f32(mapped as f32),
-                        _ => Literal::from_f64(mapped),
-                    };
-                    Ok(out)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in tensor.elements.iter().copied() {
+                let mapped = literal.as_f64().map(&op).ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric tensor elements",
+                })?;
+                let out = match out_dtype {
+                    DType::BF16 => Literal::from_bf16_f32(mapped as f32),
+                    DType::F16 => Literal::from_f16_f32(mapped as f32),
+                    _ => Literal::from_f64(mapped),
+                };
+                elements.push(out);
+            }
 
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
