@@ -2308,35 +2308,14 @@ pub(crate) fn eval_iota(
             detail: format!("invalid length: '{length_str}'"),
         })?;
 
-    let dtype_str = params.get("dtype").map(String::as_str).unwrap_or("I64");
-    let (dtype, elements) = match dtype_str {
-        "I64" | "i64" => {
-            let elems: Vec<Literal> = (0..length as i64).map(Literal::I64).collect();
-            (DType::I64, elems)
-        }
-        "I32" | "i32" => {
-            let elems: Vec<Literal> = (0..length as i64).map(Literal::I64).collect();
-            (DType::I32, elems)
-        }
-        "F64" | "f64" => {
-            let elems: Vec<Literal> = (0..length)
-                .map(|i| Literal::from_f64(f64::from(i)))
-                .collect();
-            (DType::F64, elems)
-        }
-        "F32" | "f32" => {
-            let elems: Vec<Literal> = (0..length)
-                .map(|i| Literal::from_f64(f64::from(i)))
-                .collect();
-            (DType::F32, elems)
-        }
-        _ => {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!("unsupported dtype for iota: '{dtype_str}'"),
-            });
-        }
+    let dtype = if let Some(raw) = params.get("dtype") {
+        parse_dtype_name(primitive, "dtype", raw)?
+    } else {
+        DType::I64
     };
+    let elements: Vec<Literal> = (0..length as usize)
+        .map(|index| literal_from_index_for_dtype(primitive, dtype, index))
+        .collect::<Result<_, _>>()?;
 
     Ok(Value::Tensor(TensorValue::new(
         dtype,
@@ -2368,13 +2347,14 @@ fn literal_from_index_for_dtype(
         }
         DType::U64 => Ok(Literal::U64(index as u64)),
         DType::F64 => Ok(Literal::from_f64(index as f64)),
-        DType::F32 => Ok(Literal::from_f64(f64::from(index as f32))),
+        DType::F32 => Ok(Literal::from_f32(index as f32)),
         DType::BF16 => Ok(Literal::from_bf16_f32(index as f32)),
         DType::F16 => Ok(Literal::from_f16_f32(index as f32)),
-        DType::Bool => Ok(Literal::Bool(index != 0)),
-        DType::Complex64 | DType::Complex128 => Err(EvalError::Unsupported {
+        DType::Complex64 => Ok(Literal::from_complex64(index as f32, 0.0)),
+        DType::Complex128 => Ok(Literal::from_complex128(index as f64, 0.0)),
+        DType::Bool => Err(EvalError::Unsupported {
             primitive,
-            detail: "broadcasted_iota does not support complex dtypes".to_owned(),
+            detail: format!("{} does not accept bool dtype", primitive.as_str()),
         }),
     }
 }

@@ -1226,10 +1226,10 @@ impl SimpleTraceContext {
                 } else {
                     DType::I64
                 };
-                if !matches!(dtype, DType::I64 | DType::I32 | DType::F64 | DType::F32) {
+                if matches!(dtype, DType::Bool) {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
-                        detail: format!("unsupported dtype for iota: {dtype:?}"),
+                        detail: "iota does not accept bool dtype".to_owned(),
                     });
                 }
                 Ok(vec![ShapedArray {
@@ -1282,10 +1282,10 @@ impl SimpleTraceContext {
                 } else {
                     DType::I64
                 };
-                if matches!(dtype, DType::Complex64 | DType::Complex128) {
+                if matches!(dtype, DType::Bool) {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
-                        detail: "broadcasted_iota does not support complex dtypes".to_owned(),
+                        detail: "broadcasted_iota does not accept bool dtype".to_owned(),
                     });
                 }
                 Ok(vec![ShapedArray {
@@ -5964,6 +5964,53 @@ mod tests {
     }
 
     #[test]
+    fn test_infer_iota_complex_dtype() {
+        run_logged_test(
+            "test_infer_iota_complex_dtype",
+            fj_test_utils::fixture_id_from_json(&("iota-complex-dtype", 3_u32))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::new();
+                let mut params = BTreeMap::new();
+                params.insert("length".to_owned(), "3".to_owned());
+                params.insert("dtype".to_owned(), "complex64".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::Iota, &[], params)
+                    .expect("complex iota inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::Complex64);
+                assert_eq!(aval.shape, Shape::vector(3));
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_iota_rejects_bool_dtype() {
+        run_logged_test(
+            "test_infer_iota_rejects_bool_dtype",
+            fj_test_utils::fixture_id_from_json(&("iota-bool-dtype", 3_u32))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::new();
+                let mut params = BTreeMap::new();
+                params.insert("length".to_owned(), "3".to_owned());
+                params.insert("dtype".to_owned(), "bool".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::Iota, &[], params)
+                    .expect_err("bool iota should be rejected");
+                assert!(
+                    err.to_string().contains("iota does not accept bool dtype"),
+                    "unexpected error: {err}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
     fn test_infer_broadcasted_iota_shape() {
         run_logged_test(
             "test_infer_broadcasted_iota_shape",
@@ -5982,6 +6029,59 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.dtype, DType::I64);
                 assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_broadcasted_iota_complex_dtype() {
+        run_logged_test(
+            "test_infer_broadcasted_iota_complex_dtype",
+            fj_test_utils::fixture_id_from_json(&(
+                "broadcasted-iota-complex-dtype",
+                [2_u32, 3_u32],
+            ))
+            .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::new();
+                let mut params = BTreeMap::new();
+                params.insert("shape".to_owned(), "2,3".to_owned());
+                params.insert("dimension".to_owned(), "1".to_owned());
+                params.insert("dtype".to_owned(), "complex128".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::BroadcastedIota, &[], params)
+                    .expect("complex broadcasted_iota inference should succeed");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::Complex128);
+                assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_broadcasted_iota_rejects_bool_dtype() {
+        run_logged_test(
+            "test_infer_broadcasted_iota_rejects_bool_dtype",
+            fj_test_utils::fixture_id_from_json(&("broadcasted-iota-bool-dtype", [2_u32, 3_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::new();
+                let mut params = BTreeMap::new();
+                params.insert("shape".to_owned(), "2,3".to_owned());
+                params.insert("dimension".to_owned(), "1".to_owned());
+                params.insert("dtype".to_owned(), "bool".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::BroadcastedIota, &[], params)
+                    .expect_err("bool broadcasted_iota should be rejected");
+                assert!(
+                    err.to_string()
+                        .contains("broadcasted_iota does not accept bool dtype"),
+                    "unexpected error: {err}"
+                );
                 Ok(Vec::new())
             },
         );

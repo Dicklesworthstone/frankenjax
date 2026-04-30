@@ -4343,6 +4343,55 @@ mod tests {
     }
 
     #[test]
+    fn iota_supports_unsigned_half_and_complex_numeric_dtypes() {
+        let mut u64_params = BTreeMap::new();
+        u64_params.insert("length".to_owned(), "3".to_owned());
+        u64_params.insert("dtype".to_owned(), "u64".to_owned());
+        let u64_out = eval_primitive(Primitive::Iota, &[], &u64_params).unwrap();
+        let u64_tensor = u64_out.as_tensor().expect("tensor output expected");
+        assert_eq!(u64_tensor.dtype, DType::U64);
+        assert_eq!(
+            u64_tensor.elements,
+            vec![Literal::U64(0), Literal::U64(1), Literal::U64(2)]
+        );
+
+        let mut bf16_params = BTreeMap::new();
+        bf16_params.insert("length".to_owned(), "2".to_owned());
+        bf16_params.insert("dtype".to_owned(), "bf16".to_owned());
+        let bf16_out = eval_primitive(Primitive::Iota, &[], &bf16_params).unwrap();
+        let bf16_tensor = bf16_out.as_tensor().expect("tensor output expected");
+        assert_eq!(bf16_tensor.dtype, DType::BF16);
+        assert_eq!(bf16_tensor.elements[0].as_f64(), Some(0.0));
+        assert_eq!(bf16_tensor.elements[1].as_f64(), Some(1.0));
+
+        let mut complex_params = BTreeMap::new();
+        complex_params.insert("length".to_owned(), "3".to_owned());
+        complex_params.insert("dtype".to_owned(), "complex64".to_owned());
+        let complex_out = eval_primitive(Primitive::Iota, &[], &complex_params).unwrap();
+        let complex_tensor = complex_out.as_tensor().expect("tensor output expected");
+        assert_eq!(complex_tensor.dtype, DType::Complex64);
+        let complex_values: Vec<(f32, f32)> = complex_tensor
+            .elements
+            .iter()
+            .map(|lit| lit.as_complex64().expect("complex64 element"))
+            .collect();
+        assert_eq!(complex_values, vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
+    }
+
+    #[test]
+    fn iota_rejects_bool_dtype() {
+        let mut params = BTreeMap::new();
+        params.insert("length".to_owned(), "3".to_owned());
+        params.insert("dtype".to_owned(), "bool".to_owned());
+        let err =
+            eval_primitive(Primitive::Iota, &[], &params).expect_err("JAX iota rejects bool dtype");
+        assert!(
+            err.to_string().contains("iota does not accept bool dtype"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn iota_zero_length() {
         let mut params = BTreeMap::new();
         params.insert("length".to_owned(), "0".to_owned());
@@ -7551,6 +7600,53 @@ mod tests {
             .map(|lit| lit.as_i64().expect("i64 element"))
             .collect();
         assert_eq!(values, vec![0, 1, 2, 0, 1, 2]);
+    }
+
+    #[test]
+    fn test_broadcasted_iota_supports_complex_numeric_dtype() {
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), "2,3".to_owned());
+        params.insert("dimension".to_owned(), "0".to_owned());
+        params.insert("dtype".to_owned(), "complex128".to_owned());
+
+        let out = eval_primitive(Primitive::BroadcastedIota, &[], &params)
+            .expect("complex broadcasted_iota should follow JAX numeric dtype rule");
+        let tensor = out.as_tensor().expect("tensor output expected");
+        assert_eq!(tensor.dtype, DType::Complex128);
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+
+        let values: Vec<(f64, f64)> = tensor
+            .elements
+            .iter()
+            .map(|lit| lit.as_complex128().expect("complex128 element"))
+            .collect();
+        assert_eq!(
+            values,
+            vec![
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 0.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_broadcasted_iota_rejects_bool_dtype() {
+        let mut params = BTreeMap::new();
+        params.insert("shape".to_owned(), "2,3".to_owned());
+        params.insert("dimension".to_owned(), "1".to_owned());
+        params.insert("dtype".to_owned(), "bool".to_owned());
+
+        let err = eval_primitive(Primitive::BroadcastedIota, &[], &params)
+            .expect_err("JAX broadcasted_iota rejects bool dtype");
+        assert!(
+            err.to_string()
+                .contains("broadcasted_iota does not accept bool dtype"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
