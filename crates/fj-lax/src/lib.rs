@@ -1657,19 +1657,20 @@ fn eval_reduce_window(
     // Iterate over all output positions using multi-dimensional index
     let out_dims_usize: Vec<usize> = out_dims.iter().map(|d| *d as usize).collect();
     let mut out_idx = vec![0usize; rank];
+    let win_total: usize = window_dims.iter().try_fold(1usize, |acc, dim| {
+        acc.checked_mul(*dim).ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "reduce_window window element count overflow".to_owned(),
+        })
+    })?;
+    let mut win_idx = vec![0usize; rank];
 
     for _ in 0..total_output {
         // For this output position, compute the window
         let mut accum = reduce_window_initial_accumulator(output_dtype, reduce_op);
 
         // Iterate over all positions within the window
-        let mut win_idx = vec![0usize; rank];
-        let win_total: usize = window_dims.iter().try_fold(1usize, |acc, dim| {
-            acc.checked_mul(*dim).ok_or_else(|| EvalError::Unsupported {
-                primitive,
-                detail: "reduce_window window element count overflow".to_owned(),
-            })
-        })?;
+        win_idx.fill(0);
 
         for _ in 0..win_total {
             // Compute input index for this window position
