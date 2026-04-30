@@ -1215,6 +1215,28 @@ pub(crate) fn eval_unary_elementwise(
     }
 }
 
+/// Round with JAX's `rounding_method` parameter.
+pub(crate) fn eval_round(
+    primitive: Primitive,
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let op = match params.get("rounding_method").map(|raw| raw.trim()) {
+        None | Some("") | Some("0") | Some("AWAY_FROM_ZERO") | Some("away_from_zero") => f64::round,
+        Some("1") | Some("TO_NEAREST_EVEN") | Some("to_nearest_even") | Some("nearest_even") => {
+            f64::round_ties_even
+        }
+        Some(raw) => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("unsupported rounding_method '{raw}'"),
+            });
+        }
+    };
+
+    eval_unary_elementwise(primitive, inputs, op)
+}
+
 /// Unary elementwise that preserves integer types (for neg, abs).
 #[inline]
 pub(crate) fn eval_unary_int_or_float(

@@ -59,6 +59,12 @@ fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
 
+fn rounding_params(method: &str) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::new();
+    params.insert("rounding_method".to_owned(), method.to_owned());
+    params
+}
+
 // ======================== Integers ========================
 
 #[test]
@@ -231,6 +237,35 @@ fn oracle_round_neg_two_point_five() {
     let input = make_f64_tensor(&[], vec![-2.5]);
     let result = eval_primitive(Primitive::Round, &[input], &no_params()).unwrap();
     assert_eq!(extract_f64_scalar(&result), -3.0, "round(-2.5) = -3");
+}
+
+#[test]
+fn oracle_round_to_nearest_even_half_values() {
+    let input = make_f64_tensor(&[7], vec![-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5]);
+    let result = eval_primitive(
+        Primitive::Round,
+        &[input],
+        &rounding_params("TO_NEAREST_EVEN"),
+    )
+    .unwrap();
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![-2.0, -1.0, -0.0, 0.0, 0.0, 1.0, 2.0]);
+    assert!(
+        vals[2].is_sign_negative(),
+        "round(-0.5) should preserve -0.0"
+    );
+}
+
+#[test]
+fn oracle_round_rejects_unknown_rounding_method() {
+    let input = make_f64_tensor(&[], vec![2.5]);
+    let err = eval_primitive(Primitive::Round, &[input], &rounding_params("HALF_UP"))
+        .expect_err("unknown rounding_method should fail");
+    assert!(
+        err.to_string()
+            .contains("unsupported rounding_method 'HALF_UP'"),
+        "unexpected error: {err}"
+    );
 }
 
 // ======================== Infinity ========================

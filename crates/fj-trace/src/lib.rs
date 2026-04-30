@@ -644,6 +644,21 @@ impl SimpleTraceContext {
                         detail: format!("expected 1 input, got {}", inputs.len()),
                     });
                 }
+                if primitive == Primitive::Round
+                    && let Some(raw) = params.get("rounding_method")
+                {
+                    match raw.trim() {
+                        "" | "0" | "1" | "AWAY_FROM_ZERO" | "TO_NEAREST_EVEN"
+                        | "away_from_zero" | "to_nearest_even" | "nearest_even" => {}
+                        _ => {
+                            return Err(TraceError::InvalidPrimitiveParam {
+                                primitive,
+                                key: "rounding_method",
+                                value: raw.to_owned(),
+                            });
+                        }
+                    }
+                }
                 Ok(vec![inputs[0].clone()])
             }
             Primitive::BitcastConvertType => {
@@ -4292,6 +4307,57 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.shape, Shape { dims: vec![2, 3] });
                 assert_eq!(aval.dtype, DType::Bool);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_round_accepts_nearest_even_method() {
+        run_logged_test(
+            "test_infer_round_accepts_nearest_even_method",
+            fj_test_utils::fixture_id_from_json(&("round-nearest-even-shape", [4_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(4),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("rounding_method".to_owned(), "TO_NEAREST_EVEN".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::Round, &[TracerId(1)], params)
+                    .expect("round inference should accept nearest-even mode");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.shape, Shape::vector(4));
+                assert_eq!(aval.dtype, DType::F64);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_round_rejects_unknown_method() {
+        run_logged_test(
+            "test_infer_round_rejects_unknown_method",
+            fj_test_utils::fixture_id_from_json(&("round-unknown-method", [4_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::F64,
+                    shape: Shape::vector(4),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("rounding_method".to_owned(), "HALF_UP".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::Round, &[TracerId(1)], params)
+                    .expect_err("unknown rounding method should fail");
+                assert!(
+                    err.to_string().contains("rounding_method"),
+                    "unexpected error: {err}"
+                );
                 Ok(Vec::new())
             },
         );

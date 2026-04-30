@@ -18,8 +18,9 @@ use std::collections::BTreeMap;
 use arithmetic::{
     erf_approx, eval_abs, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
     eval_cosh, eval_digamma, eval_dot, eval_erf_inv, eval_exp, eval_imag, eval_integer_pow,
-    eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_real, eval_select,
-    eval_sin, eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float,
+    eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_real, eval_round,
+    eval_select, eval_sin, eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise,
+    eval_unary_int_or_float,
 };
 
 use comparison::eval_comparison;
@@ -166,7 +167,7 @@ pub fn eval_primitive(
         Primitive::Rsqrt => eval_unary_elementwise(primitive, inputs, |x| 1.0 / x.sqrt()),
         Primitive::Floor => eval_unary_elementwise(primitive, inputs, f64::floor),
         Primitive::Ceil => eval_unary_elementwise(primitive, inputs, f64::ceil),
-        Primitive::Round => eval_unary_elementwise(primitive, inputs, f64::round),
+        Primitive::Round => eval_round(primitive, inputs, params),
         // Trigonometric
         Primitive::Sin => eval_sin(primitive, inputs),
         Primitive::Cos => eval_cos(primitive, inputs),
@@ -1899,6 +1900,28 @@ mod tests {
             eval_primitive(Primitive::Round, &[Value::scalar_f64(3.5)], &no_params()).unwrap();
         let v = out.as_f64_scalar().unwrap();
         assert!((v - 4.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn round_to_nearest_even_scalar() {
+        let mut params = BTreeMap::new();
+        params.insert("rounding_method".to_owned(), "TO_NEAREST_EVEN".to_owned());
+        let out = eval_primitive(Primitive::Round, &[Value::scalar_f64(2.5)], &params).unwrap();
+        let v = out.as_f64_scalar().unwrap();
+        assert!((v - 2.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn round_to_nearest_even_rejects_unknown_method() {
+        let mut params = BTreeMap::new();
+        params.insert("rounding_method".to_owned(), "HALF_UP".to_owned());
+        let err = eval_primitive(Primitive::Round, &[Value::scalar_f64(2.5)], &params)
+            .expect_err("unknown rounding methods should fail closed");
+        assert!(
+            err.to_string()
+                .contains("unsupported rounding_method 'HALF_UP'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
