@@ -420,6 +420,23 @@ fn bench_dispatch_latency(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("vmap/constant_scalar_out_axes_none", |b| {
+        let vec_arg =
+            Value::vector_i64(&(0_i64..128).collect::<Vec<_>>()).expect("vector should build");
+        let jaxpr = constant_scalar_jaxpr();
+        b.iter(|| {
+            let mut request = dispatch_jaxpr_request(
+                jaxpr.clone(),
+                &[Transform::Vmap, Transform::Jit],
+                vec![vec_arg.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_out_axes".to_owned(), "none".to_owned());
+            dispatch(request).expect("vmap constant scalar out_axes=none should succeed");
+        });
+    });
+
     // jit(grad(f)) composed
     group.bench_function("jit_grad/scalar_square", |b| {
         b.iter(|| {

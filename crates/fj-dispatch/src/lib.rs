@@ -832,10 +832,10 @@ fn execute_vmap_loop_and_stack(
             .get(out_idx)
             .copied()
             .unwrap_or(AxisSpec::Batched(0));
-        let tensor = TensorValue::stack_axis0(values)
-            .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
         match out_axis {
             AxisSpec::Batched(0) => {
+                let tensor = TensorValue::stack_axis0(values)
+                    .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
                 outputs.push(Value::Tensor(tensor));
             }
             AxisSpec::NotBatched => {
@@ -849,6 +849,8 @@ fn execute_vmap_loop_and_stack(
             }
             AxisSpec::Batched(target_axis) => {
                 // Move batch dim from 0 to target_axis via Transpose primitive
+                let tensor = TensorValue::stack_axis0(values)
+                    .map_err(|err| TransformExecutionError::TensorBuild(err.to_string()))?;
                 let rank = tensor.rank();
                 let resolved = AxisSpec::Batched(target_axis).resolve(rank).ok_or(
                     TransformExecutionError::VmapAxesOutOfBounds {
