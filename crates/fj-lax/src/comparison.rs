@@ -34,15 +34,17 @@ pub(crate) fn eval_comparison(
                     right: rhs.shape.clone(),
                 });
             }
-            let elements = lhs
+            let mut elements = Vec::with_capacity(lhs.elements.len());
+            for (lhs, rhs) in lhs
                 .elements
                 .iter()
                 .copied()
                 .zip(rhs.elements.iter().copied())
-                .map(|(l, r)| {
-                    compare_literals(l, r, primitive, &int_cmp, &float_cmp).map(Literal::Bool)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            {
+                elements.push(Literal::Bool(compare_literals(
+                    lhs, rhs, primitive, &int_cmp, &float_cmp,
+                )?));
+            }
             Ok(Value::Tensor(TensorValue::new(
                 DType::Bool,
                 lhs.shape.clone(),
@@ -50,14 +52,12 @@ pub(crate) fn eval_comparison(
             )?))
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
-            let elements = rhs
-                .elements
-                .iter()
-                .copied()
-                .map(|r| {
-                    compare_literals(*lhs, r, primitive, &int_cmp, &float_cmp).map(Literal::Bool)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(rhs.elements.len());
+            for rhs in rhs.elements.iter().copied() {
+                elements.push(Literal::Bool(compare_literals(
+                    *lhs, rhs, primitive, &int_cmp, &float_cmp,
+                )?));
+            }
             Ok(Value::Tensor(TensorValue::new(
                 DType::Bool,
                 rhs.shape.clone(),
@@ -65,14 +65,12 @@ pub(crate) fn eval_comparison(
             )?))
         }
         (Value::Tensor(lhs), Value::Scalar(rhs)) => {
-            let elements = lhs
-                .elements
-                .iter()
-                .copied()
-                .map(|l| {
-                    compare_literals(l, *rhs, primitive, &int_cmp, &float_cmp).map(Literal::Bool)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(lhs.elements.len());
+            for lhs in lhs.elements.iter().copied() {
+                elements.push(Literal::Bool(compare_literals(
+                    lhs, *rhs, primitive, &int_cmp, &float_cmp,
+                )?));
+            }
             Ok(Value::Tensor(TensorValue::new(
                 DType::Bool,
                 lhs.shape.clone(),
