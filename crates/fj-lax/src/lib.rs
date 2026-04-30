@@ -1408,6 +1408,7 @@ fn reduce_window_output_dtype(input_dtype: fj_core::DType) -> fj_core::DType {
             input_dtype
         }
         fj_core::DType::I64 | fj_core::DType::U32 | fj_core::DType::U64 => input_dtype,
+        fj_core::DType::Bool => fj_core::DType::Bool,
         _ => fj_core::DType::F64,
     }
 }
@@ -1426,6 +1427,7 @@ enum ReduceWindowAccumulator {
     I64(i64),
     U32(u32),
     U64(u64),
+    Bool(bool),
     F64(f64),
 }
 
@@ -1449,6 +1451,7 @@ fn reduce_window_initial_accumulator(
             "min" => u64::MAX,
             _ => 0,
         }),
+        fj_core::DType::Bool => ReduceWindowAccumulator::Bool(matches!(reduce_op, "min")),
         _ => ReduceWindowAccumulator::F64(match reduce_op {
             "max" => f64::NEG_INFINITY,
             "min" => f64::INFINITY,
@@ -1503,6 +1506,18 @@ fn reduce_window_accumulate_literal(
                 _ => *value = value.wrapping_add(input),
             }
         }
+        ReduceWindowAccumulator::Bool(value) => {
+            let fj_core::Literal::Bool(input) = literal else {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "reduce_window Bool tensors require Bool literals",
+                });
+            };
+            match reduce_op {
+                "min" => *value &= input,
+                _ => *value |= input,
+            }
+        }
         ReduceWindowAccumulator::F64(value) => {
             let input = literal.as_f64().unwrap_or(0.0);
             match reduce_op {
@@ -1529,6 +1544,9 @@ fn reduce_window_accumulator_literal(
         }
         (fj_core::DType::U64, ReduceWindowAccumulator::U64(value)) => {
             Ok(fj_core::Literal::U64(value))
+        }
+        (fj_core::DType::Bool, ReduceWindowAccumulator::Bool(value)) => {
+            Ok(fj_core::Literal::Bool(value))
         }
         (_, ReduceWindowAccumulator::F64(value)) => {
             Ok(reduce_window_literal_from_f64(output_dtype, value))
@@ -7439,6 +7457,82 @@ mod tests {
             assert_eq!(t.dtype, DType::U64);
             assert_eq!(t.shape.dims, vec![2]);
             assert_eq!(t.elements, vec![Literal::U64(high), Literal::U64(high)]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_sum_preserves_bool_literal_dtype_as_or() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(false),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::Bool);
+            assert_eq!(t.shape.dims, vec![3]);
+            assert_eq!(
+                t.elements,
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                ]
+            );
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_min_preserves_bool_literal_dtype_as_and() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("min", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::Bool);
+            assert_eq!(t.shape.dims, vec![3]);
+            assert_eq!(
+                t.elements,
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(false),
+                ]
+            );
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

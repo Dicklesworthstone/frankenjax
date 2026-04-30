@@ -49,6 +49,19 @@ fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     )
 }
 
+fn make_bool_tensor(shape: &[u32], data: Vec<bool>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::Bool).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -187,6 +200,32 @@ fn oracle_reduce_window_1d_i64_preserves_literal_dtype() {
         assert_eq!(
             t.elements,
             vec![Literal::I64(3), Literal::I64(5), Literal::I64(7)]
+        );
+    } else {
+        assert!(matches!(result, Value::Tensor(_)), "expected tensor");
+    }
+}
+
+#[test]
+fn oracle_reduce_window_1d_bool_sum_preserves_literal_dtype() {
+    let input = make_bool_tensor(&[4], vec![false, true, false, false]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "VALID"),
+    )
+    .unwrap();
+
+    if let Value::Tensor(t) = &result {
+        assert_eq!(t.dtype, DType::Bool);
+        assert_eq!(extract_shape(&result), vec![3]);
+        assert_eq!(
+            t.elements,
+            vec![
+                Literal::Bool(true),
+                Literal::Bool(true),
+                Literal::Bool(false),
+            ]
         );
     } else {
         assert!(matches!(result, Value::Tensor(_)), "expected tensor");
