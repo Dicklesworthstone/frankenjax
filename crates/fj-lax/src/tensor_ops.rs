@@ -3223,17 +3223,7 @@ fn eval_conv_1d(
                 };
                 (out_w, pad_low)
             }
-            ConvPadding::Valid => {
-                if width < kernel_w {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!(
-                            "input width {width} < kernel {kernel_w} with valid padding"
-                        ),
-                    });
-                }
-                ((width - kernel_w) / stride + 1, 0)
-            }
+            ConvPadding::Valid => (conv_valid_output_dim(width, kernel_w, stride), 0),
         }
     };
 
@@ -3311,21 +3301,6 @@ fn eval_conv_2d(
 
     let (out_h, pad_top) = compute_output_and_pad(height, kernel_h, stride_h, padding);
     let (out_w, pad_left) = compute_output_and_pad(width, kernel_w, stride_w, padding);
-
-    if padding == ConvPadding::Valid {
-        if height < kernel_h {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!("input height {height} < kernel {kernel_h} with valid padding"),
-            });
-        }
-        if width < kernel_w {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!("input width {width} < kernel {kernel_w} with valid padding"),
-            });
-        }
-    }
 
     let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
     let total = batch * out_h * out_w * c_out;
@@ -3439,13 +3414,15 @@ fn compute_output_and_pad(
             };
             (out, pad_low)
         }
-        ConvPadding::Valid => {
-            if input_size < kernel_size {
-                (0, 0)
-            } else {
-                ((input_size - kernel_size) / stride + 1, 0)
-            }
-        }
+        ConvPadding::Valid => (conv_valid_output_dim(input_size, kernel_size, stride), 0),
+    }
+}
+
+fn conv_valid_output_dim(input_size: usize, kernel_size: usize, stride: usize) -> usize {
+    if input_size < kernel_size {
+        0
+    } else {
+        (input_size - kernel_size) / stride + 1
     }
 }
 

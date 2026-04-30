@@ -16899,6 +16899,57 @@
     {
       "args": [
         {
+          "kind": "tensor_f64",
+          "shape": [
+            1,
+            1,
+            1
+          ],
+          "values": [
+            2.0
+          ]
+        },
+        {
+          "kind": "tensor_f64",
+          "shape": [
+            2,
+            1,
+            1
+          ],
+          "values": [
+            1.0,
+            1.0
+          ]
+        }
+      ],
+      "atol": 1e-12,
+      "baseline_mismatch": false,
+      "case_id": "lax_conv1d_valid_3",
+      "comparator": "approx_atol_rtol",
+      "expected": [
+        {
+          "kind": "tensor_f64",
+          "shape": [
+            1,
+            0,
+            1
+          ],
+          "values": []
+        }
+      ],
+      "family": "lax",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_conv1d_valid",
+      "rtol": 1e-12,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit"
+      ]
+    },
+    {
+      "args": [
+        {
           "kind": "vector_i64",
           "values": [
             10,

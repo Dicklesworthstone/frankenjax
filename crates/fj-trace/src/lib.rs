@@ -1466,17 +1466,7 @@ impl SimpleTraceContext {
                     }
                     let out_w = match padding {
                         ConvPadding::Same | ConvPadding::SameLower => width.div_ceil(stride),
-                        ConvPadding::Valid => {
-                            if width < kernel_w {
-                                return Err(TraceError::ShapeInferenceFailed {
-                                    primitive,
-                                    detail: format!(
-                                        "input width {width} < kernel {kernel_w} with valid padding"
-                                    ),
-                                });
-                            }
-                            (width - kernel_w) / stride + 1
-                        }
+                        ConvPadding::Valid => conv_valid_output_dim(width, kernel_w, stride),
                     };
                     vec![lhs.shape.dims[0], out_w as u32, c_out]
                 } else {
@@ -1538,31 +1528,13 @@ impl SimpleTraceContext {
                             detail: "conv strides must be positive".to_owned(),
                         });
                     }
-                    if padding == ConvPadding::Valid {
-                        if height < kernel_h {
-                            return Err(TraceError::ShapeInferenceFailed {
-                                primitive,
-                                detail: format!(
-                                    "input height {height} < kernel {kernel_h} with valid padding"
-                                ),
-                            });
-                        }
-                        if width < kernel_w {
-                            return Err(TraceError::ShapeInferenceFailed {
-                                primitive,
-                                detail: format!(
-                                    "input width {width} < kernel {kernel_w} with valid padding"
-                                ),
-                            });
-                        }
-                    }
                     let out_h = match padding {
                         ConvPadding::Same | ConvPadding::SameLower => height.div_ceil(stride_h),
-                        ConvPadding::Valid => (height - kernel_h) / stride_h + 1,
+                        ConvPadding::Valid => conv_valid_output_dim(height, kernel_h, stride_h),
                     };
                     let out_w = match padding {
                         ConvPadding::Same | ConvPadding::SameLower => width.div_ceil(stride_w),
-                        ConvPadding::Valid => (width - kernel_w) / stride_w + 1,
+                        ConvPadding::Valid => conv_valid_output_dim(width, kernel_w, stride_w),
                     };
                     vec![lhs.shape.dims[0], out_h as u32, out_w as u32, c_out]
                 };
@@ -2272,6 +2244,14 @@ fn parse_conv_padding_param(
             key: "padding",
             value: raw.clone(),
         })
+    }
+}
+
+fn conv_valid_output_dim(input_size: usize, kernel_size: usize, stride: usize) -> usize {
+    if input_size < kernel_size {
+        0
+    } else {
+        (input_size - kernel_size) / stride + 1
     }
 }
 
@@ -8526,5 +8506,59 @@ mod tests {
         let aval = ctx.tracer_aval(out[0]).expect("aval present");
         // valid padding: (6 - 2) / 2 + 1 = 3
         assert_eq!(aval.shape.dims, vec![1, 3, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_1d_valid_kernel_larger_than_input_returns_zero_width() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 1, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "valid".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("VALID conv with oversized kernel should produce zero-width output");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![1, 0, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_2d_valid_kernel_larger_than_height_returns_zero_height() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 1, 3, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "valid".to_owned());
+        params.insert("strides".to_owned(), "1,1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("VALID conv with oversized height kernel should produce zero-height output");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![1, 0, 3, 1]);
     }
 }

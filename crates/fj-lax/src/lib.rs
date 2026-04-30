@@ -5961,6 +5961,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn conv_1d_valid_kernel_larger_than_input_returns_empty() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![1, 1, 1],
+                },
+                vec![Literal::from_f64(2.0)],
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![2, 1, 1],
+                },
+                vec![Literal::from_f64(1.0), Literal::from_f64(1.0)],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::F64);
+            assert_eq!(t.shape.dims, vec![1, 0, 1]);
+            assert!(t.elements.is_empty());
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
     // ── Conv 2D tests ────────────────────────────────────────────
 
     #[test]
@@ -6004,6 +6037,43 @@ mod tests {
             assert_eq!(t.shape.dims, vec![1, 2, 2, 1]);
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![12.0, 16.0, 24.0, 28.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn conv_2d_valid_kernel_larger_than_height_returns_empty() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![1, 1, 3, 1],
+                },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![2, 1, 1, 1],
+                },
+                vec![Literal::from_f64(1.0), Literal::from_f64(1.0)],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::F64);
+            assert_eq!(t.shape.dims, vec![1, 0, 3, 1]);
+            assert!(t.elements.is_empty());
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

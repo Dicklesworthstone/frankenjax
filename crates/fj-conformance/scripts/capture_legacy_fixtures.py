@@ -2010,6 +2010,14 @@ def build_lax_cases(cb: CaseBuilder) -> None:
         [{"kind": "tensor_f64", "shape": [1, 2, 1], "values": [10.0, 18.0]}],
         atol=1e-12, rtol=1e-12, comparator="approx_atol_rtol",
     )
+    # Kernel larger than input under VALID padding produces a zero-width output.
+    cb.add_raw(
+        "lax_conv1d_valid_3", "lax", "lax_conv1d_valid", ["jit"],
+        [{"kind": "tensor_f64", "shape": [1, 1, 1], "values": [2.0]},
+         {"kind": "tensor_f64", "shape": [2, 1, 1], "values": [1.0, 1.0]}],
+        [{"kind": "tensor_f64", "shape": [1, 0, 1], "values": []}],
+        atol=1e-12, rtol=1e-12, comparator="approx_atol_rtol",
+    )
 
     # ── Scatter (overwrite mode): [operand, indices, updates] → scattered tensor ──
     # operand=[10,20,30,40,50] scatter indices=[1,3] updates=[99,88] → [10,99,30,88,50]
