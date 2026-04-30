@@ -8339,6 +8339,49 @@ mod prop_tests {
     }
 
     #[test]
+    fn test_complex_cbrt_uses_principal_branch() {
+        let out = eval_primitive(
+            Primitive::Cbrt,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 1.0842150814913512, 0.2905145555072514, 1e-12);
+    }
+
+    #[test]
+    fn test_complex64_tensor_cbrt_preserves_dtype_and_shape() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(0.0, 0.0),
+                    Literal::from_complex64(-8.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::Complex64);
+        assert_eq!(tensor.shape, Shape { dims: vec![2] });
+
+        let (re0, im0) = tensor.elements[0]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!(re0.abs() < 1e-6);
+        assert!(im0.abs() < 1e-6);
+
+        let (re1, im1) = tensor.elements[1]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!((f64::from(re1) - 1.0).abs() < 1e-6);
+        assert!((f64::from(im1) - 3.0_f64.sqrt()).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_complex_sin() {
         let out = eval_primitive(
             Primitive::Sin,

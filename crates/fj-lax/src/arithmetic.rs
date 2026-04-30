@@ -222,6 +222,11 @@ fn complex_sqrt((re, im): (f64, f64)) -> (f64, f64) {
     (out_re, out_im)
 }
 
+fn complex_cbrt(input: (f64, f64)) -> (f64, f64) {
+    let logged = complex_log(input);
+    complex_exp((logged.0 / 3.0, logged.1 / 3.0))
+}
+
 fn complex_asin(input: (f64, f64)) -> (f64, f64) {
     let input_squared = complex_mul(input, input);
     let sqrt_term = complex_sqrt(complex_sub((1.0, 0.0), input_squared));
@@ -252,6 +257,7 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
     match primitive {
         Primitive::Sqrt => Some(complex_sqrt(input)),
         Primitive::Rsqrt => Some(complex_reciprocal(complex_sqrt(input))),
+        Primitive::Cbrt => Some(complex_cbrt(input)),
         Primitive::Asin => Some(complex_asin(input)),
         Primitive::Acos => Some(complex_acos(input)),
         Primitive::Atan => Some(complex_atan(input)),
