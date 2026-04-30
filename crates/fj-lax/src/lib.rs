@@ -5617,6 +5617,47 @@ mod tests {
     }
 
     #[test]
+    fn conv_1d_uppercase_same_padding() {
+        let inputs = conv_1d_single_channel_values(&[1.0, 2.0, 3.0, 4.0], &[1.0, 1.0]);
+        let out = eval_primitive(Primitive::Conv, &inputs, &conv_params("SAME", "1")).unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![1, 4, 1]);
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![3.0, 5.0, 7.0, 4.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn conv_1d_same_lower_padding_puts_extra_pad_low() {
+        let inputs = conv_1d_single_channel_values(&[1.0, 2.0, 3.0, 4.0], &[1.0, 1.0]);
+        let out =
+            eval_primitive(Primitive::Conv, &inputs, &conv_params("SAME_LOWER", "1")).unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.shape.dims, vec![1, 4, 1]);
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![1.0, 3.0, 5.0, 7.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn conv_rejects_unknown_padding() {
+        let inputs = conv_1d_single_channel_values(&[1.0, 2.0, 3.0, 4.0], &[1.0, 1.0]);
+        let result = eval_primitive(Primitive::Conv, &inputs, &conv_params("mirror", "1"));
+
+        let err = result.expect_err("unknown padding should fail").to_string();
+        assert!(
+            err.contains("unsupported conv padding mode"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn conv_1d_stride2() {
         // lhs=[1, 6, 1], rhs=[2, 1, 1], valid, stride=2
         // input: [1,2,3,4,5,6], kernel: [1,1]

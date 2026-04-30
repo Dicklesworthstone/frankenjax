@@ -3,7 +3,7 @@
 //! Tests against expected behavior for 1D and 2D convolution:
 //! - lhs: input tensor [N, H, W, C_in] or [N, L, C_in]
 //! - rhs: kernel [KH, KW, C_in, C_out] or [K, C_in, C_out]
-//! - params: padding ("valid"/"same"), stride
+//! - params: padding ("VALID", "SAME", or "SAME_LOWER"), stride
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -86,6 +86,43 @@ fn oracle_conv_1d_same_padding() {
     let rhs = make_f64_tensor(&[3, 1, 1], vec![1.0, 1.0, 1.0]);
     let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("same", "1")).unwrap();
     assert_eq!(extract_shape(&result), vec![1, 4, 1]);
+}
+
+#[test]
+fn oracle_conv_1d_uppercase_same_padding() {
+    let lhs = make_f64_tensor(&[1, 4, 1], vec![1.0, 2.0, 3.0, 4.0]);
+    let rhs = make_f64_tensor(&[2, 1, 1], vec![1.0, 1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("SAME", "1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 4, 1]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![3.0, 5.0, 7.0, 4.0]);
+}
+
+#[test]
+fn oracle_conv_1d_same_lower_padding() {
+    let lhs = make_f64_tensor(&[1, 4, 1], vec![1.0, 2.0, 3.0, 4.0]);
+    let rhs = make_f64_tensor(&[2, 1, 1], vec![1.0, 1.0]);
+    let result = eval_primitive(
+        Primitive::Conv,
+        &[lhs, rhs],
+        &conv_params("SAME_LOWER", "1"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 4, 1]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![1.0, 3.0, 5.0, 7.0]);
+}
+
+#[test]
+fn oracle_conv_unknown_padding_rejected() {
+    let lhs = make_f64_tensor(&[1, 4, 1], vec![1.0, 2.0, 3.0, 4.0]);
+    let rhs = make_f64_tensor(&[2, 1, 1], vec![1.0, 1.0]);
+    let err = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("MIRROR", "1"))
+        .expect_err("unknown padding should fail closed");
+    assert!(
+        err.to_string().contains("unsupported conv padding mode"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

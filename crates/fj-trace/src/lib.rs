@@ -1408,7 +1408,7 @@ impl SimpleTraceContext {
                     });
                 }
 
-                let padding_mode = params.get("padding").map(String::as_str).unwrap_or("valid");
+                let padding = parse_conv_padding_param(primitive, params)?;
 
                 let out_dims = if lhs_rank == 3 {
                     if rhs.shape.rank() != 3 {
@@ -1464,9 +1464,9 @@ impl SimpleTraceContext {
                             detail: "conv strides must be positive".to_owned(),
                         });
                     }
-                    let out_w = match padding_mode {
-                        "same" | "SAME" => width.div_ceil(stride),
-                        _ => {
+                    let out_w = match padding {
+                        ConvPadding::Same | ConvPadding::SameLower => width.div_ceil(stride),
+                        ConvPadding::Valid => {
                             if width < kernel_w {
                                 return Err(TraceError::ShapeInferenceFailed {
                                     primitive,
@@ -1538,7 +1538,7 @@ impl SimpleTraceContext {
                             detail: "conv strides must be positive".to_owned(),
                         });
                     }
-                    if padding_mode != "same" && padding_mode != "SAME" {
+                    if padding == ConvPadding::Valid {
                         if height < kernel_h {
                             return Err(TraceError::ShapeInferenceFailed {
                                 primitive,
@@ -1556,13 +1556,13 @@ impl SimpleTraceContext {
                             });
                         }
                     }
-                    let out_h = match padding_mode {
-                        "same" | "SAME" => height.div_ceil(stride_h),
-                        _ => (height - kernel_h) / stride_h + 1,
+                    let out_h = match padding {
+                        ConvPadding::Same | ConvPadding::SameLower => height.div_ceil(stride_h),
+                        ConvPadding::Valid => (height - kernel_h) / stride_h + 1,
                     };
-                    let out_w = match padding_mode {
-                        "same" | "SAME" => width.div_ceil(stride_w),
-                        _ => (width - kernel_w) / stride_w + 1,
+                    let out_w = match padding {
+                        ConvPadding::Same | ConvPadding::SameLower => width.div_ceil(stride_w),
+                        ConvPadding::Valid => (width - kernel_w) / stride_w + 1,
                     };
                     vec![lhs.shape.dims[0], out_h as u32, out_w as u32, c_out]
                 };
@@ -2242,6 +2242,36 @@ fn parse_bool_param(
             key,
             value: raw.clone(),
         }),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConvPadding {
+    Valid,
+    Same,
+    SameLower,
+}
+
+fn parse_conv_padding_param(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<ConvPadding, TraceError> {
+    let Some(raw) = params.get("padding") else {
+        return Ok(ConvPadding::Valid);
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("VALID") {
+        Ok(ConvPadding::Valid)
+    } else if trimmed.eq_ignore_ascii_case("SAME") {
+        Ok(ConvPadding::Same)
+    } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
+        Ok(ConvPadding::SameLower)
+    } else {
+        Err(TraceError::InvalidPrimitiveParam {
+            primitive,
+            key: "padding",
+            value: raw.clone(),
+        })
     }
 }
 
@@ -8246,6 +8276,93 @@ mod tests {
     }
 
     // ======================== Conv trace stride validation ========================
+
+    #[test]
+    fn test_infer_conv_1d_uppercase_same_padding() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 4, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "SAME".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("uppercase SAME padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![1, 4, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_1d_same_lower_padding() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 4, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "SAME_LOWER".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+
+        let out = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect("SAME_LOWER padding should succeed");
+        let aval = ctx.tracer_aval(out[0]).expect("aval present");
+        assert_eq!(aval.shape.dims, vec![1, 4, 1]);
+    }
+
+    #[test]
+    fn test_infer_conv_rejects_unknown_padding() {
+        let mut ctx = SimpleTraceContext::with_inputs(vec![
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![1, 4, 1],
+                },
+            },
+            ShapedArray {
+                dtype: DType::F64,
+                shape: Shape {
+                    dims: vec![2, 1, 1],
+                },
+            },
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("padding".to_owned(), "mirror".to_owned());
+        params.insert("strides".to_owned(), "1".to_owned());
+
+        let err = ctx
+            .process_primitive(Primitive::Conv, &[TracerId(1), TracerId(2)], params)
+            .expect_err("unknown padding should fail");
+        assert!(matches!(
+            err,
+            TraceError::InvalidPrimitiveParam {
+                primitive: Primitive::Conv,
+                key: "padding",
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn test_infer_conv_1d_rejects_zero_stride() {

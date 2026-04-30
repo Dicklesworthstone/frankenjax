@@ -3065,7 +3065,7 @@ fn sort_key_rank(key: SortKey) -> u8 {
 
 /// Conv: N-dimensional convolution.
 /// Layout: lhs=[batch, spatial..., in_channels], rhs=[kernel_spatial..., in_channels, out_channels]
-/// Params: strides (comma-sep), padding ("valid" or "same")
+/// Params: strides (comma-sep), padding ("VALID", "SAME", or "SAME_LOWER")
 pub(crate) fn eval_conv(
     primitive: Primitive,
     inputs: &[Value],
@@ -3125,12 +3125,41 @@ pub(crate) fn eval_conv(
         });
     }
 
-    let padding_mode = params.get("padding").map(String::as_str).unwrap_or("valid");
+    let padding = parse_conv_padding(primitive, params)?;
 
     if lhs_rank == 3 {
-        eval_conv_1d(primitive, lhs, rhs, params, padding_mode)
+        eval_conv_1d(primitive, lhs, rhs, params, padding)
     } else {
-        eval_conv_2d(primitive, lhs, rhs, params, padding_mode)
+        eval_conv_2d(primitive, lhs, rhs, params, padding)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConvPadding {
+    Valid,
+    Same,
+    SameLower,
+}
+
+fn parse_conv_padding(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<ConvPadding, EvalError> {
+    let Some(raw) = params.get("padding") else {
+        return Ok(ConvPadding::Valid);
+    };
+    let trimmed = raw.trim();
+    if trimmed.eq_ignore_ascii_case("VALID") {
+        Ok(ConvPadding::Valid)
+    } else if trimmed.eq_ignore_ascii_case("SAME") {
+        Ok(ConvPadding::Same)
+    } else if trimmed.eq_ignore_ascii_case("SAME_LOWER") {
+        Ok(ConvPadding::SameLower)
+    } else {
+        Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("unsupported conv padding mode {raw:?}"),
+        })
     }
 }
 
@@ -3140,7 +3169,7 @@ fn eval_conv_1d(
     lhs: &TensorValue,
     rhs: &TensorValue,
     params: &BTreeMap<String, String>,
-    padding_mode: &str,
+    padding: ConvPadding,
 ) -> Result<Value, EvalError> {
     if rhs.shape.rank() != 3 {
         return Err(EvalError::Unsupported {
@@ -3173,14 +3202,19 @@ fn eval_conv_1d(
         // Empty input produces empty output with no padding
         (0, 0)
     } else {
-        match padding_mode {
-            "same" | "SAME" => {
+        match padding {
+            ConvPadding::Same | ConvPadding::SameLower => {
                 let out_w = width.div_ceil(stride);
                 // out_w >= 1 since width >= 1 and stride >= 1
                 let pad_total = ((out_w - 1) * stride + kernel_w).saturating_sub(width);
-                (out_w, pad_total / 2)
+                let pad_low = if padding == ConvPadding::SameLower {
+                    pad_total.div_ceil(2)
+                } else {
+                    pad_total / 2
+                };
+                (out_w, pad_low)
             }
-            _ => {
+            ConvPadding::Valid => {
                 if width < kernel_w {
                     return Err(EvalError::Unsupported {
                         primitive,
@@ -3233,7 +3267,7 @@ fn eval_conv_2d(
     lhs: &TensorValue,
     rhs: &TensorValue,
     params: &BTreeMap<String, String>,
-    padding_mode: &str,
+    padding: ConvPadding,
 ) -> Result<Value, EvalError> {
     if rhs.shape.rank() != 4 {
         return Err(EvalError::Unsupported {
@@ -3265,10 +3299,10 @@ fn eval_conv_2d(
     // Parse strides: either single value or "h,w" pair
     let (stride_h, stride_w) = parse_stride_pair(primitive, params)?;
 
-    let (out_h, pad_top) = compute_output_and_pad(height, kernel_h, stride_h, padding_mode);
-    let (out_w, pad_left) = compute_output_and_pad(width, kernel_w, stride_w, padding_mode);
+    let (out_h, pad_top) = compute_output_and_pad(height, kernel_h, stride_h, padding);
+    let (out_w, pad_left) = compute_output_and_pad(width, kernel_w, stride_w, padding);
 
-    if padding_mode != "same" && padding_mode != "SAME" {
+    if padding == ConvPadding::Valid {
         if height < kernel_h {
             return Err(EvalError::Unsupported {
                 primitive,
@@ -3376,20 +3410,25 @@ fn compute_output_and_pad(
     input_size: usize,
     kernel_size: usize,
     stride: usize,
-    padding_mode: &str,
+    padding: ConvPadding,
 ) -> (usize, usize) {
     // Empty input produces empty output with no padding
     if input_size == 0 {
         return (0, 0);
     }
-    match padding_mode {
-        "same" | "SAME" => {
+    match padding {
+        ConvPadding::Same | ConvPadding::SameLower => {
             let out = input_size.div_ceil(stride);
             // out >= 1 since input_size >= 1 and stride >= 1
             let pad_total = ((out - 1) * stride + kernel_size).saturating_sub(input_size);
-            (out, pad_total / 2)
+            let pad_low = if padding == ConvPadding::SameLower {
+                pad_total.div_ceil(2)
+            } else {
+                pad_total / 2
+            };
+            (out, pad_low)
         }
-        _ => {
+        ConvPadding::Valid => {
             if input_size < kernel_size {
                 (0, 0)
             } else {
