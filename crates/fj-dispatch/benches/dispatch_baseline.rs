@@ -405,6 +405,30 @@ fn bench_dispatch_latency(c: &mut Criterion) {
         });
     });
 
+    group.bench_function("vmap/rank2_add_one_in_axes_1", |b| {
+        let matrix = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![64, 128],
+                },
+                (0_i64..(64 * 128)).map(Literal::I64).collect(),
+            )
+            .expect("matrix should build"),
+        );
+        b.iter(|| {
+            let mut request = dispatch_request(
+                ProgramSpec::AddOne,
+                &[Transform::Vmap],
+                vec![matrix.clone()],
+            );
+            request
+                .compile_options
+                .insert("vmap_in_axes".to_owned(), "1".to_owned());
+            dispatch(request).expect("vmap rank2 add_one in_axes=1 should succeed");
+        });
+    });
+
     // vmap over a constant scalar output exercises BatchTrace's unbatched-output
     // broadcast path.
     group.bench_function("vmap/constant_scalar_output", |b| {

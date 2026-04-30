@@ -4,7 +4,7 @@ pub mod batching;
 
 use fj_cache::{CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
-    CompatibilityMode, Jaxpr, TensorValue, TraceTransformLedger, Transform,
+    CompatibilityMode, Jaxpr, Shape, TensorValue, TraceTransformLedger, Transform,
     TransformCompositionError, Value, verify_transform_composition,
 };
 use fj_interpreters::InterpreterError;
@@ -906,30 +906,83 @@ fn slice_along_axis(tensor: &TensorValue, axis: usize, index: usize) -> Result<V
         return tensor.slice_axis0(index).map_err(|e| e.to_string());
     }
 
-    // For non-zero axis, transpose to bring the axis to position 0,
-    // slice, then transpose back.
-    let mut perm_fwd: Vec<usize> = (0..rank).collect();
-    perm_fwd.remove(axis);
-    perm_fwd.insert(0, axis);
-    let perm_str = perm_fwd
-        .iter()
-        .map(|d| d.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let mut params = BTreeMap::new();
-    params.insert("permutation".to_owned(), perm_str);
-
-    let transposed = fj_lax::eval_primitive(
-        fj_core::Primitive::Transpose,
-        &[Value::Tensor(tensor.clone())],
-        &params,
-    )
-    .map_err(|e| e.to_string())?;
-
-    match transposed {
-        Value::Tensor(t) => t.slice_axis0(index).map_err(|e| e.to_string()),
-        other => Ok(other),
+    let axis_size = tensor.shape.dims[axis] as usize;
+    if index >= axis_size {
+        return Err(format!(
+            "slice_along_axis: index {index} out of bounds for axis {axis} with size {axis_size}"
+        ));
     }
+
+    let out_dims: Vec<u32> = tensor
+        .shape
+        .dims
+        .iter()
+        .enumerate()
+        .filter_map(|(dim_idx, dim)| (dim_idx != axis).then_some(*dim))
+        .collect();
+    let out_shape = Shape { dims: out_dims };
+    let out_count = out_shape
+        .element_count()
+        .ok_or_else(|| {
+            format!(
+                "slice_along_axis: output shape overflowed: {:?}",
+                out_shape.dims
+            )
+        })
+        .and_then(|count| {
+            usize::try_from(count)
+                .map_err(|_| format!("slice_along_axis: output shape too large: {count}"))
+        })?;
+
+    if out_count == 0 {
+        return Ok(Value::Tensor(
+            TensorValue::new(tensor.dtype, out_shape, Vec::new()).map_err(|e| e.to_string())?,
+        ));
+    }
+
+    let input_strides = row_major_strides(&tensor.shape.dims)?;
+    let output_strides = row_major_strides(&out_shape.dims)?;
+    let kept_axes: Vec<usize> = (0..rank).filter(|dim_idx| *dim_idx != axis).collect();
+    let mut elements = Vec::with_capacity(out_count);
+
+    for out_flat in 0..out_count {
+        let mut source_flat = index
+            .checked_mul(input_strides[axis])
+            .ok_or_else(|| "slice_along_axis: source index overflowed".to_owned())?;
+
+        for (out_axis, source_axis) in kept_axes.iter().copied().enumerate() {
+            let dim = out_shape.dims[out_axis] as usize;
+            let output_stride = output_strides[out_axis];
+            if dim == 0 || output_stride == 0 {
+                return Err("slice_along_axis: zero output dimension or stride".to_owned());
+            }
+            let coord = (out_flat / output_stride) % dim;
+            let offset = coord
+                .checked_mul(input_strides[source_axis])
+                .ok_or_else(|| "slice_along_axis: source offset overflowed".to_owned())?;
+            source_flat = source_flat
+                .checked_add(offset)
+                .ok_or_else(|| "slice_along_axis: source index overflowed".to_owned())?;
+        }
+
+        elements.push(tensor.elements[source_flat]);
+    }
+
+    Ok(Value::Tensor(
+        TensorValue::new(tensor.dtype, out_shape, elements).map_err(|e| e.to_string())?,
+    ))
+}
+
+fn row_major_strides(dims: &[u32]) -> Result<Vec<usize>, String> {
+    let mut strides = vec![1; dims.len()];
+    let mut stride = 1_usize;
+    for (idx, dim) in dims.iter().enumerate().rev() {
+        strides[idx] = stride;
+        stride = stride
+            .checked_mul(*dim as usize)
+            .ok_or_else(|| format!("row-major stride overflowed for dims {dims:?}"))?;
+    }
+    Ok(strides)
 }
 
 #[inline]
@@ -2152,6 +2205,32 @@ mod tests {
             .collect();
         // Column 0: [1, 4]+1 = [2, 5], Column 1: [2, 5]+1 = [3, 6], Column 2: [3, 6]+1 = [4, 7]
         assert_eq!(vals, vec![2, 5, 3, 6, 4, 7]);
+    }
+
+    #[test]
+    fn test_slice_along_axis_rank3_preserves_row_major_order() {
+        let tensor = TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: vec![2, 3, 2],
+            },
+            (0_i64..12).map(fj_core::Literal::I64).collect(),
+        )
+        .expect("rank-3 tensor");
+
+        let slice = super::slice_along_axis(&tensor, 1, 2)
+            .expect("axis-1 slice should succeed")
+            .as_tensor()
+            .expect("rank-3 axis-1 slice should be rank-2")
+            .clone();
+
+        assert_eq!(slice.shape, Shape { dims: vec![2, 2] });
+        let vals: Vec<i64> = slice
+            .elements
+            .iter()
+            .map(|lit| lit.as_i64().expect("i64 literal"))
+            .collect();
+        assert_eq!(vals, vec![4, 5, 10, 11]);
     }
 
     #[test]
