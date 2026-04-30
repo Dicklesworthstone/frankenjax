@@ -8,7 +8,7 @@
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "os": "linux",
     "cargo_target_dir": "/tmp/frankenjax-target-codex-bhuo-workspace",
-    "timestamp_unix_ms": 1777492182057
+    "timestamp_unix_ms": 1777494298204
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -19,7 +19,7 @@
   "duration_ms": 59,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-core;result=pass",
   "phase_timings": {
-    "setup_ms": 58,
+    "setup_ms": 59,
     "execute_ms": 0,
     "verify_ms": 0,
     "teardown_ms": 0

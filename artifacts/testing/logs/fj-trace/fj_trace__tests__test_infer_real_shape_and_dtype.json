@@ -8,7 +8,7 @@
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "os": "linux",
     "cargo_target_dir": "/tmp/frankenjax-target-codex-bhuo-workspace",
-    "timestamp_unix_ms": 1777492183424
+    "timestamp_unix_ms": 1777494299537
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -16,7 +16,7 @@
     "/data/projects/frankenjax/crates/fj-trace/../../artifacts/testing/logs/fj-trace/fj_trace__tests__test_infer_real_shape_and_dtype.json"
   ],
   "result": "pass",
-  "duration_ms": 76,
+  "duration_ms": 75,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-trace;result=pass",
   "phase_timings": {
     "setup_ms": 75,
