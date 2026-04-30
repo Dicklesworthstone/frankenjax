@@ -1409,6 +1409,7 @@ fn reduce_window_output_dtype(input_dtype: fj_core::DType) -> fj_core::DType {
         }
         fj_core::DType::I64 | fj_core::DType::U32 | fj_core::DType::U64 => input_dtype,
         fj_core::DType::Bool => fj_core::DType::Bool,
+        fj_core::DType::Complex64 | fj_core::DType::Complex128 => input_dtype,
         _ => fj_core::DType::F64,
     }
 }
@@ -1428,7 +1429,36 @@ enum ReduceWindowAccumulator {
     U32(u32),
     U64(u64),
     Bool(bool),
+    Complex(f64, f64),
     F64(f64),
+}
+
+fn reduce_window_complex_initial(reduce_op: &str) -> (f64, f64) {
+    match reduce_op {
+        "max" => (f64::NEG_INFINITY, f64::NEG_INFINITY),
+        "min" => (f64::INFINITY, f64::INFINITY),
+        _ => (0.0, 0.0),
+    }
+}
+
+fn reduce_window_complex_ge(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
+    lhs.0 > rhs.0 || (lhs.0 == rhs.0 && lhs.1 >= rhs.1)
+}
+
+fn reduce_window_complex_parts(
+    primitive: Primitive,
+    literal: fj_core::Literal,
+) -> Result<(f64, f64), EvalError> {
+    match literal {
+        fj_core::Literal::Complex64Bits(re, im) => {
+            Ok((f32::from_bits(re) as f64, f32::from_bits(im) as f64))
+        }
+        fj_core::Literal::Complex128Bits(re, im) => Ok((f64::from_bits(re), f64::from_bits(im))),
+        _ => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "reduce_window complex tensors require complex literals",
+        }),
+    }
 }
 
 fn reduce_window_initial_accumulator(
@@ -1452,6 +1482,10 @@ fn reduce_window_initial_accumulator(
             _ => 0,
         }),
         fj_core::DType::Bool => ReduceWindowAccumulator::Bool(matches!(reduce_op, "min")),
+        fj_core::DType::Complex64 | fj_core::DType::Complex128 => {
+            let (re, im) = reduce_window_complex_initial(reduce_op);
+            ReduceWindowAccumulator::Complex(re, im)
+        }
         _ => ReduceWindowAccumulator::F64(match reduce_op {
             "max" => f64::NEG_INFINITY,
             "min" => f64::INFINITY,
@@ -1518,6 +1552,27 @@ fn reduce_window_accumulate_literal(
                 _ => *value |= input,
             }
         }
+        ReduceWindowAccumulator::Complex(re, im) => {
+            let input = reduce_window_complex_parts(primitive, literal)?;
+            match reduce_op {
+                "max" => {
+                    if reduce_window_complex_ge(input, (*re, *im)) {
+                        *re = input.0;
+                        *im = input.1;
+                    }
+                }
+                "min" => {
+                    if !reduce_window_complex_ge(input, (*re, *im)) {
+                        *re = input.0;
+                        *im = input.1;
+                    }
+                }
+                _ => {
+                    *re += input.0;
+                    *im += input.1;
+                }
+            }
+        }
         ReduceWindowAccumulator::F64(value) => {
             let input = literal.as_f64().unwrap_or(0.0);
             match reduce_op {
@@ -1547,6 +1602,12 @@ fn reduce_window_accumulator_literal(
         }
         (fj_core::DType::Bool, ReduceWindowAccumulator::Bool(value)) => {
             Ok(fj_core::Literal::Bool(value))
+        }
+        (fj_core::DType::Complex64, ReduceWindowAccumulator::Complex(re, im)) => {
+            Ok(fj_core::Literal::from_complex64(re as f32, im as f32))
+        }
+        (fj_core::DType::Complex128, ReduceWindowAccumulator::Complex(re, im)) => {
+            Ok(fj_core::Literal::from_complex128(re, im))
         }
         (_, ReduceWindowAccumulator::F64(value)) => {
             Ok(reduce_window_literal_from_f64(output_dtype, value))
@@ -7538,6 +7599,70 @@ mod tests {
                     Literal::Bool(false),
                 ]
             );
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_sum_preserves_complex128_literal_dtype() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex128,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::from_complex128(1.0, 2.0),
+                    Literal::from_complex128(3.0, -4.0),
+                    Literal::from_complex128(-2.0, 0.5),
+                    Literal::from_complex128(0.0, 1.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::Complex128);
+            assert_eq!(t.shape.dims, vec![3]);
+            assert_eq!(t.elements[0].as_complex128(), Some((4.0, -2.0)));
+            assert_eq!(t.elements[1].as_complex128(), Some((1.0, -3.5)));
+            assert_eq!(t.elements[2].as_complex128(), Some((-2.0, 1.5)));
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_max_preserves_complex64_literal_dtype() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_complex64(1.0, 2.0),
+                    Literal::from_complex64(3.0, 0.0),
+                    Literal::from_complex64(3.0, 4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("max", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::Complex64);
+            assert_eq!(t.shape.dims, vec![2]);
+            assert_eq!(t.elements[0].as_complex64(), Some((3.0, 0.0)));
+            assert_eq!(t.elements[1].as_complex64(), Some((3.0, 4.0)));
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

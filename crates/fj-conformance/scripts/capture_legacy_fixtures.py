@@ -1755,6 +1755,16 @@ def build_lax_cases(cb: CaseBuilder) -> None:
         [{"kind": "vector_f64", "values": [6.0, 9.0, 12.0]}],
         atol=0.0, rtol=0.0, comparator="exact",
     )
+    cb.add_raw(
+        "lax_reduce_window_sum_complex128_0", "lax", "lax_reduce_window_sum", ["jit"],
+        [{"kind": "tensor_complex128", "shape": [4],
+          "reals": [1.0, 3.0, -2.0, 0.0],
+          "imags": [2.0, -4.0, 0.5, 1.0]}],
+        [{"kind": "tensor_complex128", "shape": [2],
+          "reals": [2.0, 1.0],
+          "imags": [-1.5, -2.5]}],
+        atol=0.0, rtol=0.0, comparator="exact",
+    )
 
     # ── DynamicSlice: [vector, start] → slice of length 3 ──
     # [10,20,30,40,50] start=1 → [20,30,40]

@@ -62,6 +62,21 @@ fn make_bool_tensor(shape: &[u32], data: Vec<bool>) -> Value {
     )
 }
 
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -227,6 +242,28 @@ fn oracle_reduce_window_1d_bool_sum_preserves_literal_dtype() {
                 Literal::Bool(false),
             ]
         );
+    } else {
+        assert!(matches!(result, Value::Tensor(_)), "expected tensor");
+    }
+}
+
+#[test]
+fn oracle_reduce_window_1d_complex_sum_preserves_literal_dtype() {
+    let input =
+        make_complex128_tensor(&[4], vec![(1.0, 2.0), (3.0, -4.0), (-2.0, 0.5), (0.0, 1.0)]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "VALID"),
+    )
+    .unwrap();
+
+    if let Value::Tensor(t) = &result {
+        assert_eq!(t.dtype, DType::Complex128);
+        assert_eq!(extract_shape(&result), vec![3]);
+        assert_eq!(t.elements[0].as_complex128(), Some((4.0, -2.0)));
+        assert_eq!(t.elements[1].as_complex128(), Some((1.0, -3.5)));
+        assert_eq!(t.elements[2].as_complex128(), Some((-2.0, 1.5)));
     } else {
         assert!(matches!(result, Value::Tensor(_)), "expected tensor");
     }

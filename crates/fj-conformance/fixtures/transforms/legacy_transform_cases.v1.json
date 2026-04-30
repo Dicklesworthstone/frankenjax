@@ -1062,6 +1062,57 @@
     {
       "args": [
         {
+          "imags": [
+            2.0,
+            -4.0,
+            0.5,
+            1.0
+          ],
+          "kind": "tensor_complex128",
+          "reals": [
+            1.0,
+            3.0,
+            -2.0,
+            0.0
+          ],
+          "shape": [
+            4
+          ]
+        }
+      ],
+      "atol": 0.0,
+      "baseline_mismatch": false,
+      "case_id": "lax_reduce_window_sum_complex128_0",
+      "comparator": "exact",
+      "expected": [
+        {
+          "imags": [
+            -1.5,
+            -2.5
+          ],
+          "kind": "tensor_complex128",
+          "reals": [
+            2.0,
+            1.0
+          ],
+          "shape": [
+            2
+          ]
+        }
+      ],
+      "family": "lax",
+      "flaky": false,
+      "mode": "strict",
+      "program": "lax_reduce_window_sum",
+      "rtol": 0.0,
+      "simulated_delay_ms": 0,
+      "transforms": [
+        "jit"
+      ]
+    },
+    {
+      "args": [
+        {
           "kind": "vector_i64",
           "values": [
             1,
