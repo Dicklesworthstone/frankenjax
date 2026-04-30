@@ -1434,7 +1434,6 @@ pub(crate) fn eval_gather(
         )?));
     }
 
-    let op_strides = checked_row_major_strides(primitive, "gather", op_dims)?;
     let mut elements = Vec::with_capacity(total);
     let trailing_slice_is_contiguous = slice_sizes
         .iter()
@@ -1442,15 +1441,14 @@ pub(crate) fn eval_gather(
         .zip(op_dims.iter().skip(1))
         .all(|(&slice_size, &dim)| slice_size == dim as usize);
 
-    for &idx in &index_vals {
-        // Base offset for this index along axis 0
-        let base_offset = idx
-            .checked_mul(op_strides[0])
-            .ok_or_else(|| EvalError::Unsupported {
-                primitive,
-                detail: "gather base offset overflows usize".to_owned(),
-            })?;
-        if trailing_slice_is_contiguous {
+    if trailing_slice_is_contiguous {
+        for &idx in &index_vals {
+            let base_offset =
+                idx.checked_mul(slice_elems)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "gather base offset overflows usize".to_owned(),
+                    })?;
             let end =
                 base_offset
                     .checked_add(slice_elems)
@@ -1465,8 +1463,25 @@ pub(crate) fn eval_gather(
                 });
             }
             elements.extend_from_slice(&operand.elements[base_offset..end]);
-            continue;
         }
+
+        return Ok(Value::Tensor(TensorValue::new(
+            operand.dtype,
+            Shape { dims: out_dims },
+            elements,
+        )?));
+    }
+
+    let op_strides = checked_row_major_strides(primitive, "gather", op_dims)?;
+
+    for &idx in &index_vals {
+        // Base offset for this index along axis 0
+        let base_offset = idx
+            .checked_mul(op_strides[0])
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "gather base offset overflows usize".to_owned(),
+            })?;
 
         // Iterate over all positions within the slice (axes 1..rank)
         let mut slice_coords = vec![0_usize; rank.saturating_sub(1)];
@@ -1666,12 +1681,11 @@ pub(crate) fn eval_scatter(
         return Ok(Value::Tensor(operand.clone()));
     }
 
-    let op_strides = checked_row_major_strides(primitive, "scatter", op_dims)?;
     let mut result_elements = operand.elements.clone();
 
     for (i, &idx) in index_vals.iter().enumerate() {
         let base_offset = idx
-            .checked_mul(op_strides[0])
+            .checked_mul(slice_elems)
             .ok_or_else(|| EvalError::Unsupported {
                 primitive,
                 detail: "scatter base offset overflows usize".to_owned(),
