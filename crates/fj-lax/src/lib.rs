@@ -1402,6 +1402,24 @@ fn parse_reduce_window_padding(
     }
 }
 
+fn reduce_window_output_dtype(input_dtype: fj_core::DType) -> fj_core::DType {
+    match input_dtype {
+        fj_core::DType::BF16 | fj_core::DType::F16 | fj_core::DType::F32 | fj_core::DType::F64 => {
+            input_dtype
+        }
+        _ => fj_core::DType::F64,
+    }
+}
+
+fn reduce_window_literal_from_f64(dtype: fj_core::DType, value: f64) -> fj_core::Literal {
+    match dtype {
+        fj_core::DType::BF16 => fj_core::Literal::from_bf16_f32(value as f32),
+        fj_core::DType::F16 => fj_core::Literal::from_f16_f32(value as f32),
+        fj_core::DType::F32 => fj_core::Literal::from_f32(value as f32),
+        _ => fj_core::Literal::from_f64(value),
+    }
+}
+
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
 ///
 /// inputs: [tensor]
@@ -1409,7 +1427,7 @@ fn parse_reduce_window_padding(
 ///   - "reduce_op": "sum", "max", "min" (default: "sum")
 ///   - "window_dimensions": comma-separated window sizes per dimension, e.g. "2,2"
 ///   - "window_strides": comma-separated strides, e.g. "1,1" (default: all 1s)
-///   - "padding": "valid" or "same" (default: "valid")
+///   - "padding": "VALID", "SAME", or "SAME_LOWER" (default: "VALID")
 ///
 /// Returns the reduced tensor with output shape determined by window/stride/padding.
 fn eval_reduce_window(
@@ -1439,6 +1457,7 @@ fn eval_reduce_window(
     let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
 
     let padding = parse_reduce_window_padding(primitive, params)?;
+    let output_dtype = reduce_window_output_dtype(tensor.dtype);
 
     // Calculate output dimensions
     let mut out_dims: Vec<u32> = Vec::with_capacity(rank);
@@ -1586,7 +1605,7 @@ fn eval_reduce_window(
             }
         }
 
-        output_elements.push(fj_core::Literal::from_f64(accum));
+        output_elements.push(reduce_window_literal_from_f64(output_dtype, accum));
 
         // Increment output index
         let mut carry = true;
@@ -1603,12 +1622,8 @@ fn eval_reduce_window(
     }
 
     Ok(Value::Tensor(
-        TensorValue::new(
-            fj_core::DType::F64,
-            Shape { dims: out_dims },
-            output_elements,
-        )
-        .map_err(EvalError::InvalidTensor)?,
+        TensorValue::new(output_dtype, Shape { dims: out_dims }, output_elements)
+            .map_err(EvalError::InvalidTensor)?,
     ))
 }
 
@@ -7136,6 +7151,84 @@ mod tests {
         if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![6.0, 9.0, 12.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_sum_preserves_f32_literal_dtype() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::from_f32(1.0),
+                    Literal::from_f32(2.0),
+                    Literal::from_f32(3.0),
+                    Literal::from_f32(4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::F32);
+            assert_eq!(t.shape.dims, vec![3]);
+            assert!(
+                t.elements
+                    .iter()
+                    .all(|literal| matches!(literal, Literal::F32Bits(_))),
+                "reduce_window F32 output should store F32 literals: {:?}",
+                t.elements
+            );
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![3.0, 5.0, 7.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_max_preserves_bf16_literal_dtype() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::from_bf16_f32(1.0),
+                    Literal::from_bf16_f32(3.0),
+                    Literal::from_bf16_f32(2.0),
+                    Literal::from_bf16_f32(4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("max", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::BF16);
+            assert_eq!(t.shape.dims, vec![3]);
+            assert!(
+                t.elements
+                    .iter()
+                    .all(|literal| matches!(literal, Literal::BF16Bits(_))),
+                "reduce_window BF16 output should store BF16 literals: {:?}",
+                t.elements
+            );
+            let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+            assert_eq!(vals, vec![3.0, 3.0, 4.0]);
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

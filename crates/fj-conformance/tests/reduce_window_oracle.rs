@@ -23,6 +23,19 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     )
 }
 
+fn make_f32_tensor(shape: &[u32], data: Vec<f32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::from_f32).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -117,6 +130,32 @@ fn oracle_reduce_window_1d_sum_window3() {
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 6.0).abs() < 1e-10);
     assert!((vals[1] - 9.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_reduce_window_1d_f32_preserves_literal_dtype() {
+    let input = make_f32_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "VALID"),
+    )
+    .unwrap();
+
+    if let Value::Tensor(t) = &result {
+        assert_eq!(t.dtype, DType::F32);
+        assert_eq!(extract_shape(&result), vec![3]);
+        assert!(
+            t.elements
+                .iter()
+                .all(|literal| matches!(literal, Literal::F32Bits(_))),
+            "reduce_window F32 output should store F32 literals: {:?}",
+            t.elements
+        );
+    } else {
+        assert!(matches!(result, Value::Tensor(_)), "expected tensor");
+    }
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 7.0]);
 }
 
 // ======================== 1D Max Pooling Tests ========================
