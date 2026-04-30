@@ -22,6 +22,19 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     )
 }
 
+fn make_f32_tensor(shape: &[u32], data: Vec<f32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::from_f32).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -76,6 +89,28 @@ fn oracle_conv_1d_valid_stride2() {
     assert!((vals[0] - 3.0).abs() < 1e-10);
     assert!((vals[1] - 7.0).abs() < 1e-10);
     assert!((vals[2] - 11.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_conv_1d_f32_preserves_literal_dtype() {
+    let lhs = make_f32_tensor(&[1, 3, 1], vec![1.0, 2.0, 3.0]);
+    let rhs = make_f32_tensor(&[2, 1, 1], vec![1.0, 1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("VALID", "1")).unwrap();
+
+    if let Value::Tensor(t) = &result {
+        assert_eq!(t.dtype, DType::F32);
+        assert_eq!(extract_shape(&result), vec![1, 2, 1]);
+        assert!(
+            t.elements
+                .iter()
+                .all(|literal| matches!(literal, Literal::F32Bits(_))),
+            "conv F32 output should store F32 literals: {:?}",
+            t.elements
+        );
+    } else {
+        assert!(matches!(result, Value::Tensor(_)), "expected tensor");
+    }
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0]);
 }
 
 #[test]

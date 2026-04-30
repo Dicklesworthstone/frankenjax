@@ -3163,6 +3163,15 @@ fn parse_conv_padding(
     }
 }
 
+fn conv_float_literal_from_f64(dtype: DType, value: f64) -> Literal {
+    match dtype {
+        DType::BF16 => Literal::from_bf16_f32(value as f32),
+        DType::F16 => Literal::from_f16_f32(value as f32),
+        DType::F32 => Literal::from_f32(value as f32),
+        _ => Literal::from_f64(value),
+    }
+}
+
 /// 1D convolution: lhs=[N, W, C_in], rhs=[K, C_in, C_out]
 fn eval_conv_1d(
     primitive: Primitive,
@@ -3228,6 +3237,7 @@ fn eval_conv_1d(
         }
     };
 
+    let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
     let total = batch * out_w * c_out;
     let mut elements = Vec::with_capacity(total);
 
@@ -3247,13 +3257,13 @@ fn eval_conv_1d(
                         }
                     }
                 }
-                elements.push(Literal::from_f64(acc));
+                elements.push(conv_float_literal_from_f64(out_dtype, acc));
             }
         }
     }
 
     Ok(Value::Tensor(TensorValue::new(
-        promote_dtype(lhs.dtype, rhs.dtype),
+        out_dtype,
         Shape {
             dims: vec![batch as u32, out_w as u32, c_out as u32],
         },
@@ -3317,6 +3327,7 @@ fn eval_conv_2d(
         }
     }
 
+    let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
     let total = batch * out_h * out_w * c_out;
     let mut elements = Vec::with_capacity(total);
 
@@ -3350,14 +3361,14 @@ fn eval_conv_2d(
                             }
                         }
                     }
-                    elements.push(Literal::from_f64(acc));
+                    elements.push(conv_float_literal_from_f64(out_dtype, acc));
                 }
             }
         }
     }
 
     Ok(Value::Tensor(TensorValue::new(
-        promote_dtype(lhs.dtype, rhs.dtype),
+        out_dtype,
         Shape {
             dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
         },

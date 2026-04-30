@@ -5568,6 +5568,56 @@ mod tests {
         if let Value::Tensor(t) = &out {
             assert_eq!(t.dtype, DType::F32);
             assert_eq!(t.shape.dims, vec![1, 2, 1]);
+            assert!(
+                t.elements
+                    .iter()
+                    .all(|literal| matches!(literal, Literal::F32Bits(_))),
+                "conv F32 output should store F32 literals: {:?}",
+                t.elements
+            );
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn conv_1d_preserves_bf16_literal_dtype() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                vec![
+                    Literal::from_bf16_f32(1.0),
+                    Literal::from_bf16_f32(2.0),
+                    Literal::from_bf16_f32(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                Shape {
+                    dims: vec![2, 1, 1],
+                },
+                vec![Literal::from_bf16_f32(1.0), Literal::from_bf16_f32(1.0)],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::BF16);
+            assert_eq!(t.shape.dims, vec![1, 2, 1]);
+            assert!(
+                t.elements
+                    .iter()
+                    .all(|literal| matches!(literal, Literal::BF16Bits(_))),
+                "conv BF16 output should store BF16 literals: {:?}",
+                t.elements
+            );
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
