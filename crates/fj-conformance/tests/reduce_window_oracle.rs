@@ -36,6 +36,19 @@ fn make_f32_tensor(shape: &[u32], data: Vec<f32>) -> Value {
     )
 }
 
+fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
     match v {
         Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
@@ -156,6 +169,28 @@ fn oracle_reduce_window_1d_f32_preserves_literal_dtype() {
         assert!(matches!(result, Value::Tensor(_)), "expected tensor");
     }
     assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 7.0]);
+}
+
+#[test]
+fn oracle_reduce_window_1d_i64_preserves_literal_dtype() {
+    let input = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("2", "1", "VALID"),
+    )
+    .unwrap();
+
+    if let Value::Tensor(t) = &result {
+        assert_eq!(t.dtype, DType::I64);
+        assert_eq!(extract_shape(&result), vec![3]);
+        assert_eq!(
+            t.elements,
+            vec![Literal::I64(3), Literal::I64(5), Literal::I64(7)]
+        );
+    } else {
+        assert!(matches!(result, Value::Tensor(_)), "expected tensor");
+    }
 }
 
 // ======================== 1D Max Pooling Tests ========================

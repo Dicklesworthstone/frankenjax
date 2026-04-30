@@ -1407,6 +1407,7 @@ fn reduce_window_output_dtype(input_dtype: fj_core::DType) -> fj_core::DType {
         fj_core::DType::BF16 | fj_core::DType::F16 | fj_core::DType::F32 | fj_core::DType::F64 => {
             input_dtype
         }
+        fj_core::DType::I64 | fj_core::DType::U32 | fj_core::DType::U64 => input_dtype,
         _ => fj_core::DType::F64,
     }
 }
@@ -1417,6 +1418,125 @@ fn reduce_window_literal_from_f64(dtype: fj_core::DType, value: f64) -> fj_core:
         fj_core::DType::F16 => fj_core::Literal::from_f16_f32(value as f32),
         fj_core::DType::F32 => fj_core::Literal::from_f32(value as f32),
         _ => fj_core::Literal::from_f64(value),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReduceWindowAccumulator {
+    I64(i64),
+    U32(u32),
+    U64(u64),
+    F64(f64),
+}
+
+fn reduce_window_initial_accumulator(
+    output_dtype: fj_core::DType,
+    reduce_op: &str,
+) -> ReduceWindowAccumulator {
+    match output_dtype {
+        fj_core::DType::I64 => ReduceWindowAccumulator::I64(match reduce_op {
+            "max" => i64::MIN,
+            "min" => i64::MAX,
+            _ => 0,
+        }),
+        fj_core::DType::U32 => ReduceWindowAccumulator::U32(match reduce_op {
+            "max" => u32::MIN,
+            "min" => u32::MAX,
+            _ => 0,
+        }),
+        fj_core::DType::U64 => ReduceWindowAccumulator::U64(match reduce_op {
+            "max" => u64::MIN,
+            "min" => u64::MAX,
+            _ => 0,
+        }),
+        _ => ReduceWindowAccumulator::F64(match reduce_op {
+            "max" => f64::NEG_INFINITY,
+            "min" => f64::INFINITY,
+            _ => 0.0,
+        }),
+    }
+}
+
+fn reduce_window_accumulate_literal(
+    primitive: Primitive,
+    reduce_op: &str,
+    accumulator: &mut ReduceWindowAccumulator,
+    literal: fj_core::Literal,
+) -> Result<(), EvalError> {
+    match accumulator {
+        ReduceWindowAccumulator::I64(value) => {
+            let fj_core::Literal::I64(input) = literal else {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "reduce_window I64 tensors require I64 literals",
+                });
+            };
+            match reduce_op {
+                "max" => *value = (*value).max(input),
+                "min" => *value = (*value).min(input),
+                _ => *value = value.wrapping_add(input),
+            }
+        }
+        ReduceWindowAccumulator::U32(value) => {
+            let fj_core::Literal::U32(input) = literal else {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "reduce_window U32 tensors require U32 literals",
+                });
+            };
+            match reduce_op {
+                "max" => *value = (*value).max(input),
+                "min" => *value = (*value).min(input),
+                _ => *value = value.wrapping_add(input),
+            }
+        }
+        ReduceWindowAccumulator::U64(value) => {
+            let fj_core::Literal::U64(input) = literal else {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "reduce_window U64 tensors require U64 literals",
+                });
+            };
+            match reduce_op {
+                "max" => *value = (*value).max(input),
+                "min" => *value = (*value).min(input),
+                _ => *value = value.wrapping_add(input),
+            }
+        }
+        ReduceWindowAccumulator::F64(value) => {
+            let input = literal.as_f64().unwrap_or(0.0);
+            match reduce_op {
+                "max" => *value = (*value).max(input),
+                "min" => *value = (*value).min(input),
+                _ => *value += input,
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reduce_window_accumulator_literal(
+    primitive: Primitive,
+    output_dtype: fj_core::DType,
+    accumulator: ReduceWindowAccumulator,
+) -> Result<fj_core::Literal, EvalError> {
+    match (output_dtype, accumulator) {
+        (fj_core::DType::I64, ReduceWindowAccumulator::I64(value)) => {
+            Ok(fj_core::Literal::I64(value))
+        }
+        (fj_core::DType::U32, ReduceWindowAccumulator::U32(value)) => {
+            Ok(fj_core::Literal::U32(value))
+        }
+        (fj_core::DType::U64, ReduceWindowAccumulator::U64(value)) => {
+            Ok(fj_core::Literal::U64(value))
+        }
+        (_, ReduceWindowAccumulator::F64(value)) => {
+            Ok(reduce_window_literal_from_f64(output_dtype, value))
+        }
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: "reduce_window accumulator/output dtype mismatch".to_owned(),
+        }),
     }
 }
 
@@ -1522,12 +1642,7 @@ fn eval_reduce_window(
 
     for _ in 0..total_output {
         // For this output position, compute the window
-        let init_val = match reduce_op {
-            "max" => f64::NEG_INFINITY,
-            "min" => f64::INFINITY,
-            _ => 0.0, // sum
-        };
-        let mut accum = init_val;
+        let mut accum = reduce_window_initial_accumulator(output_dtype, reduce_op);
 
         // Iterate over all positions within the window
         let mut win_idx = vec![0usize; rank];
@@ -1583,12 +1698,12 @@ fn eval_reduce_window(
             }
 
             if in_bounds {
-                let val = tensor.elements[flat_input_idx].as_f64().unwrap_or(0.0);
-                match reduce_op {
-                    "max" => accum = accum.max(val),
-                    "min" => accum = accum.min(val),
-                    _ => accum += val,
-                }
+                reduce_window_accumulate_literal(
+                    primitive,
+                    reduce_op,
+                    &mut accum,
+                    tensor.elements[flat_input_idx],
+                )?;
             }
 
             // Increment window index
@@ -1605,7 +1720,11 @@ fn eval_reduce_window(
             }
         }
 
-        output_elements.push(reduce_window_literal_from_f64(output_dtype, accum));
+        output_elements.push(reduce_window_accumulator_literal(
+            primitive,
+            output_dtype,
+            accum,
+        )?);
 
         // Increment output index
         let mut carry = true;
@@ -7229,6 +7348,97 @@ mod tests {
             );
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 3.0, 4.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_sum_preserves_i64_literal_dtype_and_wraps() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![3] },
+                vec![Literal::I64(i64::MAX), Literal::I64(1), Literal::I64(2)],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("sum", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::I64);
+            assert_eq!(t.shape.dims, vec![2]);
+            assert_eq!(t.elements, vec![Literal::I64(i64::MIN), Literal::I64(3)]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_min_preserves_u32_literal_dtype() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::U32,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::U32(9),
+                    Literal::U32(4),
+                    Literal::U32(7),
+                    Literal::U32(2),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("min", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::U32);
+            assert_eq!(t.shape.dims, vec![3]);
+            assert_eq!(
+                t.elements,
+                vec![Literal::U32(4), Literal::U32(4), Literal::U32(2)]
+            );
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn reduce_window_max_preserves_u64_literal_dtype() {
+        let high = 9_007_199_254_740_995_u64;
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::U64,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::U64(9_007_199_254_740_993),
+                    Literal::U64(high),
+                    Literal::U64(5),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params("max", "2", "1"),
+        )
+        .unwrap();
+
+        if let Value::Tensor(t) = &out {
+            assert_eq!(t.dtype, DType::U64);
+            assert_eq!(t.shape.dims, vec![2]);
+            assert_eq!(t.elements, vec![Literal::U64(high), Literal::U64(high)]);
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
