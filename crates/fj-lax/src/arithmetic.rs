@@ -183,6 +183,10 @@ fn complex_sub(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
     (lhs.0 - rhs.0, lhs.1 - rhs.1)
 }
 
+fn complex_add(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
+    (lhs.0 + rhs.0, lhs.1 + rhs.1)
+}
+
 fn complex_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
     let (ar, ai) = lhs;
     let (br, bi) = rhs;
@@ -218,10 +222,34 @@ fn complex_sqrt((re, im): (f64, f64)) -> (f64, f64) {
     (out_re, out_im)
 }
 
+fn complex_asin(input: (f64, f64)) -> (f64, f64) {
+    let input_squared = complex_mul(input, input);
+    let sqrt_term = complex_sqrt(complex_sub((1.0, 0.0), input_squared));
+    let i_times_input = (-input.1, input.0);
+    let logged = complex_log(complex_add(i_times_input, sqrt_term));
+    (logged.1, -logged.0)
+}
+
+fn complex_acos(input: (f64, f64)) -> (f64, f64) {
+    let asin = complex_asin(input);
+    (std::f64::consts::FRAC_PI_2 - asin.0, -asin.1)
+}
+
+fn complex_atan(input: (f64, f64)) -> (f64, f64) {
+    let i_times_input = (-input.1, input.0);
+    let log_left = complex_log(complex_sub((1.0, 0.0), i_times_input));
+    let log_right = complex_log(complex_add((1.0, 0.0), i_times_input));
+    let diff = complex_sub(log_left, log_right);
+    (-0.5 * diff.1, 0.5 * diff.0)
+}
+
 fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<(f64, f64)> {
     match primitive {
         Primitive::Sqrt => Some(complex_sqrt(input)),
         Primitive::Rsqrt => Some(complex_reciprocal(complex_sqrt(input))),
+        Primitive::Asin => Some(complex_asin(input)),
+        Primitive::Acos => Some(complex_acos(input)),
+        Primitive::Atan => Some(complex_atan(input)),
         Primitive::Expm1 => Some(complex_expm1(input)),
         Primitive::Log1p => Some(complex_log((input.0 + 1.0, input.1))),
         Primitive::Reciprocal => Some(complex_reciprocal(input)),

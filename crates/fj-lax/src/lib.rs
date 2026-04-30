@@ -8231,6 +8231,71 @@ mod prop_tests {
     }
 
     #[test]
+    fn test_complex_asin_uses_principal_branch() {
+        let out = eval_primitive(
+            Primitive::Asin,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.6662394324925153, 1.0612750619050357, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_acos_uses_principal_branch() {
+        let out = eval_primitive(
+            Primitive::Acos,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.9045568943023814, -1.0612750619050357, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_atan_uses_principal_branch() {
+        let out = eval_primitive(
+            Primitive::Atan,
+            &[Value::scalar_complex128(1.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 1.0172219678978514, 0.40235947810852507, 1e-12);
+    }
+
+    #[test]
+    fn test_complex64_tensor_atan_preserves_dtype_and_shape() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(1.0, 0.0),
+                    Literal::from_complex64(1.0, 1.0),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Atan, &[input], &no_params()).unwrap();
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::Complex64);
+        assert_eq!(tensor.shape, Shape { dims: vec![2] });
+
+        let (re0, im0) = tensor.elements[0]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!((f64::from(re0) - std::f64::consts::FRAC_PI_4).abs() < 1e-6);
+        assert!(im0.abs() < 1e-6);
+
+        let (re1, im1) = tensor.elements[1]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!((f64::from(re1) - 1.0172219678978514).abs() < 1e-6);
+        assert!((f64::from(im1) - 0.40235947810852507).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_complex_sin() {
         let out = eval_primitive(
             Primitive::Sin,
