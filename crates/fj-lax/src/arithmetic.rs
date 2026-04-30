@@ -199,6 +199,22 @@ fn complex_reciprocal((re, im): (f64, f64)) -> (f64, f64) {
     (re / denom, -im / denom)
 }
 
+fn complex_sqrt((re, im): (f64, f64)) -> (f64, f64) {
+    let magnitude = re.hypot(im);
+    let out_re = ((magnitude + re) * 0.5).sqrt();
+    let out_im = ((magnitude - re) * 0.5).sqrt().copysign(im);
+    (out_re, out_im)
+}
+
+fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<(f64, f64)> {
+    match primitive {
+        Primitive::Sqrt => Some(complex_sqrt(input)),
+        Primitive::Rsqrt => Some(complex_reciprocal(complex_sqrt(input))),
+        Primitive::Reciprocal => Some(complex_reciprocal(input)),
+        _ => None,
+    }
+}
+
 fn complex_binary_unsupported_detail(primitive: Primitive) -> &'static str {
     match primitive {
         Primitive::Atan2 => "atan2 is not defined for complex operands",
@@ -1008,20 +1024,20 @@ pub(crate) fn eval_unary_elementwise(
     match &inputs[0] {
         Value::Scalar(literal) => {
             if literal.is_complex() {
-                return match primitive {
-                    Primitive::Reciprocal => {
-                        let (re, im) = literal_to_complex_parts(primitive, *literal)?;
-                        let (out_re, out_im) = complex_reciprocal((re, im));
+                return {
+                    let input = literal_to_complex_parts(primitive, *literal)?;
+                    if let Some((out_re, out_im)) = complex_unary_elementwise(primitive, input) {
                         Ok(Value::Scalar(complex_literal_from_f64_parts(
                             literal_dtype(*literal),
                             out_re,
                             out_im,
                         )))
+                    } else {
+                        Err(EvalError::TypeMismatch {
+                            primitive,
+                            detail: complex_unary_unsupported_detail(primitive),
+                        })
                     }
-                    _ => Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: complex_unary_unsupported_detail(primitive),
-                    }),
                 };
             }
             let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
@@ -1032,29 +1048,27 @@ pub(crate) fn eval_unary_elementwise(
         }
         Value::Tensor(tensor) => {
             if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
-                return match primitive {
-                    Primitive::Reciprocal => {
-                        let elements = tensor
-                            .elements
-                            .iter()
-                            .copied()
-                            .map(|literal| {
-                                let (re, im) = literal_to_complex_parts(primitive, literal)?;
-                                let (out_re, out_im) = complex_reciprocal((re, im));
-                                Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
-                            })
-                            .collect::<Result<Vec<_>, EvalError>>()?;
+                return {
+                    let elements = tensor
+                        .elements
+                        .iter()
+                        .copied()
+                        .map(|literal| {
+                            let input = literal_to_complex_parts(primitive, literal)?;
+                            let (out_re, out_im) = complex_unary_elementwise(primitive, input)
+                                .ok_or(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: complex_unary_unsupported_detail(primitive),
+                                })?;
+                            Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
+                        })
+                        .collect::<Result<Vec<_>, EvalError>>()?;
 
-                        Ok(Value::Tensor(TensorValue::new(
-                            tensor.dtype,
-                            tensor.shape.clone(),
-                            elements,
-                        )?))
-                    }
-                    _ => Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: complex_unary_unsupported_detail(primitive),
-                    }),
+                    Ok(Value::Tensor(TensorValue::new(
+                        tensor.dtype,
+                        tensor.shape.clone(),
+                        elements,
+                    )?))
                 };
             }
             let out_dtype = match tensor.dtype {

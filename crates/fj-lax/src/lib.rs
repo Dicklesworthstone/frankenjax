@@ -7991,6 +7991,60 @@ mod prop_tests {
     }
 
     #[test]
+    fn test_complex_sqrt_uses_principal_branch() {
+        let out = eval_primitive(
+            Primitive::Sqrt,
+            &[Value::scalar_complex128(-4.0, 0.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, 2.0, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_rsqrt_inverts_principal_sqrt() {
+        let out = eval_primitive(
+            Primitive::Rsqrt,
+            &[Value::scalar_complex128(-4.0, 0.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, -0.5, 1e-12);
+    }
+
+    #[test]
+    fn test_complex64_tensor_sqrt_preserves_dtype_and_shape() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(3.0, 4.0),
+                    Literal::from_complex64(-4.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::Complex64);
+        assert_eq!(tensor.shape, Shape { dims: vec![2] });
+
+        let (re0, im0) = tensor.elements[0]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!((re0 - 2.0).abs() < 1e-6);
+        assert!((im0 - 1.0).abs() < 1e-6);
+
+        let (re1, im1) = tensor.elements[1]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!(re1.abs() < 1e-6);
+        assert!((im1 - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_complex_is_finite_checks_both_parts() {
         let out = eval_primitive(
             Primitive::IsFinite,
