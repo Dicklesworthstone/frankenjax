@@ -1338,8 +1338,19 @@ impl SimpleTraceContext {
                     shape: Shape { dims: out_dims },
                 }])
             }
-            Primitive::Cumsum | Primitive::Cumprod | Primitive::Sort => {
-                // Cumulative/sort ops: output shape = input shape
+            Primitive::Cumsum | Primitive::Cumprod => {
+                // Cumulative ops: output shape = input shape
+                if inputs.len() != 1 {
+                    return Err(TraceError::ShapeInferenceFailed {
+                        primitive,
+                        detail: format!("expected 1 input, got {}", inputs.len()),
+                    });
+                }
+                let _ = parse_bool_param(primitive, params, "reverse", false)?;
+                Ok(vec![inputs[0].clone()])
+            }
+            Primitive::Sort => {
+                // Sort output shape = input shape
                 if inputs.len() != 1 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
@@ -4356,6 +4367,57 @@ mod tests {
                     .expect_err("unknown rounding method should fail");
                 assert!(
                     err.to_string().contains("rounding_method"),
+                    "unexpected error: {err}"
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_cumsum_accepts_reverse_param() {
+        run_logged_test(
+            "test_infer_cumsum_accepts_reverse_param",
+            fj_test_utils::fixture_id_from_json(&("cumsum-reverse-shape", [4_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::vector(4),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("reverse".to_owned(), "true".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::Cumsum, &[TracerId(1)], params)
+                    .expect("cumsum inference should accept reverse=true");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.shape, Shape::vector(4));
+                assert_eq!(aval.dtype, DType::I64);
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_cumprod_rejects_invalid_reverse_param() {
+        run_logged_test(
+            "test_infer_cumprod_rejects_invalid_reverse_param",
+            fj_test_utils::fixture_id_from_json(&("cumprod-invalid-reverse", [4_u32]))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape::vector(4),
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("reverse".to_owned(), "maybe".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::Cumprod, &[TracerId(1)], params)
+                    .expect_err("invalid reverse param should fail");
+                assert!(
+                    err.to_string().contains("reverse"),
                     "unexpected error: {err}"
                 );
                 Ok(Vec::new())

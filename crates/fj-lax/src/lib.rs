@@ -5154,6 +5154,12 @@ mod tests {
         p
     }
 
+    fn reverse_axis_params(axis: usize) -> BTreeMap<String, String> {
+        let mut p = axis_params(axis);
+        p.insert("reverse".to_owned(), "true".to_owned());
+        p
+    }
+
     #[test]
     fn cumsum_1d() {
         // cumsum([1, 2, 3, 4]) = [1, 3, 6, 10]
@@ -5218,6 +5224,18 @@ mod tests {
     }
 
     #[test]
+    fn cumsum_reverse_1d() {
+        let input = Value::vector_i64(&[1, 2, 3, 4]).unwrap();
+        let out = eval_primitive(Primitive::Cumsum, &[input], &reverse_axis_params(0)).unwrap();
+        if let Value::Tensor(t) = &out {
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(vals, vec![10, 9, 7, 4]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
     fn cumsum_empty_vector_negative_axis_returns_empty_tensor() {
         let input =
             Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap());
@@ -5263,6 +5281,32 @@ mod tests {
         if let Value::Tensor(t) = &out {
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![1.0, 2.0, 6.0]);
+        } else {
+            assert!(matches!(out, Value::Tensor(_)), "expected tensor");
+        }
+    }
+
+    #[test]
+    fn cumprod_reverse_2d_axis1() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
+                ],
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(Primitive::Cumprod, &[input], &reverse_axis_params(1)).unwrap();
+        if let Value::Tensor(t) = &out {
+            let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(vals, vec![6, 6, 3, 120, 30, 6]);
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }

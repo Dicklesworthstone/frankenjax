@@ -18,6 +18,12 @@ fn axis_params(axis: i64) -> BTreeMap<String, String> {
     p
 }
 
+fn reverse_axis_params(axis: i64) -> BTreeMap<String, String> {
+    let mut p = axis_params(axis);
+    p.insert("reverse".to_owned(), "true".to_owned());
+    p
+}
+
 fn make_i64_tensor(shape: &[u32], data: Vec<i64>) -> Value {
     Value::Tensor(
         TensorValue::new(
@@ -45,17 +51,21 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
 }
 
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
-    match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
-    }
+    let tensor = v.as_tensor().expect("expected tensor");
+    tensor
+        .elements
+        .iter()
+        .map(|l| l.as_i64().unwrap())
+        .collect()
 }
 
 fn extract_f64_vec(v: &Value) -> Vec<f64> {
-    match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        _ => panic!("expected tensor"),
-    }
+    let tensor = v.as_tensor().expect("expected tensor");
+    tensor
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap())
+        .collect()
 }
 
 // ======================== Cumsum Oracle Tests ========================
@@ -110,6 +120,13 @@ fn oracle_cumsum_with_negatives() {
     let input = make_i64_tensor(&[4], vec![1, -2, 3, -4]);
     let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![1, -1, 2, -2]);
+}
+
+#[test]
+fn oracle_cumsum_reverse_1d_i64() {
+    let input = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &reverse_axis_params(0)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![10, 9, 7, 4]);
 }
 
 #[test]
@@ -186,4 +203,24 @@ fn oracle_cumprod_all_ones() {
     let input = make_i64_tensor(&[5], vec![1, 1, 1, 1, 1]);
     let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![1, 1, 1, 1, 1]);
+}
+
+#[test]
+fn oracle_cumprod_reverse_2d_last_axis() {
+    let input = make_i64_tensor(&[2, 3], vec![1, 2, 3, 4, 5, 6]);
+    let result = eval_primitive(Primitive::Cumprod, &[input], &reverse_axis_params(-1)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![6, 6, 3, 120, 30, 6]);
+}
+
+#[test]
+fn oracle_cumulative_rejects_invalid_reverse_param() {
+    let input = make_i64_tensor(&[3], vec![1, 2, 3]);
+    let mut params = axis_params(0);
+    params.insert("reverse".to_owned(), "maybe".to_owned());
+    let err = eval_primitive(Primitive::Cumsum, &[input], &params)
+        .expect_err("invalid reverse parameter should fail");
+    assert!(
+        err.to_string().contains("reverse"),
+        "unexpected error: {err}"
+    );
 }

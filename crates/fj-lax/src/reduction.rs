@@ -53,6 +53,32 @@ fn parse_reduction_axes(
         .collect()
 }
 
+fn parse_bool_param(
+    primitive: Primitive,
+    params: &std::collections::BTreeMap<String, String>,
+    key: &str,
+    default: bool,
+) -> Result<bool, EvalError> {
+    let Some(raw) = params.get(key) else {
+        return Ok(default);
+    };
+    let trimmed = raw.trim();
+    if trimmed == "1" || trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("yes")
+    {
+        Ok(true)
+    } else if trimmed == "0"
+        || trimmed.eq_ignore_ascii_case("false")
+        || trimmed.eq_ignore_ascii_case("no")
+    {
+        Ok(false)
+    } else {
+        Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid boolean parameter {key}={raw:?}"),
+        })
+    }
+}
+
 /// Generic reduction: reduces elements of a tensor along specified axes (or all axes).
 pub(crate) fn eval_reduce(
     primitive: Primitive,
@@ -528,6 +554,7 @@ pub(crate) fn eval_cumulative(
                     detail: format!("axis {} out of bounds for rank {}", axis, rank),
                 });
             }
+            let reverse = parse_bool_param(primitive, params, "reverse", false)?;
 
             let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
 
@@ -569,25 +596,53 @@ pub(crate) fn eval_cumulative(
 
                 if is_integral {
                     let mut acc = int_init;
-                    for i in 0..axis_dim {
-                        let flat_idx = base + i * axis_stride;
-                        let val = elements[flat_idx].as_i64().ok_or(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "expected i64 tensor",
-                        })?;
-                        acc = int_op(acc, val);
-                        elements[flat_idx] = Literal::I64(acc);
+                    if reverse {
+                        for i in (0..axis_dim).rev() {
+                            let flat_idx = base + i * axis_stride;
+                            let val =
+                                elements[flat_idx].as_i64().ok_or(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "expected i64 tensor",
+                                })?;
+                            acc = int_op(acc, val);
+                            elements[flat_idx] = Literal::I64(acc);
+                        }
+                    } else {
+                        for i in 0..axis_dim {
+                            let flat_idx = base + i * axis_stride;
+                            let val =
+                                elements[flat_idx].as_i64().ok_or(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "expected i64 tensor",
+                                })?;
+                            acc = int_op(acc, val);
+                            elements[flat_idx] = Literal::I64(acc);
+                        }
                     }
                 } else {
                     let mut acc = float_init;
-                    for i in 0..axis_dim {
-                        let flat_idx = base + i * axis_stride;
-                        let val = elements[flat_idx].as_f64().ok_or(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "expected numeric tensor",
-                        })?;
-                        acc = float_op(acc, val);
-                        elements[flat_idx] = Literal::from_f64(acc);
+                    if reverse {
+                        for i in (0..axis_dim).rev() {
+                            let flat_idx = base + i * axis_stride;
+                            let val =
+                                elements[flat_idx].as_f64().ok_or(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "expected numeric tensor",
+                                })?;
+                            acc = float_op(acc, val);
+                            elements[flat_idx] = Literal::from_f64(acc);
+                        }
+                    } else {
+                        for i in 0..axis_dim {
+                            let flat_idx = base + i * axis_stride;
+                            let val =
+                                elements[flat_idx].as_f64().ok_or(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "expected numeric tensor",
+                                })?;
+                            acc = float_op(acc, val);
+                            elements[flat_idx] = Literal::from_f64(acc);
+                        }
                     }
                 }
             }
@@ -825,6 +880,24 @@ mod tests {
         .unwrap();
         let vals = extract_f64_vec(&result);
         assert_eq!(vals, vec![1.0, 3.0, 6.0, 10.0]);
+    }
+
+    #[test]
+    fn cumsum_reverse_vector() {
+        let mut params = BTreeMap::new();
+        params.insert("reverse".to_owned(), "true".to_owned());
+        let result = eval_cumulative(
+            Primitive::Cumsum,
+            &[v_f64(&[1.0, 2.0, 3.0, 4.0])],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![10.0, 9.0, 7.0, 4.0]);
     }
 
     #[test]
