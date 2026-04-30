@@ -243,6 +243,11 @@ fn complex_atan(input: (f64, f64)) -> (f64, f64) {
     (-0.5 * diff.1, 0.5 * diff.0)
 }
 
+fn complex_logistic(input: (f64, f64)) -> (f64, f64) {
+    let neg_input = (-input.0, -input.1);
+    complex_reciprocal(complex_add((1.0, 0.0), complex_exp(neg_input)))
+}
+
 fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<(f64, f64)> {
     match primitive {
         Primitive::Sqrt => Some(complex_sqrt(input)),
@@ -250,6 +255,7 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
         Primitive::Asin => Some(complex_asin(input)),
         Primitive::Acos => Some(complex_acos(input)),
         Primitive::Atan => Some(complex_atan(input)),
+        Primitive::Logistic => Some(complex_logistic(input)),
         Primitive::Expm1 => Some(complex_expm1(input)),
         Primitive::Log1p => Some(complex_log((input.0 + 1.0, input.1))),
         Primitive::Reciprocal => Some(complex_reciprocal(input)),
