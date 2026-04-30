@@ -160,10 +160,7 @@ fn apply_complex_binary(
         Primitive::Add => Ok((ar + br, ai + bi)),
         Primitive::Sub => Ok((ar - br, ai - bi)),
         Primitive::Mul => Ok((ar * br - ai * bi, ar * bi + ai * br)),
-        Primitive::Div => {
-            let denom = br * br + bi * bi;
-            Ok(((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom))
-        }
+        Primitive::Div => Ok(complex_div(lhs, rhs)),
         Primitive::Rem => {
             let quotient = apply_complex_binary(Primitive::Div, lhs, rhs)?;
             let rounded = (quotient.0.round(), quotient.1.round());
@@ -172,6 +169,7 @@ fn apply_complex_binary(
         Primitive::Max => Ok(if complex_lex_ge(lhs, rhs) { lhs } else { rhs }),
         Primitive::Min => Ok(if complex_lex_ge(lhs, rhs) { rhs } else { lhs }),
         Primitive::Pow => apply_complex_pow(lhs, rhs),
+        Primitive::Atan2 => Ok(complex_atan2(lhs, rhs)),
         _ => Err(EvalError::TypeMismatch {
             primitive,
             detail: complex_binary_unsupported_detail(primitive),
@@ -191,6 +189,13 @@ fn complex_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
     let (ar, ai) = lhs;
     let (br, bi) = rhs;
     (ar * br - ai * bi, ar * bi + ai * br)
+}
+
+fn complex_div(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
+    let (ar, ai) = lhs;
+    let (br, bi) = rhs;
+    let denom = br * br + bi * bi;
+    ((ar * br + ai * bi) / denom, (ai * br - ar * bi) / denom)
 }
 
 fn complex_exp((re, im): (f64, f64)) -> (f64, f64) {
@@ -248,6 +253,14 @@ fn complex_atan(input: (f64, f64)) -> (f64, f64) {
     (-0.5 * diff.1, 0.5 * diff.0)
 }
 
+fn complex_atan2(y: (f64, f64), x: (f64, f64)) -> (f64, f64) {
+    let numerator = complex_add(x, (-y.1, y.0));
+    let denominator = complex_sqrt(complex_add(complex_mul(x, x), complex_mul(y, y)));
+    let quotient = complex_div(numerator, denominator);
+    let logged = complex_log(quotient);
+    (logged.1, -logged.0)
+}
+
 fn complex_logistic(input: (f64, f64)) -> (f64, f64) {
     let neg_input = (-input.0, -input.1);
     complex_reciprocal(complex_add((1.0, 0.0), complex_exp(neg_input)))
@@ -269,11 +282,8 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
     }
 }
 
-fn complex_binary_unsupported_detail(primitive: Primitive) -> &'static str {
-    match primitive {
-        Primitive::Atan2 => "atan2 is not defined for complex operands",
-        _ => "operation is not supported for complex operands",
-    }
+fn complex_binary_unsupported_detail(_primitive: Primitive) -> &'static str {
+    "operation is not supported for complex operands"
 }
 
 fn complex_unary_unsupported_detail(primitive: Primitive) -> &'static str {
@@ -361,7 +371,8 @@ fn eval_binary_elementwise_complex(
         | Primitive::Rem
         | Primitive::Max
         | Primitive::Min
-        | Primitive::Pow => {}
+        | Primitive::Pow
+        | Primitive::Atan2 => {}
         _ => {
             return Err(EvalError::TypeMismatch {
                 primitive,
