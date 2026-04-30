@@ -34,16 +34,17 @@ pub(crate) fn eval_binary_elementwise(
         )?)),
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
             if lhs.shape == rhs.shape {
-                // Same shape: elementwise
-                let elements = lhs
+                let mut elements = Vec::with_capacity(lhs.elements.len());
+                for (left, right) in lhs
                     .elements
                     .iter()
                     .copied()
                     .zip(rhs.elements.iter().copied())
-                    .map(|(left, right)| {
-                        binary_literal_op(left, right, primitive, &int_op, &float_op)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                {
+                    elements.push(binary_literal_op(
+                        left, right, primitive, &int_op, &float_op,
+                    )?);
+                }
 
                 let dtype = promote_dtype(lhs.dtype, rhs.dtype);
                 Ok(Value::Tensor(TensorValue::new(
@@ -57,12 +58,12 @@ pub(crate) fn eval_binary_elementwise(
             }
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
-            let elements = rhs
-                .elements
-                .iter()
-                .copied()
-                .map(|right| binary_literal_op(*lhs, right, primitive, &int_op, &float_op))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(rhs.elements.len());
+            for right in rhs.elements.iter().copied() {
+                elements.push(binary_literal_op(
+                    *lhs, right, primitive, &int_op, &float_op,
+                )?);
+            }
 
             let lhs_dtype = literal_dtype(*lhs);
             let dtype = promote_dtype(lhs_dtype, rhs.dtype);
@@ -73,12 +74,12 @@ pub(crate) fn eval_binary_elementwise(
             )?))
         }
         (Value::Tensor(lhs), Value::Scalar(rhs)) => {
-            let elements = lhs
-                .elements
-                .iter()
-                .copied()
-                .map(|left| binary_literal_op(left, *rhs, primitive, &int_op, &float_op))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(lhs.elements.len());
+            for left in lhs.elements.iter().copied() {
+                elements.push(binary_literal_op(
+                    left, *rhs, primitive, &int_op, &float_op,
+                )?);
+            }
 
             let rhs_dtype = literal_dtype(*rhs);
             let dtype = promote_dtype(lhs.dtype, rhs_dtype);
