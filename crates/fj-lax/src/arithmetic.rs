@@ -300,6 +300,56 @@ fn complex_unary_unsupported_detail(primitive: Primitive) -> &'static str {
     }
 }
 
+fn select_literal_as_dtype(
+    primitive: Primitive,
+    value: Literal,
+    dtype: DType,
+    real_detail: &'static str,
+    integer_detail: &'static str,
+    unsigned_detail: &'static str,
+) -> Result<Literal, EvalError> {
+    match dtype {
+        DType::F64 | DType::F32 | DType::BF16 | DType::F16 => {
+            let f_val = value.as_f64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: real_detail,
+            })?;
+            Ok(real_literal_from_f64(dtype, f_val))
+        }
+        DType::I64 | DType::I32 => {
+            let i_val = value.as_i64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: integer_detail,
+            })?;
+            Ok(Literal::I64(i_val))
+        }
+        DType::U32 => {
+            let u_val = value.as_u64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: unsigned_detail,
+            })?;
+            Ok(Literal::U32(u32::try_from(u_val).map_err(|_| {
+                EvalError::TypeMismatch {
+                    primitive,
+                    detail: "u32 overflow in select",
+                }
+            })?))
+        }
+        DType::U64 => {
+            let u_val = value.as_u64().ok_or(EvalError::TypeMismatch {
+                primitive,
+                detail: unsigned_detail,
+            })?;
+            Ok(Literal::U64(u_val))
+        }
+        DType::Bool => Ok(value),
+        DType::Complex64 | DType::Complex128 => {
+            let (re, im) = literal_to_complex_parts(primitive, value)?;
+            Ok(complex_literal_from_f64_parts(dtype, re, im))
+        }
+    }
+}
+
 fn complex_lex_ge(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
     lhs.0 > rhs.0 || (lhs.0 == rhs.0 && lhs.1 >= rhs.1)
 }
@@ -1347,46 +1397,14 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             let lhs_dtype = literal_dtype(*on_true);
             let rhs_dtype = literal_dtype(*on_false);
             let dtype = promote_dtype(lhs_dtype, rhs_dtype);
-            let promoted_val = match dtype {
-                DType::F64 | DType::F32 | DType::BF16 | DType::F16 => {
-                    let f_val = val.as_f64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected numeric scalar for select",
-                    })?;
-                    real_literal_from_f64(dtype, f_val)
-                }
-                DType::I64 | DType::I32 => {
-                    let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected integer scalar for select",
-                    })?;
-                    Literal::I64(i_val)
-                }
-                DType::U32 => {
-                    let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected unsigned scalar for select",
-                    })?;
-                    Literal::U32(u32::try_from(u_val).map_err(|_| EvalError::TypeMismatch {
-                        primitive,
-                        detail: "u32 overflow in select",
-                    })?)
-                }
-                DType::U64 => {
-                    let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected unsigned scalar for select",
-                    })?;
-                    Literal::U64(u_val)
-                }
-                DType::Bool => val,
-                DType::Complex64 | DType::Complex128 => {
-                    return Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "select values must share a non-complex dtype",
-                    });
-                }
-            };
+            let promoted_val = select_literal_as_dtype(
+                primitive,
+                val,
+                dtype,
+                "expected numeric scalar for select",
+                "expected integer scalar for select",
+                "expected unsigned scalar for select",
+            )?;
             Ok(Value::Scalar(promoted_val))
         }
         (Value::Tensor(cond), Value::Tensor(on_true), Value::Tensor(on_false)) => {
@@ -1424,46 +1442,14 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         }
                     };
                     let val = if flag { *t } else { *f };
-                    match dtype {
-                        DType::F64 | DType::F32 | DType::BF16 | DType::F16 => {
-                            let f_val = val.as_f64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected numeric tensor elements for select",
-                            })?;
-                            Ok(real_literal_from_f64(dtype, f_val))
-                        }
-                        DType::I64 | DType::I32 => {
-                            let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected integer tensor elements for select",
-                            })?;
-                            Ok(Literal::I64(i_val))
-                        }
-                        DType::U32 => {
-                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected unsigned tensor elements for select",
-                            })?;
-                            Ok(Literal::U32(u32::try_from(u_val).map_err(|_| {
-                                EvalError::TypeMismatch {
-                                    primitive,
-                                    detail: "u32 overflow in select",
-                                }
-                            })?))
-                        }
-                        DType::U64 => {
-                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected unsigned tensor elements for select",
-                            })?;
-                            Ok(Literal::U64(u_val))
-                        }
-                        DType::Bool => Ok(val),
-                        DType::Complex64 | DType::Complex128 => Err(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "select values must share a non-complex dtype",
-                        }),
-                    }
+                    select_literal_as_dtype(
+                        primitive,
+                        val,
+                        dtype,
+                        "expected numeric tensor elements for select",
+                        "expected integer tensor elements for select",
+                        "expected unsigned tensor elements for select",
+                    )
                 })
                 .collect();
             Ok(Value::Tensor(TensorValue::new(
@@ -1500,46 +1486,14 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         }
                     };
                     let val = if flag { *on_true } else { *on_false };
-                    match dtype {
-                        DType::F64 | DType::F32 | DType::BF16 | DType::F16 => {
-                            let f_val = val.as_f64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected numeric scalar for select",
-                            })?;
-                            Ok(real_literal_from_f64(dtype, f_val))
-                        }
-                        DType::I64 | DType::I32 => {
-                            let i_val = val.as_i64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected integer scalar for select",
-                            })?;
-                            Ok(Literal::I64(i_val))
-                        }
-                        DType::U32 => {
-                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected unsigned scalar for select",
-                            })?;
-                            Ok(Literal::U32(u32::try_from(u_val).map_err(|_| {
-                                EvalError::TypeMismatch {
-                                    primitive,
-                                    detail: "u32 overflow in select",
-                                }
-                            })?))
-                        }
-                        DType::U64 => {
-                            let u_val = val.as_u64().ok_or(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "expected unsigned scalar for select",
-                            })?;
-                            Ok(Literal::U64(u_val))
-                        }
-                        DType::Bool => Ok(val),
-                        DType::Complex64 | DType::Complex128 => Err(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "select values must share a non-complex dtype",
-                        }),
-                    }
+                    select_literal_as_dtype(
+                        primitive,
+                        val,
+                        dtype,
+                        "expected numeric scalar for select",
+                        "expected integer scalar for select",
+                        "expected unsigned scalar for select",
+                    )
                 })
                 .collect();
             Ok(Value::Tensor(TensorValue::new(

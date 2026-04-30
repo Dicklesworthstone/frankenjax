@@ -8147,6 +8147,74 @@ mod prop_tests {
     }
 
     #[test]
+    fn test_select_complex_scalar_values_preserve_selected_branch() {
+        let out = eval_primitive(
+            Primitive::Select,
+            &[
+                Value::scalar_bool(false),
+                Value::scalar_complex128(1.0, 2.0),
+                Value::scalar_complex128(3.0, -4.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+
+        assert_complex128_close(&out, 3.0, -4.0, 1e-12);
+    }
+
+    #[test]
+    fn test_select_complex64_tensor_values_preserve_dtype_and_shape() {
+        let cond = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![2] },
+                vec![Literal::Bool(true), Literal::Bool(false)],
+            )
+            .unwrap(),
+        );
+        let on_true = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(1.0, 2.0),
+                    Literal::from_complex64(3.0, 4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let on_false = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(5.0, 6.0),
+                    Literal::from_complex64(7.0, 8.0),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out =
+            eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::Complex64);
+        assert_eq!(tensor.shape, Shape { dims: vec![2] });
+
+        let (re0, im0) = tensor.elements[0]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!((re0 - 1.0).abs() < 1e-6);
+        assert!((im0 - 2.0).abs() < 1e-6);
+
+        let (re1, im1) = tensor.elements[1]
+            .as_complex64()
+            .expect("complex64 element");
+        assert!((re1 - 7.0).abs() < 1e-6);
+        assert!((im1 - 8.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn test_clamp_complex_value_reports_unsupported_dtype() {
         let err = eval_primitive(
             Primitive::Clamp,
