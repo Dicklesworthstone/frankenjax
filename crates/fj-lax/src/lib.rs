@@ -5076,6 +5076,12 @@ mod tests {
         p
     }
 
+    fn raw_axis_params(axis: &str) -> BTreeMap<String, String> {
+        let mut p = BTreeMap::new();
+        p.insert("axis".to_owned(), axis.to_owned());
+        p
+    }
+
     #[test]
     fn cumsum_1d() {
         // cumsum([1, 2, 3, 4]) = [1, 3, 6, 10]
@@ -5137,6 +5143,31 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn cumsum_empty_vector_negative_axis_returns_empty_tensor() {
+        let input =
+            Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap());
+        let out = eval_primitive(Primitive::Cumsum, &[input], &raw_axis_params("-1")).unwrap();
+
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape, Shape { dims: vec![0] });
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
+    fn cumprod_empty_selected_axis_returns_empty_tensor() {
+        let input = Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![2, 0] }, vec![]).unwrap(),
+        );
+        let out = eval_primitive(Primitive::Cumprod, &[input], &axis_params(1)).unwrap();
+
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::I64);
+        assert_eq!(tensor.shape, Shape { dims: vec![2, 0] });
+        assert!(tensor.elements.is_empty());
     }
 
     #[test]
