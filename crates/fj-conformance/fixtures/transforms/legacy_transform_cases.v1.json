@@ -15547,11 +15547,11 @@
       "comparator": "exact",
       "expected": [
         {
-          "kind": "vector_f64",
+          "kind": "vector_i64",
           "values": [
-            6.0,
-            9.0,
-            12.0
+            6,
+            9,
+            12
           ]
         }
       ],

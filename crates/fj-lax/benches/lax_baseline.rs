@@ -39,6 +39,22 @@ fn real_vector(len: usize) -> Value {
     })
 }
 
+fn real_matrix(rows: usize, cols: usize) -> Value {
+    let elements: Vec<Literal> = (0..rows * cols)
+        .map(|i| {
+            let x = i as f64;
+            Literal::from_f64((x * 0.125).sin() + (x * 0.03125).cos())
+        })
+        .collect();
+    Value::Tensor(TensorValue {
+        dtype: DType::F64,
+        shape: Shape {
+            dims: vec![rows as u32, cols as u32],
+        },
+        elements,
+    })
+}
+
 fn bench_add_scalar(c: &mut Criterion) {
     let inputs = [Value::scalar_i64(42), Value::scalar_i64(17)];
     let p = no_params();
@@ -83,6 +99,24 @@ fn bench_reduce_sum_1k(c: &mut Criterion) {
     let p = no_params();
     c.bench_function("eval/reduce_sum_1k_i64", |bencher| {
         bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_reduce_window_64x64(c: &mut Criterion) {
+    let input = real_matrix(64, 64);
+    let mut params = BTreeMap::new();
+    params.insert("reduce_op".to_owned(), "sum".to_owned());
+    params.insert("window_dimensions".to_owned(), "3,3".to_owned());
+    params.insert("window_strides".to_owned(), "1,1".to_owned());
+    params.insert("padding".to_owned(), "SAME".to_owned());
+    c.bench_function("eval/reduce_window_64x64_3x3_same_f64", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::ReduceWindow,
+                std::slice::from_ref(&input),
+                &params,
+            )
+        })
     });
 }
 
@@ -320,6 +354,7 @@ criterion_group!(
     bench_mul_1k_vector,
     bench_dot_100,
     bench_reduce_sum_1k,
+    bench_reduce_window_64x64,
     bench_sin_1k,
     bench_exp_1k,
     bench_fft_256,

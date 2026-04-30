@@ -1741,12 +1741,12 @@ def build_lax_cases(cb: CaseBuilder) -> None:
     )
 
     # ── ReduceWindow: sum with window_dimensions=3, stride=1, valid padding ──
-    # Note: ReduceWindow always outputs F64 regardless of input dtype
+    # ReduceWindow preserves the input literal dtype for typed reductions.
     # [1,2,3,4,5] → [1+2+3, 2+3+4, 3+4+5] = [6, 9, 12]
     cb.add_raw(
         "lax_reduce_window_sum_i64_0", "lax", "lax_reduce_window_sum", ["jit"],
         [{"kind": "vector_i64", "values": [1, 2, 3, 4, 5]}],
-        [{"kind": "vector_f64", "values": [6.0, 9.0, 12.0]}],
+        [{"kind": "vector_i64", "values": [6, 9, 12]}],
         atol=0.0, rtol=0.0, comparator="exact",
     )
     cb.add_raw(

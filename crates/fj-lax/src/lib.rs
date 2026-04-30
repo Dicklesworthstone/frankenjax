@@ -1651,6 +1651,18 @@ fn eval_reduce_window(
     // For 1D case: straightforward sliding window
     // For N-D: use multi-dimensional indexing
     let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+    let mut input_strides = vec![1usize; rank];
+    let mut stride_mult = 1usize;
+    for d in (0..rank).rev() {
+        input_strides[d] = stride_mult;
+        stride_mult =
+            stride_mult
+                .checked_mul(input_dims[d])
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "reduce_window stride multiplier overflow".to_owned(),
+                })?;
+    }
 
     let mut output_elements = Vec::with_capacity(total_output);
 
@@ -1676,7 +1688,6 @@ fn eval_reduce_window(
             // Compute input index for this window position
             let mut in_bounds = true;
             let mut flat_input_idx = 0usize;
-            let mut stride_mult = 1usize;
 
             for d in (0..rank).rev() {
                 let padded_pos = out_idx[d]
@@ -1695,23 +1706,16 @@ fn eval_reduce_window(
                     in_bounds = false;
                     break;
                 }
-                let flat_increment =
-                    input_pos
-                        .checked_mul(stride_mult)
-                        .ok_or_else(|| EvalError::Unsupported {
-                            primitive,
-                            detail: "reduce_window flat index overflow".to_owned(),
-                        })?;
-                flat_input_idx = flat_input_idx.checked_add(flat_increment).ok_or_else(|| {
+                let flat_increment = input_pos.checked_mul(input_strides[d]).ok_or_else(|| {
                     EvalError::Unsupported {
                         primitive,
                         detail: "reduce_window flat index overflow".to_owned(),
                     }
                 })?;
-                stride_mult = stride_mult.checked_mul(input_dims[d]).ok_or_else(|| {
+                flat_input_idx = flat_input_idx.checked_add(flat_increment).ok_or_else(|| {
                     EvalError::Unsupported {
                         primitive,
-                        detail: "reduce_window stride multiplier overflow".to_owned(),
+                        detail: "reduce_window flat index overflow".to_owned(),
                     }
                 })?;
             }
