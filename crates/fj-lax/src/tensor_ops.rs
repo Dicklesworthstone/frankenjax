@@ -1215,9 +1215,7 @@ pub(crate) fn eval_slice(
                 )?));
             }
 
-            // Compute input strides (row-major).
             let in_dims = &tensor.shape.dims;
-            let in_strides = checked_row_major_strides(primitive, "slice", in_dims)?;
 
             let has_contiguous_trailing_slice = rank > 0
                 && slice_strides.iter().all(|&stride| stride == 1)
@@ -1228,9 +1226,10 @@ pub(crate) fn eval_slice(
                     .zip(in_dims.iter().skip(1))
                     .all(|(&limit, &dim)| limit == dim as usize);
             if has_contiguous_trailing_slice {
+                let row_len = checked_shape_element_count(primitive, "slice row", &in_dims[1..])?;
                 let start_offset =
                     starts[0]
-                        .checked_mul(in_strides[0])
+                        .checked_mul(row_len)
                         .ok_or_else(|| EvalError::Unsupported {
                             primitive,
                             detail: "slice start offset overflows usize".to_owned(),
@@ -1248,6 +1247,8 @@ pub(crate) fn eval_slice(
                     tensor.elements[start_offset..end_offset].to_vec(),
                 )?));
             }
+
+            let in_strides = checked_row_major_strides(primitive, "slice", in_dims)?;
 
             let mut elements = Vec::with_capacity(total);
             let mut out_coords = vec![0_usize; rank];
@@ -1929,9 +1930,6 @@ pub(crate) fn eval_dynamic_slice(
         )?));
     }
 
-    // Compute strides
-    let in_strides = checked_row_major_strides(primitive, "dynamic_slice", &tensor.shape.dims)?;
-
     let has_contiguous_trailing_slice = rank > 0
         && slice_sizes
             .iter()
@@ -1940,9 +1938,11 @@ pub(crate) fn eval_dynamic_slice(
             .all(|(&slice_size, &dim)| slice_size == dim as usize)
         && starts.iter().skip(1).all(|&start| start == 0);
     if has_contiguous_trailing_slice {
+        let row_len =
+            checked_shape_element_count(primitive, "dynamic_slice row", &tensor.shape.dims[1..])?;
         let start_offset =
             starts[0]
-                .checked_mul(in_strides[0])
+                .checked_mul(row_len)
                 .ok_or_else(|| EvalError::Unsupported {
                     primitive,
                     detail: "dynamic_slice start offset overflows usize".to_owned(),
@@ -1959,6 +1959,8 @@ pub(crate) fn eval_dynamic_slice(
             tensor.elements[start_offset..end_offset].to_vec(),
         )?));
     }
+
+    let in_strides = checked_row_major_strides(primitive, "dynamic_slice", &tensor.shape.dims)?;
 
     let mut elements = Vec::with_capacity(total);
     let mut out_coords = vec![0_usize; rank];
@@ -2127,9 +2129,6 @@ pub(crate) fn eval_dynamic_update_slice(
         )?));
     }
 
-    let op_strides =
-        checked_row_major_strides(primitive, "dynamic_update_slice", &operand.shape.dims)?;
-
     let has_contiguous_trailing_update = rank > 0
         && update
             .shape
@@ -2140,9 +2139,14 @@ pub(crate) fn eval_dynamic_update_slice(
             .all(|(&update_dim, &operand_dim)| update_dim == operand_dim)
         && starts.iter().skip(1).all(|&start| start == 0);
     if has_contiguous_trailing_update {
+        let row_len = checked_shape_element_count(
+            primitive,
+            "dynamic_update_slice row",
+            &operand.shape.dims[1..],
+        )?;
         let start_offset =
             starts[0]
-                .checked_mul(op_strides[0])
+                .checked_mul(row_len)
                 .ok_or_else(|| EvalError::Unsupported {
                     primitive,
                     detail: "dynamic_update_slice start offset overflows usize".to_owned(),
@@ -2161,6 +2165,9 @@ pub(crate) fn eval_dynamic_update_slice(
             elements,
         )?));
     }
+
+    let op_strides =
+        checked_row_major_strides(primitive, "dynamic_update_slice", &operand.shape.dims)?;
 
     let mut upd_coords = vec![0_usize; rank];
 
