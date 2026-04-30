@@ -51,6 +51,17 @@ fn literal_to_numeric_f64(literal: Literal) -> Option<f64> {
 }
 
 #[inline]
+fn literal_to_complex_f64(literal: Literal) -> Option<(f64, f64)> {
+    match literal {
+        Literal::Complex64Bits(re, im) => {
+            Some((f32::from_bits(re) as f64, f32::from_bits(im) as f64))
+        }
+        Literal::Complex128Bits(re, im) => Some((f64::from_bits(re), f64::from_bits(im))),
+        _ => literal_to_numeric_f64(literal).map(|value| (value, 0.0)),
+    }
+}
+
+#[inline]
 fn literal_from_numeric_f64(dtype: DType, value: f64) -> Literal {
     match dtype {
         DType::BF16 => Literal::from_bf16_f32(value as f32),
@@ -251,6 +262,37 @@ pub(crate) fn compare_literals(
     int_cmp: &impl Fn(i128, i128) -> bool,
     float_cmp: &impl Fn(f64, f64) -> bool,
 ) -> Result<bool, EvalError> {
+    if matches!(
+        (lhs, rhs),
+        (Literal::Complex64Bits(..) | Literal::Complex128Bits(..), _)
+            | (_, Literal::Complex64Bits(..) | Literal::Complex128Bits(..))
+    ) {
+        return match primitive {
+            Primitive::Eq | Primitive::Ne => {
+                let (lhs_re, lhs_im) =
+                    literal_to_complex_f64(lhs).ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric lhs for comparison",
+                    })?;
+                let (rhs_re, rhs_im) =
+                    literal_to_complex_f64(rhs).ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric rhs for comparison",
+                    })?;
+                let equal = lhs_re == rhs_re && lhs_im == rhs_im;
+                Ok(if primitive == Primitive::Eq {
+                    equal
+                } else {
+                    !equal
+                })
+            }
+            _ => Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "ordered comparison is not supported for complex operands",
+            }),
+        };
+    }
+
     if let (Some(left), Some(right)) = (literal_to_i128(lhs), literal_to_i128(rhs)) {
         return Ok(int_cmp(left, right));
     }

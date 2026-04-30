@@ -8764,6 +8764,72 @@ mod prop_tests {
         ));
     }
 
+    #[test]
+    fn test_complex_eq_and_ne_scalars() {
+        let eq = eval_primitive(
+            Primitive::Eq,
+            &[
+                Value::scalar_complex128(1.0, -2.0),
+                Value::scalar_complex128(1.0, -2.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(eq, Value::scalar_bool(true));
+
+        let ne = eval_primitive(
+            Primitive::Ne,
+            &[
+                Value::scalar_complex128(1.0, -2.0),
+                Value::scalar_complex128(1.0, 2.0),
+            ],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(ne, Value::scalar_bool(true));
+    }
+
+    #[test]
+    fn test_complex64_tensor_eq_is_elementwise_bool() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_complex64(1.0, 2.0),
+                    Literal::from_complex64(3.0, 4.0),
+                    Literal::from_complex64(5.0, 6.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_complex64(1.0, 2.0),
+                    Literal::from_complex64(3.0, -4.0),
+                    Literal::from_complex64(5.0, 6.0),
+                ],
+            )
+            .unwrap(),
+        );
+
+        let out = eval_primitive(Primitive::Eq, &[lhs, rhs], &no_params()).unwrap();
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::Bool);
+        assert_eq!(tensor.shape, Shape { dims: vec![3] });
+        assert_eq!(
+            tensor.elements,
+            vec![
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::Bool(true)
+            ]
+        );
+    }
+
     proptest! {
         #[test]
         fn prop_conj_involution(re in -1.0e6f64..1.0e6f64, im in -1.0e6f64..1.0e6f64) {
