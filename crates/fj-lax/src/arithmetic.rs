@@ -191,7 +191,19 @@ fn complex_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
 
 fn complex_exp((re, im): (f64, f64)) -> (f64, f64) {
     let exp_re = re.exp();
-    (exp_re * im.cos(), exp_re * im.sin())
+    let (sin_im, cos_im) = im.sin_cos();
+    (exp_re * cos_im, exp_re * sin_im)
+}
+
+fn complex_expm1((re, im): (f64, f64)) -> (f64, f64) {
+    let expm1_re = re.exp_m1();
+    let exp_re = expm1_re + 1.0;
+    let (sin_im, cos_im) = im.sin_cos();
+    (expm1_re * cos_im + cos_im - 1.0, exp_re * sin_im)
+}
+
+fn complex_log((re, im): (f64, f64)) -> (f64, f64) {
+    (re.hypot(im).ln(), im.atan2(re))
 }
 
 fn complex_reciprocal((re, im): (f64, f64)) -> (f64, f64) {
@@ -210,6 +222,8 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
     match primitive {
         Primitive::Sqrt => Some(complex_sqrt(input)),
         Primitive::Rsqrt => Some(complex_reciprocal(complex_sqrt(input))),
+        Primitive::Expm1 => Some(complex_expm1(input)),
+        Primitive::Log1p => Some(complex_log((input.0 + 1.0, input.1))),
         Primitive::Reciprocal => Some(complex_reciprocal(input)),
         _ => None,
     }
@@ -927,10 +941,7 @@ pub(crate) fn eval_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
 
 pub(crate) fn eval_exp(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.first().is_some_and(value_contains_complex) {
-        eval_unary_complex_map(primitive, inputs, |a, b| {
-            let exp_a = a.exp();
-            (exp_a * b.cos(), exp_a * b.sin())
-        })
+        eval_unary_complex_map(primitive, inputs, |a, b| complex_exp((a, b)))
     } else {
         eval_unary_elementwise(primitive, inputs, f64::exp)
     }
@@ -938,7 +949,7 @@ pub(crate) fn eval_exp(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
 
 pub(crate) fn eval_log(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.first().is_some_and(value_contains_complex) {
-        eval_unary_complex_map(primitive, inputs, |a, b| (a.hypot(b).ln(), b.atan2(a)))
+        eval_unary_complex_map(primitive, inputs, |a, b| complex_log((a, b)))
     } else {
         eval_unary_elementwise(primitive, inputs, f64::ln)
     }
