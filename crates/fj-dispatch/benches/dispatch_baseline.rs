@@ -79,6 +79,22 @@ fn build_chain_jaxpr(n: usize) -> Jaxpr {
     )
 }
 
+fn constant_scalar_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2)],
+        vec![Equation {
+            primitive: Primitive::Add,
+            inputs: smallvec::smallvec![Atom::Lit(Literal::I64(3)), Atom::Lit(Literal::I64(4))],
+            outputs: smallvec::smallvec![VarId(2)],
+            params: BTreeMap::new(),
+            sub_jaxprs: vec![],
+            effects: vec![],
+        }],
+    )
+}
+
 fn switch_branch_identity_jaxpr() -> Jaxpr {
     Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
 }
@@ -386,6 +402,21 @@ fn bench_dispatch_latency(c: &mut Criterion) {
                 vec![matrix.clone()],
             ))
             .expect("vmap rank2 add_one should succeed");
+        });
+    });
+
+    // vmap over a constant scalar output exercises BatchTrace's unbatched-output
+    // broadcast path.
+    group.bench_function("vmap/constant_scalar_output", |b| {
+        let vec_arg = Value::vector_i64(&[1, 2, 3, 4, 5]).expect("vector should build");
+        let jaxpr = constant_scalar_jaxpr();
+        b.iter(|| {
+            dispatch(dispatch_jaxpr_request(
+                jaxpr.clone(),
+                &[Transform::Vmap],
+                vec![vec_arg.clone()],
+            ))
+            .expect("vmap constant scalar output should succeed");
         });
     });
 

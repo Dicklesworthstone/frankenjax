@@ -778,6 +778,38 @@ impl TensorValue {
         }
     }
 
+    pub fn repeat_axis0(value: &Value, repeat_count: usize) -> Result<Self, ValueError> {
+        if repeat_count == 0 {
+            return Err(ValueError::EmptyAxisStack);
+        }
+
+        match value {
+            Value::Scalar(lit) => {
+                let elements = vec![*lit; repeat_count];
+                let dtype = infer_dtype_from_repeated_literal(*lit);
+                TensorValue::new(dtype, Shape::vector(repeat_count as u32), elements)
+            }
+            Value::Tensor(tensor) => {
+                let mut dims = Vec::with_capacity(tensor.shape.rank() + 1);
+                dims.push(repeat_count as u32);
+                dims.extend_from_slice(&tensor.shape.dims);
+                let shape = Shape { dims };
+
+                let total_len = tensor.elements.len().checked_mul(repeat_count).ok_or(
+                    ValueError::ShapeOverflow {
+                        shape: shape.clone(),
+                    },
+                )?;
+                let mut elements = Vec::with_capacity(total_len);
+                for _ in 0..repeat_count {
+                    elements.extend_from_slice(&tensor.elements);
+                }
+
+                TensorValue::new(tensor.dtype, shape, elements)
+            }
+        }
+    }
+
     pub fn to_f64_vec(&self) -> Option<Vec<f64>> {
         self.elements.iter().copied().map(Literal::as_f64).collect()
     }
@@ -908,6 +940,21 @@ fn infer_dtype_from_literals(elements: &[Literal]) -> DType {
         DType::F32
     } else {
         DType::F64
+    }
+}
+
+fn infer_dtype_from_repeated_literal(literal: Literal) -> DType {
+    match literal {
+        Literal::I64(_) => DType::I64,
+        Literal::U32(_) => DType::U32,
+        Literal::U64(_) => DType::U64,
+        Literal::Bool(_) => DType::Bool,
+        Literal::BF16Bits(_) => DType::BF16,
+        Literal::F16Bits(_) => DType::F16,
+        Literal::F32Bits(_) => DType::F32,
+        Literal::F64Bits(_) | Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+            DType::F64
+        }
     }
 }
 
@@ -3202,6 +3249,29 @@ mod tests {
                 Ok(Vec::new())
             },
         );
+    }
+
+    #[test]
+    fn repeat_axis0_matches_repeated_stack_for_scalars_and_tensors() {
+        let scalar = Value::scalar_i64(7);
+        let repeated_scalar =
+            TensorValue::repeat_axis0(&scalar, 3).expect("scalar repeat should succeed");
+        let stacked_scalar = TensorValue::stack_axis0(&[scalar.clone(), scalar.clone(), scalar])
+            .expect("scalar stack should succeed");
+        assert_eq!(repeated_scalar, stacked_scalar);
+
+        let vector = Value::vector_i64(&[1, 2]).expect("vector should build");
+        let repeated_vector =
+            TensorValue::repeat_axis0(&vector, 3).expect("tensor repeat should succeed");
+        assert_eq!(
+            repeated_vector,
+            TensorValue::stack_axis0(&[vector.clone(), vector.clone(), vector])
+                .expect("tensor stack should succeed")
+        );
+
+        let empty_repeat = TensorValue::repeat_axis0(&Value::scalar_i64(0), 0)
+            .expect_err("empty repeat should preserve stack's empty-axis error");
+        assert!(matches!(empty_repeat, ValueError::EmptyAxisStack));
     }
 
     #[test]

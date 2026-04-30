@@ -743,8 +743,7 @@ fn execute_vmap_batch_trace(
             None => {
                 // Unbatched output — broadcast it across the mapped batch axis.
                 // This happens when the function output doesn't depend on the input.
-                let repeated = vec![tracer.value; lead_len];
-                let broadcast = TensorValue::stack_axis0(&repeated)
+                let broadcast = TensorValue::repeat_axis0(&tracer.value, lead_len)
                     .map(Value::Tensor)
                     .map_err(|e| TransformExecutionError::TensorBuild(e.to_string()))?;
                 outputs.push(broadcast);
