@@ -2,7 +2,28 @@
 
 ## Benchmark Suite
 
-All benchmarks live in `crates/fj-dispatch/benches/dispatch_baseline.rs` and cover six metric categories:
+The global performance gate is tracked in
+`artifacts/performance/global_performance_gate.v1.json`. It normalizes the
+current baseline across trace, compile/dispatch, execute, cold-cache,
+warm-cache, and memory phases without inventing measurements for surfaces that
+do not yet have allocation evidence.
+
+Baseline numbers come from
+`artifacts/performance/benchmark_baselines_v2_2026-03-12.json`, which captures
+82 Criterion benchmarks across seven suites. The gate intentionally leaves the
+memory phase as `not_measured` until heap/RSS evidence exists.
+
+| Phase | Suites | What it gates |
+|-------|--------|---------------|
+| `trace` | `jaxpr_fingerprint`, `jaxpr_validation` | Jaxpr capture-adjacent hashing and validation overhead |
+| `compile_dispatch` | `transform_composition`, `dispatch_latency` | Transform proof checks and dispatch wrapper latency |
+| `execute` | `backend_cpu`, `lax_eval` | CPU backend execution and primitive evaluator throughput |
+| `cold_cache` | `cache_subsystem` | Cache misses and cache-key construction |
+| `warm_cache` | `cache_subsystem`, `jaxpr_fingerprint` | Cache hits and cached fingerprint retrieval |
+| `memory` | pending heap/RSS tooling | Explicit coverage gap; no synthetic numbers allowed |
+
+The dispatch benchmark file remains the densest single suite and covers these
+metric categories:
 
 | Group | Benchmarks | What it measures |
 |-------|-----------|------------------|
@@ -19,31 +40,57 @@ All benchmarks live in `crates/fj-dispatch/benches/dispatch_baseline.rs` and cov
 Full suite:
 
 ```bash
-rch exec -- cargo bench --bench dispatch_baseline
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-dispatch \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- cargo bench --bench dispatch_baseline
 ```
 
 Single group:
 
 ```bash
-rch exec -- cargo bench --bench dispatch_baseline -- dispatch_latency
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-dispatch \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- cargo bench --bench dispatch_baseline -- dispatch_latency
 ```
 
 Single benchmark:
 
 ```bash
-rch exec -- cargo bench --bench dispatch_baseline -- "jit/scalar_add"
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-dispatch \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- cargo bench --bench dispatch_baseline -- "jit/scalar_add"
+```
+
+Cross-crate phase probes:
+
+```bash
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-cache \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- cargo bench -p fj-cache --bench cache_baseline
+
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-backend \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- cargo bench -p fj-backend-cpu --bench backend_baseline
+
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-lax \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- cargo bench -p fj-lax --bench lax_baseline
 ```
 
 ## Saving a Baseline
 
 ```bash
-./scripts/check_perf_regression.sh --save-baseline
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-baseline \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- ./scripts/check_perf_regression.sh --save-baseline
 ```
 
 This saves criterion results under the baseline name from `reliability_budgets.v1.json` (default: `main`). Custom name:
 
 ```bash
-./scripts/check_perf_regression.sh --save-baseline --baseline-name pre-optimization
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-baseline \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- ./scripts/check_perf_regression.sh --save-baseline --baseline-name pre-optimization
 ```
 
 ## Checking for Regressions
@@ -51,10 +98,15 @@ This saves criterion results under the baseline name from `reliability_budgets.v
 After making changes, compare against the saved baseline:
 
 ```bash
-./scripts/check_perf_regression.sh
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-candidate \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- ./scripts/check_perf_regression.sh
 ```
 
-The gate fails if any benchmark's p95 regresses more than 5% (configurable in `reliability_budgets.v1.json`) without a risk-note justification.
+The gate fails if any benchmark's p95 regresses more than 5% (configurable in
+`reliability_budgets.v1.json`) without a risk-note justification. Optimization
+work must keep the same loop every time: baseline, profile, change one lever,
+prove behavior unchanged with conformance/invariant tests, then re-baseline.
 
 ## Justifying an Accepted Regression
 
@@ -84,18 +136,25 @@ Each gate run emits `artifacts/ci/perf_regression_report.v1.json` conforming to 
 - `regressions[]`: benchmarks exceeding threshold, with justification status
 - `overall_status`: `pass` or `fail`
 
+`artifacts/performance/global_performance_gate.v1.json` is the phase-level
+coverage artifact. It must keep measured phases tied to existing Criterion
+baseline values and must keep unmeasured memory work listed as required next
+evidence until allocation tooling produces real numbers.
+
 ## Example Profiling Session
 
 ```bash
 # 1. Save baseline on clean main
-git checkout main
-./scripts/check_perf_regression.sh --save-baseline
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-baseline \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- ./scripts/check_perf_regression.sh --save-baseline
 
-# 2. Make optimization changes on branch
-git checkout -b optimize-cache-key
+# 2. Make one optimization change
 
 # 3. Run comparison
-./scripts/check_perf_regression.sh
+CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-candidate \
+  RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR \
+  rch exec -- ./scripts/check_perf_regression.sh
 
 # 4. Review report
 jq . artifacts/ci/perf_regression_report.v1.json

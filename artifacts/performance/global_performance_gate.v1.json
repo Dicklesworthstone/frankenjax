@@ -1,0 +1,127 @@
+{
+  "schema_version": "frankenjax.global-performance-gate.v1",
+  "generated_at_unix_ms": 1777600000000,
+  "baseline_ref": "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
+  "regression_report_ref": "artifacts/ci/perf_regression_report.v1.json",
+  "regression_threshold_percent": 5.0,
+  "runner": "rch exec -- cargo bench",
+  "policy": {
+    "profile_first": true,
+    "one_optimization_lever_per_change": true,
+    "behavior_proof_required": true,
+    "risk_note_required_for_regression": true
+  },
+  "phases": [
+    {
+      "phase_id": "trace",
+      "status": "measured",
+      "gate_kind": "p95_regression",
+      "benchmarks": [
+        {
+          "suite": "jaxpr_fingerprint",
+          "bench_id": "canonical_fingerprint/10",
+          "p50_ns": 3660.0,
+          "p95_ns": 3720.0
+        },
+        {
+          "suite": "jaxpr_validation",
+          "bench_id": "validate_well_formed/100",
+          "p50_ns": 5770.0,
+          "p95_ns": 5920.0
+        }
+      ]
+    },
+    {
+      "phase_id": "compile_dispatch",
+      "status": "measured",
+      "gate_kind": "p95_regression",
+      "benchmarks": [
+        {
+          "suite": "transform_composition",
+          "bench_id": "depth3/jit_vmap_grad",
+          "p50_ns": 273.51,
+          "p95_ns": 280.56
+        },
+        {
+          "suite": "dispatch_latency",
+          "bench_id": "jit_grad/scalar_square",
+          "p50_ns": 3100.0,
+          "p95_ns": 3170.0
+        }
+      ]
+    },
+    {
+      "phase_id": "execute",
+      "status": "measured",
+      "gate_kind": "p95_regression",
+      "benchmarks": [
+        {
+          "suite": "backend_cpu",
+          "bench_id": "backend_execute/square",
+          "p50_ns": 174.03,
+          "p95_ns": 176.82
+        },
+        {
+          "suite": "lax_eval",
+          "bench_id": "add_1k_i64_vec",
+          "p50_ns": 27690.0,
+          "p95_ns": 28030.0
+        }
+      ]
+    },
+    {
+      "phase_id": "cold_cache",
+      "status": "measured",
+      "gate_kind": "p95_regression",
+      "benchmarks": [
+        {
+          "suite": "cache_subsystem",
+          "bench_id": "cache_lookup/miss/in_memory",
+          "p50_ns": 43.86,
+          "p95_ns": 45.64
+        },
+        {
+          "suite": "cache_subsystem",
+          "bench_id": "cache_key/owned/10eqn_program",
+          "p50_ns": 332.97,
+          "p95_ns": 339.04
+        }
+      ]
+    },
+    {
+      "phase_id": "warm_cache",
+      "status": "measured",
+      "gate_kind": "p95_regression",
+      "benchmarks": [
+        {
+          "suite": "cache_subsystem",
+          "bench_id": "cache_lookup/hit/in_memory",
+          "p50_ns": 256.52,
+          "p95_ns": 262.78
+        },
+        {
+          "suite": "jaxpr_fingerprint",
+          "bench_id": "cached_fingerprint/10eq",
+          "p50_ns": 1.88,
+          "p95_ns": 1.90
+        }
+      ]
+    },
+    {
+      "phase_id": "memory",
+      "status": "not_measured",
+      "gate_kind": "coverage_gap",
+      "benchmarks": [],
+      "required_next_evidence": [
+        "heaptrack or DHAT allocation baseline for dispatch_latency",
+        "allocation baseline for cache hit/miss",
+        "resident-set-size sample for full workspace conformance run"
+      ]
+    }
+  ],
+  "commands": {
+    "save_baseline": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-baseline rch exec -- ./scripts/check_perf_regression.sh --save-baseline",
+    "compare": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-candidate rch exec -- ./scripts/check_perf_regression.sh",
+    "single_phase_probe": "CARGO_TARGET_DIR=/data/tmp/frankenjax-perf-probe rch exec -- cargo bench --bench dispatch_baseline -- dispatch_latency"
+  }
+}

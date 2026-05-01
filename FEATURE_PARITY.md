@@ -15,11 +15,11 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 
 | Bead | Scope | Current State |
 |---|---|---|
-| `frankenjax-fcxy.1` | Reconcile README, CHANGELOG, FEATURE_PARITY, and TODO status with live implementation evidence | in progress |
-| `frankenjax-fcxy.2` | Complete Phase2C packet topology and durability proof coverage | open |
+| `frankenjax-fcxy.1` | Reconcile README, CHANGELOG, FEATURE_PARITY, and TODO status with live implementation evidence | closed |
+| `frankenjax-fcxy.2` | Complete Phase2C packet topology and durability proof coverage | closed |
 | `frankenjax-fcxy.3` | Strengthen transform-composition verification beyond ledger hygiene | closed |
 | `frankenjax-fcxy.4` | Replace or explicitly gate composed-grad finite-difference fallback | closed |
-| `frankenjax-fcxy.5` | Define and enforce global performance baseline gates | open |
+| `frankenjax-fcxy.5` | Define and enforce global performance baseline gates | closed |
 
 ## Feature Family Matrix
 
@@ -48,6 +48,14 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 | CPU parallel backend | parity_green | Hybrid dependency-wave executor in `crates/fj-backend-cpu/src/executor.rs`; wide DAGs under 128 equations keep scan scheduling, longer pure segments use dependency-count consumer wakeups keyed by local producer index; ready-wave parallelism now stays tensor/cost aware by keeping scalar waves below 256 equations sequential and only parallelizing tensor waves when aggregate or per-input element counts justify Rayon; tests cover out-of-order dependencies, control-flow barrier ordering, missing segment inputs, long-chain dependency-count execution, long branched fan-in execution, long-segment missing-input errors, and tensor ready-wave cost gates; ordering/barrier isomorphism preserved because only pure single-output segments are dependency-scheduled and ready waves still commit in equation-index order; `backend_execute/dependency_chain_512` improved from 92.011us to 78.885us (-13.9%) and measured 74.075us in the latest guardrail; `backend_scheduler_cutover/dependency_chain/255` improved from 138.50us scan path to 38.374us (-72.4%) after lowering cutover to 128; branched fan-in benchmarks improved from 2.8725ms to 21.549us for 16x8, 3.8151ms to 41.504us for 32x8, and 2.7627ms to 43.671us for 64x4; new 128x2 fan-in guardrail measured 53.646us; `wide_parallel_64` improved from 1.5485ms to 13.703us; tensor ready-wave tuning improved `16x4x4` from 1.7003ms to 35.357us, `16x4x64` from 1.8245ms to 295.62us, and `32x4x64` from 2.4386ms to 531.26us while preserving large-tensor parallel speed (`16x4x1024` 2.4745ms -> 2.4714ms, `16x4x4096` 5.2948ms -> 5.2378ms) | Expand tensor-heavy benchmarks to dot/FFT/reduction primitive mixes |
 
 ## Performance Evidence Updates
+
+### 2026-05-01: Global performance gate (`frankenjax-fcxy.5`)
+
+- Scope: phase-level performance evidence for trace, compile/dispatch, execute, cold-cache, warm-cache, and memory coverage.
+- Baseline: `artifacts/performance/benchmark_baselines_v2_2026-03-12.json` records 82 Criterion benchmarks across dispatch, LAX evaluation, cache, API, backend CPU, FFI, partial evaluation, DCE, and staging suites.
+- Gate artifact: `artifacts/performance/global_performance_gate.v1.json` maps required phases to existing measured benchmarks and preserves `memory` as `not_measured` until heap/RSS evidence exists.
+- Policy: p95 regressions above 5% require a risk note; optimization work must baseline, profile, change one lever, prove behavior unchanged, and re-baseline.
+- Validation: `crates/fj-conformance/tests/artifact_schemas.rs` includes a coverage test that rejects missing phases, missing benchmark references for measured phases, synthetic memory numbers, and missing policy flags.
 
 ### 2026-04-27: `frankenjax-3oq` FFT radix-2 fast path
 

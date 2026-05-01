@@ -624,10 +624,22 @@ fn execute_grad_finite_diff(
     plus_args[0] = Value::scalar_f64(input_value + epsilon);
     minus_args[0] = Value::scalar_f64(input_value - epsilon);
 
-    let plus_out =
-        execute_with_transforms(root_jaxpr, tail, &plus_args, backend, device, compile_options)?;
-    let minus_out =
-        execute_with_transforms(root_jaxpr, tail, &minus_args, backend, device, compile_options)?;
+    let plus_out = execute_with_transforms(
+        root_jaxpr,
+        tail,
+        &plus_args,
+        backend,
+        device,
+        compile_options,
+    )?;
+    let minus_out = execute_with_transforms(
+        root_jaxpr,
+        tail,
+        &minus_args,
+        backend,
+        device,
+        compile_options,
+    )?;
 
     let plus_value = plus_out
         .first()

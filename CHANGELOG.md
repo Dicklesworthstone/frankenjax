@@ -8,7 +8,7 @@ FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. T
 
 ## [Unreleased] — HEAD
 
-Latest commit: [`0a7ec1b`](https://github.com/Dicklesworthstone/frankenjax/commit/0a7ec1b) (2026-05-01)
+Latest audited commit before this update: [`4f87b84`](https://github.com/Dicklesworthstone/frankenjax/commit/4f87b84) (2026-05-01)
 
 Current state: 110 primitive operations, VJP + JVP coverage for the declared V1 primitive set, 848 JAX oracle fixture cases, 87 e-graph rewrite rules, 15 workspace crates, 162,733 Rust source lines under `crates/`, 4,416 static Rust test/proptest markers, 115 conformance test files, and a passing `cargo test --workspace` run via RCH on 2026-05-01.
 
@@ -16,7 +16,9 @@ Current state: 110 primitive operations, VJP + JVP coverage for the declared V1 
 
 - Reconciled public status docs with live evidence: 848 oracle fixtures, 4,416 static Rust test/proptest markers, 115 conformance test files, and the current HEAD commit.
 - Downgraded over-broad "all green" language where the project still has tracked parity/evidence gaps: advanced transform/control-flow compositions, semantic TTL verification, all-long-lived-artifact durability coverage, and global performance gates.
-- Created follow-up beads for remaining work: `frankenjax-fcxy.1` through `frankenjax-fcxy.5`.
+- Closed the reality-check follow-up slices `frankenjax-fcxy.1` through `frankenjax-fcxy.5`: docs/status reconciliation, Phase2C packet topology, TTL evidence hardening, gateable finite-difference grad fallback, and global performance gates.
+- Added `artifacts/performance/global_performance_gate.v1.json` as the phase-level performance gate for trace, compile/dispatch, execute, cold-cache, warm-cache, and the explicit memory evidence gap.
+- Validated the follow-up with `cargo fmt --check`, `cargo check --workspace --all-targets`, `cargo clippy --workspace --all-targets -- -D warnings`, targeted artifact-schema tests, and `cargo test --workspace` via RCH.
 
 ---
 

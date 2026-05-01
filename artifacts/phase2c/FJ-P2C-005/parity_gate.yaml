@@ -1,0 +1,34 @@
+schema_version: frankenjax.parity-gate.v1
+packet_id: FJ-P2C-005
+generated_at_unix_ms: 1777600000000
+strict_mode:
+  status: pass
+  checked_cases: 57
+  mismatches: 0
+  report_path: artifacts/phase2c/FJ-P2C-005/parity_report.json
+hardened_mode:
+  status: pass
+  checked_cases: 6
+  allowlisted_drift_count: 0
+  report_path: artifacts/phase2c/FJ-P2C-005/parity_report.json
+gates:
+  - gate_id: G1-artifact-topology
+    description: Required Phase2C packet files are present for this packet.
+    status: pass
+    evidence_refs:
+      - artifacts/phase2c/FJ-P2C-005/legacy_anchor_map.v1.json
+      - artifacts/phase2c/FJ-P2C-005/contract_table.v1.json
+      - artifacts/phase2c/FJ-P2C-005/fixture_manifest.json
+      - artifacts/phase2c/FJ-P2C-005/risk_note.md
+  - gate_id: G2-durability
+    description: Packet parity report has a RaptorQ sidecar and decode proof.
+    status: pass
+    evidence_refs:
+      - artifacts/phase2c/FJ-P2C-005/parity_report.raptorq.json
+      - artifacts/phase2c/FJ-P2C-005/parity_report.decode_proof.json
+  - gate_id: G3-tracked-gaps
+    description: Known residual risks are linked to open beads rather than hidden behind all-green claims.
+    status: pass
+    evidence_refs:
+      - artifacts/phase2c/FJ-P2C-005/risk_note.md
+overall_status: pass

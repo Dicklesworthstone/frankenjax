@@ -1,0 +1,14 @@
+{
+  "proof_id": "decode-proof-deb591400d89385c",
+  "sidecar_path": "artifacts/phase2c/FJ-P2C-006/parity_report.raptorq.json",
+  "artifact_path": "artifacts/phase2c/FJ-P2C-006/parity_report.json",
+  "expected_sha256_hex": "b27ceab4cc83b659607b28a445b76c54aebd01460cc6e4ab1ac060f03aa9948d",
+  "decoded_sha256_hex": "b27ceab4cc83b659607b28a445b76c54aebd01460cc6e4ab1ac060f03aa9948d",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0"
+  ],
+  "attempted_symbol_count": 5,
+  "recovered": true,
+  "details": "drop-kind=source count=1; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1777613359557
+}

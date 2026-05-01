@@ -104,26 +104,26 @@ Tracker parent: `frankenjax-fcxy`
 - [x] Run `cargo test -p fj-dispatch grad`.
 
 ### RC8. Global performance gates (`frankenjax-fcxy.5`)
-- [ ] Claim `frankenjax-fcxy.5` after correctness gates are not moving.
-- [ ] Inventory existing Criterion benchmarks and performance artifacts.
-- [ ] Define schema for trace, compile/dispatch, execute, cold-cache, warm-cache, and memory fields.
-- [ ] Capture or normalize current baselines without inventing unmeasured speed claims.
-- [ ] Add parse/coverage tests for baseline artifacts.
-- [ ] Document exact `rch`/Criterion commands for re-baselining.
-- [ ] Add pass/fail tolerance policy that distinguishes noise from regression.
-- [ ] Record an isomorphism proof template for any actual optimization lever.
+- [x] Claim `frankenjax-fcxy.5` after correctness gates are not moving.
+- [x] Inventory existing Criterion benchmarks and performance artifacts.
+- [x] Define schema for trace, compile/dispatch, execute, cold-cache, warm-cache, and memory fields.
+- [x] Capture or normalize current baselines without inventing unmeasured speed claims.
+- [x] Add parse/coverage tests for baseline artifacts.
+- [x] Document exact `rch`/Criterion commands for re-baselining.
+- [x] Add pass/fail tolerance policy that distinguishes noise from regression.
+- [x] Record an isomorphism proof template for any actual optimization lever.
 
 ### RC9. Verification and landing for this follow-up
-- [ ] Run `cargo fmt --check`.
-- [ ] Run `cargo check --workspace --all-targets` through `rch`.
-- [ ] Run `cargo clippy --workspace --all-targets -- -D warnings` through `rch`.
-- [ ] Run targeted tests for touched crates.
-- [ ] Run `cargo test --workspace` through `rch`.
-- [ ] Run `ubs` on changed source/docs files if applicable.
-- [ ] Close completed beads.
-- [ ] Leave unfinished beads open with exact next steps.
-- [ ] Run `br sync --flush-only`.
-- [ ] Do not stage or commit unrelated dirty artifact/log files.
+- [x] Run `cargo fmt --check`.
+- [x] Run `cargo check --workspace --all-targets` through `rch`.
+- [x] Run `cargo clippy --workspace --all-targets -- -D warnings` through `rch`.
+- [x] Run targeted tests for touched crates.
+- [x] Run `cargo test --workspace` through `rch`.
+- [!] Run `ubs` on changed source/docs files if applicable; full changed-file scan exits 1 on test-harness `expect`/`panic`/`assert` inventory in `artifact_schemas.rs`, while the changed production file `crates/fj-dispatch/src/lib.rs` exits 0 with no critical findings.
+- [x] Close completed beads.
+- [x] Leave unfinished beads open with exact next steps; no `frankenjax-fcxy` child beads remain open.
+- [!] Run `br sync --flush-only`; attempted after `br sync --import-only` and `br sync --rebuild`, but `br` still refuses export because its stale guard claims `frankenjax-h8l2` is missing even though JSONL/no-DB and `br list --status closed` both show it. Current `.beads/issues.jsonl` contains the closed `frankenjax-fcxy` and `frankenjax-fcxy.5` records.
+- [x] Do not stage or commit unrelated dirty artifact/log files.
 
 ## Stream A: Legacy Fixture Capture + Conformance Wiring
 

@@ -1,0 +1,49 @@
+{
+  "schema_version": "frankenjax.fixture-manifest.v1",
+  "packet_id": "FJ-P2C-002",
+  "generated_at_unix_ms": 1777600000000,
+  "fixtures": [
+    {
+      "fixture_id": "fj-p2c-002-01",
+      "family": "jit",
+      "path": "artifacts/e2e/e2e_p2c002_user_api_jit_basic.e2e.json",
+      "oracle_source": "jax/_src/api.py; jax/tests/api_test.py; jax/tests/extend_test.py",
+      "mode": "both",
+      "checksum_sha256": "b25a398f185efe32e72338fb818e94f7d1c845910a512c460a877ed1831e4bdd",
+      "expected_outcome": "pass",
+      "tags": [
+        "phase2c",
+        "fj-p2c-002",
+        "reality-check-2026-05-01"
+      ]
+    },
+    {
+      "fixture_id": "fj-p2c-002-02",
+      "family": "grad",
+      "path": "artifacts/e2e/e2e_p2c002_user_api_grad_polynomial.e2e.json",
+      "oracle_source": "jax/_src/api.py; jax/tests/api_test.py; jax/tests/extend_test.py",
+      "mode": "both",
+      "checksum_sha256": "e39ea2011fc4cb0b079528917d35a922ff5182fba235d1ed8317f20f84b41b15",
+      "expected_outcome": "pass",
+      "tags": [
+        "phase2c",
+        "fj-p2c-002",
+        "reality-check-2026-05-01"
+      ]
+    },
+    {
+      "fixture_id": "fj-p2c-002-03",
+      "family": "vmap",
+      "path": "artifacts/e2e/e2e_p2c002_user_api_vmap_batch.e2e.json",
+      "oracle_source": "jax/_src/api.py; jax/tests/api_test.py; jax/tests/extend_test.py",
+      "mode": "both",
+      "checksum_sha256": "e891190c0f050396737767a6775089e2acf8cb40c9e0a86f1ef8c3e798fd67dc",
+      "expected_outcome": "pass",
+      "tags": [
+        "phase2c",
+        "fj-p2c-002",
+        "reality-check-2026-05-01"
+      ]
+    }
+  ]
+}

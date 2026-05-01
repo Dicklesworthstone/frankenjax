@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "artifacts/phase2c/FJ-P2C-004/parity_report.raptorq.json",
+  "artifact_path": "artifacts/phase2c/FJ-P2C-004/parity_report.json",
+  "expected_sha256_hex": "683e23be3a7488266bdf28d3a43d3ab3309f797aad8a544f9eba193e5386d34c",
+  "decoded_sha256_hex": "683e23be3a7488266bdf28d3a43d3ab3309f797aad8a544f9eba193e5386d34c",
+  "decoded_matches_expected": true,
+  "total_symbols": 6,
+  "source_symbols": 5,
+  "repair_symbols": 1,
+  "generated_at_unix_ms": 1777613359542
+}

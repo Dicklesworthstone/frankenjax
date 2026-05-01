@@ -1,0 +1,35 @@
+{
+  "schema_version": "frankenjax.fixture-manifest.v1",
+  "packet_id": "FJ-P2C-007",
+  "generated_at_unix_ms": 1777600000000,
+  "fixtures": [
+    {
+      "fixture_id": "fj-p2c-007-01",
+      "family": "runtime",
+      "path": "artifacts/e2e/e2e_ffi_basic_call.e2e.json",
+      "oracle_source": "jax/_src/ffi.py; ffi/lowering targeted tests",
+      "mode": "both",
+      "checksum_sha256": "78f2a496a91dd7d622a07dd7be467158cebe2f18a00184ab1ddef7f43e2f85d2",
+      "expected_outcome": "pass",
+      "tags": [
+        "phase2c",
+        "fj-p2c-007",
+        "reality-check-2026-05-01"
+      ]
+    },
+    {
+      "fixture_id": "fj-p2c-007-02",
+      "family": "runtime",
+      "path": "artifacts/e2e/e2e_ffi_adversarial_clean_errors.e2e.json",
+      "oracle_source": "jax/_src/ffi.py; ffi/lowering targeted tests",
+      "mode": "both",
+      "checksum_sha256": "03c33198c5469675b59e7e97052d07a385a8b1e3ed8e54ba27b5f9923a1358a0",
+      "expected_outcome": "pass",
+      "tags": [
+        "phase2c",
+        "fj-p2c-007",
+        "reality-check-2026-05-01"
+      ]
+    }
+  ]
+}

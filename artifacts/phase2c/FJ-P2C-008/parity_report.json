@@ -1,0 +1,35 @@
+{
+  "schema_version": "frankenjax.phase2c-parity-report.v1",
+  "packet_id": "FJ-P2C-008",
+  "subsystem": "LAX primitive first wave",
+  "generated_at_unix_ms": 1777600000000,
+  "status": "pass_with_tracked_residual_risks",
+  "strict_mode": {
+    "status": "pass",
+    "checked_cases": 150,
+    "mismatches": 0
+  },
+  "hardened_mode": {
+    "status": "pass",
+    "checked_cases": 10,
+    "allowlisted_drift_count": 0
+  },
+  "evidence_refs": [
+    "artifacts/phase2c/FJ-P2C-008/legacy_anchor_map.v1.json",
+    "artifacts/phase2c/FJ-P2C-008/contract_table.v1.json",
+    "artifacts/phase2c/FJ-P2C-008/fixture_manifest.json",
+    "artifacts/phase2c/FJ-P2C-008/parity_gate.yaml",
+    "artifacts/phase2c/FJ-P2C-008/risk_note.md",
+    "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
+    "crates/fj-conformance/fixtures/linalg_fft_oracle.v1.json",
+    "crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json"
+  ],
+  "known_residual_risks": [
+    {
+      "risk_id": "risk.p2c008.advanced-lax-surface",
+      "category": "compatibility",
+      "description": "The V1 LAX surface is broad but not a complete replacement for every upstream lax/numpy/scipy behavior.",
+      "tracking_bead": "frankenjax-fcxy.2"
+    }
+  ]
+}

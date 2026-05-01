@@ -1,0 +1,34 @@
+{
+  "schema_version": "frankenjax.phase2c-parity-report.v1",
+  "packet_id": "FJ-P2C-003",
+  "subsystem": "Partial evaluation and staging",
+  "generated_at_unix_ms": 1777600000000,
+  "status": "pass_with_tracked_residual_risks",
+  "strict_mode": {
+    "status": "pass",
+    "checked_cases": 94,
+    "mismatches": 0
+  },
+  "hardened_mode": {
+    "status": "pass",
+    "checked_cases": 6,
+    "allowlisted_drift_count": 0
+  },
+  "evidence_refs": [
+    "artifacts/phase2c/FJ-P2C-003/legacy_anchor_map.v1.json",
+    "artifacts/phase2c/FJ-P2C-003/contract_table.v1.json",
+    "artifacts/phase2c/FJ-P2C-003/fixture_manifest.json",
+    "artifacts/phase2c/FJ-P2C-003/parity_gate.yaml",
+    "artifacts/phase2c/FJ-P2C-003/risk_note.md",
+    "artifacts/e2e/e2e_p2c003_staging_roundtrip.e2e.json",
+    "artifacts/e2e/e2e_p2c003_large_graph_staging.e2e.json"
+  ],
+  "known_residual_risks": [
+    {
+      "risk_id": "risk.p2c003.residual-graph-drift",
+      "category": "correctness",
+      "description": "Residual graph behavior needs broader upstream oracle capture for high-rank and nested transform programs.",
+      "tracking_bead": "frankenjax-fcxy.2"
+    }
+  ]
+}

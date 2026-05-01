@@ -1,0 +1,34 @@
+{
+  "schema_version": "frankenjax.phase2c-parity-report.v1",
+  "packet_id": "FJ-P2C-007",
+  "subsystem": "FFI call interface",
+  "generated_at_unix_ms": 1777600000000,
+  "status": "pass_with_tracked_residual_risks",
+  "strict_mode": {
+    "status": "pass",
+    "checked_cases": 70,
+    "mismatches": 0
+  },
+  "hardened_mode": {
+    "status": "pass",
+    "checked_cases": 6,
+    "allowlisted_drift_count": 0
+  },
+  "evidence_refs": [
+    "artifacts/phase2c/FJ-P2C-007/legacy_anchor_map.v1.json",
+    "artifacts/phase2c/FJ-P2C-007/contract_table.v1.json",
+    "artifacts/phase2c/FJ-P2C-007/fixture_manifest.json",
+    "artifacts/phase2c/FJ-P2C-007/parity_gate.yaml",
+    "artifacts/phase2c/FJ-P2C-007/risk_note.md",
+    "artifacts/e2e/e2e_ffi_basic_call.e2e.json",
+    "artifacts/e2e/e2e_ffi_adversarial_clean_errors.e2e.json"
+  ],
+  "known_residual_risks": [
+    {
+      "risk_id": "risk.p2c007.ffi-boundary",
+      "category": "security",
+      "description": "FFI remains the highest-risk boundary and requires adversarial contract gates for every new exported call.",
+      "tracking_bead": "frankenjax-fcxy.2"
+    }
+  ]
+}
