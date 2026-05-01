@@ -197,6 +197,14 @@ fn bench_complex_ctor_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_complex_conj_1k(c: &mut Criterion) {
+    let input = complex_vector(1000);
+    let p = no_params();
+    c.bench_function("eval/conj_1k_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Conj, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_fft_256(c: &mut Criterion) {
     let input = complex_vector(256);
     let p = no_params();
@@ -421,6 +429,7 @@ criterion_group!(
     bench_select_1k,
     bench_complex_mul_1k,
     bench_complex_ctor_1k,
+    bench_complex_conj_1k,
     bench_fft_256,
     bench_ifft_256,
     bench_rfft_256,

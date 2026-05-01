@@ -827,15 +827,12 @@ pub(crate) fn eval_conj(primitive: Primitive, inputs: &[Value]) -> Result<Value,
     let conj_literal = |lit: Literal| -> Result<Literal, EvalError> {
         match lit {
             Literal::Complex64Bits(re_bits, im_bits) => {
-                let re = f32::from_bits(re_bits);
-                let im = -f32::from_bits(im_bits);
-                Ok(Literal::from_complex64(re, im))
+                Ok(Literal::Complex64Bits(re_bits, im_bits ^ 0x8000_0000))
             }
-            Literal::Complex128Bits(re_bits, im_bits) => {
-                let re = f64::from_bits(re_bits);
-                let im = -f64::from_bits(im_bits);
-                Ok(Literal::from_complex128(re, im))
-            }
+            Literal::Complex128Bits(re_bits, im_bits) => Ok(Literal::Complex128Bits(
+                re_bits,
+                im_bits ^ 0x8000_0000_0000_0000,
+            )),
             _ => Err(EvalError::TypeMismatch {
                 primitive,
                 detail: "conj expects complex-valued input",
@@ -846,12 +843,10 @@ pub(crate) fn eval_conj(primitive: Primitive, inputs: &[Value]) -> Result<Value,
     match &inputs[0] {
         Value::Scalar(lit) => Ok(Value::Scalar(conj_literal(*lit)?)),
         Value::Tensor(tensor) => {
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(conj_literal)
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for lit in tensor.elements.iter().copied() {
+                elements.push(conj_literal(lit)?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 tensor.dtype,
                 tensor.shape.clone(),
