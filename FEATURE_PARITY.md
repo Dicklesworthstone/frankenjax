@@ -17,7 +17,7 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 |---|---|---|
 | `frankenjax-fcxy.1` | Reconcile README, CHANGELOG, FEATURE_PARITY, and TODO status with live implementation evidence | in progress |
 | `frankenjax-fcxy.2` | Complete Phase2C packet topology and durability proof coverage | open |
-| `frankenjax-fcxy.3` | Strengthen transform-composition verification beyond ledger hygiene | open |
+| `frankenjax-fcxy.3` | Strengthen transform-composition verification beyond ledger hygiene | closed |
 | `frankenjax-fcxy.4` | Replace or explicitly gate composed-grad finite-difference fallback | open |
 | `frankenjax-fcxy.5` | Define and enforce global performance baseline gates | open |
 
@@ -25,7 +25,7 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 
 | Feature Family | Status | Current Evidence | Next Required Artifact |
 |---|---|---|---|
-| Canonical IR + TTL model | in_progress | Canonical IR/value model in `crates/fj-core/src/lib.rs`; transform evidence flow in `crates/fj-dispatch/src/lib.rs`; E2E traces in `artifacts/e2e/`; current composition verifier checks evidence count, non-empty evidence, and deterministic stack signature | Strengthen semantic evidence binding under `frankenjax-fcxy.3` |
+| Canonical IR + TTL model | parity_green | Canonical IR/value model in `crates/fj-core/src/lib.rs`; transform evidence flow in `crates/fj-dispatch/src/lib.rs`; E2E traces in `artifacts/e2e/`; current composition verifier checks evidence count, non-empty evidence, evidence-to-transform binding, duplicate evidence IDs, and evidence-bound stack signatures | Expand structural oracle comparisons to larger program families |
 | Primitive semantics (110 ops) | parity_green | `Primitive` enum (110 ops) in `crates/fj-core/src/lib.rs`; evaluator + extensive tests in `crates/fj-lax/src/lib.rs`; all workspace tests green | Continue expanding oracle-backed primitive fixture families |
 | Interpreter path over canonical IR | parity_green | Interpreter/eval coverage in `crates/fj-interpreters/src/lib.rs` and staging tests; multi-output support via sub_jaxprs | Add broader higher-rank oracle parity fixtures |
 | Dispatch path + transform wrappers (`jit`/`grad`/`vmap`) | in_progress | Dispatch + composition tests in `crates/fj-dispatch/src/lib.rs`; e-graph optimization wired via `egraph_optimize` compile option; BatchTrace fast path for default `vmap`; composed `grad` with tail transforms still has a finite-difference fallback | Replace or explicitly gate the finite-difference fallback under `frankenjax-fcxy.4` |

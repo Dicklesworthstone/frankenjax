@@ -66,30 +66,30 @@ Tracker parent: `frankenjax-fcxy`
 - [x] List follow-up beads that now own remaining gaps.
 
 ### RC5. Phase2C topology completion (`frankenjax-fcxy.2`)
-- [ ] Claim `frankenjax-fcxy.2` after `frankenjax-fcxy.1` lands.
-- [ ] Build packet inventory for `FJ-P2C-001` through `FJ-P2C-008`.
-- [ ] Compare each packet against required topology in `PHASE2C_EXTRACTION_PACKET.md`.
-- [ ] Add or update missing `fixture_manifest` artifacts.
-- [ ] Add or update missing `parity_gate` artifacts.
-- [ ] Add or update missing `parity_report` artifacts.
-- [ ] Add or update missing `risk_note` artifacts.
-- [ ] Add or update sidecar/proof manifest references.
-- [ ] Add a topology coverage test or machine-readable checker if the existing harness has a natural home.
-- [ ] Run targeted artifact/schema tests.
+- [x] Claim `frankenjax-fcxy.2` after `frankenjax-fcxy.1` lands.
+- [x] Build packet inventory for `FJ-P2C-001` through `FJ-P2C-008`.
+- [x] Compare each packet against required topology in `PHASE2C_EXTRACTION_PACKET.md`.
+- [x] Add or update missing `fixture_manifest` artifacts.
+- [x] Add or update missing `parity_gate` artifacts.
+- [x] Add or update missing `parity_report` artifacts.
+- [x] Add or update missing `risk_note` artifacts.
+- [x] Add or update sidecar/proof manifest references.
+- [x] Add a topology coverage test or machine-readable checker if the existing harness has a natural home.
+- [x] Run targeted artifact/schema tests.
 
 ### RC6. TTL verification hardening (`frankenjax-fcxy.3`)
-- [ ] Claim `frankenjax-fcxy.3` after Phase2C docs/artifacts are stable or if code work becomes the narrower next slice.
-- [ ] Inspect `TraceTransformLedger` construction APIs.
-- [ ] Identify what evidence strings currently encode for `jit`, `grad`, `vmap`, nested transforms, and empty stacks.
-- [ ] Define a stronger valid-evidence contract that preserves existing valid ledgers.
-- [ ] Reject evidence entries that do not bind to the expected transform.
-- [ ] Reject duplicate/stale evidence where the stack signature does not match.
-- [ ] Keep composition proof hashing deterministic.
-- [ ] Add unit tests for valid single transforms.
-- [ ] Add unit tests for valid nested transforms.
-- [ ] Add rejection tests for mismatched transform evidence.
-- [ ] Add rejection tests for stale stack signatures.
-- [ ] Run `cargo test -p fj-core transform_composition`.
+- [x] Claim `frankenjax-fcxy.3` after Phase2C docs/artifacts are stable or if code work becomes the narrower next slice.
+- [x] Inspect `TraceTransformLedger` construction APIs.
+- [x] Identify what evidence strings currently encode for `jit`, `grad`, `vmap`, nested transforms, and empty stacks.
+- [x] Define a stronger valid-evidence contract that preserves existing valid ledgers.
+- [x] Reject evidence entries that do not bind to the expected transform.
+- [x] Reject duplicate/stale evidence where the stack signature does not match.
+- [x] Keep composition proof hashing deterministic.
+- [x] Add unit tests for valid single transforms.
+- [x] Add unit tests for valid nested transforms.
+- [x] Add rejection tests for mismatched transform evidence.
+- [x] Add rejection tests for stale stack signatures.
+- [x] Run `cargo test -p fj-core transform_composition`.
 
 ### RC7. Composed-grad fallback (`frankenjax-fcxy.4`)
 - [ ] Claim `frankenjax-fcxy.4` after TTL hardening or if dispatch proves independently tractable.
