@@ -213,6 +213,14 @@ fn bench_complex_neg_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_complex_expm1_1k(c: &mut Criterion) {
+    let input = complex_vector(1000);
+    let p = no_params();
+    c.bench_function("eval/expm1_1k_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Expm1, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_complex_abs_1k(c: &mut Criterion) {
     let input = complex_vector(1000);
     let p = no_params();
@@ -463,6 +471,7 @@ criterion_group!(
     bench_complex_ctor_1k,
     bench_complex_conj_1k,
     bench_complex_neg_1k,
+    bench_complex_expm1_1k,
     bench_complex_abs_1k,
     bench_complex_real_1k,
     bench_complex_imag_1k,

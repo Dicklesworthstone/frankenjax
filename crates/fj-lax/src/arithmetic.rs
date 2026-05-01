@@ -1170,20 +1170,17 @@ pub(crate) fn eval_unary_elementwise(
         Value::Tensor(tensor) => {
             if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
                 return {
-                    let elements = tensor
-                        .elements
-                        .iter()
-                        .copied()
-                        .map(|literal| {
-                            let input = literal_to_complex_parts(primitive, literal)?;
-                            let (out_re, out_im) = complex_unary_elementwise(primitive, input)
-                                .ok_or(EvalError::TypeMismatch {
-                                    primitive,
-                                    detail: complex_unary_unsupported_detail(primitive),
-                                })?;
-                            Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
-                        })
-                        .collect::<Result<Vec<_>, EvalError>>()?;
+                    let mut elements = Vec::with_capacity(tensor.elements.len());
+                    for literal in tensor.elements.iter().copied() {
+                        let input = literal_to_complex_parts(primitive, literal)?;
+                        let (out_re, out_im) = complex_unary_elementwise(primitive, input).ok_or(
+                            EvalError::TypeMismatch {
+                                primitive,
+                                detail: complex_unary_unsupported_detail(primitive),
+                            },
+                        )?;
+                        elements.push(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im));
+                    }
 
                     Ok(Value::Tensor(TensorValue::new(
                         tensor.dtype,
