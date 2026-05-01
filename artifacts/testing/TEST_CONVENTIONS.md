@@ -82,6 +82,20 @@ strict and hardened behavior, exact key equality/inequality expectations,
 corrupt-read bypass, failed-write miss behavior, artifact hashes, and replay
 commands.
 
+## Architecture Boundary Gate
+
+Workspace crate-boundary decisions are checked by:
+
+```bash
+./scripts/run_architecture_boundary_gate.sh --enforce
+```
+
+The command emits a machine-readable boundary report, Markdown preview, and
+shared-schema E2E forensic log. Required checks include current cargo metadata,
+workspace crate owners, normal dependency edges, acyclic layering, no production
+dependency on `fj-conformance`, rejected alternatives, guardrails, follow-up
+bead links, and explicit revisit conditions for deferred extractions.
+
 ## Property Test Configuration
 
 Use `fj_test_utils::property_test_case_count()` for test-case volume:

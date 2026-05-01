@@ -157,6 +157,19 @@ CPU Backend (fj-backend-cpu: dependency-wave parallel executor)
 Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 ```
 
+Architecture boundary decisions are now checked by:
+
+```bash
+./scripts/run_architecture_boundary_gate.sh --enforce
+```
+
+The gate emits `artifacts/conformance/architecture_boundary_decision.v1.json`,
+`artifacts/conformance/architecture_boundary_decision.v1.md`, and
+`artifacts/e2e/e2e_architecture_boundary_gate.e2e.json`. Current V1 decision:
+keep `fj-api`, `fj-backend-cpu`, `fj-ffi`, and `fj-conformance` as explicit
+boundaries; defer dedicated `fj-transforms` and `fj-lowering` crates until
+advanced transform/control-flow parity and public API example replay are green.
+
 ## Workspace Crates
 
 | Crate | Purpose | Tests |

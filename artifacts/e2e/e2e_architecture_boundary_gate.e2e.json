@@ -1,0 +1,188 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.12",
+  "scenario_id": "e2e_architecture_boundary_gate",
+  "test_id": "fj_architecture_boundary_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-cstq12/debug/fj_architecture_boundary_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--report",
+    "/data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_architecture_boundary_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-cstq12",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-cstq12",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777623983178
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "user_api_facade",
+    "transform_stack",
+    "lowering_execution",
+    "cpu_backend",
+    "ffi_boundary",
+    "conformance_harness"
+  ],
+  "oracle_ids": [
+    "EXISTING_JAX_STRUCTURE.md",
+    "PROPOSED_ARCHITECTURE.md",
+    "cargo metadata --no-deps"
+  ],
+  "transform_stack": [
+    "architecture",
+    "facade",
+    "lowering",
+    "runtime_backend"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "crate_count": 15,
+    "decision_ids": [
+      "user_api_facade",
+      "transform_stack",
+      "lowering_execution",
+      "cpu_backend",
+      "ffi_boundary",
+      "conformance_harness"
+    ],
+    "normal_edge_count": 34,
+    "workspace_root": "/data/projects/frankenjax"
+  },
+  "expected": {
+    "dependency_cycles": 0,
+    "gate_status": "pass",
+    "layer_violations": 0,
+    "missing_decision_fields": 0
+  },
+  "actual": {
+    "crate_count": 15,
+    "decision_count": 6,
+    "decisions": [
+      {
+        "boundary_id": "user_api_facade",
+        "decision": "keep_current_boundary",
+        "owners": [
+          "fj-api",
+          "fj-trace"
+        ],
+        "status": "accepted"
+      },
+      {
+        "boundary_id": "transform_stack",
+        "decision": "defer_extraction",
+        "owners": [
+          "fj-core",
+          "fj-dispatch",
+          "fj-ad",
+          "fj-trace",
+          "fj-api"
+        ],
+        "status": "accepted"
+      },
+      {
+        "boundary_id": "lowering_execution",
+        "decision": "defer_extraction",
+        "owners": [
+          "fj-interpreters",
+          "fj-dispatch",
+          "fj-backend-cpu",
+          "fj-runtime"
+        ],
+        "status": "accepted"
+      },
+      {
+        "boundary_id": "cpu_backend",
+        "decision": "keep_current_boundary",
+        "owners": [
+          "fj-backend-cpu",
+          "fj-runtime"
+        ],
+        "status": "accepted"
+      },
+      {
+        "boundary_id": "ffi_boundary",
+        "decision": "keep_current_boundary",
+        "owners": [
+          "fj-ffi"
+        ],
+        "status": "accepted"
+      },
+      {
+        "boundary_id": "conformance_harness",
+        "decision": "keep_current_boundary",
+        "owners": [
+          "fj-conformance"
+        ],
+        "status": "accepted"
+      }
+    ],
+    "issue_count": 0,
+    "normal_edge_count": 34,
+    "status": "pass"
+  },
+  "tolerance": {
+    "policy_id": "exact_architecture_boundary_gate",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "workspace graph, boundary owners, rejected alternatives, and guardrails are exact"
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "architecture_boundary_report",
+      "path": "artifacts/conformance/architecture_boundary_decision.v1.json",
+      "sha256": "072c14d41d1b478d0b07be446f216b191d11b10621d21076a121e1679c139252",
+      "required": true
+    },
+    {
+      "kind": "architecture_boundary_markdown",
+      "path": "artifacts/conformance/architecture_boundary_decision.v1.md",
+      "sha256": "bd66e4b0f650dfedf69cf39f2b63f69080b7d13adf186d0c40e6163867276755",
+      "required": true
+    }
+  ],
+  "replay_command": "/data/tmp/cargo-target-frankenjax-cstq12/debug/fj_architecture_boundary_gate --root /data/projects/frankenjax --report /data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_architecture_boundary_gate.e2e.json --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.12",
+      "title": "Decide transform/lowering/API facade crate boundary extraction"
+    }
+  }
+}

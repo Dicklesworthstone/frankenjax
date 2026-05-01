@@ -127,39 +127,48 @@ Deferred but tracked:
 | `fj-ad` | autodiff path (`grad_first`, tape/backward logic) | `fj-core`, `fj-lax` | gradient semantics; consumes IR/value model |
 | `fj-cache` | deterministic cache key derivation | `fj-core` | strict/hardened key gate for unknown metadata |
 | `fj-ledger` | evidence/decision ledger + calibration logic | `fj-core` | policy/evidence state, no dispatch execution |
-| `fj-dispatch` | orchestration (`dispatch`) and transform wrapper execution | `fj-ad`, `fj-cache`, `fj-core`, `fj-interpreters`, `fj-ledger` | integration choke point for transform order + cache behavior |
+| `fj-dispatch` | orchestration (`dispatch`) and transform wrapper execution | `fj-ad`, `fj-backend-cpu`, `fj-cache`, `fj-core`, `fj-egraph`, `fj-interpreters`, `fj-lax`, `fj-ledger`, `fj-runtime`, `fj-trace` | integration choke point for transform order, cache behavior, backend routing, and optimization toggles |
 | `fj-runtime` | admission policy model + optional bridges | `fj-core`, `fj-ledger` | operational runtime decision boundary |
-| `fj-egraph` | e-graph optimizer + IR round trip | `fj-core` | optimization sandbox, not yet dispatch-integrated |
-| `fj-conformance` | fixture/parity harness + durability pipeline | `fj-core`, `fj-dispatch` | oracle comparison and durability evidence generation |
+| `fj-egraph` | e-graph optimizer + IR round trip | `fj-core` | optimization sandbox integrated through explicit dispatch compile options |
+| `fj-backend-cpu` | dependency-wave CPU backend | `fj-core`, `fj-interpreters`, `fj-lax`, `fj-runtime` | always-available CPU execution backend, separate from facade/API surface |
+| `fj-api` | user-facing transform facade | `fj-ad`, `fj-core`, `fj-dispatch`, `fj-trace` | V1 public Rust API for `jit`/`grad`/`vmap` and derivative helpers |
+| `fj-ffi` | C FFI call interface | `fj-core` | isolated native interop boundary |
+| `fj-conformance` | fixture/parity harness, durability pipeline, E2E logs, boundary gates | `fj-cache`, `fj-core`, `fj-dispatch`, `fj-lax` | oracle comparison, durability, and replayable evidence generation |
 | `fj-test-utils` | common test log schema + fixture IDs | none | cross-crate test contract only (dev dependency) |
 
 ### 8.2 Cross-Module Dependency Direction Map (Cycle-Checked)
 
 Normal dependency edges (from `cargo metadata --no-deps --format-version 1`):
 
+- `fj-core -> (none)`
+- `fj-test-utils -> (none)`
 - `fj-trace -> fj-core`
-- `fj-lax -> fj-core`
 - `fj-interpreters -> fj-core`, `fj-interpreters -> fj-lax`
+- `fj-lax -> fj-core`
+- `fj-dispatch -> fj-ad`, `fj-dispatch -> fj-backend-cpu`, `fj-dispatch -> fj-cache`, `fj-dispatch -> fj-core`, `fj-dispatch -> fj-egraph`, `fj-dispatch -> fj-interpreters`, `fj-dispatch -> fj-lax`, `fj-dispatch -> fj-ledger`, `fj-dispatch -> fj-runtime`, `fj-dispatch -> fj-trace`
 - `fj-ad -> fj-core`, `fj-ad -> fj-lax`
+- `fj-backend-cpu -> fj-core`, `fj-backend-cpu -> fj-interpreters`, `fj-backend-cpu -> fj-lax`, `fj-backend-cpu -> fj-runtime`
+- `fj-runtime -> fj-core`, `fj-runtime -> fj-ledger`
 - `fj-cache -> fj-core`
 - `fj-ledger -> fj-core`
-- `fj-dispatch -> fj-ad`, `fj-dispatch -> fj-cache`, `fj-dispatch -> fj-core`, `fj-dispatch -> fj-interpreters`, `fj-dispatch -> fj-ledger`
-- `fj-runtime -> fj-core`, `fj-runtime -> fj-ledger`
 - `fj-egraph -> fj-core`
-- `fj-conformance -> fj-core`, `fj-conformance -> fj-dispatch`
+- `fj-conformance -> fj-cache`, `fj-conformance -> fj-core`, `fj-conformance -> fj-dispatch`, `fj-conformance -> fj-lax`
+- `fj-api -> fj-ad`, `fj-api -> fj-core`, `fj-api -> fj-dispatch`, `fj-api -> fj-trace`
+- `fj-ffi -> fj-core`
 
 Cycle check:
-- Topological sort (`tsort`) over normal edges succeeds without error.
-- Result confirms acyclic layering for current workspace crate graph.
+- `./scripts/run_architecture_boundary_gate.sh --enforce` reports `15` crates, `34` normal edges, `6` accepted boundary decisions, and `0` issues.
+- Result confirms acyclic layering for the current workspace crate graph and rejects production dependencies on `fj-conformance`.
 
 ### 8.3 Layering Constraints (Current)
 
 | Layer | Crates | Allowed outbound edges | Forbidden patterns |
 |---|---|---|---|
-| `L0 model` | `fj-core` | none | any dependency on higher execution/runtime/harness layers |
+| `L0 model` | `fj-core`, `fj-test-utils` | none for production model code; test-utils is dev-only scaffolding | any dependency on higher execution/runtime/harness layers |
 | `L1 semantics` | `fj-trace`, `fj-lax`, `fj-cache`, `fj-ledger` | `-> fj-core` | cross-calls into dispatch/harness |
-| `L2 execution` | `fj-interpreters`, `fj-ad`, `fj-dispatch` | `-> L0/L1` | reverse dependency from `fj-core` into execution |
-| `L3 ops/harness` | `fj-runtime`, `fj-egraph`, `fj-conformance` | `-> L0/L2` (as needed) | production execution paths depending on conformance harness |
+| `L2 execution` | `fj-interpreters`, `fj-ad`, `fj-runtime`, `fj-egraph` | `-> L0/L1` | reverse dependency from `fj-core` into execution |
+| `L3 facade/backend` | `fj-dispatch`, `fj-api`, `fj-backend-cpu`, `fj-ffi` | `-> L0/L1/L2` as needed | semantic crates depending on facade/backend crates |
+| `L4 ops/harness` | `fj-conformance` | `-> L0/L1/L2/L3` for evidence generation | production execution paths depending on conformance harness |
 
 ## 9. Hidden/Implicit Coupling Register
 
@@ -168,8 +177,8 @@ Cycle check:
 | Transform-order law split between `fj-core::verify_transform_composition` and `fj-dispatch` transform execution | validation and execution are in separate crates with shared assumptions | semantic drift between proof and execution | add shared transform contract tests in `fj-conformance` |
 | Strict/hardened mode semantics span `fj-core`, `fj-cache`, `fj-dispatch`, `fj-runtime` | mode flag is propagated, not centrally enforced | inconsistent fail-closed behavior | centralize mode contract matrix and cross-crate invariant tests |
 | `fj-test-utils` schema contract is global across crates | test log shape is shared via dev dependency only | silent logging drift across crate tests | keep schema tests mandatory in every crate |
-| `fj-conformance` directly depends on `fj-dispatch` | harness executes current integration choke point | harness and execution semantics can co-evolve accidentally | add explicit fixture-versioning and drift-class gates |
-| `fj-egraph` optimization path is not wired into dispatch | optimization correctness is validated in isolation | future integration may bypass parity gates | require conformance parity run before enabling optimization path |
+| `fj-conformance` directly depends on implementation crates including `fj-dispatch`, `fj-cache`, `fj-core`, and `fj-lax` | harness executes current integration and evidence choke points | harness and execution semantics can co-evolve accidentally | add explicit fixture-versioning and drift-class gates |
+| `fj-egraph` optimization path is wired through an explicit dispatch compile option | optimization correctness depends on the option gate staying explicit | future broader integration may bypass parity gates | require conformance parity run before promoting optimization paths |
 
 ## 10. Conflict Check: Current vs Target Architecture
 
@@ -177,21 +186,23 @@ Cycle check:
 |---|---|---|---|
 | `trace` crate (`fj-trace`) | dedicated crate (`crates/fj-trace`) owns tracer IDs, abstract values, and trace context materialization | satisfied (crate present) | remaining conflict is explicit lowering/backend split, not trace crate existence |
 | `canonical IR` crate (`fj-ir`) | represented in `fj-core` | partially satisfied | IR ownership exists but not isolated as planned crate |
-| `transform stack` crate (`fj-transforms`) | folded into `fj-dispatch` + `fj-core` proof logic | missing dedicated crate | transform policy spread across crates |
-| `lowering` crate (`fj-lowering`) | folded into interpreter/dispatch path | missing | lowering contracts hard to isolate and benchmark separately |
-| `backend` crate (`fj-backend-cpu`) | backend bridge emulated via current runtime/dispatch slice | missing | backend compatibility matrix remains implicit |
-| top-level `frankenjax` API crate | not present | missing | no single stable API facade crate yet |
+| `transform stack` crate (`fj-transforms`) | folded into `fj-core`, `fj-trace`, `fj-ad`, `fj-dispatch`, and `fj-api` | explicitly deferred | extraction waits for advanced transform/control-flow parity and facade replay evidence |
+| `lowering` crate (`fj-lowering`) | folded into interpreter/dispatch/backend path | explicitly deferred | V1 has no XLA/compiler lowering contract; avoid exposing an unused surface |
+| `backend` crate (`fj-backend-cpu`) | dedicated CPU backend crate | satisfied for V1 CPU scope | future backend plurality may justify more routing/facade work |
+| top-level user API facade | `fj-api` | satisfied for V1 Rust facade | release/package naming can be revisited after public examples are replay-proven |
+| FFI boundary | `fj-ffi` | satisfied | native interop remains isolated from pure Rust transform crates |
 
 Conflict-check verdict:
 - Current crate dependency graph is acyclic and layered.
-- Architecture conflicts are primarily missing crate boundary extractions, not dependency cycles.
-- `fj-trace` boundary exists as a dedicated crate; highest-priority extraction work remains transform/lowering decomposition and backend/API facade isolation.
+- `fj-api`, `fj-backend-cpu`, `fj-ffi`, and `fj-conformance` are explicit accepted boundaries for V1.
+- Dedicated `fj-transforms` and `fj-lowering` crates are not optimal yet because they would mix parity work with crate churn before user-facing examples and advanced transform/control-flow evidence are green.
+- The executable decision source is `artifacts/conformance/architecture_boundary_decision.v1.json`, generated by `./scripts/run_architecture_boundary_gate.sh --enforce`.
 
 ## 11. Symbol/API Census and Surface Classification
 
 Census scope for V1 parity slice:
 - legacy anchors in section `2` (transform, trace, cache, dispatch, backend/ffi bands),
-- Rust workspace exported symbols in `fj-core`, `fj-trace`, `fj-lax`, `fj-interpreters`, `fj-ad`, `fj-cache`, `fj-dispatch`, `fj-ledger`, `fj-runtime`, `fj-conformance`, `fj-egraph`.
+- Rust workspace exported symbols in `fj-core`, `fj-trace`, `fj-lax`, `fj-interpreters`, `fj-ad`, `fj-cache`, `fj-dispatch`, `fj-ledger`, `fj-runtime`, `fj-conformance`, `fj-egraph`, `fj-api`, `fj-backend-cpu`, and `fj-ffi`.
 
 ### 11.1 Surface Classes
 

@@ -1,0 +1,613 @@
+{
+  "schema_version": "frankenjax.architecture-boundary-report.v1",
+  "bead_id": "frankenjax-cstq.12",
+  "status": "pass",
+  "workspace_root": "/data/projects/frankenjax",
+  "crate_count": 15,
+  "workspace_crates": [
+    {
+      "name": "fj-ad",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-ad/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-ad/src/lib.rs",
+      "layer": "execution",
+      "normal_deps": [
+        "fj-core",
+        "fj-lax"
+      ],
+      "dev_deps": [
+        "fj-interpreters",
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-api",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-api/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-api/src/lib.rs",
+      "layer": "facade_backend",
+      "normal_deps": [
+        "fj-ad",
+        "fj-core",
+        "fj-dispatch",
+        "fj-trace"
+      ],
+      "dev_deps": [
+        "fj-interpreters",
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib",
+        "test"
+      ]
+    },
+    {
+      "name": "fj-backend-cpu",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-backend-cpu/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-backend-cpu/src/lib.rs",
+      "layer": "facade_backend",
+      "normal_deps": [
+        "fj-core",
+        "fj-interpreters",
+        "fj-lax",
+        "fj-runtime"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-cache",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-cache/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-cache/src/lib.rs",
+      "layer": "semantics",
+      "normal_deps": [
+        "fj-core"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-conformance",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-conformance/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-conformance/src/lib.rs",
+      "layer": "ops_harness",
+      "normal_deps": [
+        "fj-cache",
+        "fj-core",
+        "fj-dispatch",
+        "fj-lax"
+      ],
+      "dev_deps": [
+        "fj-ad",
+        "fj-api",
+        "fj-backend-cpu",
+        "fj-egraph",
+        "fj-ffi",
+        "fj-interpreters",
+        "fj-runtime",
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bin",
+        "lib",
+        "test"
+      ]
+    },
+    {
+      "name": "fj-core",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-core/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-core/src/lib.rs",
+      "layer": "model",
+      "normal_deps": [],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-dispatch",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-dispatch/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-dispatch/src/lib.rs",
+      "layer": "facade_backend",
+      "normal_deps": [
+        "fj-ad",
+        "fj-backend-cpu",
+        "fj-cache",
+        "fj-core",
+        "fj-egraph",
+        "fj-interpreters",
+        "fj-lax",
+        "fj-ledger",
+        "fj-runtime",
+        "fj-trace"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib",
+        "test"
+      ]
+    },
+    {
+      "name": "fj-egraph",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-egraph/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-egraph/src/lib.rs",
+      "layer": "execution",
+      "normal_deps": [
+        "fj-core"
+      ],
+      "dev_deps": [
+        "fj-interpreters",
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-ffi",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-ffi/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-ffi/src/lib.rs",
+      "layer": "facade_backend",
+      "normal_deps": [
+        "fj-core"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-interpreters",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-interpreters/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-interpreters/src/lib.rs",
+      "layer": "execution",
+      "normal_deps": [
+        "fj-core",
+        "fj-lax"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-lax",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-lax/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-lax/src/lib.rs",
+      "layer": "semantics",
+      "normal_deps": [
+        "fj-core"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "bench",
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-ledger",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-ledger/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-ledger/src/lib.rs",
+      "layer": "semantics",
+      "normal_deps": [
+        "fj-core"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-runtime",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-runtime/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-runtime/src/lib.rs",
+      "layer": "execution",
+      "normal_deps": [
+        "fj-core",
+        "fj-ledger"
+      ],
+      "dev_deps": [
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-test-utils",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-test-utils/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-test-utils/src/lib.rs",
+      "layer": "model",
+      "normal_deps": [],
+      "dev_deps": [],
+      "target_kinds": [
+        "lib"
+      ]
+    },
+    {
+      "name": "fj-trace",
+      "manifest_path": "/data/projects/frankenjax/crates/fj-trace/Cargo.toml",
+      "lib_path": "/data/projects/frankenjax/crates/fj-trace/src/lib.rs",
+      "layer": "semantics",
+      "normal_deps": [
+        "fj-core"
+      ],
+      "dev_deps": [
+        "fj-interpreters",
+        "fj-test-utils"
+      ],
+      "target_kinds": [
+        "lib",
+        "test"
+      ]
+    }
+  ],
+  "normal_edges": [
+    {
+      "from": "fj-ad",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-ad",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-ad"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-dispatch"
+    },
+    {
+      "from": "fj-api",
+      "to": "fj-trace"
+    },
+    {
+      "from": "fj-backend-cpu",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-backend-cpu",
+      "to": "fj-interpreters"
+    },
+    {
+      "from": "fj-backend-cpu",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-backend-cpu",
+      "to": "fj-runtime"
+    },
+    {
+      "from": "fj-cache",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-conformance",
+      "to": "fj-cache"
+    },
+    {
+      "from": "fj-conformance",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-conformance",
+      "to": "fj-dispatch"
+    },
+    {
+      "from": "fj-conformance",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-ad"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-backend-cpu"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-cache"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-egraph"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-interpreters"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-ledger"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-runtime"
+    },
+    {
+      "from": "fj-dispatch",
+      "to": "fj-trace"
+    },
+    {
+      "from": "fj-egraph",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-ffi",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-interpreters",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-interpreters",
+      "to": "fj-lax"
+    },
+    {
+      "from": "fj-lax",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-ledger",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-runtime",
+      "to": "fj-core"
+    },
+    {
+      "from": "fj-runtime",
+      "to": "fj-ledger"
+    },
+    {
+      "from": "fj-trace",
+      "to": "fj-core"
+    }
+  ],
+  "decisions": [
+    {
+      "boundary_id": "user_api_facade",
+      "title": "User API facade",
+      "owner_crates": [
+        "fj-api",
+        "fj-trace"
+      ],
+      "current_state": "fj-api is the V1 user-facing transform facade for jit, grad, vmap, value_and_grad, jacobian, hessian, and make_jaxpr.",
+      "decision": "keep_current_boundary",
+      "user_outcome": "Users get one explicit Rust transform facade now; no extra compatibility wrapper or package rename is introduced in this bead.",
+      "dependency_graph_impact": "fj-api depends only on trace/core/dispatch/ad plus dev-only test helpers, so it remains above semantic crates without reverse edges.",
+      "compile_time_impact": "Keeping the facade avoids adding another workspace crate and keeps incremental compile churn lower while public examples are still being proven.",
+      "public_api_impact": "The public import path remains fj_api::* for V1 evidence; frankenjax package naming is deferred until release packaging work.",
+      "testability_impact": "Facade tests stay in fj-api and public example replay is owned by frankenjax-cstq.9.",
+      "rejected_options": [
+        {
+          "option_id": "new_frankenjax_wrapper_crate",
+          "reason": "A wrapper crate would add a second user import surface before README examples are fully replay-proven.",
+          "user_impact": "Avoids confusing users with two equivalent facade crates and no extra functionality."
+        }
+      ],
+      "guardrails": [
+        "fj-api must not be a normal dependency of lower-layer semantic crates",
+        "public README examples must replay through fj-api under frankenjax-cstq.9"
+      ],
+      "follow_up_beads": [
+        "frankenjax-cstq.9"
+      ],
+      "revisit_when": [],
+      "status": "accepted"
+    },
+    {
+      "boundary_id": "transform_stack",
+      "title": "Transform stack ownership",
+      "owner_crates": [
+        "fj-core",
+        "fj-dispatch",
+        "fj-ad",
+        "fj-trace",
+        "fj-api"
+      ],
+      "current_state": "Transform proof types live in fj-core, tracing in fj-trace, AD in fj-ad, orchestration in fj-dispatch, and public wrappers in fj-api.",
+      "decision": "defer_extraction",
+      "user_outcome": "Users keep current transform behavior while parity work closes advanced control-flow composition gaps.",
+      "dependency_graph_impact": "A dedicated fj-transforms crate would currently pull together core, trace, AD, dispatch, and API responsibilities and risks new cycles.",
+      "compile_time_impact": "Extraction would force broad rebuilds across the hottest crates without a measured performance or ergonomics win.",
+      "public_api_impact": "No transform function moves until frankenjax-cstq.2 and frankenjax-cstq.9 prove the behavior and examples.",
+      "testability_impact": "The safer near-term test seam is a conformance matrix over existing crates rather than a structural split.",
+      "rejected_options": [
+        {
+          "option_id": "extract_fj_transforms_now",
+          "reason": "The advanced transform/control-flow matrix is still open, so extraction would mix semantics work with crate churn.",
+          "user_impact": "Deferral protects existing jit/grad/vmap behavior and avoids moving APIs while users still need parity evidence."
+        }
+      ],
+      "guardrails": [
+        "transform-order tests must remain in dispatch/conformance gates",
+        "fj-core proof types must not depend on fj-dispatch or fj-api"
+      ],
+      "follow_up_beads": [
+        "frankenjax-cstq.2",
+        "frankenjax-cstq.9"
+      ],
+      "revisit_when": [
+        "advanced transform-control-flow parity is green",
+        "public README examples replay through fj-api"
+      ],
+      "status": "accepted"
+    },
+    {
+      "boundary_id": "lowering_execution",
+      "title": "Lowering and execution boundary",
+      "owner_crates": [
+        "fj-interpreters",
+        "fj-dispatch",
+        "fj-backend-cpu",
+        "fj-runtime"
+      ],
+      "current_state": "V1 lowers to canonical IR evaluated by interpreter/dispatch paths; fj-backend-cpu owns dependency-wave CPU execution and fj-runtime owns admission policy.",
+      "decision": "defer_extraction",
+      "user_outcome": "Users keep the documented CPU-only interpreter/backend semantics without an invented XLA-like lowering layer.",
+      "dependency_graph_impact": "A new fj-lowering crate would be mostly policy glue today and would increase cross-crate coupling with dispatch/backend.",
+      "compile_time_impact": "Deferral avoids moving interpreter/backend code while performance and memory gates are still being expanded.",
+      "public_api_impact": "No user-facing lowering API is exposed in V1; claims remain CPU/interpreter/backend scoped.",
+      "testability_impact": "Execution behavior remains covered by interpreter, dispatch, backend, and conformance tests with explicit E2E logs.",
+      "rejected_options": [
+        {
+          "option_id": "extract_fj_lowering_now",
+          "reason": "There is no separate XLA/compiler lowering contract in V1; extracting a crate would formalize a surface users cannot use yet.",
+          "user_impact": "Avoids overpromising a compiler pipeline and keeps the README limitation honest."
+        }
+      ],
+      "guardrails": [
+        "README must continue to state no XLA lowering for V1",
+        "backend execution must stay covered by conformance and performance gates"
+      ],
+      "follow_up_beads": [
+        "frankenjax-cstq.4",
+        "frankenjax-cstq.18"
+      ],
+      "revisit_when": [
+        "a real compiler/lowering IR is introduced",
+        "backend parity requires multiple execution backends"
+      ],
+      "status": "accepted"
+    },
+    {
+      "boundary_id": "cpu_backend",
+      "title": "CPU backend boundary",
+      "owner_crates": [
+        "fj-backend-cpu",
+        "fj-runtime"
+      ],
+      "current_state": "fj-backend-cpu is a dedicated CPU backend crate and fj-runtime owns backend registry/admission concerns.",
+      "decision": "keep_current_boundary",
+      "user_outcome": "Users get a concrete always-available CPU backend without waiting for GPU/TPU abstractions.",
+      "dependency_graph_impact": "The backend stays above core/interpreter/lax/runtime and below dispatch/api, preserving layered flow.",
+      "compile_time_impact": "Keeping the backend crate isolated localizes Rayon-heavy backend rebuilds.",
+      "public_api_impact": "Backend internals remain implementation detail unless explicitly promoted later.",
+      "testability_impact": "Backend scheduling can be tested and benchmarked independently from facade examples.",
+      "rejected_options": [
+        {
+          "option_id": "fold_cpu_backend_into_dispatch",
+          "reason": "Dispatch already coordinates transforms/cache/ledger; folding backend scheduling into it would enlarge the integration choke point.",
+          "user_impact": "Keeping it separate preserves focused performance gates and simpler failure diagnosis."
+        }
+      ],
+      "guardrails": [
+        "fj-backend-cpu must not depend on fj-api or fj-conformance",
+        "backend performance changes require benchmark evidence"
+      ],
+      "follow_up_beads": [
+        "frankenjax-cstq.4"
+      ],
+      "revisit_when": [],
+      "status": "accepted"
+    },
+    {
+      "boundary_id": "ffi_boundary",
+      "title": "FFI boundary",
+      "owner_crates": [
+        "fj-ffi"
+      ],
+      "current_state": "fj-ffi isolates C ABI registration, buffers, calls, callbacks, and error propagation.",
+      "decision": "keep_current_boundary",
+      "user_outcome": "Users get one auditable native interop boundary and the rest of the workspace stays unsafe-free.",
+      "dependency_graph_impact": "fj-ffi depends only on fj-core in normal builds, so native interop cannot pull execution or harness crates downward.",
+      "compile_time_impact": "The FFI crate compiles independently from dispatch/conformance-heavy paths.",
+      "public_api_impact": "FFI symbols remain opt-in and do not affect the Rust transform facade.",
+      "testability_impact": "FFI adversarial tests remain localized and can be fuzzed without changing pure Rust crates.",
+      "rejected_options": [
+        {
+          "option_id": "spread_ffi_into_runtime",
+          "reason": "Putting native calls into runtime would weaken the single unsafe-boundary doctrine.",
+          "user_impact": "Users retain a simpler security story and clearer audit surface."
+        }
+      ],
+      "guardrails": [
+        "unsafe code remains isolated to fj-ffi test/FFI implementation surfaces",
+        "production crates must not depend on fj-ffi unless an explicit interop feature is added"
+      ],
+      "follow_up_beads": [
+        "frankenjax-cstq.17"
+      ],
+      "revisit_when": [],
+      "status": "accepted"
+    },
+    {
+      "boundary_id": "conformance_harness",
+      "title": "Conformance and evidence harness",
+      "owner_crates": [
+        "fj-conformance"
+      ],
+      "current_state": "fj-conformance owns oracle fixtures, parity reports, durability tools, E2E forensic logs, and architecture gates.",
+      "decision": "keep_current_boundary",
+      "user_outcome": "Users and agents get one evidence plane for replaying claims without production crates depending on the harness.",
+      "dependency_graph_impact": "Conformance stays at the top layer and may depend on implementation crates, never the reverse.",
+      "compile_time_impact": "Evidence binaries and tests can build separately from core library consumers.",
+      "public_api_impact": "Harness APIs are evidence infrastructure, not user-facing transform APIs.",
+      "testability_impact": "All child evidence lanes can share forensic log validation and artifact hashing.",
+      "rejected_options": [
+        {
+          "option_id": "move_gates_into_each_production_crate",
+          "reason": "Distributed gate binaries would fragment log schema enforcement and replay commands.",
+          "user_impact": "Centralizing the evidence plane gives users one place to inspect red/yellow/green status."
+        }
+      ],
+      "guardrails": [
+        "no non-conformance crate may depend normally on fj-conformance",
+        "new evidence scripts must emit shared E2E forensic logs or an explicit adapter"
+      ],
+      "follow_up_beads": [
+        "frankenjax-cstq.15",
+        "frankenjax-cstq.16",
+        "frankenjax-cstq.18"
+      ],
+      "revisit_when": [],
+      "status": "accepted"
+    }
+  ],
+  "issues": [],
+  "replay_command": "./scripts/run_architecture_boundary_gate.sh --enforce"
+}

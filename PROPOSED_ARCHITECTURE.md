@@ -11,17 +11,30 @@
 ## 2. Current Workspace Crate Map
 
 - `fj-core`: canonical data model, tensor value model, Trace Transform Ledger (TTL), transform composition proofs.
+- `fj-trace`: trace context, abstract values, nested trace lifecycle, and `make_jaxpr` materialization.
 - `fj-lax`: scoped primitive execution semantics (scalar + tensor subset).
 - `fj-interpreters`: interpreter path over canonical IR and runtime values.
+- `fj-ad`: forward/reverse automatic differentiation rules and higher-order derivative helpers.
 - `fj-cache`: deterministic cache-key derivation + compatibility gates.
 - `fj-ledger`: decision/evidence ledger artifacts.
-- `fj-dispatch`: dispatch pipeline integrating cache/interpreter/ledger plus transform wrappers (`jit`/`grad`/`vmap`).
+- `fj-dispatch`: dispatch pipeline integrating trace, cache, interpreter, AD, ledger, backend, and transform wrappers.
 - `fj-runtime`: runtime admission model and integration bridges.
+- `fj-egraph`: e-graph optimization sandbox and IR round trip.
+- `fj-api`: V1 user-facing facade for `jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, and `make_jaxpr`.
+- `fj-backend-cpu`: dependency-wave CPU backend.
+- `fj-ffi`: C FFI boundary and the only crate allowed to host native interop safety obligations.
 - `fj-conformance`: fixture manifests, transform parity runner, and durability pipeline.
+- `fj-test-utils`: shared test scaffolding and fixture helpers.
+
+Boundary evidence:
+
+- `./scripts/run_architecture_boundary_gate.sh --enforce`
+- `artifacts/conformance/architecture_boundary_decision.v1.json`
+- `artifacts/e2e/e2e_architecture_boundary_gate.e2e.json`
 
 ## 3. End-to-End Dataflow (Current Slice)
 
-`request` -> `TTL proof` -> `cache key` -> `transform wrappers` -> `interpreter` -> `decision ledger` -> `response`
+`fj-api request` -> `trace/Jaxpr` -> `TTL proof` -> `cache key` -> `transform wrappers` -> `interpreter/backend` -> `decision ledger` -> `response`
 
 ## 4. Target Dataflow (Full)
 
@@ -95,6 +108,8 @@ Operational CLI:
 ## 10. Evolution Plan
 
 - Preserve crate boundaries while expanding primitive/transform coverage.
-- Add legacy-oracle strict capture runs once `jaxlib` environment is available.
+- Keep `fj-api`, `fj-backend-cpu`, `fj-ffi`, and `fj-conformance` as explicit V1 boundaries.
+- Defer dedicated `fj-transforms` and `fj-lowering` crates until transform/control-flow parity and public facade replay evidence are green.
+- Add legacy-oracle strict capture runs when fixture families need refresh.
 - Expand drift-gate compatibility matrix to cover cache-key and transform semantics at subsystem granularity.
-- Add lowering/backend crates once conformance coverage for current slice is stable.
+- Add future lowering/backend extraction beads only when a real compiler/lowering IR or multiple backend contracts exist.

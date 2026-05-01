@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod architecture_decision;
 pub mod cache_lifecycle;
 pub mod durability;
 pub mod e2e_log;
