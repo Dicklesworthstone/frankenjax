@@ -2204,10 +2204,9 @@ pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<V
             Ok(Value::Scalar(Literal::Bool(is_finite)))
         }
         Value::Tensor(tensor) => {
-            let elements = tensor
-                .elements
-                .iter()
-                .map(|literal| match *literal {
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                let is_finite = match *literal {
                     Literal::Complex64Bits(re, im) => Ok(Literal::Bool(
                         f32::from_bits(re).is_finite() && f32::from_bits(im).is_finite(),
                     )),
@@ -2221,8 +2220,9 @@ pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<V
                             primitive,
                             detail: "expected numeric tensor elements",
                         }),
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+                }?;
+                elements.push(is_finite);
+            }
 
             Ok(Value::Tensor(TensorValue::new(
                 DType::Bool,
