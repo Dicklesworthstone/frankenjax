@@ -24,18 +24,19 @@ pub fn buffer_to_value(buffer: &FfiBuffer) -> Result<Value, FfiError> {
         Ok(Value::Scalar(lit))
     } else {
         // Tensor
-        let shape = Shape {
-            dims: buffer.shape().iter().map(|&d| d as u32).collect(),
-        };
-        let num_elements: usize = buffer.shape().iter().product();
+        let shape = ffi_shape_to_core_shape(buffer.shape())?;
         let elem_size = dtype_size_bytes(buffer.dtype())?;
-        let mut elements = Vec::with_capacity(num_elements);
-        for i in 0..num_elements {
-            let offset = i * elem_size;
-            let lit = bytes_to_literal(
-                &buffer.as_bytes()[offset..offset + elem_size],
-                buffer.dtype(),
-            )?;
+        let chunks = buffer.as_bytes().chunks_exact(elem_size);
+        if !chunks.remainder().is_empty() {
+            return Err(FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: buffer.as_bytes().len() - chunks.remainder().len(),
+                actual_bytes: buffer.as_bytes().len(),
+            });
+        }
+        let mut elements = Vec::with_capacity(chunks.len());
+        for chunk in chunks {
+            let lit = bytes_to_literal(chunk, buffer.dtype())?;
             elements.push(lit);
         }
         Ok(Value::Tensor(TensorValue {
@@ -47,51 +48,89 @@ pub fn buffer_to_value(buffer: &FfiBuffer) -> Result<Value, FfiError> {
 }
 
 fn scalar_to_buffer(lit: &Literal) -> Result<FfiBuffer, FfiError> {
-    match lit {
-        Literal::BF16Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::BF16),
-        Literal::F16Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::F16),
-        Literal::F32Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::F32),
-        Literal::F64Bits(bits) => FfiBuffer::new(bits.to_ne_bytes().to_vec(), vec![], DType::F64),
-        Literal::I64(v) => FfiBuffer::new(v.to_ne_bytes().to_vec(), vec![], DType::I64),
-        Literal::U32(v) => FfiBuffer::new(v.to_ne_bytes().to_vec(), vec![], DType::U32),
-        Literal::U64(v) => FfiBuffer::new(v.to_ne_bytes().to_vec(), vec![], DType::U64),
-        Literal::Bool(v) => FfiBuffer::new(vec![*v as u8], vec![], DType::Bool),
-        Literal::Complex64Bits(..) => Err(FfiError::UnsupportedDtype {
-            dtype: DType::Complex64,
-        }),
-        Literal::Complex128Bits(..) => Err(FfiError::UnsupportedDtype {
-            dtype: DType::Complex128,
-        }),
-    }
+    let dtype = literal_storage_dtype(*lit);
+    let elem_size = dtype_size_bytes(dtype)?;
+    let mut data = Vec::with_capacity(elem_size);
+    append_literal_as_dtype(&mut data, *lit, dtype)?;
+    FfiBuffer::new(data, vec![], dtype)
 }
 
 fn tensor_to_buffer(tv: &TensorValue) -> Result<FfiBuffer, FfiError> {
     let elem_size = dtype_size_bytes(tv.dtype)?;
-    let mut data = Vec::with_capacity(tv.elements.len() * elem_size);
+    let capacity =
+        checked_data_capacity(tv.elements.len(), elem_size).ok_or(FfiError::BufferMismatch {
+            buffer_index: 0,
+            expected_bytes: usize::MAX,
+            actual_bytes: 0,
+        })?;
+    let mut data = Vec::with_capacity(capacity);
     for lit in &tv.elements {
-        match lit {
-            Literal::BF16Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
-            Literal::F16Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
-            Literal::F32Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
-            Literal::F64Bits(bits) => data.extend_from_slice(&bits.to_ne_bytes()),
-            Literal::I64(v) => data.extend_from_slice(&v.to_ne_bytes()),
-            Literal::U32(v) => data.extend_from_slice(&v.to_ne_bytes()),
-            Literal::U64(v) => data.extend_from_slice(&v.to_ne_bytes()),
-            Literal::Bool(v) => data.push(*v as u8),
-            Literal::Complex64Bits(..) => {
-                return Err(FfiError::UnsupportedDtype {
-                    dtype: DType::Complex64,
-                });
-            }
-            Literal::Complex128Bits(..) => {
-                return Err(FfiError::UnsupportedDtype {
-                    dtype: DType::Complex128,
-                });
-            }
-        }
+        append_literal_as_dtype(&mut data, *lit, tv.dtype)?;
     }
     let shape: Vec<usize> = tv.shape.dims.iter().map(|&d| d as usize).collect();
     FfiBuffer::new(data, shape, tv.dtype)
+}
+
+fn checked_data_capacity(element_count: usize, elem_size: usize) -> Option<usize> {
+    element_count.checked_mul(elem_size)
+}
+
+fn ffi_shape_to_core_shape(shape: &[usize]) -> Result<Shape, FfiError> {
+    let mut dims = Vec::with_capacity(shape.len());
+    for (dimension_index, &dimension) in shape.iter().enumerate() {
+        let dim = u32::try_from(dimension).map_err(|_| FfiError::ShapeDimensionOutOfRange {
+            dimension_index,
+            dimension,
+            max_supported: u32::MAX as usize,
+        })?;
+        dims.push(dim);
+    }
+    Ok(Shape { dims })
+}
+
+fn literal_storage_dtype(lit: Literal) -> DType {
+    match lit {
+        Literal::BF16Bits(_) => DType::BF16,
+        Literal::F16Bits(_) => DType::F16,
+        Literal::F32Bits(_) => DType::F32,
+        Literal::F64Bits(_) => DType::F64,
+        Literal::I64(_) => DType::I64,
+        Literal::U32(_) => DType::U32,
+        Literal::U64(_) => DType::U64,
+        Literal::Bool(_) => DType::Bool,
+        Literal::Complex64Bits(..) => DType::Complex64,
+        Literal::Complex128Bits(..) => DType::Complex128,
+    }
+}
+
+fn append_literal_as_dtype(data: &mut Vec<u8>, lit: Literal, dtype: DType) -> Result<(), FfiError> {
+    match (dtype, lit) {
+        (DType::BF16, Literal::BF16Bits(bits)) => data.extend_from_slice(&bits.to_ne_bytes()),
+        (DType::F16, Literal::F16Bits(bits)) => data.extend_from_slice(&bits.to_ne_bytes()),
+        (DType::F32, Literal::F32Bits(bits)) => data.extend_from_slice(&bits.to_ne_bytes()),
+        (DType::F64, Literal::F64Bits(bits)) => data.extend_from_slice(&bits.to_ne_bytes()),
+        (DType::I64, Literal::I64(value)) => data.extend_from_slice(&value.to_ne_bytes()),
+        (DType::I32, Literal::I64(value)) => {
+            let value = i32::try_from(value).map_err(|_| FfiError::UnrepresentableLiteral {
+                dtype,
+                literal: lit,
+            })?;
+            data.extend_from_slice(&value.to_ne_bytes());
+        }
+        (DType::U32, Literal::U32(value)) => data.extend_from_slice(&value.to_ne_bytes()),
+        (DType::U64, Literal::U64(value)) => data.extend_from_slice(&value.to_ne_bytes()),
+        (DType::Bool, Literal::Bool(value)) => data.push(u8::from(value)),
+        (DType::Complex64, Literal::Complex64Bits(re, im)) => {
+            data.extend_from_slice(&re.to_ne_bytes());
+            data.extend_from_slice(&im.to_ne_bytes());
+        }
+        (DType::Complex128, Literal::Complex128Bits(re, im)) => {
+            data.extend_from_slice(&re.to_ne_bytes());
+            data.extend_from_slice(&im.to_ne_bytes());
+        }
+        (dtype, literal) => return Err(FfiError::UnrepresentableLiteral { dtype, literal }),
+    }
+    Ok(())
 }
 
 fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
@@ -128,6 +167,14 @@ fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
             })?;
             Ok(Literal::F64Bits(u64::from_ne_bytes(arr)))
         }
+        DType::I32 => {
+            let arr: [u8; 4] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: 4,
+                actual_bytes: bytes.len(),
+            })?;
+            Ok(Literal::I64(i64::from(i32::from_ne_bytes(arr))))
+        }
         DType::I64 => {
             let arr: [u8; 8] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
                 buffer_index: 0,
@@ -152,8 +199,31 @@ fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
             })?;
             Ok(Literal::U64(u64::from_ne_bytes(arr)))
         }
-        DType::I32 | DType::Complex64 | DType::Complex128 => {
-            Err(FfiError::UnsupportedDtype { dtype })
+        DType::Complex64 => {
+            let arr: [u8; 8] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: 8,
+                actual_bytes: bytes.len(),
+            })?;
+            Ok(Literal::Complex64Bits(
+                u32::from_ne_bytes([arr[0], arr[1], arr[2], arr[3]]),
+                u32::from_ne_bytes([arr[4], arr[5], arr[6], arr[7]]),
+            ))
+        }
+        DType::Complex128 => {
+            let arr: [u8; 16] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: 16,
+                actual_bytes: bytes.len(),
+            })?;
+            Ok(Literal::Complex128Bits(
+                u64::from_ne_bytes([
+                    arr[0], arr[1], arr[2], arr[3], arr[4], arr[5], arr[6], arr[7],
+                ]),
+                u64::from_ne_bytes([
+                    arr[8], arr[9], arr[10], arr[11], arr[12], arr[13], arr[14], arr[15],
+                ]),
+            ))
         }
         DType::Bool => {
             if bytes.is_empty() {
@@ -215,6 +285,26 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_scalar_complex() {
+        let values = [
+            Value::Scalar(Literal::Complex64Bits(
+                1.25_f32.to_bits(),
+                (-3.5_f32).to_bits(),
+            )),
+            Value::Scalar(Literal::Complex128Bits(
+                1.25_f64.to_bits(),
+                (-3.5_f64).to_bits(),
+            )),
+        ];
+
+        for val in values {
+            let buf = value_to_buffer(&val).unwrap();
+            let restored = buffer_to_value(&buf).unwrap();
+            assert_eq!(val, restored);
+        }
+    }
+
+    #[test]
     fn roundtrip_tensor_f64() {
         let val = Value::Tensor(TensorValue {
             dtype: DType::F64,
@@ -247,6 +337,24 @@ mod tests {
         let buf = value_to_buffer(&val).unwrap();
         assert_eq!(buf.size(), 32);
         assert_eq!(buf.shape(), &[2, 2]);
+        let restored = buffer_to_value(&buf).unwrap();
+        assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn roundtrip_tensor_i32() {
+        let val = Value::Tensor(TensorValue {
+            dtype: DType::I32,
+            shape: Shape { dims: vec![3] },
+            elements: vec![
+                Literal::I64(i64::from(i32::MIN)),
+                Literal::I64(0),
+                Literal::I64(i64::from(i32::MAX)),
+            ],
+        });
+        let buf = value_to_buffer(&val).unwrap();
+        assert_eq!(buf.size(), 12);
+        assert_eq!(buf.dtype(), DType::I32);
         let restored = buffer_to_value(&buf).unwrap();
         assert_eq!(val, restored);
     }
@@ -297,5 +405,60 @@ mod tests {
         let buf = FfiBuffer::new(vec![0u8; 4], vec![], DType::F32)?;
         assert_eq!(buffer_to_value(&buf)?, Value::Scalar(Literal::F32Bits(0)));
         Ok(())
+    }
+
+    #[test]
+    fn buffer_to_value_i32_scalar_uses_i64_literal_storage() -> Result<(), FfiError> {
+        let buf = FfiBuffer::new((-7_i32).to_ne_bytes().to_vec(), vec![], DType::I32)?;
+        assert_eq!(buffer_to_value(&buf)?, Value::Scalar(Literal::I64(-7)));
+        Ok(())
+    }
+
+    #[test]
+    fn buffer_to_value_rejects_shape_dimension_above_core_limit() {
+        let buf = FfiBuffer::new(Vec::new(), vec![u32::MAX as usize + 1, 0], DType::F64).unwrap();
+        let err = buffer_to_value(&buf).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::ShapeDimensionOutOfRange {
+                dimension_index: 0,
+                dimension,
+                max_supported,
+            } if dimension == u32::MAX as usize + 1 && max_supported == u32::MAX as usize
+        ));
+    }
+
+    #[test]
+    fn tensor_to_buffer_rejects_i32_literal_out_of_range() {
+        let val = Value::Tensor(TensorValue {
+            dtype: DType::I32,
+            shape: Shape { dims: vec![1] },
+            elements: vec![Literal::I64(i64::from(i32::MAX) + 1)],
+        });
+        let err = value_to_buffer(&val).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::UnrepresentableLiteral {
+                dtype: DType::I32,
+                literal: Literal::I64(_),
+            }
+        ));
+    }
+
+    #[test]
+    fn tensor_to_buffer_rejects_declared_dtype_mismatch() {
+        let val = Value::Tensor(TensorValue {
+            dtype: DType::F32,
+            shape: Shape { dims: vec![1] },
+            elements: vec![Literal::U32(1)],
+        });
+        let err = value_to_buffer(&val).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::UnrepresentableLiteral {
+                dtype: DType::F32,
+                literal: Literal::U32(1),
+            }
+        ));
     }
 }

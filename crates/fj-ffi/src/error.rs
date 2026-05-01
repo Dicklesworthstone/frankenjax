@@ -35,6 +35,19 @@ pub enum FfiError {
         actual_bytes: usize,
     },
 
+    /// Shape dimension cannot be represented by FrankenJAX core shape metadata.
+    ShapeDimensionOutOfRange {
+        dimension_index: usize,
+        dimension: usize,
+        max_supported: usize,
+    },
+
+    /// Literal payload cannot be represented as the declared dtype.
+    UnrepresentableLiteral {
+        dtype: fj_core::DType,
+        literal: fj_core::Literal,
+    },
+
     /// Dtype not supported at the FFI boundary.
     UnsupportedDtype { dtype: fj_core::DType },
 }
@@ -73,6 +86,18 @@ impl fmt::Display for FfiError {
             } => write!(
                 f,
                 "FFI buffer {buffer_index} size mismatch: expected {expected_bytes} bytes, got {actual_bytes}"
+            ),
+            FfiError::ShapeDimensionOutOfRange {
+                dimension_index,
+                dimension,
+                max_supported,
+            } => write!(
+                f,
+                "FFI shape dimension {dimension_index}={dimension} exceeds maximum supported core dimension {max_supported}"
+            ),
+            FfiError::UnrepresentableLiteral { dtype, literal } => write!(
+                f,
+                "Literal {literal:?} cannot be represented as declared FFI dtype {dtype:?}"
             ),
             FfiError::UnsupportedDtype { dtype } => {
                 write!(f, "Dtype {dtype:?} is not supported at the FFI boundary")
