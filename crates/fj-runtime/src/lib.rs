@@ -54,8 +54,8 @@ impl RuntimeAdmissionModel {
 pub mod asupersync_bridge {
     use asupersync::{Cx, Error};
 
-    pub fn emit_checkpoint(cx: &Cx, message: impl Into<String>) -> Result<(), Error> {
-        cx.checkpoint_with(message.into())
+    pub fn emit_checkpoint(cx: &Cx, message: impl Into<String>) -> Result<(), Box<Error>> {
+        cx.checkpoint_with(message.into()).map_err(Box::new)
     }
 
     #[must_use]
