@@ -1,0 +1,107 @@
+{
+  "schema_version": "frankenjax.oracle-drift-report.v1",
+  "generated_at_unix_ms": 1777621283202,
+  "baseline_path": null,
+  "require_baseline": false,
+  "expected_total_cases": 848,
+  "actual_total_cases": 848,
+  "added": [],
+  "removed": [],
+  "changed": [],
+  "unsupported": [
+    "composition",
+    "dtype_promotion"
+  ],
+  "skipped": [
+    "transforms",
+    "rng"
+  ],
+  "rows": [
+    {
+      "family_id": "transforms",
+      "status": "baseline_not_provided",
+      "current_case_count": 613,
+      "baseline_case_count": null,
+      "current_sha256": "bb0eae2659e1bc5cff95f5958dc6c1fdc7af78964c469689142bed7fd005f3cc",
+      "baseline_sha256": null,
+      "issue_codes": []
+    },
+    {
+      "family_id": "rng",
+      "status": "baseline_not_provided",
+      "current_case_count": 25,
+      "baseline_case_count": null,
+      "current_sha256": "ad62ae3686e4f453c0cca1dbc2d2f55fe72fcd489bfeb3f2f4fe13ecd0f0a1ad",
+      "baseline_sha256": null,
+      "issue_codes": []
+    },
+    {
+      "family_id": "linalg_fft",
+      "status": "current_invalid",
+      "current_case_count": 33,
+      "baseline_case_count": null,
+      "current_sha256": "85e3ff94d800f0a081008f124d8ce44797c6e1c3a75e2d57c5538ff74eda0823",
+      "baseline_sha256": null,
+      "issue_codes": [
+        "x64_mode_mismatch"
+      ]
+    },
+    {
+      "family_id": "composition",
+      "status": "unsupported_recapture",
+      "current_case_count": 15,
+      "baseline_case_count": null,
+      "current_sha256": "7596f063e3afcc904895d4781bc10f04666cb0266fc67c60aea2f8fb679f5bca",
+      "baseline_sha256": null,
+      "issue_codes": [
+        "stale_oracle_version",
+        "missing_recapture_command"
+      ]
+    },
+    {
+      "family_id": "dtype_promotion",
+      "status": "unsupported_recapture",
+      "current_case_count": 162,
+      "baseline_case_count": null,
+      "current_sha256": "8af84f756fa8690e8a5c1feeca39d22b8e9279397f33d09d0e707125bf5cacb1",
+      "baseline_sha256": null,
+      "issue_codes": [
+        "stale_oracle_version",
+        "missing_recapture_command"
+      ]
+    }
+  ],
+  "issues": [
+    {
+      "code": "x64_mode_mismatch",
+      "family_id": "linalg_fft",
+      "path": "$.rows.linalg_fft",
+      "message": "expected x64 Some(true), found None"
+    },
+    {
+      "code": "stale_oracle_version",
+      "family_id": "composition",
+      "path": "$.rows.composition",
+      "message": "expected oracle version prefix 0.9.2, found 0.9.1"
+    },
+    {
+      "code": "missing_recapture_command",
+      "family_id": "composition",
+      "path": "$.rows.composition",
+      "message": "family has no strict automated recapture command"
+    },
+    {
+      "code": "stale_oracle_version",
+      "family_id": "dtype_promotion",
+      "path": "$.rows.dtype_promotion",
+      "message": "expected oracle version prefix 0.9.2, found 0.9.1"
+    },
+    {
+      "code": "missing_recapture_command",
+      "family_id": "dtype_promotion",
+      "path": "$.rows.dtype_promotion",
+      "message": "family has no strict automated recapture command"
+    }
+  ],
+  "gate_status": "fail"
+}

@@ -1,0 +1,145 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.1",
+  "scenario_id": "e2e_oracle_recapture_gate",
+  "test_id": "fj_oracle_recapture_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-cstq1-cli/debug/fj_oracle_recapture_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--matrix",
+    "/data/projects/frankenjax/artifacts/conformance/oracle_recapture_matrix.v1.json",
+    "--drift",
+    "/data/projects/frankenjax/artifacts/conformance/oracle_drift_report.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/oracle_recapture_matrix.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_oracle_recapture_gate.e2e.json"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-cstq1-cli",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-cstq1-cli",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777621283230
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "transforms",
+    "rng",
+    "linalg_fft",
+    "composition",
+    "dtype_promotion"
+  ],
+  "oracle_ids": [
+    "transforms:0.9.2.dev20260316+12a2449",
+    "rng:0.9.2.dev20260316+12a2449",
+    "linalg_fft:0.9.2",
+    "composition:0.9.1",
+    "dtype_promotion:0.9.1"
+  ],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": null,
+  "expected": {
+    "families": [
+      "transforms",
+      "rng",
+      "linalg_fft",
+      "composition",
+      "dtype_promotion"
+    ],
+    "gate_status": "pass",
+    "total_cases": 848
+  },
+  "actual": {
+    "actual_total_cases": 848,
+    "added": [],
+    "changed": [],
+    "drift_gate_status": "fail",
+    "expected_total_cases": 848,
+    "issue_codes": [
+      "x64_mode_mismatch",
+      "stale_oracle_version",
+      "missing_recapture_command",
+      "stale_oracle_version",
+      "missing_recapture_command"
+    ],
+    "matrix_status": "fail",
+    "removed": [],
+    "required_families": [
+      "transforms",
+      "rng",
+      "linalg_fft",
+      "composition",
+      "dtype_promotion"
+    ],
+    "unsupported": [
+      "composition",
+      "dtype_promotion"
+    ]
+  },
+  "tolerance": {
+    "policy_id": "exact_case_count_and_hash",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "fixture case counts, schema versions, oracle versions, and hashes are exact"
+  },
+  "error": {
+    "expected": null,
+    "actual": "x64_mode_mismatch,stale_oracle_version,missing_recapture_command,stale_oracle_version,missing_recapture_command",
+    "taxonomy_class": "oracle_recapture_drift"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "oracle_recapture_matrix",
+      "path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
+      "sha256": "9d166f767afba43ecdd7606be981f2f84114a902b4ba598389c42f79abcbe1d9",
+      "required": true
+    },
+    {
+      "kind": "oracle_drift_report",
+      "path": "artifacts/conformance/oracle_drift_report.v1.json",
+      "sha256": "4a06b3f864cb2990ff19e918933354dfb89a413d02d9de3aaab9c95668965538",
+      "required": true
+    },
+    {
+      "kind": "oracle_recapture_markdown",
+      "path": "artifacts/conformance/oracle_recapture_matrix.v1.md",
+      "sha256": "6e7c3b62308eb7ee8c9458aaeaa1be21afa9a1edc460f00ebc94a575ba7db402",
+      "required": true
+    }
+  ],
+  "replay_command": "/data/tmp/cargo-target-frankenjax-cstq1-cli/debug/fj_oracle_recapture_gate --root /data/projects/frankenjax --matrix /data/projects/frankenjax/artifacts/conformance/oracle_recapture_matrix.v1.json --drift /data/projects/frankenjax/artifacts/conformance/oracle_drift_report.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/oracle_recapture_matrix.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_oracle_recapture_gate.e2e.json",
+  "status": "fail",
+  "failure_summary": "oracle recapture gate found 5 issue(s); see drift report",
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.1",
+      "title": "Build oracle parity recapture matrix and drift gate"
+    }
+  }
+}

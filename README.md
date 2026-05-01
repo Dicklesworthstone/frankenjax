@@ -673,10 +673,26 @@ uv pip install --python .venv/bin/python jax jaxlib numpy
 |---------------|-------|--------|
 | Transform (jit/grad/vmap/lax/control_flow/mixed_dtype) | 613 | JAX 0.9.2 |
 | RNG determinism (key/split/fold_in/uniform/normal) | 25 | JAX 0.9.2 |
-| Linear algebra + FFT oracle | 33 | JAX 0.9.2 (x64) |
-| Transform composition (jit+grad, grad+grad, vmap+grad, jacobian, hessian) | 15 | JAX 0.9.2 (x64) |
-| Dtype promotion (9x9 dtype matrix, add + mul) | 162 | JAX 0.9.2 (x64) |
+| Linear algebra + FFT oracle | 33 | JAX 0.9.2; recapture gate requires fixture x64 metadata refresh |
+| Transform composition (jit+grad, grad+grad, vmap+grad, jacobian, hessian) | 15 | JAX 0.9.1 fixture metadata; recapture gate requires 0.9.2 refresh |
+| Dtype promotion (9x9 dtype matrix, add + mul) | 162 | JAX 0.9.1 fixture metadata; recapture gate requires 0.9.2 refresh |
 | **Total** | **848** | |
+
+The oracle recapture gate makes this evidence auditable instead of relying on
+the static table above:
+
+```bash
+./scripts/run_oracle_recapture_gate.sh
+```
+
+It writes `artifacts/conformance/oracle_recapture_matrix.v1.json`,
+`artifacts/conformance/oracle_drift_report.v1.json`,
+`artifacts/conformance/oracle_recapture_matrix.v1.md`, and
+`artifacts/e2e/e2e_oracle_recapture_gate.e2e.json`. The gate records fixture
+paths, case counts, legacy anchors, capture commands, JAX versions, x64 mode,
+hashes, unsupported recapture rows, and exact replay data. Use `--enforce` to
+turn stale versions, missing fixture families, changed hashes, missing baselines,
+or unsupported recapture rows into a nonzero CI exit.
 
 ## Building from Source
 

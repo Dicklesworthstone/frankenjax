@@ -50,6 +50,21 @@ The validator accepts unknown future fields but rejects missing required fields,
 malformed status values, empty or redacted replay commands, stale artifact hashes,
 unredacted secret-like values, failing logs without summaries, and empty log sets.
 
+## Oracle Recapture And Drift Gate
+
+The oracle fixture table is checked by:
+
+```bash
+./scripts/run_oracle_recapture_gate.sh
+```
+
+The command emits a matrix, drift report, markdown preview, and shared-schema E2E
+log. It must show all required fixture families, exact case counts, legacy
+anchors, JAX/x64 metadata, fixture hashes, and strict recapture commands or
+explicit unsupported rows. `--enforce` turns stale versions, changed hashes,
+missing baselines, unsupported recapture paths, and missing families into a
+nonzero gate.
+
 ## Property Test Configuration
 
 Use `fj_test_utils::property_test_case_count()` for test-case volume:
