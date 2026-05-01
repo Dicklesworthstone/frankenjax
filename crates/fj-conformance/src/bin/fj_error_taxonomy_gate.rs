@@ -5,8 +5,9 @@ use fj_conformance::e2e_log::{
     E2ELogStatus, E2ETolerancePolicy, artifact_sha256_hex, write_e2e_log,
 };
 use fj_conformance::error_taxonomy::{
-    ERROR_TAXONOMY_BEAD_ID, ErrorTaxonomyReport, error_taxonomy_summary_json,
-    write_error_taxonomy_outputs,
+    ERROR_TAXONOMY_BEAD_ID, ErrorTaxonomyOutputPaths, ErrorTaxonomyReport,
+    build_error_taxonomy_report_for_outputs, error_taxonomy_summary_json,
+    write_error_taxonomy_report_outputs,
 };
 use std::path::{Path, PathBuf};
 
@@ -72,19 +73,17 @@ fn main() {
         }
     };
 
-    let report = match write_error_taxonomy_outputs(&args.root, &args.report, &args.markdown) {
-        Ok(report) => report,
-        Err(err) => {
-            eprintln!("error: failed to write error taxonomy outputs: {err}");
-            std::process::exit(1);
-        }
-    };
-
+    let report = build_error_taxonomy_report_for_outputs(&args.root, &args.report, &args.markdown);
     if let Some(case_id) = args.case_filter.as_deref()
         && !report.cases.iter().any(|case| case.case_id == case_id)
     {
         eprintln!("error: unknown error taxonomy case `{case_id}`");
         std::process::exit(2);
+    }
+
+    if let Err(err) = write_error_taxonomy_report_outputs(&report, &args.report, &args.markdown) {
+        eprintln!("error: failed to write error taxonomy outputs: {err}");
+        std::process::exit(1);
     }
 
     if let Err(err) = write_forensic_log(&args, &report) {
@@ -207,7 +206,7 @@ fn write_forensic_log(args: &Args, report: &ErrorTaxonomyReport) -> Result<(), s
         artifact_ref(&args.root, &args.report, "error_taxonomy_matrix_report")?,
         artifact_ref(&args.root, &args.markdown, "error_taxonomy_matrix_markdown")?,
     ];
-    log.replay_command = std::env::args().collect::<Vec<_>>().join(" ");
+    log.replay_command = stable_replay_command(args);
     if status.requires_failure_summary() {
         log.failure_summary = Some(
             "error taxonomy gate found a missing row, mismatched typed class, panic, missing replay metadata, or unapproved strict/hardened divergence"
@@ -237,6 +236,55 @@ fn repo_relative(root: &Path, path: &Path) -> String {
     match path.strip_prefix(root) {
         Ok(path) => path.display().to_string(),
         Err(_) => path.display().to_string(),
+    }
+}
+
+fn stable_replay_command(args: &Args) -> String {
+    let defaults = ErrorTaxonomyOutputPaths::for_root(&args.root);
+    let mut parts = vec!["./scripts/run_error_taxonomy_gate.sh".to_owned()];
+    if args.report != defaults.report {
+        push_flag_value(
+            &mut parts,
+            "--report",
+            repo_relative(&args.root, &args.report),
+        );
+    }
+    if args.markdown != defaults.markdown {
+        push_flag_value(
+            &mut parts,
+            "--markdown",
+            repo_relative(&args.root, &args.markdown),
+        );
+    }
+    if args.e2e
+        != args
+            .root
+            .join("artifacts/e2e/e2e_error_taxonomy_gate.e2e.json")
+    {
+        push_flag_value(&mut parts, "--e2e", repo_relative(&args.root, &args.e2e));
+    }
+    if let Some(case_id) = &args.case_filter {
+        push_flag_value(&mut parts, "--case", case_id.clone());
+    }
+    if args.enforce {
+        parts.push("--enforce".to_owned());
+    }
+    parts.join(" ")
+}
+
+fn push_flag_value(parts: &mut Vec<String>, flag: &str, value: String) {
+    parts.push(flag.to_owned());
+    parts.push(shell_word(&value));
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '/' | '_' | '-' | '=' | ':'))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 

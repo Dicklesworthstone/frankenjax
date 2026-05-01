@@ -165,6 +165,16 @@ struct CaseSpec {
 
 #[must_use]
 pub fn build_error_taxonomy_report(root: &Path) -> ErrorTaxonomyReport {
+    let outputs = ErrorTaxonomyOutputPaths::for_root(root);
+    build_error_taxonomy_report_for_outputs(root, &outputs.report, &outputs.markdown)
+}
+
+#[must_use]
+pub fn build_error_taxonomy_report_for_outputs(
+    root: &Path,
+    report_path: &Path,
+    markdown_path: &Path,
+) -> ErrorTaxonomyReport {
     let cases = case_specs()
         .into_iter()
         .map(|spec| build_case(root, spec))
@@ -201,7 +211,6 @@ pub fn build_error_taxonomy_report(root: &Path) -> ErrorTaxonomyReport {
         strict_hardened_divergence_count,
         allowed_divergence_count,
     };
-    let outputs = ErrorTaxonomyOutputPaths::for_root(root);
     let mut report = ErrorTaxonomyReport {
         schema_version: ERROR_TAXONOMY_REPORT_SCHEMA_VERSION.to_owned(),
         bead_id: ERROR_TAXONOMY_BEAD_ID.to_owned(),
@@ -218,15 +227,12 @@ pub fn build_error_taxonomy_report(root: &Path) -> ErrorTaxonomyReport {
         cases,
         issues: Vec::new(),
         artifact_refs: vec![
-            repo_relative_artifact(&outputs.report),
-            repo_relative_artifact(&outputs.markdown),
+            repo_relative_artifact(root, report_path),
+            repo_relative_artifact(root, markdown_path),
         ],
         replay_command: "./scripts/run_error_taxonomy_gate.sh --enforce".to_owned(),
     };
-    report.issues = validate_error_taxonomy_report(&report);
-    if !report.issues.is_empty() {
-        report.status = "fail".to_owned();
-    }
+    finalize_error_taxonomy_report(&mut report);
     report
 }
 
@@ -235,10 +241,18 @@ pub fn write_error_taxonomy_outputs(
     report_path: &Path,
     markdown_path: &Path,
 ) -> Result<ErrorTaxonomyReport, std::io::Error> {
-    let report = build_error_taxonomy_report(root);
-    write_json(report_path, &report)?;
-    write_markdown(markdown_path, &error_taxonomy_markdown(&report))?;
+    let report = build_error_taxonomy_report_for_outputs(root, report_path, markdown_path);
+    write_error_taxonomy_report_outputs(&report, report_path, markdown_path)?;
     Ok(report)
+}
+
+pub fn write_error_taxonomy_report_outputs(
+    report: &ErrorTaxonomyReport,
+    report_path: &Path,
+    markdown_path: &Path,
+) -> Result<(), std::io::Error> {
+    write_json(report_path, report)?;
+    write_markdown(markdown_path, &error_taxonomy_markdown(report))
 }
 
 #[must_use]
@@ -293,7 +307,11 @@ pub fn error_taxonomy_markdown(report: &ErrorTaxonomyReport) -> String {
             case.actual_error_class,
             case.panic_status,
             if case.strict_hardened_divergence {
-                "allowed"
+                if case.divergence_allowed {
+                    "allowed"
+                } else {
+                    "unapproved"
+                }
             } else {
                 "none"
             }
@@ -347,16 +365,47 @@ pub fn validate_error_taxonomy_report(report: &ErrorTaxonomyReport) -> Vec<Error
             "error taxonomy matrix must remain bound to frankenjax-cstq.8",
         ));
     }
+    if !matches!(report.status.as_str(), "pass" | "fail") {
+        issues.push(ErrorTaxonomyIssue::new(
+            "invalid_report_status",
+            "$.status",
+            "report status must be pass or fail",
+        ));
+    }
 
-    let allowed = report
-        .strict_hardened_divergence_allowlist
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
+    let required_cases = REQUIRED_CASES.iter().copied().collect::<BTreeSet<_>>();
+    let mut allowlist_counts = BTreeMap::<&str, usize>::new();
+    for allowed_case in &report.strict_hardened_divergence_allowlist {
+        *allowlist_counts.entry(allowed_case.as_str()).or_default() += 1;
+    }
+    for (allowed_case, count) in &allowlist_counts {
+        if !required_cases.contains(*allowed_case) {
+            issues.push(ErrorTaxonomyIssue::new(
+                "unknown_divergence_allowlist_case",
+                "$.strict_hardened_divergence_allowlist",
+                format!("allowlist case `{allowed_case}` is not a required taxonomy row"),
+            ));
+        }
+        if *count > 1 {
+            issues.push(ErrorTaxonomyIssue::new(
+                "duplicate_divergence_allowlist_case",
+                "$.strict_hardened_divergence_allowlist",
+                format!("allowlist case `{allowed_case}` appears {count} times"),
+            ));
+        }
+    }
+    let allowed = allowlist_counts.keys().copied().collect::<BTreeSet<_>>();
     let mut seen = BTreeMap::<&str, usize>::new();
     for (idx, case) in report.cases.iter().enumerate() {
         *seen.entry(case.case_id.as_str()).or_default() += 1;
         let path = format!("$.cases[{idx}]");
+        if !matches!(case.status.as_str(), "pass" | "fail") {
+            issues.push(ErrorTaxonomyIssue::new(
+                "invalid_case_status",
+                format!("{path}.status"),
+                format!("case `{}` must have status pass or fail", case.case_id),
+            ));
+        }
         if case.status != "pass" {
             issues.push(ErrorTaxonomyIssue::new(
                 "case_failed",
@@ -385,6 +434,8 @@ pub fn validate_error_taxonomy_report(report: &ErrorTaxonomyReport) -> Vec<Error
             ("boundary", case.boundary.as_str()),
             ("mode", case.mode.as_str()),
             ("input_class", case.input_class.as_str()),
+            ("expected_error_class", case.expected_error_class.as_str()),
+            ("actual_error_class", case.actual_error_class.as_str()),
             ("error_variant", case.error_variant.as_str()),
             ("message_shape", case.message_shape.as_str()),
             ("replay_hint", case.replay_hint.as_str()),
@@ -399,6 +450,21 @@ pub fn validate_error_taxonomy_report(report: &ErrorTaxonomyReport) -> Vec<Error
                     format!("case `{}` must set `{field}`", case.case_id),
                 ));
             }
+        }
+        if case.actual_error_class != "none"
+            && case
+                .actual_message
+                .as_deref()
+                .is_none_or(|message| message.trim().is_empty())
+        {
+            issues.push(ErrorTaxonomyIssue::new(
+                "missing_actual_error_message",
+                format!("{path}.actual_message"),
+                format!(
+                    "typed error row `{}` must capture the actual message",
+                    case.case_id
+                ),
+            ));
         }
         if case.evidence_refs.is_empty() {
             issues.push(ErrorTaxonomyIssue::new(
@@ -470,6 +536,87 @@ pub fn validate_error_taxonomy_report(report: &ErrorTaxonomyReport) -> Vec<Error
             "pass_count must match passing rows",
         ));
     }
+    if report.coverage.panic_free_count
+        != report
+            .cases
+            .iter()
+            .filter(|case| case.panic_status == "no_panic")
+            .count()
+    {
+        issues.push(ErrorTaxonomyIssue::new(
+            "bad_panic_free_count",
+            "$.coverage.panic_free_count",
+            "panic_free_count must match rows with no_panic status",
+        ));
+    }
+    if report.coverage.typed_error_count
+        != report
+            .cases
+            .iter()
+            .filter(|case| case.actual_error_class != "none")
+            .count()
+    {
+        issues.push(ErrorTaxonomyIssue::new(
+            "bad_typed_error_count",
+            "$.coverage.typed_error_count",
+            "typed_error_count must match non-success typed error rows",
+        ));
+    }
+    if report.coverage.success_rows
+        != report
+            .cases
+            .iter()
+            .filter(|case| case.actual_error_class == "none")
+            .count()
+    {
+        issues.push(ErrorTaxonomyIssue::new(
+            "bad_success_rows",
+            "$.coverage.success_rows",
+            "success_rows must match rows whose actual class is none",
+        ));
+    }
+    if report.coverage.strict_hardened_divergence_count
+        != report
+            .cases
+            .iter()
+            .filter(|case| case.strict_hardened_divergence)
+            .count()
+    {
+        issues.push(ErrorTaxonomyIssue::new(
+            "bad_strict_hardened_divergence_count",
+            "$.coverage.strict_hardened_divergence_count",
+            "strict_hardened_divergence_count must match divergent rows",
+        ));
+    }
+    if report.coverage.allowed_divergence_count
+        != report
+            .cases
+            .iter()
+            .filter(|case| case.strict_hardened_divergence && case.divergence_allowed)
+            .count()
+    {
+        issues.push(ErrorTaxonomyIssue::new(
+            "bad_allowed_divergence_count",
+            "$.coverage.allowed_divergence_count",
+            "allowed_divergence_count must match allowlisted divergent rows",
+        ));
+    }
+    if report.artifact_refs.is_empty() {
+        issues.push(ErrorTaxonomyIssue::new(
+            "missing_artifact_refs",
+            "$.artifact_refs",
+            "report must list the generated JSON and Markdown artifact refs",
+        ));
+    }
+    for (idx, artifact_ref) in report.artifact_refs.iter().enumerate() {
+        if artifact_ref.trim().is_empty() {
+            issues.push(ErrorTaxonomyIssue::new(
+                "blank_artifact_ref",
+                format!("$.artifact_refs[{idx}]"),
+                "artifact refs must not be blank",
+            ));
+        }
+    }
     if report.replay_command.trim().is_empty() {
         issues.push(ErrorTaxonomyIssue::new(
             "missing_replay_command",
@@ -479,6 +626,14 @@ pub fn validate_error_taxonomy_report(report: &ErrorTaxonomyReport) -> Vec<Error
     }
 
     issues
+}
+
+fn finalize_error_taxonomy_report(report: &mut ErrorTaxonomyReport) {
+    report.status = "pass".to_owned();
+    report.issues = validate_error_taxonomy_report(report);
+    if !report.issues.is_empty() {
+        report.status = "fail".to_owned();
+    }
 }
 
 fn build_case(root: &Path, spec: CaseSpec) -> ErrorTaxonomyCase {
@@ -1216,11 +1371,10 @@ fn tensor_f64(dims: &[u32], values: &[f64]) -> Result<Value, fj_core::ValueError
     .map(Value::Tensor)
 }
 
-fn repo_relative_artifact(path: &Path) -> String {
-    let text = path.display().to_string();
-    match text.find("artifacts/") {
-        Some(idx) => text[idx..].to_owned(),
-        None => text,
+fn repo_relative_artifact(root: &Path, path: &Path) -> String {
+    match path.strip_prefix(root) {
+        Ok(relative) => relative.display().to_string(),
+        Err(_) => path.display().to_string(),
     }
 }
 

@@ -1,7 +1,7 @@
 {
   "schema_version": "frankenjax.error-taxonomy-matrix.v1",
   "bead_id": "frankenjax-cstq.8",
-  "generated_at_unix_ms": 1777628988765,
+  "generated_at_unix_ms": 1777630085809,
   "status": "pass",
   "matrix_policy": "Every required cross-crate boundary must produce a typed, replayable, panic-free outcome with stable class, message shape, mode tag, boundary tag, and explicit strict/hardened divergence policy.",
   "coverage": {

@@ -5,8 +5,8 @@ use fj_conformance::e2e_log::{
 };
 use fj_conformance::error_taxonomy::{
     ERROR_TAXONOMY_BEAD_ID, ERROR_TAXONOMY_REPORT_SCHEMA_VERSION, ErrorTaxonomyReport,
-    build_error_taxonomy_report, error_taxonomy_markdown, error_taxonomy_summary_json,
-    validate_error_taxonomy_report, write_error_taxonomy_outputs,
+    build_error_taxonomy_report, build_error_taxonomy_report_for_outputs, error_taxonomy_markdown,
+    error_taxonomy_summary_json, validate_error_taxonomy_report, write_error_taxonomy_outputs,
 };
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -122,6 +122,43 @@ fn error_taxonomy_outputs_round_trip() {
     let markdown = std::fs::read_to_string(&markdown_path).expect("markdown should be readable");
     assert!(markdown.contains("Error Taxonomy Matrix Gate"));
     assert!(markdown.contains("No error taxonomy matrix issues found."));
+}
+
+#[test]
+fn error_taxonomy_custom_output_paths_are_reflected_in_artifact_refs() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let report_path = temp.path().join("custom/error_taxonomy_matrix.v1.json");
+    let markdown_path = temp.path().join("custom/error_taxonomy_matrix.v1.md");
+    let report = build_error_taxonomy_report_for_outputs(temp.path(), &report_path, &markdown_path);
+
+    assert_eq!(
+        report.artifact_refs,
+        vec![
+            "custom/error_taxonomy_matrix.v1.json".to_owned(),
+            "custom/error_taxonomy_matrix.v1.md".to_owned()
+        ]
+    );
+    assert!(validate_error_taxonomy_report(&report).is_empty());
+}
+
+#[test]
+fn error_taxonomy_validation_rejects_stale_coverage_and_missing_messages() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let mut report = build_error_taxonomy_report(temp.path());
+    report.coverage.typed_error_count = 0;
+    report
+        .cases
+        .iter_mut()
+        .find(|case| case.actual_error_class != "none")
+        .expect("there should be typed error rows")
+        .actual_message = None;
+
+    let issue_codes = validate_error_taxonomy_report(&report)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("bad_typed_error_count"));
+    assert!(issue_codes.contains("missing_actual_error_message"));
 }
 
 #[test]
