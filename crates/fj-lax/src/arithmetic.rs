@@ -981,11 +981,7 @@ fn eval_unary_complex_map(
     }
 }
 
-fn eval_unary_complex_to_real(
-    primitive: Primitive,
-    inputs: &[Value],
-    op: impl Fn(f64, f64) -> f64,
-) -> Result<Value, EvalError> {
+fn eval_unary_complex_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
             primitive,
@@ -994,22 +990,29 @@ fn eval_unary_complex_to_real(
         });
     }
 
-    let map_literal = |lit: Literal| -> Result<Literal, EvalError> {
-        let (re, im) = literal_to_complex_parts(primitive, lit)?;
-        Ok(Literal::from_f64(op(re, im)))
+    let abs_literal = |lit: Literal| -> Result<Literal, EvalError> {
+        match lit {
+            Literal::Complex64Bits(re_bits, im_bits) => Ok(Literal::from_f32(
+                f32::from_bits(re_bits).hypot(f32::from_bits(im_bits)),
+            )),
+            Literal::Complex128Bits(re_bits, im_bits) => Ok(Literal::from_f64(
+                f64::from_bits(re_bits).hypot(f64::from_bits(im_bits)),
+            )),
+            _ => Err(EvalError::TypeMismatch {
+                primitive,
+                detail: "abs expects complex-valued input",
+            }),
+        }
     };
 
     match &inputs[0] {
-        Value::Scalar(lit) => Ok(Value::Scalar(map_literal(*lit)?)),
+        Value::Scalar(lit) => Ok(Value::Scalar(abs_literal(*lit)?)),
         Value::Tensor(tensor) => {
             let out_dtype = real_dtype_from_complex(tensor.dtype);
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(map_literal)
-                .collect::<Result<Vec<_>, _>>()?;
-
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for lit in tensor.elements.iter().copied() {
+                elements.push(abs_literal(lit)?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
                 tensor.shape.clone(),
@@ -1036,7 +1039,7 @@ pub(crate) fn eval_neg(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
 
 pub(crate) fn eval_abs(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.first().is_some_and(value_contains_complex) {
-        eval_unary_complex_to_real(primitive, inputs, f64::hypot)
+        eval_unary_complex_abs(primitive, inputs)
     } else {
         eval_unary_int_or_float(
             primitive,

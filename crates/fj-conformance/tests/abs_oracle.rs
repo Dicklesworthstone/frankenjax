@@ -62,6 +62,21 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     )
 }
 
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_scalar(v: &Value) -> f64 {
     match v {
         Value::Tensor(t) => {
@@ -324,6 +339,36 @@ fn oracle_abs_complex_unit() {
     let input = make_complex128_tensor(&[], vec![(re, im)]);
     let result = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
     assert_close(extract_f64_scalar(&result), 1.0, 1e-14, "abs(e^(iπ/4))");
+}
+
+#[test]
+fn oracle_abs_complex64_returns_float32_literals() {
+    let input = make_complex64_tensor(&[2], vec![(3.0, 4.0), (5.0, 12.0)]);
+    let result = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
+    let Value::Tensor(tensor) = result else {
+        unreachable!("expected tensor result");
+    };
+    assert_eq!(tensor.dtype, DType::F32);
+    assert_eq!(tensor.shape.dims, vec![2]);
+    assert_eq!(
+        tensor.elements,
+        vec![Literal::from_f32(5.0), Literal::from_f32(13.0)]
+    );
+}
+
+#[test]
+fn oracle_abs_complex128_returns_float64_literals() {
+    let input = make_complex128_tensor(&[2], vec![(3.0, 4.0), (5.0, 12.0)]);
+    let result = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
+    let Value::Tensor(tensor) = result else {
+        unreachable!("expected tensor result");
+    };
+    assert_eq!(tensor.dtype, DType::F64);
+    assert_eq!(tensor.shape.dims, vec![2]);
+    assert_eq!(
+        tensor.elements,
+        vec![Literal::from_f64(5.0), Literal::from_f64(13.0)]
+    );
 }
 
 // ====================== 1D TENSOR ======================
