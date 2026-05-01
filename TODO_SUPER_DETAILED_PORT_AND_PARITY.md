@@ -92,16 +92,16 @@ Tracker parent: `frankenjax-fcxy`
 - [x] Run `cargo test -p fj-core transform_composition`.
 
 ### RC7. Composed-grad fallback (`frankenjax-fcxy.4`)
-- [ ] Claim `frankenjax-fcxy.4` after TTL hardening or if dispatch proves independently tractable.
-- [ ] Inspect `execute_grad` tail-transform fallback behavior in `fj-dispatch`.
-- [ ] Identify strict-mode versus hardened-mode behavior knobs available in dispatch options.
-- [ ] Prefer symbolic composition for tractable `grad(jit(...))` or `jit(grad(...))` cases.
-- [ ] If symbolic coverage cannot be completed in one slice, make finite difference opt-in or hardened-only.
-- [ ] Add error messaging that explains non-strict fallback requirements.
-- [ ] Add regression test for composed grad with tail `jit`.
-- [ ] Add regression test for composed grad with tail `vmap` where supported.
-- [ ] Add conformance coverage or explicit limitation entry for unsupported cases.
-- [ ] Run `cargo test -p fj-dispatch grad`.
+- [x] Claim `frankenjax-fcxy.4` after TTL hardening or if dispatch proves independently tractable.
+- [x] Inspect `execute_grad` tail-transform fallback behavior in `fj-dispatch`.
+- [x] Identify strict-mode versus hardened-mode behavior knobs available in dispatch options.
+- [x] Prefer symbolic composition for tractable `grad(jit(...))` or `jit(grad(...))` cases.
+- [x] If symbolic coverage cannot be completed in one slice, make finite difference explicitly gateable.
+- [x] Add error messaging that explains non-strict fallback requirements.
+- [x] Add regression test for composed grad with tail `jit`.
+- [x] Add regression test for composed grad with tail `vmap` where supported.
+- [x] Add conformance coverage or explicit limitation entry for unsupported cases.
+- [x] Run `cargo test -p fj-dispatch grad`.
 
 ### RC8. Global performance gates (`frankenjax-fcxy.5`)
 - [ ] Claim `frankenjax-fcxy.5` after correctness gates are not moving.
