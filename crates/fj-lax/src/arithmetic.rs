@@ -1647,18 +1647,17 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             Ok(Value::Scalar(result))
         }
         (Value::Tensor(x), Value::Scalar(lo), Value::Scalar(hi)) => {
-            let elements: Result<Vec<Literal>, EvalError> = x
-                .elements
-                .iter()
-                .map(|elem| {
-                    clamp_literal(*elem, *lo, *hi)
-                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })
-                })
-                .collect();
+            let mut elements = Vec::with_capacity(x.elements.len());
+            for elem in x.elements.iter().copied() {
+                elements.push(
+                    clamp_literal(elem, *lo, *hi)
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
+                );
+            }
             Ok(Value::Tensor(TensorValue::new(
                 x.dtype,
                 x.shape.clone(),
-                elements?,
+                elements,
             )?))
         }
         (Value::Tensor(x), Value::Tensor(lo), Value::Tensor(hi)) => {
@@ -1668,20 +1667,23 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                     detail: "clamp requires all tensor inputs to have the same shape".to_owned(),
                 });
             }
-            let elements: Result<Vec<Literal>, EvalError> = x
+            let mut elements = Vec::with_capacity(x.elements.len());
+            for ((xv, lov), hiv) in x
                 .elements
                 .iter()
-                .zip(lo.elements.iter())
-                .zip(hi.elements.iter())
-                .map(|((xv, lov), hiv)| {
-                    clamp_literal(*xv, *lov, *hiv)
-                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })
-                })
-                .collect();
+                .copied()
+                .zip(lo.elements.iter().copied())
+                .zip(hi.elements.iter().copied())
+            {
+                elements.push(
+                    clamp_literal(xv, lov, hiv)
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
+                );
+            }
             Ok(Value::Tensor(TensorValue::new(
                 x.dtype,
                 x.shape.clone(),
-                elements?,
+                elements,
             )?))
         }
         _ => Err(EvalError::Unsupported {

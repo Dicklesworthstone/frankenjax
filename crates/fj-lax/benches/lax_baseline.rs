@@ -147,6 +147,16 @@ fn bench_square_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_clamp_1k(c: &mut Criterion) {
+    let data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.002 - 0.5).collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let inputs = [input, Value::scalar_f64(0.0), Value::scalar_f64(1.0)];
+    let p = no_params();
+    c.bench_function("eval/clamp_1k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Clamp, &inputs, &p))
+    });
+}
+
 fn bench_fft_256(c: &mut Criterion) {
     let input = complex_vector(256);
     let p = no_params();
@@ -367,6 +377,7 @@ criterion_group!(
     bench_sin_1k,
     bench_exp_1k,
     bench_square_1k,
+    bench_clamp_1k,
     bench_fft_256,
     bench_ifft_256,
     bench_rfft_256,
