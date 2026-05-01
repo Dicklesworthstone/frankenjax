@@ -30,6 +30,7 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 | Interpreter path over canonical IR | parity_green | Interpreter/eval coverage in `crates/fj-interpreters/src/lib.rs` and staging tests; multi-output support via sub_jaxprs | Add broader higher-rank oracle parity fixtures |
 | Dispatch path + transform wrappers (`jit`/`grad`/`vmap`) | parity_green | Dispatch + composition tests in `crates/fj-dispatch/src/lib.rs`; e-graph optimization wired via `egraph_optimize` compile option; BatchTrace fast path for default `vmap`; `grad(jit(f))` uses symbolic AD and remaining finite-difference grad fallback is gateable with `allow_finite_diff_grad_fallback=false` or `deny` | Extend parity report against broader legacy transform matrix |
 | Cache-key determinism + strict/hardened split | parity_green | Determinism/mode-split tests in `crates/fj-cache/src/lib.rs`; strict-vs-hardened E2E in `artifacts/e2e/` | Component-by-component parity ledger against legacy cache-key behavior |
+| Cross-crate error taxonomy | parity_green | Error taxonomy matrix gate in `artifacts/conformance/error_taxonomy_matrix.v1.json`; E2E forensic log in `artifacts/e2e/e2e_error_taxonomy_gate.e2e.json`; covers IR validation, transform proof, primitive arity/type/shape, interpreter missing variables, cache strict/hardened unknown features, vmap axis mismatch, durability missing artifacts, unsupported transform tails, and unsupported control-flow rows | Keep new public error boundaries wired into the taxonomy gate before counting them as complete |
 | Decision/evidence ledger foundation | parity_green | Ledger/test coverage in `crates/fj-ledger/src/lib.rs`; audit-trail E2E in `artifacts/e2e/e2e_p2c004_evidence_ledger_audit_trail.e2e.json` | Add calibration/drift confidence reporting artifacts |
 | Conformance harness + transform bundle runner | parity_green | Harness/reporting code in `crates/fj-conformance/src/lib.rs`; 613 transform fixtures + 25 RNG fixtures + 33 linalg/FFT fixtures + 15 composition fixtures + 162 dtype-promotion fixtures captured from JAX 0.9.2; smoke/integration tests; linalg/FFT/durability/e-graph conformance tests; explicit higher-rank/edge-case oracle coverage in `tests/linalg_oracle.rs` and `tests/fft_oracle.rs` | Capture matching higher-rank/edge-case JAX fixtures so these scenarios also live in the fixture-backed parity bundles |
 | Legacy fixture capture automation | parity_green | Capture pipeline script in `crates/fj-conformance/scripts/capture_legacy_fixtures.py` (strict + fallback modes); strict-mode capture completed with JAX 0.9.2 in uv venv (Python 3.12); `_as_u32_list` updated for JAX 0.9+ PRNG key API | Automate periodic re-capture for regression detection |
@@ -71,6 +72,14 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 - Result: 21 rows pass: 18 supported rows execute under strict mode and 3 unsupported V1 rows fail closed with typed `TransformExecutionError` classes.
 - Performance sentinels: `perf_vmap_scan_loop_stack`, `perf_vmap_while_loop_stack`, `perf_jit_vmap_grad_cond`, and `perf_batched_switch` record p50/p95/p99 nanosecond timings plus Linux procfs peak RSS.
 - Validation: `cargo test -p fj-conformance --test transform_control_flow_gate -- --nocapture`, `./scripts/run_transform_control_flow_gate.sh --enforce`, and `./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_transform_control_flow_gate.e2e.json`.
+
+### 2026-05-01: Error taxonomy matrix gate (`frankenjax-cstq.8`)
+
+- Scope: cross-crate typed error taxonomy for user-visible strict/hardened boundaries.
+- Gate artifacts: `artifacts/conformance/error_taxonomy_matrix.v1.json`, `artifacts/conformance/error_taxonomy_matrix.v1.md`, and `artifacts/e2e/e2e_error_taxonomy_gate.e2e.json`.
+- Result: required rows pass for IR validation, transform proof hygiene, primitive arity/type/shape errors, interpreter missing variables, cache unknown-feature policy, vmap axis mismatch, durability missing artifacts, unsupported transform tails, and unsupported transform/control-flow rows.
+- Strict/hardened policy: the only allowlisted divergence is cache unknown-feature handling: strict mode rejects unknown incompatible features, while hardened mode preserves them in the deterministic key payload.
+- Validation: `cargo test -p fj-conformance --test error_taxonomy_gate -- --nocapture`, `./scripts/run_error_taxonomy_gate.sh --enforce`, and `./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_error_taxonomy_gate.e2e.json`.
 
 ### 2026-04-27: `frankenjax-3oq` FFT radix-2 fast path
 

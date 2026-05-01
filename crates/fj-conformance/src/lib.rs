@@ -4,6 +4,7 @@ pub mod architecture_decision;
 pub mod cache_lifecycle;
 pub mod durability;
 pub mod e2e_log;
+pub mod error_taxonomy;
 pub mod memory_performance;
 pub mod oracle_recapture;
 pub mod transform_control_flow;

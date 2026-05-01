@@ -1,0 +1,316 @@
+{
+  "schema_version": "frankenjax.error-taxonomy-matrix.v1",
+  "bead_id": "frankenjax-cstq.8",
+  "generated_at_unix_ms": 1777628988765,
+  "status": "pass",
+  "matrix_policy": "Every required cross-crate boundary must produce a typed, replayable, panic-free outcome with stable class, message shape, mode tag, boundary tag, and explicit strict/hardened divergence policy.",
+  "coverage": {
+    "required_case_count": 13,
+    "observed_case_count": 13,
+    "pass_count": 13,
+    "panic_free_count": 13,
+    "typed_error_count": 12,
+    "success_rows": 1,
+    "strict_hardened_divergence_count": 2,
+    "allowed_divergence_count": 2
+  },
+  "strict_hardened_divergence_allowlist": [
+    "cache_strict_unknown_feature",
+    "cache_hardened_unknown_feature"
+  ],
+  "cases": [
+    {
+      "case_id": "ir_validation_unknown_outvar",
+      "status": "pass",
+      "boundary": "fj-core::Jaxpr::validate_well_formed",
+      "mode": "strict_and_hardened",
+      "input_class": "jaxpr outvar has no defining input, const, or equation binding",
+      "expected_error_class": "ir_validation.unknown_outvar",
+      "actual_error_class": "ir_validation.unknown_outvar",
+      "error_variant": "JaxprValidationError::UnknownOutvar",
+      "message_shape": "outvar v{var} does not have a defining binding",
+      "actual_message": "outvar v99 does not have a defining binding",
+      "replay_hint": "Validate a Jaxpr whose only outvar is v99.",
+      "strict_behavior": "Rejects malformed IR with JaxprValidationError::UnknownOutvar.",
+      "hardened_behavior": "Same fail-closed typed rejection; no repair is attempted.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::JaxprValidationError"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case ir_validation_unknown_outvar"
+    },
+    {
+      "case_id": "transform_proof_duplicate_evidence",
+      "status": "pass",
+      "boundary": "fj-core::verify_transform_composition",
+      "mode": "strict_and_hardened",
+      "input_class": "TraceTransformLedger repeats an evidence id across two transforms",
+      "expected_error_class": "transform_proof.duplicate_evidence",
+      "actual_error_class": "transform_proof.duplicate_evidence",
+      "error_variant": "TransformCompositionError::DuplicateEvidence",
+      "message_shape": "transform evidence at index {index} duplicates an earlier evidence id: {evidence}",
+      "actual_message": "transform evidence at index 1 duplicates an earlier evidence id: jit:duplicate-proof",
+      "replay_hint": "Verify a JIT/JIT ledger with the same evidence string in both slots.",
+      "strict_behavior": "Rejects duplicated proof evidence.",
+      "hardened_behavior": "Same fail-closed typed rejection.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::TransformCompositionError"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case transform_proof_duplicate_evidence"
+    },
+    {
+      "case_id": "transform_proof_missing_evidence",
+      "status": "pass",
+      "boundary": "fj-core::verify_transform_composition",
+      "mode": "strict_and_hardened",
+      "input_class": "TraceTransformLedger has fewer evidence entries than transforms",
+      "expected_error_class": "transform_proof.evidence_count_mismatch",
+      "actual_error_class": "transform_proof.evidence_count_mismatch",
+      "error_variant": "TransformCompositionError::EvidenceCountMismatch",
+      "message_shape": "transform/evidence cardinality mismatch: transforms={transform_count}, evidence={evidence_count}",
+      "actual_message": "transform/evidence cardinality mismatch: transforms=1, evidence=0",
+      "replay_hint": "Verify a ledger with one JIT transform and zero evidence ids.",
+      "strict_behavior": "Rejects transform/evidence cardinality mismatch.",
+      "hardened_behavior": "Same fail-closed typed rejection.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::verify_transform_composition"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case transform_proof_missing_evidence"
+    },
+    {
+      "case_id": "primitive_arity_add",
+      "status": "pass",
+      "boundary": "fj-lax::eval_primitive",
+      "mode": "strict_and_hardened",
+      "input_class": "add called with one scalar operand",
+      "expected_error_class": "primitive.arity_mismatch",
+      "actual_error_class": "primitive.arity_mismatch",
+      "error_variant": "EvalError::ArityMismatch",
+      "message_shape": "arity mismatch for {primitive}: expected {expected}, got {actual}",
+      "actual_message": "arity mismatch for add: expected 2, got 1",
+      "replay_hint": "Evaluate add with a single I64 scalar input.",
+      "strict_behavior": "Returns EvalError::ArityMismatch.",
+      "hardened_behavior": "Same typed rejection; no operand synthesis.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-lax/src/arithmetic.rs::eval_binary_elementwise"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case primitive_arity_add"
+    },
+    {
+      "case_id": "primitive_shape_add_broadcast",
+      "status": "pass",
+      "boundary": "fj-lax::eval_primitive",
+      "mode": "strict_and_hardened",
+      "input_class": "add called with non-broadcastable [2] and [3] tensors",
+      "expected_error_class": "primitive.shape_mismatch",
+      "actual_error_class": "primitive.shape_mismatch",
+      "error_variant": "EvalError::ShapeMismatch",
+      "message_shape": "shape mismatch for {primitive}: left={left_shape} right={right_shape}",
+      "actual_message": "shape mismatch for add: left=[2] right=[3]",
+      "replay_hint": "Evaluate add on F64 vectors with lengths 2 and 3.",
+      "strict_behavior": "Returns EvalError::ShapeMismatch.",
+      "hardened_behavior": "Same typed rejection; no implicit resize.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-lax/src/arithmetic.rs::broadcast_binary_tensors"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case primitive_shape_add_broadcast"
+    },
+    {
+      "case_id": "primitive_type_sin_bool",
+      "status": "pass",
+      "boundary": "fj-lax::eval_primitive",
+      "mode": "strict_and_hardened",
+      "input_class": "sin called with bool scalar",
+      "expected_error_class": "primitive.type_mismatch",
+      "actual_error_class": "primitive.type_mismatch",
+      "error_variant": "EvalError::TypeMismatch",
+      "message_shape": "type mismatch for {primitive}: {detail}",
+      "actual_message": "type mismatch for sin: expected numeric scalar",
+      "replay_hint": "Evaluate sin(true).",
+      "strict_behavior": "Returns EvalError::TypeMismatch with numeric-scalar message shape.",
+      "hardened_behavior": "Same typed rejection; bool is not coerced for unary trig.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-lax/src/arithmetic.rs::eval_unary_elementwise"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case primitive_type_sin_bool"
+    },
+    {
+      "case_id": "interpreter_missing_variable",
+      "status": "pass",
+      "boundary": "fj-interpreters::eval_jaxpr",
+      "mode": "strict_and_hardened",
+      "input_class": "equation references v7 before any binding",
+      "expected_error_class": "interpreter.missing_variable",
+      "actual_error_class": "interpreter.missing_variable",
+      "error_variant": "InterpreterError::MissingVariable",
+      "message_shape": "missing variable v{var}",
+      "actual_message": "missing variable v7",
+      "replay_hint": "Evaluate a one-equation Jaxpr whose add input is an unbound var.",
+      "strict_behavior": "Returns InterpreterError::MissingVariable.",
+      "hardened_behavior": "Same typed rejection; no implicit zero/default binding.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-interpreters/src/lib.rs::resolve_equation_inputs"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case interpreter_missing_variable"
+    },
+    {
+      "case_id": "cache_strict_unknown_feature",
+      "status": "pass",
+      "boundary": "fj-cache::build_cache_key",
+      "mode": "strict",
+      "input_class": "cache key input contains unknown incompatible feature marker",
+      "expected_error_class": "cache.unknown_incompatible_features",
+      "actual_error_class": "cache.unknown_incompatible_features",
+      "error_variant": "CacheKeyError::UnknownIncompatibleFeatures",
+      "message_shape": "strict mode rejected unknown incompatible features: {features}",
+      "actual_message": "strict mode rejected unknown incompatible features: future_xla_flag",
+      "replay_hint": "Build a strict cache key with unknown_incompatible_features=[future_xla_flag].",
+      "strict_behavior": "Strict rejects unknown incompatible feature names.",
+      "hardened_behavior": "Hardened includes unknown names in the deterministic key payload.",
+      "strict_hardened_divergence": true,
+      "divergence_allowed": true,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs::build_cache_key"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case cache_strict_unknown_feature"
+    },
+    {
+      "case_id": "cache_hardened_unknown_feature",
+      "status": "pass",
+      "boundary": "fj-cache::build_cache_key",
+      "mode": "hardened",
+      "input_class": "cache key input contains unknown incompatible feature marker",
+      "expected_error_class": "none",
+      "actual_error_class": "none",
+      "error_variant": "ok",
+      "message_shape": "ok",
+      "actual_message": null,
+      "replay_hint": "Build a hardened cache key with unknown_incompatible_features=[future_xla_flag].",
+      "strict_behavior": "Strict rejects the same input.",
+      "hardened_behavior": "Hardened succeeds while preserving the feature in the hash payload.",
+      "strict_hardened_divergence": true,
+      "divergence_allowed": true,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs::canonical_payload"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case cache_hardened_unknown_feature"
+    },
+    {
+      "case_id": "vmap_axis_mismatch",
+      "status": "pass",
+      "boundary": "fj-dispatch::dispatch",
+      "mode": "strict_and_hardened",
+      "input_class": "vmap over two vectors with leading dimensions 2 and 3",
+      "expected_error_class": "transform_execution.vmap_mismatched_leading_dimension",
+      "actual_error_class": "transform_execution.vmap_mismatched_leading_dimension",
+      "error_variant": "TransformExecutionError::VmapMismatchedLeadingDimension",
+      "message_shape": "vmap leading-dimension mismatch: expected {expected}, got {actual}",
+      "actual_message": "vmap leading-dimension mismatch: expected 2, got 3",
+      "replay_hint": "Dispatch vmap(add) with vector lengths 2 and 3.",
+      "strict_behavior": "Returns TransformExecutionError::VmapMismatchedLeadingDimension.",
+      "hardened_behavior": "Same typed rejection; no truncation or padding.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::execute_vmap"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case vmap_axis_mismatch"
+    },
+    {
+      "case_id": "durability_missing_artifact",
+      "status": "pass",
+      "boundary": "fj-conformance::durability::encode_artifact_to_sidecar",
+      "mode": "strict_and_hardened",
+      "input_class": "durability sidecar generation points at a missing artifact path",
+      "expected_error_class": "durability.io",
+      "actual_error_class": "durability.io",
+      "error_variant": "DurabilityError::Io",
+      "message_shape": "io error: {detail}",
+      "actual_message": "io error: No such file or directory (os error 2)",
+      "replay_hint": "Attempt sidecar generation for a missing artifact file.",
+      "strict_behavior": "Returns DurabilityError::Io from the missing artifact read.",
+      "hardened_behavior": "Same typed rejection; no empty artifact is synthesized.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-conformance/src/durability.rs::encode_artifact_to_sidecar"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case durability_missing_artifact"
+    },
+    {
+      "case_id": "unsupported_transform_tail_without_fallback",
+      "status": "pass",
+      "boundary": "fj-dispatch::dispatch",
+      "mode": "strict_and_hardened",
+      "input_class": "grad(vmap(square)) with finite-difference fallback explicitly denied",
+      "expected_error_class": "transform_execution.finite_diff_grad_fallback_disabled",
+      "actual_error_class": "transform_execution.finite_diff_grad_fallback_disabled",
+      "error_variant": "TransformExecutionError::FiniteDiffGradFallbackDisabled",
+      "message_shape": "finite-difference grad fallback is disabled for remaining transform tail [{tail}]",
+      "actual_message": "finite-difference grad fallback is disabled for remaining transform tail [vmap]",
+      "replay_hint": "Dispatch grad(vmap(square)) with allow_finite_diff_grad_fallback=deny.",
+      "strict_behavior": "Rejects unsupported transform tail with typed fallback-disabled error.",
+      "hardened_behavior": "Same fail-closed transform policy.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::execute_grad"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case unsupported_transform_tail_without_fallback"
+    },
+    {
+      "case_id": "unsupported_control_flow_grad_vmap_vector",
+      "status": "pass",
+      "boundary": "fj-dispatch::dispatch",
+      "mode": "strict_and_hardened",
+      "input_class": "grad(vmap(cond)) row receives a vector first argument in V1 scope",
+      "expected_error_class": "transform_execution.non_scalar_gradient_input",
+      "actual_error_class": "transform_execution.non_scalar_gradient_input",
+      "error_variant": "TransformExecutionError::NonScalarGradientInput",
+      "message_shape": "grad currently requires scalar first input",
+      "actual_message": "grad currently requires scalar first input",
+      "replay_hint": "Dispatch grad(vmap(cond_select)) with a vector first argument.",
+      "strict_behavior": "Rejects the V1 non-scalar grad input before silently differentiating a vector contract.",
+      "hardened_behavior": "Same fail-closed transform/control-flow boundary.",
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "panic_status": "no_panic",
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::execute_grad",
+        "artifacts/conformance/transform_control_flow_matrix.v1.json"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case unsupported_control_flow_grad_vmap_vector"
+    }
+  ],
+  "issues": [],
+  "artifact_refs": [
+    "artifacts/conformance/error_taxonomy_matrix.v1.json",
+    "artifacts/conformance/error_taxonomy_matrix.v1.md"
+  ],
+  "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce"
+}

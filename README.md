@@ -819,6 +819,24 @@ cannot silently pass without evidence.
 Existing legacy/ad hoc E2E emitters must either write this shared schema directly or
 carry a temporary adapter bead before being counted as complete dashboard evidence.
 
+### Error Taxonomy Gate
+
+The cross-crate error taxonomy gate emits `artifacts/conformance/error_taxonomy_matrix.v1.json`,
+`artifacts/conformance/error_taxonomy_matrix.v1.md`, and
+`artifacts/e2e/e2e_error_taxonomy_gate.e2e.json`. It covers IR validation,
+transform proof errors, primitive arity/type/shape errors, interpreter missing variables,
+cache unknown-feature policy, vmap axis mismatch, durability failures, unsupported
+transform tails, and unsupported control-flow rows. Each row records boundary, mode,
+input class, expected/actual typed class, enum variant, stable message shape, panic
+status, evidence refs, strict/hardened behavior, and a replay command.
+
+```bash
+./scripts/run_error_taxonomy_gate.sh --enforce
+```
+
+The gate is intentionally exact: all malformed rows must be panic-free and return typed
+classes, while the hardened cache row is the only allowlisted strict/hardened divergence.
+
 ## Verification Commands
 
 ```bash

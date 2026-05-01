@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use fj_conformance::error_taxonomy::{ErrorTaxonomyReport, validate_error_taxonomy_report};
 use fj_conformance::transform_control_flow::{
     TransformControlFlowReport, validate_transform_control_flow_report,
 };
@@ -460,5 +461,63 @@ fn transform_control_flow_matrix_artifact_covers_required_rows() {
                 && sentinel.p99_ns >= sentinel.p95_ns
                 && sentinel.peak_rss_bytes.is_some_and(|rss| rss > 0)),
         "performance sentinels must record ordered p50/p95/p99 and non-zero peak RSS"
+    );
+}
+
+#[test]
+fn error_taxonomy_matrix_artifact_covers_required_rows() {
+    let root = repo_root();
+    let matrix_path = root.join("artifacts/conformance/error_taxonomy_matrix.v1.json");
+    let matrix = read_json(&matrix_path);
+    assert_eq!(
+        matrix["schema_version"], "frankenjax.error-taxonomy-matrix.v1",
+        "error taxonomy matrix schema marker changed"
+    );
+    assert_eq!(
+        matrix["bead_id"], "frankenjax-cstq.8",
+        "matrix must stay bound to the error taxonomy bead"
+    );
+    assert_eq!(matrix["status"], "pass", "error taxonomy matrix must pass");
+
+    let parsed: ErrorTaxonomyReport =
+        serde_json::from_value(matrix).expect("matrix artifact should parse");
+    let issues = validate_error_taxonomy_report(&parsed);
+    assert!(issues.is_empty(), "matrix validation issues: {issues:#?}");
+
+    let case_ids = parsed
+        .cases
+        .iter()
+        .map(|case| case.case_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "ir_validation_unknown_outvar",
+        "transform_proof_duplicate_evidence",
+        "transform_proof_missing_evidence",
+        "primitive_arity_add",
+        "primitive_shape_add_broadcast",
+        "primitive_type_sin_bool",
+        "interpreter_missing_variable",
+        "cache_strict_unknown_feature",
+        "cache_hardened_unknown_feature",
+        "vmap_axis_mismatch",
+        "durability_missing_artifact",
+        "unsupported_transform_tail_without_fallback",
+        "unsupported_control_flow_grad_vmap_vector",
+    ] {
+        assert!(case_ids.contains(required), "missing matrix row {required}");
+    }
+    assert_eq!(
+        parsed.coverage.panic_free_count,
+        parsed.cases.len(),
+        "every taxonomy row must be panic-free"
+    );
+    assert!(
+        parsed
+            .cases
+            .iter()
+            .all(|case| case.expected_error_class == case.actual_error_class
+                && !case.replay_command.trim().is_empty()
+                && !case.evidence_refs.is_empty()),
+        "rows must have exact typed classes, replay commands, and evidence refs"
     );
 }

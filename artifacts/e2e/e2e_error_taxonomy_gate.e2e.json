@@ -1,0 +1,321 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.8",
+  "scenario_id": "e2e_error_taxonomy_gate",
+  "test_id": "fj_error_taxonomy_gate",
+  "packet_id": null,
+  "command": [
+    "/tmp/frankenjax-codex-cstq8-target/debug/fj_error_taxonomy_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--report",
+    "/data/projects/frankenjax/artifacts/conformance/error_taxonomy_matrix.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/error_taxonomy_matrix.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/tmp/frankenjax-codex-cstq8-target",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/tmp/frankenjax-codex-cstq8-target",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777628988797
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "ir_validation_unknown_outvar",
+    "transform_proof_duplicate_evidence",
+    "transform_proof_missing_evidence",
+    "primitive_arity_add",
+    "primitive_shape_add_broadcast",
+    "primitive_type_sin_bool",
+    "interpreter_missing_variable",
+    "cache_strict_unknown_feature",
+    "cache_hardened_unknown_feature",
+    "vmap_axis_mismatch",
+    "durability_missing_artifact",
+    "unsupported_transform_tail_without_fallback",
+    "unsupported_control_flow_grad_vmap_vector"
+  ],
+  "oracle_ids": [
+    "local:error-taxonomy-matrix.v1"
+  ],
+  "transform_stack": [
+    "jit",
+    "grad",
+    "vmap",
+    "cache",
+    "durability"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "boundaries": [
+      "fj-cache::build_cache_key",
+      "fj-conformance::durability::encode_artifact_to_sidecar",
+      "fj-core::Jaxpr::validate_well_formed",
+      "fj-core::verify_transform_composition",
+      "fj-dispatch::dispatch",
+      "fj-interpreters::eval_jaxpr",
+      "fj-lax::eval_primitive"
+    ],
+    "case_filter": null,
+    "case_ids": [
+      "ir_validation_unknown_outvar",
+      "transform_proof_duplicate_evidence",
+      "transform_proof_missing_evidence",
+      "primitive_arity_add",
+      "primitive_shape_add_broadcast",
+      "primitive_type_sin_bool",
+      "interpreter_missing_variable",
+      "cache_strict_unknown_feature",
+      "cache_hardened_unknown_feature",
+      "vmap_axis_mismatch",
+      "durability_missing_artifact",
+      "unsupported_transform_tail_without_fallback",
+      "unsupported_control_flow_grad_vmap_vector"
+    ],
+    "matrix_policy": "Every required cross-crate boundary must produce a typed, replayable, panic-free outcome with stable class, message shape, mode tag, boundary tag, and explicit strict/hardened divergence policy.",
+    "workspace_root": "/data/projects/frankenjax"
+  },
+  "expected": {
+    "gate_status": "pass",
+    "panic_status": "no_panic",
+    "required_case_count": 13,
+    "strict_hardened_divergence_allowlist": [
+      "cache_strict_unknown_feature",
+      "cache_hardened_unknown_feature"
+    ]
+  },
+  "actual": {
+    "case_count": 13,
+    "cases": [
+      {
+        "actual_error_class": "ir_validation.unknown_outvar",
+        "boundary": "fj-core::Jaxpr::validate_well_formed",
+        "case_id": "ir_validation_unknown_outvar",
+        "divergence_allowed": false,
+        "expected_error_class": "ir_validation.unknown_outvar",
+        "input_class": "jaxpr outvar has no defining input, const, or equation binding",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "transform_proof.duplicate_evidence",
+        "boundary": "fj-core::verify_transform_composition",
+        "case_id": "transform_proof_duplicate_evidence",
+        "divergence_allowed": false,
+        "expected_error_class": "transform_proof.duplicate_evidence",
+        "input_class": "TraceTransformLedger repeats an evidence id across two transforms",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "transform_proof.evidence_count_mismatch",
+        "boundary": "fj-core::verify_transform_composition",
+        "case_id": "transform_proof_missing_evidence",
+        "divergence_allowed": false,
+        "expected_error_class": "transform_proof.evidence_count_mismatch",
+        "input_class": "TraceTransformLedger has fewer evidence entries than transforms",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "primitive.arity_mismatch",
+        "boundary": "fj-lax::eval_primitive",
+        "case_id": "primitive_arity_add",
+        "divergence_allowed": false,
+        "expected_error_class": "primitive.arity_mismatch",
+        "input_class": "add called with one scalar operand",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "primitive.shape_mismatch",
+        "boundary": "fj-lax::eval_primitive",
+        "case_id": "primitive_shape_add_broadcast",
+        "divergence_allowed": false,
+        "expected_error_class": "primitive.shape_mismatch",
+        "input_class": "add called with non-broadcastable [2] and [3] tensors",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "primitive.type_mismatch",
+        "boundary": "fj-lax::eval_primitive",
+        "case_id": "primitive_type_sin_bool",
+        "divergence_allowed": false,
+        "expected_error_class": "primitive.type_mismatch",
+        "input_class": "sin called with bool scalar",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "interpreter.missing_variable",
+        "boundary": "fj-interpreters::eval_jaxpr",
+        "case_id": "interpreter_missing_variable",
+        "divergence_allowed": false,
+        "expected_error_class": "interpreter.missing_variable",
+        "input_class": "equation references v7 before any binding",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "cache.unknown_incompatible_features",
+        "boundary": "fj-cache::build_cache_key",
+        "case_id": "cache_strict_unknown_feature",
+        "divergence_allowed": true,
+        "expected_error_class": "cache.unknown_incompatible_features",
+        "input_class": "cache key input contains unknown incompatible feature marker",
+        "mode": "strict",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": true
+      },
+      {
+        "actual_error_class": "none",
+        "boundary": "fj-cache::build_cache_key",
+        "case_id": "cache_hardened_unknown_feature",
+        "divergence_allowed": true,
+        "expected_error_class": "none",
+        "input_class": "cache key input contains unknown incompatible feature marker",
+        "mode": "hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": true
+      },
+      {
+        "actual_error_class": "transform_execution.vmap_mismatched_leading_dimension",
+        "boundary": "fj-dispatch::dispatch",
+        "case_id": "vmap_axis_mismatch",
+        "divergence_allowed": false,
+        "expected_error_class": "transform_execution.vmap_mismatched_leading_dimension",
+        "input_class": "vmap over two vectors with leading dimensions 2 and 3",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "durability.io",
+        "boundary": "fj-conformance::durability::encode_artifact_to_sidecar",
+        "case_id": "durability_missing_artifact",
+        "divergence_allowed": false,
+        "expected_error_class": "durability.io",
+        "input_class": "durability sidecar generation points at a missing artifact path",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "transform_execution.finite_diff_grad_fallback_disabled",
+        "boundary": "fj-dispatch::dispatch",
+        "case_id": "unsupported_transform_tail_without_fallback",
+        "divergence_allowed": false,
+        "expected_error_class": "transform_execution.finite_diff_grad_fallback_disabled",
+        "input_class": "grad(vmap(square)) with finite-difference fallback explicitly denied",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      },
+      {
+        "actual_error_class": "transform_execution.non_scalar_gradient_input",
+        "boundary": "fj-dispatch::dispatch",
+        "case_id": "unsupported_control_flow_grad_vmap_vector",
+        "divergence_allowed": false,
+        "expected_error_class": "transform_execution.non_scalar_gradient_input",
+        "input_class": "grad(vmap(cond)) row receives a vector first argument in V1 scope",
+        "mode": "strict_and_hardened",
+        "panic_status": "no_panic",
+        "status": "pass",
+        "strict_hardened_divergence": false
+      }
+    ],
+    "coverage": {
+      "allowed_divergence_count": 2,
+      "observed_case_count": 13,
+      "panic_free_count": 13,
+      "pass_count": 13,
+      "required_case_count": 13,
+      "strict_hardened_divergence_count": 2,
+      "success_rows": 1,
+      "typed_error_count": 12
+    },
+    "issue_count": 0,
+    "schema_version": "frankenjax.error-taxonomy-matrix.v1",
+    "status": "pass"
+  },
+  "tolerance": {
+    "policy_id": "exact_error_taxonomy_classes_and_replay_metadata",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "Every taxonomy row compares exact expected/actual class names and requires replay metadata."
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "error_taxonomy_matrix_report",
+      "path": "artifacts/conformance/error_taxonomy_matrix.v1.json",
+      "sha256": "046197b62a0f5fd0ba54ab3bf692fe571ab37ac99d7befe84820e606215afa33",
+      "required": true
+    },
+    {
+      "kind": "error_taxonomy_matrix_markdown",
+      "path": "artifacts/conformance/error_taxonomy_matrix.v1.md",
+      "sha256": "b9450288168134fb0ea1010cd4d1be23d2e4700bc330ec854d5de5aae225d42a",
+      "required": true
+    }
+  ],
+  "replay_command": "/tmp/frankenjax-codex-cstq8-target/debug/fj_error_taxonomy_gate --root /data/projects/frankenjax --report /data/projects/frankenjax/artifacts/conformance/error_taxonomy_matrix.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/error_taxonomy_matrix.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_error_taxonomy_gate.e2e.json --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.8",
+      "title": "Unify cross-crate error taxonomy conformance"
+    }
+  }
+}
