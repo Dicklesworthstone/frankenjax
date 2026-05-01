@@ -24,6 +24,32 @@ Required identity fields:
 - `result`
 - `seed` (when property test seed exists)
 
+## E2E Forensic Log Contract
+
+New E2E scenarios must emit `frankenjax.e2e-forensic-log.v1` records through the
+shared `fj_conformance::e2e_log` contract or an explicitly tracked adapter bead.
+
+Required replay and diagnosis fields include:
+
+- `bead_id`, `scenario_id`, `test_id`
+- `command`, `working_dir`, `replay_command`
+- `environment`, `feature_flags`, `fixture_ids`, `oracle_ids`
+- `transform_stack`, `mode`, `inputs`, `expected`, `actual`
+- `tolerance`, `error`, `timings`, `allocations`
+- hash-bound `artifacts`
+- `status`, `failure_summary`, `redactions`, `metadata`
+
+Validation commands:
+
+```bash
+./scripts/validate_e2e_logs.sh
+./scripts/bootstrap_e2e_forensic_log.sh
+```
+
+The validator accepts unknown future fields but rejects missing required fields,
+malformed status values, empty or redacted replay commands, stale artifact hashes,
+unredacted secret-like values, failing logs without summaries, and empty log sets.
+
 ## Property Test Configuration
 
 Use `fj_test_utils::property_test_case_count()` for test-case volume:
@@ -51,4 +77,3 @@ Initial floor targets:
 
 - core crates (`fj-core`, `fj-dispatch`, `fj-lax`, `fj-cache`): line >= 90%, branch >= 80%
 - supporting crates (`fj-ad`, `fj-interpreters`, `fj-runtime`, `fj-ledger`, `fj-egraph`, `fj-conformance`): line >= 85%, branch >= 75%
-

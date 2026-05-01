@@ -1,0 +1,14 @@
+{
+  "schema_version": "frankenjax.e2e-log-validation-report.v1",
+  "status": "pass",
+  "checked": 1,
+  "passed": 1,
+  "failed": 0,
+  "logs": [
+    {
+      "path": "/data/projects/frankenjax/artifacts/e2e/e2e_forensic_log_contract_bootstrap.e2e.json",
+      "status": "pass",
+      "issues": []
+    }
+  ]
+}

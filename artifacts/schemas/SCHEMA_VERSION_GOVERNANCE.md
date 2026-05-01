@@ -13,6 +13,7 @@ The following schema families are versioned and required for packet evidence and
 - `frankenjax.risk-note.v1`
 - `frankenjax.compatibility-matrix.v1`
 - `frankenjax.test-log.v1`
+- `frankenjax.e2e-forensic-log.v1`
 
 ## Stability Contract
 

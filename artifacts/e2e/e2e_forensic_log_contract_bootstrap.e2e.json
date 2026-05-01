@@ -1,0 +1,104 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.16",
+  "scenario_id": "e2e_forensic_log_contract_bootstrap",
+  "test_id": "e2e_forensic_log_contract::bootstrap_e2e_forensic_log_sample_validates",
+  "packet_id": "FJ-CSTQ-016",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "fj-conformance",
+    "--test",
+    "e2e_forensic_log_contract",
+    "--",
+    "bootstrap_e2e_forensic_log_sample_validates",
+    "--exact",
+    "--nocapture"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc nightly",
+    "cargo_version": "cargo nightly",
+    "cargo_target_dir": "<default>",
+    "env_vars": {
+      "RUSTUP_TOOLCHAIN": "nightly",
+      "API_TOKEN": "[REDACTED]"
+    },
+    "timestamp_unix_ms": 1777605600000
+  },
+  "feature_flags": [
+    "default"
+  ],
+  "fixture_ids": [
+    "fixture:e2e-forensic-log-contract-bootstrap"
+  ],
+  "oracle_ids": [
+    "oracle:none"
+  ],
+  "transform_stack": [
+    "jit",
+    "grad"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "description": "validate the shared log schema and hash-bound stdout artifact"
+  },
+  "expected": {
+    "validator_status": "pass",
+    "artifact_hash_matches": true
+  },
+  "actual": {
+    "validator_status": "pass",
+    "artifact_hash_matches": true
+  },
+  "tolerance": {
+    "policy_id": "exact",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "schema and hash validation are exact"
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 1,
+    "total_ms": 1
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "stdout_log",
+      "path": "artifacts/e2e/e2e_forensic_log_contract_bootstrap.stdout.log",
+      "sha256": "f163b2c98b908b66c20c4d0f40e64107209f5315be6c47bebb4dc299c30721e2",
+      "required": true
+    }
+  ],
+  "replay_command": "cargo test -p fj-conformance --test e2e_forensic_log_contract -- bootstrap_e2e_forensic_log_sample_validates --exact --nocapture",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [
+    {
+      "path": "$.environment.env_vars.API_TOKEN",
+      "reason": "secret-like env var"
+    }
+  ],
+  "metadata": {
+    "dashboard_lane": "e2e_logging",
+    "script": "scripts/bootstrap_e2e_forensic_log.sh"
+  }
+}

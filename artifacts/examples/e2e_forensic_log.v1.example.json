@@ -1,0 +1,91 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.16",
+  "scenario_id": "e2e_example_contract",
+  "test_id": "example::e2e_example_contract",
+  "packet_id": "FJ-CSTQ-016",
+  "command": [
+    "cargo",
+    "test",
+    "-p",
+    "fj-conformance"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc nightly",
+    "cargo_version": "cargo nightly",
+    "cargo_target_dir": "<default>",
+    "env_vars": {
+      "API_TOKEN": "[REDACTED]"
+    },
+    "timestamp_unix_ms": 1
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "fixture:example"
+  ],
+  "oracle_ids": [
+    "oracle:none"
+  ],
+  "transform_stack": [
+    "jit"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "x": 1
+  },
+  "expected": {
+    "value": 2
+  },
+  "actual": {
+    "value": 2
+  },
+  "tolerance": {
+    "policy_id": "exact",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": null
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 1,
+    "eval_ms": 1,
+    "verify_ms": 0,
+    "total_ms": 2
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "stdout_log",
+      "path": "artifacts/e2e/e2e_example_contract.stdout.log",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "required": false
+    }
+  ],
+  "replay_command": "cargo test -p fj-conformance --test e2e_example -- e2e_example_contract --exact --nocapture",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [
+    {
+      "path": "$.environment.env_vars.API_TOKEN",
+      "reason": "secret-like env var"
+    }
+  ],
+  "metadata": {
+    "dashboard_lane": "example"
+  }
+}

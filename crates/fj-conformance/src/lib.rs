@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 pub mod durability;
+pub mod e2e_log;
 
 use fj_core::{
     CompatibilityMode, ProgramSpec, TraceTransformLedger, Transform, Value, build_program,

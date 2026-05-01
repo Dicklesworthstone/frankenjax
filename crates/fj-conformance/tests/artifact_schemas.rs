@@ -83,6 +83,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "risk_note.v1",
         "compatibility_matrix.v1",
         "test_log.v1",
+        "e2e_forensic_log.v1",
         "failure_diagnostic.v1",
     ];
 

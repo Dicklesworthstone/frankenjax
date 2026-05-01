@@ -708,24 +708,73 @@ git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax
 
 ## E2E Forensic Logs
 
-Each E2E scenario produces a forensic JSON log at `artifacts/e2e/<scenario>.e2e.json` containing:
+Each E2E scenario produces a shared forensic JSON log at `artifacts/e2e/<scenario>.e2e.json`.
+New logs use `schema_version: "frankenjax.e2e-forensic-log.v1"` and are validated by the
+Rust checker in `fj-conformance` before dashboard ingestion. The contract includes the
+bead id, scenario id, exact command, working directory, environment fingerprint, feature
+flags, fixture/oracle ids, transform stack, strict/hardened mode, inputs, expected and
+actual results, tolerance policy, error taxonomy class, timings, allocation counters,
+hash-bound artifact references, replay command, status, redaction notes, and failure
+summary.
 
 ```json
 {
-  "scenario": "e2e_p2c001_full_dispatch_pipeline",
-  "replay_command": "cargo test -p fj-conformance --test e2e ...",
-  "input_capture": { "args": [...], "transforms": [...] },
-  "intermediate_states": {
-    "traced_jaxpr": { "equations": [...] },
-    "optimized_jaxpr": { "equations": [...] },
-    "ledger_entries": [...]
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.16",
+  "scenario_id": "e2e_p2c001_full_dispatch_pipeline",
+  "command": ["cargo", "test", "-p", "fj-conformance", "--test", "e2e", "--", "..."],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc nightly",
+    "cargo_version": "cargo nightly",
+    "cargo_target_dir": "<default>",
+    "env_vars": { "API_TOKEN": "[REDACTED]" },
+    "timestamp_unix_ms": 1777605600000
   },
-  "output_capture": { "values": [...], "dtype": "F64" },
-  "timing": { "trace_ms": 0.5, "dispatch_ms": 1.2, "eval_ms": 0.8 }
+  "feature_flags": ["default"],
+  "fixture_ids": ["fixture:legacy_transform_cases.v1"],
+  "oracle_ids": ["jax:0.9.2"],
+  "transform_stack": ["jit", "grad"],
+  "mode": "strict",
+  "inputs": { "args": [3.0] },
+  "expected": { "values": [6.0] },
+  "actual": { "values": [6.0] },
+  "tolerance": { "policy_id": "f64-default", "atol": 1e-12, "rtol": 1e-12, "ulp": null, "notes": null },
+  "error": { "expected": null, "actual": null, "taxonomy_class": "none" },
+  "timings": { "setup_ms": 0, "trace_ms": 1, "dispatch_ms": 2, "eval_ms": 1, "verify_ms": 1, "total_ms": 5 },
+  "allocations": { "allocation_count": null, "allocated_bytes": null, "peak_rss_bytes": null, "measurement_backend": "not_measured" },
+  "artifacts": [{ "kind": "stdout_log", "path": "artifacts/e2e/example.stdout.log", "sha256": "<64 hex chars>", "required": true }],
+  "replay_command": "cargo test -p fj-conformance --test e2e -- e2e_p2c001_full_dispatch_pipeline --exact --nocapture",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [{ "path": "$.environment.env_vars.API_TOKEN", "reason": "secret-like env var" }],
+  "metadata": {}
 }
 ```
 
-This enables full replay: given the input capture, you can re-run the exact same computation and verify the output matches. The intermediate states show the Jaxpr before and after optimization, and the ledger entries show every decision the dispatcher made. Timing breakdowns separate trace, dispatch, and evaluation phases for performance analysis.
+This enables full replay: given the log, users can re-run the exact command, verify
+the hash-bound artifacts, inspect strict/hardened mode, and compare expected versus
+actual results without source-code archaeology. Unknown fields are accepted for forward
+compatibility, but missing required fields, stale artifact hashes, redacted replay
+commands, unredacted secret-like values, malformed status values, and failing logs
+without summaries are rejected. Empty log sets are also rejected so dashboard jobs
+cannot silently pass without evidence.
+
+```bash
+# Validate the bootstrap contract sample
+./scripts/validate_e2e_logs.sh
+
+# Emit a dashboard-ready validation report for selected logs
+./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e
+
+# Exercise the bootstrap sample and validator together
+./scripts/bootstrap_e2e_forensic_log.sh
+```
+
+Existing legacy/ad hoc E2E emitters must either write this shared schema directly or
+carry a temporary adapter bead before being counted as complete dashboard evidence.
 
 ## Verification Commands
 

@@ -1,0 +1,3 @@
+bootstrap shared E2E forensic logging contract
+status=pass
+scenario=e2e_forensic_log_contract_bootstrap

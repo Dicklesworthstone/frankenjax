@@ -1,0 +1,373 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frankenjax.dev/schemas/e2e_forensic_log.v1.schema.json",
+  "title": "FrankenJAX E2E Forensic Log v1",
+  "description": "Shared replayable E2E evidence log for conformance, dashboard, durability, security, onboarding, and performance lanes.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "bead_id",
+    "scenario_id",
+    "test_id",
+    "command",
+    "working_dir",
+    "environment",
+    "feature_flags",
+    "fixture_ids",
+    "oracle_ids",
+    "transform_stack",
+    "mode",
+    "inputs",
+    "expected",
+    "actual",
+    "tolerance",
+    "error",
+    "timings",
+    "allocations",
+    "artifacts",
+    "replay_command",
+    "status",
+    "failure_summary",
+    "redactions",
+    "metadata"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frankenjax.e2e-forensic-log.v1"
+    },
+    "bead_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scenario_id": {
+      "type": "string",
+      "pattern": "^e2e_[A-Za-z0-9_]+$"
+    },
+    "test_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "packet_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "command": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "working_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "os",
+        "arch",
+        "rust_version",
+        "cargo_version",
+        "cargo_target_dir",
+        "env_vars",
+        "timestamp_unix_ms"
+      ],
+      "properties": {
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "arch": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rust_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cargo_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cargo_target_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "env_vars": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "timestamp_unix_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "feature_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "fixture_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "oracle_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "transform_stack": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "strict",
+        "hardened"
+      ]
+    },
+    "inputs": true,
+    "expected": true,
+    "actual": true,
+    "tolerance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "policy_id",
+        "atol",
+        "rtol",
+        "ulp",
+        "notes"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "atol": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "rtol": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ulp": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "notes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "expected",
+        "actual",
+        "taxonomy_class"
+      ],
+      "properties": {
+        "expected": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "actual": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "taxonomy_class": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "timings": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "setup_ms",
+        "trace_ms",
+        "dispatch_ms",
+        "eval_ms",
+        "verify_ms",
+        "total_ms"
+      ],
+      "properties": {
+        "setup_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "trace_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dispatch_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "eval_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "verify_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "allocations": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "allocation_count",
+        "allocated_bytes",
+        "peak_rss_bytes",
+        "measurement_backend"
+      ],
+      "properties": {
+        "allocation_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "allocated_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "peak_rss_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "measurement_backend": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "kind",
+          "path",
+          "sha256",
+          "required"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "replay_command": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "skip",
+        "timeout",
+        "crash",
+        "error"
+      ]
+    },
+    "failure_summary": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "redactions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "path",
+          "reason"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  }
+}

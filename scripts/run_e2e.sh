@@ -140,16 +140,48 @@ for entry in "${SELECTED[@]}"; do
   duration_ms=$((end_ms - start_ms))
 
   if [[ ! -f "$forensic_log" ]]; then
+    stdout_hash="$(sha256sum "$stdout_log" | awk '{print $1}')"
+    status="$( [[ $rc -eq 0 ]] && echo pass || echo fail )"
+    failure_summary_json="null"
+    if [[ $rc -ne 0 ]]; then
+      failure_summary_json="\"cargo test exited $rc; see stdout log\""
+    fi
     cat >"$forensic_log" <<JSON
 {
-  "schema_version": "frankenjax.e2e.log.v1",
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "unassigned",
   "scenario_id": "$scenario",
+  "test_id": "$test_bin::$scenario",
   "packet_id": "$packet",
-  "result": "$( [[ $rc -eq 0 ]] && echo pass || echo fail )",
-  "duration_ms": $duration_ms,
-  "details": "scenario did not emit forensic log; see stdout log",
+  "command": ["cargo", "test", "-p", "$pkg", "--test", "$test_bin", "--", "$scenario", "--exact", "--nocapture"],
+  "working_dir": "$ROOT_DIR",
+  "environment": {
+    "os": "$(uname -s)",
+    "arch": "$(uname -m)",
+    "rust_version": "$(rustc --version 2>/dev/null || printf 'rustc <unknown>')",
+    "cargo_version": "$(cargo --version 2>/dev/null || printf 'cargo <unknown>')",
+    "cargo_target_dir": "${CARGO_TARGET_DIR:-<default>}",
+    "env_vars": {},
+    "timestamp_unix_ms": $end_ms
+  },
+  "feature_flags": [],
+  "fixture_ids": [],
+  "oracle_ids": [],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {"scenario": "$scenario", "packet": "$packet"},
+  "expected": {"exit_code": 0},
+  "actual": {"exit_code": $rc},
+  "tolerance": {"policy_id": "exact_exit_code", "atol": null, "rtol": null, "ulp": null, "notes": "fallback log emitted by scripts/run_e2e.sh"},
+  "error": {"expected": null, "actual": null, "taxonomy_class": "none"},
+  "timings": {"setup_ms": 0, "trace_ms": 0, "dispatch_ms": 0, "eval_ms": 0, "verify_ms": $duration_ms, "total_ms": $duration_ms},
+  "allocations": {"allocation_count": null, "allocated_bytes": null, "peak_rss_bytes": null, "measurement_backend": "not_measured"},
+  "artifacts": [{"kind": "stdout_log", "path": "$stdout_log", "sha256": "$stdout_hash", "required": true}],
   "replay_command": "$replay_cmd",
-  "artifact_refs": ["$stdout_log"]
+  "status": "$status",
+  "failure_summary": $failure_summary_json,
+  "redactions": [],
+  "metadata": {"emitter": "scripts/run_e2e.sh", "fallback": true}
 }
 JSON
   fi

@@ -1,0 +1,5 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "scenario_id": "e2e_missing_required",
+  "status": "pass"
+}
