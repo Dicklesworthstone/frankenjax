@@ -84,18 +84,18 @@
       "lib_path": "/data/projects/frankenjax/crates/fj-conformance/src/lib.rs",
       "layer": "ops_harness",
       "normal_deps": [
+        "fj-ad",
         "fj-cache",
         "fj-core",
         "fj-dispatch",
+        "fj-interpreters",
         "fj-lax"
       ],
       "dev_deps": [
-        "fj-ad",
         "fj-api",
         "fj-backend-cpu",
         "fj-egraph",
         "fj-ffi",
-        "fj-interpreters",
         "fj-runtime",
         "fj-test-utils"
       ],
@@ -316,6 +316,10 @@
     },
     {
       "from": "fj-conformance",
+      "to": "fj-ad"
+    },
+    {
+      "from": "fj-conformance",
       "to": "fj-cache"
     },
     {
@@ -325,6 +329,10 @@
     {
       "from": "fj-conformance",
       "to": "fj-dispatch"
+    },
+    {
+      "from": "fj-conformance",
+      "to": "fj-interpreters"
     },
     {
       "from": "fj-conformance",

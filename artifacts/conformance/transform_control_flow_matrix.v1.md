@@ -34,10 +34,10 @@
 
 | Workload | Status | Iterations | p50 ns | p95 ns | p99 ns | Peak RSS bytes |
 |---|---:|---:|---:|---:|---:|---:|
-| `perf_vmap_scan_loop_stack` | `pass` | `16` | `98987` | `144353` | `144353` | `11866112` |
-| `perf_vmap_while_loop_stack` | `pass` | `16` | `107804` | `138162` | `138162` | `11870208` |
-| `perf_jit_vmap_grad_cond` | `pass` | `16` | `115208` | `133783` | `133783` | `11870208` |
-| `perf_batched_switch` | `pass` | `16` | `94760` | `257928` | `257928` | `11874304` |
+| `perf_vmap_scan_loop_stack` | `pass` | `16` | `108355` | `155184` | `155184` | `11706368` |
+| `perf_vmap_while_loop_stack` | `pass` | `16` | `113064` | `134695` | `134695` | `11710464` |
+| `perf_jit_vmap_grad_cond` | `pass` | `16` | `121079` | `179450` | `179450` | `11710464` |
+| `perf_batched_switch` | `pass` | `16` | `88678` | `123564` | `123564` | `11714560` |
 
 ## Issues
 

@@ -11,18 +11,34 @@ ENFORCE=()
 while (($#)); do
   case "$1" in
     --ledger)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --ledger requires a path" >&2
+        exit 2
+      fi
       LEDGER="$2"
       shift 2
       ;;
     --report)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --report requires a path" >&2
+        exit 2
+      fi
       REPORT="$2"
       shift 2
       ;;
     --markdown)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --markdown requires a path" >&2
+        exit 2
+      fi
       MARKDOWN="$2"
       shift 2
       ;;
     --e2e)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --e2e requires a path" >&2
+        exit 2
+      fi
       E2E="$2"
       shift 2
       ;;

@@ -177,6 +177,18 @@ fn redacted_replay_command_is_rejected() {
 }
 
 #[test]
+fn transient_target_binary_replay_command_is_rejected() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut value = valid_log_value(tmp.path());
+    value["replay_command"] = json!(
+        "/data/tmp/cargo-target-frankenjax-cstq6-conformance/debug/fj_cache_lifecycle_gate --enforce"
+    );
+
+    let codes = issue_codes(validate_e2e_log_value(&value, tmp.path()));
+    assert!(codes.contains(&"transient_replay_command".to_owned()));
+}
+
+#[test]
 fn failing_status_requires_failure_summary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut value = valid_log_value(tmp.path());
@@ -278,4 +290,25 @@ fn bootstrap_e2e_forensic_log_sample_validates() {
     let parsed = validate_e2e_log_path(&sample, &root).expect("bootstrap sample log validates");
     assert_eq!(parsed.bead_id, "frankenjax-cstq.16");
     assert_eq!(parsed.scenario_id, "e2e_forensic_log_contract_bootstrap");
+}
+
+#[test]
+fn committed_gate_logs_use_stable_script_replay_commands() {
+    let root = repo_root();
+    for rel_path in [
+        "artifacts/e2e/e2e_oracle_recapture_gate.e2e.json",
+        "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json",
+        "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json",
+        "artifacts/e2e/e2e_memory_performance_gate.e2e.json",
+        "artifacts/e2e/e2e_transform_control_flow_gate.e2e.json",
+        "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+    ] {
+        let parsed =
+            validate_e2e_log_path(&root.join(rel_path), &root).expect("gate log validates");
+        assert!(
+            parsed.replay_command.starts_with("./scripts/run_"),
+            "{rel_path} replay should use a stable wrapper script, got {}",
+            parsed.replay_command
+        );
+    }
 }

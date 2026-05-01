@@ -3,7 +3,7 @@
   "artifact_path": "/data/projects/frankenjax/artifacts/performance/memory_durability_probe.v1.json",
   "artifact_sha256_hex": "8e12f88b686e92f6e1496fd75d3b263d181c7cc704f4416c7f5093d5b5907235",
   "artifact_size": 149,
-  "generated_at_unix_ms": 1777624915116,
+  "generated_at_unix_ms": 1777630901866,
   "object_id_high": 10237518180602778358,
   "object_id_low": 16233629302606472765,
   "symbol_size": 256,

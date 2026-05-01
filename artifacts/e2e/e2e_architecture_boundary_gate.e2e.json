@@ -5,7 +5,7 @@
   "test_id": "fj_architecture_boundary_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-cstq12/debug/fj_architecture_boundary_gate",
+    "/data/tmp/cargo-target/debug/fj_architecture_boundary_gate",
     "--root",
     "/data/projects/frankenjax",
     "--report",
@@ -22,12 +22,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-cstq12",
+    "cargo_target_dir": "/data/tmp/cargo-target",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-cstq12",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777623983178
+    "timestamp_unix_ms": 1777630894711
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -60,7 +60,7 @@
       "ffi_boundary",
       "conformance_harness"
     ],
-    "normal_edge_count": 34,
+    "normal_edge_count": 36,
     "workspace_root": "/data/projects/frankenjax"
   },
   "expected": {
@@ -132,7 +132,7 @@
       }
     ],
     "issue_count": 0,
-    "normal_edge_count": 34,
+    "normal_edge_count": 36,
     "status": "pass"
   },
   "tolerance": {
@@ -165,17 +165,17 @@
     {
       "kind": "architecture_boundary_report",
       "path": "artifacts/conformance/architecture_boundary_decision.v1.json",
-      "sha256": "072c14d41d1b478d0b07be446f216b191d11b10621d21076a121e1679c139252",
+      "sha256": "0c78b2bd32b500db773dc11915b2b33c2a08c8e79edd7cb02d6b4ff6b9c4e788",
       "required": true
     },
     {
       "kind": "architecture_boundary_markdown",
       "path": "artifacts/conformance/architecture_boundary_decision.v1.md",
-      "sha256": "bd66e4b0f650dfedf69cf39f2b63f69080b7d13adf186d0c40e6163867276755",
+      "sha256": "67b6c3e8fd357c305b488471dc5ac35b6ffe356444d013623af2ec364a186abb",
       "required": true
     }
   ],
-  "replay_command": "/data/tmp/cargo-target-frankenjax-cstq12/debug/fj_architecture_boundary_gate --root /data/projects/frankenjax --report /data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/architecture_boundary_decision.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_architecture_boundary_gate.e2e.json --enforce",
+  "replay_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
   "status": "pass",
   "failure_summary": null,
   "redactions": [],

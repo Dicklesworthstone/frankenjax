@@ -27,7 +27,7 @@
       "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777626549436
+    "timestamp_unix_ms": 1777630906182
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -381,40 +381,40 @@
       {
         "delta_rss_bytes": 0,
         "iterations": 16,
-        "p50_ns": 98987,
-        "p95_ns": 144353,
-        "p99_ns": 144353,
-        "peak_rss_bytes": 11866112,
+        "p50_ns": 108355,
+        "p95_ns": 155184,
+        "p99_ns": 155184,
+        "peak_rss_bytes": 11706368,
         "status": "pass",
         "workload_id": "perf_vmap_scan_loop_stack"
       },
       {
         "delta_rss_bytes": 0,
         "iterations": 16,
-        "p50_ns": 107804,
-        "p95_ns": 138162,
-        "p99_ns": 138162,
-        "peak_rss_bytes": 11870208,
+        "p50_ns": 113064,
+        "p95_ns": 134695,
+        "p99_ns": 134695,
+        "peak_rss_bytes": 11710464,
         "status": "pass",
         "workload_id": "perf_vmap_while_loop_stack"
       },
       {
         "delta_rss_bytes": 0,
         "iterations": 16,
-        "p50_ns": 115208,
-        "p95_ns": 133783,
-        "p99_ns": 133783,
-        "peak_rss_bytes": 11870208,
+        "p50_ns": 121079,
+        "p95_ns": 179450,
+        "p99_ns": 179450,
+        "peak_rss_bytes": 11710464,
         "status": "pass",
         "workload_id": "perf_jit_vmap_grad_cond"
       },
       {
         "delta_rss_bytes": 4096,
         "iterations": 16,
-        "p50_ns": 94760,
-        "p95_ns": 257928,
-        "p99_ns": 257928,
-        "peak_rss_bytes": 11874304,
+        "p50_ns": 88678,
+        "p95_ns": 123564,
+        "p99_ns": 123564,
+        "peak_rss_bytes": 11714560,
         "status": "pass",
         "workload_id": "perf_batched_switch"
       }
@@ -446,24 +446,24 @@
   "allocations": {
     "allocation_count": null,
     "allocated_bytes": null,
-    "peak_rss_bytes": 11874304,
+    "peak_rss_bytes": 11714560,
     "measurement_backend": "linux_procfs_status_vm_hwm"
   },
   "artifacts": [
     {
       "kind": "transform_control_flow_matrix_report",
       "path": "artifacts/conformance/transform_control_flow_matrix.v1.json",
-      "sha256": "d432a81f9960cef7df95f1b3f733acd745a0b3e0c8595a298dadcecd2229e254",
+      "sha256": "91cab66ca8d0b36b49cf4745a14b1710e555d09fd6a5860a5ae4e7ddfa9ff4d4",
       "required": true
     },
     {
       "kind": "transform_control_flow_matrix_markdown",
       "path": "artifacts/conformance/transform_control_flow_matrix.v1.md",
-      "sha256": "6a5abde1c7d2a7ac92289d7f811d33803e27199afc72e2870c7e6dde7c276355",
+      "sha256": "237e4ca4c019583832c4e7bef0f453da61b01ec71b2ddea9315508615782f365",
       "required": true
     }
   ],
-  "replay_command": "/data/tmp/cargo-target/debug/fj_transform_control_flow_gate --root /data/projects/frankenjax --report /data/projects/frankenjax/artifacts/conformance/transform_control_flow_matrix.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/transform_control_flow_matrix.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_transform_control_flow_gate.e2e.json --enforce",
+  "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce",
   "status": "pass",
   "failure_summary": null,
   "redactions": [],

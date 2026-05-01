@@ -186,7 +186,7 @@ fn write_forensic_log(
         artifact_ref(&args.root, &args.report, "architecture_boundary_report")?,
         artifact_ref(&args.root, &args.markdown, "architecture_boundary_markdown")?,
     ];
-    log.replay_command = std::env::args().collect::<Vec<_>>().join(" ");
+    log.replay_command = stable_replay_command(args);
     if status.requires_failure_summary() {
         log.failure_summary = Some(
             "architecture boundary gate found dependency, owner, or decision-record issues; see report artifact"
@@ -216,6 +216,57 @@ fn repo_relative(root: &Path, path: &Path) -> String {
     match path.strip_prefix(root) {
         Ok(path) => path.display().to_string(),
         Err(_) => path.display().to_string(),
+    }
+}
+
+fn stable_replay_command(args: &Args) -> String {
+    let mut parts = vec!["./scripts/run_architecture_boundary_gate.sh".to_owned()];
+    let default_report = args
+        .root
+        .join("artifacts/conformance/architecture_boundary_decision.v1.json");
+    let default_markdown = args
+        .root
+        .join("artifacts/conformance/architecture_boundary_decision.v1.md");
+    let default_e2e = args
+        .root
+        .join("artifacts/e2e/e2e_architecture_boundary_gate.e2e.json");
+
+    if args.report != default_report {
+        push_flag_value(
+            &mut parts,
+            "--report",
+            repo_relative(&args.root, &args.report),
+        );
+    }
+    if args.markdown != default_markdown {
+        push_flag_value(
+            &mut parts,
+            "--markdown",
+            repo_relative(&args.root, &args.markdown),
+        );
+    }
+    if args.e2e != default_e2e {
+        push_flag_value(&mut parts, "--e2e", repo_relative(&args.root, &args.e2e));
+    }
+    if args.enforce {
+        parts.push("--enforce".to_owned());
+    }
+    parts.join(" ")
+}
+
+fn push_flag_value(parts: &mut Vec<String>, flag: &str, value: String) {
+    parts.push(flag.to_owned());
+    parts.push(shell_word(&value));
+}
+
+fn shell_word(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '/' | '_' | '-' | '=' | ':'))
+    {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 

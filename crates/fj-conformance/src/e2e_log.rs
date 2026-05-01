@@ -388,6 +388,13 @@ pub fn validate_e2e_log_value(
             "replay_command must not be redacted",
         ));
     }
+    if replay_command_uses_transient_cargo_binary(&parsed.replay_command) {
+        issues.push(E2ELogValidationIssue::new(
+            "transient_replay_command",
+            "$.replay_command",
+            "replay_command must use a stable repo command, not a cargo target binary path",
+        ));
+    }
 
     if parsed.status.requires_failure_summary()
         && parsed
@@ -642,6 +649,15 @@ fn is_redacted_text(text: &str) -> bool {
         normalized.as_str(),
         "[redacted]" | "<redacted>" | "redacted" | "***redacted***"
     )
+}
+
+fn replay_command_uses_transient_cargo_binary(command: &str) -> bool {
+    let Some(first_word) = command.split_whitespace().next() else {
+        return false;
+    };
+    let executable = first_word.trim_matches(['\'', '"']);
+    (executable.contains("/target/") || executable.contains("cargo-target"))
+        && (executable.contains("/debug/") || executable.contains("/release/"))
 }
 
 fn looks_sensitive_key(key: &str) -> bool {

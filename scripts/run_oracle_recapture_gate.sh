@@ -12,7 +12,7 @@ REQUIRE_BASELINE=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/run_oracle_recapture_gate.sh [--baseline matrix.json] [--require-baseline] [--enforce]
+Usage: ./scripts/run_oracle_recapture_gate.sh [--matrix json] [--drift json] [--markdown md] [--e2e json] [--baseline matrix.json] [--require-baseline] [--enforce]
 
 Builds the oracle recapture matrix, drift report, markdown preview, and shared-schema
 E2E forensic log for frankenjax-cstq.1.
@@ -21,6 +21,38 @@ USAGE
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --matrix)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --matrix requires a path" >&2
+        exit 2
+      fi
+      MATRIX_PATH="$2"
+      shift 2
+      ;;
+    --drift)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --drift requires a path" >&2
+        exit 2
+      fi
+      DRIFT_PATH="$2"
+      shift 2
+      ;;
+    --markdown)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --markdown requires a path" >&2
+        exit 2
+      fi
+      MARKDOWN_PATH="$2"
+      shift 2
+      ;;
+    --e2e)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --e2e requires a path" >&2
+        exit 2
+      fi
+      E2E_PATH="$2"
+      shift 2
+      ;;
     --baseline)
       if [[ $# -lt 2 ]]; then
         echo "error: --baseline requires a path" >&2

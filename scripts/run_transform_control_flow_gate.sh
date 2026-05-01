@@ -10,14 +10,26 @@ ENFORCE=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --report)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --report requires a path" >&2
+        exit 2
+      fi
       REPORT="$2"
       shift 2
       ;;
     --markdown)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --markdown requires a path" >&2
+        exit 2
+      fi
       MARKDOWN="$2"
       shift 2
       ;;
     --e2e)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --e2e requires a path" >&2
+        exit 2
+      fi
       E2E="$2"
       shift 2
       ;;

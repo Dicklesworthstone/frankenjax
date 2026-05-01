@@ -5,7 +5,7 @@
   "test_id": "fj_oracle_recapture_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-cstq1-cli/debug/fj_oracle_recapture_gate",
+    "/data/tmp/cargo-target/debug/fj_oracle_recapture_gate",
     "--root",
     "/data/projects/frankenjax",
     "--matrix",
@@ -23,12 +23,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-cstq1-cli",
+    "cargo_target_dir": "/data/tmp/cargo-target",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-cstq1-cli",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777621283230
+    "timestamp_unix_ms": 1777630850923
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -116,13 +116,13 @@
     {
       "kind": "oracle_recapture_matrix",
       "path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
-      "sha256": "9d166f767afba43ecdd7606be981f2f84114a902b4ba598389c42f79abcbe1d9",
+      "sha256": "6bd50abbfb6227eb4bdbe8844f4aa6dc770db91c7c7a6a72f0451e6a27970885",
       "required": true
     },
     {
       "kind": "oracle_drift_report",
       "path": "artifacts/conformance/oracle_drift_report.v1.json",
-      "sha256": "4a06b3f864cb2990ff19e918933354dfb89a413d02d9de3aaab9c95668965538",
+      "sha256": "75b841b630d148089c190f2dca6faee478a675724096f34c380498af866aac86",
       "required": true
     },
     {
@@ -132,7 +132,7 @@
       "required": true
     }
   ],
-  "replay_command": "/data/tmp/cargo-target-frankenjax-cstq1-cli/debug/fj_oracle_recapture_gate --root /data/projects/frankenjax --matrix /data/projects/frankenjax/artifacts/conformance/oracle_recapture_matrix.v1.json --drift /data/projects/frankenjax/artifacts/conformance/oracle_drift_report.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/oracle_recapture_matrix.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_oracle_recapture_gate.e2e.json",
+  "replay_command": "./scripts/run_oracle_recapture_gate.sh",
   "status": "fail",
   "failure_summary": "oracle recapture gate found 5 issue(s); see drift report",
   "redactions": [],
