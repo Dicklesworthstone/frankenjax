@@ -1,6 +1,6 @@
 //! Buffer types for device-side memory management.
 //!
-//! V1 scope: host-resident buffers backed by Vec<u8>. Buffers represent
+//! V1 scope: host-resident buffers backed by `Vec<u8>`. Buffers represent
 //! owned, contiguous memory regions. The CPU backend allocates buffers
 //! via the Rust global allocator.
 //!

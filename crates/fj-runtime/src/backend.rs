@@ -85,7 +85,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<Vec<Value>, BackendError>;
 
     /// Allocate a buffer on the specified device.
-    /// V1 (CPU): wraps a Vec<u8> on the host.
+    /// V1 (CPU): wraps a `Vec<u8>` on the host.
     /// Legacy anchor: P2C006-A10 (Buffer), P2C006-A25 (memory_stats).
     fn allocate(&self, size_bytes: usize, device: DeviceId) -> Result<Buffer, BackendError>;
 

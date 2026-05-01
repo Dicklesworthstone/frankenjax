@@ -973,10 +973,10 @@ pub struct Equation {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<String>,
     /// Nested sub-jaxprs for control-flow primitives.
-    /// For Cond: [true_branch, false_branch].
-    /// For Scan: [body].
-    /// For While: [cond, body].
-    /// For Switch: [branch0, branch1, ...].
+    /// For Cond: `[true_branch, false_branch]`.
+    /// For Scan: `[body]`.
+    /// For While: `[cond, body]`.
+    /// For Switch: `[branch0, branch1, ...]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sub_jaxprs: Vec<Jaxpr>,
 }
