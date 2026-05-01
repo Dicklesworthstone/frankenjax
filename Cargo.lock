@@ -718,6 +718,7 @@ dependencies = [
  "fj-core",
  "fj-test-utils",
  "proptest",
+ "serde",
  "sha2 0.10.9",
 ]
 

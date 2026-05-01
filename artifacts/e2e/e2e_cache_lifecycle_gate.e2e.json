@@ -1,0 +1,223 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.6",
+  "scenario_id": "e2e_cache_lifecycle_gate",
+  "test_id": "fj_cache_lifecycle_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-cstq6-conformance/debug/fj_cache_lifecycle_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--ledger",
+    "/data/projects/frankenjax/artifacts/conformance/cache_legacy_parity_ledger.v1.json",
+    "--report",
+    "/data/projects/frankenjax/artifacts/conformance/cache_lifecycle_report.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/cache_legacy_parity_ledger.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-cstq6-conformance",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-cstq6-conformance",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777622715559
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "compile_option_ordering",
+    "transform_order_differentiation",
+    "strict_unknown_metadata_rejection",
+    "hardened_unknown_metadata_inclusion",
+    "custom_hook_key_material",
+    "namespace_version_material",
+    "hostile_key_material_no_alias",
+    "corrupt_read_bypass",
+    "failed_write_stays_miss"
+  ],
+  "oracle_ids": [
+    "P2C005-A01,P2C005-A02",
+    "P2C005-A10",
+    "P2C005-A11,P2C005-A16",
+    "P2C005-A12,P2C005-A13",
+    "P2C005-A03,P2C005-A18",
+    "P2C005-A01,P2C005-A10",
+    "P2C005-A12,P2C005-A15",
+    "P2C005-A04,P2C005-A06,P2C005-A13",
+    "P2C005-A05,P2C005-A07",
+    "P2C005-A04,P2C005-A07",
+    "P2C005-A02",
+    "P2C005-A08"
+  ],
+  "transform_stack": [
+    "jit",
+    "grad,vmap",
+    "vmap,grad"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "key_namespace": "fjx",
+    "ledger_schema": "frankenjax.cache-legacy-parity-ledger.v1",
+    "scenario_ids": [
+      "compile_option_ordering",
+      "transform_order_differentiation",
+      "strict_unknown_metadata_rejection",
+      "hardened_unknown_metadata_inclusion",
+      "custom_hook_key_material",
+      "namespace_version_material",
+      "hostile_key_material_no_alias",
+      "corrupt_read_bypass",
+      "failed_write_stays_miss"
+    ]
+  },
+  "expected": {
+    "all_scenarios": "pass",
+    "gate_status": "pass",
+    "ledger_issues": 0
+  },
+  "actual": {
+    "gate_status": "pass",
+    "ledger_issues": [],
+    "ledger_rows": 12,
+    "required_surfaces": 11,
+    "scenario_count": 9,
+    "scenario_status": [
+      {
+        "actual": "compile option insertion order ignored",
+        "ledger_rows": [
+          "compile-options-sorted"
+        ],
+        "scenario_id": "compile_option_ordering",
+        "status": "pass"
+      },
+      {
+        "actual": "transform order separated",
+        "ledger_rows": [
+          "transform-stack-order"
+        ],
+        "scenario_id": "transform_order_differentiation",
+        "status": "pass"
+      },
+      {
+        "actual": "strict mode rejected unknown incompatible features: legacy_unknown_xla_flag",
+        "ledger_rows": [
+          "unknown-metadata-policy"
+        ],
+        "scenario_id": "strict_unknown_metadata_rejection",
+        "status": "pass"
+      },
+      {
+        "actual": "unknown metadata changed key",
+        "ledger_rows": [
+          "unknown-metadata-policy"
+        ],
+        "scenario_id": "hardened_unknown_metadata_inclusion",
+        "status": "pass"
+      },
+      {
+        "actual": "custom hook separated",
+        "ledger_rows": [
+          "custom-cache-hook-material"
+        ],
+        "scenario_id": "custom_hook_key_material",
+        "status": "pass"
+      },
+      {
+        "actual": "namespace version separated",
+        "ledger_rows": [
+          "namespace-version-material"
+        ],
+        "scenario_id": "namespace_version_material",
+        "status": "pass"
+      },
+      {
+        "actual": "hostile material separated",
+        "ledger_rows": [
+          "hostile-key-material"
+        ],
+        "scenario_id": "hostile_key_material_no_alias",
+        "status": "pass"
+      },
+      {
+        "actual": "Corrupted { key: \"fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8\" }",
+        "ledger_rows": [
+          "corrupt-read-bypass"
+        ],
+        "scenario_id": "corrupt_read_bypass",
+        "status": "pass"
+      },
+      {
+        "actual": "Miss",
+        "ledger_rows": [
+          "stale-write-blocking"
+        ],
+        "scenario_id": "failed_write_stays_miss",
+        "status": "pass"
+      }
+    ]
+  },
+  "tolerance": {
+    "policy_id": "exact_cache_key_lifecycle",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "cache key equality, inequality, rejection, corruption, and write-blocking outcomes are exact"
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "cache_legacy_parity_ledger",
+      "path": "artifacts/conformance/cache_legacy_parity_ledger.v1.json",
+      "sha256": "b61e324ccceebbd3f0aeccaec0eea274d91ef84edfef7a7c4154124bd4395ea0",
+      "required": true
+    },
+    {
+      "kind": "cache_lifecycle_report",
+      "path": "artifacts/conformance/cache_lifecycle_report.v1.json",
+      "sha256": "1ba95cd9529697b404fbd09e38229259e2a3e8c9f77ce3cd937ef25686bbdf1b",
+      "required": true
+    },
+    {
+      "kind": "cache_legacy_parity_markdown",
+      "path": "artifacts/conformance/cache_legacy_parity_ledger.v1.md",
+      "sha256": "55bb9c44a84363384e8bd6b081488772ad6ab1bd2ca5e2744c5ba3a81d28fbf1",
+      "required": true
+    }
+  ],
+  "replay_command": "/data/tmp/cargo-target-frankenjax-cstq6-conformance/debug/fj_cache_lifecycle_gate --root /data/projects/frankenjax --ledger /data/projects/frankenjax/artifacts/conformance/cache_legacy_parity_ledger.v1.json --report /data/projects/frankenjax/artifacts/conformance/cache_lifecycle_report.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/cache_legacy_parity_ledger.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.6",
+      "title": "Create cache-key legacy parity ledger and lifecycle conformance"
+    }
+  }
+}

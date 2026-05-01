@@ -136,25 +136,27 @@ impl FileCache {
 impl CacheBackend for FileCache {
     fn get(&self, key: &CacheKey) -> Option<CachedArtifact> {
         let path = self.path_for(key);
-        let data = std::fs::read(&path).ok()?;
+        let bytes = std::fs::read(&path).ok()?;
 
-        // Integrity check: recompute SHA-256 and compare with stored digest.
-        let integrity_sha256_hex = crate::sha256_hex(&data);
-        Some(CachedArtifact {
-            data,
-            integrity_sha256_hex,
-        })
+        match crate::persistence::deserialize(&bytes) {
+            Ok(artifact) => Some(artifact),
+            Err(_) => Some(CachedArtifact {
+                data: bytes,
+                integrity_sha256_hex: "corrupt-cache-artifact".to_owned(),
+            }),
+        }
     }
 
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
         let path = self.path_for(key);
+        let bytes = crate::persistence::serialize(&artifact);
         // Atomic write: write to temp file, then rename.
         // Use a unique temp file to avoid concurrent write races.
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
         let id = COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp_path = path.with_extension(format!("tmp.{}.{}", std::process::id(), id));
-        if std::fs::write(&tmp_path, &artifact.data).is_ok() {
+        if std::fs::write(&tmp_path, bytes).is_ok() {
             let _ = std::fs::rename(&tmp_path, &path);
         } else {
             let _ = std::fs::remove_file(&tmp_path);
@@ -274,6 +276,31 @@ mod tests {
 
         cache.clear();
         assert_eq!(cache.stats().entry_count, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_cache_corrupt_wire_returns_mismatched_artifact() {
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-test-corrupt-wire-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut cache = FileCache::new(dir.clone());
+        let key = test_key("corrupt");
+        cache.put(&key, test_artifact(b"clean payload"));
+
+        let path = cache.path_for(&key);
+        let mut bytes = std::fs::read(&path).expect("cache file should exist");
+        bytes[8] ^= 0xff;
+        std::fs::write(&path, bytes).expect("cache file should be writable");
+
+        let artifact = cache.get(&key).expect("corrupt artifact should be visible");
+        assert_ne!(
+            crate::sha256_hex(&artifact.data),
+            artifact.integrity_sha256_hex,
+            "corrupt wire payload must not be reported as integrity-clean"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

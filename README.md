@@ -455,6 +455,20 @@ The Jaxpr fingerprint recursively hashes the equation structure (primitives, ari
 
 **Strict mode** rejects cache entries with unknown incompatible features. **Hardened mode** allows bounded recovery from unexpected cache states.
 
+The cache legacy parity ledger and lifecycle gate are generated with:
+
+```bash
+./scripts/run_cache_lifecycle_gate.sh --enforce
+```
+
+The gate writes `artifacts/conformance/cache_legacy_parity_ledger.v1.json`,
+`artifacts/conformance/cache_lifecycle_report.v1.json`, a Markdown preview, and
+`artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json`. The report must prove sorted
+compile-option keying, transform-order separation, strict unknown-metadata
+rejection, hardened unknown-metadata inclusion, custom-hook key material,
+namespace/version separation, hostile key-material non-aliasing, corrupt-read
+bypass, and failed-write miss behavior before cache parity can be green.
+
 ### RaptorQ Durability Sidecars (fj-conformance)
 
 Long-lived artifacts (conformance fixtures, benchmark baselines, evidence ledgers) are protected against bit rot using RaptorQ erasure coding:

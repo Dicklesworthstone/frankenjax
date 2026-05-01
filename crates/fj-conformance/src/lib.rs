@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod cache_lifecycle;
 pub mod durability;
 pub mod e2e_log;
 pub mod oracle_recapture;

@@ -1,0 +1,125 @@
+{
+  "schema_version": "frankenjax.cache-lifecycle-report.v1",
+  "bead_id": "frankenjax-cstq.6",
+  "status": "pass",
+  "scenarios": [
+    {
+      "scenario_id": "compile_option_ordering",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "same key for equivalent sorted compile options",
+      "actual": "compile option insertion order ignored",
+      "key_a": "fjx-df00df4adc6150e5431c5c4e229ff1b63ecb6f3237b7b7aff36bb920cd8de973",
+      "key_b": "fjx-df00df4adc6150e5431c5c4e229ff1b63ecb6f3237b7b7aff36bb920cd8de973",
+      "ledger_rows": [
+        "compile-options-sorted"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "transform_order_differentiation",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "different keys for grad,vmap and vmap,grad",
+      "actual": "transform order separated",
+      "key_a": "fjx-deefdc6661bb5bf05f7653531f9785d25e1b730832920f66de022dc10574db2b",
+      "key_b": "fjx-f646b1a1eab92d3ebc157d2c9ad5dd566e6e4beb0d6016798bff4050d887832d",
+      "ledger_rows": [
+        "transform-stack-order"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "strict_unknown_metadata_rejection",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "CacheKeyError names rejected unknown metadata and no key is produced",
+      "actual": "strict mode rejected unknown incompatible features: legacy_unknown_xla_flag",
+      "key_a": null,
+      "key_b": null,
+      "ledger_rows": [
+        "unknown-metadata-policy"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "hardened_unknown_metadata_inclusion",
+      "status": "pass",
+      "mode": "hardened",
+      "expected": "unknown metadata is hash-bound and separated from clean key",
+      "actual": "unknown metadata changed key",
+      "key_a": "fjx-585552e777f2e42d6386fbee14ee158f9d36e3359db5d0350c99fea2fba5d0a9",
+      "key_b": "fjx-0bede20f9426d6a618c516bac57ca31692de61fc3db441e36b984bc344562c49",
+      "ledger_rows": [
+        "unknown-metadata-policy"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "custom_hook_key_material",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "custom hook state changes cache key",
+      "actual": "custom hook separated",
+      "key_a": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "key_b": "fjx-03be9276c4c2b76eca96a4f451577a69a7e9d9d49f453613c48d4f905eb64820",
+      "ledger_rows": [
+        "custom-cache-hook-material"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "namespace_version_material",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "namespace changes alter the public cache key string",
+      "actual": "namespace version separated",
+      "key_a": "fjx-0000000000000000000000000000000000000000000000000000000000000000",
+      "key_b": "fjx-v2-0000000000000000000000000000000000000000000000000000000000000000",
+      "ledger_rows": [
+        "namespace-version-material"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "hostile_key_material_no_alias",
+      "status": "pass",
+      "mode": "hardened",
+      "expected": "delimiter-like key material cannot alias clean material",
+      "actual": "hostile material separated",
+      "key_a": "fjx-7dd914a25267d1572043e72defc2410fa0ee329cb7587efddc23691fd5a04d92",
+      "key_b": "fjx-cb172f30e958c7b9698c0a8a468cdffc654520debe19f20e456d373d4fb08150",
+      "ledger_rows": [
+        "hostile-key-material"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "corrupt_read_bypass",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "corrupt file-backed cache artifact is never returned as a hit",
+      "actual": "Corrupted { key: \"fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8\" }",
+      "key_a": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "key_b": null,
+      "ledger_rows": [
+        "corrupt-read-bypass"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    },
+    {
+      "scenario_id": "failed_write_stays_miss",
+      "status": "pass",
+      "mode": "strict",
+      "expected": "failed file-cache write is not visible as a stale hit",
+      "actual": "Miss",
+      "key_a": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "key_b": null,
+      "ledger_rows": [
+        "stale-write-blocking"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce"
+    }
+  ],
+  "ledger_issues": []
+}

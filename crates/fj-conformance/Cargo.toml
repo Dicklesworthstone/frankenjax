@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 asupersync = "0.3.1"
 base64 = "0.22.1"
+fj-cache = { path = "../fj-cache" }
 fj-core = { path = "../fj-core" }
 fj-dispatch = { path = "../fj-dispatch" }
 fj-lax = { path = "../fj-lax" }
@@ -17,7 +18,6 @@ sha2 = "0.10.9"
 fj-ad = { path = "../fj-ad" }
 fj-api = { path = "../fj-api" }
 fj-backend-cpu = { path = "../fj-backend-cpu" }
-fj-cache = { path = "../fj-cache" }
 fj-egraph = { path = "../fj-egraph" }
 fj-ffi = { path = "../fj-ffi" }
 fj-interpreters = { path = "../fj-interpreters" }

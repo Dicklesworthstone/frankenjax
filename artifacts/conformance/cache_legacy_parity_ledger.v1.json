@@ -1,0 +1,260 @@
+{
+  "schema_version": "frankenjax.cache-legacy-parity-ledger.v1",
+  "key_namespace": "fjx",
+  "required_surfaces": [
+    "cache_key",
+    "compiler_options",
+    "compilation_cache_metadata",
+    "backend_identity",
+    "transform_stack",
+    "versioning_inputs",
+    "unknown_metadata",
+    "cache_hooks",
+    "corrupt_reads",
+    "stale_writes",
+    "hostile_key_material"
+  ],
+  "rows": [
+    {
+      "row_id": "cache-key-hash-inputs",
+      "surface": "cache_key",
+      "legacy_anchor": "P2C005-A01,P2C005-A02",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "get,_hash_computation",
+      "legacy_behavior": "Legacy JAX hashes compiled computation bytes plus devices, compile options, backend metadata, and version material.",
+      "rust_key_material": [
+        "jaxpr.canonical_fingerprint",
+        "mode",
+        "backend",
+        "transform_stack",
+        "compile_options",
+        "custom_hook",
+        "unknown_incompatible_features"
+      ],
+      "rust_behavior": "FrankenJAX hashes canonical Jaxpr structure and all Rust-side execution configuration with SHA-256.",
+      "strict_behavior": "Rejects unknown incompatible feature material before hashing.",
+      "hardened_behavior": "Hashes unknown feature material into the key so progress remains auditable.",
+      "status": "modeled_with_scope_difference",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs::build_cache_key_ref",
+        "crates/fj-conformance/tests/cache_keying_oracle.rs"
+      ]
+    },
+    {
+      "row_id": "compile-options-sorted",
+      "surface": "compiler_options",
+      "legacy_anchor": "P2C005-A10",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_xla_flags",
+      "legacy_behavior": "Legacy JAX includes compiler flags and codegen-affecting options in the hash.",
+      "rust_key_material": [
+        "compile_options:BTreeMap<String,String>"
+      ],
+      "rust_behavior": "Rust compile options are sorted by BTreeMap key order before hashing.",
+      "strict_behavior": "Sorted options are hashed only when all material is recognized.",
+      "hardened_behavior": "Sorted options are hashed together with unknown feature material.",
+      "status": "modeled",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs::hash_canonical_payload_ref",
+        "crates/fj-cache/src/legacy_parity.rs tests"
+      ]
+    },
+    {
+      "row_id": "backend-identity",
+      "surface": "backend_identity",
+      "legacy_anchor": "P2C005-A11,P2C005-A16",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_devices,_hash_platform",
+      "legacy_behavior": "Legacy JAX includes device assignment and platform identity to prevent cross-device artifact reuse.",
+      "rust_key_material": [
+        "backend"
+      ],
+      "rust_behavior": "V1 Rust cache keys include backend identity. Current runtime scope is CPU, while non-CPU strings still separate keys.",
+      "strict_behavior": "Unknown backend semantics must be represented as incompatible feature material by callers.",
+      "hardened_behavior": "Backend string still separates keys for defensive diagnostics.",
+      "status": "modeled_with_scope_difference",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-conformance/tests/cache_keying_oracle.rs::oracle_cache_key_sensitivity_per_field"
+      ]
+    },
+    {
+      "row_id": "transform-stack-order",
+      "surface": "transform_stack",
+      "legacy_anchor": "P2C005-A12,P2C005-A13",
+      "legacy_path": "jax/_src/linear_util.py,jax/_src/compiler.py",
+      "legacy_symbol": "cache,get_executable",
+      "legacy_behavior": "Legacy JAX compilation caches distinguish transformed function state and abstract input state.",
+      "rust_key_material": [
+        "transform_stack"
+      ],
+      "rust_behavior": "Rust cache keys preserve exact transform order; grad,vmap and vmap,grad hash differently.",
+      "strict_behavior": "Transform stack is required key material.",
+      "hardened_behavior": "Transform stack is required key material.",
+      "status": "modeled",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs tests"
+      ]
+    },
+    {
+      "row_id": "namespace-version-material",
+      "surface": "versioning_inputs",
+      "legacy_anchor": "P2C005-A03,P2C005-A18",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "CacheKey,_version_hash",
+      "legacy_behavior": "Legacy JAX includes JAX version material in the hash and stores raw hex keys.",
+      "rust_key_material": [
+        "fjx"
+      ],
+      "rust_behavior": "Rust uses the fjx namespace as explicit coarse version material for all cache keys.",
+      "strict_behavior": "Namespace mismatch is a fail-closed cache miss across versions.",
+      "hardened_behavior": "Namespace mismatch is a diagnostic cache miss; no stale artifact is accepted.",
+      "status": "modeled_with_scope_difference",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs::CacheKey::as_string"
+      ]
+    },
+    {
+      "row_id": "unknown-metadata-policy",
+      "surface": "unknown_metadata",
+      "legacy_anchor": "P2C005-A01,P2C005-A10",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "get,_hash_xla_flags",
+      "legacy_behavior": "Legacy JAX hashes known metadata and versioned compiler options.",
+      "rust_key_material": [
+        "unknown_incompatible_features"
+      ],
+      "rust_behavior": "Rust makes unknown incompatible feature material explicit at the API boundary.",
+      "strict_behavior": "Strict mode returns CacheKeyError::UnknownIncompatibleFeatures without producing a key.",
+      "hardened_behavior": "Hardened mode hashes the feature list so distinct unknowns cannot alias clean keys.",
+      "status": "modeled",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs tests"
+      ]
+    },
+    {
+      "row_id": "custom-cache-hook-material",
+      "surface": "cache_hooks",
+      "legacy_anchor": "P2C005-A12,P2C005-A15",
+      "legacy_path": "jax/_src/linear_util.py,jax/_src/compiler.py",
+      "legacy_symbol": "cache,_cache_hit_logging",
+      "legacy_behavior": "Legacy JAX cache behavior includes function identity and hook-like wrapping state in memoization layers.",
+      "rust_key_material": [
+        "custom_hook"
+      ],
+      "rust_behavior": "Rust exposes custom_hook as explicit key material instead of implicit function identity.",
+      "strict_behavior": "Hook material changes the key only when the caller supplies recognized hook state.",
+      "hardened_behavior": "Hook material changes the key and can be diagnosed in lifecycle reports.",
+      "status": "modeled_with_scope_difference",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/lib.rs tests"
+      ]
+    },
+    {
+      "row_id": "compilation-cache-metadata",
+      "surface": "compilation_cache_metadata",
+      "legacy_anchor": "P2C005-A04,P2C005-A06,P2C005-A13",
+      "legacy_path": "jax/_src/compiler.py,jax/_src/compilation_cache/compilation_cache.py",
+      "legacy_symbol": "_compile_and_write_cache,initialize_cache,get_executable",
+      "legacy_behavior": "Legacy JAX can read/write compiled executable artifacts through memory, file, and cloud cache layers.",
+      "rust_key_material": [
+        "CacheManager",
+        "CacheBackend",
+        "CachedArtifact.integrity_sha256_hex"
+      ],
+      "rust_behavior": "Rust V1 has cache-manager primitives and deterministic keys, but dispatch still interprets directly instead of compiling XLA executables.",
+      "strict_behavior": "Compiled-artifact cache misses fall back to recomputation/interpreted execution.",
+      "hardened_behavior": "Malformed cache state is reported as corrupted or missed without accepting stale bytes.",
+      "status": "modeled_with_scope_difference",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/backend.rs",
+        "crates/fj-conformance/tests/e2e_p2c005.rs"
+      ]
+    },
+    {
+      "row_id": "corrupt-read-bypass",
+      "surface": "corrupt_reads",
+      "legacy_anchor": "P2C005-A05,P2C005-A07",
+      "legacy_path": "jax/_src/compiler.py,jax/_src/compilation_cache/file_cache.py",
+      "legacy_symbol": "_read_from_cache,FileCache.get",
+      "legacy_behavior": "Legacy JAX treats missing or incompatible cached executables as cache misses and recompiles.",
+      "rust_key_material": [
+        "CachedArtifact.integrity_sha256_hex",
+        "persistence::deserialize"
+      ],
+      "rust_behavior": "Rust file cache embeds payload digests and surfaces corrupt reads as CacheLookup::Corrupted.",
+      "strict_behavior": "Corrupt reads are not accepted as hits.",
+      "hardened_behavior": "Corrupt reads are not accepted as hits; recovery must be audited by callers.",
+      "status": "modeled",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/backend.rs tests"
+      ]
+    },
+    {
+      "row_id": "stale-write-blocking",
+      "surface": "stale_writes",
+      "legacy_anchor": "P2C005-A04,P2C005-A07",
+      "legacy_path": "jax/_src/compiler.py,jax/_src/compilation_cache/file_cache.py",
+      "legacy_symbol": "_cache_write,FileCache.put",
+      "legacy_behavior": "Legacy JAX writes cache artifacts atomically and treats write failures as non-fatal cache misses.",
+      "rust_key_material": [
+        "FileCache::put atomic temp-write-rename"
+      ],
+      "rust_behavior": "Rust file cache writes serialized artifacts through a temporary file and rename; failed writes do not create readable hits.",
+      "strict_behavior": "A failed write cannot become a strict cache hit.",
+      "hardened_behavior": "A failed write cannot become a hardened cache hit.",
+      "status": "modeled",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-cache/src/backend.rs"
+      ]
+    },
+    {
+      "row_id": "hostile-key-material",
+      "surface": "hostile_key_material",
+      "legacy_anchor": "P2C005-A02",
+      "legacy_path": "jax/_src/cache_key.py",
+      "legacy_symbol": "_hash_computation",
+      "legacy_behavior": "Legacy JAX hashes raw serialized fields so delimiter-like bytes are part of the digest input.",
+      "rust_key_material": [
+        "backend",
+        "compile_options",
+        "custom_hook",
+        "unknown_incompatible_features"
+      ],
+      "rust_behavior": "Rust hashes delimiter-bearing strings as bytes in their field positions; lifecycle tests prove hostile material does not alias clean keys.",
+      "strict_behavior": "Hostile unknown material is rejected when classified incompatible.",
+      "hardened_behavior": "Hostile unknown material is hashed and separated from clean key material.",
+      "status": "modeled",
+      "exclusion_reason": null,
+      "evidence_refs": [
+        "crates/fj-conformance/tests/cache_keying_oracle.rs::adversarial_delimiter_in_backend_name"
+      ]
+    },
+    {
+      "row_id": "gcs-cache-exclusion",
+      "surface": "compilation_cache_metadata",
+      "legacy_anchor": "P2C005-A08",
+      "legacy_path": "jax/_src/compilation_cache/gcs_cache.py",
+      "legacy_symbol": "GcsCache",
+      "legacy_behavior": "Legacy JAX can use Google Cloud Storage as a persistent compilation cache backend.",
+      "rust_key_material": [],
+      "rust_behavior": "FrankenJAX V1 intentionally excludes cloud cache backends; local file and in-memory cache primitives cover current scope.",
+      "strict_behavior": "Cloud cache URIs must not be silently accepted.",
+      "hardened_behavior": "Cloud cache URIs must not be silently accepted.",
+      "status": "explicit_exclusion",
+      "exclusion_reason": "GCS compilation cache is outside V1 CPU/runtime scope and would require credentials, network policy, and artifact lifecycle controls.",
+      "evidence_refs": [
+        "artifacts/phase2c/FJ-P2C-005/security_threat_matrix.md"
+      ]
+    }
+  ]
+}

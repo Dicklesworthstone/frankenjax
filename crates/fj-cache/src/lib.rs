@@ -2,12 +2,15 @@
 
 pub mod backend;
 pub mod eviction;
+pub mod legacy_parity;
 pub mod persistence;
 pub mod stability;
 
 use fj_core::{CompatibilityMode, Jaxpr, Transform};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+
+pub const CACHE_KEY_NAMESPACE: &str = "fjx";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheKeyInput {
@@ -67,7 +70,7 @@ pub fn build_cache_key(input: &CacheKeyInput) -> Result<CacheKey, CacheKeyError>
     let digest = hasher.finalize();
 
     Ok(CacheKey {
-        namespace: "fjx",
+        namespace: CACHE_KEY_NAMESPACE,
         digest_hex: bytes_to_hex(&digest),
     })
 }
@@ -107,7 +110,7 @@ pub fn build_cache_key_ref(input: &CacheKeyInputRef<'_>) -> Result<CacheKey, Cac
     let digest = hasher.finalize();
 
     Ok(CacheKey {
-        namespace: "fjx",
+        namespace: CACHE_KEY_NAMESPACE,
         digest_hex: bytes_to_hex(&digest),
     })
 }
@@ -845,6 +848,82 @@ mod tests {
             key_hex(&opt_a),
             key_hex(&opt_b),
             "Different compile option values must produce different keys"
+        );
+    }
+
+    #[test]
+    fn key_determinism_compile_option_insertion_order() {
+        let mut opt_a = baseline_input();
+        opt_a
+            .compile_options
+            .insert("target".to_owned(), "x86_64".to_owned());
+        opt_a
+            .compile_options
+            .insert("opt_level".to_owned(), "3".to_owned());
+
+        let mut opt_b = baseline_input();
+        opt_b
+            .compile_options
+            .insert("opt_level".to_owned(), "3".to_owned());
+        opt_b
+            .compile_options
+            .insert("target".to_owned(), "x86_64".to_owned());
+
+        assert_eq!(
+            key_hex(&opt_a),
+            key_hex(&opt_b),
+            "BTreeMap compile options must make insertion order irrelevant"
+        );
+    }
+
+    #[test]
+    fn cache_manager_file_backed_corrupt_read_is_not_hit() {
+        use super::backend::{CacheBackend, FileCache};
+        use super::{CacheLookup, CacheManager};
+
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-mgr-corrupt-read-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let key = build_cache_key(&baseline_input()).unwrap();
+
+        {
+            let mut cache = FileCache::new(dir.clone());
+            cache.put(
+                &key,
+                super::backend::CachedArtifact {
+                    data: b"clean payload".to_vec(),
+                    integrity_sha256_hex: super::sha256_hex(b"clean payload"),
+                },
+            );
+            let path = cache.path_for(&key);
+            let mut bytes = std::fs::read(&path).expect("cache file should exist");
+            bytes[8] ^= 0xff;
+            std::fs::write(&path, bytes).expect("cache file should be writable");
+        }
+
+        let manager = CacheManager::file_backed(dir.clone());
+        assert!(
+            matches!(manager.get(&key), CacheLookup::Corrupted { .. }),
+            "corrupt serialized file cache entry must not be accepted as a hit"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_manager_file_backed_failed_write_stays_miss() {
+        use super::{CacheLookup, CacheManager};
+
+        let missing_dir =
+            std::env::temp_dir().join(format!("fj-cache-missing-write-dir-{}", std::process::id()));
+        let key = build_cache_key(&baseline_input()).unwrap();
+
+        let mut manager = CacheManager::file_backed(missing_dir);
+        manager.put(&key, b"should not be stored".to_vec());
+        assert_eq!(
+            manager.get(&key),
+            CacheLookup::Miss,
+            "failed file cache writes must not become readable stale hits"
         );
     }
 

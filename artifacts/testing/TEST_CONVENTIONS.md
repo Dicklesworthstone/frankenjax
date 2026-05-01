@@ -65,6 +65,23 @@ explicit unsupported rows. `--enforce` turns stale versions, changed hashes,
 missing baselines, unsupported recapture paths, and missing families into a
 nonzero gate.
 
+## Cache Lifecycle Gate
+
+Cache-key parity and cache lifecycle evidence are checked by:
+
+```bash
+./scripts/run_cache_lifecycle_gate.sh --enforce
+```
+
+The command emits a machine-readable legacy parity ledger, lifecycle report,
+Markdown preview, and shared-schema E2E forensic log. Required rows include
+legacy cache-key anchors, compiler options, compilation-cache metadata, backend
+identity, transform stack, versioning inputs, unknown metadata, cache hooks,
+corrupt reads, stale writes, and hostile key material. Required scenarios prove
+strict and hardened behavior, exact key equality/inequality expectations,
+corrupt-read bypass, failed-write miss behavior, artifact hashes, and replay
+commands.
+
 ## Property Test Configuration
 
 Use `fj_test_utils::property_test_case_count()` for test-case volume:
