@@ -44,6 +44,8 @@ Validation commands:
 ```bash
 ./scripts/validate_e2e_logs.sh
 ./scripts/bootstrap_e2e_forensic_log.sh
+./scripts/run_memory_performance_gate.sh --enforce
+./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_memory_performance_gate.e2e.json
 ```
 
 The validator accepts unknown future fields but rejects missing required fields,

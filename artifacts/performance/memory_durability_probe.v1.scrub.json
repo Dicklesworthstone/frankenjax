@@ -1,0 +1,11 @@
+{
+  "sidecar_path": "/data/projects/frankenjax/artifacts/performance/memory_durability_probe.v1.sidecar.json",
+  "artifact_path": "/data/projects/frankenjax/artifacts/performance/memory_durability_probe.v1.json",
+  "expected_sha256_hex": "8e12f88b686e92f6e1496fd75d3b263d181c7cc704f4416c7f5093d5b5907235",
+  "decoded_sha256_hex": "8e12f88b686e92f6e1496fd75d3b263d181c7cc704f4416c7f5093d5b5907235",
+  "decoded_matches_expected": true,
+  "total_symbols": 2,
+  "source_symbols": 1,
+  "repair_symbols": 1,
+  "generated_at_unix_ms": 1777624915118
+}

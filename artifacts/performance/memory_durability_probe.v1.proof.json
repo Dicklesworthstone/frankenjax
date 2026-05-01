@@ -1,0 +1,14 @@
+{
+  "proof_id": "decode-proof-994f066b06c16432",
+  "sidecar_path": "/data/projects/frankenjax/artifacts/performance/memory_durability_probe.v1.sidecar.json",
+  "artifact_path": "/data/projects/frankenjax/artifacts/performance/memory_durability_probe.v1.json",
+  "expected_sha256_hex": "8e12f88b686e92f6e1496fd75d3b263d181c7cc704f4416c7f5093d5b5907235",
+  "decoded_sha256_hex": "8e12f88b686e92f6e1496fd75d3b263d181c7cc704f4416c7f5093d5b5907235",
+  "dropped_symbols": [
+    "kind:source:sbn:0:esi:0"
+  ],
+  "attempted_symbol_count": 1,
+  "recovered": true,
+  "details": "drop-kind=source count=1; recovered successfully from retained symbols",
+  "generated_at_unix_ms": 1777624915119
+}

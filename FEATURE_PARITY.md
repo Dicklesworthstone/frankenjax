@@ -53,9 +53,16 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 
 - Scope: phase-level performance evidence for trace, compile/dispatch, execute, cold-cache, warm-cache, and memory coverage.
 - Baseline: `artifacts/performance/benchmark_baselines_v2_2026-03-12.json` records 82 Criterion benchmarks across dispatch, LAX evaluation, cache, API, backend CPU, FFI, partial evaluation, DCE, and staging suites.
-- Gate artifact: `artifacts/performance/global_performance_gate.v1.json` maps required phases to existing measured benchmarks and preserves `memory` as `not_measured` until heap/RSS evidence exists.
+- Gate artifact: `artifacts/performance/global_performance_gate.v1.json` maps required phases to existing measured benchmarks and links the `memory` phase to `artifacts/performance/memory_performance_gate.v1.json`, which records Linux procfs RSS evidence for trace, dispatch, AD, vmap, FFT, linalg, cache hit/miss, and durability workloads.
 - Policy: p95 regressions above 5% require a risk note; optimization work must baseline, profile, change one lever, prove behavior unchanged, and re-baseline.
-- Validation: `crates/fj-conformance/tests/artifact_schemas.rs` includes a coverage test that rejects missing phases, missing benchmark references for measured phases, synthetic memory numbers, and missing policy flags.
+- Validation: `crates/fj-conformance/tests/artifact_schemas.rs` includes a coverage test that rejects missing phases, missing benchmark references for measured phases, unmeasured memory rows, synthetic memory numbers, and missing policy flags.
+
+### 2026-05-01: Memory performance gate (`frankenjax-cstq.4`)
+
+- Scope: RSS-gated smoke coverage for trace fingerprinting, JIT dispatch, scalar AD, vector vmap, FFT, Cholesky linalg, cache hit/miss, and durability sidecar recovery.
+- Gate artifacts: `artifacts/performance/memory_performance_gate.v1.json`, `artifacts/performance/memory_performance_gate.v1.md`, and `artifacts/e2e/e2e_memory_performance_gate.e2e.json`.
+- Durability witness: `artifacts/performance/memory_durability_probe.v1.json` plus `.sidecar.json`, `.scrub.json`, and `.proof.json` prove the durability workload inside the memory gate.
+- Validation: `cargo test -p fj-conformance --test memory_performance_gate -- --nocapture`, `./scripts/run_memory_performance_gate.sh --enforce`, and `./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_memory_performance_gate.e2e.json`.
 
 ### 2026-04-27: `frankenjax-3oq` FFT radix-2 fast path
 

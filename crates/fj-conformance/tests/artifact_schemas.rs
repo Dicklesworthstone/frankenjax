@@ -229,6 +229,23 @@ fn global_performance_gate_covers_required_phases() {
         .exists(),
         "global performance gate regression report artifact does not exist"
     );
+    let memory_gate_ref = gate["memory_gate_ref"]
+        .as_str()
+        .expect("memory gate ref must be a string");
+    let memory_gate_path = root.join(memory_gate_ref);
+    assert!(
+        memory_gate_path.exists(),
+        "global performance gate memory artifact does not exist"
+    );
+    let memory_gate = read_json(&memory_gate_path);
+    assert_eq!(
+        memory_gate["schema_version"], "frankenjax.memory-performance-gate.v1",
+        "memory performance gate schema marker changed"
+    );
+    assert_eq!(
+        memory_gate["status"], "pass",
+        "memory performance gate must pass before the global gate can reference it"
+    );
 
     let policy = gate["policy"]
         .as_object()
@@ -297,37 +314,76 @@ fn global_performance_gate_covers_required_phases() {
                             .is_some_and(|id| !id.is_empty()),
                         "benchmark id must be non-empty for phase {phase_id}"
                     );
-                    assert!(
-                        benchmark["p50_ns"]
-                            .as_f64()
-                            .is_some_and(|value| value > 0.0),
-                        "benchmark p50_ns must be positive for phase {phase_id}"
-                    );
-                    assert!(
-                        benchmark["p95_ns"]
-                            .as_f64()
-                            .is_some_and(|value| value > 0.0),
-                        "benchmark p95_ns must be positive for phase {phase_id}"
-                    );
+                    if phase_id == "memory" {
+                        assert!(
+                            benchmark["peak_rss_bytes"]
+                                .as_u64()
+                                .is_some_and(|value| value > 0),
+                            "memory benchmark must record non-zero peak RSS"
+                        );
+                    } else {
+                        assert!(
+                            benchmark["p50_ns"]
+                                .as_f64()
+                                .is_some_and(|value| value > 0.0),
+                            "benchmark p50_ns must be positive for phase {phase_id}"
+                        );
+                        assert!(
+                            benchmark["p95_ns"]
+                                .as_f64()
+                                .is_some_and(|value| value > 0.0),
+                            "benchmark p95_ns must be positive for phase {phase_id}"
+                        );
+                    }
                 }
             }
-            "not_measured" => {
-                assert_eq!(
-                    phase_id, "memory",
-                    "only memory may remain an explicit unmeasured coverage gap"
+            "not_measured" => panic!(
+                "performance phase {phase_id} is still unmeasured; memory must be covered by the RSS gate"
+            ),
+            other => panic!("unexpected performance phase status {other:?} for {phase_id}"),
+        }
+
+        if phase_id == "memory" {
+            assert_eq!(
+                phase["gate_kind"], "rss_budget",
+                "memory phase must use the RSS budget gate"
+            );
+            assert_eq!(
+                phase["report_ref"], gate["memory_gate_ref"],
+                "memory phase must point at the memory gate artifact"
+            );
+            let memory_workload_ids = memory_gate["workloads"]
+                .as_array()
+                .expect("memory gate workloads must be an array")
+                .iter()
+                .map(|workload| {
+                    workload["workload_id"]
+                        .as_str()
+                        .expect("memory workload id must be a string")
+                        .to_owned()
+                })
+                .collect::<BTreeSet<_>>();
+            for benchmark in benchmarks {
+                let bench_id = benchmark["bench_id"]
+                    .as_str()
+                    .expect("memory bench id must be a string");
+                assert!(
+                    memory_workload_ids.contains(bench_id),
+                    "memory benchmark {bench_id} must come from the memory gate workloads"
                 );
                 assert!(
-                    benchmarks.is_empty(),
-                    "unmeasured phase {phase_id} must not invent benchmark values"
+                    benchmark["peak_rss_bytes"]
+                        .as_u64()
+                        .is_some_and(|value| value > 0),
+                    "memory benchmark must record non-zero peak RSS"
                 );
                 assert!(
-                    phase["required_next_evidence"]
-                        .as_array()
-                        .is_some_and(|items| !items.is_empty()),
-                    "unmeasured phase {phase_id} must list next evidence requirements"
+                    benchmark["measurement_backend"]
+                        .as_str()
+                        .is_some_and(|backend| backend != "not_measured" && !backend.is_empty()),
+                    "memory benchmark must record concrete measurement backend"
                 );
             }
-            other => panic!("unexpected performance phase status {other:?} for {phase_id}"),
         }
     }
 }

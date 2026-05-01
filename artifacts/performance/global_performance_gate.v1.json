@@ -3,6 +3,7 @@
   "generated_at_unix_ms": 1777600000000,
   "baseline_ref": "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
   "regression_report_ref": "artifacts/ci/perf_regression_report.v1.json",
+  "memory_gate_ref": "artifacts/performance/memory_performance_gate.v1.json",
   "regression_threshold_percent": 5.0,
   "runner": "rch exec -- cargo bench",
   "policy": {
@@ -109,13 +110,58 @@
     },
     {
       "phase_id": "memory",
-      "status": "not_measured",
-      "gate_kind": "coverage_gap",
-      "benchmarks": [],
-      "required_next_evidence": [
-        "heaptrack or DHAT allocation baseline for dispatch_latency",
-        "allocation baseline for cache hit/miss",
-        "resident-set-size sample for full workspace conformance run"
+      "status": "measured",
+      "gate_kind": "rss_budget",
+      "report_ref": "artifacts/performance/memory_performance_gate.v1.json",
+      "benchmarks": [
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "trace_canonical_fingerprint",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 5677056
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "dispatch_jit_scalar",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 10985472
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "ad_grad_scalar",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 11587584
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "vmap_vector_add_one",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 11919360
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "fft_complex_vector",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 12050432
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "linalg_cholesky_matrix",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 12050432
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "cache_hit_miss",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 12058624
+        },
+        {
+          "suite": "memory_performance_gate",
+          "bench_id": "durability_sidecar_round_trip",
+          "measurement_backend": "linux_procfs_status_vm_hwm",
+          "peak_rss_bytes": 12423168
+        }
       ]
     }
   ],

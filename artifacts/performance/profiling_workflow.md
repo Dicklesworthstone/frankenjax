@@ -5,13 +5,14 @@
 The global performance gate is tracked in
 `artifacts/performance/global_performance_gate.v1.json`. It normalizes the
 current baseline across trace, compile/dispatch, execute, cold-cache,
-warm-cache, and memory phases without inventing measurements for surfaces that
-do not yet have allocation evidence.
+warm-cache, and memory phases without inventing measurements.
 
 Baseline numbers come from
 `artifacts/performance/benchmark_baselines_v2_2026-03-12.json`, which captures
-82 Criterion benchmarks across seven suites. The gate intentionally leaves the
-memory phase as `not_measured` until heap/RSS evidence exists.
+82 Criterion benchmarks across seven suites. Memory evidence comes from
+`artifacts/performance/memory_performance_gate.v1.json`, which records procfs
+RSS measurements for smoke workloads that exercise trace, dispatch, AD, vmap,
+FFT, linalg, cache hit/miss, and durability paths.
 
 | Phase | Suites | What it gates |
 |-------|--------|---------------|
@@ -20,7 +21,7 @@ memory phase as `not_measured` until heap/RSS evidence exists.
 | `execute` | `backend_cpu`, `lax_eval` | CPU backend execution and primitive evaluator throughput |
 | `cold_cache` | `cache_subsystem` | Cache misses and cache-key construction |
 | `warm_cache` | `cache_subsystem`, `jaxpr_fingerprint` | Cache hits and cached fingerprint retrieval |
-| `memory` | pending heap/RSS tooling | Explicit coverage gap; no synthetic numbers allowed |
+| `memory` | `memory_performance_gate` | RSS budget for trace/dispatch/AD/vmap/FFT/linalg/cache/durability smoke workloads |
 
 The dispatch benchmark file remains the densest single suite and covers these
 metric categories:
@@ -138,8 +139,10 @@ Each gate run emits `artifacts/ci/perf_regression_report.v1.json` conforming to 
 
 `artifacts/performance/global_performance_gate.v1.json` is the phase-level
 coverage artifact. It must keep measured phases tied to existing Criterion
-baseline values and must keep unmeasured memory work listed as required next
-evidence until allocation tooling produces real numbers.
+baseline values and must keep memory tied to `memory_performance_gate.v1.json`
+RSS measurements. Allocation counts remain non-synthetic: if an allocator-level
+counter backend is added later, it must be recorded as an additional measured
+backend rather than inferred from payload sizes.
 
 ## Example Profiling Session
 

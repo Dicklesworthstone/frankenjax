@@ -1,0 +1,31 @@
+{
+  "schema_version": "frankenjax.sidecar.v1",
+  "artifact_path": "/data/projects/frankenjax/artifacts/performance/memory_durability_probe.v1.json",
+  "artifact_sha256_hex": "8e12f88b686e92f6e1496fd75d3b263d181c7cc704f4416c7f5093d5b5907235",
+  "artifact_size": 149,
+  "generated_at_unix_ms": 1777624915116,
+  "object_id_high": 10237518180602778358,
+  "object_id_low": 16233629302606472765,
+  "symbol_size": 256,
+  "max_block_size": 1048576,
+  "repair_overhead": 1.1,
+  "source_blocks": 1,
+  "symbols_per_block": 1,
+  "total_symbols": 2,
+  "source_symbols": 1,
+  "repair_symbols": 1,
+  "symbols": [
+    {
+      "sbn": 0,
+      "esi": 0,
+      "kind": "source",
+      "data_b64": "ewogICJiZWFkX2lkIjogImZyYW5rZW5qYXgtY3N0cS40IiwKICAicGF5bG9hZCI6ICJyc3MgZ2F0ZSBkdXJhYmlsaXR5IHNtb2tlIGFydGlmYWN0IiwKICAic2NoZW1hX3ZlcnNpb24iOiAiZnJhbmtlbmpheC5tZW1vcnktZHVyYWJpbGl0eS1wcm9iZS52MSIKfQoAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    },
+    {
+      "sbn": 0,
+      "esi": 1,
+      "kind": "repair",
+      "data_b64": "/CMCAq+rmd5BuVBBryACr+yq3mL9mWIl3okTc3JA32ZEr8sjAgKvB95Rz7reQa8gAq+qcnICNN5AmQJBmKreq1DPUEBRAnIXuv2ZAt6qQFDs3nNAr8sjAgKvcnOImRfeue2ZqnJQumKvIAKv7KreYv2ZYiXeiWYXmRe6qlETQZiq3qtQz1BAURMHqrqrmWbt268jFiMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    }
+  ]
+}
