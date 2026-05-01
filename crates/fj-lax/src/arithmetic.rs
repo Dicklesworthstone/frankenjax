@@ -1314,38 +1314,38 @@ pub(crate) fn eval_unary_int_or_float(
             },
         },
         Value::Tensor(tensor) => {
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(|literal| match literal {
-                    Literal::I64(v) => Ok(Literal::I64(int_op(v))),
-                    Literal::U32(v) => Ok(Literal::U32(u32_op(v))),
-                    Literal::U64(v) => Ok(Literal::U64(u64_op(v))),
-                    Literal::BF16Bits(bits) => Ok(Literal::from_f64(float_op(
-                        Literal::BF16Bits(bits)
-                            .as_f64()
-                            .ok_or(EvalError::TypeMismatch {
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in tensor.elements.iter().copied() {
+                let out = match literal {
+                    Literal::I64(v) => Literal::I64(int_op(v)),
+                    Literal::U32(v) => Literal::U32(u32_op(v)),
+                    Literal::U64(v) => Literal::U64(u64_op(v)),
+                    Literal::BF16Bits(bits) => {
+                        Literal::from_f64(float_op(Literal::BF16Bits(bits).as_f64().ok_or(
+                            EvalError::TypeMismatch {
                                 primitive,
                                 detail: "expected numeric tensor elements, got bf16",
-                            })?,
-                    ))),
-                    Literal::F16Bits(bits) => Ok(Literal::from_f64(float_op(
-                        Literal::F16Bits(bits)
-                            .as_f64()
-                            .ok_or(EvalError::TypeMismatch {
+                            },
+                        )?))
+                    }
+                    Literal::F16Bits(bits) => {
+                        Literal::from_f64(float_op(Literal::F16Bits(bits).as_f64().ok_or(
+                            EvalError::TypeMismatch {
                                 primitive,
                                 detail: "expected numeric tensor elements, got f16",
-                            })?,
-                    ))),
-                    Literal::F32Bits(bits) => Ok(Literal::from_f32(float_op(f64::from(
-                        f32::from_bits(bits),
-                    )) as f32)),
-                    Literal::F64Bits(bits) => Ok(Literal::from_f64(float_op(f64::from_bits(bits)))),
-                    Literal::Bool(_) => Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected numeric tensor elements, got bool",
-                    }),
+                            },
+                        )?))
+                    }
+                    Literal::F32Bits(bits) => {
+                        Literal::from_f32(float_op(f64::from(f32::from_bits(bits))) as f32)
+                    }
+                    Literal::F64Bits(bits) => Literal::from_f64(float_op(f64::from_bits(bits))),
+                    Literal::Bool(_) => {
+                        return Err(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "expected numeric tensor elements, got bool",
+                        });
+                    }
                     Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => match primitive {
                         Primitive::Sign => {
                             let (re, im) = literal_to_complex_parts(primitive, literal)?;
@@ -1355,20 +1355,23 @@ pub(crate) fn eval_unary_int_or_float(
                             } else {
                                 (re / magnitude, im / magnitude)
                             };
-                            Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
+                            complex_literal_from_f64_parts(tensor.dtype, out_re, out_im)
                         }
                         Primitive::Square => {
                             let (re, im) = literal_to_complex_parts(primitive, literal)?;
                             let (out_re, out_im) = complex_mul((re, im), (re, im));
-                            Ok(complex_literal_from_f64_parts(tensor.dtype, out_re, out_im))
+                            complex_literal_from_f64_parts(tensor.dtype, out_re, out_im)
                         }
-                        _ => Err(EvalError::TypeMismatch {
-                            primitive,
-                            detail: complex_unary_unsupported_detail(primitive),
-                        }),
+                        _ => {
+                            return Err(EvalError::TypeMismatch {
+                                primitive,
+                                detail: complex_unary_unsupported_detail(primitive),
+                            });
+                        }
                     },
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+                };
+                elements.push(out);
+            }
 
             let dtype = tensor.dtype;
             Ok(Value::Tensor(TensorValue::new(
