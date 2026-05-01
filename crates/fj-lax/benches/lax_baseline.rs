@@ -147,6 +147,16 @@ fn bench_square_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_integer_pow_1k(c: &mut Criterion) {
+    let data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.001).collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("exponent".to_owned(), "3".to_owned());
+    c.bench_function("eval/integer_pow_1k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_clamp_1k(c: &mut Criterion) {
     let data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.002 - 0.5).collect();
     let input = Value::vector_f64(&data).unwrap();
@@ -473,6 +483,7 @@ criterion_group!(
     bench_sin_1k,
     bench_exp_1k,
     bench_square_1k,
+    bench_integer_pow_1k,
     bench_clamp_1k,
     bench_select_1k,
     bench_complex_mul_1k,

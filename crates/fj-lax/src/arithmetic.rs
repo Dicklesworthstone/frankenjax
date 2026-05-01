@@ -2264,19 +2264,14 @@ pub(crate) fn eval_integer_pow(
             Ok(Value::scalar_f64(value.powi(exponent)))
         }
         Value::Tensor(tensor) => {
-            let elements = tensor
-                .elements
-                .iter()
-                .map(|literal| {
-                    literal
-                        .as_f64()
-                        .map(|v| Literal::from_f64(v.powi(exponent)))
-                        .ok_or(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "expected numeric tensor elements",
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric tensor elements",
+                })?;
+                elements.push(Literal::from_f64(value.powi(exponent)));
+            }
 
             Ok(Value::Tensor(TensorValue::new(
                 DType::F64,
