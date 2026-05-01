@@ -8,9 +8,15 @@ FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. T
 
 ## [Unreleased] — HEAD
 
-Latest commit: [`0e62ff4`](https://github.com/Dicklesworthstone/frankenjax/commit/0e62ff4693a476edbdd2444279b8cd91c0feadc2) (2026-03-17)
+Latest commit: [`0a7ec1b`](https://github.com/Dicklesworthstone/frankenjax/commit/0a7ec1b) (2026-05-01)
 
-Current state: 110 primitive operations, full VJP + JVP AD coverage for all 110, 834 JAX oracle fixture cases, 87 e-graph rewrite rules, 1,724 tests passing, 15 workspace crates, ~80,872 lines of Rust.
+Current state: 110 primitive operations, VJP + JVP coverage for the declared V1 primitive set, 848 JAX oracle fixture cases, 87 e-graph rewrite rules, 15 workspace crates, 162,733 Rust source lines under `crates/`, 4,416 static Rust test/proptest markers, 115 conformance test files, and a passing `cargo test --workspace` run via RCH on 2026-05-01.
+
+### 2026-05-01 Reality-Check Recalibration
+
+- Reconciled public status docs with live evidence: 848 oracle fixtures, 4,416 static Rust test/proptest markers, 115 conformance test files, and the current HEAD commit.
+- Downgraded over-broad "all green" language where the project still has tracked parity/evidence gaps: advanced transform/control-flow compositions, semantic TTL verification, all-long-lived-artifact durability coverage, and global performance gates.
+- Created follow-up beads for remaining work: `frankenjax-fcxy.1` through `frankenjax-fcxy.5`.
 
 ---
 
@@ -413,15 +419,15 @@ Initial commit establishing the FrankenJAX workspace. Canonical Jaxpr IR with co
 | Automatic Differentiation (JVP forward-mode) | 2 | All 110 primitives |
 | E-graph optimizer (equality saturation) | 0 | 87 algebraic rewrite rules |
 | Partial evaluation and staging | 1 | Bitset-indexed with 27% DCE improvement |
-| API surface (`jit`, `grad`, `vmap`) | 2 | Full composition support |
+| API surface (`jit`, `grad`, `vmap`) | 2 | Broad composition support; advanced gaps tracked |
 | Dispatch/effects runtime | 2 | Transform stack with effect tokens |
 | Compilation cache (SHA-256 keying) | 2 | Strict/hardened modes, LRU eviction |
 | CPU backend (parallel) | 2 | Dependency-wave scheduling via Rayon |
 | C FFI surface | 2 | Only `unsafe` crate in workspace |
 | Numerical AD verification | 3 | 22 unary + 7 binary + composition tests |
 | Typed partial evaluation | 3 | Axis-aware reductions, Dot, shape ops |
-| Vmap (BatchTrace) | 4 | in_axes/out_axes, per-primitive batch rules |
-| Control flow (cond/scan/while/fori/switch) | 4 | Full VJP + JVP support |
+| Vmap (BatchTrace) | 4 | in_axes/out_axes, per-primitive batch rules; advanced iterative compositions tracked |
+| Control flow (cond/scan/while/fori/switch) | 4 | VJP + JVP support with remaining nested-composition gaps tracked |
 | ThreeFry2x32 PRNG | 4 | JAX-matched determinism, 25 oracle fixtures |
 | Complex numbers (Complex64/Complex128) | 4 | Full arithmetic + AD + e-graph rules |
 | Unsigned integers (U32/U64) | 5 | Full stack support |
@@ -431,8 +437,8 @@ Initial commit establishing the FrankenJAX workspace. Canonical Jaxpr IR with co
 | Custom VJP registration | 5 | Thread-safe global registry |
 | Linear algebra (Cholesky/QR/SVD/Eigh/TriSolve) | 7 | Eval + VJP + JVP, numerically verified |
 | FFT (Fft/Ifft/Rfft/Irfft) | 7 | Eval + VJP + JVP |
-| Oracle conformance | 1 | 834 JAX 0.9.2 fixture cases |
-| RaptorQ durability | 2 | Erasure-coded sidecars for all long-lived artifacts |
+| Oracle conformance | 1 | 848 JAX 0.9.2 fixture cases |
+| RaptorQ durability | 2 | Erasure-coded sidecars for current evidence bundles; full long-lived coverage tracked |
 
 ---
 
@@ -448,7 +454,8 @@ Initial commit establishing the FrankenJAX workspace. Canonical Jaxpr IR with co
 | 5 | 2026-03-02 to 03-04 | 22 | Type expansion, Jacobian/Hessian, parallel backend |
 | 6 | 2026-03-04 to 03-12 | 8 | E-graph dispatch, ScalarBool, durability proofs |
 | 7 | 2026-03-12 to 03-17 | 49 | 834 oracle fixtures, linalg/FFT AD, README rewrite |
+| 8 | 2026-03-18 to 05-01 | ongoing | 848 oracle fixtures, performance slices, reality-check gap tracking |
 
 ---
 
-*This changelog covers all 220 commits in the repository. FrankenJAX has no formal releases, tags, or semver milestones; all development is on the `main` branch at version 0.1.0.*
+*This changelog covers continuous development on `main`. FrankenJAX has no formal releases, tags, or semver milestones; all development is on the `main` branch at version 0.1.0.*

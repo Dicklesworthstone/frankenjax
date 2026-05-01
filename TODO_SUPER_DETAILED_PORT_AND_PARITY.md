@@ -1,6 +1,6 @@
 # TODO_SUPER_DETAILED_PORT_AND_PARITY
 
-Last updated: 2026-02-13
+Last updated: 2026-05-01
 Owner: Codex session
 Goal: Complete all identified next-step streams end-to-end in one pass.
 
@@ -10,6 +10,120 @@ Goal: Complete all identified next-step streams end-to-end in one pass.
 - [~] in progress
 - [x] completed
 - [!] blocked/needs follow-up
+
+## 2026-05-01 Reality-Check Follow-Up TODO
+
+Tracker parent: `frankenjax-fcxy`
+
+### RC0. Tracker and coordination
+- [x] Confirm live tracker state before adding work.
+- [x] Verify open queue was empty before creating follow-up beads.
+- [x] Create parent epic `frankenjax-fcxy`.
+- [x] Create docs/status reconciliation bead `frankenjax-fcxy.1`.
+- [x] Create Phase2C topology/durability bead `frankenjax-fcxy.2`.
+- [x] Create TTL verification hardening bead `frankenjax-fcxy.3`.
+- [x] Create composed-grad fallback bead `frankenjax-fcxy.4`.
+- [x] Create global performance gate bead `frankenjax-fcxy.5`.
+- [x] Claim `frankenjax-fcxy.1` first.
+- [!] Agent Mail write-path bootstrap failed with a database error; continue with `br` and local file discipline.
+
+### RC1. Live evidence inventory
+- [x] Confirm current HEAD short hash and commit subject.
+- [x] Count workspace crates.
+- [x] Count `Primitive` variants.
+- [x] Count `DType` variants.
+- [x] Count Rust source lines under `crates/`.
+- [x] Count static Rust test/proptest markers.
+- [x] Count conformance test files.
+- [x] Count transform fixture cases.
+- [x] Count RNG fixture cases.
+- [x] Count linalg/FFT fixture cases.
+- [x] Count transform-composition fixture cases.
+- [x] Count dtype-promotion fixture cases.
+- [x] Run `cargo test --workspace` through `rch`.
+
+### RC2. README reality reconciliation (`frankenjax-fcxy.1`)
+- [x] Replace stale 846 fixture claims with live 848 fixture count.
+- [x] Replace stale 4,280 test claim with live static-marker wording.
+- [x] Replace over-broad "all green" status language where a tracked limitation remains.
+- [x] Clarify TTL as auditable evidence/provenance rather than a formal semantic proof.
+- [x] Clarify RaptorQ durability as implemented for current evidence bundles, with all-long-lived-artifact expansion still tracked.
+- [x] Preserve explicit limitations: CPU-only, no XLA lowering, advanced `vmap` plus iterative-control-flow compositions still incomplete.
+- [x] Update fixture-family table totals.
+- [x] Update FAQ oracle fixture count.
+
+### RC3. Feature parity reconciliation (`frankenjax-fcxy.1`)
+- [x] Update audit timestamp and command evidence.
+- [x] Add a reality-check gap tracker section with bead IDs.
+- [x] Update fixture and test evidence counts.
+- [x] Downgrade TTL, dispatch composition, `vmap`, control flow, and RaptorQ rows where the next artifact is a real parity gap rather than routine expansion.
+- [x] Keep declared V1 successes marked green only where live evidence supports them.
+
+### RC4. CHANGELOG reconciliation (`frankenjax-fcxy.1`)
+- [x] Update latest commit from stale March hash to current HEAD.
+- [x] Update current state numbers to live counts.
+- [x] Add 2026-05-01 reality-check recalibration entry.
+- [x] List follow-up beads that now own remaining gaps.
+
+### RC5. Phase2C topology completion (`frankenjax-fcxy.2`)
+- [ ] Claim `frankenjax-fcxy.2` after `frankenjax-fcxy.1` lands.
+- [ ] Build packet inventory for `FJ-P2C-001` through `FJ-P2C-008`.
+- [ ] Compare each packet against required topology in `PHASE2C_EXTRACTION_PACKET.md`.
+- [ ] Add or update missing `fixture_manifest` artifacts.
+- [ ] Add or update missing `parity_gate` artifacts.
+- [ ] Add or update missing `parity_report` artifacts.
+- [ ] Add or update missing `risk_note` artifacts.
+- [ ] Add or update sidecar/proof manifest references.
+- [ ] Add a topology coverage test or machine-readable checker if the existing harness has a natural home.
+- [ ] Run targeted artifact/schema tests.
+
+### RC6. TTL verification hardening (`frankenjax-fcxy.3`)
+- [ ] Claim `frankenjax-fcxy.3` after Phase2C docs/artifacts are stable or if code work becomes the narrower next slice.
+- [ ] Inspect `TraceTransformLedger` construction APIs.
+- [ ] Identify what evidence strings currently encode for `jit`, `grad`, `vmap`, nested transforms, and empty stacks.
+- [ ] Define a stronger valid-evidence contract that preserves existing valid ledgers.
+- [ ] Reject evidence entries that do not bind to the expected transform.
+- [ ] Reject duplicate/stale evidence where the stack signature does not match.
+- [ ] Keep composition proof hashing deterministic.
+- [ ] Add unit tests for valid single transforms.
+- [ ] Add unit tests for valid nested transforms.
+- [ ] Add rejection tests for mismatched transform evidence.
+- [ ] Add rejection tests for stale stack signatures.
+- [ ] Run `cargo test -p fj-core transform_composition`.
+
+### RC7. Composed-grad fallback (`frankenjax-fcxy.4`)
+- [ ] Claim `frankenjax-fcxy.4` after TTL hardening or if dispatch proves independently tractable.
+- [ ] Inspect `execute_grad` tail-transform fallback behavior in `fj-dispatch`.
+- [ ] Identify strict-mode versus hardened-mode behavior knobs available in dispatch options.
+- [ ] Prefer symbolic composition for tractable `grad(jit(...))` or `jit(grad(...))` cases.
+- [ ] If symbolic coverage cannot be completed in one slice, make finite difference opt-in or hardened-only.
+- [ ] Add error messaging that explains non-strict fallback requirements.
+- [ ] Add regression test for composed grad with tail `jit`.
+- [ ] Add regression test for composed grad with tail `vmap` where supported.
+- [ ] Add conformance coverage or explicit limitation entry for unsupported cases.
+- [ ] Run `cargo test -p fj-dispatch grad`.
+
+### RC8. Global performance gates (`frankenjax-fcxy.5`)
+- [ ] Claim `frankenjax-fcxy.5` after correctness gates are not moving.
+- [ ] Inventory existing Criterion benchmarks and performance artifacts.
+- [ ] Define schema for trace, compile/dispatch, execute, cold-cache, warm-cache, and memory fields.
+- [ ] Capture or normalize current baselines without inventing unmeasured speed claims.
+- [ ] Add parse/coverage tests for baseline artifacts.
+- [ ] Document exact `rch`/Criterion commands for re-baselining.
+- [ ] Add pass/fail tolerance policy that distinguishes noise from regression.
+- [ ] Record an isomorphism proof template for any actual optimization lever.
+
+### RC9. Verification and landing for this follow-up
+- [ ] Run `cargo fmt --check`.
+- [ ] Run `cargo check --workspace --all-targets` through `rch`.
+- [ ] Run `cargo clippy --workspace --all-targets -- -D warnings` through `rch`.
+- [ ] Run targeted tests for touched crates.
+- [ ] Run `cargo test --workspace` through `rch`.
+- [ ] Run `ubs` on changed source/docs files if applicable.
+- [ ] Close completed beads.
+- [ ] Leave unfinished beads open with exact next steps.
+- [ ] Run `br sync --flush-only`.
+- [ ] Do not stage or commit unrelated dirty artifact/log files.
 
 ## Stream A: Legacy Fixture Capture + Conformance Wiring
 

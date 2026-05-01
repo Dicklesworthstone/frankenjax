@@ -8,10 +8,10 @@
   Semantic fidelity. Mathematical rigor. Operational safety. Profile-proven performance.
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
-  ![Tests](https://img.shields.io/badge/tests-4280_passing-brightgreen)
+  ![Tests](https://img.shields.io/badge/tests-workspace_passing-brightgreen)
   ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
   ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
-  ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-846_cases-purple)
+  ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-848_cases-purple)
 </div>
 
 ---
@@ -28,14 +28,14 @@
 |---------|--------|
 | 110 primitive operations with full eval | All green |
 | Reverse-mode (VJP) + Forward-mode (JVP) AD for all 110 primitives | All green |
-| Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | All green |
+| Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | Broad coverage; advanced compositions tracked |
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
 | E-graph equality saturation optimizer (87 algebraic rewrite rules) | All green |
-| 846 JAX oracle fixture cases for differential conformance | All green |
-| RaptorQ erasure-coded durability for all long-lived artifacts | All green |
+| 848 JAX oracle fixture cases for differential conformance | All green |
+| RaptorQ erasure-coded durability for current evidence bundles | Implemented; all-long-lived-artifact expansion tracked |
 | Strict/Hardened compatibility-security mode split | All green |
-| 4,280 `#[test]` cases + proptest suites | All passing |
+| Workspace tests + 4,416 static Rust test/proptest markers | Passing in the latest RCH run |
 
 ## Comparison vs Alternatives
 
@@ -43,9 +43,9 @@
 |---|---|---|---|---|---|
 | **Language** | Rust | Python/C++ | Python/C++ | LLVM IR | Python |
 | **Runtime dependency** | None (standalone) | Python + XLA + CUDA | Python + CUDA | LLVM toolchain | NumPy |
-| **Transform composition** | Full (`jit`/`grad`/`vmap`) | Full | Limited (`torch.func`) | `grad` only | `grad` only |
-| **Verifiable proofs** | Trace Transform Ledger | No | No | No | No |
-| **Oracle conformance** | 846 JAX-verified cases | N/A (is the oracle) | No | No | No |
+| **Transform composition** | Scoped `jit`/`grad`/`vmap` with tracked advanced gaps | Full | Limited (`torch.func`) | `grad` only | `grad` only |
+| **Verifiable evidence** | Trace Transform Ledger | No | No | No | No |
+| **Oracle conformance** | 848 JAX-verified cases | N/A (is the oracle) | No | No | No |
 | **Artifact durability** | RaptorQ sidecars | No | No | No | No |
 | **E-graph optimization** | 87 rules, equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
 | **Embeddable** | Yes (Rust library + C FFI) | No (Python required) | Partially (libtorch) | Yes (LLVM plugin) | No |
@@ -56,7 +56,7 @@ FrankenJAX is not a replacement for JAX in production ML training. It is a **ref
 
 - **Compiler researchers** studying how `jit`/`grad`/`vmap` compose and interact
 - **Rust developers** who need automatic differentiation without Python
-- **Verification engineers** who want auditable transform composition with proof artifacts
+- **Verification engineers** who want auditable transform composition evidence
 - **ML framework developers** who need a reference implementation of JAX semantics
 - **Educators** teaching automatic differentiation, functional transforms, or IR design
 
@@ -115,16 +115,16 @@ mul_vjp for v2:  g_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
 ## Design Philosophy
 
 **1. Transform composition semantics are non-negotiable.**
-Every transform composition produces a verifiable proof artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL).
+Every transform composition produces an auditable evidence artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL). The current verifier checks deterministic ledger structure and evidence binding; stronger semantic-equivalence checks are tracked in `frankenjax-fcxy.3`.
 
 **2. Differential conformance, not reimplementation faith.**
-Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 846 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
+Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 848 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
 
 **3. Strict/Hardened mode split.**
 Strict mode maximizes observable compatibility. Hardened mode adds safety guards with bounded defensive recovery. You choose the tradeoff per invocation.
 
 **4. RaptorQ-everywhere durability.**
-Long-lived artifacts (fixtures, baselines, ledgers) get erasure-coded sidecars with scrub reports and decode proofs. Bit rot does not get to silently corrupt your conformance evidence.
+Current conformance and evidence bundles get erasure-coded sidecars with scrub reports and decode proofs. Expanding that coverage to every long-lived artifact family is tracked in `frankenjax-fcxy.2`.
 
 **5. Correctness is measured, not assumed.**
 Numerical AD rules are validated against finite-difference gradients. The Cholesky VJP/JVP bugs we found and fixed? Found by numerical verification tests, not by staring at formulas.
@@ -172,14 +172,14 @@ Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 | `fj-ledger` | Decision/evidence ledger, loss-matrix actions, audit trail | Yes |
 | `fj-runtime` | Tensor-aware runtime value model, optional async integration | Yes |
 | `fj-interpreters` | Scoped primitive interpreter, partial evaluation, staging | Yes |
-| `fj-conformance` | Differential conformance harness, 846 oracle fixtures, durability | 200+ |
+| `fj-conformance` | Differential conformance harness, 848 oracle fixtures, durability | 200+ |
 | `fj-backend-cpu` | Dependency-wave parallel executor (rayon) | 40 |
 | `fj-ffi` | C FFI surface (only crate permitted `unsafe`) | Yes |
 | `fj-test-utils` | Shared test scaffolding, fixture helpers | Yes |
 
 ## Current Status
 
-**131,647 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
+**162,733 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
 
 - **110 primitive operations** covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions
 - **11 DTypes** (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128) with JAX-verified type promotion rules
@@ -189,9 +189,9 @@ Cache (fj-cache: SHA-256 deterministic keys, strict/hardened gates)
 - **E-graph optimizer**: 87 algebraic rewrite rules with equality saturation, verified to preserve program semantics
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
 - **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support
-- **846 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
-- **4,280 `#[test]` cases** plus proptest/property-based suites
-- **RaptorQ durability pipeline** for all long-lived evidence artifacts
+- **848 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
+- **4,416 static Rust test/proptest markers** plus 115 conformance test files; the latest full `cargo test --workspace` run passed through RCH
+- **RaptorQ durability pipeline** for current conformance/evidence bundles, with all-long-lived-artifact coverage tracked in `frankenjax-fcxy.2`
 
 ## The Canonical IR: Jaxpr
 
@@ -322,7 +322,7 @@ This is a formal audit trail, not a debugging log. It answers "why did the syste
 
 FrankenJAX uses **four layers of correctness assurance**, each catching different classes of bugs:
 
-**Layer 1: Oracle conformance (846 cases)**
+**Layer 1: Oracle conformance (848 cases)**
 Capture expected outputs from real JAX, replay against FrankenJAX. Catches: wrong evaluation logic, incorrect primitive semantics, dtype mismatches.
 
 **Layer 2: Numerical AD verification (9 tests)**
@@ -671,12 +671,12 @@ uv pip install --python .venv/bin/python jax jaxlib numpy
 
 | Fixture Family | Cases | Source |
 |---------------|-------|--------|
-| Transform (jit/grad/vmap/lax/control_flow/mixed_dtype) | 611 | JAX 0.9.2 |
+| Transform (jit/grad/vmap/lax/control_flow/mixed_dtype) | 613 | JAX 0.9.2 |
 | RNG determinism (key/split/fold_in/uniform/normal) | 25 | JAX 0.9.2 |
 | Linear algebra + FFT oracle | 33 | JAX 0.9.2 (x64) |
 | Transform composition (jit+grad, grad+grad, vmap+grad, jacobian, hessian) | 15 | JAX 0.9.2 (x64) |
 | Dtype promotion (9x9 dtype matrix, add + mul) | 162 | JAX 0.9.2 (x64) |
-| **Total** | **846** | |
+| **Total** | **848** | |
 
 ## Building from Source
 
@@ -961,13 +961,13 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 A: JAX requires Python + XLA + CUDA/TPU. FrankenJAX gives you the mathematical transform semantics in a standalone Rust library with no Python dependency.
 
 **Q: How do you verify correctness without running JAX?**
-A: We capture oracle fixtures from real JAX 0.9.2 (846 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
+A: We capture oracle fixtures from real JAX 0.9.2 (848 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
 
 **Q: Is the AD (automatic differentiation) complete?**
 A: Yes. All 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Numerical verification tests confirm correctness via finite-difference comparison.
 
 **Q: What's the Trace Transform Ledger?**
-A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces a verifiable proof artifact that records the input IR, applied transforms, and output IR. This makes transform composition auditable.
+A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Stronger semantic-equivalence verification is tracked in `frankenjax-fcxy.3`.
 
 **Q: How fast is it?**
 A: Performance optimization is ongoing. The CPU backend uses a dependency-wave parallel executor, and the e-graph optimizer applies 87 algebraic simplification rules. Profiling infrastructure is in place but systematic optimization hasn't started yet.
