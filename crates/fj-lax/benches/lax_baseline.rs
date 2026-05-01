@@ -474,6 +474,17 @@ fn bench_eq_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_bitwise_and_1k(c: &mut Criterion) {
+    let lhs_data: Vec<i64> = (0..1000).map(|i| i * 3 + 1).collect();
+    let rhs_data: Vec<i64> = (0..1000).map(|i| i * 5 + 7).collect();
+    let lhs = Value::vector_i64(&lhs_data).unwrap();
+    let rhs = Value::vector_i64(&rhs_data).unwrap();
+    let p = no_params();
+    c.bench_function("eval/bitwise_and_1k_i64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::BitwiseAnd, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_dispatch_overhead(c: &mut Criterion) {
     let inputs = [Value::scalar_i64(1), Value::scalar_i64(1)];
     let p = no_params();
@@ -518,5 +529,6 @@ criterion_group!(
     bench_dynamic_slice_64_rows_16_cols,
     bench_dynamic_update_slice_64_rows_16_cols,
     bench_eq_1k,
+    bench_bitwise_and_1k,
 );
 criterion_main!(benches);

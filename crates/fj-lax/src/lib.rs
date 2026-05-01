@@ -1129,68 +1129,68 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
             }
             match a.dtype {
                 fj_core::DType::I64 => {
-                    let elements: Result<Vec<_>, _> = a
-                        .elements
-                        .iter()
-                        .zip(b.elements.iter())
-                        .map(|(ea, eb)| match (ea, eb) {
+                    let mut elements = Vec::with_capacity(a.elements.len());
+                    for (ea, eb) in a.elements.iter().zip(b.elements.iter()) {
+                        match (ea, eb) {
                             (fj_core::Literal::I64(va), fj_core::Literal::I64(vb)) => {
-                                Ok(fj_core::Literal::I64(apply_bitwise_binary_i64(
+                                elements.push(fj_core::Literal::I64(apply_bitwise_binary_i64(
                                     primitive, *va, *vb,
-                                )))
+                                )));
                             }
-                            _ => Err(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "bitwise ops require integer tensors",
-                            }),
-                        })
-                        .collect();
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "bitwise ops require integer tensors",
+                                });
+                            }
+                        }
+                    }
                     Ok(Value::Tensor(
-                        TensorValue::new(fj_core::DType::I64, a.shape.clone(), elements?)
+                        TensorValue::new(fj_core::DType::I64, a.shape.clone(), elements)
                             .map_err(EvalError::InvalidTensor)?,
                     ))
                 }
                 fj_core::DType::U32 => {
-                    let elements: Result<Vec<_>, _> = a
-                        .elements
-                        .iter()
-                        .zip(b.elements.iter())
-                        .map(|(ea, eb)| match (ea, eb) {
+                    let mut elements = Vec::with_capacity(a.elements.len());
+                    for (ea, eb) in a.elements.iter().zip(b.elements.iter()) {
+                        match (ea, eb) {
                             (fj_core::Literal::U32(va), fj_core::Literal::U32(vb)) => {
-                                Ok(fj_core::Literal::U32(apply_bitwise_binary_u32(
+                                elements.push(fj_core::Literal::U32(apply_bitwise_binary_u32(
                                     primitive, *va, *vb,
-                                )))
+                                )));
                             }
-                            _ => Err(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "bitwise ops require integer tensors",
-                            }),
-                        })
-                        .collect();
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "bitwise ops require integer tensors",
+                                });
+                            }
+                        }
+                    }
                     Ok(Value::Tensor(
-                        TensorValue::new(fj_core::DType::U32, a.shape.clone(), elements?)
+                        TensorValue::new(fj_core::DType::U32, a.shape.clone(), elements)
                             .map_err(EvalError::InvalidTensor)?,
                     ))
                 }
                 fj_core::DType::U64 => {
-                    let elements: Result<Vec<_>, _> = a
-                        .elements
-                        .iter()
-                        .zip(b.elements.iter())
-                        .map(|(ea, eb)| match (ea, eb) {
+                    let mut elements = Vec::with_capacity(a.elements.len());
+                    for (ea, eb) in a.elements.iter().zip(b.elements.iter()) {
+                        match (ea, eb) {
                             (fj_core::Literal::U64(va), fj_core::Literal::U64(vb)) => {
-                                Ok(fj_core::Literal::U64(apply_bitwise_binary_u64(
+                                elements.push(fj_core::Literal::U64(apply_bitwise_binary_u64(
                                     primitive, *va, *vb,
-                                )))
+                                )));
                             }
-                            _ => Err(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "bitwise ops require integer tensors",
-                            }),
-                        })
-                        .collect();
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    primitive,
+                                    detail: "bitwise ops require integer tensors",
+                                });
+                            }
+                        }
+                    }
                     Ok(Value::Tensor(
-                        TensorValue::new(fj_core::DType::U64, a.shape.clone(), elements?)
+                        TensorValue::new(fj_core::DType::U64, a.shape.clone(), elements)
                             .map_err(EvalError::InvalidTensor)?,
                     ))
                 }
