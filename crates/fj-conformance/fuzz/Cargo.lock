@@ -396,6 +396,7 @@ name = "fj-cache"
 version = "0.1.0"
 dependencies = [
  "fj-core",
+ "serde",
  "sha2 0.10.9",
 ]
 
@@ -405,12 +406,16 @@ version = "0.1.0"
 dependencies = [
  "asupersync",
  "base64",
+ "fj-ad",
+ "fj-cache",
  "fj-core",
  "fj-dispatch",
+ "fj-interpreters",
  "fj-lax",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "smallvec",
 ]
 
 [[package]]
