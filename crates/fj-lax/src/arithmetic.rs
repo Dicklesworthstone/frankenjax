@@ -442,15 +442,17 @@ fn eval_binary_elementwise_complex(
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
             let out_dtype = complex_binary_output_dtype(lhs.dtype, rhs.dtype);
             if lhs.shape == rhs.shape {
-                let elements = lhs
+                let mut elements = Vec::with_capacity(lhs.elements.len());
+                for (left, right) in lhs
                     .elements
                     .iter()
                     .copied()
                     .zip(rhs.elements.iter().copied())
-                    .map(|(left, right)| {
-                        complex_binary_literal_op(primitive, left, right, out_dtype)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
+                {
+                    elements.push(complex_binary_literal_op(
+                        primitive, left, right, out_dtype,
+                    )?);
+                }
 
                 Ok(Value::Tensor(TensorValue::new(
                     out_dtype,
@@ -490,12 +492,12 @@ fn eval_binary_elementwise_complex(
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
             let out_dtype = complex_binary_output_dtype(literal_dtype(*lhs), rhs.dtype);
-            let elements = rhs
-                .elements
-                .iter()
-                .copied()
-                .map(|right| complex_binary_literal_op(primitive, *lhs, right, out_dtype))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(rhs.elements.len());
+            for right in rhs.elements.iter().copied() {
+                elements.push(complex_binary_literal_op(
+                    primitive, *lhs, right, out_dtype,
+                )?);
+            }
 
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
@@ -505,12 +507,10 @@ fn eval_binary_elementwise_complex(
         }
         (Value::Tensor(lhs), Value::Scalar(rhs)) => {
             let out_dtype = complex_binary_output_dtype(lhs.dtype, literal_dtype(*rhs));
-            let elements = lhs
-                .elements
-                .iter()
-                .copied()
-                .map(|left| complex_binary_literal_op(primitive, left, *rhs, out_dtype))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(lhs.elements.len());
+            for left in lhs.elements.iter().copied() {
+                elements.push(complex_binary_literal_op(primitive, left, *rhs, out_dtype)?);
+            }
 
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
