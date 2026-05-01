@@ -11,6 +11,148 @@ Goal: Complete all identified next-step streams end-to-end in one pass.
 - [x] completed
 - [!] blocked/needs follow-up
 
+## 2026-05-01 Full Reality Check, Ambition Rounds, and Bead Plan
+
+Tracker parent: `frankenjax-cstq`
+
+### RCB0. Skill protocol and source ingestion
+- [x] Apply `reality-check-for-project` instead of jumping directly to implementation.
+- [x] Read global `/dp/AGENTS.md`.
+- [x] Read repo-local `AGENTS.md`.
+- [x] Read `README.md` fully, including current limitations and verification sections.
+- [x] Read `COMPREHENSIVE_SPEC_FOR_FRANKENJAX_V1.md`.
+- [x] Read `PLAN_TO_PORT_JAX_TO_RUST.md`.
+- [x] Read `PROPOSED_ARCHITECTURE.md`.
+- [x] Read `FEATURE_PARITY.md`.
+- [x] Read `PHASE2C_EXTRACTION_PACKET.md`.
+- [x] Read `EXISTING_JAX_STRUCTURE.md`.
+- [x] Read `EXHAUSTIVE_LEGACY_ANALYSIS.md`.
+- [x] Read `CHANGELOG.md`.
+- [x] Read `UPGRADE_LOG.md`.
+- [x] Read conformance fixture README notes.
+- [x] Confirm current tracker state before creating new beads: `br ready --json` returned `[]`.
+- [x] Confirm `bv --robot-triage` before this pass reported 314 closed issues, 0 open issues, and no ready work.
+- [!] Agent Mail write-path bootstrap still fails with a database error; use `br`, JSONL, git status, and scoped file edits instead.
+
+### RCB1. Reality-check answer
+- [x] Current implementation is substantial, not a skeleton: 15 workspace crates, 110 declared primitives, strict/hardened infrastructure, conformance harnesses, many E2E/durability artifacts, and recently green workspace validation evidence.
+- [x] Current implementation is not yet "100 percent V1 reality" because several spec-level promises still need stronger machine evidence or actual closure.
+- [x] The right next work is not another broad rewrite. It is a focused graph of oracle recapture, transform composition, semantic proof, memory/perf gating, durability inventory, cache-key parity, facade/API proof, and audit beads.
+- [x] GPU/TPU/XLA replacement remains excluded scope, not a failure, unless future docs claim it as V1.
+- [x] CPU-only/no-XLA limitations remain correctly documented and should stay explicit.
+
+### RCB2. Vision checklist against current evidence
+
+| Vision claim | Current reality | Gap owner |
+|---|---|---|
+| Clean-room Rust implementation of scoped JAX transform semantics | Broadly implemented for declared primitives and core transforms | `frankenjax-cstq.1`, `frankenjax-cstq.2`, `frankenjax-cstq.7` |
+| Transform composition semantics are non-negotiable | Evidence/proof checks exist and were hardened, but semantic replay against oracle structures is not yet complete | `frankenjax-cstq.2`, `frankenjax-cstq.3` |
+| Strict/hardened compatibility split is enforced | Present in cache/dispatch paths, but cross-crate error taxonomy is distributed | `frankenjax-cstq.6`, `frankenjax-cstq.8` |
+| Profile-proven performance with trace/compile/execute and memory | Global gate exists for measured runtime phases; memory remains explicitly `not_measured` | `frankenjax-cstq.4`, `frankenjax-cstq.11` |
+| RaptorQ sidecars for all long-lived artifacts | Many sidecars/proofs exist, including Phase2C packets and E2E artifacts; authoritative all-artifact coverage needs machine enforcement | `frankenjax-cstq.5` |
+| Cache-key soundness against legacy behavior | Deterministic Rust keying exists; component-by-component legacy ledger is still needed | `frankenjax-cstq.6` |
+| Top-level usable library/API story | Multiple crates and examples exist; top-level facade and README executable proof remain ambiguous | `frankenjax-cstq.9`, `frankenjax-cstq.12` |
+| Backend, FFI, asupersync, FrankenTUI integrations | Foundational/optional paths exist; feature-combination and external-contract proof needs tightening | `frankenjax-cstq.10` |
+| No hidden stubs or stale proof claims | Prior docs were recalibrated, but a fresh stub/dead-claim audit is still needed after the latest ambition graph | `frankenjax-cstq.13` |
+| Docs/specs/beads remain aligned over time | Manual docs are currently updated, but no machine-checked vision-to-evidence coverage dashboard exists | `frankenjax-cstq.14` |
+
+### RCB3. Gap inventory converted to bridge lanes
+- [x] Lane A: Evidence truth source and drift detection.
+  - [x] `frankenjax-cstq.1` recaptures oracle matrix and drift gates.
+  - [x] `frankenjax-cstq.14` later makes vision-to-evidence coverage machine checked.
+- [x] Lane B: Transform correctness and proof closure.
+  - [x] `frankenjax-cstq.2` closes advanced transform/control-flow composition parity.
+  - [x] `frankenjax-cstq.3` adds semantic TTL replay instead of relying on provenance only.
+  - [x] `frankenjax-cstq.7` expands higher-rank and complex AD/linalg/FFT fixture-backed parity.
+  - [x] `frankenjax-cstq.8` centralizes strict/hardened error taxonomy conformance.
+- [x] Lane C: Performance, memory, and durability truth.
+  - [x] `frankenjax-cstq.4` replaces `memory: not_measured` with real heap/RSS/allocation evidence.
+  - [x] `frankenjax-cstq.5` enforces RaptorQ coverage for all long-lived artifacts.
+  - [x] `frankenjax-cstq.11` ranks optimization work only after measured baseline/profile evidence.
+- [x] Lane D: User-facing and architecture closure.
+  - [x] `frankenjax-cstq.12` decides whether target crate boundaries should be extracted or explicitly retained.
+  - [x] `frankenjax-cstq.9` proves documented user entry points and README examples.
+  - [x] `frankenjax-cstq.10` proves backend, FFI, and optional feature contracts.
+- [x] Lane E: Fresh audit.
+  - [x] `frankenjax-cstq.13` searches for hidden mocks, stubs, stale claims, and false "done" surfaces.
+
+### RCB4. Phase 3a bead creation pass
+- [x] Create parent epic `frankenjax-cstq`.
+- [x] Create `frankenjax-cstq.1` for oracle parity recapture matrix and drift gate.
+- [x] Create `frankenjax-cstq.2` for advanced transform/control-flow composition parity.
+- [x] Create `frankenjax-cstq.3` for TTL semantic verifier and structural oracle replay.
+- [x] Create `frankenjax-cstq.4` for memory/allocation performance gate.
+- [x] Create `frankenjax-cstq.5` for all-long-lived-artifact RaptorQ coverage.
+- [x] Create `frankenjax-cstq.6` for cache-key legacy parity ledger and lifecycle conformance.
+- [x] Create `frankenjax-cstq.7` for higher-rank and complex AD/linalg/FFT fixtures.
+- [x] Create `frankenjax-cstq.8` for cross-crate error taxonomy conformance.
+- [x] Create `frankenjax-cstq.9` for top-level user facade and README executable proof.
+- [x] Create `frankenjax-cstq.10` for backend, FFI, and optional integration contracts.
+- [x] Create `frankenjax-cstq.11` for optimization hotspot scoreboard and one-lever queue.
+- [x] Create `frankenjax-cstq.12` for transform/lowering/API facade boundary decision.
+- [x] Create `frankenjax-cstq.13` for mock/stub/dead-claim audit.
+- [x] Create `frankenjax-cstq.14` for machine-checked vision-to-evidence coverage dashboard.
+- [x] Mark parent epic `frankenjax-cstq` as `in_progress` after child graph creation; it stays open until the child program is executed.
+
+### RCB5. Ambition Round 1: make claims machine-checkable
+- [x] Strengthen the plan from "update docs" to "add checks that reject unsupported claims."
+- [x] Require `frankenjax-cstq.1` to emit drift reports, not just recapture fixtures.
+- [x] Require `frankenjax-cstq.5` to define an authoritative artifact inventory, not just generate more sidecars.
+- [x] Require `frankenjax-cstq.14` to connect spec MUST clauses, parity rows, tests, artifacts, and bead IDs.
+
+### RCB6. Ambition Round 2: promote parity claims only after oracle or fail-closed evidence
+- [x] Keep advanced `vmap` plus iterative control flow as a real open parity lane until oracle matrix rows pass.
+- [x] Require unsupported transform rows to fail closed explicitly, not silently degrade.
+- [x] Require TTL semantic verification to bind transformed IR/evidence to structural oracle replay.
+- [x] Require cache-key parity to map every legacy component to Rust material or explicit excluded scope.
+
+### RCB7. Ambition Round 3: optimize only from measured bottlenecks
+- [x] Preserve the existing performance doctrine: baseline, profile, one lever, behavior proof, rebaseline.
+- [x] Treat memory/allocation as a missing measurement phase, not as an optimization claim.
+- [x] Add an optimization scoreboard bead before creating more speedup beads.
+- [x] Include vmap multiplier, AD tape/backward map, tensor materialization, shape kernels, cache hashing, egraph saturation, FFT/linalg/reduction mixes, and durability encode/decode in the scoreboard scope.
+
+### RCB8. Phase 5 plan-space refinement rounds
+- [x] Round 1: bv found the created graph cycle-free but too flat; add real sequencing edges.
+- [x] Round 2: ensure oracle recapture blocks advanced transform, TTL proof, and higher-rank fixture work.
+- [x] Round 3: ensure memory baseline blocks optimization scoreboard work.
+- [x] Round 4: ensure architecture-boundary decision blocks facade/API proof, which blocks backend/FFI optional-contract proof.
+- [x] Round 5: ensure final vision dashboard depends on oracle, durability, cache, and error-taxonomy evidence.
+- [x] Stop refinement after no additional dependency edge is necessary for the current gap model.
+
+### RCB9. Refined dependency graph
+- [x] `frankenjax-cstq.2` depends on `frankenjax-cstq.1`.
+- [x] `frankenjax-cstq.3` depends on `frankenjax-cstq.1`.
+- [x] `frankenjax-cstq.3` depends on `frankenjax-cstq.2`.
+- [x] `frankenjax-cstq.7` depends on `frankenjax-cstq.1`.
+- [x] `frankenjax-cstq.9` depends on `frankenjax-cstq.12`.
+- [x] `frankenjax-cstq.10` depends on `frankenjax-cstq.9`.
+- [x] `frankenjax-cstq.11` depends on `frankenjax-cstq.4`.
+- [x] `frankenjax-cstq.14` depends on `frankenjax-cstq.1`.
+- [x] `frankenjax-cstq.14` depends on `frankenjax-cstq.5`.
+- [x] `frankenjax-cstq.14` depends on `frankenjax-cstq.6`.
+- [x] `frankenjax-cstq.14` depends on `frankenjax-cstq.8`.
+
+### RCB10. Next implementation order from the refined graph
+- [ ] First ready slice: `frankenjax-cstq.1` oracle parity recapture matrix and drift gate.
+- [ ] Parallel-safe ready slices after/around it: `frankenjax-cstq.4`, `frankenjax-cstq.5`, `frankenjax-cstq.6`, `frankenjax-cstq.8`, `frankenjax-cstq.12`, `frankenjax-cstq.13`.
+- [ ] After `frankenjax-cstq.1`: proceed to `frankenjax-cstq.2` and `frankenjax-cstq.7`.
+- [ ] After `frankenjax-cstq.2`: proceed to `frankenjax-cstq.3`.
+- [ ] After `frankenjax-cstq.4`: proceed to `frankenjax-cstq.11`.
+- [ ] After `frankenjax-cstq.12`: proceed to `frankenjax-cstq.9`, then `frankenjax-cstq.10`.
+- [ ] After oracle/durability/cache/error evidence: proceed to `frankenjax-cstq.14`.
+
+### RCB11. Validation checklist for this planning/bead phase
+- [x] Re-run `br dep cycles --json`; result: no cycles.
+- [x] Re-run `br ready --json`; result: ready children are `frankenjax-cstq.1`, `.4`, `.5`, `.6`, `.8`, `.12`, `.13`.
+- [x] Re-run `bv --robot-triage`; result: 15 open, 8 actionable, 7 blocked, 1 in progress, top pick `frankenjax-cstq.1`.
+- [x] Run `git diff --check`.
+- [!] Run `br sync --flush-only`; it still refuses export because the DB has 328 issues while JSONL has 329 and the stale guard says export would lose `frankenjax-h8l2`. Do not force without explicit permission; use the auto-updated JSONL records from `br create`/`br dep add`/`br update`.
+- [x] Stage `TODO_SUPER_DETAILED_PORT_AND_PARITY.md` and `.beads/` changes only.
+- [x] Commit and push to `main`.
+- [x] Mirror `main` to legacy `master`.
+- [x] Leave unrelated untracked fuzz directory untouched.
+
 ## 2026-05-01 Reality-Check Follow-Up TODO
 
 Tracker parent: `frankenjax-fcxy`
