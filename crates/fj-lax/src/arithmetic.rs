@@ -1437,91 +1437,89 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 });
             }
             let dtype = promote_dtype(on_true.dtype, on_false.dtype);
-            let elements: Result<Vec<Literal>, EvalError> = cond
+            let mut elements = Vec::with_capacity(cond.elements.len());
+            for ((c, t), f) in cond
                 .elements
                 .iter()
-                .zip(on_true.elements.iter())
-                .zip(on_false.elements.iter())
-                .map(|((c, t), f)| {
-                    let flag = match c {
-                        Literal::Bool(b) => *b,
-                        Literal::I64(v) => *v != 0,
-                        Literal::U32(v) => *v != 0,
-                        Literal::U64(v) => *v != 0,
-                        Literal::BF16Bits(bits) => {
-                            Literal::BF16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                        }
-                        Literal::F16Bits(bits) => {
-                            Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                        }
-                        Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
-                        Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
-                        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                            return Err(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "select condition must be boolean, got complex dtype",
-                            });
-                        }
-                    };
-                    let val = if flag { *t } else { *f };
-                    select_literal_as_dtype(
-                        primitive,
-                        val,
-                        dtype,
-                        "expected numeric tensor elements for select",
-                        "expected integer tensor elements for select",
-                        "expected unsigned tensor elements for select",
-                    )
-                })
-                .collect();
+                .copied()
+                .zip(on_true.elements.iter().copied())
+                .zip(on_false.elements.iter().copied())
+            {
+                let flag = match c {
+                    Literal::Bool(b) => b,
+                    Literal::I64(v) => v != 0,
+                    Literal::U32(v) => v != 0,
+                    Literal::U64(v) => v != 0,
+                    Literal::BF16Bits(bits) => {
+                        Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
+                    }
+                    Literal::F16Bits(bits) => {
+                        Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
+                    }
+                    Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
+                    Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
+                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+                        return Err(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "select condition must be boolean, got complex dtype",
+                        });
+                    }
+                };
+                let val = if flag { t } else { f };
+                elements.push(select_literal_as_dtype(
+                    primitive,
+                    val,
+                    dtype,
+                    "expected numeric tensor elements for select",
+                    "expected integer tensor elements for select",
+                    "expected unsigned tensor elements for select",
+                )?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 cond.shape.clone(),
-                elements?,
+                elements,
             )?))
         }
         // Tensor cond + scalar on_true + scalar on_false: broadcast scalars
         (Value::Tensor(cond), Value::Scalar(on_true), Value::Scalar(on_false)) => {
             let dtype = promote_dtype(literal_dtype(*on_true), literal_dtype(*on_false));
-            let elements: Result<Vec<Literal>, EvalError> = cond
-                .elements
-                .iter()
-                .map(|c| {
-                    let flag = match c {
-                        Literal::Bool(b) => *b,
-                        Literal::I64(v) => *v != 0,
-                        Literal::U32(v) => *v != 0,
-                        Literal::U64(v) => *v != 0,
-                        Literal::BF16Bits(bits) => {
-                            Literal::BF16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                        }
-                        Literal::F16Bits(bits) => {
-                            Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                        }
-                        Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
-                        Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
-                        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                            return Err(EvalError::TypeMismatch {
-                                primitive,
-                                detail: "select condition must be boolean, got complex dtype",
-                            });
-                        }
-                    };
-                    let val = if flag { *on_true } else { *on_false };
-                    select_literal_as_dtype(
-                        primitive,
-                        val,
-                        dtype,
-                        "expected numeric scalar for select",
-                        "expected integer scalar for select",
-                        "expected unsigned scalar for select",
-                    )
-                })
-                .collect();
+            let mut elements = Vec::with_capacity(cond.elements.len());
+            for c in cond.elements.iter().copied() {
+                let flag = match c {
+                    Literal::Bool(b) => b,
+                    Literal::I64(v) => v != 0,
+                    Literal::U32(v) => v != 0,
+                    Literal::U64(v) => v != 0,
+                    Literal::BF16Bits(bits) => {
+                        Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
+                    }
+                    Literal::F16Bits(bits) => {
+                        Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
+                    }
+                    Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
+                    Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
+                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
+                        return Err(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "select condition must be boolean, got complex dtype",
+                        });
+                    }
+                };
+                let val = if flag { *on_true } else { *on_false };
+                elements.push(select_literal_as_dtype(
+                    primitive,
+                    val,
+                    dtype,
+                    "expected numeric scalar for select",
+                    "expected integer scalar for select",
+                    "expected unsigned scalar for select",
+                )?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 dtype,
                 cond.shape.clone(),
-                elements?,
+                elements,
             )?))
         }
         // Scalar cond + tensor on_true + tensor on_false

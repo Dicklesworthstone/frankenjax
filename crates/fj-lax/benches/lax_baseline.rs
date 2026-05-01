@@ -157,6 +157,26 @@ fn bench_clamp_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_select_1k(c: &mut Criterion) {
+    let cond_elements: Vec<Literal> = (0..1000).map(|i| Literal::Bool(i % 3 == 0)).collect();
+    let cond = Value::Tensor(TensorValue {
+        dtype: DType::Bool,
+        shape: Shape { dims: vec![1000] },
+        elements: cond_elements,
+    });
+    let true_data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.001).collect();
+    let false_data: Vec<f64> = (0..1000).map(|i| -(i as f64) * 0.001).collect();
+    let inputs = [
+        cond,
+        Value::vector_f64(&true_data).unwrap(),
+        Value::vector_f64(&false_data).unwrap(),
+    ];
+    let p = no_params();
+    c.bench_function("eval/select_1k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Select, &inputs, &p))
+    });
+}
+
 fn bench_fft_256(c: &mut Criterion) {
     let input = complex_vector(256);
     let p = no_params();
@@ -378,6 +398,7 @@ criterion_group!(
     bench_exp_1k,
     bench_square_1k,
     bench_clamp_1k,
+    bench_select_1k,
     bench_fft_256,
     bench_ifft_256,
     bench_rfft_256,
