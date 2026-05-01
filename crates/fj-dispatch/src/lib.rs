@@ -227,6 +227,23 @@ fn wants_egraph_optimize(opts: &BTreeMap<String, String>) -> bool {
     })
 }
 
+fn allows_finite_diff_grad_fallback(opts: &BTreeMap<String, String>) -> bool {
+    opts.get("allow_finite_diff_grad_fallback")
+        .is_none_or(|raw| {
+            !(raw.eq_ignore_ascii_case("false")
+                || raw.eq_ignore_ascii_case("0")
+                || raw.eq_ignore_ascii_case("no")
+                || raw.eq_ignore_ascii_case("deny"))
+        })
+}
+
+fn transform_tail_summary(tail: &[Transform]) -> String {
+    tail.iter()
+        .map(|transform| transform.as_str())
+        .collect::<Vec<_>>()
+        .join(">")
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct DispatchResponse {
     pub outputs: Vec<Value>,
@@ -246,6 +263,7 @@ pub enum TransformExecutionError {
     VmapAxesCountMismatch { expected: usize, actual: usize },
     InvalidVmapAxisSpec { option: &'static str, value: String },
     VmapUnmappedOutputMismatch,
+    FiniteDiffGradFallbackDisabled { tail: String },
     EmptyVmapOutput,
     TensorBuild(String),
 }
@@ -304,6 +322,12 @@ impl std::fmt::Display for TransformExecutionError {
                 write!(
                     f,
                     "vmap out_axes=none requires the output to be identical across mapped elements"
+                )
+            }
+            Self::FiniteDiffGradFallbackDisabled { tail } => {
+                write!(
+                    f,
+                    "finite-difference grad fallback is disabled for remaining transform tail [{tail}]"
                 )
             }
             Self::TensorBuild(detail) => write!(f, "tensor build error: {detail}"),
@@ -529,16 +553,33 @@ fn execute_grad(
         .into());
     }
 
-    // If there are remaining transforms in the tail, fall back to finite-diff
-    // (symbolic AD only applies to the innermost evaluation).
-    // For finite-diff, we still require scalar first argument.
+    // A trailing Jit is semantically transparent for symbolic AD. Other
+    // remaining transforms still require the finite-difference compatibility
+    // fallback unless the caller explicitly disables it.
     if !tail.is_empty() {
+        if tail.iter().all(|transform| *transform == Transform::Jit) {
+            return execute_symbolic_grad(root_jaxpr, args, compile_options);
+        }
+        if !allows_finite_diff_grad_fallback(compile_options) {
+            return Err(TransformExecutionError::FiniteDiffGradFallbackDisabled {
+                tail: transform_tail_summary(tail),
+            }
+            .into());
+        }
         args[0]
             .as_f64_scalar()
             .ok_or(TransformExecutionError::NonScalarGradientInput)?;
-        return execute_grad_finite_diff(root_jaxpr, tail, args, backend, device);
+        return execute_grad_finite_diff(root_jaxpr, tail, args, backend, device, compile_options);
     }
 
+    execute_symbolic_grad(root_jaxpr, args, compile_options)
+}
+
+fn execute_symbolic_grad(
+    root_jaxpr: &Jaxpr,
+    args: &[Value],
+    compile_options: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, DispatchError> {
     if wants_value_and_grad(compile_options) {
         // Shared forward pass for value_and_grad mode.
         let (mut values, grads) =
@@ -571,6 +612,7 @@ fn execute_grad_finite_diff(
     args: &[Value],
     backend: &dyn Backend,
     device: DeviceId,
+    compile_options: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, DispatchError> {
     let input_value = args[0]
         .as_f64_scalar()
@@ -582,11 +624,10 @@ fn execute_grad_finite_diff(
     plus_args[0] = Value::scalar_f64(input_value + epsilon);
     minus_args[0] = Value::scalar_f64(input_value - epsilon);
 
-    let empty_opts = BTreeMap::new();
     let plus_out =
-        execute_with_transforms(root_jaxpr, tail, &plus_args, backend, device, &empty_opts)?;
+        execute_with_transforms(root_jaxpr, tail, &plus_args, backend, device, compile_options)?;
     let minus_out =
-        execute_with_transforms(root_jaxpr, tail, &minus_args, backend, device, &empty_opts)?;
+        execute_with_transforms(root_jaxpr, tail, &minus_args, backend, device, compile_options)?;
 
     let plus_value = plus_out
         .first()
@@ -1065,6 +1106,56 @@ mod tests {
             .as_f64_scalar()
             .expect("grad output should be scalar f64");
         assert!((derivative - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dispatch_grad_jit_uses_symbolic_ad_when_fallback_is_disabled() {
+        let mut compile_options = BTreeMap::new();
+        compile_options.insert(
+            "allow_finite_diff_grad_fallback".to_owned(),
+            "false".to_owned(),
+        );
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Grad, Transform::Jit]),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("grad(jit(f)) should use symbolic AD because jit is transparent");
+
+        let derivative = response.outputs[0]
+            .as_f64_scalar()
+            .expect("grad output should be scalar f64");
+        assert!((derivative - 6.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dispatch_grad_grad_can_deny_finite_diff_fallback() {
+        let mut compile_options = BTreeMap::new();
+        compile_options.insert(
+            "allow_finite_diff_grad_fallback".to_owned(),
+            "deny".to_owned(),
+        );
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Square, &[Transform::Grad, Transform::Grad]),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("finite-difference fallback should be gateable");
+
+        assert!(matches!(
+            err,
+            DispatchError::TransformExecution(
+                TransformExecutionError::FiniteDiffGradFallbackDisabled { .. }
+            )
+        ));
     }
 
     #[test]
