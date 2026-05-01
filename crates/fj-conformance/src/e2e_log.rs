@@ -652,12 +652,28 @@ fn is_redacted_text(text: &str) -> bool {
 }
 
 fn replay_command_uses_transient_cargo_binary(command: &str) -> bool {
-    let Some(first_word) = command.split_whitespace().next() else {
+    command
+        .split_whitespace()
+        .any(shell_word_uses_transient_cargo_binary)
+}
+
+fn shell_word_uses_transient_cargo_binary(raw: &str) -> bool {
+    let shell_word = raw.trim_matches(['\'', '"', ';']);
+    if shell_word.is_empty() || is_shell_assignment(shell_word) {
+        return false;
+    }
+    (shell_word.contains("/target/") || shell_word.contains("cargo-target"))
+        && (shell_word.contains("/debug/") || shell_word.contains("/release/"))
+}
+
+fn is_shell_assignment(shell_word: &str) -> bool {
+    let Some((name, _value)) = shell_word.split_once('=') else {
         return false;
     };
-    let executable = first_word.trim_matches(['\'', '"']);
-    (executable.contains("/target/") || executable.contains("cargo-target"))
-        && (executable.contains("/debug/") || executable.contains("/release/"))
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
 fn looks_sensitive_key(key: &str) -> bool {

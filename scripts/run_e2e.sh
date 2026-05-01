@@ -37,7 +37,7 @@ normalize_packet() {
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --packet)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --packet requires a value" >&2
         exit 2
       fi
@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --scenario)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --scenario requires a value" >&2
         exit 2
       fi

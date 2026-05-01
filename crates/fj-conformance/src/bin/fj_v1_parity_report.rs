@@ -280,8 +280,13 @@ fn next_value<I>(args: &mut I, flag: &str) -> Result<String, String>
 where
     I: Iterator<Item = String>,
 {
-    args.next()
-        .ok_or_else(|| format!("missing value for {flag}"))
+    let value = args
+        .next()
+        .ok_or_else(|| format!("missing value for {flag}"))?;
+    if value.starts_with('-') {
+        return Err(format!("missing value for {flag}: got flag `{value}`"));
+    }
+    Ok(value)
 }
 
 fn parse_args(root: &Path) -> Result<Args, String> {

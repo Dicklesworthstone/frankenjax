@@ -292,8 +292,13 @@ fn next_value(
     iter: &mut impl Iterator<Item = String>,
     flag: &'static str,
 ) -> Result<String, String> {
-    iter.next()
-        .ok_or_else(|| format!("{flag} requires a value"))
+    let value = iter
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))?;
+    if value.starts_with('-') {
+        return Err(format!("{flag} requires a value, got flag `{value}`"));
+    }
+    Ok(value)
 }
 
 fn print_usage() {

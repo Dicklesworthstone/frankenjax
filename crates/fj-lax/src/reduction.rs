@@ -212,11 +212,8 @@ pub(crate) fn eval_reduce_axes(
             let is_complex = matches!(tensor.dtype, DType::Complex64 | DType::Complex128);
             let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
 
-            // Compute strides for the input tensor (row-major)
-            let strides = compute_strides(&tensor.shape.dims);
-
             // Total number of output elements
-            let out_count: usize = out_dims.iter().map(|d| *d as usize).product();
+            let out_count = checked_shape_element_count(primitive, "reduction output", &out_dims)?;
             if out_count == 0 {
                 return Ok(Value::Tensor(TensorValue::new(
                     tensor.dtype,
@@ -227,6 +224,7 @@ pub(crate) fn eval_reduce_axes(
 
             // For each output element, iterate over the reduced axes and accumulate
             let kept_axes: Vec<usize> = (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
+            let strides = checked_strides(primitive, "reduction input", &tensor.shape.dims)?;
 
             if is_complex {
                 if primitive != Primitive::ReduceSum {
@@ -237,12 +235,28 @@ pub(crate) fn eval_reduce_axes(
                     });
                 }
 
-                let mut result_re = vec![float_init; out_count];
-                let mut result_im = vec![float_init; out_count];
+                let mut result_re = try_filled_vec(
+                    primitive,
+                    "reduction real accumulator",
+                    out_count,
+                    float_init,
+                )?;
+                let mut result_im = try_filled_vec(
+                    primitive,
+                    "reduction imaginary accumulator",
+                    out_count,
+                    float_init,
+                )?;
                 let total = tensor.elements.len();
                 for flat_idx in 0..total {
-                    let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
-                    let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
+                    let multi = flat_to_multi(flat_idx, &strides);
+                    let out_idx = multi_to_out_flat(
+                        primitive,
+                        "reduction output",
+                        &multi,
+                        &kept_axes,
+                        &out_dims,
+                    )?;
                     let (re, im) = literal_to_complex_parts(primitive, tensor.elements[flat_idx])?;
                     result_re[out_idx] = float_op(result_re[out_idx], re);
                     result_im[out_idx] = float_op(result_im[out_idx], im);
@@ -260,13 +274,24 @@ pub(crate) fn eval_reduce_axes(
                     elements,
                 )?))
             } else if is_integral {
-                let mut result = vec![int_init; out_count];
+                let mut result = try_filled_vec(
+                    primitive,
+                    "reduction integer accumulator",
+                    out_count,
+                    int_init,
+                )?;
                 let total = tensor.elements.len();
                 for flat_idx in 0..total {
                     // Compute multi-index from flat index
-                    let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
+                    let multi = flat_to_multi(flat_idx, &strides);
                     // Compute output flat index from kept dimensions
-                    let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
+                    let out_idx = multi_to_out_flat(
+                        primitive,
+                        "reduction output",
+                        &multi,
+                        &kept_axes,
+                        &out_dims,
+                    )?;
                     let val =
                         tensor.elements[flat_idx]
                             .as_i64()
@@ -283,11 +308,22 @@ pub(crate) fn eval_reduce_axes(
                     elements,
                 )?))
             } else {
-                let mut result = vec![float_init; out_count];
+                let mut result = try_filled_vec(
+                    primitive,
+                    "reduction float accumulator",
+                    out_count,
+                    float_init,
+                )?;
                 let total = tensor.elements.len();
                 for flat_idx in 0..total {
-                    let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
-                    let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
+                    let multi = flat_to_multi(flat_idx, &strides);
+                    let out_idx = multi_to_out_flat(
+                        primitive,
+                        "reduction output",
+                        &multi,
+                        &kept_axes,
+                        &out_dims,
+                    )?;
                     let val =
                         tensor.elements[flat_idx]
                             .as_f64()
@@ -383,7 +419,11 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         .filter(|(i, _)| !axes_sorted.contains(i))
                         .map(|(_, d)| *d)
                         .collect();
-                    let out_count: usize = out_dims.iter().map(|d| *d as usize).product();
+                    let out_count = checked_shape_element_count(
+                        primitive,
+                        "bitwise reduction output",
+                        &out_dims,
+                    )?;
                     if out_count == 0 {
                         return Ok(Value::Tensor(TensorValue::new(
                             DType::Bool,
@@ -392,13 +432,25 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         )?));
                     }
 
-                    let strides = compute_strides(&tensor.shape.dims);
+                    let strides =
+                        checked_strides(primitive, "bitwise reduction input", &tensor.shape.dims)?;
                     let kept_axes: Vec<usize> =
                         (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
-                    let mut result = vec![bool_init; out_count];
+                    let mut result = try_filled_vec(
+                        primitive,
+                        "bitwise reduction bool accumulator",
+                        out_count,
+                        bool_init,
+                    )?;
                     for flat_idx in 0..tensor.elements.len() {
-                        let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
-                        let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
+                        let multi = flat_to_multi(flat_idx, &strides);
+                        let out_idx = multi_to_out_flat(
+                            primitive,
+                            "bitwise reduction output",
+                            &multi,
+                            &kept_axes,
+                            &out_dims,
+                        )?;
                         let val = match tensor.elements[flat_idx] {
                             Literal::Bool(v) => v,
                             _ => {
@@ -439,7 +491,11 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         .filter(|(i, _)| !axes_sorted.contains(i))
                         .map(|(_, d)| *d)
                         .collect();
-                    let out_count: usize = out_dims.iter().map(|d| *d as usize).product();
+                    let out_count = checked_shape_element_count(
+                        primitive,
+                        "bitwise reduction output",
+                        &out_dims,
+                    )?;
                     if out_count == 0 {
                         return Ok(Value::Tensor(TensorValue::new(
                             DType::I64,
@@ -448,13 +504,25 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         )?));
                     }
 
-                    let strides = compute_strides(&tensor.shape.dims);
+                    let strides =
+                        checked_strides(primitive, "bitwise reduction input", &tensor.shape.dims)?;
                     let kept_axes: Vec<usize> =
                         (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
-                    let mut result = vec![int_init; out_count];
+                    let mut result = try_filled_vec(
+                        primitive,
+                        "bitwise reduction integer accumulator",
+                        out_count,
+                        int_init,
+                    )?;
                     for flat_idx in 0..tensor.elements.len() {
-                        let multi = flat_to_multi(flat_idx, &strides, &tensor.shape.dims);
-                        let out_idx = multi_to_out_flat(&multi, &kept_axes, &out_dims);
+                        let multi = flat_to_multi(flat_idx, &strides);
+                        let out_idx = multi_to_out_flat(
+                            primitive,
+                            "bitwise reduction output",
+                            &multi,
+                            &kept_axes,
+                            &out_dims,
+                        )?;
                         let val =
                             tensor.elements[flat_idx]
                                 .as_i64()
@@ -481,15 +549,59 @@ pub(crate) fn eval_reduce_bitwise_axes(
     }
 }
 
-fn compute_strides(dims: &[u32]) -> Vec<usize> {
-    let mut strides = vec![1_usize; dims.len()];
-    for i in (0..dims.len().saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * dims[i + 1] as usize;
+fn checked_shape_element_count(
+    primitive: Primitive,
+    context: &str,
+    dims: &[u32],
+) -> Result<usize, EvalError> {
+    if dims.contains(&0) {
+        return Ok(0);
     }
-    strides
+
+    dims.iter().try_fold(1_usize, |acc, dim| {
+        acc.checked_mul(*dim as usize)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("{context} shape overflows usize"),
+            })
+    })
 }
 
-fn flat_to_multi(flat: usize, strides: &[usize], _dims: &[u32]) -> Vec<usize> {
+fn checked_strides(
+    primitive: Primitive,
+    context: &str,
+    dims: &[u32],
+) -> Result<Vec<usize>, EvalError> {
+    let mut strides = vec![1_usize; dims.len()];
+    for i in (0..dims.len().saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1]
+            .checked_mul(dims[i + 1] as usize)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("{context} strides overflow usize"),
+            })?;
+    }
+    Ok(strides)
+}
+
+fn try_filled_vec<T: Clone>(
+    primitive: Primitive,
+    context: &str,
+    len: usize,
+    value: T,
+) -> Result<Vec<T>, EvalError> {
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(len)
+        .map_err(|err| EvalError::Unsupported {
+            primitive,
+            detail: format!("{context} allocation failed for {len} elements: {err}"),
+        })?;
+    values.resize(len, value);
+    Ok(values)
+}
+
+fn flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
     let mut multi = Vec::with_capacity(strides.len());
     let mut remainder = flat;
     for &stride in strides {
@@ -499,14 +611,38 @@ fn flat_to_multi(flat: usize, strides: &[usize], _dims: &[u32]) -> Vec<usize> {
     multi
 }
 
-fn multi_to_out_flat(multi: &[usize], kept_axes: &[usize], out_dims: &[u32]) -> usize {
-    let mut idx = 0;
-    let mut stride = 1;
+fn multi_to_out_flat(
+    primitive: Primitive,
+    context: &str,
+    multi: &[usize],
+    kept_axes: &[usize],
+    out_dims: &[u32],
+) -> Result<usize, EvalError> {
+    let mut idx = 0_usize;
+    let mut stride = 1_usize;
     for i in (0..kept_axes.len()).rev() {
-        idx += multi[kept_axes[i]] * stride;
-        stride *= out_dims[i] as usize;
+        let offset =
+            multi[kept_axes[i]]
+                .checked_mul(stride)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("{context} flat index overflows usize"),
+                })?;
+        idx = idx
+            .checked_add(offset)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: format!("{context} flat index overflows usize"),
+            })?;
+        stride =
+            stride
+                .checked_mul(out_dims[i] as usize)
+                .ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("{context} stride overflows usize"),
+                })?;
     }
-    idx
+    Ok(idx)
 }
 
 /// Cumulative scan along a specified axis. Output shape matches input.
@@ -558,20 +694,20 @@ pub(crate) fn eval_cumulative(
 
             let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
 
-            // Compute strides
-            let strides = compute_strides(&tensor.shape.dims);
             let axis_dim = tensor.shape.dims[axis] as usize;
-            let axis_stride = strides[axis];
 
             let total = tensor.elements.len();
             let mut elements = tensor.elements.clone();
-            if axis_dim == 0 {
+            if axis_dim == 0 || total == 0 {
                 return Ok(Value::Tensor(TensorValue::new(
                     tensor.dtype,
                     tensor.shape.clone(),
                     elements,
                 )?));
             }
+
+            let strides = checked_strides(primitive, "cumulative input", &tensor.shape.dims)?;
+            let axis_stride = strides[axis];
 
             // For each "line" along the axis, do a prefix scan
             // A line is identified by all indices except the axis index
@@ -690,6 +826,9 @@ mod tests {
     }
     fn empty_i64(dims: Vec<u32>) -> Value {
         Value::Tensor(TensorValue::new(DType::I64, Shape { dims }, vec![]).unwrap())
+    }
+    fn empty_bool(dims: Vec<u32>) -> Value {
+        Value::Tensor(TensorValue::new(DType::Bool, Shape { dims }, vec![]).unwrap())
     }
     fn mat_f64(rows: u32, cols: u32, data: &[f64]) -> Value {
         Value::Tensor(
@@ -863,6 +1002,104 @@ mod tests {
         assert!((vals[1] - 7.0).abs() < 1e-12);
     }
 
+    #[test]
+    fn reduce_axes_empty_kept_zero_dim_short_circuits_huge_product() {
+        let huge = u32::MAX;
+        let x = empty_i64(vec![1, huge, huge, huge, 0]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let result = eval_reduce_axes(
+            Primitive::ReduceSum,
+            &[x],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .expect("zero-sized output should return before huge shape products overflow");
+
+        let tensor = result.as_tensor().expect("tensor output");
+        assert_eq!(tensor.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
+    fn reduce_axes_rejects_overflowing_kept_shape_without_panicking() {
+        let huge = u32::MAX;
+        let x = empty_i64(vec![0, huge, huge, huge]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let err = eval_reduce_axes(
+            Primitive::ReduceSum,
+            &[x],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .expect_err("overflowing non-empty reduction output shape should be rejected")
+        .to_string();
+
+        assert!(
+            err.contains("reduction output shape overflows usize"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn reduce_axes_rejects_impossible_identity_output_allocation() {
+        let huge = u32::MAX;
+        let x = empty_i64(vec![0, huge, huge]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let err = eval_reduce_axes(
+            Primitive::ReduceSum,
+            &[x],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .expect_err("huge identity-filled reduction output should fail with a typed error")
+        .to_string();
+
+        assert!(
+            err.contains("reduction integer accumulator allocation failed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn bitwise_reduce_axes_rejects_overflowing_kept_shape_without_panicking() {
+        let huge = u32::MAX;
+        let x = empty_bool(vec![0, huge, huge, huge]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let err = eval_reduce_bitwise_axes(
+            Primitive::ReduceAnd,
+            &[x],
+            &params,
+            0,
+            true,
+            |a, b| a & b,
+            |a, b| a & b,
+        )
+        .expect_err("overflowing non-empty bitwise reduction output shape should be rejected")
+        .to_string();
+
+        assert!(
+            err.contains("bitwise reduction output shape overflows usize"),
+            "unexpected error: {err}"
+        );
+    }
+
     // ── Cumulative ──
 
     #[test]
@@ -880,6 +1117,29 @@ mod tests {
         .unwrap();
         let vals = extract_f64_vec(&result);
         assert_eq!(vals, vec![1.0, 3.0, 6.0, 10.0]);
+    }
+
+    #[test]
+    fn cumsum_empty_huge_shape_returns_empty_before_stride_overflow() {
+        let huge = u32::MAX;
+        let dims = vec![0, huge, huge, huge, huge];
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), "0".to_owned());
+
+        let result = eval_cumulative(
+            Primitive::Cumsum,
+            &[empty_i64(dims.clone())],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .expect("empty cumulative output should not need huge strides");
+
+        let tensor = result.as_tensor().expect("tensor output");
+        assert_eq!(tensor.shape.dims, dims);
+        assert!(tensor.elements.is_empty());
     }
 
     #[test]

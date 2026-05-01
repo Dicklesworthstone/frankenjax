@@ -11,7 +11,7 @@ ENFORCE=()
 while (($#)); do
   case "$1" in
     --ledger)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --ledger requires a path" >&2
         exit 2
       fi
@@ -19,7 +19,7 @@ while (($#)); do
       shift 2
       ;;
     --report)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --report requires a path" >&2
         exit 2
       fi
@@ -27,7 +27,7 @@ while (($#)); do
       shift 2
       ;;
     --markdown)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --markdown requires a path" >&2
         exit 2
       fi
@@ -35,7 +35,7 @@ while (($#)); do
       shift 2
       ;;
     --e2e)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --e2e requires a path" >&2
         exit 2
       fi

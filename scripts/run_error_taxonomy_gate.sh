@@ -11,7 +11,7 @@ CASE_ID=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --report)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "--report requires a value" >&2
         exit 2
       fi
@@ -19,7 +19,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --markdown)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "--markdown requires a value" >&2
         exit 2
       fi
@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --e2e)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "--e2e requires a value" >&2
         exit 2
       fi
@@ -35,7 +35,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --case)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "--case requires a value" >&2
         exit 2
       fi

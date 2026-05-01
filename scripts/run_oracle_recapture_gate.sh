@@ -22,7 +22,7 @@ USAGE
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --matrix)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --matrix requires a path" >&2
         exit 2
       fi
@@ -30,7 +30,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --drift)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --drift requires a path" >&2
         exit 2
       fi
@@ -38,7 +38,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --markdown)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --markdown requires a path" >&2
         exit 2
       fi
@@ -46,7 +46,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --e2e)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --e2e requires a path" >&2
         exit 2
       fi
@@ -54,7 +54,7 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --baseline)
-      if [[ $# -lt 2 ]]; then
+      if [[ $# -lt 2 || "$2" == --* ]]; then
         echo "error: --baseline requires a path" >&2
         exit 2
       fi

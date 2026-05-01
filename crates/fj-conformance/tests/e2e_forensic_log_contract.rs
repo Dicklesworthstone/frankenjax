@@ -8,6 +8,7 @@ use fj_conformance::e2e_log::{
 use serde_json::{Value, json};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -189,6 +190,30 @@ fn transient_target_binary_replay_command_is_rejected() {
 }
 
 #[test]
+fn env_prefixed_transient_target_binary_replay_command_is_rejected() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut value = valid_log_value(tmp.path());
+    value["replay_command"] = json!(
+        "RUST_LOG=debug /data/tmp/cargo-target-frankenjax-cstq8/debug/fj_error_taxonomy_gate --enforce"
+    );
+
+    let codes = issue_codes(validate_e2e_log_value(&value, tmp.path()));
+    assert!(codes.contains(&"transient_replay_command".to_owned()));
+}
+
+#[test]
+fn cargo_target_dir_assignment_with_stable_cargo_replay_is_allowed() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let mut value = valid_log_value(tmp.path());
+    value["replay_command"] = json!(
+        "CARGO_TARGET_DIR=/data/tmp/cargo-target-frankenjax cargo test -p fj-conformance --test e2e -- exact --nocapture"
+    );
+
+    validate_e2e_log_value(&value, tmp.path())
+        .expect("stable cargo replay with target-dir assignment should validate");
+}
+
+#[test]
 fn failing_status_requires_failure_summary() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let mut value = valid_log_value(tmp.path());
@@ -309,6 +334,64 @@ fn committed_gate_logs_use_stable_script_replay_commands() {
             parsed.replay_command.starts_with("./scripts/run_"),
             "{rel_path} replay should use a stable wrapper script, got {}",
             parsed.replay_command
+        );
+    }
+}
+
+#[test]
+fn e2e_wrapper_scripts_reject_flag_tokens_as_missing_values() {
+    let root = repo_root();
+    for (script, flag, next_arg) in [
+        (
+            "scripts/run_cache_lifecycle_gate.sh",
+            "--report",
+            "--enforce",
+        ),
+        (
+            "scripts/run_architecture_boundary_gate.sh",
+            "--report",
+            "--enforce",
+        ),
+        (
+            "scripts/run_oracle_recapture_gate.sh",
+            "--matrix",
+            "--enforce",
+        ),
+        (
+            "scripts/run_memory_performance_gate.sh",
+            "--report",
+            "--enforce",
+        ),
+        (
+            "scripts/run_transform_control_flow_gate.sh",
+            "--report",
+            "--enforce",
+        ),
+        (
+            "scripts/run_error_taxonomy_gate.sh",
+            "--report",
+            "--enforce",
+        ),
+        ("scripts/run_e2e.sh", "--scenario", "--packet"),
+    ] {
+        let output = Command::new("bash")
+            .current_dir(&root)
+            .arg(root.join(script))
+            .arg(flag)
+            .arg(next_arg)
+            .output()
+            .expect("wrapper script should launch");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{script} {flag} {next_arg} should reject a flag token as a missing value; stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("requires"),
+            "{script} should explain the missing value, stderr={}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
