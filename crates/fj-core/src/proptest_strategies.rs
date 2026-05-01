@@ -264,7 +264,7 @@ mod tests {
         fn prop_ttl_composition_signature_determinism(transform in arb_transform()) {
             let jaxpr = Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![]);
             let mut ttl = TraceTransformLedger::new(jaxpr);
-            ttl.push_transform(transform, "evidence");
+            ttl.push_transform(transform, format!("evidence-{}", transform.as_str()));
             let sig1 = ttl.composition_signature();
             let sig2 = ttl.composition_signature();
             prop_assert_eq!(sig1, sig2);
@@ -274,7 +274,7 @@ mod tests {
         fn prop_ttl_single_transform_composition_valid(transform in arb_transform()) {
             let jaxpr = Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![]);
             let mut ttl = TraceTransformLedger::new(jaxpr);
-            ttl.push_transform(transform, "evidence");
+            ttl.push_transform(transform, format!("evidence-{}", transform.as_str()));
             let proof = verify_transform_composition(&ttl);
             prop_assert!(proof.is_ok());
         }

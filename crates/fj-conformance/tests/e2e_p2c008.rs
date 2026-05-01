@@ -115,7 +115,10 @@ fn dispatch_with_transforms(
 ) -> Result<Value, String> {
     let mut ttl = TraceTransformLedger::new(build_program(program));
     for (index, transform) in transforms.iter().enumerate() {
-        ttl.push_transform(*transform, format!("adversarial-{index}"));
+        ttl.push_transform(
+            *transform,
+            format!("adversarial-{}-{index}", transform.as_str()),
+        );
     }
 
     let response = dispatch(DispatchRequest {

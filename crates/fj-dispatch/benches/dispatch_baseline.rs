@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 fn make_ledger(spec: ProgramSpec, transforms: &[Transform]) -> TraceTransformLedger {
     let mut ledger = TraceTransformLedger::new(build_program(spec));
     for (idx, t) in transforms.iter().enumerate() {
-        ledger.push_transform(*t, format!("ev-{idx}"));
+        ledger.push_transform(*t, format!("ev-{}-{idx}", t.as_str()));
     }
     ledger
 }
@@ -42,7 +42,7 @@ fn dispatch_jaxpr_request(
 ) -> DispatchRequest {
     let mut ledger = TraceTransformLedger::new(jaxpr);
     for (idx, transform) in transforms.iter().enumerate() {
-        ledger.push_transform(*transform, format!("ev-{idx}"));
+        ledger.push_transform(*transform, format!("ev-{}-{idx}", transform.as_str()));
     }
     DispatchRequest {
         mode: CompatibilityMode::Strict,

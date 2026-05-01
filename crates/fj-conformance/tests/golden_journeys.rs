@@ -65,7 +65,7 @@ fn write_journey_log(log: &GoldenJourneyLog) {
 fn make_ledger(spec: ProgramSpec, transforms: &[Transform]) -> TraceTransformLedger {
     let mut ledger = TraceTransformLedger::new(build_program(spec));
     for (idx, t) in transforms.iter().enumerate() {
-        ledger.push_transform(*t, format!("gj-{idx}"));
+        ledger.push_transform(*t, format!("gj-{}-{idx}", t.as_str()));
     }
     ledger
 }

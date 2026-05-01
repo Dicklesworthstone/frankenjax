@@ -176,7 +176,10 @@ fn test_nested_trace_transform_evidence() {
 
     let mut ledger = TraceTransformLedger::new(build_program(ProgramSpec::Square));
     for (idx, transform) in transforms.iter().enumerate() {
-        ledger.push_transform(*transform, format!("nested-evidence-{idx}"));
+        ledger.push_transform(
+            *transform,
+            format!("nested-evidence-{}-{idx}", transform.as_str()),
+        );
     }
     let proof = verify_transform_composition(&ledger).expect("composition proof should validate");
 

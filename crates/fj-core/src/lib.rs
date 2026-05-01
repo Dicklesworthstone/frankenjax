@@ -2281,6 +2281,20 @@ impl TraceTransformLedger {
         for transform in &self.transform_stack {
             let _ = write!(&mut out, "{}>", transform.as_str());
         }
+        out.push_str("|evidence=");
+        for (transform, evidence) in self
+            .transform_stack
+            .iter()
+            .zip(self.transform_evidence.iter())
+        {
+            let _ = write!(
+                &mut out,
+                "{}:{}:{};",
+                transform.as_str(),
+                evidence.len(),
+                evidence
+            );
+        }
         out.push_str("|jaxpr=");
         out.push_str(self.root_jaxpr.canonical_fingerprint());
         out
@@ -2305,6 +2319,15 @@ pub enum TransformCompositionError {
         index: usize,
         transform: Transform,
     },
+    EvidenceTransformMismatch {
+        index: usize,
+        transform: Transform,
+        evidence: String,
+    },
+    DuplicateEvidence {
+        index: usize,
+        evidence: String,
+    },
 }
 
 impl std::fmt::Display for TransformCompositionError {
@@ -2328,6 +2351,26 @@ impl std::fmt::Display for TransformCompositionError {
                     transform.as_str()
                 )
             }
+            Self::EvidenceTransformMismatch {
+                index,
+                transform,
+                evidence,
+            } => {
+                write!(
+                    f,
+                    "transform evidence at index {} does not bind to {}: {}",
+                    index,
+                    transform.as_str(),
+                    evidence
+                )
+            }
+            Self::DuplicateEvidence { index, evidence } => {
+                write!(
+                    f,
+                    "transform evidence at index {} duplicates an earlier evidence id: {}",
+                    index, evidence
+                )
+            }
         }
     }
 }
@@ -2344,11 +2387,26 @@ pub fn verify_transform_composition(
         });
     }
 
+    let mut seen_evidence = BTreeSet::new();
     for (index, transform) in ledger.transform_stack.iter().enumerate() {
-        if ledger.transform_evidence[index].trim().is_empty() {
+        let evidence = ledger.transform_evidence[index].trim();
+        if evidence.is_empty() {
             return Err(TransformCompositionError::EmptyEvidence {
                 index,
                 transform: *transform,
+            });
+        }
+        if !evidence_mentions_transform(evidence, *transform) {
+            return Err(TransformCompositionError::EvidenceTransformMismatch {
+                index,
+                transform: *transform,
+                evidence: evidence.to_owned(),
+            });
+        }
+        if !seen_evidence.insert(evidence) {
+            return Err(TransformCompositionError::DuplicateEvidence {
+                index,
+                evidence: evidence.to_owned(),
             });
         }
     }
@@ -2362,6 +2420,13 @@ pub fn verify_transform_composition(
         transform_count: ledger.transform_stack.len(),
         evidence_count: ledger.transform_evidence.len(),
     })
+}
+
+fn evidence_mentions_transform(evidence: &str, transform: Transform) -> bool {
+    let expected = transform.as_str();
+    evidence
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .any(|part| part.eq_ignore_ascii_case(expected))
 }
 
 fn fnv1a_64(bytes: &[u8]) -> u64 {
@@ -3013,8 +3078,8 @@ mod tests {
                 ];
                 for stack in stacks {
                     let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
-                    ttl.push_transform(stack[0], "a");
-                    ttl.push_transform(stack[1], "b");
+                    ttl.push_transform(stack[0], format!("evidence-{}-0", stack[0].as_str()));
+                    ttl.push_transform(stack[1], format!("evidence-{}-1", stack[1].as_str()));
                     verify_transform_composition(&ttl)
                         .map_err(|err| format!("double transform should validate: {err}"))?;
                 }
@@ -3051,8 +3116,8 @@ mod tests {
             fj_test_utils::TestMode::Strict,
             || {
                 let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
-                ttl.push_transform(Transform::Grad, "g1");
-                ttl.push_transform(Transform::Grad, "g2");
+                ttl.push_transform(Transform::Grad, "grad-1");
+                ttl.push_transform(Transform::Grad, "grad-2");
                 let proof =
                     verify_transform_composition(&ttl).expect("double grad should validate");
                 assert_eq!(proof.transform_count, 2);
@@ -3070,8 +3135,8 @@ mod tests {
             fj_test_utils::TestMode::Strict,
             || {
                 let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
-                ttl.push_transform(Transform::Vmap, "v1");
-                ttl.push_transform(Transform::Vmap, "v2");
+                ttl.push_transform(Transform::Vmap, "vmap-1");
+                ttl.push_transform(Transform::Vmap, "vmap-2");
                 let proof =
                     verify_transform_composition(&ttl).expect("double vmap should validate");
                 assert_eq!(proof.transform_count, 2);
@@ -3113,6 +3178,58 @@ mod tests {
                 let err =
                     verify_transform_composition(&ttl).expect_err("empty evidence should fail");
                 assert!(format!("{err}").contains("is empty"));
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn transform_composition_rejects_transform_mismatched_evidence() {
+        run_logged_test(
+            "transform_composition_rejects_transform_mismatched_evidence",
+            &("mismatched-evidence", 1_u32),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+                ttl.push_transform(Transform::Jit, "evidence-grad-0");
+                let err = verify_transform_composition(&ttl)
+                    .expect_err("evidence must bind to its transform");
+                assert!(format!("{err}").contains("does not bind to jit"));
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn transform_composition_rejects_duplicate_evidence_ids() {
+        run_logged_test(
+            "transform_composition_rejects_duplicate_evidence_ids",
+            &("duplicate-evidence", 2_u32),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+                ttl.push_transform(Transform::Grad, "grad");
+                ttl.push_transform(Transform::Grad, "grad");
+                let err = verify_transform_composition(&ttl)
+                    .expect_err("duplicate evidence ids should fail");
+                assert!(format!("{err}").contains("duplicates an earlier evidence id"));
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn transform_composition_signature_changes_when_evidence_changes() {
+        run_logged_test(
+            "transform_composition_signature_changes_when_evidence_changes",
+            &("evidence-bound-signature", 2_u32),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut lhs = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+                lhs.push_transform(Transform::Jit, "jit-evidence-a");
+                let mut rhs = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+                rhs.push_transform(Transform::Jit, "jit-evidence-b");
+                assert_ne!(lhs.composition_signature(), rhs.composition_signature());
                 Ok(Vec::new())
             },
         );
@@ -3767,7 +3884,10 @@ mod tests {
 
                         let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
                         for (idx, transform) in stack.iter().enumerate() {
-                            ttl.push_transform(*transform, format!("ev-{idx}"));
+                            ttl.push_transform(
+                                *transform,
+                                format!("ev-{}-{idx}", transform.as_str()),
+                            );
                         }
                         let proof_a = verify_transform_composition(&ttl)
                             .map_err(|err| TestCaseError::fail(err.to_string()))?;
