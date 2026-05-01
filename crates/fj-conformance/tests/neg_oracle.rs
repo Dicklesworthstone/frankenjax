@@ -64,6 +64,21 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     )
 }
 
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_scalar(v: &Value) -> f64 {
     match v {
         Value::Tensor(t) => {
@@ -111,6 +126,20 @@ fn extract_complex_scalar(v: &Value) -> (f64, f64) {
             (f64::from_bits(*re), f64::from_bits(*im))
         }
         _ => unreachable!("expected complex128"),
+    }
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|literal| match literal {
+                Literal::Complex64Bits(re, im) => (f32::from_bits(*re), f32::from_bits(*im)),
+                _ => unreachable!("expected complex64"),
+            })
+            .collect(),
+        _ => unreachable!("expected tensor"),
     }
 }
 
@@ -329,6 +358,21 @@ fn oracle_neg_complex_pure_imag() {
     let (re, im) = extract_complex_scalar(&result);
     assert_close(re, 0.0, 1e-14, "neg(0+5i) real part");
     assert_close(im, -5.0, 1e-14, "neg(0+5i) imag part");
+}
+
+#[test]
+fn oracle_neg_complex64_preserves_complex64_literals() {
+    let input = make_complex64_tensor(&[2], vec![(3.0, 4.0), (-5.0, 12.0)]);
+    let result = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
+    let Value::Tensor(tensor) = &result else {
+        unreachable!("expected tensor result");
+    };
+    assert_eq!(tensor.dtype, DType::Complex64);
+    assert_eq!(tensor.shape.dims, vec![2]);
+    assert_eq!(
+        extract_complex64_vec(&result),
+        vec![(-3.0, -4.0), (5.0, -12.0)]
+    );
 }
 
 // ====================== 1D TENSOR ======================

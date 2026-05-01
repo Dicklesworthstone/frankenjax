@@ -965,13 +965,10 @@ fn eval_unary_complex_map(
     match &inputs[0] {
         Value::Scalar(lit) => Ok(Value::Scalar(map_literal(*lit)?)),
         Value::Tensor(tensor) => {
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(map_literal)
-                .collect::<Result<Vec<_>, _>>()?;
-
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for lit in tensor.elements.iter().copied() {
+                elements.push(map_literal(lit)?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 tensor.dtype,
                 tensor.shape.clone(),
