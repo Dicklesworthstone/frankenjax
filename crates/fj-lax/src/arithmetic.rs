@@ -875,10 +875,8 @@ pub(crate) fn eval_real(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 
     let real_part = |lit: Literal| -> Result<Literal, EvalError> {
         match lit {
-            Literal::Complex64Bits(re_bits, _) => {
-                Ok(Literal::from_f64(f32::from_bits(re_bits) as f64))
-            }
-            Literal::Complex128Bits(re_bits, _) => Ok(Literal::from_f64(f64::from_bits(re_bits))),
+            Literal::Complex64Bits(re_bits, _) => Ok(Literal::F32Bits(re_bits)),
+            Literal::Complex128Bits(re_bits, _) => Ok(Literal::F64Bits(re_bits)),
             _ => Err(EvalError::TypeMismatch {
                 primitive,
                 detail: "real expects complex-valued input",
@@ -890,12 +888,10 @@ pub(crate) fn eval_real(primitive: Primitive, inputs: &[Value]) -> Result<Value,
         Value::Scalar(lit) => Ok(Value::Scalar(real_part(*lit)?)),
         Value::Tensor(tensor) => {
             let out_dtype = real_dtype_from_complex(tensor.dtype);
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(real_part)
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for lit in tensor.elements.iter().copied() {
+                elements.push(real_part(lit)?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
                 tensor.shape.clone(),
@@ -916,10 +912,8 @@ pub(crate) fn eval_imag(primitive: Primitive, inputs: &[Value]) -> Result<Value,
 
     let imag_part = |lit: Literal| -> Result<Literal, EvalError> {
         match lit {
-            Literal::Complex64Bits(_, im_bits) => {
-                Ok(Literal::from_f64(f32::from_bits(im_bits) as f64))
-            }
-            Literal::Complex128Bits(_, im_bits) => Ok(Literal::from_f64(f64::from_bits(im_bits))),
+            Literal::Complex64Bits(_, im_bits) => Ok(Literal::F32Bits(im_bits)),
+            Literal::Complex128Bits(_, im_bits) => Ok(Literal::F64Bits(im_bits)),
             _ => Err(EvalError::TypeMismatch {
                 primitive,
                 detail: "imag expects complex-valued input",
@@ -931,12 +925,10 @@ pub(crate) fn eval_imag(primitive: Primitive, inputs: &[Value]) -> Result<Value,
         Value::Scalar(lit) => Ok(Value::Scalar(imag_part(*lit)?)),
         Value::Tensor(tensor) => {
             let out_dtype = real_dtype_from_complex(tensor.dtype);
-            let elements = tensor
-                .elements
-                .iter()
-                .copied()
-                .map(imag_part)
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for lit in tensor.elements.iter().copied() {
+                elements.push(imag_part(lit)?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
                 tensor.shape.clone(),

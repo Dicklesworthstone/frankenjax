@@ -234,6 +234,77 @@ fn oracle_imag_negative_c64() {
     assert_close_f64(extract_f64_scalar(&result), -4.0, 1e-6, "Imag(3-4i)");
 }
 
+#[test]
+fn oracle_real_imag_preserve_component_bits() {
+    let c64_re_bits = (-0.0_f32).to_bits();
+    let c64_im_bits = 0x7fc0_1234_u32;
+    let c64_input = Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![1] },
+            vec![Literal::Complex64Bits(c64_re_bits, c64_im_bits)],
+        )
+        .unwrap(),
+    );
+
+    let c64_real = eval_primitive(
+        Primitive::Real,
+        std::slice::from_ref(&c64_input),
+        &no_params(),
+    )
+    .unwrap();
+    let c64_imag = eval_primitive(Primitive::Imag, &[c64_input], &no_params()).unwrap();
+
+    match c64_real {
+        Value::Tensor(tensor) => {
+            assert_eq!(tensor.dtype, DType::F32);
+            assert_eq!(tensor.elements, vec![Literal::F32Bits(c64_re_bits)]);
+        }
+        _ => unreachable!("real tensor input should produce tensor output"),
+    }
+    match c64_imag {
+        Value::Tensor(tensor) => {
+            assert_eq!(tensor.dtype, DType::F32);
+            assert_eq!(tensor.elements, vec![Literal::F32Bits(c64_im_bits)]);
+        }
+        _ => unreachable!("imag tensor input should produce tensor output"),
+    }
+
+    let c128_re_bits = (-0.0_f64).to_bits();
+    let c128_im_bits = 0x7ff8_0000_0000_1234_u64;
+    let c128_input = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![1] },
+            vec![Literal::Complex128Bits(c128_re_bits, c128_im_bits)],
+        )
+        .unwrap(),
+    );
+
+    let c128_real = eval_primitive(
+        Primitive::Real,
+        std::slice::from_ref(&c128_input),
+        &no_params(),
+    )
+    .unwrap();
+    let c128_imag = eval_primitive(Primitive::Imag, &[c128_input], &no_params()).unwrap();
+
+    match c128_real {
+        Value::Tensor(tensor) => {
+            assert_eq!(tensor.dtype, DType::F64);
+            assert_eq!(tensor.elements, vec![Literal::F64Bits(c128_re_bits)]);
+        }
+        _ => unreachable!("real tensor input should produce tensor output"),
+    }
+    match c128_imag {
+        Value::Tensor(tensor) => {
+            assert_eq!(tensor.dtype, DType::F64);
+            assert_eq!(tensor.elements, vec![Literal::F64Bits(c128_im_bits)]);
+        }
+        _ => unreachable!("imag tensor input should produce tensor output"),
+    }
+}
+
 // ====================== 1D TENSOR ======================
 
 #[test]
