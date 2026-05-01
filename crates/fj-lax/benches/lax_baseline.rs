@@ -83,6 +83,17 @@ fn bench_mul_1k_vector(c: &mut Criterion) {
     });
 }
 
+fn bench_nextafter_1k(c: &mut Criterion) {
+    let lhs = real_vector(1000);
+    let rhs_data: Vec<f64> = (0..1000).map(|i| (i as f64 * 0.05).cos()).collect();
+    let rhs = Value::vector_f64(&rhs_data).unwrap();
+    let inputs = [lhs, rhs];
+    let p = no_params();
+    c.bench_function("eval/nextafter_1k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Nextafter, &inputs, &p))
+    });
+}
+
 fn bench_dot_100(c: &mut Criterion) {
     let data: Vec<i64> = (0..100).collect();
     let lhs = Value::vector_i64(&data).unwrap();
@@ -477,6 +488,7 @@ criterion_group!(
     bench_add_scalar,
     bench_add_1k_vector,
     bench_mul_1k_vector,
+    bench_nextafter_1k,
     bench_dot_100,
     bench_reduce_sum_1k,
     bench_reduce_window_64x64,

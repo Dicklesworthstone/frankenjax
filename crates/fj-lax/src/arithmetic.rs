@@ -2335,22 +2335,18 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
                     right: rhs.shape.clone(),
                 });
             }
-            let elements = lhs
-                .elements
-                .iter()
-                .zip(rhs.elements.iter())
-                .map(|(l, r)| -> Result<Literal, EvalError> {
-                    let x = l.as_f64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected numeric tensor elements",
-                    })?;
-                    let y = r.as_f64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected numeric tensor elements",
-                    })?;
-                    Ok(Literal::from_f64(next_after(x, y)))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(lhs.elements.len());
+            for (l, r) in lhs.elements.iter().zip(rhs.elements.iter()) {
+                let x = l.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric tensor elements",
+                })?;
+                let y = r.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric tensor elements",
+                })?;
+                elements.push(Literal::from_f64(next_after(x, y)));
+            }
 
             Ok(Value::Tensor(TensorValue::new(
                 DType::F64,
