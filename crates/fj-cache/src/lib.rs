@@ -23,7 +23,7 @@ pub struct CacheKeyInput {
     pub unknown_incompatible_features: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CacheKey {
     pub namespace: &'static str,
     pub digest_hex: String,

@@ -9,7 +9,7 @@
 
 use crate::CacheKey;
 use crate::backend::{CacheBackend, CacheStats, CachedArtifact};
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 /// Configuration for LRU eviction.
@@ -32,7 +32,7 @@ impl Default for LruConfig {
 
 /// LRU-evicting wrapper around any `CacheBackend`.
 ///
-/// Tracks access order in a `Mutex<VecDeque>` of key strings, enabling true
+/// Tracks access order in a `Mutex<VecDeque>` of cache keys, enabling true
 /// LRU behavior: both `get()` and `put()` update recency. On `put`, if the
 /// cache exceeds `max_entries` or `max_bytes`, the least-recently-used
 /// entry is evicted from the underlying backend.
@@ -41,7 +41,7 @@ pub struct LruCache<B: CacheBackend> {
     config: LruConfig,
     /// Access-ordered queue: front = least recently used, back = most recent.
     /// Wrapped in Mutex so `get(&self)` can update recency.
-    pub(crate) order: Arc<Mutex<VecDeque<String>>>,
+    pub(crate) order: Arc<Mutex<VecDeque<CacheKey>>>,
 }
 
 impl<B: CacheBackend> std::fmt::Debug for LruCache<B> {
@@ -63,34 +63,19 @@ impl<B: CacheBackend> LruCache<B> {
         }
     }
 
-    fn order_key_to_cache_key(order_key: &str) -> Option<CacheKey> {
-        let (_namespace, digest_hex) = order_key.split_once('-')?;
-        Some(CacheKey {
-            namespace: "fjx",
-            digest_hex: digest_hex.to_owned(),
-        })
-    }
-
     fn pop_oldest_cache_key(&self) -> Option<CacheKey> {
-        loop {
-            let oldest_key_str = {
-                let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
-                order.pop_front()
-            }?;
-            if let Some(evict_key) = Self::order_key_to_cache_key(&oldest_key_str) {
-                return Some(evict_key);
-            }
-        }
+        let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
+        order.pop_front()
     }
 
     /// Move a key to the most-recently-used position.
     /// Safe to call from `&self` thanks to interior mutability.
-    fn touch(&self, key_str: &str) {
+    fn touch(&self, key: &CacheKey) {
         let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pos) = order.iter().position(|k| k == key_str) {
+        if let Some(pos) = order.iter().position(|cached_key| cached_key == key) {
             order.remove(pos);
         }
-        order.push_back(key_str.to_owned());
+        order.push_back(key.clone());
     }
 
     /// Evict least-recently-used entries until within budget.
@@ -100,10 +85,8 @@ impl<B: CacheBackend> LruCache<B> {
             let mut evict_keys = Vec::new();
 
             while order.len() > self.config.max_entries {
-                if let Some(oldest_key_str) = order.pop_front() {
-                    if let Some(evict_key) = Self::order_key_to_cache_key(&oldest_key_str) {
-                        evict_keys.push(evict_key);
-                    }
+                if let Some(evict_key) = order.pop_front() {
+                    evict_keys.push(evict_key);
                 } else {
                     break;
                 }
@@ -133,23 +116,21 @@ impl<B: CacheBackend> CacheBackend for LruCache<B> {
         let result = self.inner.get(key);
         if result.is_some() {
             // Update recency on cache hit for true LRU behavior.
-            self.touch(&key.as_string());
+            self.touch(key);
         }
         result
     }
 
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
-        let key_str = key.as_string();
-        self.touch(&key_str);
+        self.touch(key);
         self.inner.put(key, artifact);
         self.enforce_budget();
     }
 
     fn evict(&mut self, key: &CacheKey) -> bool {
-        let key_str = key.as_string();
         {
             let mut order = self.order.lock().unwrap_or_else(|e| e.into_inner());
-            order.retain(|k| k != &key_str);
+            order.retain(|cached_key| cached_key != key);
         }
         self.inner.evict(key)
     }
@@ -194,8 +175,8 @@ impl Default for TtlLruConfig {
 pub struct TtlLruCache<B: CacheBackend> {
     inner: LruCache<B>,
     ttl_secs: u64,
-    /// Track insertion timestamps per key string.
-    insert_times: std::collections::HashMap<String, std::time::Instant>,
+    /// Track insertion timestamps per cache key.
+    insert_times: HashMap<CacheKey, std::time::Instant>,
 }
 
 impl<B: CacheBackend> TtlLruCache<B> {
@@ -203,7 +184,7 @@ impl<B: CacheBackend> TtlLruCache<B> {
         Self {
             inner: LruCache::new(inner, config.lru),
             ttl_secs: config.ttl_secs,
-            insert_times: std::collections::HashMap::new(),
+            insert_times: HashMap::new(),
         }
     }
 
@@ -214,36 +195,27 @@ impl<B: CacheBackend> TtlLruCache<B> {
         }
         let now = std::time::Instant::now();
         let ttl = std::time::Duration::from_secs(self.ttl_secs);
-        let expired_keys: Vec<String> = self
+        let expired_keys: Vec<CacheKey> = self
             .insert_times
             .iter()
             .filter(|(_, inserted)| now.duration_since(**inserted) > ttl)
-            .map(|(k, _)| k.clone())
+            .map(|(key, _)| key.clone())
             .collect();
 
-        for key_str in &expired_keys {
-            if let Some((ns, hex)) = key_str.split_once('-') {
-                let evict_key = CacheKey {
-                    namespace: match ns {
-                        "fjx" => "fjx",
-                        _ => "fjx",
-                    },
-                    digest_hex: hex.to_owned(),
-                };
-                self.inner.evict(&evict_key);
-            }
-            self.insert_times.remove(key_str);
+        for key in &expired_keys {
+            self.inner.evict(key);
+            self.insert_times.remove(key);
         }
 
-        // Prevent memory leak by cleaning up keys silently evicted by the underlying LRU
-        if self.insert_times.len() > self.inner.config.max_entries.saturating_mul(2).max(1024) {
-            let active_keys: std::collections::HashSet<String> = {
-                let order = self.inner.order.lock().unwrap_or_else(|e| e.into_inner());
-                order.iter().cloned().collect()
-            };
-            self.insert_times
-                .retain(|k, _| active_keys.contains(k.as_str()));
-        }
+        self.retain_active_insert_times();
+    }
+
+    fn retain_active_insert_times(&mut self) {
+        let active_keys: HashSet<CacheKey> = {
+            let order = self.inner.order.lock().unwrap_or_else(|e| e.into_inner());
+            order.iter().cloned().collect()
+        };
+        self.insert_times.retain(|key, _| active_keys.contains(key));
     }
 
     /// Return the number of entries that would be expired by a sweep.
@@ -263,31 +235,30 @@ impl<B: CacheBackend> TtlLruCache<B> {
 impl<B: CacheBackend> CacheBackend for TtlLruCache<B> {
     fn get(&self, key: &CacheKey) -> Option<CachedArtifact> {
         // Check if the entry has expired before returning it
-        if self.ttl_secs > 0 {
-            let key_str = key.as_string();
-            if let Some(&inserted) = self.insert_times.get(&key_str) {
-                let ttl = std::time::Duration::from_secs(self.ttl_secs);
-                if std::time::Instant::now().duration_since(inserted) > ttl {
-                    return None; // Expired
-                }
+        if self.ttl_secs > 0
+            && let Some(&inserted) = self.insert_times.get(key)
+        {
+            let ttl = std::time::Duration::from_secs(self.ttl_secs);
+            if std::time::Instant::now().duration_since(inserted) > ttl {
+                return None; // Expired
             }
         }
         self.inner.get(key)
     }
 
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
-        let key_str = key.as_string();
-        if self.ttl_secs > 0 {
-            self.insert_times.insert(key_str, std::time::Instant::now());
-        }
         self.inner.put(key, artifact);
-        // Opportunistically sweep expired entries
-        self.sweep_expired();
+        if self.ttl_secs > 0 {
+            self.insert_times
+                .insert(key.clone(), std::time::Instant::now());
+            self.retain_active_insert_times();
+            // Opportunistically sweep expired entries.
+            self.sweep_expired();
+        }
     }
 
     fn evict(&mut self, key: &CacheKey) -> bool {
-        let key_str = key.as_string();
-        self.insert_times.remove(&key_str);
+        self.insert_times.remove(key);
         self.inner.evict(key)
     }
 
@@ -315,6 +286,13 @@ mod tests {
         }
     }
 
+    fn namespaced_key(namespace: &'static str, digest: &str) -> CacheKey {
+        CacheKey {
+            namespace,
+            digest_hex: digest.to_owned(),
+        }
+    }
+
     fn test_artifact(data: &[u8]) -> CachedArtifact {
         CachedArtifact {
             data: data.to_vec(),
@@ -325,13 +303,13 @@ mod tests {
     #[derive(Debug, Default)]
     struct ReentrantAuditBackend {
         entries: HashMap<String, CachedArtifact>,
-        order: Option<Arc<Mutex<VecDeque<String>>>>,
+        order: Option<Arc<Mutex<VecDeque<CacheKey>>>>,
         evict_observed_unlocked: Arc<AtomicBool>,
         stats_observed_unlocked: Arc<AtomicBool>,
     }
 
     impl ReentrantAuditBackend {
-        fn with_order(&mut self, order: Arc<Mutex<VecDeque<String>>>) {
+        fn with_order(&mut self, order: Arc<Mutex<VecDeque<CacheKey>>>) {
             self.order = Some(order);
         }
 
@@ -395,6 +373,27 @@ mod tests {
         );
         assert!(cache.get(&test_key("b")).is_some());
         assert!(cache.get(&test_key("c")).is_some());
+    }
+
+    #[test]
+    fn lru_evicts_non_default_namespace_keys() {
+        let config = LruConfig {
+            max_entries: 1,
+            max_bytes: 0,
+        };
+        let mut cache = LruCache::new(InMemoryCache::new(), config);
+        let first = namespaced_key("custom", "a");
+        let second = namespaced_key("custom", "b");
+
+        cache.put(&first, test_artifact(b"first"));
+        cache.put(&second, test_artifact(b"second"));
+
+        assert_eq!(cache.stats().entry_count, 1);
+        assert!(
+            cache.get(&first).is_none(),
+            "LRU eviction must preserve the original key namespace"
+        );
+        assert!(cache.get(&second).is_some());
     }
 
     #[test]
@@ -549,6 +548,35 @@ mod tests {
         assert!(cache.get(&test_key("b")).is_some());
         assert!(cache.get(&test_key("c")).is_some());
         assert_eq!(cache.stats().entry_count, 2);
+    }
+
+    #[test]
+    fn ttl_lru_prunes_timestamps_for_lru_evictions() {
+        let config = TtlLruConfig {
+            lru: LruConfig {
+                max_entries: 1,
+                max_bytes: 0,
+            },
+            ttl_secs: 3600,
+        };
+        let mut cache = TtlLruCache::new(InMemoryCache::new(), config);
+        let first = namespaced_key("custom", "a");
+        let second = namespaced_key("custom", "b");
+
+        cache.put(&first, test_artifact(b"first"));
+        cache.put(&second, test_artifact(b"second"));
+
+        assert_eq!(cache.stats().entry_count, 1);
+        assert_eq!(
+            cache.insert_times.len(),
+            1,
+            "TTL metadata should not retain LRU-evicted keys"
+        );
+        assert!(
+            !cache.insert_times.contains_key(&first),
+            "evicted key timestamp should be pruned with its original namespace"
+        );
+        assert!(cache.insert_times.contains_key(&second));
     }
 
     #[test]
