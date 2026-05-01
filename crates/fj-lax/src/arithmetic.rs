@@ -703,6 +703,23 @@ fn complex_literal_from_parts(
     })
 }
 
+fn complex_literal_from_parts_fast(
+    primitive: Primitive,
+    real: Literal,
+    imag: Literal,
+    out_dtype: DType,
+) -> Result<Literal, EvalError> {
+    match (out_dtype, real, imag) {
+        (DType::Complex64, Literal::F32Bits(re), Literal::F32Bits(im)) => {
+            Ok(Literal::Complex64Bits(re, im))
+        }
+        (DType::Complex128, Literal::F64Bits(re), Literal::F64Bits(im)) => {
+            Ok(Literal::Complex128Bits(re, im))
+        }
+        _ => complex_literal_from_parts(primitive, real, imag, out_dtype),
+    }
+}
+
 pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 2 {
         return Err(EvalError::ArityMismatch {
@@ -715,20 +732,24 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
     match (&inputs[0], &inputs[1]) {
         (Value::Scalar(real), Value::Scalar(imag)) => {
             let dtype = complex_output_dtype(literal_dtype(*real), literal_dtype(*imag));
-            Ok(Value::Scalar(complex_literal_from_parts(
+            Ok(Value::Scalar(complex_literal_from_parts_fast(
                 primitive, *real, *imag, dtype,
             )?))
         }
         (Value::Tensor(real), Value::Tensor(imag)) => {
             let out_dtype = complex_output_dtype(real.dtype, imag.dtype);
             if real.shape == imag.shape {
-                let elements = real
+                let mut elements = Vec::with_capacity(real.elements.len());
+                for (re, im) in real
                     .elements
                     .iter()
                     .copied()
                     .zip(imag.elements.iter().copied())
-                    .map(|(re, im)| complex_literal_from_parts(primitive, re, im, out_dtype))
-                    .collect::<Result<Vec<_>, _>>()?;
+                {
+                    elements.push(complex_literal_from_parts_fast(
+                        primitive, re, im, out_dtype,
+                    )?);
+                }
                 Ok(Value::Tensor(TensorValue::new(
                     out_dtype,
                     real.shape.clone(),
@@ -751,7 +772,7 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
                     let multi = flat_to_multi(flat_idx, &out_strides);
                     let real_idx = broadcast_flat_index(&multi, &real_strides);
                     let imag_idx = broadcast_flat_index(&multi, &imag_strides);
-                    elements.push(complex_literal_from_parts(
+                    elements.push(complex_literal_from_parts_fast(
                         primitive,
                         real.elements[real_idx],
                         imag.elements[imag_idx],
@@ -765,12 +786,12 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
         }
         (Value::Scalar(real), Value::Tensor(imag)) => {
             let out_dtype = complex_output_dtype(literal_dtype(*real), imag.dtype);
-            let elements = imag
-                .elements
-                .iter()
-                .copied()
-                .map(|im| complex_literal_from_parts(primitive, *real, im, out_dtype))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(imag.elements.len());
+            for im in imag.elements.iter().copied() {
+                elements.push(complex_literal_from_parts_fast(
+                    primitive, *real, im, out_dtype,
+                )?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
                 imag.shape.clone(),
@@ -779,12 +800,12 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
         }
         (Value::Tensor(real), Value::Scalar(imag)) => {
             let out_dtype = complex_output_dtype(real.dtype, literal_dtype(*imag));
-            let elements = real
-                .elements
-                .iter()
-                .copied()
-                .map(|re| complex_literal_from_parts(primitive, re, *imag, out_dtype))
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut elements = Vec::with_capacity(real.elements.len());
+            for re in real.elements.iter().copied() {
+                elements.push(complex_literal_from_parts_fast(
+                    primitive, re, *imag, out_dtype,
+                )?);
+            }
             Ok(Value::Tensor(TensorValue::new(
                 out_dtype,
                 real.shape.clone(),
