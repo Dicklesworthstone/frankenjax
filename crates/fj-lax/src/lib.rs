@@ -6570,6 +6570,43 @@ mod tests {
     }
 
     #[test]
+    fn test_scan_multi_carry_matrix_shape_witness() {
+        let init = vec![Value::scalar_f64(1.0), Value::scalar_f64(10.0)];
+        let xs = Value::vector_f64(&[2.0, 3.0]).unwrap();
+        let (carry, ys) = super::eval_scan_functional(
+            init,
+            &xs,
+            |c, x| {
+                let next_product =
+                    eval_primitive(Primitive::Mul, &[c[0].clone(), x.clone()], &BTreeMap::new())?;
+                let next_sum =
+                    eval_primitive(Primitive::Add, &[c[1].clone(), x.clone()], &BTreeMap::new())?;
+                Ok((
+                    vec![next_product.clone(), next_sum.clone()],
+                    vec![next_product, next_sum],
+                ))
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(carry.len(), 2);
+        assert_eq!(carry[0].as_f64_scalar().unwrap(), 6.0);
+        assert_eq!(carry[1].as_f64_scalar().unwrap(), 15.0);
+        assert_eq!(ys.len(), 2);
+        assert_eq!(ys[0].as_tensor().unwrap().shape.dims, vec![2]);
+        assert_eq!(ys[1].as_tensor().unwrap().shape.dims, vec![2]);
+        assert_eq!(
+            ys[0].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![2.0, 6.0]
+        );
+        assert_eq!(
+            ys[1].as_tensor().unwrap().to_f64_vec().unwrap(),
+            vec![12.0, 15.0]
+        );
+    }
+
+    #[test]
     fn test_scan_no_output() {
         // Scan that only accumulates carry, no per-step output
         let init = vec![Value::scalar_f64(0.0)];

@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
 
+use fj_conformance::transform_control_flow::{
+    TransformControlFlowReport, validate_transform_control_flow_report,
+};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -386,4 +389,76 @@ fn global_performance_gate_covers_required_phases() {
             }
         }
     }
+}
+
+#[test]
+fn transform_control_flow_matrix_artifact_covers_required_rows() {
+    let root = repo_root();
+    let matrix_path = root.join("artifacts/conformance/transform_control_flow_matrix.v1.json");
+    let matrix = read_json(&matrix_path);
+    assert_eq!(
+        matrix["schema_version"], "frankenjax.transform-control-flow-matrix.v1",
+        "transform control-flow matrix schema marker changed"
+    );
+    assert_eq!(
+        matrix["bead_id"], "frankenjax-cstq.2",
+        "matrix must stay bound to the closing bead"
+    );
+    assert_eq!(
+        matrix["status"], "pass",
+        "transform control-flow matrix must pass"
+    );
+
+    let parsed: TransformControlFlowReport =
+        serde_json::from_value(matrix).expect("matrix artifact should parse");
+    let issues = validate_transform_control_flow_report(&parsed);
+    assert!(issues.is_empty(), "matrix validation issues: {issues:#?}");
+
+    let case_ids = parsed
+        .cases
+        .iter()
+        .map(|case| case.case_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "jit_vmap_grad_cond_false",
+        "jit_vmap_grad_scan_mul",
+        "vmap_grad_while_mul",
+        "value_and_grad_multi_output",
+        "jacobian_quadratic",
+        "hessian_quadratic",
+        "scan_multi_carry_state",
+        "vmap_multi_output_return",
+        "jit_mixed_dtype_add",
+        "grad_vmap_vector_output_fail_closed",
+        "vmap_empty_batch_fail_closed",
+        "vmap_out_axes_none_nonconstant_fail_closed",
+    ] {
+        assert!(case_ids.contains(required), "missing matrix row {required}");
+    }
+
+    let sentinel_ids = parsed
+        .performance_sentinels
+        .iter()
+        .map(|sentinel| sentinel.workload_id.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        sentinel_ids,
+        BTreeSet::from([
+            "perf_batched_switch",
+            "perf_jit_vmap_grad_cond",
+            "perf_vmap_scan_loop_stack",
+            "perf_vmap_while_loop_stack",
+        ]),
+        "performance sentinels must cover the required transform-control-flow workloads"
+    );
+    assert!(
+        parsed
+            .performance_sentinels
+            .iter()
+            .all(|sentinel| sentinel.p50_ns > 0
+                && sentinel.p95_ns >= sentinel.p50_ns
+                && sentinel.p99_ns >= sentinel.p95_ns
+                && sentinel.peak_rss_bytes.is_some_and(|rss| rss > 0)),
+        "performance sentinels must record ordered p50/p95/p99 and non-zero peak RSS"
+    );
 }

@@ -28,7 +28,7 @@
 |---------|--------|
 | 110 primitive operations with full eval | All green |
 | Reverse-mode (VJP) + Forward-mode (JVP) AD for all 110 primitives | All green |
-| Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | Broad coverage; advanced compositions tracked |
+| Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | V1 matrix gated; unsupported rows fail closed |
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
 | E-graph equality saturation optimizer (87 algebraic rewrite rules) | All green |
@@ -43,7 +43,7 @@
 |---|---|---|---|---|---|
 | **Language** | Rust | Python/C++ | Python/C++ | LLVM IR | Python |
 | **Runtime dependency** | None (standalone) | Python + XLA + CUDA | Python + CUDA | LLVM toolchain | NumPy |
-| **Transform composition** | Scoped `jit`/`grad`/`vmap` with tracked advanced gaps | Full | Limited (`torch.func`) | `grad` only | `grad` only |
+| **Transform composition** | Scoped `jit`/`grad`/`vmap` with V1 matrix evidence | Full | Limited (`torch.func`) | `grad` only | `grad` only |
 | **Verifiable evidence** | Trace Transform Ledger | No | No | No | No |
 | **Oracle conformance** | 848 JAX-verified cases | N/A (is the oracle) | No | No | No |
 | **Artifact durability** | RaptorQ sidecars | No | No | No | No |
@@ -198,10 +198,10 @@ advanced transform/control-flow parity and public API example replay are green.
 - **11 DTypes** (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128) with JAX-verified type promotion rules
 - **Full AD coverage**: all 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT
 - **Jacobian and Hessian** matrix computation via composable AD
-- **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes`, BatchTrace interpreter
+- **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes`, BatchTrace interpreter, and a 21-row transform/control-flow matrix gate
 - **E-graph optimizer**: 87 algebraic rewrite rules with equality saturation, verified to preserve program semantics
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
-- **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support
+- **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support and explicit advanced transform-composition evidence
 - **848 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
 - **4,416 static Rust test/proptest markers** plus 115 conformance test files; the latest full `cargo test --workspace` run passed through RCH
 - **RaptorQ durability pipeline** for current conformance/evidence bundles, with all-long-lived-artifact coverage tracked in `frankenjax-fcxy.2`
@@ -1046,7 +1046,7 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 - **CPU-only backend.** GPU/TPU backends are not yet implemented. The CPU backend uses rayon for wave-parallel execution.
 - **No XLA lowering.** FrankenJAX evaluates through its own interpreter, not through XLA. This means we match JAX's mathematical semantics but not its compilation/optimization pipeline.
 - **Gateable finite-difference compatibility fallback.** `grad(jit(f))` uses symbolic AD because `jit` is transparent, but higher-order/composed `grad` cases that still require numerical fallback can be denied with `allow_finite_diff_grad_fallback=false` or `deny`.
-- **Partial `vmap` + iterative control flow composition.** Primitive scalar-sequence `vmap(scan(...))` uses direct batched row folds, multi-carry functional `vmap(scan(...))` batches body sub-Jaxprs and returns `[batch, scan, ...]` outputs, primitive scalar `vmap(while_loop(...))` keeps supported scalar lanes in one batched active-mask loop, multi-carry functional `vmap(while_loop(...))` lowers cond/body sub-Jaxprs into the same active-mask path, and batched-index `vmap(switch(...))` uses branch-once batched evaluation with row-wise selection. More complex iterative compositions still need further work.
+- **Explicit V1 transform/control-flow boundary.** `artifacts/conformance/transform_control_flow_matrix.v1.json` gates 21 rows across `jit`, `grad`, `vmap`, `value_and_grad`, `jacobian`, `hessian`, nested grad/vmap, `cond`, `scan`, `while`, `switch`, scalar/tensor inputs, multi-carry state, multi-output returns, dtype-mixed promotion, and error rows. Supported rows execute under strict mode; unsupported V1 rows fail closed with deterministic typed errors for vector-input `grad(vmap(...))`, empty `vmap`, and nonconstant `out_axes=none`.
 
 ## FAQ
 

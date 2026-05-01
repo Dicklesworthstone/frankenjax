@@ -1,0 +1,1185 @@
+{
+  "schema_version": "frankenjax.transform-control-flow-matrix.v1",
+  "bead_id": "frankenjax-cstq.2",
+  "generated_at_unix_ms": 1777626549388,
+  "status": "pass",
+  "matrix_policy": "Strict V1 transform/control-flow matrix: supported rows execute; unsupported rows must fail closed with deterministic typed errors",
+  "supported_rows": 18,
+  "fail_closed_rows": 3,
+  "cases": [
+    {
+      "case_id": "jit_grad_cond_false",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "jit",
+        "grad"
+      ],
+      "control_flow_op": "cond",
+      "primitive_ops": [
+        "mul",
+        "cond"
+      ],
+      "input_shapes": [
+        [],
+        []
+      ],
+      "input_dtypes": [
+        "f64",
+        "bool"
+      ],
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.grad(lambda x: lax.cond(False, x, x*x))(5.0)",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "absolute_error <= 1e-6",
+      "expected": 10.0,
+      "actual": 10.0,
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_jit_grad_cond",
+        "crates/fj-conformance/tests/control_flow_conformance.rs::e2e_control_flow_ad_oracle"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_grad_cond_mixed_predicates",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap",
+        "grad"
+      ],
+      "control_flow_op": "cond",
+      "primitive_ops": [
+        "mul",
+        "cond"
+      ],
+      "input_shapes": [
+        [
+          3
+        ],
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "f64",
+        "bool"
+      ],
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(jax.grad(cond_square_identity))([3,5,7],[T,F,T])",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        1.0,
+        10.0,
+        1.0
+      ],
+      "actual": [
+        1.0,
+        10.0,
+        1.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_grad_cond_mixed"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "jit_vmap_grad_cond_false",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "jit",
+        "vmap",
+        "grad"
+      ],
+      "control_flow_op": "cond",
+      "primitive_ops": [
+        "mul",
+        "cond"
+      ],
+      "input_shapes": [
+        [
+          2
+        ],
+        [
+          2
+        ]
+      ],
+      "input_dtypes": [
+        "f64",
+        "bool"
+      ],
+      "output_shapes": [
+        [
+          2
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.jit(jax.vmap(jax.grad(cond_square_identity)))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        4.0,
+        8.0
+      ],
+      "actual": [
+        4.0,
+        8.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_jit_vmap_grad_cond"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_grad_scan_mul",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap",
+        "grad"
+      ],
+      "control_flow_op": "scan",
+      "primitive_ops": [
+        "scan:mul"
+      ],
+      "input_shapes": [
+        [
+          3
+        ],
+        [
+          2
+        ]
+      ],
+      "input_dtypes": [
+        "f64",
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(jax.grad(lambda init: lax.scan(mul, init, [2,5])))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        10.0,
+        10.0,
+        10.0
+      ],
+      "actual": [
+        10.0,
+        10.0,
+        10.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_grad_scan"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "jit_vmap_grad_scan_mul",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "jit",
+        "vmap",
+        "grad"
+      ],
+      "control_flow_op": "scan",
+      "primitive_ops": [
+        "scan:mul"
+      ],
+      "input_shapes": [
+        [
+          2
+        ],
+        [
+          2
+        ]
+      ],
+      "input_dtypes": [
+        "f64",
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          2
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.jit(jax.vmap(jax.grad(lambda init: lax.scan(mul, init, [3,4]))))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        12.0,
+        12.0
+      ],
+      "actual": [
+        12.0,
+        12.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_jit_vmap_grad_scan"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_grad_while_mul",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap",
+        "grad"
+      ],
+      "control_flow_op": "while",
+      "primitive_ops": [
+        "while:mul:lt"
+      ],
+      "input_shapes": [
+        [
+          3
+        ],
+        [],
+        []
+      ],
+      "input_dtypes": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(jax.grad(lambda init: lax.while_loop(init * 2 < 8)))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        8.0,
+        4.0,
+        4.0
+      ],
+      "actual": [
+        8.0,
+        4.0,
+        4.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_grad_while_mul"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_switch_batched_indices",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": "switch",
+      "primitive_ops": [
+        "switch",
+        "add",
+        "mul"
+      ],
+      "input_shapes": [
+        [
+          3
+        ],
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "i64",
+        "i64"
+      ],
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "i64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(lax.switch)([0,1,2],[5,6,7])",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "exact integer vector match",
+      "expected": [
+        5,
+        12,
+        49
+      ],
+      "actual": [
+        5,
+        12,
+        49
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_switch_dispatch_with_batched_indices"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_switch_scalar_index_batched_operand",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": "switch",
+      "primitive_ops": [
+        "switch",
+        "add"
+      ],
+      "input_shapes": [
+        [],
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "i64",
+        "i64"
+      ],
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "i64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(lambda x: lax.switch(1, branches, x))([2,3,4])",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "exact integer vector match",
+      "expected": [
+        4,
+        6,
+        8
+      ],
+      "actual": [
+        4,
+        6,
+        8
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_switch_dispatch_with_scalar_index_and_batched_operand"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "grad_grad_square",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "grad",
+        "grad"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "mul",
+        "add"
+      ],
+      "input_shapes": [
+        []
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "fixtures/composition_oracle.v1.json#grad_grad_poly",
+      "oracle_kind": "jax_0.9_fixture",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "absolute_error <= 1e-6",
+      "expected": 2.0,
+      "actual": 2.000000000279556,
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/composition_oracle_parity.rs::composition_oracle_grad_grad",
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_grad_grad_square_plus_linear"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_grad_grad_square",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap",
+        "grad",
+        "grad"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "mul"
+      ],
+      "input_shapes": [
+        [
+          4
+        ]
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          4
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(jax.grad(jax.grad(lambda x: x*x)))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        2.0,
+        2.0,
+        2.0,
+        2.0
+      ],
+      "actual": [
+        1.999999999946489,
+        2.000000000279556,
+        2.000000000279556,
+        1.999999998503199
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_grad_grad_square"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "jit_vmap_grad_grad_square",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "jit",
+        "vmap",
+        "grad",
+        "grad"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "mul"
+      ],
+      "input_shapes": [
+        [
+          2
+        ]
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          2
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.jit(jax.vmap(jax.grad(jax.grad(lambda x: x*x))))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        2.0,
+        2.0
+      ],
+      "actual": [
+        2.0000000000575113,
+        1.9999999993913775
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_jit_vmap_grad_grad_square"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_jit_grad_square",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap",
+        "jit",
+        "grad"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "mul"
+      ],
+      "input_shapes": [
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(jax.jit(jax.grad(lambda x: x*x)))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        2.0,
+        4.0,
+        6.0
+      ],
+      "actual": [
+        2.0,
+        4.0,
+        6.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_jit_grad_square"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "value_and_grad_multi_output",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-ad",
+      "transform_stack": [
+        "grad"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "add",
+        "mul"
+      ],
+      "input_shapes": [
+        []
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        [],
+        [],
+        []
+      ],
+      "output_dtypes": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "oracle_fixture_id": "fixtures/composition_oracle.v1.json#value_and_grad_poly",
+      "oracle_kind": "jax_0.9_fixture",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "exact value_and_grad output vector match",
+      "expected": [
+        4.0,
+        6.0,
+        1.0
+      ],
+      "actual": [
+        4.0,
+        6.0,
+        1.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-ad/src/lib.rs::value_and_grad_returns_all_outputs",
+        "crates/fj-api/tests/api_transform_suite.rs::api_value_and_grad_square"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "jacobian_quadratic",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-ad",
+      "transform_stack": [],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "mul"
+      ],
+      "input_shapes": [
+        []
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          1,
+          1
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "fixtures/composition_oracle.v1.json#jacobian_quadratic",
+      "oracle_kind": "jax_0.9_fixture",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-6",
+      "expected": [
+        6.0
+      ],
+      "actual": [
+        6.0
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/composition_oracle_parity.rs::fixture_covers_all_composition_types",
+        "crates/fj-ad/src/lib.rs::test_jacobian_two_outputs_two_inputs"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "hessian_quadratic",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-ad",
+      "transform_stack": [],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "mul"
+      ],
+      "input_shapes": [
+        []
+      ],
+      "input_dtypes": [
+        "f64"
+      ],
+      "output_shapes": [
+        [
+          1,
+          1
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "fixtures/composition_oracle.v1.json#hessian_quadratic",
+      "oracle_kind": "jax_0.9_fixture",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "all absolute_errors <= 1e-3",
+      "expected": [
+        2.0
+      ],
+      "actual": [
+        2.0000000000131024
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/composition_oracle_parity.rs::fixture_covers_all_composition_types",
+        "crates/fj-ad/src/lib.rs::test_hessian_x2y"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "scan_multi_carry_state",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-lax",
+      "transform_stack": [],
+      "control_flow_op": "scan",
+      "primitive_ops": [
+        "scan:functional",
+        "add"
+      ],
+      "input_shapes": [
+        [],
+        [],
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "output_shapes": [
+        [],
+        [],
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "f64",
+        "f64",
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:lax.scan multi-carry count/sum",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "exact multi-carry and stacked-output match",
+      "expected": {
+        "carry": [
+          3.0,
+          60.0
+        ],
+        "ys": [
+          [
+            10.0,
+            20.0,
+            30.0
+          ]
+        ]
+      },
+      "actual": {
+        "carry": [
+          3.0,
+          60.0
+        ],
+        "ys": [
+          [
+            10.0,
+            20.0,
+            30.0
+          ]
+        ]
+      },
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-lax/src/lib.rs::test_scan_multi_carry"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_multi_output_return",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "add",
+        "mul"
+      ],
+      "input_shapes": [
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "i64"
+      ],
+      "output_shapes": [
+        [
+          3
+        ],
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "i64",
+        "i64"
+      ],
+      "oracle_fixture_id": "analytic:jax.vmap(lambda x: (x+1, x*2))",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "exact multi-output vector match",
+      "expected": [
+        [
+          2,
+          3,
+          4
+        ],
+        [
+          2,
+          4,
+          6
+        ]
+      ],
+      "actual": [
+        [
+          2,
+          3,
+          4
+        ],
+        [
+          2,
+          4,
+          6
+        ]
+      ],
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::ProgramSpec::AddOneMulTwo"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "jit_mixed_dtype_add",
+      "status": "pass",
+      "support_status": "supported",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "jit"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "add"
+      ],
+      "input_shapes": [
+        [],
+        []
+      ],
+      "input_dtypes": [
+        "i64",
+        "f64"
+      ],
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "oracle_fixture_id": "analytic:jax.jit(lambda x, y: x + y)(int64, float64)",
+      "oracle_kind": "analytic_jax_semantics",
+      "tolerance_policy": "strict_numeric_or_exact_declared_per_row",
+      "comparison": "absolute_error <= 1e-9 and output dtype f64",
+      "expected": 2.5,
+      "actual": 2.5,
+      "error_class": null,
+      "error_message": null,
+      "strict_hardened_rationale": "Supported V1 row executes under strict mode and hardened mode must preserve the same observable transform semantics.",
+      "evidence_refs": [
+        "crates/fj-lax/src/arithmetic.rs::mixed scalar promotion"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "grad_vmap_vector_output_fail_closed",
+      "status": "pass",
+      "support_status": "fail_closed",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "grad",
+        "vmap"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "add"
+      ],
+      "input_shapes": [
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "i64"
+      ],
+      "output_shapes": [],
+      "output_dtypes": [],
+      "oracle_fixture_id": "unsupported:v1_grad_requires_scalar_first_input_before_vmap_tail",
+      "oracle_kind": "unsupported_v1_contract",
+      "tolerance_policy": "typed_error_exact_match",
+      "comparison": "expected typed error transform_execution.non_scalar_gradient_input, got transform_execution.non_scalar_gradient_input",
+      "expected": {
+        "error_class": "transform_execution.non_scalar_gradient_input"
+      },
+      "actual": {
+        "error_class": "transform_execution.non_scalar_gradient_input"
+      },
+      "error_class": "transform_execution.non_scalar_gradient_input",
+      "error_message": "transform execution error: grad currently requires scalar first input",
+      "strict_hardened_rationale": "Strict mode rejects grad(vmap(...)) over vector first inputs instead of silently differentiating a non-scalar contract; hardened mode keeps the same fail-closed boundary.",
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::TransformExecutionError"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_empty_batch_fail_closed",
+      "status": "pass",
+      "support_status": "fail_closed",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "add"
+      ],
+      "input_shapes": [
+        [
+          0
+        ]
+      ],
+      "input_dtypes": [
+        "i64"
+      ],
+      "output_shapes": [],
+      "output_dtypes": [],
+      "oracle_fixture_id": "unsupported:v1_empty_vmap_output_has_no_materialized_batch_shape",
+      "oracle_kind": "unsupported_v1_contract",
+      "tolerance_policy": "typed_error_exact_match",
+      "comparison": "expected typed error transform_execution.empty_vmap_output, got transform_execution.empty_vmap_output",
+      "expected": {
+        "error_class": "transform_execution.empty_vmap_output"
+      },
+      "actual": {
+        "error_class": "transform_execution.empty_vmap_output"
+      },
+      "error_class": "transform_execution.empty_vmap_output",
+      "error_message": "transform execution error: vmap received no mapped elements",
+      "strict_hardened_rationale": "Strict mode rejects empty vmap batches until an explicit empty-output shape contract is carried through dispatch; hardened mode must not synthesize data.",
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::TransformExecutionError"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    },
+    {
+      "case_id": "vmap_out_axes_none_nonconstant_fail_closed",
+      "status": "pass",
+      "support_status": "fail_closed",
+      "api_surface": "fj-dispatch",
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": null,
+      "primitive_ops": [
+        "add"
+      ],
+      "input_shapes": [
+        [
+          3
+        ]
+      ],
+      "input_dtypes": [
+        "i64"
+      ],
+      "output_shapes": [],
+      "output_dtypes": [],
+      "oracle_fixture_id": "unsupported:v1_out_axes_none_requires_identical_outputs",
+      "oracle_kind": "unsupported_v1_contract",
+      "tolerance_policy": "typed_error_exact_match",
+      "comparison": "expected typed error transform_execution.vmap_unmapped_output_mismatch, got transform_execution.vmap_unmapped_output_mismatch",
+      "expected": {
+        "error_class": "transform_execution.vmap_unmapped_output_mismatch"
+      },
+      "actual": {
+        "error_class": "transform_execution.vmap_unmapped_output_mismatch"
+      },
+      "error_class": "transform_execution.vmap_unmapped_output_mismatch",
+      "error_message": "transform execution error: vmap out_axes=none requires the output to be identical across mapped elements",
+      "strict_hardened_rationale": "Strict mode refuses to collapse non-identical mapped outputs into an unmapped scalar; hardened mode preserves this deterministic mismatch error.",
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::TransformExecutionError"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+    }
+  ],
+  "performance_sentinels": [
+    {
+      "workload_id": "perf_vmap_scan_loop_stack",
+      "status": "pass",
+      "iterations": 16,
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": "scan",
+      "p50_ns": 98987,
+      "p95_ns": 144353,
+      "p99_ns": 144353,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "rss_before_bytes": 11866112,
+      "rss_after_bytes": 11866112,
+      "peak_rss_bytes": 11866112,
+      "delta_rss_bytes": 0,
+      "logical_output_units": 64,
+      "evidence_refs": [
+        "benchmark:transform_control_flow/vmap_scan_loop_stack",
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_scan_fixture_accumulate"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce",
+      "error": null
+    },
+    {
+      "workload_id": "perf_vmap_while_loop_stack",
+      "status": "pass",
+      "iterations": 16,
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": "while",
+      "p50_ns": 107804,
+      "p95_ns": 138162,
+      "p99_ns": 138162,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "rss_before_bytes": 11870208,
+      "rss_after_bytes": 11870208,
+      "peak_rss_bytes": 11870208,
+      "delta_rss_bytes": 0,
+      "logical_output_units": 48,
+      "evidence_refs": [
+        "benchmark:transform_control_flow/vmap_while_loop_stack",
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_while_fixture_countdown"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce",
+      "error": null
+    },
+    {
+      "workload_id": "perf_jit_vmap_grad_cond",
+      "status": "pass",
+      "iterations": 16,
+      "transform_stack": [
+        "jit",
+        "vmap",
+        "grad"
+      ],
+      "control_flow_op": "cond",
+      "p50_ns": 115208,
+      "p95_ns": 133783,
+      "p99_ns": 133783,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "rss_before_bytes": 11870208,
+      "rss_after_bytes": 11870208,
+      "peak_rss_bytes": 11870208,
+      "delta_rss_bytes": 0,
+      "logical_output_units": 32,
+      "evidence_refs": [
+        "benchmark:transform_control_flow/jit_vmap_grad_cond",
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_jit_vmap_grad_cond"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce",
+      "error": null
+    },
+    {
+      "workload_id": "perf_batched_switch",
+      "status": "pass",
+      "iterations": 16,
+      "transform_stack": [
+        "vmap"
+      ],
+      "control_flow_op": "switch",
+      "p50_ns": 94760,
+      "p95_ns": 257928,
+      "p99_ns": 257928,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "rss_before_bytes": 11870208,
+      "rss_after_bytes": 11874304,
+      "peak_rss_bytes": 11874304,
+      "delta_rss_bytes": 4096,
+      "logical_output_units": 48,
+      "evidence_refs": [
+        "benchmark:transform_control_flow/batched_switch",
+        "crates/fj-conformance/tests/control_flow_conformance.rs::test_vmap_switch_dispatch_with_batched_indices"
+      ],
+      "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce",
+      "error": null
+    }
+  ],
+  "issues": [],
+  "artifact_refs": [
+    "artifacts/conformance/transform_control_flow_matrix.v1.json",
+    "artifacts/conformance/transform_control_flow_matrix.v1.md"
+  ],
+  "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce"
+}

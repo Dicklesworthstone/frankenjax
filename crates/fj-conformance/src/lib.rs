@@ -6,6 +6,7 @@ pub mod durability;
 pub mod e2e_log;
 pub mod memory_performance;
 pub mod oracle_recapture;
+pub mod transform_control_flow;
 
 use fj_core::{
     CompatibilityMode, ProgramSpec, TraceTransformLedger, Transform, Value, build_program,

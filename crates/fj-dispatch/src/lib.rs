@@ -1197,6 +1197,72 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_value_and_grad_mode_multi_output_preserves_all_outputs() {
+        let mut compile_options = BTreeMap::new();
+        compile_options.insert("value_and_grad".to_owned(), "true".to_owned());
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOneMulTwo, &[Transform::Grad]),
+            args: vec![Value::scalar_f64(3.0)],
+            backend: "cpu".to_owned(),
+            compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("dispatch value_and_grad should succeed");
+
+        assert_eq!(
+            response.outputs.len(),
+            3,
+            "expected both primal outputs plus the first-input gradient"
+        );
+        let values = response
+            .outputs
+            .iter()
+            .map(|value| value.as_f64_scalar().expect("output should be f64"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![4.0, 6.0, 1.0]);
+    }
+
+    #[test]
+    fn dispatch_grad_vmap_vector_input_fails_closed_with_typed_error() {
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Grad, Transform::Vmap]),
+            args: vec![Value::vector_i64(&[1, 2, 3]).expect("vector should build")],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("grad(vmap(...)) over a vector first input must fail closed");
+
+        assert!(matches!(
+            err,
+            DispatchError::TransformExecution(TransformExecutionError::NonScalarGradientInput)
+        ));
+    }
+
+    #[test]
+    fn dispatch_vmap_empty_batch_fails_closed_with_typed_error() {
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap]),
+            args: vec![Value::vector_i64(&[]).expect("empty vector should build")],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("empty vmap batch must fail closed");
+
+        assert!(matches!(
+            err,
+            DispatchError::TransformExecution(TransformExecutionError::EmptyVmapOutput)
+        ));
+    }
+
+    #[test]
     fn dispatch_grad_of_grad_square_scalar() {
         let response = dispatch(DispatchRequest {
             mode: CompatibilityMode::Strict,

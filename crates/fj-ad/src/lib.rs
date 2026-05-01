@@ -11720,6 +11720,34 @@ mod tests {
     }
 
     #[test]
+    fn test_jacobian_scalar_square_matrix_row() {
+        let jac = jacobian_jaxpr(
+            &build_program(ProgramSpec::Square),
+            &[Value::scalar_f64(3.0)],
+        )
+        .expect("jacobian should succeed");
+        let tensor = jac.as_tensor().expect("jacobian should return tensor");
+        assert_eq!(tensor.shape.dims, vec![1, 1]);
+        let vals = tensor.to_f64_vec().expect("f64 elements");
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_hessian_scalar_square_matrix_row() {
+        let hessian = hessian_jaxpr(
+            &build_program(ProgramSpec::Square),
+            &[Value::scalar_f64(3.0)],
+        )
+        .expect("hessian should succeed");
+        let tensor = hessian.as_tensor().expect("hessian should return tensor");
+        assert_eq!(tensor.shape.dims, vec![1, 1]);
+        let vals = tensor.to_f64_vec().expect("f64 elements");
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 2.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn test_hessian_is_symmetric_for_quadratic() {
         use fj_core::{Jaxpr, VarId};
         use smallvec::smallvec;

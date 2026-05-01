@@ -1,0 +1,476 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.2",
+  "scenario_id": "e2e_transform_control_flow_gate",
+  "test_id": "fj_transform_control_flow_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target/debug/fj_transform_control_flow_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--report",
+    "/data/projects/frankenjax/artifacts/conformance/transform_control_flow_matrix.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/transform_control_flow_matrix.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_transform_control_flow_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777626549436
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "jit_grad_cond_false",
+    "vmap_grad_cond_mixed_predicates",
+    "jit_vmap_grad_cond_false",
+    "vmap_grad_scan_mul",
+    "jit_vmap_grad_scan_mul",
+    "vmap_grad_while_mul",
+    "vmap_switch_batched_indices",
+    "vmap_switch_scalar_index_batched_operand",
+    "grad_grad_square",
+    "vmap_grad_grad_square",
+    "jit_vmap_grad_grad_square",
+    "vmap_jit_grad_square",
+    "value_and_grad_multi_output",
+    "jacobian_quadratic",
+    "hessian_quadratic",
+    "scan_multi_carry_state",
+    "vmap_multi_output_return",
+    "jit_mixed_dtype_add",
+    "grad_vmap_vector_output_fail_closed",
+    "vmap_empty_batch_fail_closed",
+    "vmap_out_axes_none_nonconstant_fail_closed"
+  ],
+  "oracle_ids": [
+    "analytic:jax.grad(lambda x: lax.cond(False, x, x*x))(5.0)",
+    "analytic:jax.jit(jax.vmap(jax.grad(cond_square_identity)))",
+    "analytic:jax.jit(jax.vmap(jax.grad(jax.grad(lambda x: x*x))))",
+    "analytic:jax.jit(jax.vmap(jax.grad(lambda init: lax.scan(mul, init, [3,4]))))",
+    "analytic:jax.jit(lambda x, y: x + y)(int64, float64)",
+    "analytic:jax.vmap(jax.grad(cond_square_identity))([3,5,7],[T,F,T])",
+    "analytic:jax.vmap(jax.grad(jax.grad(lambda x: x*x)))",
+    "analytic:jax.vmap(jax.grad(lambda init: lax.scan(mul, init, [2,5])))",
+    "analytic:jax.vmap(jax.grad(lambda init: lax.while_loop(init * 2 < 8)))",
+    "analytic:jax.vmap(jax.jit(jax.grad(lambda x: x*x)))",
+    "analytic:jax.vmap(lambda x: (x+1, x*2))",
+    "analytic:jax.vmap(lambda x: lax.switch(1, branches, x))([2,3,4])",
+    "analytic:jax.vmap(lax.switch)([0,1,2],[5,6,7])",
+    "analytic:lax.scan multi-carry count/sum",
+    "fixtures/composition_oracle.v1.json#grad_grad_poly",
+    "fixtures/composition_oracle.v1.json#hessian_quadratic",
+    "fixtures/composition_oracle.v1.json#jacobian_quadratic",
+    "fixtures/composition_oracle.v1.json#value_and_grad_poly",
+    "unsupported:v1_empty_vmap_output_has_no_materialized_batch_shape",
+    "unsupported:v1_grad_requires_scalar_first_input_before_vmap_tail",
+    "unsupported:v1_out_axes_none_requires_identical_outputs"
+  ],
+  "transform_stack": [
+    "jit",
+    "grad",
+    "vmap",
+    "value_and_grad",
+    "jacobian",
+    "hessian",
+    "cond",
+    "scan",
+    "while",
+    "switch"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "case_ids": [
+      "jit_grad_cond_false",
+      "vmap_grad_cond_mixed_predicates",
+      "jit_vmap_grad_cond_false",
+      "vmap_grad_scan_mul",
+      "jit_vmap_grad_scan_mul",
+      "vmap_grad_while_mul",
+      "vmap_switch_batched_indices",
+      "vmap_switch_scalar_index_batched_operand",
+      "grad_grad_square",
+      "vmap_grad_grad_square",
+      "jit_vmap_grad_grad_square",
+      "vmap_jit_grad_square",
+      "value_and_grad_multi_output",
+      "jacobian_quadratic",
+      "hessian_quadratic",
+      "scan_multi_carry_state",
+      "vmap_multi_output_return",
+      "jit_mixed_dtype_add",
+      "grad_vmap_vector_output_fail_closed",
+      "vmap_empty_batch_fail_closed",
+      "vmap_out_axes_none_nonconstant_fail_closed"
+    ],
+    "matrix_policy": "Strict V1 transform/control-flow matrix: supported rows execute; unsupported rows must fail closed with deterministic typed errors",
+    "performance_workloads": [
+      "perf_vmap_scan_loop_stack",
+      "perf_vmap_while_loop_stack",
+      "perf_jit_vmap_grad_cond",
+      "perf_batched_switch"
+    ],
+    "workspace_root": "/data/projects/frankenjax"
+  },
+  "expected": {
+    "gate_status": "pass",
+    "required_case_count": 21,
+    "required_performance_sentinels": 4,
+    "unsupported_rows": "typed_fail_closed"
+  },
+  "actual": {
+    "case_count": 21,
+    "cases": [
+      {
+        "case_id": "jit_grad_cond_false",
+        "control_flow_op": "cond",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.grad(lambda x: lax.cond(False, x, x*x))(5.0)",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "jit",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "vmap_grad_cond_mixed_predicates",
+        "control_flow_op": "cond",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(jax.grad(cond_square_identity))([3,5,7],[T,F,T])",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "jit_vmap_grad_cond_false",
+        "control_flow_op": "cond",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.jit(jax.vmap(jax.grad(cond_square_identity)))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "jit",
+          "vmap",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "vmap_grad_scan_mul",
+        "control_flow_op": "scan",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(jax.grad(lambda init: lax.scan(mul, init, [2,5])))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "jit_vmap_grad_scan_mul",
+        "control_flow_op": "scan",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.jit(jax.vmap(jax.grad(lambda init: lax.scan(mul, init, [3,4]))))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "jit",
+          "vmap",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "vmap_grad_while_mul",
+        "control_flow_op": "while",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(jax.grad(lambda init: lax.while_loop(init * 2 < 8)))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "vmap_switch_batched_indices",
+        "control_flow_op": "switch",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(lax.switch)([0,1,2],[5,6,7])",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap"
+        ]
+      },
+      {
+        "case_id": "vmap_switch_scalar_index_batched_operand",
+        "control_flow_op": "switch",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(lambda x: lax.switch(1, branches, x))([2,3,4])",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap"
+        ]
+      },
+      {
+        "case_id": "grad_grad_square",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "fixtures/composition_oracle.v1.json#grad_grad_poly",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "grad",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "vmap_grad_grad_square",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(jax.grad(jax.grad(lambda x: x*x)))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap",
+          "grad",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "jit_vmap_grad_grad_square",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.jit(jax.vmap(jax.grad(jax.grad(lambda x: x*x))))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "jit",
+          "vmap",
+          "grad",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "vmap_jit_grad_square",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(jax.jit(jax.grad(lambda x: x*x)))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap",
+          "jit",
+          "grad"
+        ]
+      },
+      {
+        "case_id": "value_and_grad_multi_output",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "fixtures/composition_oracle.v1.json#value_and_grad_poly",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "grad"
+        ]
+      },
+      {
+        "case_id": "jacobian_quadratic",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "fixtures/composition_oracle.v1.json#jacobian_quadratic",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": []
+      },
+      {
+        "case_id": "hessian_quadratic",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "fixtures/composition_oracle.v1.json#hessian_quadratic",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": []
+      },
+      {
+        "case_id": "scan_multi_carry_state",
+        "control_flow_op": "scan",
+        "error_class": null,
+        "oracle_fixture_id": "analytic:lax.scan multi-carry count/sum",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": []
+      },
+      {
+        "case_id": "vmap_multi_output_return",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.vmap(lambda x: (x+1, x*2))",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "vmap"
+        ]
+      },
+      {
+        "case_id": "jit_mixed_dtype_add",
+        "control_flow_op": null,
+        "error_class": null,
+        "oracle_fixture_id": "analytic:jax.jit(lambda x, y: x + y)(int64, float64)",
+        "status": "pass",
+        "support_status": "supported",
+        "transform_stack": [
+          "jit"
+        ]
+      },
+      {
+        "case_id": "grad_vmap_vector_output_fail_closed",
+        "control_flow_op": null,
+        "error_class": "transform_execution.non_scalar_gradient_input",
+        "oracle_fixture_id": "unsupported:v1_grad_requires_scalar_first_input_before_vmap_tail",
+        "status": "pass",
+        "support_status": "fail_closed",
+        "transform_stack": [
+          "grad",
+          "vmap"
+        ]
+      },
+      {
+        "case_id": "vmap_empty_batch_fail_closed",
+        "control_flow_op": null,
+        "error_class": "transform_execution.empty_vmap_output",
+        "oracle_fixture_id": "unsupported:v1_empty_vmap_output_has_no_materialized_batch_shape",
+        "status": "pass",
+        "support_status": "fail_closed",
+        "transform_stack": [
+          "vmap"
+        ]
+      },
+      {
+        "case_id": "vmap_out_axes_none_nonconstant_fail_closed",
+        "control_flow_op": null,
+        "error_class": "transform_execution.vmap_unmapped_output_mismatch",
+        "oracle_fixture_id": "unsupported:v1_out_axes_none_requires_identical_outputs",
+        "status": "pass",
+        "support_status": "fail_closed",
+        "transform_stack": [
+          "vmap"
+        ]
+      }
+    ],
+    "fail_closed_rows": 3,
+    "issue_count": 0,
+    "performance_sentinel_count": 4,
+    "performance_sentinels": [
+      {
+        "delta_rss_bytes": 0,
+        "iterations": 16,
+        "p50_ns": 98987,
+        "p95_ns": 144353,
+        "p99_ns": 144353,
+        "peak_rss_bytes": 11866112,
+        "status": "pass",
+        "workload_id": "perf_vmap_scan_loop_stack"
+      },
+      {
+        "delta_rss_bytes": 0,
+        "iterations": 16,
+        "p50_ns": 107804,
+        "p95_ns": 138162,
+        "p99_ns": 138162,
+        "peak_rss_bytes": 11870208,
+        "status": "pass",
+        "workload_id": "perf_vmap_while_loop_stack"
+      },
+      {
+        "delta_rss_bytes": 0,
+        "iterations": 16,
+        "p50_ns": 115208,
+        "p95_ns": 133783,
+        "p99_ns": 133783,
+        "peak_rss_bytes": 11870208,
+        "status": "pass",
+        "workload_id": "perf_jit_vmap_grad_cond"
+      },
+      {
+        "delta_rss_bytes": 4096,
+        "iterations": 16,
+        "p50_ns": 94760,
+        "p95_ns": 257928,
+        "p99_ns": 257928,
+        "peak_rss_bytes": 11874304,
+        "status": "pass",
+        "workload_id": "perf_batched_switch"
+      }
+    ],
+    "schema_version": "frankenjax.transform-control-flow-matrix.v1",
+    "status": "pass",
+    "supported_rows": 18
+  },
+  "tolerance": {
+    "policy_id": "exact_matrix_coverage_with_declared_numeric_tolerances",
+    "atol": 1e-6,
+    "rtol": 0.0,
+    "ulp": null,
+    "notes": "Each matrix row records its own exact or numeric comparison; unsupported rows require exact typed error classes"
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": 11874304,
+    "measurement_backend": "linux_procfs_status_vm_hwm"
+  },
+  "artifacts": [
+    {
+      "kind": "transform_control_flow_matrix_report",
+      "path": "artifacts/conformance/transform_control_flow_matrix.v1.json",
+      "sha256": "d432a81f9960cef7df95f1b3f733acd745a0b3e0c8595a298dadcecd2229e254",
+      "required": true
+    },
+    {
+      "kind": "transform_control_flow_matrix_markdown",
+      "path": "artifacts/conformance/transform_control_flow_matrix.v1.md",
+      "sha256": "6a5abde1c7d2a7ac92289d7f811d33803e27199afc72e2870c7e6dde7c276355",
+      "required": true
+    }
+  ],
+  "replay_command": "/data/tmp/cargo-target/debug/fj_transform_control_flow_gate --root /data/projects/frankenjax --report /data/projects/frankenjax/artifacts/conformance/transform_control_flow_matrix.v1.json --markdown /data/projects/frankenjax/artifacts/conformance/transform_control_flow_matrix.v1.md --e2e /data/projects/frankenjax/artifacts/e2e/e2e_transform_control_flow_gate.e2e.json --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.2",
+      "title": "Close advanced transform-control-flow composition parity"
+    }
+  }
+}

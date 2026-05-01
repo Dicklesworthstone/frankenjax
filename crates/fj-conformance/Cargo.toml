@@ -8,14 +8,15 @@ asupersync = "0.3.1"
 base64 = "0.22.1"
 fj-cache = { path = "../fj-cache" }
 fj-core = { path = "../fj-core" }
+fj-ad = { path = "../fj-ad" }
 fj-dispatch = { path = "../fj-dispatch" }
 fj-lax = { path = "../fj-lax" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
+smallvec = { workspace = true }
 
 [dev-dependencies]
-fj-ad = { path = "../fj-ad" }
 fj-api = { path = "../fj-api" }
 fj-backend-cpu = { path = "../fj-backend-cpu" }
 fj-egraph = { path = "../fj-egraph" }
@@ -25,5 +26,4 @@ fj-runtime = { path = "../fj-runtime" }
 fj-test-utils = { path = "../fj-test-utils" }
 insta = "1.47"
 jsonschema = "0.42"
-smallvec = { workspace = true }
 tempfile = "3.25"
