@@ -7,8 +7,8 @@
   "env": {
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "os": "linux",
-    "cargo_target_dir": "/tmp/frankenjax-target-codex-bhuo-workspace",
-    "timestamp_unix_ms": 1777494299304
+    "cargo_target_dir": "/dev/shm/frankenjax-target-codex-vmap-axis1",
+    "timestamp_unix_ms": 1777524561587
   },
   "artifact_refs": [
     "packet:FJ-P2C-003",
@@ -16,7 +16,7 @@
     "/data/projects/frankenjax/crates/fj-interpreters/../../artifacts/testing/logs/fj-interpreters/fj_interpreters__partial_eval__tests__test_pe_mixed_residual_count_matches.json"
   ],
   "result": "pass",
-  "duration_ms": 106,
+  "duration_ms": 107,
   "details": "packet_id=FJ-P2C-003;suite_id=fj-interpreters;result=pass",
   "phase_timings": {
     "setup_ms": 106,
