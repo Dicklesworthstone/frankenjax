@@ -93,6 +93,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "vision_evidence_map.v1",
         "security_threat_model.v1",
         "onboarding_command_inventory.v1",
+        "decision_ledger_calibration.v1",
     ];
 
     for schema_name in schemas {
@@ -748,4 +749,53 @@ fn onboarding_command_inventory_validates_against_schema() {
         status_total,
         "summary counts must add up to total_commands"
     );
+}
+
+#[test]
+fn decision_ledger_calibration_validates_against_schema() {
+    let root = repo_root();
+    let report_path = root.join("artifacts/conformance/decision_ledger_calibration.v1.json");
+    if !report_path.exists() {
+        return;
+    }
+    validate_schema_instance(
+        "decision_ledger_calibration.v1",
+        "artifacts/conformance/decision_ledger_calibration.v1.json",
+    );
+    let report = read_json(&report_path);
+    assert_eq!(
+        report["schema_version"], "frankenjax.decision-ledger-calibration.v1",
+        "decision ledger calibration schema marker changed"
+    );
+    assert_eq!(
+        report["bead_id"], "frankenjax-cstq.19",
+        "decision ledger report must stay bound to the ledger bead"
+    );
+    let rows = report["rows"].as_array();
+    assert!(rows.is_some(), "rows must be an array");
+    let Some(rows) = rows else {
+        return;
+    };
+    assert!(!rows.is_empty(), "decision ledger report needs rows");
+    for row in rows {
+        assert!(
+            row["alternatives_considered"]
+                .as_array()
+                .is_some_and(|alternatives| alternatives.len() >= 2),
+            "decision row must contain at least two alternatives"
+        );
+        assert!(
+            row["evidence_signals"]
+                .as_array()
+                .is_some_and(|signals| !signals.is_empty()),
+            "decision row must contain evidence signals"
+        );
+        assert!(
+            !row["replay_command"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "decision row must have replay command"
+        );
+    }
 }

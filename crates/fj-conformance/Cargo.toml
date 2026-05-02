@@ -12,6 +12,7 @@ fj-ad = { path = "../fj-ad" }
 fj-dispatch = { path = "../fj-dispatch" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-lax = { path = "../fj-lax" }
+fj-ledger = { path = "../fj-ledger" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"

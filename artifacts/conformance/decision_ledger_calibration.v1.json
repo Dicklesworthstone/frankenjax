@@ -1,0 +1,479 @@
+{
+  "schema_version": "frankenjax.decision-ledger-calibration.v1",
+  "bead_id": "frankenjax-cstq.19",
+  "generated_at_unix_ms": 1777731686301,
+  "status": "pass",
+  "policy": "Every consequential runtime decision must name the selected action, viable alternatives, loss matrix, evidence signals, posterior/confidence values, calibration bucket, user-visible consequence, artifact links, and exact replay command. Strict/hardened divergence is allowed only for explicit recovery rows.",
+  "required_decision_classes": [
+    "cache_hit_recompute",
+    "strict_rejection",
+    "hardened_recovery",
+    "fallback_denial",
+    "optimization_selection",
+    "durability_recovery",
+    "transform_admission",
+    "unsupported_scope",
+    "runtime_budget_deadline"
+  ],
+  "strict_hardened_divergence_allowlist": [
+    "hardened_recovery",
+    "durability_recovery"
+  ],
+  "summary": {
+    "required_decision_class_count": 9,
+    "observed_decision_class_count": 9,
+    "pass_count": 9,
+    "row_count": 9,
+    "calibration_bucket_count": 4,
+    "stale_calibration_count": 0,
+    "strict_hardened_divergence_count": 2,
+    "allowed_divergence_count": 2,
+    "rows_with_artifacts": 9,
+    "rows_with_replay": 9,
+    "rows_with_dashboard_rows": 9
+  },
+  "rows": [
+    {
+      "decision_id": "ledger-cache-hit-recompute-001",
+      "decision_class": "cache_hit_recompute",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "keep",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 100,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 1
+      },
+      "posterior_abandoned": 0.15199496107785568,
+      "confidence": 0.8480050389221443,
+      "expected_loss_keep": 4.55984883233567,
+      "expected_loss_kill": 84.9524988532923,
+      "evidence_signals": [
+        {
+          "signal_name": "cache_hit_rate",
+          "log_likelihood_delta": -1.1,
+          "detail": "recent cache reuse supports keeping the compiled artifact"
+        }
+      ],
+      "expected_outcome": "reuse cache entry when key and mode are proven compatible",
+      "actual_outcome": "cache lifecycle gate separates compatible reuse from recompute",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "compiled artifact reused with cache-key evidence",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+      "dashboard_row": "ledger/cache_hit_recompute"
+    },
+    {
+      "decision_id": "ledger-strict-rejection-001",
+      "decision_class": "strict_rejection",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "kill",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 100,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 1
+      },
+      "posterior_abandoned": 0.8574823680672098,
+      "confidence": 0.8574823680672098,
+      "expected_loss_keep": 25.724471042016294,
+      "expected_loss_kill": 15.109245561346231,
+      "evidence_signals": [
+        {
+          "signal_name": "unknown_incompatible_feature",
+          "log_likelihood_delta": 2.2,
+          "detail": "strict mode observed unknown incompatible cache metadata"
+        }
+      ],
+      "expected_outcome": "strict mode rejects unknown incompatible features",
+      "actual_outcome": "error taxonomy and cache lifecycle gates fail closed",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "request fails closed with typed error and replay hint",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+        "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce",
+      "dashboard_row": "ledger/strict_rejection"
+    },
+    {
+      "decision_id": "ledger-hardened-recovery-001",
+      "decision_class": "hardened_recovery",
+      "status": "pass",
+      "mode": "hardened",
+      "selected_action": "fallback",
+      "alternatives_considered": [
+        "fallback",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 10,
+        "kill_if_useful": 70,
+        "keep_if_abandoned": 35,
+        "kill_if_abandoned": 5
+      },
+      "posterior_abandoned": 0.4998323261407476,
+      "confidence": 0.9998323261407476,
+      "expected_loss_keep": 22.495808153518688,
+      "expected_loss_kill": 37.51089880085141,
+      "evidence_signals": [
+        {
+          "signal_name": "malformed_input_detected",
+          "log_likelihood_delta": 0.8,
+          "detail": "hardened mode detected malformed but bounded input"
+        },
+        {
+          "signal_name": "recovery_proof",
+          "log_likelihood_delta": -0.6,
+          "detail": "typed recovery path preserved the API contract"
+        }
+      ],
+      "expected_outcome": "hardened mode may recover only with typed evidence",
+      "actual_outcome": "security gate records bounded recovery without panic",
+      "calibration_bucket": "bucket_050_075",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": true,
+      "divergence_allowed": true,
+      "user_visible_consequence": "operation recovers with audit-trail disclosure",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_security_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_security_gate.sh --enforce",
+      "dashboard_row": "ledger/hardened_recovery"
+    },
+    {
+      "decision_id": "ledger-fallback-denial-001",
+      "decision_class": "fallback_denial",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "kill",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "fallback",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 100,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 1
+      },
+      "posterior_abandoned": 0.8604507997242211,
+      "confidence": 0.8604507997242211,
+      "expected_loss_keep": 25.813523991726633,
+      "expected_loss_kill": 14.81537082730211,
+      "evidence_signals": [
+        {
+          "signal_name": "unsupported_transform_tail",
+          "log_likelihood_delta": 1.2,
+          "detail": "fallback would hide unsupported transform semantics"
+        }
+      ],
+      "expected_outcome": "fallback denied when it would change transform semantics",
+      "actual_outcome": "error taxonomy records unsupported scope as fail-closed",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "user receives unsupported-scope error instead of silent fallback",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce",
+      "dashboard_row": "ledger/fallback_denial"
+    },
+    {
+      "decision_id": "ledger-optimization-selection-001",
+      "decision_class": "optimization_selection",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "keep",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 60,
+        "keep_if_abandoned": 20,
+        "kill_if_abandoned": 2
+      },
+      "posterior_abandoned": 0.10098802937273296,
+      "confidence": 0.899011970627267,
+      "expected_loss_keep": 2.0197605874546594,
+      "expected_loss_kill": 54.142694296381485,
+      "evidence_signals": [
+        {
+          "signal_name": "benchmark_delta",
+          "log_likelihood_delta": -0.8,
+          "detail": "performance gate shows a behavior-preserving improvement"
+        }
+      ],
+      "expected_outcome": "select optimization only when behavior evidence stays green",
+      "actual_outcome": "memory/performance gate exposes benchmark and artifact links",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "optimization ships only with replayable benchmark evidence",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_memory_performance_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_memory_performance_gate.sh --enforce",
+      "dashboard_row": "ledger/optimization_selection"
+    },
+    {
+      "decision_id": "ledger-durability-recovery-001",
+      "decision_class": "durability_recovery",
+      "status": "pass",
+      "mode": "hardened",
+      "selected_action": "fallback",
+      "alternatives_considered": [
+        "fallback",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 5,
+        "kill_if_useful": 90,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 3
+      },
+      "posterior_abandoned": 0.19781611144141825,
+      "confidence": 0.6978161114414183,
+      "expected_loss_keep": 9.945402786035455,
+      "expected_loss_kill": 72.78999830459661,
+      "evidence_signals": [
+        {
+          "signal_name": "sidecar_decode_proof",
+          "log_likelihood_delta": -1.4,
+          "detail": "RaptorQ sidecar and decode proof bind recovered artifact bytes"
+        }
+      ],
+      "expected_outcome": "recover artifact only when sidecar scrub and proof are present",
+      "actual_outcome": "durability coverage gate records sidecar, scrub, and decode proof",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": true,
+      "divergence_allowed": true,
+      "user_visible_consequence": "artifact recovery is disclosed and hash-bound",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_durability_coverage_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_durability_coverage_gate.sh --enforce",
+      "dashboard_row": "ledger/durability_recovery"
+    },
+    {
+      "decision_id": "ledger-transform-admission-001",
+      "decision_class": "transform_admission",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "keep",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 100,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 1
+      },
+      "posterior_abandoned": 0.11934869982126191,
+      "confidence": 0.880651300178738,
+      "expected_loss_keep": 3.5804609946378574,
+      "expected_loss_kill": 88.18447871769506,
+      "evidence_signals": [
+        {
+          "signal_name": "composition_proof_valid",
+          "log_likelihood_delta": -0.9,
+          "detail": "TTL semantic proof binds transform stack to evidence ids"
+        }
+      ],
+      "expected_outcome": "admit transform composition only with matching proof evidence",
+      "actual_outcome": "TTL semantic gate validates composition signatures",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "transform executes with proof-linked audit trail",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_ttl_semantic_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --enforce",
+      "dashboard_row": "ledger/transform_admission"
+    },
+    {
+      "decision_id": "ledger-unsupported-scope-001",
+      "decision_class": "unsupported_scope",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "kill",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "fallback",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 100,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 1
+      },
+      "posterior_abandoned": 0.8751517019581333,
+      "confidence": 0.8751517019581333,
+      "expected_loss_keep": 26.254551058744,
+      "expected_loss_kill": 13.359981506144804,
+      "evidence_signals": [
+        {
+          "signal_name": "scope_gap_detected",
+          "log_likelihood_delta": 1.1,
+          "detail": "requested transform is outside the currently proven V1 scope"
+        }
+      ],
+      "expected_outcome": "deny unsupported scope and file visible follow-up work",
+      "actual_outcome": "error taxonomy names unsupported scope and replay command",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "unsupported request is rejected with actionable explanation",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce",
+      "dashboard_row": "ledger/unsupported_scope"
+    },
+    {
+      "decision_id": "ledger-runtime-budget-deadline-001",
+      "decision_class": "runtime_budget_deadline",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "reprofile",
+      "alternatives_considered": [
+        "keep",
+        "kill",
+        "reprofile"
+      ],
+      "loss_matrix": {
+        "keep_if_useful": 5,
+        "kill_if_useful": 15,
+        "keep_if_abandoned": 15,
+        "kill_if_abandoned": 5
+      },
+      "posterior_abandoned": 0.5,
+      "confidence": 1.0,
+      "expected_loss_keep": 10.0,
+      "expected_loss_kill": 10.0,
+      "evidence_signals": [
+        {
+          "signal_name": "deadline_budget_tie",
+          "log_likelihood_delta": 0.0,
+          "detail": "budget evidence is inconclusive and requires reprofile"
+        }
+      ],
+      "expected_outcome": "reprofile when deadline evidence is tied",
+      "actual_outcome": "memory/performance gate exposes timing metadata for replay",
+      "calibration_bucket": "bucket_050_075",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "runtime budget uncertainty triggers reprofile instead of guessing",
+      "artifact_refs": [
+        "artifacts/e2e/e2e_memory_performance_gate.e2e.json"
+      ],
+      "replay_command": "./scripts/run_memory_performance_gate.sh --enforce",
+      "dashboard_row": "ledger/runtime_budget_deadline"
+    }
+  ],
+  "calibration_buckets": [
+    {
+      "bucket_id": "bucket_00_025",
+      "lower_bound": 0.0,
+      "upper_bound": 0.25,
+      "expected_probability": 0.18,
+      "observed_probability": 0.17,
+      "count": 18,
+      "ece_contribution": 0.0024657534246575294,
+      "drift_status": "green",
+      "stale": false
+    },
+    {
+      "bucket_id": "bucket_025_050",
+      "lower_bound": 0.25,
+      "upper_bound": 0.5,
+      "expected_probability": 0.38,
+      "observed_probability": 0.4,
+      "count": 20,
+      "ece_contribution": 0.005479452054794525,
+      "drift_status": "green",
+      "stale": false
+    },
+    {
+      "bucket_id": "bucket_050_075",
+      "lower_bound": 0.5,
+      "upper_bound": 0.75,
+      "expected_probability": 0.62,
+      "observed_probability": 0.68,
+      "count": 19,
+      "ece_contribution": 0.015616438356164396,
+      "drift_status": "green",
+      "stale": false
+    },
+    {
+      "bucket_id": "bucket_075_100",
+      "lower_bound": 0.75,
+      "upper_bound": 1.0,
+      "expected_probability": 0.86,
+      "observed_probability": 0.81,
+      "count": 16,
+      "ece_contribution": 0.010958904109589026,
+      "drift_status": "green",
+      "stale": false
+    }
+  ],
+  "issues": [],
+  "artifact_refs": [
+    "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json",
+    "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+    "artifacts/e2e/e2e_security_gate.e2e.json",
+    "artifacts/e2e/e2e_durability_coverage_gate.e2e.json",
+    "artifacts/e2e/e2e_memory_performance_gate.e2e.json",
+    "artifacts/e2e/e2e_ttl_semantic_gate.e2e.json"
+  ],
+  "replay_command": "./scripts/run_decision_ledger_gate.sh --enforce"
+}

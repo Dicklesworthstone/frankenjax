@@ -1,0 +1,38 @@
+{
+  "schema_version": "frankenjax.decision-ledger-calibration.v1",
+  "bead_id": "frankenjax-cstq.19",
+  "generated_at_unix_ms": 1777693500000,
+  "status": "pass",
+  "policy": "Invalid decision ledger calibration report - missing replay_command",
+  "required_decision_classes": ["cache_hit_recompute"],
+  "strict_hardened_divergence_allowlist": [],
+  "summary": {
+    "required_decision_class_count": 1,
+    "observed_decision_class_count": 0,
+    "pass_count": 0,
+    "row_count": 0,
+    "calibration_bucket_count": 1,
+    "stale_calibration_count": 0,
+    "strict_hardened_divergence_count": 0,
+    "allowed_divergence_count": 0,
+    "rows_with_artifacts": 0,
+    "rows_with_replay": 0,
+    "rows_with_dashboard_rows": 0
+  },
+  "rows": [],
+  "calibration_buckets": [
+    {
+      "bucket_id": "bucket_075_100",
+      "lower_bound": 0.75,
+      "upper_bound": 1.0,
+      "expected_probability": 0.86,
+      "observed_probability": 0.81,
+      "count": 16,
+      "ece_contribution": 0.01,
+      "drift_status": "green",
+      "stale": false
+    }
+  ],
+  "issues": [],
+  "artifact_refs": ["artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"]
+}

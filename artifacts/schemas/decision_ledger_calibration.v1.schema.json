@@ -1,0 +1,402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frankenjax.dev/schemas/decision_ledger_calibration.v1.schema.json",
+  "title": "FrankenJAX Decision Ledger Calibration v1",
+  "description": "Machine-readable decision/evidence ledger coverage, calibration, drift, and auditability report.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bead_id",
+    "generated_at_unix_ms",
+    "status",
+    "policy",
+    "required_decision_classes",
+    "strict_hardened_divergence_allowlist",
+    "summary",
+    "rows",
+    "calibration_buckets",
+    "issues",
+    "artifact_refs",
+    "replay_command"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frankenjax.decision-ledger-calibration.v1"
+    },
+    "bead_id": {
+      "const": "frankenjax-cstq.19"
+    },
+    "generated_at_unix_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "type": "string",
+      "enum": ["pass", "fail"]
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_decision_classes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "strict_hardened_divergence_allowlist": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required_decision_class_count",
+        "observed_decision_class_count",
+        "pass_count",
+        "row_count",
+        "calibration_bucket_count",
+        "stale_calibration_count",
+        "strict_hardened_divergence_count",
+        "allowed_divergence_count",
+        "rows_with_artifacts",
+        "rows_with_replay",
+        "rows_with_dashboard_rows"
+      ],
+      "properties": {
+        "required_decision_class_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "observed_decision_class_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pass_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "row_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "calibration_bucket_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stale_calibration_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "strict_hardened_divergence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "allowed_divergence_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows_with_artifacts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows_with_replay": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rows_with_dashboard_rows": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/decision_row"
+      }
+    },
+    "calibration_buckets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/calibration_bucket"
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/issue"
+      }
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "replay_command": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "decision_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision_id",
+        "decision_class",
+        "status",
+        "mode",
+        "selected_action",
+        "alternatives_considered",
+        "loss_matrix",
+        "posterior_abandoned",
+        "confidence",
+        "expected_loss_keep",
+        "expected_loss_kill",
+        "evidence_signals",
+        "expected_outcome",
+        "actual_outcome",
+        "calibration_bucket",
+        "drift_status",
+        "stale_calibration",
+        "strict_hardened_divergence",
+        "divergence_allowed",
+        "user_visible_consequence",
+        "artifact_refs",
+        "replay_command",
+        "dashboard_row"
+      ],
+      "properties": {
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "decision_class": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail"]
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["strict", "hardened"]
+        },
+        "selected_action": {
+          "type": "string",
+          "enum": ["keep", "kill", "reprofile", "fallback"]
+        },
+        "alternatives_considered": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "string"
+          }
+        },
+        "loss_matrix": {
+          "$ref": "#/$defs/loss_matrix"
+        },
+        "posterior_abandoned": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "expected_loss_keep": {
+          "type": "number",
+          "minimum": 0
+        },
+        "expected_loss_kill": {
+          "type": "number",
+          "minimum": 0
+        },
+        "evidence_signals": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence_signal"
+          }
+        },
+        "expected_outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actual_outcome": {
+          "type": "string",
+          "minLength": 1
+        },
+        "calibration_bucket": {
+          "type": "string",
+          "minLength": 1
+        },
+        "drift_status": {
+          "type": "string",
+          "enum": ["green", "yellow", "red"]
+        },
+        "stale_calibration": {
+          "type": "boolean"
+        },
+        "strict_hardened_divergence": {
+          "type": "boolean"
+        },
+        "divergence_allowed": {
+          "type": "boolean"
+        },
+        "user_visible_consequence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "replay_command": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dashboard_row": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "loss_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keep_if_useful",
+        "kill_if_useful",
+        "keep_if_abandoned",
+        "kill_if_abandoned"
+      ],
+      "properties": {
+        "keep_if_useful": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kill_if_useful": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "keep_if_abandoned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kill_if_abandoned": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "evidence_signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal_name", "log_likelihood_delta", "detail"],
+      "properties": {
+        "signal_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "log_likelihood_delta": {
+          "type": "number"
+        },
+        "detail": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "calibration_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucket_id",
+        "lower_bound",
+        "upper_bound",
+        "expected_probability",
+        "observed_probability",
+        "count",
+        "ece_contribution",
+        "drift_status",
+        "stale"
+      ],
+      "properties": {
+        "bucket_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lower_bound": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "upper_bound": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "expected_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "observed_probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ece_contribution": {
+          "type": "number",
+          "minimum": 0
+        },
+        "drift_status": {
+          "type": "string",
+          "enum": ["green", "yellow", "red"]
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "path", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,254 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.19",
+  "scenario_id": "e2e_decision_ledger_gate",
+  "test_id": "fj_decision_ledger_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-codex-cstq19/debug/fj_decision_ledger_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--report",
+    "/data/projects/frankenjax/artifacts/conformance/decision_ledger_calibration.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/decision_ledger_calibration.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_decision_ledger_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq19",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq19",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777731686334
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "ledger-cache-hit-recompute-001",
+    "ledger-strict-rejection-001",
+    "ledger-hardened-recovery-001",
+    "ledger-fallback-denial-001",
+    "ledger-optimization-selection-001",
+    "ledger-durability-recovery-001",
+    "ledger-transform-admission-001",
+    "ledger-unsupported-scope-001",
+    "ledger-runtime-budget-deadline-001"
+  ],
+  "oracle_ids": [
+    "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json",
+    "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+    "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json",
+    "artifacts/e2e/e2e_security_gate.e2e.json",
+    "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+    "artifacts/e2e/e2e_memory_performance_gate.e2e.json",
+    "artifacts/e2e/e2e_durability_coverage_gate.e2e.json",
+    "artifacts/e2e/e2e_ttl_semantic_gate.e2e.json",
+    "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+    "artifacts/e2e/e2e_memory_performance_gate.e2e.json"
+  ],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {
+    "report_path": "artifacts/conformance/decision_ledger_calibration.v1.json",
+    "required_decision_classes": [
+      "cache_hit_recompute",
+      "strict_rejection",
+      "hardened_recovery",
+      "fallback_denial",
+      "optimization_selection",
+      "durability_recovery",
+      "transform_admission",
+      "unsupported_scope",
+      "runtime_budget_deadline"
+    ],
+    "strict_hardened_divergence_allowlist": [
+      "hardened_recovery",
+      "durability_recovery"
+    ]
+  },
+  "expected": {
+    "gate_status": "pass",
+    "red_drift_rows": 0,
+    "required_decision_classes": 9,
+    "stale_calibration": 0,
+    "unallowed_divergence": 0
+  },
+  "actual": {
+    "bead_id": "frankenjax-cstq.19",
+    "issue_count": 0,
+    "issues": [],
+    "row_status": [
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.8480050389221443,
+        "decision_class": "cache_hit_recompute",
+        "decision_id": "ledger-cache-hit-recompute-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.15199496107785568,
+        "selected_action": "keep",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.8574823680672098,
+        "decision_class": "strict_rejection",
+        "decision_id": "ledger-strict-rejection-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.8574823680672098,
+        "selected_action": "kill",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_050_075",
+        "confidence": 0.9998323261407476,
+        "decision_class": "hardened_recovery",
+        "decision_id": "ledger-hardened-recovery-001",
+        "drift_status": "green",
+        "mode": "hardened",
+        "posterior_abandoned": 0.4998323261407476,
+        "selected_action": "fallback",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.8604507997242211,
+        "decision_class": "fallback_denial",
+        "decision_id": "ledger-fallback-denial-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.8604507997242211,
+        "selected_action": "kill",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.899011970627267,
+        "decision_class": "optimization_selection",
+        "decision_id": "ledger-optimization-selection-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.10098802937273296,
+        "selected_action": "keep",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.6978161114414183,
+        "decision_class": "durability_recovery",
+        "decision_id": "ledger-durability-recovery-001",
+        "drift_status": "green",
+        "mode": "hardened",
+        "posterior_abandoned": 0.19781611144141825,
+        "selected_action": "fallback",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.880651300178738,
+        "decision_class": "transform_admission",
+        "decision_id": "ledger-transform-admission-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.11934869982126191,
+        "selected_action": "keep",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_075_100",
+        "confidence": 0.8751517019581333,
+        "decision_class": "unsupported_scope",
+        "decision_id": "ledger-unsupported-scope-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.8751517019581333,
+        "selected_action": "kill",
+        "status": "pass"
+      },
+      {
+        "calibration_bucket": "bucket_050_075",
+        "confidence": 1.0,
+        "decision_class": "runtime_budget_deadline",
+        "decision_id": "ledger-runtime-budget-deadline-001",
+        "drift_status": "green",
+        "mode": "strict",
+        "posterior_abandoned": 0.5,
+        "selected_action": "reprofile",
+        "status": "pass"
+      }
+    ],
+    "schema_version": "frankenjax.decision-ledger-calibration.v1",
+    "status": "pass",
+    "summary": {
+      "allowed_divergence_count": 2,
+      "calibration_bucket_count": 4,
+      "observed_decision_class_count": 9,
+      "pass_count": 9,
+      "required_decision_class_count": 9,
+      "row_count": 9,
+      "rows_with_artifacts": 9,
+      "rows_with_dashboard_rows": 9,
+      "rows_with_replay": 9,
+      "stale_calibration_count": 0,
+      "strict_hardened_divergence_count": 2
+    }
+  },
+  "tolerance": {
+    "policy_id": "exact_decision_ledger_calibration",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "Decision ledger auditability is exact: rows need alternatives, loss matrices, evidence signals, posterior/confidence, calibration bucket, artifact refs, dashboard row, and replay command."
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "decision_ledger_calibration_report",
+      "path": "artifacts/conformance/decision_ledger_calibration.v1.json",
+      "sha256": "b7b2ecf9f450ac20fa5e8ebc0ab46ac1cf6c9920cad9ac0cb13e53c181e29b79",
+      "required": true
+    },
+    {
+      "kind": "decision_ledger_calibration_markdown",
+      "path": "artifacts/conformance/decision_ledger_calibration.v1.md",
+      "sha256": "1a218a3151ab25d03018113b66fad660ce8e35ff3582534789ffeea50685b503",
+      "required": true
+    }
+  ],
+  "replay_command": "./scripts/run_decision_ledger_gate.sh --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.19",
+      "title": "Prove decision/evidence ledger calibration and auditability"
+    }
+  }
+}

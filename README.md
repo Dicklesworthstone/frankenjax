@@ -353,6 +353,22 @@ Every non-trivial decision (cache hit vs recompute, strict vs hardened recovery,
 
 This is a formal audit trail, not a debugging log. It answers "why did the system do X instead of Y?" for any execution. The ledger entries survive across sessions via the durability pipeline.
 
+The decision-ledger calibration gate turns that promise into replayable evidence:
+
+```bash
+./scripts/run_decision_ledger_gate.sh --enforce
+```
+
+It writes `artifacts/conformance/decision_ledger_calibration.v1.json`,
+`artifacts/conformance/decision_ledger_calibration.v1.md`, and
+`artifacts/e2e/e2e_decision_ledger_gate.e2e.json`. The report covers cache
+reuse/recompute, strict rejection, hardened recovery, fallback denial,
+optimization selection, durability recovery, transform admission, unsupported
+scope, and runtime budget/deadline decisions. Each row records alternatives,
+loss matrix, evidence signals, posterior/confidence values, calibration bucket,
+drift status, user-visible consequence, artifact links, dashboard row, and exact
+replay command.
+
 ## Correctness Methodology
 
 FrankenJAX uses **four layers of correctness assurance**, each catching different classes of bugs:

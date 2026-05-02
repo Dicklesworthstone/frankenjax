@@ -1,0 +1,76 @@
+{
+  "schema_version": "frankenjax.decision-ledger-calibration.v1",
+  "bead_id": "frankenjax-cstq.19",
+  "generated_at_unix_ms": 1777693500000,
+  "status": "pass",
+  "policy": "Example decision ledger calibration report",
+  "required_decision_classes": ["cache_hit_recompute"],
+  "strict_hardened_divergence_allowlist": [],
+  "summary": {
+    "required_decision_class_count": 1,
+    "observed_decision_class_count": 1,
+    "pass_count": 1,
+    "row_count": 1,
+    "calibration_bucket_count": 1,
+    "stale_calibration_count": 0,
+    "strict_hardened_divergence_count": 0,
+    "allowed_divergence_count": 0,
+    "rows_with_artifacts": 1,
+    "rows_with_replay": 1,
+    "rows_with_dashboard_rows": 1
+  },
+  "rows": [
+    {
+      "decision_id": "ledger-example",
+      "decision_class": "cache_hit_recompute",
+      "status": "pass",
+      "mode": "strict",
+      "selected_action": "keep",
+      "alternatives_considered": ["keep", "kill"],
+      "loss_matrix": {
+        "keep_if_useful": 0,
+        "kill_if_useful": 100,
+        "keep_if_abandoned": 30,
+        "kill_if_abandoned": 1
+      },
+      "posterior_abandoned": 0.2,
+      "confidence": 0.8,
+      "expected_loss_keep": 6.0,
+      "expected_loss_kill": 80.2,
+      "evidence_signals": [
+        {
+          "signal_name": "cache_hit_rate",
+          "log_likelihood_delta": -1.0,
+          "detail": "example signal"
+        }
+      ],
+      "expected_outcome": "keep compatible cache entry",
+      "actual_outcome": "cache entry kept",
+      "calibration_bucket": "bucket_075_100",
+      "drift_status": "green",
+      "stale_calibration": false,
+      "strict_hardened_divergence": false,
+      "divergence_allowed": false,
+      "user_visible_consequence": "cache entry reused",
+      "artifact_refs": ["artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"],
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+      "dashboard_row": "ledger/cache_hit_recompute"
+    }
+  ],
+  "calibration_buckets": [
+    {
+      "bucket_id": "bucket_075_100",
+      "lower_bound": 0.75,
+      "upper_bound": 1.0,
+      "expected_probability": 0.86,
+      "observed_probability": 0.81,
+      "count": 16,
+      "ece_contribution": 0.01,
+      "drift_status": "green",
+      "stale": false
+    }
+  ],
+  "issues": [],
+  "artifact_refs": ["artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"],
+  "replay_command": "./scripts/run_decision_ledger_gate.sh --enforce"
+}

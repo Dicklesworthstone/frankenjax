@@ -739,6 +739,7 @@ dependencies = [
  "fj-ffi",
  "fj-interpreters",
  "fj-lax",
+ "fj-ledger",
  "fj-runtime",
  "fj-test-utils",
  "insta",

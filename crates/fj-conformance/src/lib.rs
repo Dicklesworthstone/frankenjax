@@ -2,6 +2,7 @@
 
 pub mod architecture_decision;
 pub mod cache_lifecycle;
+pub mod decision_ledger;
 pub mod durability;
 pub mod e2e_log;
 pub mod error_taxonomy;
