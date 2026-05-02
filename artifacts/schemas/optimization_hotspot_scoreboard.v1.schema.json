@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frankenjax.dev/schemas/optimization_hotspot_scoreboard.v1.schema.json",
+  "title": "FrankenJAX optimization hotspot scoreboard v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "bead_id",
+    "generated_at_unix_ms",
+    "status",
+    "policy",
+    "follow_up_threshold",
+    "required_hotspot_families",
+    "summary",
+    "rows",
+    "follow_up_beads",
+    "issues",
+    "artifact_refs",
+    "replay_command"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frankenjax.optimization-hotspot-scoreboard.v1"
+    },
+    "bead_id": {
+      "const": "frankenjax-cstq.11"
+    },
+    "generated_at_unix_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": ["pass", "fail"]
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "follow_up_threshold": {
+      "type": "number",
+      "minimum": 0
+    },
+    "required_hotspot_families": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "required_family_count",
+        "observed_family_count",
+        "row_count",
+        "rows_with_p95",
+        "rows_with_p99",
+        "rows_with_memory",
+        "rows_with_profile_artifacts",
+        "rows_with_behavior_proof_templates",
+        "rows_with_replay",
+        "follow_up_threshold_milli",
+        "follow_up_required_count",
+        "follow_up_created_count",
+        "issue_count"
+      ],
+      "properties": {
+        "required_family_count": { "type": "integer", "minimum": 0 },
+        "observed_family_count": { "type": "integer", "minimum": 0 },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "rows_with_p95": { "type": "integer", "minimum": 0 },
+        "rows_with_p99": { "type": "integer", "minimum": 0 },
+        "rows_with_memory": { "type": "integer", "minimum": 0 },
+        "rows_with_profile_artifacts": { "type": "integer", "minimum": 0 },
+        "rows_with_behavior_proof_templates": { "type": "integer", "minimum": 0 },
+        "rows_with_replay": { "type": "integer", "minimum": 0 },
+        "follow_up_threshold_milli": { "type": "integer", "minimum": 0 },
+        "follow_up_required_count": { "type": "integer", "minimum": 0 },
+        "follow_up_created_count": { "type": "integer", "minimum": 0 },
+        "issue_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "rank",
+          "hotspot_id",
+          "family",
+          "owner_crate",
+          "status",
+          "p50_ns",
+          "p95_ns",
+          "p99_ns",
+          "peak_rss_bytes",
+          "measurement_backend",
+          "sample_count",
+          "confidence",
+          "priority_score",
+          "score_components",
+          "one_lever_candidate",
+          "behavior_proof_template_ref",
+          "profile_artifact_refs",
+          "source_evidence_refs",
+          "follow_up_bead_id",
+          "replay_command",
+          "notes"
+        ],
+        "properties": {
+          "rank": { "type": "integer", "minimum": 1 },
+          "hotspot_id": { "type": "string", "minLength": 1 },
+          "family": { "type": "string", "minLength": 1 },
+          "owner_crate": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["measured"] },
+          "p50_ns": { "type": "integer", "minimum": 1 },
+          "p95_ns": { "type": "integer", "minimum": 1 },
+          "p99_ns": { "type": "integer", "minimum": 1 },
+          "peak_rss_bytes": { "type": ["integer", "null"], "minimum": 1 },
+          "measurement_backend": { "type": "string", "minLength": 1 },
+          "sample_count": { "type": "integer", "minimum": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "priority_score": { "type": "number", "minimum": 0 },
+          "score_components": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "latency_weight",
+              "p99_tail_weight",
+              "memory_weight",
+              "confidence_weight",
+              "complexity_weight"
+            ],
+            "properties": {
+              "latency_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+              "p99_tail_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+              "memory_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+              "confidence_weight": { "type": "number", "minimum": 0, "maximum": 1 },
+              "complexity_weight": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          },
+          "one_lever_candidate": { "type": "string", "minLength": 1 },
+          "behavior_proof_template_ref": { "type": "string", "minLength": 1 },
+          "profile_artifact_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "source_evidence_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "follow_up_bead_id": { "type": ["string", "null"] },
+          "replay_command": { "type": "string", "minLength": 1 },
+          "notes": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    },
+    "follow_up_beads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "bead_id",
+          "hotspot_id",
+          "title",
+          "priority",
+          "one_lever_scope",
+          "required_evidence"
+        ],
+        "properties": {
+          "bead_id": { "type": "string", "minLength": 1 },
+          "hotspot_id": { "type": "string", "minLength": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "priority": { "type": "integer", "minimum": 0, "maximum": 4 },
+          "one_lever_scope": { "type": "string", "minLength": 1 },
+          "required_evidence": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "path", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "replay_command": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

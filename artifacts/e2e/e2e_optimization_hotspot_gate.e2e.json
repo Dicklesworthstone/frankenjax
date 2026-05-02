@@ -1,0 +1,327 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.11",
+  "scenario_id": "e2e_optimization_hotspot_gate",
+  "test_id": "fj_optimization_hotspot_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-codex-cstq11/debug/fj_optimization_hotspot_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--report",
+    "/data/projects/frankenjax/artifacts/performance/optimization_hotspot_scoreboard.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/performance/optimization_hotspot_scoreboard.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_optimization_hotspot_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq11",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq11",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777738845099
+  },
+  "feature_flags": [],
+  "fixture_ids": [
+    "hotspot-egraph-saturation-001",
+    "hotspot-vmap-multiplier-001",
+    "hotspot-fft-linalg-reduction-001",
+    "hotspot-ad-tape-001",
+    "hotspot-tensor-materialization-001",
+    "hotspot-shape-kernels-001",
+    "hotspot-cache-key-hashing-001",
+    "hotspot-durability-encode-decode-001"
+  ],
+  "oracle_ids": [
+    "artifacts/performance/global_performance_gate.v1.json",
+    "artifacts/performance/memory_performance_gate.v1.json",
+    "linux:/proc/self/status"
+  ],
+  "transform_stack": [
+    "vmap",
+    "grad",
+    "tensor_materialization",
+    "shape_kernels",
+    "cache_key",
+    "egraph",
+    "lax_mixed",
+    "durability"
+  ],
+  "mode": "strict",
+  "inputs": {
+    "follow_up_threshold": 2.0,
+    "required_hotspot_families": [
+      "vmap_multiplier",
+      "ad_tape_backward_map",
+      "tensor_materialization",
+      "shape_kernels",
+      "cache_key_hashing",
+      "egraph_saturation",
+      "fft_linalg_reduction_mixes",
+      "durability_encode_decode"
+    ],
+    "sample_count_per_row": [
+      {
+        "hotspot_id": "hotspot-egraph-saturation-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-vmap-multiplier-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-fft-linalg-reduction-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-ad-tape-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-tensor-materialization-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-shape-kernels-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-cache-key-hashing-001",
+        "samples": 32
+      },
+      {
+        "hotspot_id": "hotspot-durability-encode-decode-001",
+        "samples": 32
+      }
+    ],
+    "workspace_root": "/data/projects/frankenjax"
+  },
+  "expected": {
+    "below_threshold_rows_have_no_followups": true,
+    "follow_up_threshold": 2.0,
+    "gate_status": "pass",
+    "required_family_count": 8,
+    "threshold_rows_have_br_followups": true
+  },
+  "actual": {
+    "bead_id": "frankenjax-cstq.11",
+    "follow_up_beads": [
+      {
+        "bead_id": "frankenjax-cstq.11.1",
+        "hotspot_id": "hotspot-vmap-multiplier-001",
+        "one_lever_scope": "Choose at most one BatchTrace vectorization or slicing lever after p95/p99/RSS evidence.",
+        "priority": 2,
+        "required_evidence": [
+          "same-worker p50/p95/p99 baseline",
+          "peak RSS measurement",
+          "profile artifact",
+          "one-lever implementation note",
+          "isomorphism proof",
+          "conformance or e2e replay log",
+          "post-change rebaseline or rejected-optimization note"
+        ],
+        "title": "Profile vmap multiplier scaling before next BatchTrace optimization"
+      },
+      {
+        "bead_id": "frankenjax-cstq.11.2",
+        "hotspot_id": "hotspot-egraph-saturation-001",
+        "one_lever_scope": "Choose at most one rewrite or extraction lever and prove optimized/unoptimized isomorphism.",
+        "priority": 2,
+        "required_evidence": [
+          "same-worker p50/p95/p99 baseline",
+          "peak RSS measurement",
+          "profile artifact",
+          "one-lever implementation note",
+          "isomorphism proof",
+          "conformance or e2e replay log",
+          "post-change rebaseline or rejected-optimization note"
+        ],
+        "title": "Profile egraph saturation shape-aware rewrite expansion"
+      }
+    ],
+    "follow_up_threshold": 2.0,
+    "issue_count": 0,
+    "issues": [],
+    "rows": [
+      {
+        "confidence": 0.74,
+        "family": "egraph_saturation",
+        "follow_up_bead_id": "frankenjax-cstq.11.2",
+        "hotspot_id": "hotspot-egraph-saturation-001",
+        "owner_crate": "fj-egraph",
+        "p50_ns": 3423924,
+        "p95_ns": 4581286,
+        "p99_ns": 5023424,
+        "peak_rss_bytes": 9986048,
+        "priority_score": 2.43,
+        "rank": 1
+      },
+      {
+        "confidence": 0.86,
+        "family": "vmap_multiplier",
+        "follow_up_bead_id": "frankenjax-cstq.11.1",
+        "hotspot_id": "hotspot-vmap-multiplier-001",
+        "owner_crate": "fj-dispatch",
+        "p50_ns": 55756,
+        "p95_ns": 74581,
+        "p99_ns": 74892,
+        "peak_rss_bytes": 8847360,
+        "priority_score": 2.15,
+        "rank": 2
+      },
+      {
+        "confidence": 0.78,
+        "family": "fft_linalg_reduction_mixes",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-fft-linalg-reduction-001",
+        "owner_crate": "fj-lax",
+        "p50_ns": 8897,
+        "p95_ns": 9228,
+        "p99_ns": 11923,
+        "peak_rss_bytes": 10788864,
+        "priority_score": 1.5,
+        "rank": 3
+      },
+      {
+        "confidence": 0.8,
+        "family": "ad_tape_backward_map",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-ad-tape-001",
+        "owner_crate": "fj-ad",
+        "p50_ns": 66866,
+        "p95_ns": 88087,
+        "p99_ns": 96372,
+        "peak_rss_bytes": 10592256,
+        "priority_score": 1.49,
+        "rank": 4
+      },
+      {
+        "confidence": 0.82,
+        "family": "tensor_materialization",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-tensor-materialization-001",
+        "owner_crate": "fj-lax",
+        "p50_ns": 15990,
+        "p95_ns": 16993,
+        "p99_ns": 24546,
+        "peak_rss_bytes": 10788864,
+        "priority_score": 1.45,
+        "rank": 5
+      },
+      {
+        "confidence": 0.76,
+        "family": "shape_kernels",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-shape-kernels-001",
+        "owner_crate": "fj-trace",
+        "p50_ns": 1683,
+        "p95_ns": 1863,
+        "p99_ns": 3376,
+        "peak_rss_bytes": 11321344,
+        "priority_score": 1.28,
+        "rank": 6
+      },
+      {
+        "confidence": 0.88,
+        "family": "cache_key_hashing",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-cache-key-hashing-001",
+        "owner_crate": "fj-cache",
+        "p50_ns": 17433,
+        "p95_ns": 20078,
+        "p99_ns": 30979,
+        "peak_rss_bytes": 11321344,
+        "priority_score": 1.18,
+        "rank": 7
+      },
+      {
+        "confidence": 0.72,
+        "family": "durability_encode_decode",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-durability-encode-decode-001",
+        "owner_crate": "fj-conformance",
+        "p50_ns": 3406312,
+        "p95_ns": 4301967,
+        "p99_ns": 12295135,
+        "peak_rss_bytes": 11190272,
+        "priority_score": 1.1,
+        "rank": 8
+      }
+    ],
+    "schema_version": "frankenjax.optimization-hotspot-scoreboard.v1",
+    "status": "pass",
+    "summary": {
+      "follow_up_created_count": 2,
+      "follow_up_required_count": 2,
+      "follow_up_threshold_milli": 2000,
+      "issue_count": 0,
+      "observed_family_count": 8,
+      "required_family_count": 8,
+      "row_count": 8,
+      "rows_with_behavior_proof_templates": 8,
+      "rows_with_memory": 8,
+      "rows_with_p95": 8,
+      "rows_with_p99": 8,
+      "rows_with_profile_artifacts": 8,
+      "rows_with_replay": 8
+    }
+  },
+  "tolerance": {
+    "policy_id": "exact_hotspot_scoreboard_contract",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "Gate status, family coverage, follow-up threshold behavior, replay commands, and artifact refs are exact; measured p95/p99/RSS values are host observations."
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": 11321344,
+    "measurement_backend": "linux_procfs_status_vm_hwm"
+  },
+  "artifacts": [
+    {
+      "kind": "optimization_hotspot_report",
+      "path": "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
+      "sha256": "37b2cbc1f38058fc241da6c4d1938aedeb2ef4c985dfffce153d211bc420ea6c",
+      "required": true
+    },
+    {
+      "kind": "optimization_hotspot_markdown",
+      "path": "artifacts/performance/optimization_hotspot_scoreboard.v1.md",
+      "sha256": "fe751aeac095120415e7656042ca2b57560d76d06432bf5e00d2755a343220d3",
+      "required": true
+    }
+  ],
+  "replay_command": "./scripts/run_optimization_hotspot_gate.sh --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.11",
+      "title": "Create optimization hotspot scoreboard and one-lever queue"
+    }
+  }
+}

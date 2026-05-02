@@ -58,6 +58,7 @@ The 2026-05-01 reality check found that the implementation is substantial and wo
 - Scope: phase-level performance evidence for trace, compile/dispatch, execute, cold-cache, warm-cache, and memory coverage.
 - Baseline: `artifacts/performance/benchmark_baselines_v2_2026-03-12.json` records 82 Criterion benchmarks across dispatch, LAX evaluation, cache, API, backend CPU, FFI, partial evaluation, DCE, and staging suites.
 - Gate artifact: `artifacts/performance/global_performance_gate.v1.json` maps required phases to existing measured benchmarks and links the `memory` phase to `artifacts/performance/memory_performance_gate.v1.json`, which records Linux procfs RSS evidence for trace, dispatch, AD, vmap, FFT, linalg, cache hit/miss, and durability workloads.
+- Optimization queue: `artifacts/performance/optimization_hotspot_scoreboard.v1.json` ranks vmap multiplier, AD tape/backward map, tensor materialization, shape kernels, cache-key hashing, e-graph saturation, FFT/linalg/reduction mixes, and durability encode/decode by measured p95/p99/RSS plus confidence, then creates `br` follow-up beads only for rows scoring at or above `2.0`.
 - Policy: p95 regressions above 5% require a risk note; optimization work must baseline, profile, change one lever, prove behavior unchanged, and re-baseline.
 - Validation: `crates/fj-conformance/tests/artifact_schemas.rs` includes a coverage test that rejects missing phases, missing benchmark references for measured phases, unmeasured memory rows, synthetic memory numbers, and missing policy flags.
 

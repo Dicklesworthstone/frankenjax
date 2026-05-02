@@ -4,13 +4,15 @@
   "baseline_ref": "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
   "regression_report_ref": "artifacts/ci/perf_regression_report.v1.json",
   "memory_gate_ref": "artifacts/performance/memory_performance_gate.v1.json",
+  "hotspot_scoreboard_ref": "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
   "regression_threshold_percent": 5.0,
   "runner": "rch exec -- cargo bench",
   "policy": {
     "profile_first": true,
     "one_optimization_lever_per_change": true,
     "behavior_proof_required": true,
-    "risk_note_required_for_regression": true
+    "risk_note_required_for_regression": true,
+    "hotspot_scoreboard_required": true
   },
   "phases": [
     {

@@ -91,6 +91,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "onboarding_command_inventory.v1",
         "decision_ledger_calibration.v1",
         "numerical_stability_matrix.v1",
+        "optimization_hotspot_scoreboard.v1",
     ];
 
     for schema_name in schemas {
@@ -252,6 +253,23 @@ fn global_performance_gate_covers_required_phases() {
         memory_gate["status"], "pass",
         "memory performance gate must pass before the global gate can reference it"
     );
+    let hotspot_scoreboard_ref = gate["hotspot_scoreboard_ref"]
+        .as_str()
+        .expect("hotspot scoreboard ref must be a string");
+    let hotspot_scoreboard_path = root.join(hotspot_scoreboard_ref);
+    assert!(
+        hotspot_scoreboard_path.exists(),
+        "global performance gate hotspot scoreboard artifact does not exist"
+    );
+    let hotspot_scoreboard = read_json(&hotspot_scoreboard_path);
+    assert_eq!(
+        hotspot_scoreboard["schema_version"], "frankenjax.optimization-hotspot-scoreboard.v1",
+        "optimization hotspot scoreboard schema marker changed"
+    );
+    assert_eq!(
+        hotspot_scoreboard["status"], "pass",
+        "optimization hotspot scoreboard must pass before the global gate can reference it"
+    );
 
     let policy = gate["policy"]
         .as_object()
@@ -261,6 +279,7 @@ fn global_performance_gate_covers_required_phases() {
         "one_optimization_lever_per_change",
         "behavior_proof_required",
         "risk_note_required_for_regression",
+        "hotspot_scoreboard_required",
     ] {
         assert_eq!(
             policy.get(key).and_then(Value::as_bool),
@@ -394,6 +413,26 @@ fn global_performance_gate_covers_required_phases() {
             }
         }
     }
+}
+
+#[test]
+fn optimization_hotspot_scoreboard_validates_against_schema() {
+    let root = repo_root();
+    let report_path = root.join("artifacts/performance/optimization_hotspot_scoreboard.v1.json");
+    let report = read_json(&report_path);
+    assert_eq!(
+        report["schema_version"], "frankenjax.optimization-hotspot-scoreboard.v1",
+        "optimization hotspot scoreboard schema marker changed"
+    );
+    assert_eq!(
+        report["bead_id"], "frankenjax-cstq.11",
+        "optimization hotspot scoreboard must stay bound to frankenjax-cstq.11"
+    );
+    assert_eq!(report["status"], "pass");
+    validate_schema_instance(
+        "optimization_hotspot_scoreboard.v1",
+        "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
+    );
 }
 
 #[test]

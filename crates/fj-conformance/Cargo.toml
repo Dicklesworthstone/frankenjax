@@ -10,6 +10,7 @@ fj-cache = { path = "../fj-cache" }
 fj-core = { path = "../fj-core" }
 fj-ad = { path = "../fj-ad" }
 fj-dispatch = { path = "../fj-dispatch" }
+fj-egraph = { path = "../fj-egraph" }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-lax = { path = "../fj-lax" }
 fj-ledger = { path = "../fj-ledger" }
@@ -21,7 +22,6 @@ smallvec = { workspace = true }
 [dev-dependencies]
 fj-api = { path = "../fj-api" }
 fj-backend-cpu = { path = "../fj-backend-cpu" }
-fj-egraph = { path = "../fj-egraph" }
 fj-ffi = { path = "../fj-ffi" }
 fj-runtime = { path = "../fj-runtime" }
 fj-test-utils = { path = "../fj-test-utils" }

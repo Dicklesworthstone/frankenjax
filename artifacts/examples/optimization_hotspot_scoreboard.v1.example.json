@@ -1,0 +1,68 @@
+{
+  "schema_version": "frankenjax.optimization-hotspot-scoreboard.v1",
+  "bead_id": "frankenjax-cstq.11",
+  "generated_at_unix_ms": 1777728000000,
+  "status": "pass",
+  "policy": "Profile-first one-lever optimization queue with thresholded br follow-ups.",
+  "follow_up_threshold": 2.0,
+  "required_hotspot_families": ["vmap_multiplier"],
+  "summary": {
+    "required_family_count": 1,
+    "observed_family_count": 1,
+    "row_count": 1,
+    "rows_with_p95": 1,
+    "rows_with_p99": 1,
+    "rows_with_memory": 1,
+    "rows_with_profile_artifacts": 1,
+    "rows_with_behavior_proof_templates": 1,
+    "rows_with_replay": 1,
+    "follow_up_threshold_milli": 2000,
+    "follow_up_required_count": 1,
+    "follow_up_created_count": 1,
+    "issue_count": 0
+  },
+  "rows": [
+    {
+      "rank": 1,
+      "hotspot_id": "hotspot-vmap-multiplier-001",
+      "family": "vmap_multiplier",
+      "owner_crate": "fj-dispatch",
+      "status": "measured",
+      "p50_ns": 1000,
+      "p95_ns": 1500,
+      "p99_ns": 1800,
+      "peak_rss_bytes": 12000000,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.86,
+      "priority_score": 2.35,
+      "score_components": {
+        "latency_weight": 0.8,
+        "p99_tail_weight": 0.7,
+        "memory_weight": 0.25,
+        "confidence_weight": 0.86,
+        "complexity_weight": 0.55
+      },
+      "one_lever_candidate": "Profile batch-size and rank scaling before selecting one BatchTrace vectorization lever.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": ["artifacts/performance/global_performance_gate.v1.json"],
+      "source_evidence_refs": ["crates/fj-dispatch/benches/dispatch_baseline.rs"],
+      "follow_up_bead_id": "frankenjax-cstq.11.1",
+      "replay_command": "cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap",
+      "notes": ["Threshold row has a br follow-up bead."]
+    }
+  ],
+  "follow_up_beads": [
+    {
+      "bead_id": "frankenjax-cstq.11.1",
+      "hotspot_id": "hotspot-vmap-multiplier-001",
+      "title": "Profile vmap multiplier scaling before next BatchTrace optimization",
+      "priority": 2,
+      "one_lever_scope": "Choose at most one BatchTrace lever after p95/p99/RSS evidence.",
+      "required_evidence": ["same-worker p95/p99 baseline", "isomorphism proof"]
+    }
+  ],
+  "issues": [],
+  "artifact_refs": ["artifacts/performance/global_performance_gate.v1.json"],
+  "replay_command": "./scripts/run_optimization_hotspot_gate.sh --enforce"
+}

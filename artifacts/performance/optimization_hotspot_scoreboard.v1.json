@@ -1,0 +1,375 @@
+{
+  "schema_version": "frankenjax.optimization-hotspot-scoreboard.v1",
+  "bead_id": "frankenjax-cstq.11",
+  "generated_at_unix_ms": 1777738845065,
+  "status": "pass",
+  "policy": "Optimization work must be profile-first, ranked by measured p95/p99/RSS and confidence, scoped to one lever, and backed by behavior-proof templates before code changes. Rows scoring below 2.0 stay monitored; rows scoring at or above 2.0 must have explicit br follow-up beads.",
+  "follow_up_threshold": 2.0,
+  "required_hotspot_families": [
+    "vmap_multiplier",
+    "ad_tape_backward_map",
+    "tensor_materialization",
+    "shape_kernels",
+    "cache_key_hashing",
+    "egraph_saturation",
+    "fft_linalg_reduction_mixes",
+    "durability_encode_decode"
+  ],
+  "summary": {
+    "required_family_count": 8,
+    "observed_family_count": 8,
+    "row_count": 8,
+    "rows_with_p95": 8,
+    "rows_with_p99": 8,
+    "rows_with_memory": 8,
+    "rows_with_profile_artifacts": 8,
+    "rows_with_behavior_proof_templates": 8,
+    "rows_with_replay": 8,
+    "follow_up_threshold_milli": 2000,
+    "follow_up_required_count": 2,
+    "follow_up_created_count": 2,
+    "issue_count": 0
+  },
+  "rows": [
+    {
+      "rank": 1,
+      "hotspot_id": "hotspot-egraph-saturation-001",
+      "family": "egraph_saturation",
+      "owner_crate": "fj-egraph",
+      "status": "measured",
+      "p50_ns": 3423924,
+      "p95_ns": 4581286,
+      "p99_ns": 5023424,
+      "peak_rss_bytes": 9986048,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.74,
+      "priority_score": 2.43,
+      "score_components": {
+        "latency_weight": 0.62,
+        "p99_tail_weight": 0.7,
+        "memory_weight": 0.2,
+        "confidence_weight": 0.74,
+        "complexity_weight": 0.8
+      },
+      "one_lever_candidate": "Profile shape-adjacent tensor programs and choose one rewrite or extraction lever with semantics-preservation proof.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
+        "crates/fj-egraph/src/lib.rs"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-conformance/tests/egraph_preserves_semantics.rs",
+        "FEATURE_PARITY.md"
+      ],
+      "follow_up_bead_id": "frankenjax-cstq.11.2",
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-egraph rch exec -- cargo test -p fj-conformance --test egraph_preserves_semantics -- --nocapture",
+      "notes": [
+        "E-graph saturation is correctness-sensitive; every change must compare optimized and unoptimized behavior.",
+        "Score crosses threshold because shape-aware expansion is a known parity frontier with non-trivial compile risk."
+      ]
+    },
+    {
+      "rank": 2,
+      "hotspot_id": "hotspot-vmap-multiplier-001",
+      "family": "vmap_multiplier",
+      "owner_crate": "fj-dispatch",
+      "status": "measured",
+      "p50_ns": 55756,
+      "p95_ns": 74581,
+      "p99_ns": 74892,
+      "peak_rss_bytes": 8847360,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.86,
+      "priority_score": 2.15,
+      "score_components": {
+        "latency_weight": 0.8,
+        "p99_tail_weight": 0.7,
+        "memory_weight": 0.4,
+        "confidence_weight": 0.95,
+        "complexity_weight": 1.0
+      },
+      "one_lever_candidate": "Profile batch-size/rank scaling and choose one BatchTrace vectorization lever only after same-worker evidence.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/global_performance_gate.v1.json",
+        "artifacts/e2e/e2e_vmap_tensor_ops.e2e.json"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-dispatch/benches/dispatch_baseline.rs",
+        "artifacts/performance/profiling_workflow.md"
+      ],
+      "follow_up_bead_id": "frankenjax-cstq.11.1",
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-vmap rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap",
+      "notes": [
+        "Recent vmap scan/switch work proves this area can yield large wins but also regresses when generic vectorization is guessed.",
+        "The follow-up is profile-only until a single lever is justified."
+      ]
+    },
+    {
+      "rank": 3,
+      "hotspot_id": "hotspot-fft-linalg-reduction-001",
+      "family": "fft_linalg_reduction_mixes",
+      "owner_crate": "fj-lax",
+      "status": "measured",
+      "p50_ns": 8897,
+      "p95_ns": 9228,
+      "p99_ns": 11923,
+      "peak_rss_bytes": 10788864,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.78,
+      "priority_score": 1.5,
+      "score_components": {
+        "latency_weight": 0.58,
+        "p99_tail_weight": 0.4,
+        "memory_weight": 0.3,
+        "confidence_weight": 0.78,
+        "complexity_weight": 0.6
+      },
+      "one_lever_candidate": "Keep FFT/linalg/reduction mixed workloads in the scoreboard until higher-rank oracle fixtures justify one primitive-specific optimization.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/global_performance_gate.v1.json",
+        "artifacts/e2e/e2e_multirank_fixtures.e2e.json"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-lax/benches/lax_baseline.rs",
+        "crates/fj-conformance/tests/lax_oracle.rs"
+      ],
+      "follow_up_bead_id": null,
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-lax rch exec -- cargo bench -p fj-lax --bench lax_baseline -- lax_eval",
+      "notes": [
+        "Below threshold because recent FFT/vector allocation work already landed; wait for cstq.7 fixture expansion."
+      ]
+    },
+    {
+      "rank": 4,
+      "hotspot_id": "hotspot-ad-tape-001",
+      "family": "ad_tape_backward_map",
+      "owner_crate": "fj-ad",
+      "status": "measured",
+      "p50_ns": 66866,
+      "p95_ns": 88087,
+      "p99_ns": 96372,
+      "peak_rss_bytes": 10592256,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.8,
+      "priority_score": 1.49,
+      "score_components": {
+        "latency_weight": 0.55,
+        "p99_tail_weight": 0.45,
+        "memory_weight": 0.2,
+        "confidence_weight": 0.8,
+        "complexity_weight": 0.65
+      },
+      "one_lever_candidate": "Monitor reverse-mode tape lookup and only open a bead if p99 or allocation evidence crosses the threshold.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/global_performance_gate.v1.json",
+        "artifacts/e2e/e2e_control_flow_ad.e2e.json"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-ad/src/lib.rs",
+        "crates/fj-conformance/tests/ad_numerical_verification.rs"
+      ],
+      "follow_up_bead_id": null,
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-ad rch exec -- cargo bench -p fj-api --bench api_overhead -- value_and_grad",
+      "notes": [
+        "Below threshold: keep measured but do not create a speculative bead."
+      ]
+    },
+    {
+      "rank": 5,
+      "hotspot_id": "hotspot-tensor-materialization-001",
+      "family": "tensor_materialization",
+      "owner_crate": "fj-lax",
+      "status": "measured",
+      "p50_ns": 15990,
+      "p95_ns": 16993,
+      "p99_ns": 24546,
+      "peak_rss_bytes": 10788864,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.82,
+      "priority_score": 1.45,
+      "score_components": {
+        "latency_weight": 0.45,
+        "p99_tail_weight": 0.35,
+        "memory_weight": 0.45,
+        "confidence_weight": 0.82,
+        "complexity_weight": 0.35
+      },
+      "one_lever_candidate": "Monitor tensor output materialization after recent preallocation wins; require new allocation proof before another bead.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/memory_performance_gate.v1.json",
+        "crates/fj-lax/benches/lax_baseline.rs"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-lax/src/arithmetic.rs",
+        "artifacts/performance/profiling_workflow.md"
+      ],
+      "follow_up_bead_id": null,
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-tensor rch exec -- cargo bench -p fj-lax --bench lax_baseline -- add_1k",
+      "notes": [
+        "Below threshold: current evidence supports guardrail monitoring rather than new work."
+      ]
+    },
+    {
+      "rank": 6,
+      "hotspot_id": "hotspot-shape-kernels-001",
+      "family": "shape_kernels",
+      "owner_crate": "fj-trace",
+      "status": "measured",
+      "p50_ns": 1683,
+      "p95_ns": 1863,
+      "p99_ns": 3376,
+      "peak_rss_bytes": 11321344,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.76,
+      "priority_score": 1.28,
+      "score_components": {
+        "latency_weight": 0.35,
+        "p99_tail_weight": 0.25,
+        "memory_weight": 0.15,
+        "confidence_weight": 0.76,
+        "complexity_weight": 0.55
+      },
+      "one_lever_candidate": "Keep high-rank shape inference under guardrail measurement; do not optimize without a failing scale profile.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/global_performance_gate.v1.json",
+        "artifacts/testing/logs/fj-trace/fj_trace__tests__prop_shape_inference_deterministic.json"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-trace/src/lib.rs",
+        "crates/fj-lax/src/tensor_ops.rs"
+      ],
+      "follow_up_bead_id": null,
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-shape rch exec -- cargo test -p fj-trace prop_shape_inference_deterministic -- --nocapture",
+      "notes": [
+        "Below threshold: correctness and overflow hardening are more important than speculative shape-kernel speedups."
+      ]
+    },
+    {
+      "rank": 7,
+      "hotspot_id": "hotspot-cache-key-hashing-001",
+      "family": "cache_key_hashing",
+      "owner_crate": "fj-cache",
+      "status": "measured",
+      "p50_ns": 17433,
+      "p95_ns": 20078,
+      "p99_ns": 30979,
+      "peak_rss_bytes": 11321344,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.88,
+      "priority_score": 1.18,
+      "score_components": {
+        "latency_weight": 0.25,
+        "p99_tail_weight": 0.2,
+        "memory_weight": 0.1,
+        "confidence_weight": 0.88,
+        "complexity_weight": 0.3
+      },
+      "one_lever_candidate": "Keep streaming cache-key hasher as a regression sentinel; avoid new work unless cache-key p99 regresses.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/evidence/ir_core/streaming_cache_key_hasher.json",
+        "artifacts/performance/global_performance_gate.v1.json"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-cache/src/lib.rs",
+        "crates/fj-cache/benches/cache_baseline.rs"
+      ],
+      "follow_up_bead_id": null,
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-cache rch exec -- cargo bench -p fj-cache --bench cache_baseline -- cache_key",
+      "notes": [
+        "Below threshold because the streaming hasher optimization already landed with evidence."
+      ]
+    },
+    {
+      "rank": 8,
+      "hotspot_id": "hotspot-durability-encode-decode-001",
+      "family": "durability_encode_decode",
+      "owner_crate": "fj-conformance",
+      "status": "measured",
+      "p50_ns": 3406312,
+      "p95_ns": 4301967,
+      "p99_ns": 12295135,
+      "peak_rss_bytes": 11190272,
+      "measurement_backend": "linux_procfs_status_vm_hwm",
+      "sample_count": 32,
+      "confidence": 0.72,
+      "priority_score": 1.1,
+      "score_components": {
+        "latency_weight": 0.2,
+        "p99_tail_weight": 0.15,
+        "memory_weight": 0.2,
+        "confidence_weight": 0.5,
+        "complexity_weight": 0.2
+      },
+      "one_lever_candidate": "Track sidecar encode/decode RSS and only optimize after larger artifact profiles show a single bottleneck.",
+      "behavior_proof_template_ref": "artifacts/performance/isomorphism_proof_template.v1.md",
+      "profile_artifact_refs": [
+        "artifacts/performance/memory_performance_gate.v1.json",
+        "artifacts/durability/benchmark_baselines_v2.decode-proof.json"
+      ],
+      "source_evidence_refs": [
+        "crates/fj-conformance/src/durability.rs",
+        "scripts/durability_ci_gate.sh"
+      ],
+      "follow_up_bead_id": null,
+      "replay_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-durability rch exec -- cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact artifacts/performance/benchmark_baselines_v2_2026-03-12.json --sidecar /data/tmp/frankenjax-hotspot-durability/sidecar.json --report /data/tmp/frankenjax-hotspot-durability/scrub.json --proof /data/tmp/frankenjax-hotspot-durability/proof.json",
+      "notes": [
+        "Below threshold: durability is covered by RSS gate and sidecar proof artifacts."
+      ]
+    }
+  ],
+  "follow_up_beads": [
+    {
+      "bead_id": "frankenjax-cstq.11.1",
+      "hotspot_id": "hotspot-vmap-multiplier-001",
+      "title": "Profile vmap multiplier scaling before next BatchTrace optimization",
+      "priority": 2,
+      "one_lever_scope": "Choose at most one BatchTrace vectorization or slicing lever after p95/p99/RSS evidence.",
+      "required_evidence": [
+        "same-worker p50/p95/p99 baseline",
+        "peak RSS measurement",
+        "profile artifact",
+        "one-lever implementation note",
+        "isomorphism proof",
+        "conformance or e2e replay log",
+        "post-change rebaseline or rejected-optimization note"
+      ]
+    },
+    {
+      "bead_id": "frankenjax-cstq.11.2",
+      "hotspot_id": "hotspot-egraph-saturation-001",
+      "title": "Profile egraph saturation shape-aware rewrite expansion",
+      "priority": 2,
+      "one_lever_scope": "Choose at most one rewrite or extraction lever and prove optimized/unoptimized isomorphism.",
+      "required_evidence": [
+        "same-worker p50/p95/p99 baseline",
+        "peak RSS measurement",
+        "profile artifact",
+        "one-lever implementation note",
+        "isomorphism proof",
+        "conformance or e2e replay log",
+        "post-change rebaseline or rejected-optimization note"
+      ]
+    }
+  ],
+  "issues": [],
+  "artifact_refs": [
+    "artifacts/performance/global_performance_gate.v1.json",
+    "artifacts/performance/memory_performance_gate.v1.json",
+    "artifacts/performance/profiling_workflow.md",
+    "artifacts/performance/isomorphism_proof_template.v1.md"
+  ],
+  "replay_command": "./scripts/run_optimization_hotspot_gate.sh --enforce"
+}

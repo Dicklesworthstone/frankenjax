@@ -9,6 +9,7 @@ pub mod error_taxonomy;
 pub mod memory_performance;
 pub mod numerical_stability;
 pub mod onboarding_command;
+pub mod optimization_hotspots;
 pub mod oracle_recapture;
 pub mod security_adversarial;
 pub mod transform_control_flow;
