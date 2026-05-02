@@ -2961,10 +2961,10 @@ fn vjp_reduce_window(
     let out_dims: Vec<usize> = g_tensor.shape.dims.iter().map(|d| *d as usize).collect();
 
     // Build input gradient tensor (same shape as input, initially zeros)
-    let total_input: usize = input_dims.iter().product();
+    let total_input = ad_checked_usize_product("reduce_window input", &input_dims)?;
     let mut grad_elements = vec![0.0_f64; total_input];
 
-    let total_output: usize = out_dims.iter().product();
+    let total_output = ad_checked_usize_product("reduce_window output", &out_dims)?;
     if total_output == 0 {
         return Ok(vec![zeros_like(&inputs[0])]);
     }
@@ -2994,11 +2994,11 @@ fn vjp_reduce_window(
                     f64::INFINITY
                 };
 
-                let win_total: usize = window_dims.iter().product();
+                let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
                 let mut win_idx = vec![0usize; rank];
 
                 for _ in 0..win_total {
-                    let flat = compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank);
+                    let flat = compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank)?;
                     if let Some(flat_idx) = flat {
                         let val = input_vals[flat_idx];
                         let is_better = if reduce_op == "max" {
@@ -3020,11 +3020,11 @@ fn vjp_reduce_window(
             }
             _ => {
                 // Sum reduction: gradient is scattered to all positions in the window
-                let win_total: usize = window_dims.iter().product();
+                let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
                 let mut win_idx = vec![0usize; rank];
 
                 for _ in 0..win_total {
-                    let flat = compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank);
+                    let flat = compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank)?;
                     if let Some(flat_idx) = flat {
                         grad_elements[flat_idx] += g_val;
                     }
@@ -3051,18 +3051,32 @@ fn compute_flat_index(
     strides: &[usize],
     input_dims: &[usize],
     rank: usize,
-) -> Option<usize> {
+) -> Result<Option<usize>, AdError> {
     let mut flat = 0usize;
     let mut stride_mult = 1usize;
     for d in (0..rank).rev() {
-        let input_pos = out_idx[d] * strides[d] + win_idx[d];
+        let input_pos = out_idx[d]
+            .checked_mul(strides[d])
+            .and_then(|base| base.checked_add(win_idx[d]))
+            .ok_or_else(|| {
+                AdError::EvalFailed(
+                    "reduce_window flat index computation overflows usize".to_owned(),
+                )
+            })?;
         if input_pos >= input_dims[d] {
-            return None;
+            return Ok(None);
         }
-        flat += input_pos * stride_mult;
-        stride_mult *= input_dims[d];
+        let offset = input_pos.checked_mul(stride_mult).ok_or_else(|| {
+            AdError::EvalFailed("reduce_window flat index offset overflows usize".to_owned())
+        })?;
+        flat = flat.checked_add(offset).ok_or_else(|| {
+            AdError::EvalFailed("reduce_window flat index accumulation overflows usize".to_owned())
+        })?;
+        stride_mult = stride_mult.checked_mul(input_dims[d]).ok_or_else(|| {
+            AdError::EvalFailed("reduce_window row-major stride overflows usize".to_owned())
+        })?;
     }
-    Some(flat)
+    Ok(Some(flat))
 }
 
 /// Increment a multi-dimensional index.
@@ -3208,8 +3222,13 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
     // g_update: slice of g at the start positions
     let upd_dims: Vec<usize> = update.shape.dims.iter().map(|&d| d as usize).collect();
     let g_dims: Vec<usize> = g_tensor.shape.dims.iter().map(|&d| d as usize).collect();
-    let upd_total: usize = upd_dims.iter().product();
+    let upd_total = ad_checked_usize_product("dynamic_update_slice update", &upd_dims)?;
     let mut g_upd_elems = Vec::with_capacity(upd_total);
+    let g_elems = g_tensor
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect::<Vec<_>>();
 
     // Iterate over update indices
     fn iterate_nd(
@@ -3219,9 +3238,9 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
         g_op_elems: &mut [f64],
         g_elems: &[f64],
         g_upd_elems: &mut Vec<f64>,
-    ) {
+    ) -> Result<(), AdError> {
         let rank = dims.len();
-        let total: usize = dims.iter().product();
+        let total = ad_checked_usize_product("dynamic_update_slice update", dims)?;
         for flat_idx in 0..total {
             // Convert flat index to ND coordinates in update space
             let mut remaining = flat_idx;
@@ -3230,13 +3249,37 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
             for ax in (0..rank).rev() {
                 let coord = remaining % dims[ax];
                 remaining /= dims[ax];
-                let g_coord = coord + starts[ax];
-                g_flat += g_coord * stride;
-                stride *= g_dims[ax];
+                let g_coord = coord.checked_add(starts[ax]).ok_or_else(|| {
+                    AdError::EvalFailed(format!(
+                        "dynamic_update_slice coordinate overflows usize on axis {ax}"
+                    ))
+                })?;
+                if g_coord >= g_dims[ax] {
+                    return Err(AdError::EvalFailed(format!(
+                        "dynamic_update_slice coordinate {g_coord} out of bounds for axis {ax} with size {}",
+                        g_dims[ax]
+                    )));
+                }
+                let offset = g_coord.checked_mul(stride).ok_or_else(|| {
+                    AdError::EvalFailed(format!(
+                        "dynamic_update_slice offset overflows usize on axis {ax}"
+                    ))
+                })?;
+                g_flat = g_flat.checked_add(offset).ok_or_else(|| {
+                    AdError::EvalFailed(
+                        "dynamic_update_slice flat index accumulation overflows usize".to_owned(),
+                    )
+                })?;
+                stride = stride.checked_mul(g_dims[ax]).ok_or_else(|| {
+                    AdError::EvalFailed(
+                        "dynamic_update_slice row-major stride overflows usize".to_owned(),
+                    )
+                })?;
             }
             g_upd_elems.push(g_elems[g_flat]);
             g_op_elems[g_flat] = 0.0;
         }
+        Ok(())
     }
 
     iterate_nd(
@@ -3244,13 +3287,9 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
         &starts,
         &g_dims,
         &mut g_op_elems,
-        &g_tensor
-            .elements
-            .iter()
-            .map(|l| l.as_f64().unwrap_or(0.0))
-            .collect::<Vec<_>>(),
+        &g_elems,
         &mut g_upd_elems,
-    );
+    )?;
 
     let grad_operand = Value::Tensor(
         TensorValue::new(
@@ -4102,19 +4141,23 @@ fn zero_scattered_positions(g: &Value, indices: &Value) -> Result<Value, AdError
 
     let dims = &g_tensor.shape.dims;
     // Elements per axis-0 slice: product of dims[1..]
-    let slice_elems: usize = dims[1..]
-        .iter()
-        .map(|d| *d as usize)
-        .product::<usize>()
-        .max(1);
+    let tail_dims = dims[1..].iter().map(|d| *d as usize).collect::<Vec<_>>();
+    let slice_elems = ad_checked_usize_product("scatter VJP slice", &tail_dims)?.max(1);
 
     let mut elements = g_tensor.elements.clone();
     for &idx in &index_vals {
         if idx < dims[0] as usize {
-            let base = idx * slice_elems;
+            let base = idx.checked_mul(slice_elems).ok_or_else(|| {
+                AdError::EvalFailed("scatter VJP slice base overflows usize".to_owned())
+            })?;
             for j in 0..slice_elems {
-                if base + j < elements.len() {
-                    elements[base + j] = Literal::from_f64(0.0);
+                let Some(pos) = base.checked_add(j) else {
+                    return Err(AdError::EvalFailed(
+                        "scatter VJP slice offset overflows usize".to_owned(),
+                    ));
+                };
+                if pos < elements.len() {
+                    elements[pos] = Literal::from_f64(0.0);
                 }
             }
         }
@@ -4216,12 +4259,39 @@ fn parse_reduce_axes(
     Ok(Some(axes))
 }
 
-fn ad_row_major_strides(dims: &[u32]) -> Vec<usize> {
-    let mut strides = vec![1_usize; dims.len()];
-    for idx in (0..dims.len().saturating_sub(1)).rev() {
-        strides[idx] = strides[idx + 1] * dims[idx + 1] as usize;
+fn ad_checked_shape_element_count(context: &str, dims: &[u32]) -> Result<usize, AdError> {
+    if dims.contains(&0) {
+        return Ok(0);
     }
-    strides
+    dims.iter().try_fold(1_usize, |acc, dim| {
+        acc.checked_mul(*dim as usize)
+            .ok_or_else(|| AdError::EvalFailed(format!("{context} element count overflows usize")))
+    })
+}
+
+fn ad_checked_usize_product(context: &str, dims: &[usize]) -> Result<usize, AdError> {
+    if dims.contains(&0) {
+        return Ok(0);
+    }
+    dims.iter().try_fold(1_usize, |acc, dim| {
+        acc.checked_mul(*dim)
+            .ok_or_else(|| AdError::EvalFailed(format!("{context} element count overflows usize")))
+    })
+}
+
+fn ad_row_major_strides(context: &str, dims: &[u32]) -> Result<Vec<usize>, AdError> {
+    let mut strides = vec![1_usize; dims.len()];
+    if dims.contains(&0) {
+        return Ok(strides);
+    }
+    for idx in (0..dims.len().saturating_sub(1)).rev() {
+        strides[idx] = strides[idx + 1]
+            .checked_mul(dims[idx + 1] as usize)
+            .ok_or_else(|| {
+                AdError::EvalFailed(format!("{context} row-major strides overflow usize"))
+            })?;
+    }
+    Ok(strides)
 }
 
 fn ad_flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
@@ -4234,14 +4304,26 @@ fn ad_flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
     multi
 }
 
-fn ad_multi_to_kept_flat(multi: &[usize], kept_axes: &[usize], out_dims: &[u32]) -> usize {
+fn ad_multi_to_kept_flat(
+    context: &str,
+    multi: &[usize],
+    kept_axes: &[usize],
+    out_dims: &[u32],
+) -> Result<usize, AdError> {
     let mut flat = 0_usize;
     let mut stride = 1_usize;
     for idx in (0..kept_axes.len()).rev() {
-        flat += multi[kept_axes[idx]] * stride;
-        stride *= out_dims[idx] as usize;
+        let offset = multi[kept_axes[idx]].checked_mul(stride).ok_or_else(|| {
+            AdError::EvalFailed(format!("{context} output offset overflows usize"))
+        })?;
+        flat = flat.checked_add(offset).ok_or_else(|| {
+            AdError::EvalFailed(format!("{context} output index overflows usize"))
+        })?;
+        stride = stride.checked_mul(out_dims[idx] as usize).ok_or_else(|| {
+            AdError::EvalFailed(format!("{context} output strides overflow usize"))
+        })?;
     }
-    flat
+    Ok(flat)
 }
 
 fn reduce_prod_vjp_tensor(
@@ -4265,7 +4347,7 @@ fn reduce_prod_vjp_tensor(
     let out_count = if out_dims.is_empty() {
         1
     } else {
-        out_dims.iter().map(|dim| *dim as usize).product()
+        ad_checked_shape_element_count("reduce_prod VJP output", &out_dims)?
     };
     let upstream = match g {
         Value::Scalar(literal) => {
@@ -4293,7 +4375,7 @@ fn reduce_prod_vjp_tensor(
         }
     };
 
-    let strides = ad_row_major_strides(&tensor.shape.dims);
+    let strides = ad_row_major_strides("reduce_prod VJP input", &tensor.shape.dims)?;
     let mut product_nonzero = vec![1.0_f64; out_count];
     let mut zero_counts = vec![0_usize; out_count];
     let mut element_buckets = Vec::with_capacity(tensor.elements.len());
@@ -4303,7 +4385,7 @@ fn reduce_prod_vjp_tensor(
             .as_f64()
             .ok_or_else(|| AdError::EvalFailed("reduce_prod input must be numeric".to_owned()))?;
         let multi = ad_flat_to_multi(flat_idx, &strides);
-        let out_idx = ad_multi_to_kept_flat(&multi, &kept_axes, &out_dims);
+        let out_idx = ad_multi_to_kept_flat("reduce_prod VJP", &multi, &kept_axes, &out_dims)?;
         element_buckets.push(out_idx);
         if value.abs() < f64::EPSILON {
             zero_counts[out_idx] += 1;
@@ -4392,10 +4474,10 @@ fn reduce_prod_jvp_tensor(
     let out_count = if out_dims.is_empty() {
         1
     } else {
-        out_dims.iter().map(|dim| *dim as usize).product()
+        ad_checked_shape_element_count("reduce_prod JVP output", &out_dims)?
     };
 
-    let strides = ad_row_major_strides(&primal.shape.dims);
+    let strides = ad_row_major_strides("reduce_prod JVP input", &primal.shape.dims)?;
     let mut product_nonzero = vec![1.0_f64; out_count];
     let mut zero_counts = vec![0_usize; out_count];
     let mut element_terms = Vec::with_capacity(primal.elements.len());
@@ -4413,7 +4495,7 @@ fn reduce_prod_jvp_tensor(
             .as_f64()
             .ok_or_else(|| AdError::EvalFailed("reduce_prod tangent must be numeric".to_owned()))?;
         let multi = ad_flat_to_multi(flat_idx, &strides);
-        let out_idx = ad_multi_to_kept_flat(&multi, &kept_axes, &out_dims);
+        let out_idx = ad_multi_to_kept_flat("reduce_prod JVP", &multi, &kept_axes, &out_dims)?;
         element_terms.push((out_idx, primal_value, tangent_value));
         if primal_value.abs() < f64::EPSILON {
             zero_counts[out_idx] += 1;
@@ -4605,7 +4687,7 @@ fn cumprod_jvp_tensor(
         .iter()
         .map(|dim| *dim as usize)
         .collect::<Vec<_>>();
-    let strides = ad_row_major_strides(&primal.shape.dims);
+    let strides = ad_row_major_strides("cumprod JVP input", &primal.shape.dims)?;
     let axis_len = dims[axis];
     let axis_stride = strides[axis];
     let total = primal.elements.len();
@@ -7082,6 +7164,13 @@ mod tests {
         )
     }
 
+    fn empty_f64_tensor(dims: Vec<u32>) -> Value {
+        Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims }, Vec::new())
+                .expect("empty tensor shape should be accepted"),
+        )
+    }
+
     fn assert_tensor_f64(value: &Value, dims: &[u32], expected: &[f64]) {
         let tensor = expect_tensor_ref(value, "assert_tensor_f64");
         assert_eq!(tensor.shape.dims.as_slice(), dims);
@@ -7991,6 +8080,21 @@ mod tests {
     }
 
     #[test]
+    fn vjp_reduce_prod_empty_huge_shape_returns_empty_without_stride_overflow() {
+        let huge = u32::MAX;
+        let input = empty_f64_tensor(vec![1, huge, huge, huge, 0]);
+        let g = empty_f64_tensor(vec![huge, huge, huge, 0]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let grads = vjp_single(Primitive::ReduceProd, &[input], &g, &params)
+            .expect("empty huge reduce_prod VJP should stay fail-closed and panic-free");
+        let tensor = expect_tensor_ref(&grads[0], "reduce_prod VJP gradient");
+        assert_eq!(tensor.shape.dims, vec![1, huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn vjp_reduce_min_selects_argmin() {
         use fj_core::{DType, Literal, Shape, TensorValue};
 
@@ -8209,6 +8313,29 @@ mod tests {
         assert_eq!(vals.len(), 2);
         assert!((vals[0] - 1.0).abs() < 1e-10);
         assert!((vals[1] - 1.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vjp_scatter_empty_huge_tail_returns_empty_without_slice_overflow() {
+        let huge = u32::MAX;
+        let operand = empty_f64_tensor(vec![huge, huge, huge, 0]);
+        let indices = Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![0] }, Vec::new())
+                .expect("empty indices tensor"),
+        );
+        let updates = empty_f64_tensor(vec![0, huge, huge, 0]);
+        let g = empty_f64_tensor(vec![huge, huge, huge, 0]);
+
+        let grads = vjp_single(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &g,
+            &BTreeMap::new(),
+        )
+        .expect("empty huge scatter VJP should not overflow slice size");
+        let operand_grad = expect_tensor_ref(&grads[0], "scatter operand gradient");
+        assert_eq!(operand_grad.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(operand_grad.elements.is_empty());
     }
 
     // ── Forward-mode JVP tests ──────────────────────────────────
@@ -9544,6 +9671,35 @@ mod tests {
         assert_eq!(grads[2].as_f64_scalar().unwrap(), 0.0);
     }
 
+    #[test]
+    fn dynamic_update_slice_vjp_empty_huge_update_returns_empty_without_product_overflow() {
+        let huge = u32::MAX;
+        let operand = empty_f64_tensor(vec![huge, huge, huge, 0]);
+        let update = empty_f64_tensor(vec![0, huge, huge, 0]);
+        let g = empty_f64_tensor(vec![huge, huge, huge, 0]);
+
+        let grads = dynamic_update_slice_vjp(
+            &[
+                operand,
+                update,
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+                Value::scalar_i64(0),
+            ],
+            &g,
+        )
+        .expect("empty huge dynamic_update_slice VJP should not overflow update products");
+
+        let operand_grad = expect_tensor_ref(&grads[0], "dynamic update operand gradient");
+        assert_eq!(operand_grad.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(operand_grad.elements.is_empty());
+
+        let update_grad = expect_tensor_ref(&grads[1], "dynamic update update gradient");
+        assert_eq!(update_grad.shape.dims, vec![0, huge, huge, 0]);
+        assert!(update_grad.elements.is_empty());
+    }
+
     // ── Cumsum VJP tests ──────────────────────────────────────────
 
     #[test]
@@ -10834,6 +10990,23 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_window_vjp_empty_huge_shape_returns_empty_without_product_overflow() {
+        let huge = u32::MAX;
+        let input = empty_f64_tensor(vec![huge, huge, huge, 0]);
+        let g = empty_f64_tensor(vec![0, huge, huge, 0]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "1,1,1,1".into());
+        params.insert("window_strides".into(), "1,1,1,1".into());
+        params.insert("reduce_op".into(), "sum".into());
+
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params)
+            .expect("empty huge reduce_window VJP should not overflow shape products");
+        let tensor = expect_tensor_ref(&grads[0], "reduce_window input gradient");
+        assert_eq!(tensor.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn test_reduce_window_max_vjp_simple() {
         // Max-pool on [1,5,3,2] with window=2, stride=1
         // Forward: [max(1,5), max(5,3), max(3,2)] = [5, 5, 3]
@@ -11521,6 +11694,21 @@ mod tests {
     }
 
     #[test]
+    fn test_jvp_reduce_prod_empty_huge_shape_returns_empty_without_stride_overflow() {
+        let huge = u32::MAX;
+        let x = empty_f64_tensor(vec![1, huge, huge, huge, 0]);
+        let dx = empty_f64_tensor(vec![1, huge, huge, huge, 0]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "0".to_owned());
+
+        let tangent_out = jvp_rule(Primitive::ReduceProd, &[x], &[dx], &params)
+            .expect("empty huge reduce_prod JVP should not overflow shape products");
+        let tensor = expect_tensor_ref(&tangent_out, "reduce_prod tangent");
+        assert_eq!(tensor.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
+    }
+
+    #[test]
     fn test_jvp_cumprod_scalar_passes_tangent() {
         let params = BTreeMap::new();
 
@@ -11649,6 +11837,21 @@ mod tests {
             tensor.to_f64_vec().expect("f64 elements"),
             vec![0.5, 3.5, 23.0, 2.0, 3.0, 15.0]
         );
+    }
+
+    #[test]
+    fn test_jvp_cumprod_empty_huge_shape_returns_empty_without_stride_overflow() {
+        let huge = u32::MAX;
+        let x = empty_f64_tensor(vec![huge, huge, huge, 0]);
+        let dx = empty_f64_tensor(vec![huge, huge, huge, 0]);
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), "0".to_owned());
+
+        let tangent_out = jvp_rule(Primitive::Cumprod, &[x], &[dx], &params)
+            .expect("empty huge cumprod JVP should not compute overflowing strides");
+        let tensor = expect_tensor_ref(&tangent_out, "cumprod tangent");
+        assert_eq!(tensor.shape.dims, vec![huge, huge, huge, 0]);
+        assert!(tensor.elements.is_empty());
     }
 
     #[test]
