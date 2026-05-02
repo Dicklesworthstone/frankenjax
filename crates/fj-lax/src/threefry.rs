@@ -14,6 +14,35 @@ const NUM_ROUNDS: usize = 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PRNGKey(pub [u32; 2]);
 
+/// Errors returned by [`random_categorical`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CategoricalError {
+    EmptyLogits,
+    SampleCountOverflow {
+        num_samples: usize,
+        num_categories: usize,
+    },
+}
+
+impl std::fmt::Display for CategoricalError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptyLogits => {
+                write!(f, "categorical sampling requires at least one logit")
+            }
+            Self::SampleCountOverflow {
+                num_samples,
+                num_categories,
+            } => write!(
+                f,
+                "categorical sampling size overflow: samples={num_samples} categories={num_categories}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CategoricalError {}
+
 /// ThreeFry2x32: encrypt a 2-word plaintext with a 2-word key using `NUM_ROUNDS` rounds.
 ///
 /// This exactly matches JAX's `threefry2x32` implementation.
@@ -146,11 +175,24 @@ pub fn random_bernoulli(key: PRNGKey, count: usize, p: f64) -> Vec<bool> {
 ///
 /// Returns integer indices drawn from the categorical distribution defined by `logits`.
 /// Uses the Gumbel-max trick: argmax(logits + Gumbel noise) gives categorical samples.
-#[must_use]
-pub fn random_categorical(key: PRNGKey, logits: &[f64], num_samples: usize) -> Vec<usize> {
+pub fn random_categorical(
+    key: PRNGKey,
+    logits: &[f64],
+    num_samples: usize,
+) -> Result<Vec<usize>, CategoricalError> {
     let num_categories = logits.len();
+    if num_categories == 0 {
+        return Err(CategoricalError::EmptyLogits);
+    }
+
     // Need num_samples * num_categories uniform samples for Gumbel noise
-    let total = num_samples * num_categories;
+    let total =
+        num_samples
+            .checked_mul(num_categories)
+            .ok_or(CategoricalError::SampleCountOverflow {
+                num_samples,
+                num_categories,
+            })?;
     let uniforms = random_uniform(key, total, 0.0, 1.0);
 
     let mut result = Vec::with_capacity(num_samples);
@@ -170,7 +212,7 @@ pub fn random_categorical(key: PRNGKey, logits: &[f64], num_samples: usize) -> V
         }
         result.push(best_idx);
     }
-    result
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -507,10 +549,10 @@ mod tests {
     // === Categorical tests ===
 
     #[test]
-    fn test_categorical_basic() {
+    fn test_categorical_basic() -> Result<(), CategoricalError> {
         let key = random_key(42);
         let logits = [0.0, 0.0, 0.0]; // uniform over 3 categories
-        let samples = random_categorical(key, &logits, 10_000);
+        let samples = random_categorical(key, &logits, 10_000)?;
         assert_eq!(samples.len(), 10_000);
         // All indices should be in [0, 3)
         for &idx in &samples {
@@ -528,19 +570,49 @@ mod tests {
                 "category {i} ratio {ratio:.3} too far from 1/3"
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn test_categorical_skewed() {
+    fn test_categorical_skewed() -> Result<(), CategoricalError> {
         let key = random_key(42);
         // log(0.9) ≈ -0.105, log(0.05) ≈ -2.996, log(0.05) ≈ -2.996
         let logits = [10.0, 0.0, 0.0]; // heavily favor first category
-        let samples = random_categorical(key, &logits, 1000);
+        let samples = random_categorical(key, &logits, 1000)?;
         let count_0 = samples.iter().filter(|&&i| i == 0).count();
         assert!(
             count_0 > 900,
             "heavily-weighted category should dominate, got {count_0}/1000"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_categorical_rejects_empty_logits() -> Result<(), String> {
+        let Err(err) = random_categorical(random_key(42), &[], 3) else {
+            return Err("empty logits should be rejected".to_owned());
+        };
+        assert_eq!(err, CategoricalError::EmptyLogits);
+        assert_eq!(
+            err.to_string(),
+            "categorical sampling requires at least one logit"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_categorical_rejects_sample_count_overflow() -> Result<(), String> {
+        let Err(err) = random_categorical(random_key(42), &[0.0, 1.0], usize::MAX) else {
+            return Err("overflowed sample count should be rejected".to_owned());
+        };
+        assert_eq!(
+            err,
+            CategoricalError::SampleCountOverflow {
+                num_samples: usize::MAX,
+                num_categories: 2
+            }
+        );
+        Ok(())
     }
 
     // === Extended RNG tests (frankenjax-tr5) ===

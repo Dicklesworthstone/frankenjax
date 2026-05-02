@@ -469,8 +469,8 @@ The RNG implements the ThreeFry2x32 counter-based PRNG from Salmon et al. (SC'11
 
 - **Core cipher**: 20 rounds of rotation + XOR + key injection on 2-word (64-bit) state, using Skein rotation constants [13, 15, 26, 6, 17, 29, 16, 24]
 - **Key splitting**: `split(key) = [threefry(key, [0,0]), threefry(key, [0,1])]`, producing two statistically independent child keys
-- **Fold-in**: `fold_in(key, data) = threefry(key, [data, 0])`, mixing external data into the key
-- **Sampling**: counter-based bit generation, then uniform (divide by 2^32), normal (Box-Muller), bernoulli (threshold), or categorical (Gumbel-max trick)
+- **Fold-in**: `fold_in(key, data) = threefry(key, [0, data])`, matching JAX's `threefry_seed(data)` ordering for u32 data
+- **Sampling**: counter-based bit generation, then uniform via f32 mantissa-bit scaling, normal via inverse-erf transform, bernoulli via thresholding, and checked categorical sampling via Gumbel-max
 
 The deterministic design means `random_key(42)` always produces the same sequence, matching JAX's ThreeFry implementation. This is verified against 25 JAX oracle fixtures covering key generation, splitting, fold-in, uniform, and normal distributions.
 
@@ -1181,7 +1181,7 @@ A: Every linalg VJP and JVP rule is verified two ways: (1) numerical finite-diff
 A: RaptorQ is a fountain code (erasure code) that can reconstruct data from any sufficient subset of encoded symbols. We use it to protect conformance fixtures and benchmark baselines against silent data corruption. In a distributed CI setup where cache nodes can lose data, this ensures your test evidence survives. Unusual for a math library, yes, but correctness evidence that cannot be trusted is worthless.
 
 **Q: How does the RNG match JAX?**
-A: FrankenJAX implements the exact same ThreeFry2x32 cipher with the same rotation constants, key schedule, and sampling algorithms (Box-Muller for normal, Gumbel-max for categorical). The determinism is verified against 25 JAX oracle fixtures. `random_key(42)` produces bit-identical output to JAX's `jax.random.key(42)`.
+A: FrankenJAX implements the exact same ThreeFry2x32 cipher with the same rotation constants, key schedule, and oracle-backed sampling algorithms (f32 mantissa-bit uniform generation, inverse-erf normal generation, and checked Gumbel-max categorical sampling). The determinism is verified against 25 JAX oracle fixtures. `random_key(42)` produces bit-identical output to JAX's `jax.random.key(42)`.
 
 ## Key Documents
 
