@@ -4,6 +4,7 @@
 //! All preconditions are validated before the unsafe block is entered.
 
 use crate::buffer::FfiBuffer;
+use crate::buffer::validate_buffer_contents;
 use crate::error::FfiError;
 use crate::registry::{FfiRegistry, FfiTarget};
 use smallvec::SmallVec;
@@ -58,6 +59,7 @@ impl FfiCall {
                     actual_bytes: buf.size(),
                 });
             }
+            validate_buffer_contents(i, buf.as_bytes(), buf.dtype())?;
         }
 
         // 3. Validate output buffer sizes
@@ -112,6 +114,17 @@ impl FfiCall {
                 code: return_code,
                 message: format!("extern function returned code {return_code}"),
             });
+        }
+
+        if let Some(err) = outputs.iter().enumerate().find_map(|(i, output)| {
+            validate_buffer_contents(inputs.len() + i, output.as_bytes(), output.dtype()).err()
+        }) {
+            // Fail closed: a successful foreign return is still invalid if it
+            // produced malformed bytes for a declared dtype.
+            for output in outputs.iter_mut() {
+                output.as_bytes_mut().fill(0);
+            }
+            return Err(err);
         }
 
         Ok(())
@@ -440,6 +453,74 @@ mod tests {
 
         call.invoke(&reg, &[input], &mut outputs).unwrap();
         assert_eq!(outputs[0].as_bytes(), &[0u8]);
+    }
+
+    #[test]
+    fn invoke_rejects_noncanonical_bool_input() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        static CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+        CALL_COUNT.store(0, Ordering::SeqCst);
+
+        unsafe extern "C" fn mock_unreachable(
+            _inputs: *const *const u8,
+            _input_count: usize,
+            _outputs: *const *mut u8,
+            _output_count: usize,
+        ) -> i32 {
+            CALL_COUNT.fetch_add(1, Ordering::SeqCst);
+            99
+        }
+
+        let reg = setup_registry("unreachable", mock_unreachable);
+        let call = FfiCall::new("unreachable");
+        let mut input = FfiBuffer::zeroed(vec![], DType::Bool).unwrap();
+        input.as_bytes_mut()[0] = 2;
+
+        let err = call.invoke(&reg, &[input], &mut []).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::InvalidBoolByte {
+                buffer_index: 0,
+                byte_index: 0,
+                value: 2,
+            }
+        ));
+        assert_eq!(
+            CALL_COUNT.load(Ordering::SeqCst),
+            0,
+            "invalid bool input should be rejected before FFI dispatch"
+        );
+    }
+
+    #[test]
+    fn invoke_rejects_and_scrubs_noncanonical_bool_output() {
+        unsafe extern "C" fn mock_invalid_bool_output(
+            _inputs: *const *const u8,
+            _input_count: usize,
+            outputs: *const *mut u8,
+            _output_count: usize,
+        ) -> i32 {
+            unsafe {
+                *(*outputs) = 2;
+            }
+            0
+        }
+
+        let reg = setup_registry("invalid_bool_output", mock_invalid_bool_output);
+        let call = FfiCall::new("invalid_bool_output");
+        let mut outputs = [FfiBuffer::zeroed(vec![], DType::Bool).unwrap()];
+
+        let err = call.invoke(&reg, &[], &mut outputs).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::InvalidBoolByte {
+                buffer_index: 0,
+                byte_index: 0,
+                value: 2,
+            }
+        ));
+        assert_eq!(outputs[0].as_bytes(), &[0]);
     }
 
     #[test]

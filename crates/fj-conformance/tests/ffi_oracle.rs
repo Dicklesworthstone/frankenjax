@@ -418,6 +418,43 @@ fn adversarial_successful_partial_write_starts_from_zeroed_output() {
     );
 }
 
+/// Adversarial: malformed bool output bytes fail closed instead of canonicalizing to true.
+#[test]
+fn adversarial_noncanonical_bool_output_is_rejected_and_scrubbed() {
+    unsafe extern "C" fn ffi_invalid_bool_output(
+        _inputs: *const *const u8,
+        _input_count: usize,
+        outputs: *const *mut u8,
+        _output_count: usize,
+    ) -> i32 {
+        unsafe {
+            *(*outputs) = 2;
+        }
+        0
+    }
+
+    let reg = FfiRegistry::new();
+    reg.register("invalid_bool_output", ffi_invalid_bool_output)
+        .unwrap();
+    let call = FfiCall::new("invalid_bool_output");
+    let mut outputs = [FfiBuffer::zeroed(vec![], DType::Bool).unwrap()];
+
+    let err = call.invoke(&reg, &[], &mut outputs).unwrap_err();
+    assert!(matches!(
+        err,
+        FfiError::InvalidBoolByte {
+            buffer_index: 0,
+            byte_index: 0,
+            value: 2,
+        }
+    ));
+    assert_eq!(
+        outputs[0].as_bytes(),
+        &[0],
+        "invalid bool output should be scrubbed after fail-closed validation"
+    );
+}
+
 /// Adversarial: zero-sized buffers are valid boundary values and should not fail.
 #[test]
 fn adversarial_zero_sized_buffers_roundtrip() {

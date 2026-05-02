@@ -32,6 +32,7 @@ impl FfiBuffer {
                 actual_bytes: data.len(),
             });
         }
+        validate_buffer_contents(0, &data, dtype)?;
         Ok(FfiBuffer { data, shape, dtype })
     }
 
@@ -125,6 +126,28 @@ pub fn checked_buffer_size(shape: &[usize], dtype: DType) -> Result<usize, FfiEr
     }
 }
 
+/// Validate dtype-specific byte-level invariants that are not captured by size checks.
+pub(crate) fn validate_buffer_contents(
+    buffer_index: usize,
+    data: &[u8],
+    dtype: DType,
+) -> Result<(), FfiError> {
+    if dtype != DType::Bool {
+        return Ok(());
+    }
+
+    for (byte_index, &value) in data.iter().enumerate() {
+        if value > 1 {
+            return Err(FfiError::InvalidBoolByte {
+                buffer_index,
+                byte_index,
+                value,
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +198,19 @@ mod tests {
         // Shape with a zero dimension = 0 elements = 0 bytes
         let buf = FfiBuffer::new(vec![], vec![0, 5], DType::F64).unwrap();
         assert_eq!(buf.size(), 0);
+    }
+
+    #[test]
+    fn buffer_new_rejects_noncanonical_bool_byte() {
+        let err = FfiBuffer::new(vec![0, 2, 1], vec![3], DType::Bool).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::InvalidBoolByte {
+                buffer_index: 0,
+                byte_index: 1,
+                value: 2,
+            }
+        ));
     }
 
     #[test]

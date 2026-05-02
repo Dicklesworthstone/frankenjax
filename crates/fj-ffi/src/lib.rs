@@ -267,6 +267,11 @@ mod tests {
                 expected_bytes: 8,
                 actual_bytes: 4,
             },
+            FfiError::InvalidBoolByte {
+                buffer_index: 1,
+                byte_index: 2,
+                value: 3,
+            },
             FfiError::UnsupportedDtype { dtype: DType::F32 },
         ];
         for err in &errors {

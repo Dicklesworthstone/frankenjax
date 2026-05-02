@@ -35,6 +35,13 @@ pub enum FfiError {
         actual_bytes: usize,
     },
 
+    /// Bool buffers must use the canonical one-byte encoding: 0 or 1.
+    InvalidBoolByte {
+        buffer_index: usize,
+        byte_index: usize,
+        value: u8,
+    },
+
     /// Shape dimension cannot be represented by FrankenJAX core shape metadata.
     ShapeDimensionOutOfRange {
         dimension_index: usize,
@@ -86,6 +93,14 @@ impl fmt::Display for FfiError {
             } => write!(
                 f,
                 "FFI buffer {buffer_index} size mismatch: expected {expected_bytes} bytes, got {actual_bytes}"
+            ),
+            FfiError::InvalidBoolByte {
+                buffer_index,
+                byte_index,
+                value,
+            } => write!(
+                f,
+                "FFI bool buffer {buffer_index} contains non-canonical byte {value} at byte {byte_index}; expected 0 or 1"
             ),
             FfiError::ShapeDimensionOutOfRange {
                 dimension_index,

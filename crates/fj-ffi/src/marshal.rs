@@ -5,7 +5,7 @@
 
 use fj_core::{DType, Literal, Shape, TensorValue, Value};
 
-use crate::buffer::{FfiBuffer, dtype_size_bytes};
+use crate::buffer::{FfiBuffer, dtype_size_bytes, validate_buffer_contents};
 use crate::error::FfiError;
 
 /// Marshal a `Value` into an `FfiBuffer` for passing to an external function.
@@ -18,6 +18,8 @@ pub fn value_to_buffer(value: &Value) -> Result<FfiBuffer, FfiError> {
 
 /// Unmarshal an `FfiBuffer` back into a `Value`.
 pub fn buffer_to_value(buffer: &FfiBuffer) -> Result<Value, FfiError> {
+    validate_buffer_contents(0, buffer.as_bytes(), buffer.dtype())?;
+
     if buffer.shape().is_empty() {
         // Scalar
         let lit = bytes_to_literal(buffer.as_bytes(), buffer.dtype())?;
@@ -226,14 +228,20 @@ fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
             ))
         }
         DType::Bool => {
-            if bytes.is_empty() {
-                return Err(FfiError::BufferMismatch {
+            let arr: [u8; 1] = bytes.try_into().map_err(|_| FfiError::BufferMismatch {
+                buffer_index: 0,
+                expected_bytes: 1,
+                actual_bytes: bytes.len(),
+            })?;
+            match arr[0] {
+                0 => Ok(Literal::Bool(false)),
+                1 => Ok(Literal::Bool(true)),
+                value => Err(FfiError::InvalidBoolByte {
                     buffer_index: 0,
-                    expected_bytes: 1,
-                    actual_bytes: 0,
-                });
+                    byte_index: 0,
+                    value,
+                }),
             }
-            Ok(Literal::Bool(bytes[0] != 0))
         }
     }
 }
@@ -412,6 +420,22 @@ mod tests {
         let buf = FfiBuffer::new((-7_i32).to_ne_bytes().to_vec(), vec![], DType::I32)?;
         assert_eq!(buffer_to_value(&buf)?, Value::Scalar(Literal::I64(-7)));
         Ok(())
+    }
+
+    #[test]
+    fn buffer_to_value_rejects_noncanonical_bool_byte() {
+        let mut buf = FfiBuffer::zeroed(vec![3], DType::Bool).unwrap();
+        buf.as_bytes_mut().copy_from_slice(&[0, 1, 2]);
+
+        let err = buffer_to_value(&buf).unwrap_err();
+        assert!(matches!(
+            err,
+            FfiError::InvalidBoolByte {
+                buffer_index: 0,
+                byte_index: 2,
+                value: 2,
+            }
+        ));
     }
 
     #[test]
