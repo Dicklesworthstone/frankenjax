@@ -186,6 +186,16 @@ pub fn validate_onboarding_command_inventory(
             "inventory needs a stable replay command",
         ));
     }
+    if !matches!(inventory.status.as_str(), "pass" | "fail") {
+        issues.push(OnboardingCommandIssue::new(
+            "bad_inventory_status",
+            "$.status",
+            format!(
+                "inventory status `{}` must be pass or fail",
+                inventory.status
+            ),
+        ));
+    }
 
     for source_doc in &inventory.source_docs {
         if !root.join(source_doc).exists() {
@@ -219,6 +229,25 @@ pub fn validate_onboarding_command_inventory(
                 "empty_command",
                 path.clone(),
                 format!("{} has an empty command", command.command_id),
+            ));
+        }
+        if let Some(smoke_command) = command.smoke_command.as_deref()
+            && smoke_command.trim().is_empty()
+        {
+            issues.push(OnboardingCommandIssue::new(
+                "empty_smoke_command",
+                path.clone(),
+                format!("{} has an empty smoke command", command.command_id),
+            ));
+        }
+        if !is_valid_classification(&command.classification) {
+            issues.push(OnboardingCommandIssue::new(
+                "bad_classification",
+                path.clone(),
+                format!(
+                    "{} has invalid classification `{}`",
+                    command.command_id, command.classification
+                ),
             ));
         }
         if command.replay_command.trim().is_empty() {
@@ -334,30 +363,31 @@ pub fn validate_onboarding_command_inventory(
                 ));
             }
         }
-        if let Some(script_path) = first_script_path(&command.command)
-            && !root.join(&script_path).exists()
-        {
-            issues.push(OnboardingCommandIssue::new(
-                "missing_script_path",
-                path.clone(),
-                format!(
-                    "{} references missing script `{script_path}`",
-                    command.command_id
-                ),
-            ));
+        for script_path in script_paths(&command.command) {
+            if !root.join(&script_path).exists() {
+                issues.push(OnboardingCommandIssue::new(
+                    "missing_script_path",
+                    path.clone(),
+                    format!(
+                        "{} references missing script `{script_path}`",
+                        command.command_id
+                    ),
+                ));
+            }
         }
-        if let Some(smoke_command) = command.smoke_command.as_deref()
-            && let Some(script_path) = first_script_path(smoke_command)
-            && !root.join(&script_path).exists()
-        {
-            issues.push(OnboardingCommandIssue::new(
-                "missing_smoke_script_path",
-                path.clone(),
-                format!(
-                    "{} smoke command references missing script `{script_path}`",
-                    command.command_id
-                ),
-            ));
+        if let Some(smoke_command) = command.smoke_command.as_deref() {
+            for script_path in script_paths(smoke_command) {
+                if !root.join(&script_path).exists() {
+                    issues.push(OnboardingCommandIssue::new(
+                        "missing_smoke_script_path",
+                        path.clone(),
+                        format!(
+                            "{} smoke command references missing script `{script_path}`",
+                            command.command_id
+                        ),
+                    ));
+                }
+            }
         }
         for key in &command.env_allowlist {
             if is_secret_like_env_key(key) {
@@ -603,6 +633,18 @@ fn requires_skip_reason(classification: &str) -> bool {
     matches!(
         classification,
         "optional_oracle" | "long_running" | "environment_specific" | "schematic"
+    )
+}
+
+fn is_valid_classification(classification: &str) -> bool {
+    matches!(
+        classification,
+        "mandatory_local_smoke"
+            | "ci_gate"
+            | "long_running"
+            | "optional_oracle"
+            | "environment_specific"
+            | "schematic"
     )
 }
 
@@ -1238,20 +1280,24 @@ fn json_contains_string(value: &JsonValue, needle: &str) -> bool {
     }
 }
 
-fn first_script_path(command: &str) -> Option<String> {
-    command.split_whitespace().find_map(|token| {
-        let clean = token
-            .trim_matches('"')
-            .trim_matches('\'')
-            .trim_end_matches('\\');
-        if clean.starts_with("./scripts/") {
-            Some(clean.trim_start_matches("./").to_owned())
-        } else if clean.starts_with("scripts/") {
-            Some(clean.to_owned())
-        } else {
-            None
-        }
-    })
+fn script_paths(command: &str) -> Vec<String> {
+    command
+        .split_whitespace()
+        .filter_map(script_path_from_token)
+        .collect()
+}
+
+fn script_path_from_token(token: &str) -> Option<String> {
+    let clean = token
+        .trim_matches(|c| matches!(c, '"' | '\'' | '(' | ')' | ';'))
+        .trim_end_matches('\\');
+    if clean.starts_with("./scripts/") {
+        Some(clean.trim_start_matches("./").to_owned())
+    } else if clean.starts_with("scripts/") {
+        Some(clean.to_owned())
+    } else {
+        None
+    }
 }
 
 fn is_secret_like_env_key(key: &str) -> bool {

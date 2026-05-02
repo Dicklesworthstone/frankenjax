@@ -50,6 +50,10 @@ fn onboarding_inventory_rejects_stale_paths_and_missing_replay() {
     inventory.commands[0].replay_command.clear();
     inventory.commands[0].evidence_refs = vec!["missing/evidence.json".to_owned()];
     inventory.commands[0].source_refs = vec!["README.md::not a real command anchor".to_owned()];
+    inventory.commands[0].command =
+        "./scripts/run_onboarding_gate.sh ./scripts/missing_onboarding_gate.sh".to_owned();
+    inventory.commands[0].smoke_command =
+        Some("./scripts/run_onboarding_gate.sh ./scripts/missing_smoke_gate.sh".to_owned());
 
     let issue_codes = validate_onboarding_command_inventory(&root, &inventory)
         .into_iter()
@@ -59,6 +63,8 @@ fn onboarding_inventory_rejects_stale_paths_and_missing_replay() {
     assert!(issue_codes.contains("missing_command_replay"));
     assert!(issue_codes.contains("stale_evidence_ref"));
     assert!(issue_codes.contains("stale_source_ref"));
+    assert!(issue_codes.contains("missing_script_path"));
+    assert!(issue_codes.contains("missing_smoke_script_path"));
 }
 
 #[test]
@@ -81,6 +87,23 @@ fn onboarding_inventory_rejects_unjustified_skips_and_secret_envs() {
         .collect::<BTreeSet<_>>();
     assert!(issue_codes.contains("missing_skip_reason"));
     assert!(issue_codes.contains("secret_env_allowlist"));
+}
+
+#[test]
+fn onboarding_inventory_rejects_bad_status_classification_and_empty_smoke() {
+    let root = repo_root();
+    let mut inventory = build_onboarding_command_inventory(&root);
+    inventory.status = "green".to_owned();
+    inventory.commands[0].classification = "fast_path".to_owned();
+    inventory.commands[0].smoke_command = Some("   ".to_owned());
+
+    let issue_codes = validate_onboarding_command_inventory(&root, &inventory)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("bad_inventory_status"));
+    assert!(issue_codes.contains("bad_classification"));
+    assert!(issue_codes.contains("empty_smoke_command"));
 }
 
 #[test]
