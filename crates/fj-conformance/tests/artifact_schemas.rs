@@ -4,6 +4,7 @@ use fj_conformance::error_taxonomy::{ErrorTaxonomyReport, validate_error_taxonom
 use fj_conformance::transform_control_flow::{
     TransformControlFlowReport, validate_transform_control_flow_report,
 };
+use fj_conformance::ttl_semantic::{TtlSemanticReport, validate_ttl_semantic_report};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fs;
@@ -89,6 +90,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "test_log.v1",
         "e2e_forensic_log.v1",
         "failure_diagnostic.v1",
+        "vision_evidence_map.v1",
     ];
 
     for schema_name in schemas {
@@ -519,5 +521,119 @@ fn error_taxonomy_matrix_artifact_covers_required_rows() {
                 && !case.replay_command.trim().is_empty()
                 && !case.evidence_refs.is_empty()),
         "rows must have exact typed classes, replay commands, and evidence refs"
+    );
+}
+
+#[test]
+fn ttl_semantic_matrix_artifact_covers_required_rows() {
+    let root = repo_root();
+    let matrix_path = root.join("artifacts/conformance/ttl_semantic_proof_matrix.v1.json");
+    let matrix = read_json(&matrix_path);
+    assert_eq!(
+        matrix["schema_version"], "frankenjax.ttl-semantic-proof-matrix.v1",
+        "TTL semantic matrix schema marker changed"
+    );
+    assert_eq!(
+        matrix["bead_id"], "frankenjax-cstq.3",
+        "matrix must stay bound to the TTL semantic verifier bead"
+    );
+    assert_eq!(matrix["status"], "pass", "TTL semantic matrix must pass");
+
+    let parsed: TtlSemanticReport =
+        serde_json::from_value(matrix).expect("matrix artifact should parse");
+    let issues = validate_ttl_semantic_report(&parsed);
+    assert!(issues.is_empty(), "matrix validation issues: {issues:#?}");
+
+    let case_ids = parsed
+        .cases
+        .iter()
+        .map(|case| case.case_id.as_str())
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "valid_single_jit_square",
+        "valid_single_grad_square",
+        "valid_single_vmap_square",
+        "valid_jit_grad_fixture",
+        "valid_grad_jit_order_sensitive",
+        "valid_vmap_grad_fixture",
+        "fail_closed_grad_vmap_vector_output",
+        "invalid_duplicate_evidence",
+        "invalid_missing_evidence",
+        "invalid_stale_input_fingerprint",
+        "invalid_wrong_transform_binding",
+        "invalid_missing_fixture_link",
+    ] {
+        assert!(case_ids.contains(required), "missing matrix row {required}");
+    }
+
+    assert_eq!(
+        parsed.coverage.accepted_count, 6,
+        "semantic proof gate must keep the valid transform replay rows accepted"
+    );
+    assert!(
+        parsed.coverage.rejected_count >= 6,
+        "semantic proof gate must keep invalid/fail-closed rows rejected"
+    );
+    assert!(
+        parsed
+            .cases
+            .iter()
+            .filter(|case| case.verifier_decision == "accept")
+            .all(
+                |case| case.output_fingerprint == case.expected_output_fingerprint
+                    && !case.output_shapes.is_empty()
+                    && !case.output_dtypes.is_empty()
+            ),
+        "accepted rows must bind output fingerprints, shapes, and dtypes"
+    );
+}
+
+#[test]
+fn vision_evidence_map_artifact_validates_against_schema() {
+    let root = repo_root();
+    let map_path = root.join("artifacts/conformance/vision_evidence_map.v1.json");
+    if !map_path.exists() {
+        return;
+    }
+    validate_schema_instance(
+        "vision_evidence_map.v1",
+        "artifacts/conformance/vision_evidence_map.v1.json",
+    );
+    let map = read_json(&map_path);
+    assert_eq!(
+        map["schema_version"], "frankenjax.vision-evidence-map.v1",
+        "vision evidence map schema marker changed"
+    );
+    assert_eq!(
+        map["bead_id"], "frankenjax-cstq.15",
+        "map must stay bound to the vision-evidence bootstrap bead"
+    );
+    let claims = map["claims"].as_array().expect("claims must be an array");
+    assert!(!claims.is_empty(), "map must contain at least one claim");
+    for claim in claims {
+        let status = claim["status"].as_str().unwrap();
+        assert!(
+            ["red", "yellow", "green"].contains(&status),
+            "claim status must be red, yellow, or green"
+        );
+        let evidence = claim["evidence"]
+            .as_array()
+            .expect("evidence must be array");
+        if status == "green" && evidence.is_empty() {
+            panic!(
+                "green claim {} must have at least one evidence reference",
+                claim["claim_id"]
+            );
+        }
+    }
+    let summary = &map["summary"];
+    let total = summary["total_claims"].as_i64().unwrap();
+    let red = summary["red_count"].as_i64().unwrap();
+    let yellow = summary["yellow_count"].as_i64().unwrap();
+    let green = summary["green_count"].as_i64().unwrap();
+    assert_eq!(
+        total,
+        red + yellow + green,
+        "summary counts must add up to total"
     );
 }

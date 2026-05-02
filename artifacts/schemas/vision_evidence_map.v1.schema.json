@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frankenjax.dev/schemas/vision_evidence_map.v1.schema.json",
+  "title": "FrankenJAX Vision-to-Evidence Map v1",
+  "description": "Bootstrap map linking README claims, FEATURE_PARITY rows, V1 spec MUSTs to replayable evidence artifacts. Red/yellow/green status per claim.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bead_id",
+    "generated_at_unix_ms",
+    "source_docs",
+    "claims",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frankenjax.vision-evidence-map.v1"
+    },
+    "bead_id": {
+      "type": "string",
+      "pattern": "^frankenjax-[a-z0-9.]+$"
+    },
+    "generated_at_unix_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source_docs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "scanned_at_unix_ms"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "scanned_at_unix_ms": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/claim"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_claims",
+        "red_count",
+        "yellow_count",
+        "green_count",
+        "coverage_pct",
+        "missing_replay_count",
+        "stale_artifact_count"
+      ],
+      "properties": {
+        "total_claims": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "red_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "yellow_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "green_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "missing_replay_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stale_artifact_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "claim_id",
+        "source",
+        "source_line",
+        "claim_text",
+        "status",
+        "evidence"
+      ],
+      "properties": {
+        "claim_id": {
+          "type": "string",
+          "pattern": "^claim_[a-z0-9_]+$"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["readme", "feature_parity", "v1_spec", "changelog"]
+        },
+        "source_line": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "claim_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["red", "yellow", "green"]
+        },
+        "status_reason": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence_ref"
+          }
+        },
+        "linked_beads": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^frankenjax-[a-z0-9.]+$"
+          }
+        },
+        "blocking_gaps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidence_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "exists"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["test", "e2e_script", "artifact", "fixture", "benchmark", "oracle"]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "replay_command": {
+          "type": ["string", "null"]
+        },
+        "last_verified_unix_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

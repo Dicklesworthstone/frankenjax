@@ -1,0 +1,22 @@
+{
+  "schema_version": "frankenjax.vision-evidence-map.v1",
+  "bead_id": "frankenjax-cstq.15",
+  "generated_at_unix_ms": 1777693500000,
+  "source_docs": [
+    {
+      "path": "FEATURE_PARITY.md",
+      "sha256": "d8392aba912e736a2388d949b32c98bbf2d21f8a493fe8ac5c713b44c4d96a54",
+      "scanned_at_unix_ms": 1777693500000
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_fp_canonical_ir",
+      "source": "feature_parity",
+      "source_line": 28,
+      "claim_text": "Canonical IR + TTL model: parity_green",
+      "status": "invalid_status",
+      "evidence": []
+    }
+  ]
+}

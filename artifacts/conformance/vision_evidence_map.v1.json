@@ -1,0 +1,533 @@
+{
+  "schema_version": "frankenjax.vision-evidence-map.v1",
+  "bead_id": "frankenjax-cstq.15",
+  "generated_at_unix_ms": 1777727138000,
+  "source_docs": [
+  {"path": "FEATURE_PARITY.md", "sha256": "53a024f06a59c39d2e5c0c093c9869f5e8c4ce286dbd4b799064083f8f69c7c3", "scanned_at_unix_ms": 1777727138000},
+  {"path": "README.md", "sha256": "d58ea1de15b741b2a3dc17df17d113a9e5b8c68f03cdc9167157213e2f47cd64", "scanned_at_unix_ms": 1777727138000}
+],
+  "claims": [
+  {
+    "claim_id": "claim_fp_canonical_ir__ttl_model",
+    "source": "feature_parity",
+    "source_line": 28,
+    "claim_text": "Canonical IR + TTL model: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-core/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "test",
+        "path": "crates/fj-dispatch/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/e2e/",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/conformance/ttl_semantic_proof_matrix.v1.json",
+        "exists": false,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_primitive_semantics_110_ops",
+    "source": "feature_parity",
+    "source_line": 29,
+    "claim_text": "Primitive semantics (110 ops): parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-core/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "test",
+        "path": "crates/fj-lax/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_interpreter_path_over_canonical_ir",
+    "source": "feature_parity",
+    "source_line": 30,
+    "claim_text": "Interpreter path over canonical IR: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-interpreters/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_dispatch_path__transform_wrappers_jitgra",
+    "source": "feature_parity",
+    "source_line": 31,
+    "claim_text": "Dispatch path + transform wrappers (`jit`/`grad`/`vmap`): parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-dispatch/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_cachekey_determinism__stricthardened_spl",
+    "source": "feature_parity",
+    "source_line": 32,
+    "claim_text": "Cache-key determinism + strict/hardened split: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-cache/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/e2e/",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_crosscrate_error_taxonomy",
+    "source": "feature_parity",
+    "source_line": 33,
+    "claim_text": "Cross-crate error taxonomy: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "artifact",
+        "path": "artifacts/conformance/error_taxonomy_matrix.v1.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "e2e_script",
+        "path": "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_decisionevidence_ledger_foundation",
+    "source": "feature_parity",
+    "source_line": 34,
+    "claim_text": "Decision/evidence ledger foundation: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-ledger/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/e2e/e2e_p2c004_evidence_ledger_audit_trail.e2e.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "e2e_script",
+        "path": "artifacts/e2e/e2e_p2c004_evidence_ledger_audit_trail.e2e.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_conformance_harness__transform_bundle_ru",
+    "source": "feature_parity",
+    "source_line": 35,
+    "claim_text": "Conformance harness + transform bundle runner: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-conformance/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_legacy_fixture_capture_automation",
+    "source": "feature_parity",
+    "source_line": 36,
+    "claim_text": "Legacy fixture capture automation: parity_green",
+    "status": "yellow",
+    "status_reason": "Claimed green but no machine-verifiable evidence paths found",
+    "evidence": [],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_jit_transform_semantics",
+    "source": "feature_parity",
+    "source_line": 37,
+    "claim_text": "`jit` transform semantics: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-conformance/tests/transforms.rs",
+        "exists": true,
+        "replay_command": "cargo test -p fj-conformance",
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "test",
+        "path": "crates/fj-conformance/tests/e2e_p2c002.rs",
+        "exists": true,
+        "replay_command": "cargo test -p fj-conformance",
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_grad_transform_semantics",
+    "source": "feature_parity",
+    "source_line": 38,
+    "claim_text": "`grad` transform semantics: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-ad/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_vmap_transform_semantics",
+    "source": "feature_parity",
+    "source_line": 39,
+    "claim_text": "`vmap` transform semantics: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-dispatch/src/batching.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "test",
+        "path": "crates/fj-conformance/tests/vmap_conformance.rs",
+        "exists": true,
+        "replay_command": "cargo test -p fj-conformance",
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/conformance/transform_control_flow_matrix.v1.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_rng_implementation_threefry__samplers",
+    "source": "feature_parity",
+    "source_line": 40,
+    "claim_text": "RNG implementation (ThreeFry + samplers): parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-lax/src/threefry.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_rng_determinism_vs_jax_oracle",
+    "source": "feature_parity",
+    "source_line": 41,
+    "claim_text": "RNG determinism vs JAX oracle: parity_green",
+    "status": "yellow",
+    "status_reason": "Claimed green but no machine-verifiable evidence paths found",
+    "evidence": [],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_raptorq_sidecar_durability_pipeline",
+    "source": "feature_parity",
+    "source_line": 42,
+    "claim_text": "RaptorQ sidecar durability pipeline: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-conformance/src/durability.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "test",
+        "path": "crates/fj-conformance/src/bin/fj_durability.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/durability/",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/conformance/durability_coverage_policy.v1.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_dtype_system_11_types__promotion_rules",
+    "source": "feature_parity",
+    "source_line": 43,
+    "claim_text": "DType system (11 types + promotion rules): parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-core/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_ad_completeness",
+    "source": "feature_parity",
+    "source_line": 44,
+    "claim_text": "AD completeness: parity_green",
+    "status": "yellow",
+    "status_reason": "Claimed green but no machine-verifiable evidence paths found",
+    "evidence": [],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_control_flow_condscanwhilefori_loopswitc",
+    "source": "feature_parity",
+    "source_line": 45,
+    "claim_text": "Control flow (`cond`/`scan`/`while`/`fori_loop`/`switch`): parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-lax/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "artifact",
+        "path": "artifacts/conformance/transform_control_flow_matrix.v1.json",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_tracing_from_user_code__nested_transform",
+    "source": "feature_parity",
+    "source_line": 46,
+    "claim_text": "Tracing from user code + nested transform tracing: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-trace/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_egraph_optimization_pipeline",
+    "source": "feature_parity",
+    "source_line": 47,
+    "claim_text": "E-graph optimization pipeline: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-egraph/src/lib.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_special_functions__linear_algebra__fft",
+    "source": "feature_parity",
+    "source_line": 48,
+    "claim_text": "Special functions + linear algebra + FFT: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-lax/src/linalg.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      },
+      {
+        "kind": "test",
+        "path": "crates/fj-lax/src/fft.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  },
+  {
+    "claim_id": "claim_fp_cpu_parallel_backend",
+    "source": "feature_parity",
+    "source_line": 49,
+    "claim_text": "CPU parallel backend: parity_green",
+    "status": "green",
+    "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+    "evidence": [
+      {
+        "kind": "test",
+        "path": "crates/fj-backend-cpu/src/executor.rs",
+        "exists": true,
+        "replay_command": null,
+        "last_verified_unix_ms": null
+      }
+    ],
+    "linked_beads": [],
+    "blocking_gaps": []
+  }
+],
+  "summary": {
+    "total_claims": 22,
+    "red_count": 0,
+    "yellow_count": 3,
+    "green_count": 19,
+    "coverage_pct": 86.3,
+    "missing_replay_count": 33,
+    "stale_artifact_count": 0
+  }
+}

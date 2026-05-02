@@ -1,0 +1,53 @@
+{
+  "schema_version": "frankenjax.vision-evidence-map.v1",
+  "bead_id": "frankenjax-cstq.15",
+  "generated_at_unix_ms": 1777693500000,
+  "source_docs": [
+    {
+      "path": "FEATURE_PARITY.md",
+      "sha256": "d8392aba912e736a2388d949b32c98bbf2d21f8a493fe8ac5c713b44c4d96a54",
+      "scanned_at_unix_ms": 1777693500000
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_fp_canonical_ir",
+      "source": "feature_parity",
+      "source_line": 28,
+      "claim_text": "Canonical IR + TTL model: parity_green",
+      "status": "green",
+      "status_reason": "FEATURE_PARITY status is parity_green with documented evidence",
+      "evidence": [
+        {
+          "kind": "test",
+          "path": "crates/fj-core/src/lib.rs",
+          "exists": true,
+          "replay_command": "cargo test -p fj-core",
+          "last_verified_unix_ms": 1777693500000
+        }
+      ],
+      "linked_beads": ["frankenjax-cstq"],
+      "blocking_gaps": []
+    },
+    {
+      "claim_id": "claim_fp_missing_evidence",
+      "source": "feature_parity",
+      "source_line": 42,
+      "claim_text": "Legacy fixture capture: in_progress",
+      "status": "yellow",
+      "status_reason": "Claimed green but no machine-verifiable evidence paths found",
+      "evidence": [],
+      "linked_beads": [],
+      "blocking_gaps": ["No replay command available"]
+    }
+  ],
+  "summary": {
+    "total_claims": 2,
+    "red_count": 0,
+    "yellow_count": 1,
+    "green_count": 1,
+    "coverage_pct": 50.0,
+    "missing_replay_count": 1,
+    "stale_artifact_count": 0
+  }
+}
