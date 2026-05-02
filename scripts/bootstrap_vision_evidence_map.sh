@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 JSON="$ROOT/artifacts/conformance/vision_evidence_map.v1.json"
 PREVIEW=""
-BEAD_ID="frankenjax-cstq.15"
+BEAD_ID="frankenjax-cstq.14"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.vision-evidence-map.v1",
-  "bead_id": "frankenjax-cstq.15",
+  "bead_id": "frankenjax-cstq.14",
   "generated_at_unix_ms": 1777727138000,
   "source_docs": [
   {"path": "FEATURE_PARITY.md", "sha256": "53a024f06a59c39d2e5c0c093c9869f5e8c4ce286dbd4b799064083f8f69c7c3", "scanned_at_unix_ms": 1777727138000},

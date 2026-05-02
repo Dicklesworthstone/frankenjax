@@ -18,8 +18,7 @@
       "const": "frankenjax.vision-evidence-map.v1"
     },
     "bead_id": {
-      "type": "string",
-      "pattern": "^frankenjax-[a-z0-9.]+$"
+      "const": "frankenjax-cstq.14"
     },
     "generated_at_unix_ms": {
       "type": "integer",

@@ -15,10 +15,8 @@ fn repo_root() -> PathBuf {
 }
 
 fn read_json(path: &Path) -> Value {
-    let raw = fs::read_to_string(path)
-        .unwrap_or_else(|err| panic!("failed to read {}: {err}", path.display()));
-    serde_json::from_str(&raw)
-        .unwrap_or_else(|err| panic!("failed to parse {}: {err}", path.display()))
+    let raw = fs::read_to_string(path).expect("failed to read JSON artifact");
+    serde_json::from_str(&raw).expect("failed to parse JSON artifact")
 }
 
 fn validate_schema_examples(name: &str) {
@@ -30,8 +28,7 @@ fn validate_schema_examples(name: &str) {
     ));
 
     let schema = read_json(&schema_path);
-    let validator = jsonschema::validator_for(&schema)
-        .unwrap_or_else(|err| panic!("schema {} failed to compile: {err}", schema_path.display()));
+    let validator = jsonschema::validator_for(&schema).expect("schema failed to compile");
 
     let valid_instance = read_json(&valid_path);
     let valid_errors = validator
@@ -63,8 +60,7 @@ fn validate_schema_instance(schema_name: &str, instance_rel_path: &str) {
     let instance_path = root.join(instance_rel_path);
     let schema = read_json(&schema_path);
     let instance = read_json(&instance_path);
-    let validator = jsonschema::validator_for(&schema)
-        .unwrap_or_else(|err| panic!("schema {} failed to compile: {err}", schema_path.display()));
+    let validator = jsonschema::validator_for(&schema).expect("schema failed to compile");
     let errors = validator
         .iter_errors(&instance)
         .map(|err| err.to_string())
@@ -185,7 +181,7 @@ fn all_phase2c_packets_have_normative_artifact_topology() {
         );
 
         let gate = fs::read_to_string(packet_dir.join("parity_gate.yaml"))
-            .unwrap_or_else(|err| panic!("failed to read parity gate for {packet_id}: {err}"));
+            .expect("failed to read parity gate");
         assert!(
             gate.contains("overall_status: pass"),
             "parity gate must record pass status for {packet_id}"
@@ -195,8 +191,8 @@ fn all_phase2c_packets_have_normative_artifact_topology() {
             "parity gate must include durability gate for {packet_id}"
         );
 
-        let risk_note = fs::read_to_string(packet_dir.join("risk_note.md"))
-            .unwrap_or_else(|err| panic!("failed to read risk note for {packet_id}: {err}"));
+        let risk_note =
+            fs::read_to_string(packet_dir.join("risk_note.md")).expect("failed to read risk note");
         assert!(
             risk_note.contains("Tracking bead:"),
             "risk note must link residual risk to a bead for {packet_id}"
@@ -305,52 +301,54 @@ fn global_performance_gate_covers_required_phases() {
             .as_array()
             .expect("benchmarks must be an array");
 
-        match status {
-            "measured" => {
+        assert_ne!(
+            status, "not_measured",
+            "performance phase {phase_id} is still unmeasured; memory must be covered by the RSS gate"
+        );
+        assert_eq!(
+            status, "measured",
+            "unexpected performance phase status {status:?} for {phase_id}"
+        );
+        if status == "measured" {
+            assert!(
+                !benchmarks.is_empty(),
+                "measured phase {phase_id} must reference at least one benchmark"
+            );
+            for benchmark in benchmarks {
                 assert!(
-                    !benchmarks.is_empty(),
-                    "measured phase {phase_id} must reference at least one benchmark"
+                    benchmark["suite"]
+                        .as_str()
+                        .is_some_and(|suite| !suite.is_empty()),
+                    "benchmark suite must be non-empty for phase {phase_id}"
                 );
-                for benchmark in benchmarks {
+                assert!(
+                    benchmark["bench_id"]
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty()),
+                    "benchmark id must be non-empty for phase {phase_id}"
+                );
+                if phase_id == "memory" {
                     assert!(
-                        benchmark["suite"]
-                            .as_str()
-                            .is_some_and(|suite| !suite.is_empty()),
-                        "benchmark suite must be non-empty for phase {phase_id}"
+                        benchmark["peak_rss_bytes"]
+                            .as_u64()
+                            .is_some_and(|value| value > 0),
+                        "memory benchmark must record non-zero peak RSS"
+                    );
+                } else {
+                    assert!(
+                        benchmark["p50_ns"]
+                            .as_f64()
+                            .is_some_and(|value| value > 0.0),
+                        "benchmark p50_ns must be positive for phase {phase_id}"
                     );
                     assert!(
-                        benchmark["bench_id"]
-                            .as_str()
-                            .is_some_and(|id| !id.is_empty()),
-                        "benchmark id must be non-empty for phase {phase_id}"
+                        benchmark["p95_ns"]
+                            .as_f64()
+                            .is_some_and(|value| value > 0.0),
+                        "benchmark p95_ns must be positive for phase {phase_id}"
                     );
-                    if phase_id == "memory" {
-                        assert!(
-                            benchmark["peak_rss_bytes"]
-                                .as_u64()
-                                .is_some_and(|value| value > 0),
-                            "memory benchmark must record non-zero peak RSS"
-                        );
-                    } else {
-                        assert!(
-                            benchmark["p50_ns"]
-                                .as_f64()
-                                .is_some_and(|value| value > 0.0),
-                            "benchmark p50_ns must be positive for phase {phase_id}"
-                        );
-                        assert!(
-                            benchmark["p95_ns"]
-                                .as_f64()
-                                .is_some_and(|value| value > 0.0),
-                            "benchmark p95_ns must be positive for phase {phase_id}"
-                        );
-                    }
                 }
             }
-            "not_measured" => panic!(
-                "performance phase {phase_id} is still unmeasured; memory must be covered by the RSS gate"
-            ),
-            other => panic!("unexpected performance phase status {other:?} for {phase_id}"),
         }
 
         if phase_id == "memory" {
@@ -609,7 +607,7 @@ fn vision_evidence_map_artifact_validates_against_schema() {
         "vision evidence map schema marker changed"
     );
     assert_eq!(
-        map["bead_id"], "frankenjax-cstq.15",
+        map["bead_id"], "frankenjax-cstq.14",
         "map must stay bound to the vision-evidence bootstrap bead"
     );
     let claims = map["claims"].as_array().expect("claims must be an array");
@@ -623,12 +621,11 @@ fn vision_evidence_map_artifact_validates_against_schema() {
         let evidence = claim["evidence"]
             .as_array()
             .expect("evidence must be array");
-        if status == "green" && evidence.is_empty() {
-            panic!(
-                "green claim {} must have at least one evidence reference",
-                claim["claim_id"]
-            );
-        }
+        assert!(
+            !(status == "green" && evidence.is_empty()),
+            "green claim {} must have at least one evidence reference",
+            claim["claim_id"]
+        );
     }
     let summary = &map["summary"];
     let total = summary["total_claims"].as_i64().unwrap();
@@ -678,12 +675,11 @@ fn security_threat_model_artifact_validates_against_schema() {
         let evidence_refs = category["evidence_refs"]
             .as_array()
             .expect("evidence_refs must be array");
-        if evidence_status == "green" && evidence_refs.is_empty() {
-            panic!(
-                "green category {} must have at least one evidence ref",
-                category["category_id"]
-            );
-        }
+        assert!(
+            !(evidence_status == "green" && evidence_refs.is_empty()),
+            "green category {} must have at least one evidence ref",
+            category["category_id"]
+        );
     }
     let summary = &model["summary"];
     let total = summary["total_categories"].as_i64().unwrap();
