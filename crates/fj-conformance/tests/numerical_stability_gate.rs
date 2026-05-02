@@ -80,6 +80,53 @@ fn numerical_stability_validation_rejects_bad_rows() {
 }
 
 #[test]
+fn numerical_stability_validation_rejects_report_contract_and_family_drift() {
+    let root = repo_root();
+    let mut report = build_numerical_stability_report(&root);
+    report.status = "green".to_owned();
+    report.policy.clear();
+    report.required_stability_families[0] = "untracked_stability_family".to_owned();
+    report
+        .required_stability_families
+        .push("untracked_stability_family".to_owned());
+    report.rows[0].family = "untracked_stability_family".to_owned();
+
+    let issue_codes = validate_numerical_stability_report(&root, &report)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("bad_report_status"));
+    assert!(issue_codes.contains("empty_policy"));
+    assert!(issue_codes.contains("unknown_required_stability_family"));
+    assert!(issue_codes.contains("duplicate_required_stability_family"));
+    assert!(issue_codes.contains("missing_required_stability_family"));
+    assert!(issue_codes.contains("unknown_stability_family"));
+    assert!(issue_codes.contains("missing_stability_family"));
+}
+
+#[test]
+fn numerical_stability_validation_rejects_policy_platform_and_exact_drift() {
+    let root = repo_root();
+    let mut report = build_numerical_stability_report(&root);
+    report.platform_fingerprints[0].endian = "middle".to_owned();
+    report.platform_fingerprints[0].rust_version = "<unavailable>".to_owned();
+    report.tolerance_policies[1].comparator = "relative-ish".to_owned();
+    report.tolerance_policies[2].comparator = "finite_difference_atol_rtol".to_owned();
+    report.tolerance_policies[2].finite_difference_step = None;
+    report.rows[4].max_ulp_error = None;
+
+    let issue_codes = validate_numerical_stability_report(&root, &report)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("bad_platform_endian"));
+    assert!(issue_codes.contains("unavailable_platform_tool_version"));
+    assert!(issue_codes.contains("unknown_tolerance_comparator"));
+    assert!(issue_codes.contains("missing_finite_difference_step"));
+    assert!(issue_codes.contains("exact_row_missing_ulp_evidence"));
+}
+
+#[test]
 fn numerical_stability_validation_rejects_threshold_and_redaction_drift() {
     let root = repo_root();
     let mut report = build_numerical_stability_report(&root);

@@ -27,6 +27,13 @@ const REQUIRED_STABILITY_FAMILIES: &[&str] = &[
     "platform_metadata",
 ];
 
+const ALLOWED_TOLERANCE_COMPARATORS: &[&str] = &[
+    "approx_atol_rtol",
+    "componentwise_atol_rtol",
+    "exact_bitwise",
+    "finite_difference_atol_rtol",
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NumericalStabilityReport {
     pub schema_version: String,
@@ -304,21 +311,52 @@ pub fn validate_numerical_stability_report(
             "report needs a stable replay command",
         ));
     }
+    if !matches!(report.status.as_str(), "pass" | "fail") {
+        issues.push(NumericalStabilityIssue::new(
+            "bad_report_status",
+            "$.status",
+            format!(
+                "numerical stability status `{}` must be pass or fail",
+                report.status
+            ),
+        ));
+    }
+    if report.policy.trim().is_empty() {
+        issues.push(NumericalStabilityIssue::new(
+            "empty_policy",
+            "$.policy",
+            "numerical stability report needs a user-facing policy",
+        ));
+    }
 
     validate_platforms(report, &mut issues);
     validate_tolerance_policies(report, &mut issues);
+    validate_declared_stability_families(report, &mut issues);
 
+    let required = REQUIRED_STABILITY_FAMILIES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     let observed = report
         .rows
         .iter()
         .map(|row| row.family.as_str())
         .collect::<BTreeSet<_>>();
-    for required in REQUIRED_STABILITY_FAMILIES {
-        if !observed.contains(required) {
+    for row in &report.rows {
+        if !required.contains(row.family.as_str()) {
+            issues.push(NumericalStabilityIssue::new(
+                "unknown_stability_family",
+                "$.rows",
+                format!("unknown stability family `{}`", row.family),
+            ));
+        }
+    }
+    for required_family in &required {
+        if !observed.contains(required_family) {
             issues.push(NumericalStabilityIssue::new(
                 "missing_stability_family",
                 "$.rows",
-                format!("required stability family `{required}` is not covered"),
+                format!("required stability family `{required_family}` is not covered"),
             ));
         }
     }
@@ -374,6 +412,40 @@ pub fn validate_numerical_stability_report(
     }
 
     issues
+}
+
+fn validate_declared_stability_families(
+    report: &NumericalStabilityReport,
+    issues: &mut Vec<NumericalStabilityIssue>,
+) {
+    let required = REQUIRED_STABILITY_FAMILIES
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut declared = BTreeSet::new();
+    for family in &report.required_stability_families {
+        if !declared.insert(family.as_str()) {
+            issues.push(NumericalStabilityIssue::new(
+                "duplicate_required_stability_family",
+                "$.required_stability_families",
+                format!("duplicate required stability family `{family}`"),
+            ));
+        }
+        if !required.contains(family.as_str()) {
+            issues.push(NumericalStabilityIssue::new(
+                "unknown_required_stability_family",
+                "$.required_stability_families",
+                format!("unknown required stability family `{family}`"),
+            ));
+        }
+    }
+    for required_family in required.difference(&declared) {
+        issues.push(NumericalStabilityIssue::new(
+            "missing_required_stability_family",
+            "$.required_stability_families",
+            format!("required stability family `{required_family}` is not declared"),
+        ));
+    }
 }
 
 #[must_use]
@@ -446,6 +518,23 @@ fn validate_platforms(
                 ));
             }
         }
+        if !matches!(platform.endian.as_str(), "little" | "big") {
+            issues.push(NumericalStabilityIssue::new(
+                "bad_platform_endian",
+                format!("{path}.endian"),
+                format!(
+                    "platform endian `{}` must be little or big",
+                    platform.endian
+                ),
+            ));
+        }
+        if platform.rust_version == "<unavailable>" || platform.cargo_version == "<unavailable>" {
+            issues.push(NumericalStabilityIssue::new(
+                "unavailable_platform_tool_version",
+                path.clone(),
+                "platform fingerprint must include concrete rustc and cargo versions",
+            ));
+        }
         if !platform.deterministic_serialization {
             issues.push(NumericalStabilityIssue::new(
                 "platform_serialization_not_deterministic",
@@ -481,6 +570,16 @@ fn validate_tolerance_policies(
                 "tolerance policy fields must be explicit",
             ));
         }
+        if !ALLOWED_TOLERANCE_COMPARATORS.contains(&policy.comparator.as_str()) {
+            issues.push(NumericalStabilityIssue::new(
+                "unknown_tolerance_comparator",
+                path.clone(),
+                format!(
+                    "{} uses unsupported comparator `{}`",
+                    policy.policy_id, policy.comparator
+                ),
+            ));
+        }
         if !policy.atol.is_finite()
             || !policy.rtol.is_finite()
             || policy.atol < 0.0
@@ -502,6 +601,15 @@ fn validate_tolerance_policies(
                     "{} exact policy must be zero tolerance and zero ulp",
                     policy.policy_id
                 ),
+            ));
+        }
+        if policy.comparator == "finite_difference_atol_rtol"
+            && policy.finite_difference_step.is_none()
+        {
+            issues.push(NumericalStabilityIssue::new(
+                "missing_finite_difference_step",
+                path.clone(),
+                format!("{} must declare a finite-difference step", policy.policy_id),
             ));
         }
         if let Some(step) = policy.finite_difference_step
@@ -621,6 +729,13 @@ fn validate_row(
                 "exact_row_not_exact",
                 path.clone(),
                 format!("{} exact row has non-zero numeric error", row.case_id),
+            ));
+        }
+        if policy.comparator == "exact_bitwise" && row.max_ulp_error != Some(0) {
+            issues.push(NumericalStabilityIssue::new(
+                "exact_row_missing_ulp_evidence",
+                path.clone(),
+                format!("{} exact row must record zero ULP error", row.case_id),
             ));
         }
         if let (Some(max_allowed), Some(observed)) = (policy.ulp, row.max_ulp_error)
