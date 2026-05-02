@@ -13,7 +13,7 @@
       "evidence_kind": "source_line",
       "lines": { "start": 30, "end": 80 },
       "confidence": "high",
-      "notes": "FrankenJAX equivalent: build_cache_key_ref() in fj-cache. Uses SHA-256 of canonical_payload (mode|backend|transforms|compile_options|hook|unknown|jaxpr_fingerprint). Hashes directly into Sha256 without intermediate allocation."
+      "notes": "FrankenJAX equivalent: build_cache_key_ref() in fj-cache. Uses SHA-256 over typed, length-framed key material (payload_version, mode, backend, transforms, compile_options, hook option, unknown feature list, jaxpr fingerprint). Hashes directly into Sha256 without intermediate allocation."
     },
     {
       "anchor_id": "P2C005-A02",
@@ -29,11 +29,11 @@
       "anchor_id": "P2C005-A03",
       "legacy_path": "jax/_src/cache_key.py",
       "legacy_symbol": "CacheKey",
-      "behavior_summary": "Dataclass holding the hex digest string. Used as the lookup key for file cache and GCS cache backends. Key is the SHA-256 hex of the concatenated hash inputs. No namespace prefix in JAX (raw hex); FrankenJAX uses 'fjx-' prefix.",
+      "behavior_summary": "Dataclass holding the hex digest string. Used as the lookup key for file cache and GCS cache backends. Key is the SHA-256 hex of the concatenated hash inputs. No namespace prefix in JAX (raw hex); FrankenJAX uses 'fjx-v2-' prefix.",
       "evidence_kind": "source_line",
       "lines": { "start": 15, "end": 30 },
       "confidence": "high",
-      "notes": "FrankenJAX CacheKey struct has namespace ('fjx') and digest_hex fields. as_string() returns 'fjx-{digest_hex}'."
+      "notes": "FrankenJAX CacheKey struct has namespace ('fjx-v2') and digest_hex fields. as_string() returns 'fjx-v2-{digest_hex}'."
     },
     {
       "anchor_id": "P2C005-A04",
@@ -183,7 +183,7 @@
       "evidence_kind": "source_line",
       "lines": { "start": 210, "end": 230 },
       "confidence": "high",
-      "notes": "FrankenJAX does not include version in cache key. The 'fjx-' namespace prefix provides coarse version separation."
+      "notes": "FrankenJAX includes payload_version key material and the 'fjx-v2-' namespace prefix for coarse version separation."
     }
   ],
   "extraction_invariants": [
@@ -195,7 +195,7 @@
     "Cache key includes all inputs that affect compiled output: jaxpr fingerprint, transform stack, backend, mode, compile options",
     "Cache backends implement get/put with hex-string keys; no eviction policy in JAX",
     "Compilation cache is optional and fail-safe: cache miss falls back to fresh compilation",
-    "Cache key format uses namespace prefix ('fjx-') for versioning and collision avoidance",
+    "Cache key format uses namespace prefix ('fjx-v2-') plus payload-version key material for versioning and collision avoidance",
     "Streaming SHA-256 hasher avoids intermediate String allocation in build_cache_key_ref",
     "The owned and reference cache key builders produce identical hashes for identical inputs",
     "All FrankenJAX crates use #![forbid(unsafe_code)] — memory safety is enforced by the type system"

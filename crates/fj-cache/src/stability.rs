@@ -32,7 +32,7 @@ pub fn golden_key_refs() -> Vec<GoldenKeyRef> {
     vec![
         GoldenKeyRef {
             description: "empty program, strict mode, no transforms",
-            expected_digest_hex: "b46e4618da22175a5f6b387b7a466be89c100263173cb4203e43b31756066cf9",
+            expected_digest_hex: "e26dbe3826d170f0c5b279392919ebb7fc28d2f6165a836f59c827a65ff8540d",
             input: CacheKeyInput {
                 mode: CompatibilityMode::Strict,
                 backend: "cpu".to_owned(),
@@ -45,7 +45,7 @@ pub fn golden_key_refs() -> Vec<GoldenKeyRef> {
         },
         GoldenKeyRef {
             description: "empty program, hardened mode, jit transform",
-            expected_digest_hex: "2631f1bb02ed6a0e66969d3826d43fbe4fd1a80e67fbc2f64a8873dba118c3e9",
+            expected_digest_hex: "5be109dd4dbf409f4bdf42d75bb797de2e474a2388610c0d591c45fa6d37fc4e",
             input: CacheKeyInput {
                 mode: CompatibilityMode::Hardened,
                 backend: "cpu".to_owned(),
@@ -58,7 +58,7 @@ pub fn golden_key_refs() -> Vec<GoldenKeyRef> {
         },
         GoldenKeyRef {
             description: "empty program, strict mode, custom hook",
-            expected_digest_hex: "5a5f9f3067b01c0cc4b4adc12c891db9d3e647c7ce7f03618c303b8241ade71c",
+            expected_digest_hex: "bcf7cdbaac5a737150e3955476f3531acc94ea92c6c547f90df580610b291ca6",
             input: CacheKeyInput {
                 mode: CompatibilityMode::Strict,
                 backend: "cpu".to_owned(),

@@ -1,7 +1,7 @@
 # Cache Legacy Parity Ledger
 
 - schema: `frankenjax.cache-legacy-parity-ledger.v1`
-- key namespace: `fjx`
+- key namespace: `fjx-v2`
 
 | Row | Surface | Status | Legacy Anchor | Rust Behavior |
 |-----|---------|--------|---------------|---------------|
@@ -15,5 +15,5 @@
 | `compilation-cache-metadata` | `CompilationCacheMetadata` | `ModeledWithScopeDifference` | `P2C005-A04,P2C005-A06,P2C005-A13` | Rust V1 has cache-manager primitives and deterministic keys, but dispatch still interprets directly instead of compiling XLA executables. |
 | `corrupt-read-bypass` | `CorruptReads` | `Modeled` | `P2C005-A05,P2C005-A07` | Rust file cache embeds payload digests and surfaces corrupt reads as CacheLookup::Corrupted. |
 | `stale-write-blocking` | `StaleWrites` | `Modeled` | `P2C005-A04,P2C005-A07` | Rust file cache writes serialized artifacts through a temporary file and rename; failed writes do not create readable hits. |
-| `hostile-key-material` | `HostileKeyMaterial` | `Modeled` | `P2C005-A02` | Rust hashes delimiter-bearing strings as bytes in their field positions; lifecycle tests prove hostile material does not alias clean keys. |
+| `hostile-key-material` | `HostileKeyMaterial` | `Modeled` | `P2C005-A02` | Rust hashes typed length-framed fields; lifecycle tests prove hostile material does not alias clean keys. |
 | `gcs-cache-exclusion` | `CompilationCacheMetadata` | `ExplicitExclusion` | `P2C005-A08` | FrankenJAX V1 intentionally excludes cloud cache backends; local file and in-memory cache primitives cover current scope. |

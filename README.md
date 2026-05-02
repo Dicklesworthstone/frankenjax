@@ -459,12 +459,13 @@ The algorithm:
 Every compilation/execution configuration gets a deterministic SHA-256 cache key:
 
 ```
-fjx-<sha256hex> = SHA-256(
-    mode | backend | transforms | compile_options | custom_hook | jaxpr_fingerprint
+fjx-v2-<sha256hex> = SHA-256(
+    length-framed(mode, backend, transforms, compile_options, custom_hook,
+                  unknown_features, jaxpr_fingerprint)
 )
 ```
 
-The Jaxpr fingerprint recursively hashes the equation structure (primitives, arities, parameters, sub-Jaxprs). Transform ordering matters: `grad,vmap` and `vmap,grad` produce different keys. Compile options are sorted (BTreeMap) for deterministic ordering.
+The Jaxpr fingerprint recursively hashes the equation structure (primitives, arities, parameters, sub-Jaxprs). Transform ordering matters: `grad,vmap` and `vmap,grad` produce different keys. Compile options are sorted (BTreeMap) for deterministic ordering, and every user-controlled string is length-framed so delimiter-like material cannot alias another configuration.
 
 **Strict mode** rejects cache entries with unknown incompatible features. **Hardened mode** allows bounded recovery from unexpected cache states.
 

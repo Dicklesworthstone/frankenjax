@@ -9,8 +9,8 @@
       "mode": "strict",
       "expected": "same key for equivalent sorted compile options",
       "actual": "compile option insertion order ignored",
-      "key_a": "fjx-df00df4adc6150e5431c5c4e229ff1b63ecb6f3237b7b7aff36bb920cd8de973",
-      "key_b": "fjx-df00df4adc6150e5431c5c4e229ff1b63ecb6f3237b7b7aff36bb920cd8de973",
+      "key_a": "fjx-v2-9ef1af308711fb3d8f0f9d2e0d4974b7786c511c3552652fc2c9e4b9e6f50548",
+      "key_b": "fjx-v2-9ef1af308711fb3d8f0f9d2e0d4974b7786c511c3552652fc2c9e4b9e6f50548",
       "ledger_rows": [
         "compile-options-sorted"
       ],
@@ -22,8 +22,8 @@
       "mode": "strict",
       "expected": "different keys for grad,vmap and vmap,grad",
       "actual": "transform order separated",
-      "key_a": "fjx-deefdc6661bb5bf05f7653531f9785d25e1b730832920f66de022dc10574db2b",
-      "key_b": "fjx-f646b1a1eab92d3ebc157d2c9ad5dd566e6e4beb0d6016798bff4050d887832d",
+      "key_a": "fjx-v2-2523582879dce7dd8691a21fcfd759ec0e606c8412b9cc08056262892f4412d5",
+      "key_b": "fjx-v2-37c128f6a1a18cf778f7b34c704591e5b0aee937342cd7f1a7935e97c99e036b",
       "ledger_rows": [
         "transform-stack-order"
       ],
@@ -48,8 +48,8 @@
       "mode": "hardened",
       "expected": "unknown metadata is hash-bound and separated from clean key",
       "actual": "unknown metadata changed key",
-      "key_a": "fjx-585552e777f2e42d6386fbee14ee158f9d36e3359db5d0350c99fea2fba5d0a9",
-      "key_b": "fjx-0bede20f9426d6a618c516bac57ca31692de61fc3db441e36b984bc344562c49",
+      "key_a": "fjx-v2-d2c4937eaf6e2056be3e24953a25a5b490e910fbe2231daa8802ccb23ebca740",
+      "key_b": "fjx-v2-6bb5806e28ba0e3e5e5998f706127a6ddcefc95febddb0114c628462b7421915",
       "ledger_rows": [
         "unknown-metadata-policy"
       ],
@@ -61,8 +61,8 @@
       "mode": "strict",
       "expected": "custom hook state changes cache key",
       "actual": "custom hook separated",
-      "key_a": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
-      "key_b": "fjx-03be9276c4c2b76eca96a4f451577a69a7e9d9d49f453613c48d4f905eb64820",
+      "key_a": "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
+      "key_b": "fjx-v2-b23a0b5f2b577532013ef4a84cb2dadc70450206f0c0df683d09b66c2db67de1",
       "ledger_rows": [
         "custom-cache-hook-material"
       ],
@@ -74,8 +74,8 @@
       "mode": "strict",
       "expected": "namespace changes alter the public cache key string",
       "actual": "namespace version separated",
-      "key_a": "fjx-0000000000000000000000000000000000000000000000000000000000000000",
-      "key_b": "fjx-v2-0000000000000000000000000000000000000000000000000000000000000000",
+      "key_a": "fjx-v2-0000000000000000000000000000000000000000000000000000000000000000",
+      "key_b": "fjx-v3-0000000000000000000000000000000000000000000000000000000000000000",
       "ledger_rows": [
         "namespace-version-material"
       ],
@@ -87,8 +87,8 @@
       "mode": "hardened",
       "expected": "delimiter-like key material cannot alias clean material",
       "actual": "hostile material separated",
-      "key_a": "fjx-7dd914a25267d1572043e72defc2410fa0ee329cb7587efddc23691fd5a04d92",
-      "key_b": "fjx-cb172f30e958c7b9698c0a8a468cdffc654520debe19f20e456d373d4fb08150",
+      "key_a": "fjx-v2-34bdeb5fc130b5678f60e89180b034afc75b9e799698b2367a18195bfd83c0cd",
+      "key_b": "fjx-v2-b9a0851c98ab0fab444e205f6c1cc66909fc22822d3c644596750abac038fa04",
       "ledger_rows": [
         "hostile-key-material"
       ],
@@ -99,8 +99,8 @@
       "status": "pass",
       "mode": "strict",
       "expected": "corrupt file-backed cache artifact is never returned as a hit",
-      "actual": "Corrupted { key: \"fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8\" }",
-      "key_a": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "actual": "Corrupted { key: \"fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944\" }",
+      "key_a": "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
       "key_b": null,
       "ledger_rows": [
         "corrupt-read-bypass"
@@ -113,7 +113,7 @@
       "mode": "strict",
       "expected": "failed file-cache write is not visible as a stale hit",
       "actual": "Miss",
-      "key_a": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "key_a": "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
       "key_b": null,
       "ledger_rows": [
         "stale-write-blocking"

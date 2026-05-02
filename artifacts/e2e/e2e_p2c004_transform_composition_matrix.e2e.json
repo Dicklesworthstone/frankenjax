@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-transform_composition_matrix",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777690991138,
+  "ts_utc_unix_ms": 1777692584170,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -21,37 +21,37 @@
   },
   "intermediate_states": [
     {
-      "cache_key": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "cache_key": "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
       "composition": "jit_only",
       "status": "OK"
     },
     {
-      "cache_key": "fjx-956d8b29b9d0c2c8abe91a3da10ea3360c36f9029e3efc72f072143c2ce7a162",
+      "cache_key": "fjx-v2-6d7dce148ec28b9d0cf6c203be82ce7259924933ce1c0125dc9b0e71b93f2b88",
       "composition": "grad_only",
       "status": "OK"
     },
     {
-      "cache_key": "fjx-feea388aecff1e279a996f7a66338e88af40a3bcfc5b073d796fdca090f13c29",
+      "cache_key": "fjx-v2-564073ae55b51446cb893d77a51f6c4ddd6b3fa7928af81e3d6d6d823ea6041a",
       "composition": "vmap_only",
       "status": "OK"
     },
     {
-      "cache_key": "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159",
+      "cache_key": "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
       "composition": "jit_grad",
       "status": "OK"
     },
     {
-      "cache_key": "fjx-19d96db774902eaf9a179ed49dda2a7a2a1084c69e7aba1ef5b57296a759cab5",
+      "cache_key": "fjx-v2-149b83db45cc5c43ee311bbbb5f1371241bb27f39ac468467af53f6a5c5ed88f",
       "composition": "jit_vmap",
       "status": "OK"
     },
     {
-      "cache_key": "fjx-1c7921c787f9b87a30ef1e47958f29e1328b8bc2e9d92e78643a2a913d6933d1",
+      "cache_key": "fjx-v2-55b5d4a479c848c58be2d053f979064949fe6bc502bfc509db7f607dfc170c78",
       "composition": "vmap_grad",
       "status": "OK"
     },
     {
-      "cache_key": "fjx-698e39bb9aa112ec01e46238da4ea3b2a603bccd2ca0e03011aeeab77301cbf9",
+      "cache_key": "fjx-v2-94bc7dda4aa55b9b410f8cf72ae2c43381283698c294c3255e5a9155b215829d",
       "composition": "jit_vmap_grad",
       "status": "OK"
     }
@@ -60,6 +60,6 @@
     "distinct_keys": 7
   },
   "result": "PASS",
-  "duration_ms": 7,
+  "duration_ms": 6,
   "details": null
 }

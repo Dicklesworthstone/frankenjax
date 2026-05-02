@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-strict_hardened_divergence",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777690991137,
+  "ts_utc_unix_ms": 1777692584170,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -27,7 +27,7 @@
       "result": "REJECTED"
     },
     {
-      "cache_key": "fjx-93282411796aa4d863269ec87b65977a7ba8e8f646dbd26851d608a84fe79be7",
+      "cache_key": "fjx-v2-616c6e06705cf9d67e1a4dfe1d2c912b2db055fbf0ba90452f7d5011f2901ddc",
       "mode": "hardened",
       "output": "[Scalar(I64(30))]",
       "result": "ACCEPTED"

@@ -323,12 +323,15 @@ pub fn cache_legacy_parity_rows() -> Vec<CacheLegacyParityRow> {
             "_hash_computation",
             "Legacy JAX hashes raw serialized fields so delimiter-like bytes are part of the digest input.",
             &["backend", "compile_options", "custom_hook", "unknown_incompatible_features"],
-            "Rust hashes delimiter-bearing strings as bytes in their field positions; lifecycle tests prove hostile material does not alias clean keys.",
+            "Rust hashes typed length-framed fields; lifecycle tests prove hostile material does not alias clean keys.",
             "Hostile unknown material is rejected when classified incompatible.",
             "Hostile unknown material is hashed and separated from clean key material.",
             CacheParityStatus::Modeled,
             None,
-            &["crates/fj-conformance/tests/cache_keying_oracle.rs::adversarial_delimiter_in_backend_name"],
+            &[
+                "crates/fj-cache/src/lib.rs::hash_canonical_payload_ref",
+                "crates/fj-conformance/tests/cache_keying_oracle.rs::adversarial_compile_options_are_length_framed",
+            ],
         ),
         row!(
             "gcs-cache-exclusion",
@@ -526,7 +529,7 @@ mod tests {
             digest_hex: digest_hex.clone(),
         };
         let next = CacheKey {
-            namespace: "fjx-v2",
+            namespace: "fjx-v3",
             digest_hex,
         };
         assert_ne!(current.as_string(), next.as_string());

@@ -6,7 +6,7 @@
   "fixture_id": "5adfb68d2fded890604faf8caf6f09db8bccb0553dddae10923d4c24f889f6e0",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1777690990986,
+  "ts_utc_unix_ms": 1777692584021,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -38,14 +38,14 @@
       "step": "composition_proof_passed"
     },
     {
-      "cache_key": "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159",
+      "cache_key": "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
       "ledger_entries": 1,
       "output": 6.0,
       "step": "dispatch_complete"
     }
   ],
   "output_capture": {
-    "cache_key": "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159",
+    "cache_key": "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
     "delta": 0.0,
     "expected": 6.0,
     "output": 6.0

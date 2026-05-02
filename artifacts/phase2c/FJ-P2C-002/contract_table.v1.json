@@ -168,7 +168,7 @@
           ],
           "guarantees": [
             "Identical inputs produce identical cache keys across invocations",
-            "Cache key format is 'fjx-<sha256-hex>'",
+            "Cache key format is 'fjx-v2-<sha256-hex>'",
             "BTreeMap iteration order for compile_options is deterministic (lexicographic)",
             "Jaxpr canonical fingerprint is stable across program restarts",
             "Unknown incompatible features in strict mode cause fail-closed CacheKeyError before execution",
@@ -556,7 +556,7 @@
     },
     {
       "invariant_id": "p2c002.strict.inv006",
-      "statement": "Cache key generation is deterministic: identical (mode, backend, jaxpr, transforms, options) always produces the same 'fjx-<sha256>' key.",
+      "statement": "Cache key generation is deterministic: identical (mode, backend, jaxpr, transforms, options) always produces the same 'fjx-v2-<sha256>' key.",
       "proof_artifact_refs": [
         "artifacts/phase2c/FJ-P2C-002/legacy_anchor_map.v1.json",
         "crates/fj-cache/src/lib.rs"

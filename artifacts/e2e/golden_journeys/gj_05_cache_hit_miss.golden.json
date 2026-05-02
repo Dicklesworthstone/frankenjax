@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_05_cache_hit_miss",
   "scenario_category": "cache_hit_miss",
-  "ts_utc_unix_ms": 1777690991946,
+  "ts_utc_unix_ms": 1777692584808,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_05 --exact --nocapture",
   "input_capture": {
     "programs": [
@@ -20,17 +20,17 @@
     {
       "name": "different_program_different_key",
       "passed": true,
-      "detail": "add2_key=fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8, square_key=fjx-70cbab602768b00872d4fe9436116d3edb02747997e3e3f6ab9cf744a45baec8"
+      "detail": "add2_key=fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944, square_key=fjx-v2-f9e6fe70a2e4f97e47a72b388db68a38f21f380b04585634cfa0cd6a095ee044"
     },
     {
       "name": "different_transform_different_key",
       "passed": true,
-      "detail": "jit_key=fjx-70cbab602768b00872d4fe9436116d3edb02747997e3e3f6ab9cf744a45baec8, grad_key=fjx-956d8b29b9d0c2c8abe91a3da10ea3360c36f9029e3efc72f072143c2ce7a162"
+      "detail": "jit_key=fjx-v2-f9e6fe70a2e4f97e47a72b388db68a38f21f380b04585634cfa0cd6a095ee044, grad_key=fjx-v2-6d7dce148ec28b9d0cf6c203be82ce7259924933ce1c0125dc9b0e71b93f2b88"
     }
   ],
   "output_capture": {
-    "cache_key_sample": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8"
+    "cache_key_sample": "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944"
   },
   "result": "pass",
-  "duration_ms": 8
+  "duration_ms": 6
 }

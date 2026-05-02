@@ -10,7 +10,8 @@ use fj_core::{CompatibilityMode, Jaxpr, Transform};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 
-pub const CACHE_KEY_NAMESPACE: &str = "fjx";
+pub const CACHE_KEY_NAMESPACE: &str = "fjx-v2";
+const CACHE_KEY_PAYLOAD_VERSION: &str = "2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheKeyInput {
@@ -64,15 +65,16 @@ pub fn build_cache_key(input: &CacheKeyInput) -> Result<CacheKey, CacheKeyError>
         });
     }
 
-    let payload = canonical_payload(input);
-    let mut hasher = Sha256::new();
-    hasher.update(payload.as_bytes());
-    let digest = hasher.finalize();
-
-    Ok(CacheKey {
-        namespace: CACHE_KEY_NAMESPACE,
-        digest_hex: bytes_to_hex(&digest),
-    })
+    let input_ref = CacheKeyInputRef {
+        mode: input.mode,
+        backend: &input.backend,
+        jaxpr: &input.jaxpr,
+        transform_stack: &input.transform_stack,
+        compile_options: &input.compile_options,
+        custom_hook: input.custom_hook.as_deref(),
+        unknown_incompatible_features: &input.unknown_incompatible_features,
+    };
+    build_cache_key_ref(&input_ref)
 }
 
 #[must_use]
@@ -102,9 +104,8 @@ pub fn build_cache_key_ref(input: &CacheKeyInputRef<'_>) -> Result<CacheKey, Cac
         });
     }
 
-    // Stream canonical payload directly into the hasher to avoid allocating
-    // an intermediate String. Each field is written with a separator prefix
-    // to match the original canonical_payload_ref layout for compatibility.
+    // Stream typed, length-framed key material directly into the hasher. User-
+    // controlled strings must never be delimiter-joined or they can alias.
     let mut hasher = Sha256::new();
     hash_canonical_payload_ref(&mut hasher, input);
     let digest = hasher.finalize();
@@ -115,7 +116,7 @@ pub fn build_cache_key_ref(input: &CacheKeyInputRef<'_>) -> Result<CacheKey, Cac
     })
 }
 
-/// Map CompatibilityMode to its Debug string representation (matching canonical_payload format).
+/// Map CompatibilityMode to its stable cache-key string representation.
 #[inline]
 fn mode_str(mode: CompatibilityMode) -> &'static str {
     match mode {
@@ -124,77 +125,131 @@ fn mode_str(mode: CompatibilityMode) -> &'static str {
     }
 }
 
-/// Write the canonical payload directly into a Digest, avoiding intermediate
-/// String allocation. Layout matches `canonical_payload_ref` exactly.
-#[inline]
-fn hash_canonical_payload_ref(hasher: &mut Sha256, input: &CacheKeyInputRef<'_>) {
-    // mode=<mode>|backend=<backend>|transforms=<t1,t2,...>|compile=<k1=v1;k2=v2>|hook=<hook>|unknown=<u1,u2>|jaxpr=<fp>
-    // Zero-allocation: hash each component directly into the SHA-256 state.
-    hasher.update(b"mode=");
-    hasher.update(mode_str(input.mode).as_bytes());
-    hasher.update(b"|backend=");
-    hasher.update(input.backend.as_bytes());
-    hasher.update(b"|transforms=");
-
-    for (i, t) in input.transform_stack.iter().enumerate() {
-        if i > 0 {
-            hasher.update(b",");
-        }
-        hasher.update(t.as_str().as_bytes());
-    }
-
-    hasher.update(b"|compile=");
-    for (i, (key, value)) in input.compile_options.iter().enumerate() {
-        if i > 0 {
-            hasher.update(b";");
-        }
-        hasher.update(key.as_bytes());
-        hasher.update(b"=");
-        hasher.update(value.as_bytes());
-    }
-
-    hasher.update(b"|hook=");
-    hasher.update(input.custom_hook.unwrap_or("none").as_bytes());
-
-    hasher.update(b"|unknown=");
-    for (i, feature) in input.unknown_incompatible_features.iter().enumerate() {
-        if i > 0 {
-            hasher.update(b",");
-        }
-        hasher.update(feature.as_bytes());
-    }
-
-    hasher.update(b"|jaxpr=");
-    hasher.update(input.jaxpr.canonical_fingerprint().as_bytes());
+trait CachePayloadSink {
+    fn write_bytes(&mut self, bytes: &[u8]);
 }
 
-fn canonical_payload(input: &CacheKeyInput) -> String {
-    let transforms = input
-        .transform_stack
-        .iter()
-        .map(|transform| transform.as_str())
-        .collect::<Vec<_>>()
-        .join(",");
+impl CachePayloadSink for Sha256 {
+    #[inline]
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        Digest::update(self, bytes);
+    }
+}
 
-    let compile_options = input
-        .compile_options
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join(";");
+#[inline]
+fn write_usize_decimal<S: CachePayloadSink>(sink: &mut S, value: usize) {
+    let mut buf = [0_u8; 20];
+    let mut cursor = buf.len();
+    let mut remaining = value;
 
-    let unknown = input.unknown_incompatible_features.join(",");
+    if remaining == 0 {
+        sink.write_bytes(b"0");
+        return;
+    }
 
-    format!(
-        "mode={:?}|backend={}|transforms={}|compile={}|hook={}|unknown={}|jaxpr={}",
-        input.mode,
-        input.backend,
-        transforms,
-        compile_options,
-        input.custom_hook.as_deref().unwrap_or("none"),
-        unknown,
-        input.jaxpr.canonical_fingerprint(),
-    )
+    while remaining > 0 {
+        cursor -= 1;
+        buf[cursor] = b'0' + (remaining % 10) as u8;
+        remaining /= 10;
+    }
+
+    sink.write_bytes(&buf[cursor..]);
+}
+
+#[inline]
+fn write_len_prefixed<S: CachePayloadSink>(sink: &mut S, value: &str) {
+    write_usize_decimal(sink, value.len());
+    sink.write_bytes(b":");
+    sink.write_bytes(value.as_bytes());
+    sink.write_bytes(b";");
+}
+
+#[inline]
+fn write_scalar_field<S: CachePayloadSink>(sink: &mut S, label: &str, value: &str) {
+    sink.write_bytes(b"S");
+    write_len_prefixed(sink, label);
+    write_len_prefixed(sink, value);
+}
+
+#[inline]
+fn write_list_start<S: CachePayloadSink>(sink: &mut S, label: &str, len: usize) {
+    sink.write_bytes(b"L");
+    write_len_prefixed(sink, label);
+    write_usize_decimal(sink, len);
+    sink.write_bytes(b";");
+}
+
+#[inline]
+fn write_list_item<S: CachePayloadSink>(sink: &mut S, value: &str) {
+    sink.write_bytes(b"I");
+    write_len_prefixed(sink, value);
+}
+
+#[inline]
+fn write_map_start<S: CachePayloadSink>(sink: &mut S, label: &str, len: usize) {
+    sink.write_bytes(b"M");
+    write_len_prefixed(sink, label);
+    write_usize_decimal(sink, len);
+    sink.write_bytes(b";");
+}
+
+#[inline]
+fn write_map_entry<S: CachePayloadSink>(sink: &mut S, key: &str, value: &str) {
+    sink.write_bytes(b"K");
+    write_len_prefixed(sink, key);
+    sink.write_bytes(b"V");
+    write_len_prefixed(sink, value);
+}
+
+#[inline]
+fn write_optional_string<S: CachePayloadSink>(sink: &mut S, label: &str, value: Option<&str>) {
+    sink.write_bytes(b"O");
+    write_len_prefixed(sink, label);
+    match value {
+        Some(value) => {
+            sink.write_bytes(b"S");
+            write_len_prefixed(sink, value);
+        }
+        None => sink.write_bytes(b"N;"),
+    }
+}
+
+fn write_canonical_payload_ref<S: CachePayloadSink>(sink: &mut S, input: &CacheKeyInputRef<'_>) {
+    write_scalar_field(sink, "payload_version", CACHE_KEY_PAYLOAD_VERSION);
+    write_scalar_field(sink, "mode", mode_str(input.mode));
+    write_scalar_field(sink, "backend", input.backend);
+
+    write_list_start(sink, "transforms", input.transform_stack.len());
+    for transform in input.transform_stack {
+        write_list_item(sink, transform.as_str());
+    }
+
+    write_map_start(sink, "compile_options", input.compile_options.len());
+    for (key, value) in input.compile_options {
+        write_map_entry(sink, key, value);
+    }
+
+    write_optional_string(sink, "custom_hook", input.custom_hook);
+
+    write_list_start(
+        sink,
+        "unknown_incompatible_features",
+        input.unknown_incompatible_features.len(),
+    );
+    for feature in input.unknown_incompatible_features {
+        write_list_item(sink, feature);
+    }
+
+    let jaxpr_fingerprint = input.jaxpr.canonical_fingerprint();
+    write_scalar_field(sink, "jaxpr", jaxpr_fingerprint);
+}
+
+/// Write the canonical payload directly into a Digest, avoiding intermediate
+/// String allocation. The layout is typed and length-framed so user strings
+/// cannot collide with structural separators.
+#[inline]
+fn hash_canonical_payload_ref(hasher: &mut Sha256, input: &CacheKeyInputRef<'_>) {
+    write_canonical_payload_ref(hasher, input);
 }
 
 // ── Cache Manager ───────────────────────────────────────────────────
@@ -523,6 +578,27 @@ mod tests {
     }
 
     #[test]
+    fn key_sensitivity_compile_option_delimiter_collision_regression() {
+        let mut embedded_pair = baseline_input();
+        embedded_pair
+            .compile_options
+            .insert("a".to_owned(), "b;c=d".to_owned());
+        let mut split_pairs = baseline_input();
+        split_pairs
+            .compile_options
+            .insert("a".to_owned(), "b".to_owned());
+        split_pairs
+            .compile_options
+            .insert("c".to_owned(), "d".to_owned());
+
+        assert_ne!(
+            key_hex(&embedded_pair),
+            key_hex(&split_pairs),
+            "compile option key/value material must be length-framed, not delimiter-joined"
+        );
+    }
+
+    #[test]
     fn key_sensitivity_custom_hook_change() {
         let mut alt = baseline_input();
         alt.custom_hook = Some("different-hook".to_owned());
@@ -534,6 +610,57 @@ mod tests {
         let mut alt = baseline_input();
         alt.custom_hook = None;
         assert_ne!(key_hex(&baseline_input()), key_hex(&alt));
+    }
+
+    #[test]
+    fn key_sensitivity_custom_hook_none_vs_literal_none() {
+        let mut absent = baseline_input();
+        absent.custom_hook = None;
+        let mut literal = baseline_input();
+        literal.custom_hook = Some("none".to_owned());
+
+        assert_ne!(
+            key_hex(&absent),
+            key_hex(&literal),
+            "custom_hook=None must not alias custom_hook=Some(\"none\")"
+        );
+    }
+
+    #[test]
+    fn key_sensitivity_unknown_features_are_length_framed() {
+        let mut no_feature = baseline_input();
+        no_feature.mode = CompatibilityMode::Hardened;
+        no_feature.unknown_incompatible_features = vec![];
+
+        let mut empty_feature = no_feature.clone();
+        empty_feature.unknown_incompatible_features = vec![String::new()];
+
+        let mut joined_feature = no_feature.clone();
+        joined_feature.unknown_incompatible_features = vec!["a,b".to_owned()];
+
+        let mut split_features = no_feature.clone();
+        split_features.unknown_incompatible_features = vec!["a".to_owned(), "b".to_owned()];
+
+        assert_ne!(
+            key_hex(&no_feature),
+            key_hex(&empty_feature),
+            "empty feature list must not alias a single empty-string feature"
+        );
+        assert_ne!(
+            key_hex(&empty_feature),
+            key_hex(&split_features),
+            "sanity check: fixture variants should differ"
+        );
+        assert_ne!(
+            key_hex(&empty_feature),
+            key_hex(&joined_feature),
+            "single empty feature must not alias other feature lists"
+        );
+        assert_ne!(
+            key_hex(&joined_feature),
+            key_hex(&split_features),
+            "unknown feature list material must be length-framed, not comma-joined"
+        );
     }
 
     #[test]
@@ -940,9 +1067,9 @@ mod tests {
     }
 
     #[test]
-    fn key_namespace_is_fjx() {
+    fn key_namespace_is_current_cache_version() {
         let key = build_cache_key(&baseline_input()).unwrap();
-        assert_eq!(key.namespace, "fjx");
+        assert_eq!(key.namespace, super::CACHE_KEY_NAMESPACE);
         assert!(
             key.as_string().starts_with("fjx-"),
             "key string should start with 'fjx-'"

@@ -5,7 +5,7 @@
   "test_id": "fj_error_taxonomy_gate",
   "packet_id": null,
   "command": [
-    "/tmp/frankenjax-codex-fresh-cstq8-local-target/debug/fj_error_taxonomy_gate",
+    "/data/tmp/cargo-target-frankenjax-codex-cachekey/debug/fj_error_taxonomy_gate",
     "--root",
     "/data/projects/frankenjax",
     "--report",
@@ -22,12 +22,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/tmp/frankenjax-codex-fresh-cstq8-local-target",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cachekey",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/tmp/frankenjax-codex-fresh-cstq8-local-target",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cachekey",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777630085839
+    "timestamp_unix_ms": 1777691740968
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -298,7 +298,7 @@
     {
       "kind": "error_taxonomy_matrix_report",
       "path": "artifacts/conformance/error_taxonomy_matrix.v1.json",
-      "sha256": "bd03ca4ce7a4b3fbb7c1ca11dfc4a13380014a54fd2bb14d9d6cac8b95b32be2",
+      "sha256": "b097b49230743b162d0abd1f91c42772e9e4cf9ec7280b3ce953cfc0c3d57ecc",
       "required": true
     },
     {

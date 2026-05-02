@@ -341,7 +341,7 @@
         "end": 149
       },
       "confidence": "high",
-      "notes": "FrankenJAX: fj-cache/src/lib.rs build_cache_key_ref() produces 'fjx-<sha256>' keys. Streaming hash avoids full string allocation. Strict mode validation at fj-dispatch/src/lib.rs:539-561 (test). Hardened mode at fj-dispatch/src/lib.rs:563-578 (test)."
+      "notes": "FrankenJAX: fj-cache/src/lib.rs build_cache_key_ref() produces 'fjx-v2-<sha256>' keys. Streaming hash avoids full string allocation. Strict mode validation at fj-dispatch/src/lib.rs:539-561 (test). Hardened mode at fj-dispatch/src/lib.rs:563-578 (test)."
     },
     {
       "anchor_id": "p2c002.composition.verify_transform_composition",

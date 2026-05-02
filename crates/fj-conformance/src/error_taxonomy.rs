@@ -799,7 +799,7 @@ fn case_specs() -> Vec<CaseSpec> {
             strict_behavior: "Strict rejects the same input.",
             hardened_behavior: "Hardened succeeds while preserving the feature in the hash payload.",
             strict_hardened_divergence: true,
-            evidence_refs: vec!["crates/fj-cache/src/lib.rs::canonical_payload"],
+            evidence_refs: vec!["crates/fj-cache/src/lib.rs::hash_canonical_payload_ref"],
             action: case_cache_hardened_unknown_feature,
         },
         CaseSpec {

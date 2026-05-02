@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-evidence_ledger_audit_trail",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777690991137,
+  "ts_utc_unix_ms": 1777692584170,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -21,31 +21,31 @@
   },
   "intermediate_states": [
     {
-      "decision_id": "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "decision_id": "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
       "dispatch": 0,
       "ledger_entries": 1,
       "signal_count": 6
     },
     {
-      "decision_id": "fjx-956d8b29b9d0c2c8abe91a3da10ea3360c36f9029e3efc72f072143c2ce7a162",
+      "decision_id": "fjx-v2-6d7dce148ec28b9d0cf6c203be82ce7259924933ce1c0125dc9b0e71b93f2b88",
       "dispatch": 1,
       "ledger_entries": 1,
       "signal_count": 6
     },
     {
-      "decision_id": "fjx-feea388aecff1e279a996f7a66338e88af40a3bcfc5b073d796fdca090f13c29",
+      "decision_id": "fjx-v2-564073ae55b51446cb893d77a51f6c4ddd6b3fa7928af81e3d6d6d823ea6041a",
       "dispatch": 2,
       "ledger_entries": 1,
       "signal_count": 6
     },
     {
-      "decision_id": "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159",
+      "decision_id": "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
       "dispatch": 3,
       "ledger_entries": 1,
       "signal_count": 6
     },
     {
-      "decision_id": "fjx-19d96db774902eaf9a179ed49dda2a7a2a1084c69e7aba1ef5b57296a759cab5",
+      "decision_id": "fjx-v2-149b83db45cc5c43ee311bbbb5f1371241bb27f39ac468467af53f6a5c5ed88f",
       "dispatch": 4,
       "ledger_entries": 1,
       "signal_count": 6

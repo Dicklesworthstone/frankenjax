@@ -476,6 +476,37 @@ fn adversarial_delimiter_in_backend_name() {
 }
 
 #[test]
+fn adversarial_compile_options_are_length_framed() {
+    let mut embedded_pair = CacheKeyInput {
+        mode: CompatibilityMode::Hardened,
+        backend: "cpu".to_owned(),
+        jaxpr: empty_jaxpr(),
+        transform_stack: vec![],
+        compile_options: BTreeMap::new(),
+        custom_hook: None,
+        unknown_incompatible_features: vec![],
+    };
+    embedded_pair
+        .compile_options
+        .insert("target".to_owned(), "x86_64;unknown=spoof".to_owned());
+
+    let mut split_pairs = embedded_pair.clone();
+    split_pairs.compile_options.clear();
+    split_pairs
+        .compile_options
+        .insert("target".to_owned(), "x86_64".to_owned());
+    split_pairs
+        .compile_options
+        .insert("unknown".to_owned(), "spoof".to_owned());
+
+    assert_ne!(
+        build_cache_key(&embedded_pair).unwrap(),
+        build_cache_key(&split_pairs).unwrap(),
+        "compile option strings must not alias the same material split across multiple options"
+    );
+}
+
+#[test]
 fn adversarial_streaming_and_owned_agree_under_stress() {
     // Verify streaming and owned builders agree for a complex input.
     let jaxpr = build_program(ProgramSpec::SquarePlusLinear);

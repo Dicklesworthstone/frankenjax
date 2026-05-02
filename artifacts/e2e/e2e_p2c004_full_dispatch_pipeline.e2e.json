@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-full_dispatch_pipeline",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777690991131,
+  "ts_utc_unix_ms": 1777692584163,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -33,14 +33,14 @@
       ]
     },
     {
-      "cache_key": "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159",
+      "cache_key": "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
       "ledger_entries": 1,
       "output_count": 1,
       "phase": "dispatch_complete"
     }
   ],
   "output_capture": {
-    "cache_key": "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159",
+    "cache_key": "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
     "derivative": 6.0
   },
   "result": "PASS",

@@ -14,8 +14,8 @@
           ],
           "guarantees": [
             "build_cache_key_ref() returns identical CacheKey for identical inputs across calls",
-            "SHA-256 hash is computed over canonical_payload layout: mode|backend|transforms|compile|hook|unknown|jaxpr",
-            "CacheKey.as_string() returns 'fjx-{hex_digest}'",
+            "SHA-256 hash is computed over typed length-framed key material: payload_version, mode, backend, transforms, compile_options, custom_hook, unknown_features, jaxpr",
+            "CacheKey.as_string() returns 'fjx-v2-{hex_digest}'",
             "legacy_anchor=P2C005-A01 (cache_key.get), P2C005-A02 (_hash_computation)"
           ],
           "failure_behavior": {
@@ -124,8 +124,8 @@
           ],
           "guarantees": [
             "build_cache_key(&owned) == build_cache_key_ref(&ref_input) for any valid input",
-            "hash_canonical_payload_ref streams same bytes as canonical_payload allocates",
-            "Field separator '|' and sub-field separators (',' ';') identical in both paths",
+            "build_cache_key delegates to build_cache_key_ref so owned and borrowed callers share one streaming encoder",
+            "Typed length framing separates field, option, list, and map boundaries",
             "legacy_anchor=P2C005-A02 (_hash_computation)"
           ],
           "failure_behavior": {
@@ -151,8 +151,8 @@
             "Cache key generated successfully"
           ],
           "guarantees": [
-            "CacheKey.namespace == 'fjx' (constant across all configurations)",
-            "as_string() returns 'fjx-{64-char-hex}' format",
+            "CacheKey.namespace == 'fjx-v2' (constant across all configurations for this payload format)",
+            "as_string() returns 'fjx-v2-{64-char-hex}' format",
             "Namespace separates FrankenJAX keys from legacy JAX keys (no namespace prefix in JAX)",
             "legacy_anchor=P2C005-A03 (CacheKey), P2C005-A18 (_version_hash)"
           ],
@@ -307,8 +307,8 @@
       "invariant_id": "p2c005.strict.inv002",
       "statement": "Distinct configurations produce distinct cache keys (SHA-256 collision resistance < 2^-128).",
       "proof_artifact_refs": [
-        "crates/fj-cache/src/lib.rs:156-183 (canonical_payload)",
-        "crates/fj-cache/src/lib.rs:112-154 (hash_canonical_payload_ref)"
+        "crates/fj-cache/src/lib.rs::hash_canonical_payload_ref",
+        "crates/fj-cache/src/lib.rs::key_sensitivity_compile_option_delimiter_collision_regression"
       ]
     },
     {
@@ -323,8 +323,8 @@
       "invariant_id": "p2c005.strict.inv004",
       "statement": "Cache key includes all semantically relevant inputs: mode, backend, transform_stack, compile_options, custom_hook, unknown_features, jaxpr_fingerprint.",
       "proof_artifact_refs": [
-        "crates/fj-cache/src/lib.rs:112-154 (hash_canonical_payload_ref)",
-        "crates/fj-cache/src/lib.rs:156-183 (canonical_payload)"
+        "crates/fj-cache/src/lib.rs::hash_canonical_payload_ref",
+        "crates/fj-cache/src/lib.rs::key_sensitivity_unknown_features_are_length_framed"
       ]
     },
     {
@@ -336,7 +336,7 @@
     },
     {
       "invariant_id": "p2c005.strict.inv006",
-      "statement": "Cache key uses 'fjx-' namespace prefix for version isolation.",
+      "statement": "Cache key uses the 'fjx-v2-' namespace prefix for version isolation.",
       "proof_artifact_refs": [
         "crates/fj-cache/src/lib.rs:64-67 (namespace constant)",
         "crates/fj-cache/src/lib.rs:26-28 (as_string format)"

@@ -6,7 +6,7 @@
   "fixture_id": "1af3c32a5568f16fd63c544a2e9840bb942ff919b20e21757aedf3ed101024b3",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1777690990986,
+  "ts_utc_unix_ms": 1777692584021,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -28,14 +28,14 @@
       "step": "strict_mode_rejected"
     },
     {
-      "cache_key": "fjx-ed4b52b8de8721b09725f11345d870e34ee5e4bd0c9dce2526528964caa366dc",
+      "cache_key": "fjx-v2-f3623b592a0599f751559249d1a0ece617af48847212d09bfeb8ae115b1315a5",
       "ledger_entries": 1,
       "output": 3,
       "step": "hardened_mode_accepted"
     },
     {
-      "clean_key": "fjx-585552e777f2e42d6386fbee14ee158f9d36e3359db5d0350c99fea2fba5d0a9",
-      "hardened_key": "fjx-ed4b52b8de8721b09725f11345d870e34ee5e4bd0c9dce2526528964caa366dc",
+      "clean_key": "fjx-v2-d2c4937eaf6e2056be3e24953a25a5b490e910fbe2231daa8802ccb23ebca740",
+      "hardened_key": "fjx-v2-f3623b592a0599f751559249d1a0ece617af48847212d09bfeb8ae115b1315a5",
       "keys_differ": true,
       "step": "cache_key_comparison"
     }
@@ -43,10 +43,10 @@
   "output_capture": {
     "cache_keys_differ_with_unknown_features": true,
     "hardened_accepted": true,
-    "hardened_cache_key": "fjx-ed4b52b8de8721b09725f11345d870e34ee5e4bd0c9dce2526528964caa366dc",
+    "hardened_cache_key": "fjx-v2-f3623b592a0599f751559249d1a0ece617af48847212d09bfeb8ae115b1315a5",
     "strict_rejected": true
   },
   "result": "pass",
-  "duration_ms": 6,
+  "duration_ms": 7,
   "details": null
 }

@@ -203,7 +203,7 @@
       "evidence_kind": "source_line",
       "lines": { "start": 510, "end": 530 },
       "confidence": "medium",
-      "notes": "FrankenJAX: no XLA version. The 'fjx-' namespace prefix in cache keys provides coarse version separation. A future fjx_version() function could return the crate version for similar cache invalidation semantics."
+      "notes": "FrankenJAX: no XLA version. The 'fjx-v2-' namespace prefix plus payload-version key material in cache keys provides coarse version separation. A future fjx_version() function could return the crate version for similar cache invalidation semantics."
     },
     {
       "anchor_id": "P2C006-A21",

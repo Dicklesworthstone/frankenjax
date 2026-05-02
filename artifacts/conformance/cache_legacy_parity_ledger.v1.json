@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.cache-legacy-parity-ledger.v1",
-  "key_namespace": "fjx",
+  "key_namespace": "fjx-v2",
   "required_surfaces": [
     "cache_key",
     "compiler_options",
@@ -107,7 +107,7 @@
       "legacy_symbol": "CacheKey,_version_hash",
       "legacy_behavior": "Legacy JAX includes JAX version material in the hash and stores raw hex keys.",
       "rust_key_material": [
-        "fjx"
+        "fjx-v2"
       ],
       "rust_behavior": "Rust uses the fjx namespace as explicit coarse version material for all cache keys.",
       "strict_behavior": "Namespace mismatch is a fail-closed cache miss across versions.",
@@ -230,13 +230,14 @@
         "custom_hook",
         "unknown_incompatible_features"
       ],
-      "rust_behavior": "Rust hashes delimiter-bearing strings as bytes in their field positions; lifecycle tests prove hostile material does not alias clean keys.",
+      "rust_behavior": "Rust hashes typed length-framed fields; lifecycle tests prove hostile material does not alias clean keys.",
       "strict_behavior": "Hostile unknown material is rejected when classified incompatible.",
       "hardened_behavior": "Hostile unknown material is hashed and separated from clean key material.",
       "status": "modeled",
       "exclusion_reason": null,
       "evidence_refs": [
-        "crates/fj-conformance/tests/cache_keying_oracle.rs::adversarial_delimiter_in_backend_name"
+        "crates/fj-cache/src/lib.rs::hash_canonical_payload_ref",
+        "crates/fj-conformance/tests/cache_keying_oracle.rs::adversarial_compile_options_are_length_framed"
       ]
     },
     {

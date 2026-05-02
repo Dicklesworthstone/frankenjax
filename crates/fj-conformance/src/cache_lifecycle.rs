@@ -276,7 +276,7 @@ fn scenario_namespace_version_material() -> CacheLifecycleScenario {
         digest_hex: digest_hex.clone(),
     };
     let next = CacheKey {
-        namespace: "fjx-v2",
+        namespace: "fjx-v3",
         digest_hex,
     };
     scenario!(
@@ -297,15 +297,16 @@ fn scenario_namespace_version_material() -> CacheLifecycleScenario {
 
 fn scenario_hostile_key_material() -> CacheLifecycleScenario {
     let mut hostile = baseline_input(CompatibilityMode::Hardened);
-    hostile.backend = "cpu|backend=spoof".to_owned();
     hostile
         .compile_options
         .insert("target".to_owned(), "x86_64;unknown=spoof".to_owned());
     let mut clean = baseline_input(CompatibilityMode::Hardened);
-    clean.backend = "cpubackend=spoof".to_owned();
     clean
         .compile_options
-        .insert("target".to_owned(), "x86_64unknown=spoof".to_owned());
+        .insert("target".to_owned(), "x86_64".to_owned());
+    clean
+        .compile_options
+        .insert("unknown".to_owned(), "spoof".to_owned());
     let key_a = build_cache_key(&hostile).expect("hardened hostile key should build");
     let key_b = build_cache_key(&clean).expect("hardened clean key should build");
     scenario!(

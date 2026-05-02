@@ -1,7 +1,7 @@
 {
   "schema_version": "frankenjax.error-taxonomy-matrix.v1",
   "bead_id": "frankenjax-cstq.8",
-  "generated_at_unix_ms": 1777630085809,
+  "generated_at_unix_ms": 1777691740939,
   "status": "pass",
   "matrix_policy": "Every required cross-crate boundary must produce a typed, replayable, panic-free outcome with stable class, message shape, mode tag, boundary tag, and explicit strict/hardened divergence policy.",
   "coverage": {
@@ -213,7 +213,7 @@
       "divergence_allowed": true,
       "panic_status": "no_panic",
       "evidence_refs": [
-        "crates/fj-cache/src/lib.rs::canonical_payload"
+        "crates/fj-cache/src/lib.rs::hash_canonical_payload_ref"
       ],
       "replay_command": "./scripts/run_error_taxonomy_gate.sh --enforce --case cache_hardened_unknown_feature"
     },
