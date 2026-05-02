@@ -28,6 +28,10 @@
 //! - Not write beyond the declared output buffer size
 //! - Not retain references to any buffer after returning
 //! - Return 0 on success, non-zero on error
+//!
+//! `FfiCall::invoke` zeroes output buffers immediately before dispatch and
+//! again after non-zero return codes, so partial writes cannot expose stale
+//! caller bytes through the safe Rust API.
 
 #![deny(unsafe_code)]
 

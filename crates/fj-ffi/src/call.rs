@@ -33,7 +33,7 @@ impl FfiCall {
     /// 1. Target exists in registry
     /// 2. All input buffer sizes match their declared dtype * shape
     /// 3. All output buffer sizes match their declared dtype * shape
-    /// 4. Output buffers are pre-zeroed
+    /// 4. Output buffers are zeroed before the foreign function can write
     ///
     /// # Post-call:
     /// - Non-zero return code → `FfiError::CallFailed`
@@ -72,12 +72,18 @@ impl FfiCall {
             }
         }
 
-        // 4. Build raw pointer arrays for the FFI boundary
+        // 4. Scrub output buffers before crossing the FFI boundary. This keeps
+        // partially written successful outputs from exposing stale caller data.
+        for output in outputs.iter_mut() {
+            output.as_bytes_mut().fill(0);
+        }
+
+        // 5. Build raw pointer arrays for the FFI boundary
         let input_ptrs: SmallVec<[*const u8; 4]> = inputs.iter().map(FfiBuffer::as_ptr).collect();
         let mut output_ptrs: SmallVec<[*mut u8; 4]> =
             outputs.iter_mut().map(FfiBuffer::as_mut_ptr).collect();
 
-        // 5. Call the external function
+        // 6. Call the external function
         // SAFETY:
         // - fn_ptr is non-null (validated at registration time by FfiRegistry.register())
         // - input_ptrs point to valid, immutable memory owned by `inputs` (alive for this scope)
@@ -94,7 +100,7 @@ impl FfiCall {
             )
         };
 
-        // 6. Check return code
+        // 7. Check return code
         if return_code != 0 {
             // Fail closed: do not expose partially written output buffers after
             // the foreign function signaled an error.
@@ -315,6 +321,36 @@ mod tests {
         assert!(
             outputs[0].as_bytes().iter().all(|&b| b == 0),
             "output buffer should be zeroed after failed FFI call"
+        );
+    }
+
+    #[test]
+    fn invoke_scrubs_outputs_before_successful_foreign_call() {
+        unsafe extern "C" fn mock_write_first_byte_only(
+            _inputs: *const *const u8,
+            _input_count: usize,
+            outputs: *const *mut u8,
+            output_count: usize,
+        ) -> i32 {
+            if output_count != 1 {
+                return 1;
+            }
+            unsafe {
+                *(*outputs) = 0xAA;
+            }
+            0
+        }
+
+        let reg = setup_registry("write_first_byte_only", mock_write_first_byte_only);
+        let call = FfiCall::new("write_first_byte_only");
+        let mut outputs = [FfiBuffer::new(vec![0xFF; 8], vec![], DType::F64).unwrap()];
+
+        call.invoke(&reg, &[], &mut outputs).unwrap();
+
+        assert_eq!(
+            outputs[0].as_bytes(),
+            &[0xAA, 0, 0, 0, 0, 0, 0, 0],
+            "successful partial writes must not expose stale output bytes"
         );
     }
 

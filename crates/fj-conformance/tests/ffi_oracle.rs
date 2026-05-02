@@ -108,6 +108,22 @@ unsafe extern "C" fn ffi_zero_sized_ok(
     0
 }
 
+/// Writes only the leading byte of an f64-sized output and succeeds.
+unsafe extern "C" fn ffi_partial_success(
+    _inputs: *const *const u8,
+    _input_count: usize,
+    outputs: *const *mut u8,
+    output_count: usize,
+) -> i32 {
+    if output_count != 1 {
+        return 1;
+    }
+    unsafe {
+        *(*outputs) = 0x7F;
+    }
+    0
+}
+
 fn make_registry() -> FfiRegistry {
     let reg = FfiRegistry::new();
     reg.register("double", ffi_double).unwrap();
@@ -118,6 +134,8 @@ fn make_registry() -> FfiRegistry {
     reg.register("mutates_then_fails", ffi_mutates_then_fails)
         .unwrap();
     reg.register("zero_sized_ok", ffi_zero_sized_ok).unwrap();
+    reg.register("partial_success", ffi_partial_success)
+        .unwrap();
     reg
 }
 
@@ -381,6 +399,22 @@ fn adversarial_failed_call_zeroes_outputs() {
     assert!(
         outputs[0].as_bytes().iter().all(|&b| b == 0),
         "failed FFI call should leave output buffer zeroed"
+    );
+}
+
+/// Adversarial: successful partial writes must not expose stale caller bytes.
+#[test]
+fn adversarial_successful_partial_write_starts_from_zeroed_output() {
+    let reg = make_registry();
+    let call = FfiCall::new("partial_success");
+    let mut outputs = [FfiBuffer::new(vec![0xFF; 8], vec![], DType::F64).unwrap()];
+
+    call.invoke(&reg, &[], &mut outputs).unwrap();
+
+    assert_eq!(
+        outputs[0].as_bytes(),
+        &[0x7F, 0, 0, 0, 0, 0, 0, 0],
+        "FFI output pre-scrub should prevent stale bytes after successful partial writes"
     );
 }
 
