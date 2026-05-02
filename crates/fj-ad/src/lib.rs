@@ -11,7 +11,20 @@ pub enum AdError {
     NonScalarGradientOutput,
     EvalFailed(String),
     MissingVariable(VarId),
-    InputArity { expected: usize, actual: usize },
+    InputArity {
+        expected: usize,
+        actual: usize,
+    },
+    PrimitiveOutputArity {
+        primitive: Primitive,
+        expected: usize,
+        actual: usize,
+    },
+    CotangentArity {
+        primitive: Primitive,
+        expected_at_least: usize,
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for AdError {
@@ -26,6 +39,24 @@ impl std::fmt::Display for AdError {
             Self::InputArity { expected, actual } => {
                 write!(f, "input arity mismatch: expected {expected}, got {actual}")
             }
+            Self::PrimitiveOutputArity {
+                primitive,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "{} output arity mismatch: expected {expected}, got {actual}",
+                primitive.as_str()
+            ),
+            Self::CotangentArity {
+                primitive,
+                expected_at_least,
+                actual,
+            } => write!(
+                f,
+                "{} cotangent arity mismatch: expected at least {expected_at_least}, got {actual}",
+                primitive.as_str()
+            ),
         }
     }
 }
@@ -178,6 +209,13 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
         let out_var_ids: Vec<VarId> = eqn.outputs.iter().copied().collect();
+        if output_values.len() != out_var_ids.len() {
+            return Err(AdError::PrimitiveOutputArity {
+                primitive: eqn.primitive,
+                expected: out_var_ids.len(),
+                actual: output_values.len(),
+            });
+        }
         for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
             env.insert(*var, val.clone());
         }
@@ -932,7 +970,13 @@ pub fn vjp(
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
     // For single-output primitives (the common case), use gs[0] as the gradient.
-    let g = &gs[0];
+    let Some(g) = gs.first() else {
+        return Err(AdError::CotangentArity {
+            primitive,
+            expected_at_least: 1,
+            actual: 0,
+        });
+    };
     if let Some(custom_rule) = lookup_custom_vjp(primitive) {
         let cotangents = custom_rule(inputs, g, params)?;
         if cotangents.len() != inputs.len() {
@@ -6338,6 +6382,56 @@ mod tests {
         let rendered = AdError::UnsupportedPrimitive(Primitive::Scan).to_string();
         assert!(rendered.contains("unsupported"));
         assert!(!rendered.contains("not implemented"));
+    }
+
+    #[test]
+    fn vjp_rejects_empty_cotangent_list() {
+        let result = vjp(
+            Primitive::Add,
+            &[Value::scalar_f64(1.0), Value::scalar_f64(2.0)],
+            &[],
+            &[],
+            &BTreeMap::new(),
+        );
+
+        assert!(matches!(
+            result,
+            Err(AdError::CotangentArity {
+                primitive: Primitive::Add,
+                expected_at_least: 1,
+                actual: 0
+            })
+        ));
+    }
+
+    #[test]
+    fn grad_rejects_primitive_output_arity_mismatch() {
+        use smallvec::smallvec;
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(3)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3), VarId(4)],
+                params: BTreeMap::new(),
+                effects: Vec::new(),
+                sub_jaxprs: Vec::new(),
+            }],
+        );
+
+        let result = grad_jaxpr(&jaxpr, &[Value::scalar_f64(1.0), Value::scalar_f64(2.0)]);
+
+        assert!(matches!(
+            result,
+            Err(AdError::PrimitiveOutputArity {
+                primitive: Primitive::Add,
+                expected: 2,
+                actual: 1
+            })
+        ));
     }
 
     #[test]
