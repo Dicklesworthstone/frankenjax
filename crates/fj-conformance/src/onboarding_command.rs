@@ -494,7 +494,10 @@ fn build_onboarding_e2e_log(
         "summary": inventory.summary,
         "issue_count": inventory.issues.len(),
         "issues": inventory.issues,
-        "command_results": inventory.commands.iter().map(command_result_json).collect::<Vec<_>>(),
+        "command_results": inventory.commands
+            .iter()
+            .map(|command| command_result_json(command, &log.environment))
+            .collect::<Vec<_>>(),
     });
     log.tolerance = E2ETolerancePolicy {
         policy_id: "exact_onboarding_inventory_contract".to_owned(),
@@ -555,7 +558,10 @@ fn build_onboarding_e2e_log(
     Ok(log)
 }
 
-fn command_result_json(command: &OnboardingCommandEntry) -> JsonValue {
+fn command_result_json(
+    command: &OnboardingCommandEntry,
+    environment: &crate::e2e_log::E2EEnvironmentFingerprint,
+) -> JsonValue {
     let status = if command.classification == "mandatory_local_smoke" {
         "pass"
     } else if command.skip_reason.is_some() {
@@ -569,6 +575,9 @@ fn command_result_json(command: &OnboardingCommandEntry) -> JsonValue {
         "smoke_command": command.smoke_command,
         "classification": command.classification,
         "cwd": ".",
+        "rustc_version": environment.rust_version.as_str(),
+        "cargo_version": environment.cargo_version.as_str(),
+        "cargo_target_dir": environment.cargo_target_dir.as_str(),
         "env_allowlist": command.env_allowlist,
         "feature_flags": command.feature_flags,
         "expected_exit": command.expected_exit,

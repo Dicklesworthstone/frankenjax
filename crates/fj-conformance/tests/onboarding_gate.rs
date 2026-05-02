@@ -138,6 +138,28 @@ fn onboarding_outputs_write_and_validate_e2e_log() -> Result<(), String> {
             .path
             .ends_with("onboarding_command_inventory.v1.json")
     );
+    let raw = std::fs::read_to_string(&e2e_path).map_err(|err| err.to_string())?;
+    let log: serde_json::Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    let rustc_version = log["environment"]["rust_version"]
+        .as_str()
+        .ok_or_else(|| "environment must include rust_version".to_owned())?;
+    let cargo_version = log["environment"]["cargo_version"]
+        .as_str()
+        .ok_or_else(|| "environment must include cargo_version".to_owned())?;
+    let command_results = log["actual"]["command_results"]
+        .as_array()
+        .ok_or_else(|| "onboarding e2e log needs command results".to_owned())?;
+    assert!(!command_results.is_empty());
+    for command in command_results {
+        assert_eq!(command["rustc_version"].as_str(), Some(rustc_version));
+        assert_eq!(command["cargo_version"].as_str(), Some(cargo_version));
+        assert!(
+            command["cargo_target_dir"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "command result needs cargo_target_dir: {command:#?}"
+        );
+    }
     Ok(())
 }
 

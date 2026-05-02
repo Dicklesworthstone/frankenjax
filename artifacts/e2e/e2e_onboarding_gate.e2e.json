@@ -5,7 +5,7 @@
   "test_id": "fj_onboarding_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq18/debug/fj_onboarding_gate",
+    "/data/tmp/cargo-target-frankenjax-codex-cstq18b/debug/fj_onboarding_gate",
     "--root",
     "/data/projects/frankenjax",
     "--inventory",
@@ -20,12 +20,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq18",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777730737924
+    "timestamp_unix_ms": 1777740368145
   },
   "feature_flags": [],
   "fixture_ids": [],
@@ -57,6 +57,8 @@
     "command_results": [
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "schematic",
         "command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
         "command_id": "cmd_git_clone",
@@ -67,6 +69,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Clone command is user-environment setup, not replayed inside an existing checkout",
         "smoke_command": null,
         "stderr_summary": "",
@@ -74,6 +77,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "rustup install nightly",
         "command_id": "cmd_rustup_install_nightly",
@@ -84,6 +89,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "rustup install nightly",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Toolchain installation mutates user-level Rust state; rust-toolchain.toml is the replayable source of truth",
         "smoke_command": null,
         "stderr_summary": "",
@@ -91,6 +97,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "rustup override set nightly",
         "command_id": "cmd_rustup_override_nightly",
@@ -101,6 +109,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "rustup override set nightly",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Repository uses rust-toolchain.toml; per-directory rustup override is documented for manual setup only",
         "smoke_command": null,
         "stderr_summary": "",
@@ -108,6 +117,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo build --workspace",
         "command_id": "cmd_cargo_build_workspace",
@@ -121,6 +132,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo build --workspace",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "cargo metadata --no-deps --format-version 1",
         "stderr_summary": "",
@@ -128,6 +140,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo test --workspace",
         "command_id": "cmd_cargo_test_workspace",
@@ -141,6 +155,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo test --workspace",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "cargo test -p fj-conformance --test smoke smoke_report_is_stable -- --exact --nocapture",
         "stderr_summary": "",
@@ -148,6 +163,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "cargo build --workspace --release",
         "command_id": "cmd_cargo_release_build",
@@ -161,6 +178,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo build --workspace --release",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Release LTO build is intentionally long-running; normal gate proves the command is documented and replayable",
         "smoke_command": null,
         "stderr_summary": "",
@@ -170,6 +188,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "mandatory_local_smoke",
         "command": "./scripts/run_api_readme_examples.sh --enforce",
         "command_id": "cmd_api_readme_examples",
@@ -183,6 +203,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_api_readme_examples.sh --enforce",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/run_api_readme_examples.sh --enforce",
         "stderr_summary": "",
@@ -192,6 +213,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_architecture_boundary_gate.sh --enforce",
         "command_id": "cmd_architecture_boundary_gate",
@@ -202,6 +225,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
         "stderr_summary": "",
@@ -211,6 +235,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
         "command_id": "cmd_cache_lifecycle_gate",
@@ -221,6 +247,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
         "stderr_summary": "",
@@ -230,6 +257,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_security_gate.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_security_gate.sh --enforce",
         "command_id": "cmd_security_gate",
@@ -243,6 +272,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_security_gate.sh --enforce",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/run_security_gate.sh --enforce",
         "stderr_summary": "",
@@ -250,6 +280,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "uv venv --python 3.12 .venv",
         "command_id": "cmd_jax_oracle_venv",
@@ -260,6 +292,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "uv venv --python 3.12 .venv",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Creates a local Python environment and may require network access",
         "smoke_command": null,
         "stderr_summary": "",
@@ -267,6 +300,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
         "command_id": "cmd_jax_oracle_pip_install",
@@ -277,6 +312,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Downloads Python packages and is intentionally opt-in",
         "smoke_command": null,
         "stderr_summary": "",
@@ -284,6 +320,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
         "command_id": "cmd_jax_oracle_clone",
@@ -294,6 +332,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Network clone of upstream JAX is optional for normal onboarding",
         "smoke_command": null,
         "stderr_summary": "",
@@ -301,6 +340,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
         "command_id": "cmd_capture_legacy_fixtures",
@@ -311,6 +352,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Requires optional JAX oracle environment and legacy source checkout",
         "smoke_command": null,
         "stderr_summary": "",
@@ -320,6 +362,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_oracle_recapture_gate.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "./scripts/run_oracle_recapture_gate.sh",
         "command_id": "cmd_oracle_recapture_gate",
@@ -330,6 +374,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_oracle_recapture_gate.sh",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Oracle recapture may require optional Python/JAX setup",
         "smoke_command": null,
         "stderr_summary": "",
@@ -339,6 +384,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_security_gate.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "mandatory_local_smoke",
         "command": "./scripts/validate_e2e_logs.sh",
         "command_id": "cmd_validate_e2e_logs_default",
@@ -352,6 +399,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/validate_e2e_logs.sh",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_security_gate.e2e.json",
         "stderr_summary": "",
@@ -361,6 +409,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_security_gate.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
         "command_id": "cmd_validate_e2e_logs_report",
@@ -374,6 +424,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_security_gate.e2e.json",
         "stderr_summary": "",
@@ -381,6 +432,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/run_e2e.sh",
         "command_id": "cmd_e2e_runner_all",
@@ -395,6 +448,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_e2e.sh",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Full E2E suite is a long-running orchestration command; targeted scenarios are replayable separately",
         "smoke_command": null,
         "stderr_summary": "",
@@ -404,6 +458,8 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json"
         ],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
         "command_id": "cmd_e2e_runner_one",
@@ -418,6 +474,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json",
         "stderr_summary": "",
@@ -425,6 +482,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/enforce_quality_gates.sh",
         "command_id": "cmd_quality_gates_full",
@@ -438,6 +497,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/enforce_quality_gates.sh",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Full reliability gates include coverage, flake, runtime, and crash triage work",
         "smoke_command": null,
         "stderr_summary": "",
@@ -445,6 +505,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
         "command_id": "cmd_quality_gates_local",
@@ -458,6 +520,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Local reliability iteration still runs multiple test passes; command is inventoried but not replayed by default",
         "smoke_command": null,
         "stderr_summary": "",
@@ -465,6 +528,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/detect_flakes.sh --runs 10",
         "command_id": "cmd_detect_flakes",
@@ -478,6 +543,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "./scripts/detect_flakes.sh --runs 10",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Flake detector intentionally repeats tests and is not a fast onboarding gate",
         "smoke_command": null,
         "stderr_summary": "",
@@ -485,6 +551,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "schematic",
         "command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
         "command_id": "cmd_durability_pipeline",
@@ -498,6 +566,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "README command uses user-supplied placeholder paths; durability batch row provides concrete replay",
         "smoke_command": null,
         "stderr_summary": "",
@@ -505,6 +574,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
         "command_id": "cmd_durability_batch",
@@ -518,6 +589,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "cargo run -p fj-conformance --bin fj_durability -- verify-only --dir artifacts/e2e --json",
         "stderr_summary": "",
@@ -525,6 +597,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "cargo fuzz build",
         "command_id": "cmd_fuzz_build",
@@ -540,6 +614,7 @@
           "cargo-fuzz"
         ],
         "replay_command": "cargo fuzz build",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "cargo-fuzz itself is opt-in; the smoke command checks the fuzz crate entrypoint with Cargo",
         "smoke_command": "cargo check --manifest-path crates/fj-conformance/fuzz/Cargo.toml --bin ir_deserializer",
         "stderr_summary": "",
@@ -547,6 +622,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
         "command_id": "cmd_fuzz_run_ir_deserializer",
@@ -562,6 +639,7 @@
           "cargo-fuzz"
         ],
         "replay_command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "libFuzzer execution is opt-in; corpus and target are validated as replay metadata",
         "smoke_command": "cargo check --manifest-path crates/fj-conformance/fuzz/Cargo.toml --bin ir_deserializer",
         "stderr_summary": "",
@@ -569,6 +647,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo fmt --check",
         "command_id": "cmd_cargo_fmt",
@@ -581,6 +661,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo fmt --check",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "rustfmt --check --edition 2024 crates/fj-conformance/src/lib.rs",
         "stderr_summary": "",
@@ -588,6 +669,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo check --all-targets",
         "command_id": "cmd_cargo_check_all_targets",
@@ -601,6 +684,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo check --all-targets",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "cargo check -p fj-core --lib",
         "stderr_summary": "",
@@ -608,6 +692,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo clippy --all-targets -- -D warnings",
         "command_id": "cmd_cargo_clippy_all_targets",
@@ -621,6 +707,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo clippy --all-targets -- -D warnings",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "cargo clippy -p fj-core --lib -- -D warnings",
         "stderr_summary": "",
@@ -628,6 +715,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo test -p fj-conformance -- --nocapture",
         "command_id": "cmd_conformance_tests_nocapture",
@@ -641,6 +730,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo test -p fj-conformance -- --nocapture",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": null,
         "smoke_command": "cargo test -p fj-conformance --test smoke smoke_report_is_stable -- --exact --nocapture",
         "stderr_summary": "",
@@ -648,6 +738,8 @@
       },
       {
         "artifact_refs": [],
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "cargo bench",
         "command_id": "cmd_cargo_bench",
@@ -661,6 +753,7 @@
         "expected_exit": 0,
         "feature_flags": [],
         "replay_command": "cargo bench",
+        "rustc_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
         "skip_reason": "Benchmark suite is intentionally long-running and belongs to performance gates",
         "smoke_command": null,
         "stderr_summary": "",
@@ -717,7 +810,7 @@
     {
       "kind": "onboarding_command_inventory",
       "path": "artifacts/conformance/onboarding_command_inventory.v1.json",
-      "sha256": "ac855ce92e57b0da6ed60c93433be15fd7f609204d1b7fa38bb6c3d3ef827553",
+      "sha256": "ac6d0121dc387944e8b7c06864c8954e5038a72df3ea362cc4ecc1bbe3a09a42",
       "required": true
     }
   ],
