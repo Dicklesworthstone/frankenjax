@@ -7,6 +7,7 @@ pub mod durability;
 pub mod e2e_log;
 pub mod error_taxonomy;
 pub mod memory_performance;
+pub mod numerical_stability;
 pub mod onboarding_command;
 pub mod oracle_recapture;
 pub mod security_adversarial;

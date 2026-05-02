@@ -1,0 +1,80 @@
+{
+  "schema_version": "frankenjax.numerical-stability.v1",
+  "bead_id": "frankenjax-cstq.20",
+  "generated_at_unix_ms": 1777728000000,
+  "status": "pass",
+  "policy": "Every numerical-stability row needs tolerance, guard, platform, replay, and artifact evidence.",
+  "required_stability_families": ["rng_determinism"],
+  "summary": {
+    "required_family_count": 1,
+    "observed_family_count": 1,
+    "row_count": 1,
+    "pass_count": 1,
+    "tolerance_policy_count": 1,
+    "platform_fingerprint_count": 1,
+    "rows_with_platform": 1,
+    "rows_with_artifacts": 1,
+    "rows_with_replay": 1,
+    "rows_with_non_finite_classification": 1,
+    "deterministic_replay_rows": 1,
+    "unstable_count": 0,
+    "stale_count": 0,
+    "regression_count": 0
+  },
+  "platform_fingerprints": [
+    {
+      "platform_id": "platform-linux-x86_64-little",
+      "os": "linux",
+      "arch": "x86_64",
+      "endian": "little",
+      "rust_version": "rustc 1.91.0-nightly",
+      "cargo_version": "cargo 1.91.0-nightly",
+      "cargo_target_dir": "<default>",
+      "deterministic_serialization": true
+    }
+  ],
+  "tolerance_policies": [
+    {
+      "policy_id": "exact_bitwise",
+      "dtype": "bits",
+      "comparator": "exact_bitwise",
+      "atol": 0.0,
+      "rtol": 0.0,
+      "ulp": 0,
+      "finite_difference_step": null,
+      "notes": "Bitwise rows require exact equality."
+    }
+  ],
+  "rows": [
+    {
+      "case_id": "stability-rng-determinism-001",
+      "family": "rng_determinism",
+      "primitive_or_scope": "threefry key/split/fold_in",
+      "dtype": "u32",
+      "shape": [2],
+      "seed": 42,
+      "edge_condition_class": "counter_based_seed_stream",
+      "reference_source": "JAX oracle fixture",
+      "tolerance_policy_id": "exact_bitwise",
+      "reference_scale": 1.0,
+      "stability_guard": "threefry_constants_and_counter_order",
+      "expected_behavior": "same seed produces bit-identical words",
+      "actual_behavior": "oracle fixture replay is exact",
+      "max_abs_error": 0.0,
+      "max_rel_error": 0.0,
+      "max_ulp_error": 0,
+      "non_finite_classification": "deterministic_seed_stream",
+      "deterministic_replay_count": 25,
+      "platform_fingerprint_id": "platform-linux-x86_64-little",
+      "artifact_refs": ["artifacts/e2e/e2e_rng_determinism.e2e.json"],
+      "replay_command": "./scripts/run_e2e.sh --scenario e2e_rng_determinism",
+      "dashboard_row": "stability/rng_determinism",
+      "status": "pass",
+      "stale": false,
+      "regression": false
+    }
+  ],
+  "issues": [],
+  "artifact_refs": ["artifacts/e2e/e2e_rng_determinism.e2e.json"],
+  "replay_command": "./scripts/run_numerical_stability_gate.sh --enforce"
+}

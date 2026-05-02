@@ -94,6 +94,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "security_threat_model.v1",
         "onboarding_command_inventory.v1",
         "decision_ledger_calibration.v1",
+        "numerical_stability_matrix.v1",
     ];
 
     for schema_name in schemas {
@@ -796,6 +797,63 @@ fn decision_ledger_calibration_validates_against_schema() {
                 .unwrap_or_default()
                 .is_empty(),
             "decision row must have replay command"
+        );
+    }
+}
+
+#[test]
+fn numerical_stability_matrix_validates_against_schema() {
+    let root = repo_root();
+    let report_path = root.join("artifacts/conformance/numerical_stability_matrix.v1.json");
+    if !report_path.exists() {
+        return;
+    }
+    validate_schema_instance(
+        "numerical_stability_matrix.v1",
+        "artifacts/conformance/numerical_stability_matrix.v1.json",
+    );
+    let report = read_json(&report_path);
+    assert_eq!(
+        report["schema_version"], "frankenjax.numerical-stability.v1",
+        "numerical stability schema marker changed"
+    );
+    assert_eq!(
+        report["bead_id"], "frankenjax-cstq.20",
+        "numerical stability report must stay bound to the stability bead"
+    );
+    let rows = report["rows"].as_array();
+    assert!(rows.is_some(), "rows must be an array");
+    let Some(rows) = rows else {
+        return;
+    };
+    assert!(!rows.is_empty(), "numerical stability report needs rows");
+    for row in rows {
+        assert!(
+            !row["tolerance_policy_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "stability row must name a tolerance policy"
+        );
+        assert!(
+            !row["platform_fingerprint_id"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "stability row must bind platform metadata"
+        );
+        assert!(
+            row["artifact_refs"]
+                .as_array()
+                .is_some_and(|artifacts| !artifacts.is_empty()),
+            "stability row must contain artifact refs"
+        );
+        assert!(
+            !row["replay_command"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "stability row must have replay command"
         );
     }
 }

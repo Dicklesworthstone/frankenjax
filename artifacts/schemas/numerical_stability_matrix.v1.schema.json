@@ -1,0 +1,232 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frankenjax.dev/schemas/numerical_stability_matrix.v1.schema.json",
+  "title": "FrankenJAX numerical stability matrix v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "bead_id",
+    "generated_at_unix_ms",
+    "status",
+    "policy",
+    "required_stability_families",
+    "summary",
+    "platform_fingerprints",
+    "tolerance_policies",
+    "rows",
+    "issues",
+    "artifact_refs",
+    "replay_command"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frankenjax.numerical-stability.v1"
+    },
+    "bead_id": {
+      "const": "frankenjax-cstq.20"
+    },
+    "generated_at_unix_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "enum": ["pass", "fail"]
+    },
+    "policy": {
+      "type": "string",
+      "minLength": 1
+    },
+    "required_stability_families": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "required_family_count",
+        "observed_family_count",
+        "row_count",
+        "pass_count",
+        "tolerance_policy_count",
+        "platform_fingerprint_count",
+        "rows_with_platform",
+        "rows_with_artifacts",
+        "rows_with_replay",
+        "rows_with_non_finite_classification",
+        "deterministic_replay_rows",
+        "unstable_count",
+        "stale_count",
+        "regression_count"
+      ],
+      "properties": {
+        "required_family_count": { "type": "integer", "minimum": 0 },
+        "observed_family_count": { "type": "integer", "minimum": 0 },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "pass_count": { "type": "integer", "minimum": 0 },
+        "tolerance_policy_count": { "type": "integer", "minimum": 0 },
+        "platform_fingerprint_count": { "type": "integer", "minimum": 0 },
+        "rows_with_platform": { "type": "integer", "minimum": 0 },
+        "rows_with_artifacts": { "type": "integer", "minimum": 0 },
+        "rows_with_replay": { "type": "integer", "minimum": 0 },
+        "rows_with_non_finite_classification": { "type": "integer", "minimum": 0 },
+        "deterministic_replay_rows": { "type": "integer", "minimum": 0 },
+        "unstable_count": { "type": "integer", "minimum": 0 },
+        "stale_count": { "type": "integer", "minimum": 0 },
+        "regression_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "platform_fingerprints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "platform_id",
+          "os",
+          "arch",
+          "endian",
+          "rust_version",
+          "cargo_version",
+          "cargo_target_dir",
+          "deterministic_serialization"
+        ],
+        "properties": {
+          "platform_id": { "type": "string", "minLength": 1 },
+          "os": { "type": "string", "minLength": 1 },
+          "arch": { "type": "string", "minLength": 1 },
+          "endian": { "enum": ["little", "big"] },
+          "rust_version": { "type": "string", "minLength": 1 },
+          "cargo_version": { "type": "string", "minLength": 1 },
+          "cargo_target_dir": { "type": "string", "minLength": 1 },
+          "deterministic_serialization": { "type": "boolean" }
+        }
+      }
+    },
+    "tolerance_policies": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "policy_id",
+          "dtype",
+          "comparator",
+          "atol",
+          "rtol",
+          "ulp",
+          "finite_difference_step",
+          "notes"
+        ],
+        "properties": {
+          "policy_id": { "type": "string", "minLength": 1 },
+          "dtype": { "type": "string", "minLength": 1 },
+          "comparator": { "type": "string", "minLength": 1 },
+          "atol": { "type": "number", "minimum": 0 },
+          "rtol": { "type": "number", "minimum": 0 },
+          "ulp": { "type": ["integer", "null"], "minimum": 0 },
+          "finite_difference_step": { "type": ["number", "null"], "minimum": 0 },
+          "notes": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "rows": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "case_id",
+          "family",
+          "primitive_or_scope",
+          "dtype",
+          "shape",
+          "seed",
+          "edge_condition_class",
+          "reference_source",
+          "tolerance_policy_id",
+          "reference_scale",
+          "stability_guard",
+          "expected_behavior",
+          "actual_behavior",
+          "max_abs_error",
+          "max_rel_error",
+          "max_ulp_error",
+          "non_finite_classification",
+          "deterministic_replay_count",
+          "platform_fingerprint_id",
+          "artifact_refs",
+          "replay_command",
+          "dashboard_row",
+          "status",
+          "stale",
+          "regression"
+        ],
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1 },
+          "family": { "type": "string", "minLength": 1 },
+          "primitive_or_scope": { "type": "string", "minLength": 1 },
+          "dtype": { "type": "string", "minLength": 1 },
+          "shape": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 0 }
+          },
+          "seed": { "type": ["integer", "null"], "minimum": 0 },
+          "edge_condition_class": { "type": "string", "minLength": 1 },
+          "reference_source": { "type": "string", "minLength": 1 },
+          "tolerance_policy_id": { "type": "string", "minLength": 1 },
+          "reference_scale": { "type": "number", "minimum": 0 },
+          "stability_guard": { "type": "string", "minLength": 1 },
+          "expected_behavior": { "type": "string", "minLength": 1 },
+          "actual_behavior": { "type": "string", "minLength": 1 },
+          "max_abs_error": { "type": "number", "minimum": 0 },
+          "max_rel_error": { "type": "number", "minimum": 0 },
+          "max_ulp_error": { "type": ["integer", "null"], "minimum": 0 },
+          "non_finite_classification": { "type": "string", "minLength": 1 },
+          "deterministic_replay_count": { "type": "integer", "minimum": 0 },
+          "platform_fingerprint_id": { "type": "string", "minLength": 1 },
+          "artifact_refs": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "replay_command": { "type": "string", "minLength": 1 },
+          "dashboard_row": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["pass", "fail"] },
+          "stale": { "type": "boolean" },
+          "regression": { "type": "boolean" }
+        }
+      }
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "path", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "path": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "artifact_refs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1
+    },
+    "replay_command": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

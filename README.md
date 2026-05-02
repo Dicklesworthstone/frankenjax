@@ -1104,6 +1104,22 @@ FrankenJAX uses several guards against numerical issues:
 - **Triangular solve stability**: Forward/back substitution checks diagonal elements against machine epsilon before dividing.
 - **FFT scaling**: IFFT uses exact `1/n` scaling, and RFFT interior bins get the correct factor-of-2 for real-signal Hermitian symmetry.
 
+The numerical-stability gate turns those guardrails into replayable evidence:
+
+```bash
+./scripts/run_numerical_stability_gate.sh --enforce
+```
+
+It writes `artifacts/conformance/numerical_stability_matrix.v1.json`,
+`artifacts/conformance/numerical_stability_matrix.v1.md`, and
+`artifacts/e2e/e2e_numerical_stability_gate.e2e.json`. The matrix covers
+special-math tails, near-singular linalg gradients, finite-difference AD checks,
+FFT scaling, dtype promotion, complex branch-sensitive values, RNG determinism,
+literal bit round-trips, NaN/Inf division behavior, finite-difference fallback
+policy, and platform metadata. Every row names its tolerance policy, guard path,
+reference source, non-finite classification, deterministic replay count,
+artifact refs, platform fingerprint, and exact replay command.
+
 ## The Effect System
 
 Jaxpr equations can carry **effect tokens** that enforce sequential execution ordering for side-effectful operations. The effect system ensures that:
