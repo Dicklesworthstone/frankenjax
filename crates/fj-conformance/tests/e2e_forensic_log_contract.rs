@@ -325,6 +325,7 @@ fn committed_gate_logs_use_stable_script_replay_commands() {
         "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json",
         "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json",
         "artifacts/e2e/e2e_memory_performance_gate.e2e.json",
+        "artifacts/e2e/e2e_api_readme_quickstart.e2e.json",
         "artifacts/e2e/e2e_transform_control_flow_gate.e2e.json",
         "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
     ] {
@@ -362,6 +363,7 @@ fn e2e_wrapper_scripts_reject_flag_tokens_as_missing_values() {
             "--report",
             "--enforce",
         ),
+        ("scripts/run_api_readme_examples.sh", "--json", "--enforce"),
         (
             "scripts/run_transform_control_flow_gate.sh",
             "--report",

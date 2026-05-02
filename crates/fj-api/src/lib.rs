@@ -5,6 +5,7 @@ pub mod transforms;
 
 pub use errors::ApiError;
 pub use fj_ad::{clear_custom_derivative_rules, register_custom_jvp, register_custom_vjp};
+pub use fj_core::{DType, Shape, Value};
 pub use transforms::{
     ComposedTransform, GradWrapped, HessianWrapped, JacobianWrapped, JitWrapped,
     ValueAndGradWrapped, VmapWrapped,
@@ -12,7 +13,7 @@ pub use transforms::{
 pub use transforms::{compose, grad, hessian, jacobian, jit, value_and_grad, vmap};
 
 // Re-export make_jaxpr tracing API from fj-trace
-pub use fj_trace::{TracerRef, make_jaxpr, make_jaxpr_fallible};
+pub use fj_trace::{ShapedArray, TracerRef, make_jaxpr, make_jaxpr_fallible};
 
 #[cfg(test)]
 mod tests {

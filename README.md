@@ -63,20 +63,42 @@ FrankenJAX is not a replacement for JAX in production ML training. It is a **ref
 ## Quick Example
 
 ```rust
-use fj_api::{jit, grad, vmap, jacobian, hessian, make_jaxpr};
+use fj_api::{DType, Shape, ShapedArray, Value, grad, jit, make_jaxpr, value_and_grad, vmap};
 
-// Trace a Rust closure into canonical IR
-let jaxpr = make_jaxpr(|x| x * x + 3.0 * x)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Trace a Rust closure into canonical IR for f(x) = x^2 + 3x.
+    let closed = make_jaxpr(
+        |inputs| {
+            let x = &inputs[0];
+            let square = x * x;
+            let double = x + x;
+            let triple = &double + x;
+            vec![square + triple]
+        },
+        vec![ShapedArray {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        }],
+    )?;
 
-// Apply transforms exactly like JAX
-let result = jit(jaxpr.clone()).call(vec![Value::scalar_f64(5.0)])?;
-let gradient = grad(jaxpr.clone()).call(vec![Value::scalar_f64(5.0)])?;
+    // Apply transforms through the public fj_api facade.
+    let value = jit(closed.jaxpr.clone()).call(vec![Value::scalar_f64(5.0)])?;
+    let gradient = grad(closed.jaxpr.clone()).call(vec![Value::scalar_f64(5.0)])?;
+    let batch = vmap(closed.jaxpr.clone())
+        .call(vec![Value::vector_f64(&[1.0, 2.0, 3.0])?])?;
+    let (value_again, gradient_again) =
+        value_and_grad(closed.jaxpr).call(vec![Value::scalar_f64(5.0)])?;
 
-// Compose transforms
-let batched_grad = jit(jaxpr.clone()).compose_grad();
-let J = jacobian(jaxpr.clone()).call(vec![Value::scalar_f64(5.0)])?;
-let H = hessian(jaxpr).call(vec![Value::scalar_f64(5.0)])?;
+    assert_eq!(value[0].as_f64_scalar(), Some(40.0));
+    assert!((gradient[0].as_f64_scalar().unwrap() - 13.0).abs() < 1e-3);
+    assert_eq!(batch[0].as_tensor().unwrap().to_f64_vec().unwrap(), vec![4.0, 10.0, 18.0]);
+    assert_eq!(value_again[0].as_f64_scalar(), Some(40.0));
+    assert!((gradient_again[0].as_f64_scalar().unwrap() - 13.0).abs() < 1e-3);
+    Ok(())
+}
 ```
+
+Replay this example with `./scripts/run_api_readme_examples.sh --enforce`.
 
 ## Worked Example: End-to-End Gradient Computation
 
