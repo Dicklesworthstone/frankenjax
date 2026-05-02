@@ -1,0 +1,768 @@
+{
+  "schema_version": "frankenjax.ttl-semantic-proof-matrix.v1",
+  "bead_id": "frankenjax-cstq.3",
+  "generated_at_unix_ms": 1777727700115,
+  "status": "pass",
+  "matrix_policy": "Strict TTL semantic proof gate: bind canonical input fingerprint, ordered transform stack, evidence ids, stack signature/hash, structural output metadata, and oracle fixture links; invalid proof chains must reject deterministically.",
+  "coverage": {
+    "required_case_count": 12,
+    "observed_case_count": 12,
+    "pass_count": 12,
+    "accepted_count": 6,
+    "rejected_count": 6,
+    "fixture_linked_count": 3,
+    "structural_replay_count": 8
+  },
+  "cases": [
+    {
+      "case_id": "valid_single_jit_square",
+      "status": "pass",
+      "proof_kind": "semantic_replay",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": "analytic:jax.jit(lambda x: x*x)(4.0)",
+      "fixture_link_required": false,
+      "transform_stack": [
+        "jit"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-valid_single_jit_square-jit-0"
+      ],
+      "transform_count": 1,
+      "evidence_count": 1,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": "stack=jit>|evidence=jit:42:ttl-semantic-valid_single_jit_square-jit-0;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_hash_hex": "71a74e69c017ab93",
+      "output_fingerprint": "257ec416d8ef7d0f66b0ffc1198333007c112561191a8cfc0b18a2a937712f5f",
+      "expected_output_fingerprint": "257ec416d8ef7d0f66b0ffc1198333007c112561191a8cfc0b18a2a937712f5f",
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 4.0
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 16.0
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 16.0
+        }
+      ],
+      "expected_decision": "accept",
+      "verifier_decision": "accept",
+      "rejection_reason": null,
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched"
+      ],
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::dispatch"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case valid_single_jit_square --enforce"
+    },
+    {
+      "case_id": "valid_single_grad_square",
+      "status": "pass",
+      "proof_kind": "semantic_replay",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": "analytic:jax.grad(lambda x: x*x)(4.0)",
+      "fixture_link_required": false,
+      "transform_stack": [
+        "grad"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-valid_single_grad_square-grad-0"
+      ],
+      "transform_count": 1,
+      "evidence_count": 1,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": "stack=grad>|evidence=grad:44:ttl-semantic-valid_single_grad_square-grad-0;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_hash_hex": "a8381b737cee9de1",
+      "output_fingerprint": "bf51af6cad409e8ebfbbd37663bfdeb19e3d09164ee2f61c35ce214ee7c39b6b",
+      "expected_output_fingerprint": "bf51af6cad409e8ebfbbd37663bfdeb19e3d09164ee2f61c35ce214ee7c39b6b",
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 4.0
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 8.0
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 8.0
+        }
+      ],
+      "expected_decision": "accept",
+      "verifier_decision": "accept",
+      "rejection_reason": null,
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched"
+      ],
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::verify_transform_composition"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case valid_single_grad_square --enforce"
+    },
+    {
+      "case_id": "valid_single_vmap_square",
+      "status": "pass",
+      "proof_kind": "semantic_replay",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": "vmap_square",
+      "fixture_link_required": true,
+      "transform_stack": [
+        "vmap"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-valid_single_vmap_square-vmap-0"
+      ],
+      "transform_count": 1,
+      "evidence_count": 1,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": "stack=vmap>|evidence=vmap:44:ttl-semantic-valid_single_vmap_square-vmap-0;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_hash_hex": "08c88e91ee90423d",
+      "output_fingerprint": "3c47c164d5b98441eb656f16e179df58e21247ba4ee915feda27ab372fac83ad",
+      "expected_output_fingerprint": "3c47c164d5b98441eb656f16e179df58e21247ba4ee915feda27ab372fac83ad",
+      "output_shapes": [
+        [
+          3
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.0,
+            4.0,
+            9.0
+          ]
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.0,
+            4.0,
+            9.0
+          ]
+        }
+      ],
+      "expected_decision": "accept",
+      "verifier_decision": "accept",
+      "rejection_reason": null,
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched",
+        "oracle_fixture_linked"
+      ],
+      "evidence_refs": [
+        "crates/fj-conformance/fixtures/composition_oracle.v1.json::vmap_square"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case valid_single_vmap_square --enforce"
+    },
+    {
+      "case_id": "valid_jit_grad_fixture",
+      "status": "pass",
+      "proof_kind": "semantic_replay",
+      "compatibility_mode": "strict",
+      "program": "x^2+3x",
+      "oracle_fixture_id": "jit_grad_poly_x5.0",
+      "fixture_link_required": true,
+      "transform_stack": [
+        "jit",
+        "grad"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-valid_jit_grad_fixture-jit-0",
+        "ttl-semantic-valid_jit_grad_fixture-grad-1"
+      ],
+      "transform_count": 2,
+      "evidence_count": 2,
+      "input_fingerprint": "in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "stack_signature": "stack=jit>grad>|evidence=jit:41:ttl-semantic-valid_jit_grad_fixture-jit-0;grad:42:ttl-semantic-valid_jit_grad_fixture-grad-1;|jaxpr=in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "stack_hash_hex": "242881b7a715cee2",
+      "output_fingerprint": "b76440fd378dc017151128e174214acb91bc27ba034bdbdbbe7039572174f84b",
+      "expected_output_fingerprint": "b76440fd378dc017151128e174214acb91bc27ba034bdbdbbe7039572174f84b",
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 5.0
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 13.0
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 13.0
+        }
+      ],
+      "expected_decision": "accept",
+      "verifier_decision": "accept",
+      "rejection_reason": null,
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched",
+        "oracle_fixture_linked"
+      ],
+      "evidence_refs": [
+        "crates/fj-conformance/fixtures/composition_oracle.v1.json::jit_grad_poly_x5.0"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case valid_jit_grad_fixture --enforce"
+    },
+    {
+      "case_id": "valid_grad_jit_order_sensitive",
+      "status": "pass",
+      "proof_kind": "semantic_replay",
+      "compatibility_mode": "strict",
+      "program": "x^2+3x",
+      "oracle_fixture_id": "analytic:jax.grad(jax.jit(lambda x: x*x+3*x))(5.0)",
+      "fixture_link_required": false,
+      "transform_stack": [
+        "grad",
+        "jit"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-valid_grad_jit_order_sensitive-grad-0",
+        "ttl-semantic-valid_grad_jit_order_sensitive-jit-1"
+      ],
+      "transform_count": 2,
+      "evidence_count": 2,
+      "input_fingerprint": "in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "stack_signature": "stack=grad>jit>|evidence=grad:50:ttl-semantic-valid_grad_jit_order_sensitive-grad-0;jit:49:ttl-semantic-valid_grad_jit_order_sensitive-jit-1;|jaxpr=in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "stack_hash_hex": "81b9c1d7620a9213",
+      "output_fingerprint": "b76440fd378dc017151128e174214acb91bc27ba034bdbdbbe7039572174f84b",
+      "expected_output_fingerprint": "b76440fd378dc017151128e174214acb91bc27ba034bdbdbbe7039572174f84b",
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 5.0
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 13.0
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 13.0
+        }
+      ],
+      "expected_decision": "accept",
+      "verifier_decision": "accept",
+      "rejection_reason": null,
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched"
+      ],
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::execute_grad"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case valid_grad_jit_order_sensitive --enforce"
+    },
+    {
+      "case_id": "valid_vmap_grad_fixture",
+      "status": "pass",
+      "proof_kind": "semantic_replay",
+      "compatibility_mode": "strict",
+      "program": "sin(x)",
+      "oracle_fixture_id": "vmap_grad_sin",
+      "fixture_link_required": true,
+      "transform_stack": [
+        "vmap",
+        "grad"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-valid_vmap_grad_fixture-vmap-0",
+        "ttl-semantic-valid_vmap_grad_fixture-grad-1"
+      ],
+      "transform_count": 2,
+      "evidence_count": 2,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:sin(v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:sin(v1,)->v2,{}|",
+      "stack_signature": "stack=vmap>grad>|evidence=vmap:43:ttl-semantic-valid_vmap_grad_fixture-vmap-0;grad:43:ttl-semantic-valid_vmap_grad_fixture-grad-1;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:sin(v1,)->v2,{}|",
+      "stack_hash_hex": "2fcd826e5e5a9588",
+      "output_fingerprint": "aee1b51ad516a1048aa8ddeb657523e0869393319b8a7bb608b6b94475eb106c",
+      "expected_output_fingerprint": "aee1b51ad516a1048aa8ddeb657523e0869393319b8a7bb608b6b94475eb106c",
+      "output_shapes": [
+        [
+          4
+        ]
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            4
+          ],
+          "values": [
+            0.0,
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            0.5403023058681398,
+            -0.4161468365471424,
+            -0.9899924966004454
+          ]
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            4
+          ],
+          "values": [
+            1.0,
+            0.5403023058681398,
+            -0.4161468365471424,
+            -0.9899924966004454
+          ]
+        }
+      ],
+      "expected_decision": "accept",
+      "verifier_decision": "accept",
+      "rejection_reason": null,
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched",
+        "oracle_fixture_linked"
+      ],
+      "evidence_refs": [
+        "crates/fj-conformance/fixtures/composition_oracle.v1.json::vmap_grad_sin"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case valid_vmap_grad_fixture --enforce"
+    },
+    {
+      "case_id": "fail_closed_grad_vmap_vector_output",
+      "status": "pass",
+      "proof_kind": "valid_proof_fail_closed_semantics",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": "analytic:strict-fail-closed:jax.grad(jax.vmap(lambda x: x*x))",
+      "fixture_link_required": false,
+      "transform_stack": [
+        "grad",
+        "vmap"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-fail_closed_grad_vmap_vector_output-grad-0",
+        "ttl-semantic-fail_closed_grad_vmap_vector_output-vmap-1"
+      ],
+      "transform_count": 2,
+      "evidence_count": 2,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": "stack=grad>vmap>|evidence=grad:55:ttl-semantic-fail_closed_grad_vmap_vector_output-grad-0;vmap:55:ttl-semantic-fail_closed_grad_vmap_vector_output-vmap-1;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_hash_hex": "f63dda71f79b996d",
+      "output_fingerprint": null,
+      "expected_output_fingerprint": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "output_shapes": [],
+      "output_dtypes": [],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "tensor",
+          "shape": [
+            3
+          ],
+          "values": [
+            1.0,
+            2.0,
+            3.0
+          ]
+        }
+      ],
+      "expected_outputs": [],
+      "actual_outputs": null,
+      "expected_decision": "reject",
+      "verifier_decision": "reject",
+      "rejection_reason": "transform_execution.non_scalar_gradient_input",
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched"
+      ],
+      "evidence_refs": [
+        "crates/fj-dispatch/src/lib.rs::execute_grad"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case fail_closed_grad_vmap_vector_output --enforce"
+    },
+    {
+      "case_id": "invalid_duplicate_evidence",
+      "status": "pass",
+      "proof_kind": "duplicate_evidence_rejection",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": null,
+      "fixture_link_required": false,
+      "transform_stack": [
+        "grad",
+        "grad"
+      ],
+      "evidence_ids": [
+        "grad-duplicate",
+        "grad-duplicate"
+      ],
+      "transform_count": 2,
+      "evidence_count": 2,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": null,
+      "stack_hash_hex": null,
+      "output_fingerprint": null,
+      "expected_output_fingerprint": null,
+      "output_shapes": [],
+      "output_dtypes": [],
+      "inputs": [],
+      "expected_outputs": [],
+      "actual_outputs": null,
+      "expected_decision": "reject",
+      "verifier_decision": "reject",
+      "rejection_reason": "transform_invariant.duplicate_evidence",
+      "structural_checks": [],
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::verify_transform_composition"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case invalid_duplicate_evidence --enforce"
+    },
+    {
+      "case_id": "invalid_missing_evidence",
+      "status": "pass",
+      "proof_kind": "missing_evidence_rejection",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": null,
+      "fixture_link_required": false,
+      "transform_stack": [
+        "jit"
+      ],
+      "evidence_ids": [],
+      "transform_count": 1,
+      "evidence_count": 0,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": null,
+      "stack_hash_hex": null,
+      "output_fingerprint": null,
+      "expected_output_fingerprint": null,
+      "output_shapes": [],
+      "output_dtypes": [],
+      "inputs": [],
+      "expected_outputs": [],
+      "actual_outputs": null,
+      "expected_decision": "reject",
+      "verifier_decision": "reject",
+      "rejection_reason": "transform_invariant.missing_evidence",
+      "structural_checks": [],
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::verify_transform_composition"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case invalid_missing_evidence --enforce"
+    },
+    {
+      "case_id": "invalid_stale_input_fingerprint",
+      "status": "pass",
+      "proof_kind": "stale_input_fingerprint_rejection",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": "analytic:stale-input-fingerprint-regression",
+      "fixture_link_required": false,
+      "transform_stack": [
+        "jit"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-invalid_stale_input_fingerprint-jit-0"
+      ],
+      "transform_count": 1,
+      "evidence_count": 1,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,v2,]const=[]out=[v3,]eqn:add(v1,v2,)->v3,{}|",
+      "stack_signature": "stack=jit>|evidence=jit:50:ttl-semantic-invalid_stale_input_fingerprint-jit-0;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_hash_hex": "e80216800da92658",
+      "output_fingerprint": "257ec416d8ef7d0f66b0ffc1198333007c112561191a8cfc0b18a2a937712f5f",
+      "expected_output_fingerprint": "257ec416d8ef7d0f66b0ffc1198333007c112561191a8cfc0b18a2a937712f5f",
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 4.0
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 16.0
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 16.0
+        }
+      ],
+      "expected_decision": "reject",
+      "verifier_decision": "reject",
+      "rejection_reason": "semantic.stale_input_fingerprint",
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "shape_dtype_matched"
+      ],
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::Jaxpr::canonical_fingerprint"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case invalid_stale_input_fingerprint --enforce"
+    },
+    {
+      "case_id": "invalid_wrong_transform_binding",
+      "status": "pass",
+      "proof_kind": "wrong_transform_binding_rejection",
+      "compatibility_mode": "strict",
+      "program": "x^2",
+      "oracle_fixture_id": null,
+      "fixture_link_required": false,
+      "transform_stack": [
+        "jit"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-grad-0"
+      ],
+      "transform_count": 1,
+      "evidence_count": 1,
+      "input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|",
+      "stack_signature": null,
+      "stack_hash_hex": null,
+      "output_fingerprint": null,
+      "expected_output_fingerprint": null,
+      "output_shapes": [],
+      "output_dtypes": [],
+      "inputs": [],
+      "expected_outputs": [],
+      "actual_outputs": null,
+      "expected_decision": "reject",
+      "verifier_decision": "reject",
+      "rejection_reason": "transform_invariant.wrong_transform_binding",
+      "structural_checks": [],
+      "evidence_refs": [
+        "crates/fj-core/src/lib.rs::verify_transform_composition"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case invalid_wrong_transform_binding --enforce"
+    },
+    {
+      "case_id": "invalid_missing_fixture_link",
+      "status": "pass",
+      "proof_kind": "missing_fixture_link_rejection",
+      "compatibility_mode": "strict",
+      "program": "x^2+3x",
+      "oracle_fixture_id": null,
+      "fixture_link_required": true,
+      "transform_stack": [
+        "jit",
+        "grad"
+      ],
+      "evidence_ids": [
+        "ttl-semantic-invalid_missing_fixture_link-jit-0",
+        "ttl-semantic-invalid_missing_fixture_link-grad-1"
+      ],
+      "transform_count": 2,
+      "evidence_count": 2,
+      "input_fingerprint": "in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "expected_input_fingerprint": "in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "stack_signature": "stack=jit>grad>|evidence=jit:47:ttl-semantic-invalid_missing_fixture_link-jit-0;grad:48:ttl-semantic-invalid_missing_fixture_link-grad-1;|jaxpr=in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(f64bits:4613937818241073152,v1,)->v3,{}|eqn:add(v2,v3,)->v4,{}|",
+      "stack_hash_hex": "01d5fc5749fbeb16",
+      "output_fingerprint": "b76440fd378dc017151128e174214acb91bc27ba034bdbdbbe7039572174f84b",
+      "expected_output_fingerprint": "b76440fd378dc017151128e174214acb91bc27ba034bdbdbbe7039572174f84b",
+      "output_shapes": [
+        []
+      ],
+      "output_dtypes": [
+        "f64"
+      ],
+      "inputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 5.0
+        }
+      ],
+      "expected_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 13.0
+        }
+      ],
+      "actual_outputs": [
+        {
+          "dtype": "f64",
+          "kind": "scalar",
+          "shape": [],
+          "value": 13.0
+        }
+      ],
+      "expected_decision": "reject",
+      "verifier_decision": "reject",
+      "rejection_reason": "semantic.missing_oracle_fixture_link",
+      "structural_checks": [
+        "transform_stack_bound",
+        "evidence_ids_bound",
+        "canonical_input_fingerprint_matched",
+        "shape_dtype_matched"
+      ],
+      "evidence_refs": [
+        "crates/fj-conformance/fixtures/composition_oracle.v1.json::jit_grad_poly_x5.0"
+      ],
+      "replay_command": "./scripts/run_ttl_semantic_gate.sh --case invalid_missing_fixture_link --enforce"
+    }
+  ],
+  "issues": [],
+  "artifact_refs": [
+    "artifacts/conformance/ttl_semantic_proof_matrix.v1.json",
+    "artifacts/conformance/ttl_semantic_proof_matrix.v1.md"
+  ],
+  "replay_command": "./scripts/run_ttl_semantic_gate.sh --enforce"
+}

@@ -8,6 +8,7 @@ pub mod error_taxonomy;
 pub mod memory_performance;
 pub mod oracle_recapture;
 pub mod transform_control_flow;
+pub mod ttl_semantic;
 
 use fj_core::{
     CompatibilityMode, ProgramSpec, TraceTransformLedger, Transform, Value, build_program,

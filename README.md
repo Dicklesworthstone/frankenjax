@@ -137,7 +137,7 @@ mul_vjp for v2:  g_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
 ## Design Philosophy
 
 **1. Transform composition semantics are non-negotiable.**
-Every transform composition produces an auditable evidence artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL). The current verifier checks deterministic ledger structure, evidence-to-transform binding, duplicate evidence IDs, and evidence-bound stack signatures.
+Every transform composition produces an auditable evidence artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL). The verifier checks deterministic ledger structure, evidence-to-transform binding, duplicate evidence IDs, evidence-bound stack signatures, and the `ttl_semantic_proof_matrix.v1` gate replays representative `jit`, `grad`, `vmap`, `jit(grad)`, `grad(jit)`, `vmap(grad)`, and fail-closed `grad(vmap)` rows against structural output metadata and oracle fixture links.
 
 **2. Differential conformance, not reimplementation faith.**
 Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 848 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
@@ -1101,7 +1101,7 @@ A: We capture oracle fixtures from real JAX 0.9.2 (848 cases), then run our Rust
 A: Yes. All 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Numerical verification tests confirm correctness via finite-difference comparison.
 
 **Q: What's the Trace Transform Ledger?**
-A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Verification binds evidence entries to their transforms and includes evidence content in the stack signature.
+A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Verification binds evidence entries to their transforms, includes evidence content in the stack signature, and the TTL semantic gate replays representative stacks with canonical fingerprints, output shape/dtype metadata, fixture links, and deterministic rejection reasons for invalid proof chains.
 
 **Q: How fast is it?**
 A: Performance optimization is ongoing and evidence-gated. The CPU backend uses a dependency-wave parallel executor, the e-graph optimizer applies 87 algebraic simplification rules, and `artifacts/performance/global_performance_gate.v1.json` ties trace, compile/dispatch, execute, cold-cache, warm-cache, and memory phases to checked evidence. The memory phase links to `artifacts/performance/memory_performance_gate.v1.json`, which records Linux procfs RSS measurements for trace, dispatch, AD, vmap, FFT, linalg, cache hit/miss, and durability workloads without synthesizing allocation counts.
