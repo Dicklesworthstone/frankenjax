@@ -715,6 +715,56 @@ fn oracle_reduce_or_negative_axis_rank2() {
 }
 
 #[test]
+fn oracle_reduce_sum_duplicate_axes_after_normalization_errors() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![2, 3] },
+            vec![
+                Literal::I64(1),
+                Literal::I64(2),
+                Literal::I64(3),
+                Literal::I64(4),
+                Literal::I64(5),
+                Literal::I64(6),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let err = eval_primitive(Primitive::ReduceSum, &[input], &axes_params("1,-1")).unwrap_err();
+    assert!(
+        err.to_string().contains("duplicate value in axes"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn oracle_reduce_or_duplicate_axes_after_normalization_errors() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape { dims: vec![2, 3] },
+            vec![
+                Literal::Bool(false),
+                Literal::Bool(false),
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::Bool(false),
+                Literal::Bool(false),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let err = eval_primitive(Primitive::ReduceOr, &[input], &axes_params("1,-1")).unwrap_err();
+    assert!(
+        err.to_string().contains("duplicate value in axes"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn oracle_reduce_negative_axis_out_of_bounds_errors() {
     let input = Value::vector_i64(&[1, 2, 3]).unwrap();
     let err = eval_primitive(Primitive::ReduceSum, &[input], &axes_params("-2")).unwrap_err();

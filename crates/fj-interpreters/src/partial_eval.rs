@@ -11,7 +11,7 @@
 //! Invariant: eval(jaxpr_known, known_inputs) ++ eval(jaxpr_unknown, residuals ++ unknown_inputs)
 //!            == eval(original_jaxpr, all_inputs)
 
-use fj_core::{AbstractValue, Atom, DType, Equation, Jaxpr, Shape, Value, VarId};
+use fj_core::{AbstractValue, Atom, DType, Equation, Jaxpr, Primitive, Shape, Value, VarId};
 
 /// Classification of a value during partial evaluation.
 #[derive(Debug, Clone)]
@@ -77,6 +77,11 @@ pub enum PartialEvalError {
     UndefinedVariable(VarId),
     /// Residual type mismatch between known outputs and unknown inputs.
     ResidualTypeMismatch { index: usize },
+    /// Shape inference failed while computing residual abstract values.
+    ShapeInference {
+        primitive: Primitive,
+        detail: String,
+    },
 }
 
 impl std::fmt::Display for PartialEvalError {
@@ -99,6 +104,14 @@ impl std::fmt::Display for PartialEvalError {
             Self::UndefinedVariable(var) => write!(f, "undefined variable v{}", var.0),
             Self::ResidualTypeMismatch { index } => {
                 write!(f, "residual type mismatch at index {}", index)
+            }
+            Self::ShapeInference { primitive, detail } => {
+                write!(
+                    f,
+                    "shape inference failed for {}: {}",
+                    primitive.as_str(),
+                    detail
+                )
             }
         }
     }
@@ -272,7 +285,7 @@ pub fn partial_eval_jaxpr_typed_with_consts(
                     })
                     .collect();
                 if !input_avals.is_empty() {
-                    let out_avals = infer_equation_output_avals(eqn, &input_avals);
+                    let out_avals = infer_equation_output_avals(eqn, &input_avals)?;
                     for (out_var, out_aval) in eqn.outputs.iter().zip(out_avals) {
                         var_aval[out_var.0 as usize] = Some(out_aval);
                     }
@@ -473,50 +486,41 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
 fn infer_equation_output_avals(
     eqn: &Equation,
     input_avals: &[AbstractValue],
-) -> Vec<AbstractValue> {
+) -> Result<Vec<AbstractValue>, PartialEvalError> {
     let Some(first_input) = input_avals.first() else {
-        return vec![];
+        return Ok(vec![]);
     };
 
     use fj_core::Primitive::*;
     match eqn.primitive {
-        Qr => infer_qr_output_avals(first_input, eqn),
-        Svd => infer_svd_output_avals(first_input, eqn),
-        Eigh => infer_eigh_output_avals(first_input),
-        _ => vec![infer_equation_output_aval(eqn, first_input); eqn.outputs.len()],
+        Qr => Ok(infer_qr_output_avals(first_input, eqn)),
+        Svd => Ok(infer_svd_output_avals(first_input, eqn)),
+        Eigh => Ok(infer_eigh_output_avals(first_input)),
+        _ => {
+            let out_aval = infer_equation_output_aval(eqn, first_input)?;
+            Ok(vec![out_aval; eqn.outputs.len()])
+        }
     }
 }
 
-fn infer_equation_output_aval(eqn: &Equation, first_input: &AbstractValue) -> AbstractValue {
+fn infer_equation_output_aval(
+    eqn: &Equation,
+    first_input: &AbstractValue,
+) -> Result<AbstractValue, PartialEvalError> {
     use fj_core::Primitive::*;
-    match eqn.primitive {
+    let out_aval = match eqn.primitive {
         // Comparisons always produce Bool
         Eq | Ne | Lt | Le | Gt | Ge => AbstractValue {
             dtype: DType::Bool,
             shape: first_input.shape.clone(),
         },
         // Reductions: honour "axes" param when present
-        ReduceSum | ReduceMax | ReduceMin | ReduceProd => {
+        ReduceSum | ReduceMax | ReduceMin | ReduceProd | ReduceAnd | ReduceOr | ReduceXor => {
             let reduced_shape = match eqn.params.get("axes") {
                 Some(axes_str) if !axes_str.trim().is_empty() => {
-                    let axes: Vec<usize> = axes_str
-                        .split(',')
-                        .filter_map(|s| s.trim().parse::<usize>().ok())
-                        .collect();
-                    let remaining: Vec<u32> = first_input
-                        .shape
-                        .dims
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, _)| !axes.contains(i))
-                        .map(|(_, &d)| d)
-                        .collect();
-                    if remaining.is_empty() {
-                        Shape::scalar()
-                    } else {
-                        Shape { dims: remaining }
-                    }
+                    reduction_shape_from_axes(eqn.primitive, &first_input.shape, axes_str)?
                 }
+                Some(_) => first_input.shape.clone(),
                 _ => Shape::scalar(),
             };
             AbstractValue {
@@ -708,7 +712,51 @@ fn infer_equation_output_aval(eqn: &Equation, first_input: &AbstractValue) -> Ab
         }
         // Most element-wise ops preserve dtype and shape
         _ => first_input.clone(),
+    };
+    Ok(out_aval)
+}
+
+fn reduction_shape_from_axes(
+    primitive: Primitive,
+    input_shape: &Shape,
+    axes_str: &str,
+) -> Result<Shape, PartialEvalError> {
+    let rank = input_shape.rank();
+    let mut axes = Vec::new();
+    for piece in axes_str.split(',').map(str::trim) {
+        let axis = piece
+            .parse::<i64>()
+            .map_err(|_| PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("invalid axis value: {piece}"),
+            })?;
+        let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+        if normalized < 0 || normalized >= rank as i64 {
+            return Err(PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("axis {axis} out of bounds for rank {rank}"),
+            });
+        }
+
+        let normalized = normalized as usize;
+        if axes.contains(&normalized) {
+            return Err(PartialEvalError::ShapeInference {
+                primitive,
+                detail: format!("duplicate value in axes: {axis}"),
+            });
+        }
+        axes.push(normalized);
     }
+
+    axes.sort_unstable();
+    let remaining = input_shape
+        .dims
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !axes.contains(i))
+        .map(|(_, &d)| d)
+        .collect();
+    Ok(Shape { dims: remaining })
 }
 
 fn infer_qr_output_avals(input: &AbstractValue, eqn: &Equation) -> Vec<AbstractValue> {
@@ -1599,8 +1647,8 @@ mod tests {
                         shape: Shape::scalar(),
                     },
                 ];
-                let result =
-                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                let result = partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals))
+                    .map_err(|err| err.to_string())?;
                 assert!(!result.residual_avals.is_empty(), "should have residuals");
                 assert_eq!(
                     result.residual_avals[0].dtype,
@@ -1658,8 +1706,8 @@ mod tests {
                         shape: Shape::scalar(),
                     },
                 ];
-                let result =
-                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                let result = partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals))
+                    .map_err(|err| err.to_string())?;
                 // v3 is produced by Eq → Bool, and consumed by Select (unknown)
                 let eq_residual = result
                     .residual_avals
@@ -2179,6 +2227,13 @@ mod tests {
                 let e4 = PartialEvalError::ResidualTypeMismatch { index: 7 };
                 assert!(format!("{e4}").contains("7"));
 
+                let e5 = PartialEvalError::ShapeInference {
+                    primitive: Primitive::ReduceSum,
+                    detail: "duplicate value in axes: -1".to_owned(),
+                };
+                assert!(format!("{e5}").contains("reduce_sum"));
+                assert!(format!("{e5}").contains("duplicate"));
+
                 // Error trait impl
                 let _: &dyn std::error::Error = &e1;
                 Ok(vec![])
@@ -2271,8 +2326,8 @@ mod tests {
                         shape: Shape { dims: vec![4] },
                     },
                 ];
-                let result =
-                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                let result = partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals))
+                    .map_err(|err| err.to_string())?;
                 assert!(!result.residual_avals.is_empty(), "should have residuals");
                 assert_eq!(
                     result.residual_avals[0].shape.dims,
@@ -2329,8 +2384,8 @@ mod tests {
                         shape: Shape { dims: vec![2] },
                     },
                 ];
-                let result =
-                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                let result = partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals))
+                    .map_err(|err| err.to_string())?;
                 assert!(!result.residual_avals.is_empty());
                 assert_eq!(
                     result.residual_avals[0].shape.dims,
@@ -2338,6 +2393,190 @@ mod tests {
                     "axis-1 reduction of [2,3] should produce shape [2]"
                 );
                 assert_eq!(result.residual_avals[0].dtype, DType::I64);
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_reduce_negative_axis_preserves_reduced_shape() {
+        run_logged_test(
+            "test_pe_typed_reduce_negative_axis_preserves_reduced_shape",
+            &("pe", "typed", "reduce_negative_axis"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // a(known, F64, [2,3]) -> reduce_sum(a, axes="-1") = v3([2])
+                //   -> add(v3, b(unknown)) = v4
+                let mut reduce_params = BTreeMap::new();
+                reduce_params.insert("axes".to_owned(), "-1".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::ReduceSum,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: reduce_params,
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2, 3] },
+                    },
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2] },
+                    },
+                ];
+                let result = partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals))
+                    .map_err(|err| err.to_string())?;
+                assert_eq!(
+                    result.residual_avals,
+                    vec![AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2] },
+                    }],
+                    "axis -1 reduction of [2,3] should produce shape [2]"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_bitwise_reduce_axis_preserves_reduced_shape() {
+        run_logged_test(
+            "test_pe_typed_bitwise_reduce_axis_preserves_reduced_shape",
+            &("pe", "typed", "bitwise_reduce_axis"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // a(known, Bool, [2,3]) -> reduce_or(a, axes="1") = v3([2])
+                //   -> eq(v3, b(unknown)) = v4
+                let mut reduce_params = BTreeMap::new();
+                reduce_params.insert("axes".to_owned(), "1".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::ReduceOr,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: reduce_params,
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Eq,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue {
+                        dtype: DType::Bool,
+                        shape: Shape { dims: vec![2, 3] },
+                    },
+                    AbstractValue {
+                        dtype: DType::Bool,
+                        shape: Shape { dims: vec![2] },
+                    },
+                ];
+                let result = partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals))
+                    .map_err(|err| err.to_string())?;
+                assert_eq!(
+                    result.residual_avals,
+                    vec![AbstractValue {
+                        dtype: DType::Bool,
+                        shape: Shape { dims: vec![2] },
+                    }],
+                    "bitwise axis reduction of [2,3] should produce shape [2]"
+                );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_reduce_rejects_duplicate_axes_after_normalization() {
+        run_logged_test(
+            "test_pe_typed_reduce_rejects_duplicate_axes_after_normalization",
+            &("pe", "typed", "reduce_duplicate_axes"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut reduce_params = BTreeMap::new();
+                reduce_params.insert("axes".to_owned(), "1,-1".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::ReduceSum,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: reduce_params,
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2, 3] },
+                    },
+                    AbstractValue {
+                        dtype: DType::F64,
+                        shape: Shape { dims: vec![2] },
+                    },
+                ];
+
+                let err = match partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)) {
+                    Ok(result) => {
+                        return Err(format!(
+                            "expected duplicate-axis error, got result: {result:?}"
+                        ));
+                    }
+                    Err(err) => err,
+                };
+                match err {
+                    PartialEvalError::ShapeInference { primitive, detail } => {
+                        assert_eq!(primitive, Primitive::ReduceSum);
+                        assert!(
+                            detail.contains("duplicate value in axes"),
+                            "unexpected detail: {detail}"
+                        );
+                    }
+                    other => return Err(format!("unexpected error: {other}")),
+                }
                 Ok(vec![])
             },
         );

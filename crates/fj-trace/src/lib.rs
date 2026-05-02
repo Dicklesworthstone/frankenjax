@@ -2134,18 +2134,9 @@ fn infer_reduce_sum(
     let input = &inputs[0];
     let mut out_dims = input.shape.dims.clone();
     if let Some(raw_axes) = params.get("axes") {
-        let axes = parse_usize_list(primitive, "axes", raw_axes)?;
-        let axes_set = axes.into_iter().collect::<BTreeSet<_>>();
-        for axis in axes_set.iter().rev() {
-            if *axis >= out_dims.len() {
-                return Err(TraceError::ShapeInferenceFailed {
-                    primitive,
-                    detail: format!(
-                        "axis {} out of bounds for shape {:?}",
-                        axis, input.shape.dims
-                    ),
-                });
-            }
+        let mut axes = parse_reduction_axes(primitive, raw_axes, out_dims.len())?;
+        axes.sort_unstable();
+        for axis in axes.iter().rev() {
             out_dims.remove(*axis);
         }
     } else {
@@ -3373,6 +3364,45 @@ fn parse_usize_list(
                 })
         })
         .collect()
+}
+
+fn parse_reduction_axes(
+    primitive: Primitive,
+    raw: &str,
+    rank: usize,
+) -> Result<Vec<usize>, TraceError> {
+    if raw.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut axes = Vec::new();
+    for piece in raw.split(',').map(str::trim) {
+        let axis = piece
+            .parse::<i64>()
+            .map_err(|_| TraceError::InvalidPrimitiveParam {
+                primitive,
+                key: "axes",
+                value: raw.to_owned(),
+            })?;
+        let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+        if normalized < 0 || normalized >= rank as i64 {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: format!("axis {axis} out of bounds for rank {rank}"),
+            });
+        }
+
+        let normalized = normalized as usize;
+        if axes.contains(&normalized) {
+            return Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: format!("duplicate value in axes: {axis}"),
+            });
+        }
+        axes.push(normalized);
+    }
+
+    Ok(axes)
 }
 
 fn parse_i64_list(
@@ -5555,6 +5585,64 @@ mod tests {
                 let aval = ctx.tracer_aval(out[0]).expect("aval present");
                 assert_eq!(aval.dtype, DType::Bool);
                 assert_eq!(aval.shape, Shape { dims: vec![2, 4] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_reduce_sum_negative_axis() {
+        run_logged_test(
+            "test_infer_reduce_sum_negative_axis",
+            fj_test_utils::fixture_id_from_json(&("reduce-sum-shape", "negative-axis"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape { dims: vec![2, 3] },
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), "-1".to_owned());
+                let out = ctx
+                    .process_primitive(Primitive::ReduceSum, &[TracerId(1)], params)
+                    .expect("reduce_sum should canonicalize negative axes");
+                let aval = ctx.tracer_aval(out[0]).expect("aval present");
+                assert_eq!(aval.dtype, DType::I64);
+                assert_eq!(aval.shape, Shape { dims: vec![2] });
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn test_infer_reduce_sum_rejects_duplicate_axes_after_normalization() {
+        run_logged_test(
+            "test_infer_reduce_sum_rejects_duplicate_axes_after_normalization",
+            fj_test_utils::fixture_id_from_json(&("reduce-sum-shape", "duplicate-axes"))
+                .expect("fixture digest"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ctx = SimpleTraceContext::with_inputs(vec![ShapedArray {
+                    dtype: DType::I64,
+                    shape: Shape { dims: vec![2, 3] },
+                }]);
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), "1,-1".to_owned());
+                let err = ctx
+                    .process_primitive(Primitive::ReduceSum, &[TracerId(1)], params)
+                    .expect_err("duplicate canonical reduce axes should be rejected");
+                assert!(matches!(
+                    err,
+                    super::TraceError::ShapeInferenceFailed {
+                        primitive: Primitive::ReduceSum,
+                        ..
+                    }
+                ));
+                assert!(
+                    err.to_string().contains("duplicate value in axes"),
+                    "unexpected error: {err}"
+                );
                 Ok(Vec::new())
             },
         );

@@ -33,24 +33,31 @@ fn parse_reduction_axes(
     raw_axes: &str,
     rank: usize,
 ) -> Result<Vec<usize>, EvalError> {
-    raw_axes
-        .split(',')
-        .map(|raw_axis| {
-            let trimmed = raw_axis.trim();
-            let axis = trimmed.parse::<i64>().map_err(|_| EvalError::Unsupported {
+    let mut axes = Vec::new();
+    for raw_axis in raw_axes.split(',') {
+        let trimmed = raw_axis.trim();
+        let axis = trimmed.parse::<i64>().map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid axis value: {trimmed}"),
+        })?;
+        let normalized = if axis < 0 { rank as i64 + axis } else { axis };
+        if normalized < 0 || normalized >= rank as i64 {
+            return Err(EvalError::Unsupported {
                 primitive,
-                detail: format!("invalid axis value: {trimmed}"),
-            })?;
-            let normalized = if axis < 0 { rank as i64 + axis } else { axis };
-            if normalized < 0 || normalized >= rank as i64 {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: format!("axis {axis} out of bounds for rank {rank}"),
-                });
-            }
-            Ok(normalized as usize)
-        })
-        .collect()
+                detail: format!("axis {axis} out of bounds for rank {rank}"),
+            });
+        }
+
+        let normalized = normalized as usize;
+        if axes.contains(&normalized) {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("duplicate value in axes: {axis}"),
+            });
+        }
+        axes.push(normalized);
+    }
+    Ok(axes)
 }
 
 fn parse_bool_param(
@@ -192,7 +199,6 @@ pub(crate) fn eval_reduce_axes(
             let rank = tensor.shape.rank();
             let mut axes_sorted = parse_reduction_axes(primitive, axes_str, rank)?;
             axes_sorted.sort_unstable();
-            axes_sorted.dedup();
 
             // If reducing all axes, just do full reduction
             if axes_sorted.len() == rank {
@@ -388,7 +394,6 @@ pub(crate) fn eval_reduce_bitwise_axes(
                 parse_reduction_axes(primitive, raw_axes, rank)?
             };
             axes_sorted.sort_unstable();
-            axes_sorted.dedup();
 
             let reduce_all_axes = reduce_all || axes_sorted.len() == rank;
 
@@ -1000,6 +1005,66 @@ mod tests {
         assert_eq!(vals.len(), 2);
         assert!((vals[0] - 3.0).abs() < 1e-12);
         assert!((vals[1] - 7.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn reduce_axes_rejects_duplicate_axes_after_normalization() {
+        let m = mat_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1,-1".to_owned());
+
+        let err = eval_reduce_axes(
+            Primitive::ReduceSum,
+            &[m],
+            &params,
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .expect_err("duplicate canonical axes should be rejected")
+        .to_string();
+
+        assert!(
+            err.contains("duplicate value in axes"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn bitwise_reduce_axes_rejects_duplicate_axes_after_normalization() {
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::Bool(true),
+                    Literal::Bool(false),
+                    Literal::Bool(false),
+                    Literal::Bool(true),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1,-1".to_owned());
+
+        let err = eval_reduce_bitwise_axes(
+            Primitive::ReduceOr,
+            &[x],
+            &params,
+            0,
+            false,
+            |a, b| a | b,
+            |a, b| a || b,
+        )
+        .expect_err("duplicate canonical bitwise axes should be rejected")
+        .to_string();
+
+        assert!(
+            err.contains("duplicate value in axes"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
