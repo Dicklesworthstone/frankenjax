@@ -91,6 +91,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "e2e_forensic_log.v1",
         "failure_diagnostic.v1",
         "vision_evidence_map.v1",
+        "security_threat_model.v1",
     ];
 
     for schema_name in schemas {
@@ -635,5 +636,60 @@ fn vision_evidence_map_artifact_validates_against_schema() {
         total,
         red + yellow + green,
         "summary counts must add up to total"
+    );
+}
+
+#[test]
+fn security_threat_model_artifact_validates_against_schema() {
+    let root = repo_root();
+    let model_path = root.join("artifacts/conformance/security_threat_model.v1.json");
+    if !model_path.exists() {
+        return;
+    }
+    validate_schema_instance(
+        "security_threat_model.v1",
+        "artifacts/conformance/security_threat_model.v1.json",
+    );
+    let model = read_json(&model_path);
+    assert_eq!(
+        model["schema_version"], "frankenjax.security-threat-model.v1",
+        "security threat model schema marker changed"
+    );
+    assert_eq!(
+        model["bead_id"], "frankenjax-cstq.17",
+        "model must stay bound to the security gate bead"
+    );
+    let categories = model["threat_categories"]
+        .as_array()
+        .expect("threat_categories must be an array");
+    assert!(
+        !categories.is_empty(),
+        "model must contain at least one threat category"
+    );
+    for category in categories {
+        let evidence_status = category["evidence_status"].as_str().unwrap();
+        assert!(
+            ["red", "yellow", "green"].contains(&evidence_status),
+            "category evidence_status must be red, yellow, or green"
+        );
+        let evidence_refs = category["evidence_refs"]
+            .as_array()
+            .expect("evidence_refs must be array");
+        if evidence_status == "green" && evidence_refs.is_empty() {
+            panic!(
+                "green category {} must have at least one evidence ref",
+                category["category_id"]
+            );
+        }
+    }
+    let summary = &model["summary"];
+    let total = summary["total_categories"].as_i64().unwrap();
+    let green = summary["evidence_green"].as_i64().unwrap();
+    let yellow = summary["evidence_yellow"].as_i64().unwrap();
+    let red = summary["evidence_red"].as_i64().unwrap();
+    assert_eq!(
+        total,
+        green + yellow + red,
+        "summary counts must add up to total_categories"
     );
 }

@@ -1,0 +1,8 @@
+{
+  "schema_version": "frankenjax.security-threat-model.v1",
+  "bead_id": "frankenjax-cstq.17",
+  "generated_at_unix_ms": 1777693500000,
+  "status": "invalid_status",
+  "description": "Invalid threat model - bad status",
+  "threat_categories": []
+}

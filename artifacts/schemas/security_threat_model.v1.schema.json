@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://frankenjax.dev/schemas/security_threat_model.v1.schema.json",
+  "title": "FrankenJAX Security Threat Model v1",
+  "description": "Threat model matrix for security boundaries with evidence refs and fuzz coverage.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bead_id",
+    "generated_at_unix_ms",
+    "status",
+    "description",
+    "threat_categories",
+    "summary",
+    "replay_command"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "frankenjax.security-threat-model.v1"
+    },
+    "bead_id": {
+      "type": "string",
+      "pattern": "^frankenjax-[a-z0-9.]+$"
+    },
+    "generated_at_unix_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "status": {
+      "type": "string",
+      "enum": ["bootstrap", "partial", "complete"]
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "threat_categories": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/threat_category"
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_categories",
+        "evidence_green",
+        "evidence_yellow",
+        "evidence_red",
+        "fuzz_started",
+        "fuzz_complete"
+      ],
+      "properties": {
+        "total_categories": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_green": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_yellow": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_red": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fuzz_started": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fuzz_complete": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "next_steps": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "replay_command": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "threat_category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category_id",
+        "name",
+        "description",
+        "boundaries",
+        "controls",
+        "evidence_status",
+        "evidence_refs",
+        "fuzz_status"
+      ],
+      "properties": {
+        "category_id": {
+          "type": "string",
+          "pattern": "^tc_[a-z0-9_]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "controls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "evidence_status": {
+          "type": "string",
+          "enum": ["green", "yellow", "red"]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fuzz_status": {
+          "type": "string",
+          "enum": ["not_started", "in_progress", "complete"]
+        },
+        "fuzz_coverage_pct": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 100
+        }
+      }
+    }
+  }
+}

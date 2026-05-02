@@ -1,0 +1,157 @@
+{
+  "schema_version": "frankenjax.security-threat-model.v1",
+  "bead_id": "frankenjax-cstq.17",
+  "generated_at_unix_ms": 1777727500000,
+  "status": "bootstrap",
+  "description": "Threat model matrix for V1 security boundaries. Bootstrap phase - coverage is partial.",
+  "threat_categories": [
+    {
+      "category_id": "tc_cache_confusion",
+      "name": "Cache Key Confusion",
+      "description": "Malicious cache metadata causing incorrect dispatch or state pollution",
+      "boundaries": ["fj-cache::strict_key_hash", "fj-cache::hardened_key_hash"],
+      "controls": [
+        "Strict mode rejects unknown features",
+        "Hardened mode preserves unknown features in deterministic payload"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::cache_strict_unknown_feature",
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::cache_hardened_unknown_feature"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_ir_validation",
+      "name": "Malformed IR/Jaxpr Graphs",
+      "description": "Invalid variable bindings, missing definitions, cyclic references",
+      "boundaries": ["fj-core::Jaxpr::validate_well_formed"],
+      "controls": [
+        "Typed rejection for unknown outvars",
+        "Typed rejection for arity mismatches"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::ir_validation_unknown_outvar",
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_arity_add"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_transform_proof",
+      "name": "Transform Proof Hygiene",
+      "description": "Duplicate or missing evidence in transform ledger",
+      "boundaries": ["fj-core::verify_transform_composition"],
+      "controls": [
+        "Typed rejection for duplicate evidence",
+        "Typed rejection for evidence count mismatch"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::transform_proof_duplicate_evidence",
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::transform_proof_missing_evidence"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_primitive_validation",
+      "name": "Primitive Arity/Type/Shape",
+      "description": "Wrong number of inputs, wrong dtype, incompatible shapes",
+      "boundaries": ["fj-lax::eval_primitive", "fj-trace::trace_primitive"],
+      "controls": [
+        "Typed arity errors",
+        "Typed dtype promotion errors",
+        "Typed shape broadcast errors"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_arity_add",
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_dtype_promotion",
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_shape_add_broadcast"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_interpreter_missing",
+      "name": "Interpreter Missing Variables",
+      "description": "Execution with undefined variable bindings",
+      "boundaries": ["fj-interpreters::interpret_jaxpr"],
+      "controls": [
+        "Typed missing variable errors"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::interpreter_missing_var"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_vmap_axis",
+      "name": "Vmap Axis Mismatch",
+      "description": "Invalid in_axes/out_axes specifications",
+      "boundaries": ["fj-dispatch::BatchTrace"],
+      "controls": [
+        "Typed axis mismatch errors"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::vmap_axis_mismatch"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_durability_corruption",
+      "name": "Artifact Corruption / Missing Sidecars",
+      "description": "Corrupt or missing durability triplets",
+      "boundaries": ["fj-conformance::durability"],
+      "controls": [
+        "RaptorQ recovery for corrupted artifacts",
+        "Typed errors for missing sidecars"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::durability_missing_artifact",
+        "artifacts/conformance/durability_coverage_policy.v1.json"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    },
+    {
+      "category_id": "tc_unsupported_transform",
+      "name": "Unsupported Transform Combinations",
+      "description": "V1 unsupported transform/control-flow combinations",
+      "boundaries": ["fj-dispatch::dispatch_transform"],
+      "controls": [
+        "Typed fail-closed errors for unsupported combinations"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::unsupported_transform_tail",
+        "artifacts/conformance/transform_control_flow_matrix.v1.json"
+      ],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    }
+  ],
+  "summary": {
+    "total_categories": 8,
+    "evidence_green": 8,
+    "evidence_yellow": 0,
+    "evidence_red": 0,
+    "fuzz_started": 0,
+    "fuzz_complete": 0
+  },
+  "next_steps": [
+    "Add adversarial fixture families for each category",
+    "Implement fuzz harnesses for parser/validator boundaries",
+    "Add property-based tests for shape/dtype validation",
+    "Create continuous fuzz regression corpus"
+  ],
+  "replay_command": "./scripts/run_security_gate.sh --enforce"
+}

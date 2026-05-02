@@ -1,0 +1,30 @@
+{
+  "schema_version": "frankenjax.security-threat-model.v1",
+  "bead_id": "frankenjax-cstq.17",
+  "generated_at_unix_ms": 1777693500000,
+  "status": "bootstrap",
+  "description": "Example threat model for schema validation",
+  "threat_categories": [
+    {
+      "category_id": "tc_example_cache",
+      "name": "Cache Confusion",
+      "description": "Malicious cache metadata",
+      "boundaries": ["fj-cache::key_hash"],
+      "controls": ["Typed rejection for unknown features"],
+      "evidence_status": "green",
+      "evidence_refs": ["artifacts/conformance/error_taxonomy_matrix.v1.json::example"],
+      "fuzz_status": "not_started",
+      "fuzz_coverage_pct": null
+    }
+  ],
+  "summary": {
+    "total_categories": 1,
+    "evidence_green": 1,
+    "evidence_yellow": 0,
+    "evidence_red": 0,
+    "fuzz_started": 0,
+    "fuzz_complete": 0
+  },
+  "next_steps": ["Add fuzz harnesses"],
+  "replay_command": "./scripts/run_security_gate.sh --enforce"
+}

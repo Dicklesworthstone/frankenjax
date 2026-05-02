@@ -1,0 +1,86 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.17",
+  "scenario_id": "e2e_security_gate",
+  "test_id": "security_gate_bootstrap",
+  "packet_id": null,
+  "command": ["./scripts/run_security_gate.sh", "--enforce"],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "1.97.0-nightly",
+    "cargo_version": "1.97.0-nightly",
+    "cargo_target_dir": "/data/tmp/cargo-target",
+    "env_vars": {},
+    "timestamp_unix_ms": 1777727561000
+  },
+  "feature_flags": [],
+  "fixture_ids": [],
+  "oracle_ids": [],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {
+    "threat_model_path": "artifacts/conformance/security_threat_model.v1.json",
+    "error_taxonomy_path": "artifacts/conformance/error_taxonomy_matrix.v1.json"
+  },
+  "expected": {
+    "taxonomy_status": "pass",
+    "all_categories_green": true
+  },
+  "actual": {
+    "taxonomy_status": "pass",
+    "threat_categories": 8,
+    "evidence_green": 8,
+    "evidence_yellow": 0,
+    "evidence_red": 0,
+    "model_status": "bootstrap"
+  },
+  "tolerance": {
+    "policy_id": "security_bootstrap",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "Bootstrap phase accepts yellow/partial evidence; enforcement phase requires all green"
+  },
+  "error": null,
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "threat_model",
+      "path": "artifacts/conformance/security_threat_model.v1.json",
+      "sha256": "d8a011141e92f4abcfa1a6ad93d8deac04831c7ab89bbcac43ebd63c552c1dec",
+      "required": true
+    },
+    {
+      "kind": "error_taxonomy",
+      "path": "artifacts/conformance/error_taxonomy_matrix.v1.json",
+      "sha256": "b097b49230743b162d0abd1f91c42772e9e4cf9ec7280b3ce953cfc0c3d57ecc",
+      "required": true
+    }
+  ],
+  "replay_command": "./scripts/run_security_gate.sh --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.17",
+      "title": "Prove security and adversarial fuzz gates"
+    },
+    "bootstrap_phase": true
+  }
+}
