@@ -6,6 +6,7 @@ pub mod durability;
 pub mod e2e_log;
 pub mod error_taxonomy;
 pub mod memory_performance;
+pub mod onboarding_command;
 pub mod oracle_recapture;
 pub mod security_adversarial;
 pub mod transform_control_flow;

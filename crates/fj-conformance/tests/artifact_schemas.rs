@@ -92,6 +92,7 @@ fn all_v1_artifact_schemas_have_valid_and_invalid_examples() {
         "failure_diagnostic.v1",
         "vision_evidence_map.v1",
         "security_threat_model.v1",
+        "onboarding_command_inventory.v1",
     ];
 
     for schema_name in schemas {
@@ -691,5 +692,60 @@ fn security_threat_model_artifact_validates_against_schema() {
         total,
         green + yellow + red,
         "summary counts must add up to total_categories"
+    );
+}
+
+#[test]
+fn onboarding_command_inventory_validates_against_schema() {
+    let root = repo_root();
+    let inv_path = root.join("artifacts/conformance/onboarding_command_inventory.v1.json");
+    if !inv_path.exists() {
+        return;
+    }
+    validate_schema_instance(
+        "onboarding_command_inventory.v1",
+        "artifacts/conformance/onboarding_command_inventory.v1.json",
+    );
+    let inv = read_json(&inv_path);
+    assert_eq!(
+        inv["schema_version"], "frankenjax.onboarding-command-inventory.v1",
+        "onboarding command inventory schema marker changed"
+    );
+    assert_eq!(
+        inv["bead_id"], "frankenjax-cstq.18",
+        "inventory must stay bound to the onboarding bead"
+    );
+    let commands = inv["commands"].as_array();
+    assert!(commands.is_some(), "commands must be an array");
+    let Some(commands) = commands else {
+        return;
+    };
+    assert!(
+        !commands.is_empty(),
+        "inventory must contain at least one command"
+    );
+    for cmd in commands {
+        let evidence_status = cmd["evidence_status"].as_str();
+        assert!(
+            evidence_status.is_some_and(|status| ["red", "yellow", "green"].contains(&status)),
+            "command evidence_status must be red, yellow, or green"
+        );
+        let replay_cmd = cmd["replay_command"].as_str().unwrap_or_default();
+        assert!(
+            !replay_cmd.is_empty(),
+            "command {} must have a replay_command",
+            cmd["command_id"]
+        );
+    }
+    let summary = &inv["summary"];
+    let status_total = summary["green_count"]
+        .as_i64()
+        .zip(summary["yellow_count"].as_i64())
+        .zip(summary["red_count"].as_i64())
+        .map(|((green, yellow), red)| green + yellow + red);
+    assert_eq!(
+        summary["total_commands"].as_i64(),
+        status_total,
+        "summary counts must add up to total_commands"
     );
 }

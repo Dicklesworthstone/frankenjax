@@ -1,0 +1,42 @@
+{
+  "schema_version": "frankenjax.onboarding-command-inventory.v1",
+  "bead_id": "frankenjax-cstq.18",
+  "generated_at_unix_ms": 1777693500000,
+  "status": "pass",
+  "description": "Invalid inventory - missing top-level replay_command",
+  "source_docs": ["README.md"],
+  "commands": [
+    {
+      "command_id": "cmd_example",
+      "command": "cargo build",
+      "smoke_command": null,
+      "classification": "mandatory_local_smoke",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo build",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": ["Cargo.toml"],
+      "source_refs": ["README.md::cargo build --workspace"],
+      "artifact_refs": []
+    }
+  ],
+  "summary": {
+    "total_commands": 1,
+    "green_count": 1,
+    "yellow_count": 0,
+    "red_count": 0,
+    "mandatory_smoke_count": 1,
+    "ci_gate_count": 0,
+    "optional_oracle_count": 0,
+    "long_running_count": 0,
+    "environment_specific_count": 0,
+    "schematic_count": 0,
+    "skip_count": 0,
+    "executable_smoke_count": 0,
+    "source_doc_ref_count": 1,
+    "evidence_ref_count": 1
+  },
+  "issues": []
+}

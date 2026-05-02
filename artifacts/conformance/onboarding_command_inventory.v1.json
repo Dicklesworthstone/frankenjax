@@ -1,0 +1,716 @@
+{
+  "schema_version": "frankenjax.onboarding-command-inventory.v1",
+  "bead_id": "frankenjax-cstq.18",
+  "generated_at_unix_ms": 1777730737891,
+  "status": "pass",
+  "description": "Replayable inventory of README and key-document commands for fresh-clone onboarding, CI gates, durability, E2E orchestration, fuzzing, and optional JAX oracle setup.",
+  "source_docs": [
+    "README.md",
+    "AGENTS.md",
+    "FEATURE_PARITY.md"
+  ],
+  "commands": [
+    {
+      "command_id": "cmd_git_clone",
+      "command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
+      "smoke_command": null,
+      "classification": "schematic",
+      "expected_exit": 0,
+      "skip_reason": "Clone command is user-environment setup, not replayed inside an existing checkout",
+      "replay_command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "README.md"
+      ],
+      "source_refs": [
+        "README.md::git clone https://github.com/Dicklesworthstone/frankenjax.git"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_rustup_install_nightly",
+      "command": "rustup install nightly",
+      "smoke_command": null,
+      "classification": "environment_specific",
+      "expected_exit": 0,
+      "skip_reason": "Toolchain installation mutates user-level Rust state; rust-toolchain.toml is the replayable source of truth",
+      "replay_command": "rustup install nightly",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "rust-toolchain.toml"
+      ],
+      "source_refs": [
+        "README.md::rustup install nightly"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_rustup_override_nightly",
+      "command": "rustup override set nightly",
+      "smoke_command": null,
+      "classification": "environment_specific",
+      "expected_exit": 0,
+      "skip_reason": "Repository uses rust-toolchain.toml; per-directory rustup override is documented for manual setup only",
+      "replay_command": "rustup override set nightly",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "rust-toolchain.toml"
+      ],
+      "source_refs": [
+        "README.md::rustup override set nightly"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_build_workspace",
+      "command": "cargo build --workspace",
+      "smoke_command": "cargo metadata --no-deps --format-version 1",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo build --workspace",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "Cargo.toml"
+      ],
+      "source_refs": [
+        "README.md::cargo build --workspace"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_test_workspace",
+      "command": "cargo test --workspace",
+      "smoke_command": "cargo test -p fj-conformance --test smoke smoke_report_is_stable -- --exact --nocapture",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo test --workspace",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/smoke.rs"
+      ],
+      "source_refs": [
+        "README.md::cargo test --workspace"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_release_build",
+      "command": "cargo build --workspace --release",
+      "smoke_command": null,
+      "classification": "long_running",
+      "expected_exit": 0,
+      "skip_reason": "Release LTO build is intentionally long-running; normal gate proves the command is documented and replayable",
+      "replay_command": "cargo build --workspace --release",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "Cargo.toml"
+      ],
+      "source_refs": [
+        "README.md::cargo build --workspace --release"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_api_readme_examples",
+      "command": "./scripts/run_api_readme_examples.sh --enforce",
+      "smoke_command": "./scripts/run_api_readme_examples.sh --enforce",
+      "classification": "mandatory_local_smoke",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/run_api_readme_examples.sh --enforce",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/run_api_readme_examples.sh",
+        "crates/fj-api/examples/readme_quickstart.rs",
+        "artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_api_readme_examples.sh --enforce"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_architecture_boundary_gate",
+      "command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+      "smoke_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/run_architecture_boundary_gate.sh",
+        "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_architecture_boundary_gate.sh --enforce"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_cache_lifecycle_gate",
+      "command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+      "smoke_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/run_cache_lifecycle_gate.sh",
+        "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_cache_lifecycle_gate.sh --enforce"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_security_gate",
+      "command": "./scripts/run_security_gate.sh --enforce",
+      "smoke_command": "./scripts/run_security_gate.sh --enforce",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/run_security_gate.sh --enforce",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/run_security_gate.sh",
+        "artifacts/e2e/e2e_security_gate.e2e.json"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_security_gate.sh --enforce"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_security_gate.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_jax_oracle_venv",
+      "command": "uv venv --python 3.12 .venv",
+      "smoke_command": null,
+      "classification": "optional_oracle",
+      "expected_exit": 0,
+      "skip_reason": "Creates a local Python environment and may require network access",
+      "replay_command": "uv venv --python 3.12 .venv",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "README.md"
+      ],
+      "source_refs": [
+        "README.md::uv venv --python 3.12 .venv"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_jax_oracle_pip_install",
+      "command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
+      "smoke_command": null,
+      "classification": "optional_oracle",
+      "expected_exit": 0,
+      "skip_reason": "Downloads Python packages and is intentionally opt-in",
+      "replay_command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "README.md"
+      ],
+      "source_refs": [
+        "README.md::uv pip install --python .venv/bin/python jax jaxlib numpy"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_jax_oracle_clone",
+      "command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
+      "smoke_command": null,
+      "classification": "optional_oracle",
+      "expected_exit": 0,
+      "skip_reason": "Network clone of upstream JAX is optional for normal onboarding",
+      "replay_command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "README.md"
+      ],
+      "source_refs": [
+        "README.md::git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_capture_legacy_fixtures",
+      "command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
+      "smoke_command": null,
+      "classification": "optional_oracle",
+      "expected_exit": 0,
+      "skip_reason": "Requires optional JAX oracle environment and legacy source checkout",
+      "replay_command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "crates/fj-conformance/scripts/capture_legacy_fixtures.py"
+      ],
+      "source_refs": [
+        "README.md::.venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_oracle_recapture_gate",
+      "command": "./scripts/run_oracle_recapture_gate.sh",
+      "smoke_command": null,
+      "classification": "optional_oracle",
+      "expected_exit": 0,
+      "skip_reason": "Oracle recapture may require optional Python/JAX setup",
+      "replay_command": "./scripts/run_oracle_recapture_gate.sh",
+      "env_allowlist": [],
+      "feature_flags": [],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "scripts/run_oracle_recapture_gate.sh",
+        "artifacts/e2e/e2e_oracle_recapture_gate.e2e.json"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_oracle_recapture_gate.sh"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_oracle_recapture_gate.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_validate_e2e_logs_default",
+      "command": "./scripts/validate_e2e_logs.sh",
+      "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_security_gate.e2e.json",
+      "classification": "mandatory_local_smoke",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/validate_e2e_logs.sh",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/validate_e2e_logs.sh"
+      ],
+      "source_refs": [
+        "README.md::./scripts/validate_e2e_logs.sh"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_security_gate.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_validate_e2e_logs_report",
+      "command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
+      "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_security_gate.e2e.json",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/validate_e2e_logs.sh"
+      ],
+      "source_refs": [
+        "README.md::./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_security_gate.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_e2e_runner_all",
+      "command": "./scripts/run_e2e.sh",
+      "smoke_command": null,
+      "classification": "long_running",
+      "expected_exit": 0,
+      "skip_reason": "Full E2E suite is a long-running orchestration command; targeted scenarios are replayable separately",
+      "replay_command": "./scripts/run_e2e.sh",
+      "env_allowlist": [
+        "FJ_E2E_ARTIFACT_DIR",
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/run_e2e.sh"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_e2e.sh"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_e2e_runner_one",
+      "command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
+      "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
+      "env_allowlist": [
+        "FJ_E2E_ARTIFACT_DIR",
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/run_e2e.sh",
+        "artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json"
+      ],
+      "source_refs": [
+        "README.md::./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline"
+      ],
+      "artifact_refs": [
+        "artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json"
+      ]
+    },
+    {
+      "command_id": "cmd_quality_gates_full",
+      "command": "./scripts/enforce_quality_gates.sh",
+      "smoke_command": null,
+      "classification": "long_running",
+      "expected_exit": 0,
+      "skip_reason": "Full reliability gates include coverage, flake, runtime, and crash triage work",
+      "replay_command": "./scripts/enforce_quality_gates.sh",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/enforce_quality_gates.sh"
+      ],
+      "source_refs": [
+        "README.md::./scripts/enforce_quality_gates.sh"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_quality_gates_local",
+      "command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
+      "smoke_command": null,
+      "classification": "long_running",
+      "expected_exit": 0,
+      "skip_reason": "Local reliability iteration still runs multiple test passes; command is inventoried but not replayed by default",
+      "replay_command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/enforce_quality_gates.sh"
+      ],
+      "source_refs": [
+        "README.md::./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_detect_flakes",
+      "command": "./scripts/detect_flakes.sh --runs 10",
+      "smoke_command": null,
+      "classification": "long_running",
+      "expected_exit": 0,
+      "skip_reason": "Flake detector intentionally repeats tests and is not a fast onboarding gate",
+      "replay_command": "./scripts/detect_flakes.sh --runs 10",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "scripts/detect_flakes.sh"
+      ],
+      "source_refs": [
+        "README.md::./scripts/detect_flakes.sh --runs 10"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_durability_pipeline",
+      "command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
+      "smoke_command": null,
+      "classification": "schematic",
+      "expected_exit": 0,
+      "skip_reason": "README command uses user-supplied placeholder paths; durability batch row provides concrete replay",
+      "replay_command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "crates/fj-conformance/src/bin/fj_durability.rs"
+      ],
+      "source_refs": [
+        "README.md::cargo run -p fj-conformance --bin fj_durability --"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_durability_batch",
+      "command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
+      "smoke_command": "cargo run -p fj-conformance --bin fj_durability -- verify-only --dir artifacts/e2e --json",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "crates/fj-conformance/src/bin/fj_durability.rs"
+      ],
+      "source_refs": [
+        "README.md::batch --dir artifacts/e2e --output artifacts/durability --json"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_fuzz_build",
+      "command": "cargo fuzz build",
+      "smoke_command": "cargo check --manifest-path crates/fj-conformance/fuzz/Cargo.toml --bin ir_deserializer",
+      "classification": "environment_specific",
+      "expected_exit": 0,
+      "skip_reason": "cargo-fuzz itself is opt-in; the smoke command checks the fuzz crate entrypoint with Cargo",
+      "replay_command": "cargo fuzz build",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [
+        "cargo-fuzz"
+      ],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "crates/fj-conformance/fuzz/Cargo.toml",
+        "crates/fj-conformance/fuzz/fuzz_targets/ir_deserializer.rs"
+      ],
+      "source_refs": [
+        "README.md::cargo fuzz build"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_fuzz_run_ir_deserializer",
+      "command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
+      "smoke_command": "cargo check --manifest-path crates/fj-conformance/fuzz/Cargo.toml --bin ir_deserializer",
+      "classification": "environment_specific",
+      "expected_exit": 0,
+      "skip_reason": "libFuzzer execution is opt-in; corpus and target are validated as replay metadata",
+      "replay_command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [
+        "cargo-fuzz"
+      ],
+      "evidence_status": "yellow",
+      "evidence_refs": [
+        "crates/fj-conformance/fuzz/Cargo.toml",
+        "crates/fj-conformance/fuzz/corpus/seed/ir_deserializer",
+        "crates/fj-conformance/fuzz/fuzz_targets/ir_deserializer.rs"
+      ],
+      "source_refs": [
+        "README.md::cargo fuzz run ir_deserializer corpus/seed/ir_deserializer"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_fmt",
+      "command": "cargo fmt --check",
+      "smoke_command": "rustfmt --check --edition 2024 crates/fj-conformance/src/lib.rs",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo fmt --check",
+      "env_allowlist": [
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "Cargo.toml",
+        "rust-toolchain.toml"
+      ],
+      "source_refs": [
+        "README.md::cargo fmt --check"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_check_all_targets",
+      "command": "cargo check --all-targets",
+      "smoke_command": "cargo check -p fj-core --lib",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo check --all-targets",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "Cargo.toml"
+      ],
+      "source_refs": [
+        "README.md::cargo check --all-targets"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_clippy_all_targets",
+      "command": "cargo clippy --all-targets -- -D warnings",
+      "smoke_command": "cargo clippy -p fj-core --lib -- -D warnings",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo clippy --all-targets -- -D warnings",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "Cargo.toml"
+      ],
+      "source_refs": [
+        "README.md::cargo clippy --all-targets -- -D warnings"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_conformance_tests_nocapture",
+      "command": "cargo test -p fj-conformance -- --nocapture",
+      "smoke_command": "cargo test -p fj-conformance --test smoke smoke_report_is_stable -- --exact --nocapture",
+      "classification": "ci_gate",
+      "expected_exit": 0,
+      "skip_reason": null,
+      "replay_command": "cargo test -p fj-conformance -- --nocapture",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "crates/fj-conformance/tests/smoke.rs"
+      ],
+      "source_refs": [
+        "README.md::cargo test -p fj-conformance -- --nocapture"
+      ],
+      "artifact_refs": []
+    },
+    {
+      "command_id": "cmd_cargo_bench",
+      "command": "cargo bench",
+      "smoke_command": null,
+      "classification": "long_running",
+      "expected_exit": 0,
+      "skip_reason": "Benchmark suite is intentionally long-running and belongs to performance gates",
+      "replay_command": "cargo bench",
+      "env_allowlist": [
+        "CARGO_TARGET_DIR",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "feature_flags": [],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "Cargo.toml"
+      ],
+      "source_refs": [
+        "README.md::cargo bench"
+      ],
+      "artifact_refs": []
+    }
+  ],
+  "summary": {
+    "total_commands": 31,
+    "green_count": 24,
+    "yellow_count": 7,
+    "red_count": 0,
+    "mandatory_smoke_count": 2,
+    "ci_gate_count": 12,
+    "optional_oracle_count": 5,
+    "long_running_count": 6,
+    "environment_specific_count": 4,
+    "schematic_count": 2,
+    "skip_count": 17,
+    "executable_smoke_count": 16,
+    "source_doc_ref_count": 31,
+    "evidence_ref_count": 42
+  },
+  "issues": [],
+  "replay_command": "./scripts/run_onboarding_gate.sh --enforce"
+}

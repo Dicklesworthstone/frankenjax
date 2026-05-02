@@ -1,0 +1,734 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.18",
+  "scenario_id": "e2e_onboarding_gate",
+  "test_id": "fj_onboarding_gate",
+  "packet_id": null,
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-codex-cstq18/debug/fj_onboarding_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--inventory",
+    "/data/projects/frankenjax/artifacts/conformance/onboarding_command_inventory.v1.json",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_onboarding_gate.e2e.json",
+    "--enforce"
+  ],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq18",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777730737924
+  },
+  "feature_flags": [],
+  "fixture_ids": [],
+  "oracle_ids": [
+    "README.md",
+    "AGENTS.md"
+  ],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {
+    "execution_mode": "static_inventory_and_replay_metadata",
+    "inventory_path": "artifacts/conformance/onboarding_command_inventory.v1.json",
+    "source_docs": [
+      "README.md",
+      "AGENTS.md",
+      "FEATURE_PARITY.md"
+    ]
+  },
+  "expected": {
+    "all_commands_have_replay": true,
+    "duplicate_command_ids": false,
+    "inventory_status": "pass",
+    "red_command_count": 0,
+    "stale_script_paths": false,
+    "stale_source_refs": false,
+    "unsafe_env_allowlist_present": false
+  },
+  "actual": {
+    "command_results": [
+      {
+        "artifact_refs": [],
+        "classification": "schematic",
+        "command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
+        "command_id": "cmd_git_clone",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
+        "skip_reason": "Clone command is user-environment setup, not replayed inside an existing checkout",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "environment_specific",
+        "command": "rustup install nightly",
+        "command_id": "cmd_rustup_install_nightly",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "rustup install nightly",
+        "skip_reason": "Toolchain installation mutates user-level Rust state; rust-toolchain.toml is the replayable source of truth",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "environment_specific",
+        "command": "rustup override set nightly",
+        "command_id": "cmd_rustup_override_nightly",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "rustup override set nightly",
+        "skip_reason": "Repository uses rust-toolchain.toml; per-directory rustup override is documented for manual setup only",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo build --workspace",
+        "command_id": "cmd_cargo_build_workspace",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo build --workspace",
+        "skip_reason": null,
+        "smoke_command": "cargo metadata --no-deps --format-version 1",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo test --workspace",
+        "command_id": "cmd_cargo_test_workspace",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo test --workspace",
+        "skip_reason": null,
+        "smoke_command": "cargo test -p fj-conformance --test smoke smoke_report_is_stable -- --exact --nocapture",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "long_running",
+        "command": "cargo build --workspace --release",
+        "command_id": "cmd_cargo_release_build",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo build --workspace --release",
+        "skip_reason": "Release LTO build is intentionally long-running; normal gate proves the command is documented and replayable",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
+        ],
+        "classification": "mandatory_local_smoke",
+        "command": "./scripts/run_api_readme_examples.sh --enforce",
+        "command_id": "cmd_api_readme_examples",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_api_readme_examples.sh --enforce",
+        "skip_reason": null,
+        "smoke_command": "./scripts/run_api_readme_examples.sh --enforce",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json"
+        ],
+        "classification": "ci_gate",
+        "command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+        "command_id": "cmd_architecture_boundary_gate",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+        "skip_reason": null,
+        "smoke_command": "./scripts/run_architecture_boundary_gate.sh --enforce",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
+        ],
+        "classification": "ci_gate",
+        "command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+        "command_id": "cmd_cache_lifecycle_gate",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+        "skip_reason": null,
+        "smoke_command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_security_gate.e2e.json"
+        ],
+        "classification": "ci_gate",
+        "command": "./scripts/run_security_gate.sh --enforce",
+        "command_id": "cmd_security_gate",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_security_gate.sh --enforce",
+        "skip_reason": null,
+        "smoke_command": "./scripts/run_security_gate.sh --enforce",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "optional_oracle",
+        "command": "uv venv --python 3.12 .venv",
+        "command_id": "cmd_jax_oracle_venv",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "uv venv --python 3.12 .venv",
+        "skip_reason": "Creates a local Python environment and may require network access",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "optional_oracle",
+        "command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
+        "command_id": "cmd_jax_oracle_pip_install",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
+        "skip_reason": "Downloads Python packages and is intentionally opt-in",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "optional_oracle",
+        "command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
+        "command_id": "cmd_jax_oracle_clone",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
+        "skip_reason": "Network clone of upstream JAX is optional for normal onboarding",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "optional_oracle",
+        "command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
+        "command_id": "cmd_capture_legacy_fixtures",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
+        "skip_reason": "Requires optional JAX oracle environment and legacy source checkout",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_oracle_recapture_gate.e2e.json"
+        ],
+        "classification": "optional_oracle",
+        "command": "./scripts/run_oracle_recapture_gate.sh",
+        "command_id": "cmd_oracle_recapture_gate",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_oracle_recapture_gate.sh",
+        "skip_reason": "Oracle recapture may require optional Python/JAX setup",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_security_gate.e2e.json"
+        ],
+        "classification": "mandatory_local_smoke",
+        "command": "./scripts/validate_e2e_logs.sh",
+        "command_id": "cmd_validate_e2e_logs_default",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/validate_e2e_logs.sh",
+        "skip_reason": null,
+        "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_security_gate.e2e.json",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_security_gate.e2e.json"
+        ],
+        "classification": "ci_gate",
+        "command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
+        "command_id": "cmd_validate_e2e_logs_report",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
+        "skip_reason": null,
+        "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_security_gate.e2e.json",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "long_running",
+        "command": "./scripts/run_e2e.sh",
+        "command_id": "cmd_e2e_runner_all",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "FJ_E2E_ARTIFACT_DIR",
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_e2e.sh",
+        "skip_reason": "Full E2E suite is a long-running orchestration command; targeted scenarios are replayable separately",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [
+          "artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json"
+        ],
+        "classification": "ci_gate",
+        "command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
+        "command_id": "cmd_e2e_runner_one",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "FJ_E2E_ARTIFACT_DIR",
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
+        "skip_reason": null,
+        "smoke_command": "./scripts/validate_e2e_logs.sh artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "long_running",
+        "command": "./scripts/enforce_quality_gates.sh",
+        "command_id": "cmd_quality_gates_full",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/enforce_quality_gates.sh",
+        "skip_reason": "Full reliability gates include coverage, flake, runtime, and crash triage work",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "long_running",
+        "command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
+        "command_id": "cmd_quality_gates_local",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
+        "skip_reason": "Local reliability iteration still runs multiple test passes; command is inventoried but not replayed by default",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "long_running",
+        "command": "./scripts/detect_flakes.sh --runs 10",
+        "command_id": "cmd_detect_flakes",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "./scripts/detect_flakes.sh --runs 10",
+        "skip_reason": "Flake detector intentionally repeats tests and is not a fast onboarding gate",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "schematic",
+        "command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
+        "command_id": "cmd_durability_pipeline",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
+        "skip_reason": "README command uses user-supplied placeholder paths; durability batch row provides concrete replay",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
+        "command_id": "cmd_durability_batch",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
+        "skip_reason": null,
+        "smoke_command": "cargo run -p fj-conformance --bin fj_durability -- verify-only --dir artifacts/e2e --json",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "environment_specific",
+        "command": "cargo fuzz build",
+        "command_id": "cmd_fuzz_build",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [
+          "cargo-fuzz"
+        ],
+        "replay_command": "cargo fuzz build",
+        "skip_reason": "cargo-fuzz itself is opt-in; the smoke command checks the fuzz crate entrypoint with Cargo",
+        "smoke_command": "cargo check --manifest-path crates/fj-conformance/fuzz/Cargo.toml --bin ir_deserializer",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "environment_specific",
+        "command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
+        "command_id": "cmd_fuzz_run_ir_deserializer",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [
+          "cargo-fuzz"
+        ],
+        "replay_command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
+        "skip_reason": "libFuzzer execution is opt-in; corpus and target are validated as replay metadata",
+        "smoke_command": "cargo check --manifest-path crates/fj-conformance/fuzz/Cargo.toml --bin ir_deserializer",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo fmt --check",
+        "command_id": "cmd_cargo_fmt",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo fmt --check",
+        "skip_reason": null,
+        "smoke_command": "rustfmt --check --edition 2024 crates/fj-conformance/src/lib.rs",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo check --all-targets",
+        "command_id": "cmd_cargo_check_all_targets",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo check --all-targets",
+        "skip_reason": null,
+        "smoke_command": "cargo check -p fj-core --lib",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo clippy --all-targets -- -D warnings",
+        "command_id": "cmd_cargo_clippy_all_targets",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo clippy --all-targets -- -D warnings",
+        "skip_reason": null,
+        "smoke_command": "cargo clippy -p fj-core --lib -- -D warnings",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "ci_gate",
+        "command": "cargo test -p fj-conformance -- --nocapture",
+        "command_id": "cmd_conformance_tests_nocapture",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "pass",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo test -p fj-conformance -- --nocapture",
+        "skip_reason": null,
+        "smoke_command": "cargo test -p fj-conformance --test smoke smoke_report_is_stable -- --exact --nocapture",
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      },
+      {
+        "artifact_refs": [],
+        "classification": "long_running",
+        "command": "cargo bench",
+        "command_id": "cmd_cargo_bench",
+        "cwd": ".",
+        "duration_ms": 0,
+        "env_allowlist": [
+          "CARGO_TARGET_DIR",
+          "RUSTUP_TOOLCHAIN"
+        ],
+        "exit_status": "skipped",
+        "expected_exit": 0,
+        "feature_flags": [],
+        "replay_command": "cargo bench",
+        "skip_reason": "Benchmark suite is intentionally long-running and belongs to performance gates",
+        "smoke_command": null,
+        "stderr_summary": "",
+        "stdout_summary": "not executed by default; this gate validates replay metadata, docs anchors, script paths, schema, and artifact refs"
+      }
+    ],
+    "issue_count": 0,
+    "issues": [],
+    "status": "pass",
+    "summary": {
+      "ci_gate_count": 12,
+      "environment_specific_count": 4,
+      "evidence_ref_count": 42,
+      "executable_smoke_count": 16,
+      "green_count": 24,
+      "long_running_count": 6,
+      "mandatory_smoke_count": 2,
+      "optional_oracle_count": 5,
+      "red_count": 0,
+      "schematic_count": 2,
+      "skip_count": 17,
+      "source_doc_ref_count": 31,
+      "total_commands": 31,
+      "yellow_count": 7
+    }
+  },
+  "tolerance": {
+    "policy_id": "exact_onboarding_inventory_contract",
+    "atol": null,
+    "rtol": null,
+    "ulp": null,
+    "notes": "Onboarding command validation is exact: documented command refs, script paths, replay commands, skip rationales, evidence refs, and redaction policy must all be current."
+  },
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
+  "timings": {
+    "setup_ms": 0,
+    "trace_ms": 0,
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "verify_ms": 0,
+    "total_ms": 0
+  },
+  "allocations": {
+    "allocation_count": null,
+    "allocated_bytes": null,
+    "peak_rss_bytes": null,
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [
+    {
+      "kind": "onboarding_command_inventory",
+      "path": "artifacts/conformance/onboarding_command_inventory.v1.json",
+      "sha256": "ac855ce92e57b0da6ed60c93433be15fd7f609204d1b7fa38bb6c3d3ef827553",
+      "required": true
+    }
+  ],
+  "replay_command": "./scripts/run_onboarding_gate.sh --enforce",
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.18",
+      "title": "Prove fresh-clone onboarding and documented command gates"
+    }
+  }
+}

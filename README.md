@@ -758,6 +758,21 @@ or unsupported recapture rows into a nonzero CI exit.
 
 ## Building from Source
 
+The onboarding command gate keeps this section and the verification commands
+below tied to replayable evidence:
+
+```bash
+./scripts/run_onboarding_gate.sh --enforce
+```
+
+It writes `artifacts/conformance/onboarding_command_inventory.v1.json` and
+`artifacts/e2e/e2e_onboarding_gate.e2e.json`. The inventory classifies each
+documented command as mandatory local smoke, CI gate, long-running,
+optional-oracle, environment-specific, or schematic; records skip rationales for
+commands that should not run in normal CI; checks script paths and README
+anchors; and rejects missing replay commands, stale evidence refs, duplicate
+command ids, red evidence, and secret-like environment allowlists.
+
 ```bash
 # Clone the repository
 git clone https://github.com/Dicklesworthstone/frankenjax.git
