@@ -11,7 +11,7 @@
   ![Tests](https://img.shields.io/badge/tests-workspace_passing-brightgreen)
   ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
   ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
-  ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-848_cases-purple)
+  ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-861_cases-purple)
 </div>
 
 ---
@@ -32,7 +32,7 @@
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
 | E-graph equality saturation optimizer (87 algebraic rewrite rules) | All green |
-| 848 JAX oracle fixture cases for differential conformance | All green |
+| 861 JAX oracle fixture cases for differential conformance | All green |
 | RaptorQ erasure-coded durability for current evidence bundles | Implemented; all-long-lived-artifact expansion tracked |
 | Strict/Hardened compatibility-security mode split | All green |
 | Workspace tests + 4,416 static Rust test/proptest markers | Passing in the latest RCH run |
@@ -45,7 +45,7 @@
 | **Runtime dependency** | None (standalone) | Python + XLA + CUDA | Python + CUDA | LLVM toolchain | NumPy |
 | **Transform composition** | Scoped `jit`/`grad`/`vmap` with V1 matrix evidence | Full | Limited (`torch.func`) | `grad` only | `grad` only |
 | **Verifiable evidence** | Trace Transform Ledger | No | No | No | No |
-| **Oracle conformance** | 848 JAX-verified cases | N/A (is the oracle) | No | No | No |
+| **Oracle conformance** | 861 JAX-verified cases | N/A (is the oracle) | No | No | No |
 | **Artifact durability** | RaptorQ sidecars | No | No | No | No |
 | **E-graph optimization** | 87 rules, equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
 | **Embeddable** | Yes (Rust library + C FFI) | No (Python required) | Partially (libtorch) | Yes (LLVM plugin) | No |
@@ -140,7 +140,7 @@ mul_vjp for v2:  g_v1 += 3.0 * 1.0 + 3.0 * 1.0 = 6.0   (d(x^2)/dx = 2x = 6)
 Every transform composition produces an auditable evidence artifact linking input IR, applied transforms, and output IR via the Trace Transform Ledger (TTL). The verifier checks deterministic ledger structure, evidence-to-transform binding, duplicate evidence IDs, evidence-bound stack signatures, and the `ttl_semantic_proof_matrix.v1` gate replays representative `jit`, `grad`, `vmap`, `jit(grad)`, `grad(jit)`, `vmap(grad)`, and fail-closed `grad(vmap)` rows against structural output metadata and oracle fixture links.
 
 **2. Differential conformance, not reimplementation faith.**
-Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 848 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
+Every primitive's behavior is validated against real JAX 0.9.2 oracle fixtures. We verify, not trust, our implementations: 861 oracle test cases spanning transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition.
 
 **3. Strict/Hardened mode split.**
 Strict mode maximizes observable compatibility. Hardened mode adds safety guards with bounded defensive recovery. You choose the tradeoff per invocation.
@@ -207,7 +207,7 @@ advanced transform/control-flow parity and public API example replay are green.
 | `fj-ledger` | Decision/evidence ledger, loss-matrix actions, audit trail | Yes |
 | `fj-runtime` | Tensor-aware runtime value model, optional async integration | Yes |
 | `fj-interpreters` | Scoped primitive interpreter, partial evaluation, staging | Yes |
-| `fj-conformance` | Differential conformance harness, 848 oracle fixtures, durability | 200+ |
+| `fj-conformance` | Differential conformance harness, 861 oracle fixtures, durability | 200+ |
 | `fj-backend-cpu` | Dependency-wave parallel executor (rayon) | 40 |
 | `fj-ffi` | C FFI surface (only crate permitted `unsafe`) | Yes |
 | `fj-test-utils` | Shared test scaffolding, fixture helpers | Yes |
@@ -224,7 +224,7 @@ advanced transform/control-flow parity and public API example replay are green.
 - **E-graph optimizer**: 87 algebraic rewrite rules with equality saturation, verified to preserve program semantics
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
 - **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support and explicit advanced transform-composition evidence
-- **848 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
+- **861 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
 - **4,416 static Rust test/proptest markers** plus 115 conformance test files; the latest full `cargo test --workspace` run passed through RCH
 - **RaptorQ durability pipeline** for current conformance/evidence bundles, with all-long-lived-artifact coverage tracked in `frankenjax-fcxy.2`
 
@@ -373,7 +373,7 @@ replay command.
 
 FrankenJAX uses **four layers of correctness assurance**, each catching different classes of bugs:
 
-**Layer 1: Oracle conformance (848 cases)**
+**Layer 1: Oracle conformance (861 cases)**
 Capture expected outputs from real JAX, replay against FrankenJAX. Catches: wrong evaluation logic, incorrect primitive semantics, dtype mismatches.
 
 **Layer 2: Numerical AD verification (9 tests)**
@@ -751,10 +751,10 @@ uv pip install --python .venv/bin/python jax jaxlib numpy
 |---------------|-------|--------|
 | Transform (jit/grad/vmap/lax/control_flow/mixed_dtype) | 613 | JAX 0.9.2 |
 | RNG determinism (key/split/fold_in/uniform/normal) | 25 | JAX 0.9.2 |
-| Linear algebra + FFT oracle | 33 | JAX 0.9.2; recapture gate requires fixture x64 metadata refresh |
+| Linear algebra + FFT oracle | 46 | JAX 0.9.2; includes higher-rank linalg, Complex64 FFT, and 8-point FFT/RFFT/IRFFT rows |
 | Transform composition (jit+grad, grad+grad, vmap+grad, jacobian, hessian) | 15 | JAX 0.9.1 fixture metadata; recapture gate requires 0.9.2 refresh |
 | Dtype promotion (9x9 dtype matrix, add + mul) | 162 | JAX 0.9.1 fixture metadata; recapture gate requires 0.9.2 refresh |
-| **Total** | **848** | |
+| **Total** | **861** | |
 
 The oracle recapture gate makes this evidence auditable instead of relying on
 the static table above:
@@ -1154,7 +1154,7 @@ Both primitives have VJP and JVP rules. Gather's VJP produces a scatter (adjoint
 A: JAX requires Python + XLA + CUDA/TPU. FrankenJAX gives you the mathematical transform semantics in a standalone Rust library with no Python dependency.
 
 **Q: How do you verify correctness without running JAX?**
-A: We capture oracle fixtures from real JAX 0.9.2 (848 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
+A: We capture oracle fixtures from real JAX 0.9.2 (861 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
 
 **Q: Is the AD (automatic differentiation) complete?**
 A: Yes. All 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Numerical verification tests confirm correctness via finite-difference comparison.

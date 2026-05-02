@@ -89,6 +89,17 @@ def _complex_value(arr) -> dict[str, Any]:
     }
 
 
+def _complex64_value(arr) -> dict[str, Any]:
+    shape = _shape_of(arr)
+    flat = arr.reshape(-1)
+    return {
+        "kind": "tensor_complex64",
+        "shape": shape,
+        "reals": [float(x.real) for x in flat.tolist()],
+        "imags": [float(x.imag) for x in flat.tolist()],
+    }
+
+
 def _value(arr) -> dict[str, Any]:
     if getattr(arr.dtype, "kind", "") == "c":
         return _complex_value(arr)
@@ -101,6 +112,7 @@ def _case(
     inputs: list[dict[str, Any]],
     expected_outputs: list[dict[str, Any]],
     params: dict[str, str] | None = None,
+    tolerance: float | None = None,
 ) -> dict[str, Any]:
     case = {
         "case_id": case_id,
@@ -110,6 +122,8 @@ def _case(
     }
     if params:
         case["params"] = params
+    if tolerance is not None:
+        case["tolerance"] = tolerance
     return case
 
 
@@ -167,6 +181,25 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
         )
     )
 
+    chol_5x5 = jnp.array(
+        [
+            [20.0, 4.0, 2.0, 1.0, 0.5],
+            [4.0, 15.0, 3.0, 1.5, 1.0],
+            [2.0, 3.0, 12.0, 2.5, 1.5],
+            [1.0, 1.5, 2.5, 10.0, 2.0],
+            [0.5, 1.0, 1.5, 2.0, 8.0],
+        ],
+        dtype=jnp.float64,
+    )
+    cases.append(
+        _case(
+            "cholesky_5x5_spd",
+            "cholesky",
+            [_real_value(chol_5x5)],
+            [_real_value(jnp.linalg.cholesky(chol_5x5))],
+        )
+    )
+
     qr_2x2_i = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float64)
     q, r = jnp.linalg.qr(qr_2x2_i, mode="reduced")
     cases.append(_case("qr_2x2_identity", "qr", [_real_value(qr_2x2_i)], [_real_value(q), _real_value(r)]))
@@ -186,6 +219,13 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     q, r = jnp.linalg.qr(qr_4x3, mode="reduced")
     cases.append(_case("qr_4x3_tall", "qr", [_real_value(qr_4x3)], [_real_value(q), _real_value(r)]))
 
+    qr_4x4 = jnp.array(
+        [[2.0, 1.0, 0.0, -1.0], [1.0, 3.0, 1.0, 0.0], [0.0, 1.0, 4.0, 2.0], [-1.0, 0.0, 2.0, 5.0]],
+        dtype=jnp.float64,
+    )
+    q, r = jnp.linalg.qr(qr_4x4, mode="reduced")
+    cases.append(_case("qr_4x4_square", "qr", [_real_value(qr_4x4)], [_real_value(q), _real_value(r)]))
+
     svd_i = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float64)
     u, s, vt = jnp.linalg.svd(svd_i, full_matrices=False)
     cases.append(_case("svd_2x2_identity", "svd", [_real_value(svd_i)], [_real_value(u), _real_value(s), _real_value(vt)]))
@@ -201,6 +241,17 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     svd_3x2 = jnp.array([[3.0, 1.0], [0.0, 2.0], [0.0, 0.0]], dtype=jnp.float64)
     u, s, vt = jnp.linalg.svd(svd_3x2, full_matrices=False)
     cases.append(_case("svd_3x2_rectangular", "svd", [_real_value(svd_3x2)], [_real_value(u), _real_value(s), _real_value(vt)]))
+
+    svd_3x3 = jnp.array([[3.0, 2.0, 1.0], [1.0, 4.0, 2.0], [0.5, 1.0, 3.0]], dtype=jnp.float64)
+    u, s, vt = jnp.linalg.svd(svd_3x3, full_matrices=False)
+    cases.append(_case("svd_3x3_general", "svd", [_real_value(svd_3x3)], [_real_value(u), _real_value(s), _real_value(vt)]))
+
+    svd_4x3 = jnp.array(
+        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 10.0], [1.0, 3.0, 5.0]],
+        dtype=jnp.float64,
+    )
+    u, s, vt = jnp.linalg.svd(svd_4x3, full_matrices=False)
+    cases.append(_case("svd_4x3_tall", "svd", [_real_value(svd_4x3)], [_real_value(u), _real_value(s), _real_value(vt)]))
 
     eigh_i = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float64)
     w, v = jnp.linalg.eigh(eigh_i)
@@ -223,6 +274,26 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     )
     w, v = jnp.linalg.eigh(eigh_rep)
     cases.append(_case("eigh_3x3_repeated", "eigh", [_real_value(eigh_rep)], [_real_value(w), _real_value(v)]))
+
+    eigh_4x4 = jnp.array(
+        [[6.0, 2.0, 1.0, 0.5], [2.0, 5.0, 1.5, 1.0], [1.0, 1.5, 4.0, 0.5], [0.5, 1.0, 0.5, 3.0]],
+        dtype=jnp.float64,
+    )
+    w, v = jnp.linalg.eigh(eigh_4x4)
+    cases.append(_case("eigh_4x4_symmetric", "eigh", [_real_value(eigh_4x4)], [_real_value(w), _real_value(v)]))
+
+    eigh_5x5 = jnp.array(
+        [
+            [10.0, 2.0, 1.0, 0.5, 0.1],
+            [2.0, 8.0, 1.5, 1.0, 0.5],
+            [1.0, 1.5, 6.0, 1.0, 0.5],
+            [0.5, 1.0, 1.0, 5.0, 0.5],
+            [0.1, 0.5, 0.5, 0.5, 4.0],
+        ],
+        dtype=jnp.float64,
+    )
+    w, v = jnp.linalg.eigh(eigh_5x5)
+    cases.append(_case("eigh_5x5_symmetric", "eigh", [_real_value(eigh_5x5)], [_real_value(w), _real_value(v)]))
 
     tsl_i = jnp.array([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float64)
     rhs_i = jnp.array([[3.0, 4.0], [5.0, 6.0]], dtype=jnp.float64)
@@ -286,6 +357,29 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
         )
     )
 
+    tsl_3x3 = jnp.array([[2.0, 0.0, 0.0], [3.0, 4.0, 0.0], [1.0, 2.0, 5.0]], dtype=jnp.float64)
+    rhs_3x1 = jnp.array([[10.0], [23.0], [23.0]], dtype=jnp.float64)
+    cases.append(
+        _case(
+            "tsolve_lower_3x3",
+            "triangular_solve",
+            [_real_value(tsl_3x3), _real_value(rhs_3x1)],
+            [_real_value(lax.linalg.triangular_solve(tsl_3x3, rhs_3x1, left_side=True, lower=True))],
+            {"lower": "true"},
+        )
+    )
+
+    rhs_3x2 = jnp.array([[10.0, 4.0], [23.0, 11.0], [23.0, 14.0]], dtype=jnp.float64)
+    cases.append(
+        _case(
+            "tsolve_lower_3x3_multi_rhs",
+            "triangular_solve",
+            [_real_value(tsl_3x3), _real_value(rhs_3x2)],
+            [_real_value(lax.linalg.triangular_solve(tsl_3x3, rhs_3x2, left_side=True, lower=True))],
+            {"lower": "true"},
+        )
+    )
+
     fft_dc = jnp.array([1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j, 1.0 + 0.0j], dtype=jnp.complex128)
     cases.append(_case("fft_dc", "fft", [_complex_value(fft_dc)], [_complex_value(jnp.fft.fft(fft_dc))]))
 
@@ -304,8 +398,28 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     )
     cases.append(_case("fft_batched_2x4", "fft", [_complex_value(fft_batched)], [_complex_value(jnp.fft.fft(fft_batched, axis=-1))]))
 
+    fft_8 = jnp.array(
+        [1.0 + 2.0j, 3.0 - 1.0j, 0.5 + 0.0j, -2.0 + 1.5j, 4.0 - 0.5j, 0.0 + 2.0j, -1.0 - 1.0j, 2.5 + 0.25j],
+        dtype=jnp.complex128,
+    )
+    cases.append(_case("fft_complex128_8point", "fft", [_complex_value(fft_8)], [_complex_value(jnp.fft.fft(fft_8))]))
+
+    fft_c64 = jnp.array([1.0 + 2.0j, -0.5 + 0.25j, 3.0 - 1.0j, 0.0 + 0.5j], dtype=jnp.complex64)
+    cases.append(
+        _case(
+            "fft_complex64_4point",
+            "fft",
+            [_complex64_value(fft_c64)],
+            [_complex64_value(jnp.fft.fft(fft_c64))],
+            tolerance=1e-5,
+        )
+    )
+
     ifft_dc = jnp.array([4.0 + 0.0j, 0.0 + 0.0j, 0.0 + 0.0j, 0.0 + 0.0j], dtype=jnp.complex128)
     cases.append(_case("ifft_dc", "ifft", [_complex_value(ifft_dc)], [_complex_value(jnp.fft.ifft(ifft_dc))]))
+
+    ifft_8 = jnp.fft.fft(fft_8)
+    cases.append(_case("ifft_complex128_8point_roundtrip", "ifft", [_complex_value(ifft_8)], [_complex_value(jnp.fft.ifft(ifft_8))]))
 
     rfft_dc = jnp.array([1.0, 1.0, 1.0, 1.0], dtype=jnp.float64)
     cases.append(_case("rfft_dc", "rfft", [_real_value(rfft_dc)], [_complex_value(jnp.fft.rfft(rfft_dc, n=4))], {"fft_length": "4"}))
@@ -319,6 +433,9 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
     rfft_rank2 = jnp.array([[1.0, 2.0, 0.0], [0.0, 1.0, 0.0]], dtype=jnp.float64)
     cases.append(_case("rfft_rank2_zeropad", "rfft", [_real_value(rfft_rank2)], [_complex_value(jnp.fft.rfft(rfft_rank2, n=4, axis=-1))], {"fft_length": "4"}))
 
+    rfft_8 = jnp.array([1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0], dtype=jnp.float64)
+    cases.append(_case("rfft_8point_alternating", "rfft", [_real_value(rfft_8)], [_complex_value(jnp.fft.rfft(rfft_8, n=8))], {"fft_length": "8"}))
+
     irfft_known = jnp.array([10.0 + 0.0j, -2.0 + 2.0j, -2.0 + 0.0j], dtype=jnp.complex128)
     cases.append(_case("irfft_known", "irfft", [_complex_value(irfft_known)], [_real_value(jnp.fft.irfft(irfft_known, n=4))], {"fft_length": "4"}))
 
@@ -327,6 +444,9 @@ def build_cases(jnp, lax) -> list[dict[str, Any]]:
 
     irfft_odd = jnp.fft.rfft(jnp.array([1.0, -2.0, 0.5, 3.0, -1.5], dtype=jnp.float64), n=5)
     cases.append(_case("irfft_odd_roundtrip", "irfft", [_complex_value(irfft_odd)], [_real_value(jnp.fft.irfft(irfft_odd, n=5))], {"fft_length": "5"}))
+
+    irfft_8 = jnp.fft.rfft(rfft_8, n=8)
+    cases.append(_case("irfft_8point_roundtrip", "irfft", [_complex_value(irfft_8)], [_real_value(jnp.fft.irfft(irfft_8, n=8))], {"fft_length": "8"}))
 
     return cases
 

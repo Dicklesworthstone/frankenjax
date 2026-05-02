@@ -52,7 +52,7 @@ fn write_fixture(root: &Path, rel_path: &str, value: serde_json::Value) {
 }
 
 #[test]
-fn committed_matrix_counts_all_848_oracle_cases() {
+fn committed_matrix_counts_all_861_oracle_cases() {
     let root = repo_root();
     let matrix = build_oracle_recapture_matrix(&root);
 
@@ -71,6 +71,15 @@ fn committed_matrix_counts_all_848_oracle_cases() {
             .expect("transforms row")
             .actual_case_count,
         613
+    );
+    assert_eq!(
+        matrix
+            .rows
+            .iter()
+            .find(|row| row.family_id == "linalg_fft")
+            .expect("linalg_fft row")
+            .actual_case_count,
+        46
     );
 }
 

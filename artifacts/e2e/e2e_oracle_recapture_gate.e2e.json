@@ -5,7 +5,7 @@
   "test_id": "fj_oracle_recapture_gate",
   "packet_id": null,
   "command": [
-    "target/debug/fj_oracle_recapture_gate",
+    "/data/tmp/cargo-target-frankenjax-codex-cstq7-local/debug/fj_oracle_recapture_gate",
     "--root",
     "/data/projects/frankenjax",
     "--matrix",
@@ -23,11 +23,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "<default>",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
     "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777692058192
+    "timestamp_unix_ms": 1777742185007
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -56,15 +57,17 @@
       "dtype_promotion"
     ],
     "gate_status": "pass",
-    "total_cases": 848
+    "total_cases": 861
   },
   "actual": {
-    "actual_total_cases": 848,
+    "actual_total_cases": 861,
     "added": [],
     "changed": [],
     "drift_gate_status": "fail",
-    "expected_total_cases": 848,
+    "expected_total_cases": 861,
     "issue_codes": [
+      "x64_mode_mismatch",
+      "x64_mode_mismatch",
       "stale_oracle_version",
       "stale_oracle_version"
     ],
@@ -88,7 +91,7 @@
   },
   "error": {
     "expected": null,
-    "actual": "stale_oracle_version,stale_oracle_version",
+    "actual": "x64_mode_mismatch,x64_mode_mismatch,stale_oracle_version,stale_oracle_version",
     "taxonomy_class": "oracle_recapture_drift"
   },
   "timings": {
@@ -109,25 +112,25 @@
     {
       "kind": "oracle_recapture_matrix",
       "path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
-      "sha256": "04ba1d4f7f79a1bbe7b783723c184078d14f0162daa013b9b83c00d58aa5e5cb",
+      "sha256": "3d32110cbfe37ccafa36f057580fc4b5d95d7a358b7ac95fe9922391c0e7e8e4",
       "required": true
     },
     {
       "kind": "oracle_drift_report",
       "path": "artifacts/conformance/oracle_drift_report.v1.json",
-      "sha256": "c2d79ca7c5cb29ca22f5d370d67bfb2ef0b8a7c5007717daa64ed814383cb3ae",
+      "sha256": "81dd28d4f982a751ba828a390fa1e8e04aa4d71cd0cdf7933c93d49f2aa25fa4",
       "required": true
     },
     {
       "kind": "oracle_recapture_markdown",
       "path": "artifacts/conformance/oracle_recapture_matrix.v1.md",
-      "sha256": "4a711c5b4a7703ba1604ac0f22dfa9c96c82278f7c43c8d5597c6b0598806579",
+      "sha256": "5f9ebcb64b2a43d849b899e0c586f0f2883d012a16737018da87197ed12a20ed",
       "required": true
     }
   ],
   "replay_command": "./scripts/run_oracle_recapture_gate.sh",
   "status": "fail",
-  "failure_summary": "oracle recapture gate found 2 issue(s); see drift report",
+  "failure_summary": "oracle recapture gate found 4 issue(s); see drift report",
   "redactions": [],
   "metadata": {
     "bead": {

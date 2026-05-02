@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const ORACLE_RECAPTURE_MATRIX_SCHEMA_VERSION: &str = "frankenjax.oracle-recapture-matrix.v1";
 pub const ORACLE_DRIFT_REPORT_SCHEMA_VERSION: &str = "frankenjax.oracle-drift-report.v1";
-pub const EXPECTED_ORACLE_CASE_TOTAL: usize = 848;
+pub const EXPECTED_ORACLE_CASE_TOTAL: usize = 861;
 
 const REQUIRED_FAMILIES: &[&str] = &[
     "transforms",
@@ -189,7 +189,7 @@ pub fn default_oracle_fixture_specs() -> Vec<OracleFixtureSpec> {
             display_name: "Linear algebra and FFT oracle".to_owned(),
             fixture_path: "crates/fj-conformance/fixtures/linalg_fft_oracle.v1.json".to_owned(),
             expected_schema_version: "frankenjax.linalg-fft-oracle.v2".to_owned(),
-            expected_case_count: 33,
+            expected_case_count: 46,
             expected_oracle_version_prefix: "0.9.2".to_owned(),
             expected_x64_enabled: Some(true),
             legacy_anchors: vec![

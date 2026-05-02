@@ -1,44 +1,46 @@
 {
   "schema_version": "frankenjax.oracle-drift-report.v1",
-  "generated_at_unix_ms": 1777692058071,
+  "generated_at_unix_ms": 1777742184978,
   "baseline_path": null,
   "require_baseline": false,
-  "expected_total_cases": 848,
-  "actual_total_cases": 848,
+  "expected_total_cases": 861,
+  "actual_total_cases": 861,
   "added": [],
   "removed": [],
   "changed": [],
   "unsupported": [],
   "skipped": [
-    "transforms",
-    "rng",
     "linalg_fft"
   ],
   "rows": [
     {
       "family_id": "transforms",
-      "status": "baseline_not_provided",
+      "status": "current_invalid",
       "current_case_count": 613,
       "baseline_case_count": null,
       "current_sha256": "bb0eae2659e1bc5cff95f5958dc6c1fdc7af78964c469689142bed7fd005f3cc",
       "baseline_sha256": null,
-      "issue_codes": []
+      "issue_codes": [
+        "x64_mode_mismatch"
+      ]
     },
     {
       "family_id": "rng",
-      "status": "baseline_not_provided",
+      "status": "current_invalid",
       "current_case_count": 25,
       "baseline_case_count": null,
       "current_sha256": "ad62ae3686e4f453c0cca1dbc2d2f55fe72fcd489bfeb3f2f4fe13ecd0f0a1ad",
       "baseline_sha256": null,
-      "issue_codes": []
+      "issue_codes": [
+        "x64_mode_mismatch"
+      ]
     },
     {
       "family_id": "linalg_fft",
       "status": "baseline_not_provided",
-      "current_case_count": 33,
+      "current_case_count": 46,
       "baseline_case_count": null,
-      "current_sha256": "71dbb67d983f4b891bef125844532f5301ce0a919a7fcce6ebc456184c445e97",
+      "current_sha256": "8b10f18497ed16afc698fdb1078f9a5f53a7abc8ecfa10f89a5bfa016766f3df",
       "baseline_sha256": null,
       "issue_codes": []
     },
@@ -66,6 +68,18 @@
     }
   ],
   "issues": [
+    {
+      "code": "x64_mode_mismatch",
+      "family_id": "transforms",
+      "path": "$.rows.transforms",
+      "message": "expected x64 Some(true), found None"
+    },
+    {
+      "code": "x64_mode_mismatch",
+      "family_id": "rng",
+      "path": "$.rows.rng",
+      "message": "expected x64 Some(true), found None"
+    },
     {
       "code": "stale_oracle_version",
       "family_id": "composition",

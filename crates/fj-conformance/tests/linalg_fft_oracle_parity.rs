@@ -23,6 +23,8 @@ struct OracleCase {
     inputs: Vec<OracleValue>,
     expected_outputs: Vec<OracleValue>,
     #[serde(default)]
+    tolerance: Option<f64>,
+    #[serde(default)]
     params: BTreeMap<String, String>,
 }
 
@@ -46,50 +48,81 @@ enum OracleValue {
         reals: Vec<f64>,
         imags: Vec<f64>,
     },
+    #[serde(rename = "tensor_complex64")]
+    TensorComplex64 {
+        shape: Vec<u32>,
+        reals: Vec<f64>,
+        imags: Vec<f64>,
+    },
 }
 
-fn oracle_value_to_fj(ov: &OracleValue) -> Value {
+fn oracle_value_to_fj(ov: &OracleValue) -> Result<Value, String> {
     match ov {
         OracleValue::MatrixF64 { shape, values }
         | OracleValue::VectorF64 { shape, values }
-        | OracleValue::TensorF64 { shape, values } => Value::Tensor(
-            TensorValue::new(
-                DType::F64,
-                Shape {
-                    dims: shape.clone(),
-                },
-                values.iter().map(|&v| Literal::from_f64(v)).collect(),
-            )
-            .unwrap(),
-        ),
+        | OracleValue::TensorF64 { shape, values } => TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: shape.clone(),
+            },
+            values.iter().map(|&v| Literal::from_f64(v)).collect(),
+        )
+        .map(Value::Tensor)
+        .map_err(|err| format!("invalid real-valued fixture tensor: {err}")),
         OracleValue::ComplexVector { shape, values } => {
             let (reals, imags): (Vec<f64>, Vec<f64>) = values.iter().copied().unzip();
-            complex_tensor_value(shape, &reals, &imags)
+            complex_tensor_value(shape, &reals, &imags, DType::Complex128)
         }
         OracleValue::TensorComplex128 {
             shape,
             reals,
             imags,
-        } => complex_tensor_value(shape, reals, imags),
+        } => complex_tensor_value(shape, reals, imags, DType::Complex128),
+        OracleValue::TensorComplex64 {
+            shape,
+            reals,
+            imags,
+        } => complex_tensor_value(shape, reals, imags, DType::Complex64),
     }
 }
 
-fn complex_tensor_value(shape: &[u32], reals: &[f64], imags: &[f64]) -> Value {
-    assert_eq!(reals.len(), imags.len(), "complex tensor length mismatch");
-    Value::Tensor(
-        TensorValue::new(
-            DType::Complex128,
-            Shape {
-                dims: shape.to_vec(),
-            },
-            reals
-                .iter()
-                .zip(imags.iter())
-                .map(|(&re, &im)| Literal::from_complex128(re, im))
-                .collect(),
-        )
-        .unwrap(),
+fn complex_tensor_value(
+    shape: &[u32],
+    reals: &[f64],
+    imags: &[f64],
+    dtype: DType,
+) -> Result<Value, String> {
+    if reals.len() != imags.len() {
+        return Err(format!(
+            "complex tensor length mismatch: {} real values, {} imaginary values",
+            reals.len(),
+            imags.len()
+        ));
+    }
+
+    let elements = match dtype {
+        DType::Complex64 => reals
+            .iter()
+            .zip(imags.iter())
+            .map(|(&re, &im)| Literal::from_complex64(re as f32, im as f32))
+            .collect(),
+        DType::Complex128 => reals
+            .iter()
+            .zip(imags.iter())
+            .map(|(&re, &im)| Literal::from_complex128(re, im))
+            .collect(),
+        other => return Err(format!("unsupported complex fixture dtype: {other:?}")),
+    };
+
+    TensorValue::new(
+        dtype,
+        Shape {
+            dims: shape.to_vec(),
+        },
+        elements,
     )
+    .map(Value::Tensor)
+    .map_err(|err| format!("invalid complex fixture tensor: {err}"))
 }
 
 fn extract_f64_vec(val: &Value) -> Vec<f64> {
@@ -108,10 +141,27 @@ fn extract_complex_vec(val: &Value) -> Result<Vec<(f64, f64)>, String> {
         .iter()
         .enumerate()
         .map(|(idx, l)| match l {
+            Literal::Complex64Bits(re, im) => {
+                Ok((f32::from_bits(*re) as f64, f32::from_bits(*im) as f64))
+            }
             Literal::Complex128Bits(re, im) => Ok((f64::from_bits(*re), f64::from_bits(*im))),
             other => Err(format!("expected complex element at {idx}, got {other:?}")),
         })
         .collect()
+}
+
+fn assert_tensor_dtype(actual: &Value, expected: DType, context: &str) -> Result<(), String> {
+    let tensor = actual
+        .as_tensor()
+        .ok_or_else(|| format!("{context}: expected tensor output"))?;
+    if tensor.dtype == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{context}: expected dtype {expected:?}, got {:?}",
+            tensor.dtype
+        ))
+    }
 }
 
 fn assert_f64_close(actual: &[f64], expected: &[f64], tol: f64, context: &str) {
@@ -144,7 +194,11 @@ fn load_oracle_bundle() -> Result<OracleBundle, String> {
 }
 
 fn run_case(case: &OracleCase) -> Result<(), String> {
-    let inputs: Vec<Value> = case.inputs.iter().map(oracle_value_to_fj).collect();
+    let inputs: Vec<Value> = case
+        .inputs
+        .iter()
+        .map(oracle_value_to_fj)
+        .collect::<Result<_, _>>()?;
 
     let prim = match case.operation.as_str() {
         "cholesky" => Primitive::Cholesky,
@@ -168,7 +222,7 @@ fn run_case(case: &OracleCase) -> Result<(), String> {
             | Primitive::TriangularSolve
     );
 
-    let tol = 1e-10;
+    let tol = case.tolerance.unwrap_or(1e-10);
 
     if is_multi_output {
         let outputs = eval_primitive_multi(prim, &inputs, &case.params)
@@ -213,6 +267,14 @@ fn run_case(case: &OracleCase) -> Result<(), String> {
                     assert_complex_close(&actual_vals, values, tol, &context);
                 }
                 OracleValue::TensorComplex128 { reals, imags, .. } => {
+                    assert_tensor_dtype(actual, DType::Complex128, &context)?;
+                    let actual_vals = extract_complex_vec(actual)?;
+                    let expected_vals: Vec<(f64, f64)> =
+                        reals.iter().copied().zip(imags.iter().copied()).collect();
+                    assert_complex_close(&actual_vals, &expected_vals, tol, &context);
+                }
+                OracleValue::TensorComplex64 { reals, imags, .. } => {
+                    assert_tensor_dtype(actual, DType::Complex64, &context)?;
                     let actual_vals = extract_complex_vec(actual)?;
                     let expected_vals: Vec<(f64, f64)> =
                         reals.iter().copied().zip(imags.iter().copied()).collect();
@@ -240,6 +302,13 @@ fn run_case(case: &OracleCase) -> Result<(), String> {
                 assert_complex_close(&extract_complex_vec(&output)?, values, tol, context);
             }
             OracleValue::TensorComplex128 { reals, imags, .. } => {
+                assert_tensor_dtype(&output, DType::Complex128, context)?;
+                let expected_vals: Vec<(f64, f64)> =
+                    reals.iter().copied().zip(imags.iter().copied()).collect();
+                assert_complex_close(&extract_complex_vec(&output)?, &expected_vals, tol, context);
+            }
+            OracleValue::TensorComplex64 { reals, imags, .. } => {
+                assert_tensor_dtype(&output, DType::Complex64, context)?;
                 let expected_vals: Vec<(f64, f64)> =
                     reals.iter().copied().zip(imags.iter().copied()).collect();
                 assert_complex_close(&extract_complex_vec(&output)?, &expected_vals, tol, context);
@@ -256,6 +325,29 @@ fn all_linalg_fft_oracle_cases_pass() -> Result<(), String> {
         !bundle.cases.is_empty(),
         "expected at least one oracle case"
     );
+    assert_eq!(bundle.cases.len(), 46, "unexpected linalg/FFT oracle count");
+    for required_case in [
+        "cholesky_5x5_spd",
+        "qr_4x4_square",
+        "svd_3x3_general",
+        "svd_4x3_tall",
+        "eigh_4x4_symmetric",
+        "eigh_5x5_symmetric",
+        "tsolve_lower_3x3",
+        "tsolve_lower_3x3_multi_rhs",
+        "fft_complex64_4point",
+        "fft_complex128_8point",
+        "rfft_8point_alternating",
+        "irfft_8point_roundtrip",
+    ] {
+        assert!(
+            bundle
+                .cases
+                .iter()
+                .any(|case| case.case_id == required_case),
+            "missing expanded oracle case {required_case}"
+        );
+    }
 
     let mut failures = Vec::new();
     for case in &bundle.cases {
