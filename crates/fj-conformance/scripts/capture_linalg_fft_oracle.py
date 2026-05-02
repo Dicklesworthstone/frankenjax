@@ -54,6 +54,7 @@ def _metadata(jax_version: str) -> dict[str, Any]:
         "platform": platform.system(),
         "hardware": platform.machine(),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "x64_enabled": True,
     }
 
 

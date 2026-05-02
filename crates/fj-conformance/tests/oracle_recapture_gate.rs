@@ -70,7 +70,7 @@ fn committed_matrix_counts_all_848_oracle_cases() {
 }
 
 #[test]
-fn committed_matrix_flags_stale_oracle_versions_and_missing_recapture_commands() {
+fn committed_matrix_flags_stale_oracle_versions() {
     let root = repo_root();
     let matrix = build_oracle_recapture_matrix(&root);
     let codes: Vec<(&str, &str)> = matrix
@@ -86,8 +86,14 @@ fn committed_matrix_flags_stale_oracle_versions_and_missing_recapture_commands()
 
     assert!(codes.contains(&("composition", "stale_oracle_version")));
     assert!(codes.contains(&("dtype_promotion", "stale_oracle_version")));
-    assert!(codes.contains(&("composition", "missing_recapture_command")));
-    assert!(codes.contains(&("dtype_promotion", "missing_recapture_command")));
+    assert!(
+        !codes.contains(&("composition", "missing_recapture_command")),
+        "composition should have recapture command"
+    );
+    assert!(
+        !codes.contains(&("dtype_promotion", "missing_recapture_command")),
+        "dtype_promotion should have recapture command"
+    );
 }
 
 #[test]

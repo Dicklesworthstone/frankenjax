@@ -223,7 +223,12 @@ pub fn default_oracle_fixture_specs() -> Vec<OracleFixtureSpec> {
                     "higher-order grad/jacobian/hessian",
                 ),
             ],
-            recapture_command: Vec::new(),
+            recapture_command: vec![
+                "python3".to_owned(),
+                "crates/fj-conformance/scripts/capture_composition_oracle.py".to_owned(),
+                "--output".to_owned(),
+                "crates/fj-conformance/fixtures/composition_oracle.v1.json".to_owned(),
+            ],
         },
         OracleFixtureSpec {
             family_id: "dtype_promotion".to_owned(),
@@ -238,7 +243,12 @@ pub fn default_oracle_fixture_specs() -> Vec<OracleFixtureSpec> {
                 "tests/dtypes_test.py",
                 "JAX dtype promotion lattice and weak type rules",
             )],
-            recapture_command: Vec::new(),
+            recapture_command: vec![
+                "python3".to_owned(),
+                "crates/fj-conformance/scripts/capture_dtype_promotion_oracle.py".to_owned(),
+                "--output".to_owned(),
+                "crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json".to_owned(),
+            ],
         },
     ]
 }
