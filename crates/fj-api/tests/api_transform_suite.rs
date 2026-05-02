@@ -152,6 +152,27 @@ fn stacking_jit_vmap() {
 }
 
 #[test]
+fn stacking_jit_vmap_with_nondefault_axes() {
+    let jaxpr = build_program(ProgramSpec::LaxMul);
+    let result = jit(jaxpr)
+        .compose_vmap()
+        .with_vmap_in_axes("none,0")
+        .with_vmap_out_axes("0")
+        .call(vec![
+            Value::scalar_f64(2.0),
+            Value::vector_f64(&[3.0, 4.0, 5.0]).expect("vector"),
+        ])
+        .expect("jit(vmap) should honor public vmap axis options");
+    let t = result[0].as_tensor().expect("tensor");
+    let vals = t.to_f64_vec().expect("f64 vec");
+    assert_eq!(vals, vec![6.0, 8.0, 10.0]);
+    log_pass(
+        "stacking_jit_vmap_with_nondefault_axes",
+        &("jit_vmap", "lax_mul", "in_axes=none,0", "out_axes=0"),
+    );
+}
+
+#[test]
 fn stacking_vmap_grad() {
     let jaxpr = build_program(ProgramSpec::Square);
     let result = vmap(jaxpr)
@@ -171,6 +192,38 @@ fn stacking_vmap_grad() {
         );
     }
     log_pass("stacking_vmap_grad", &("vmap_grad", "square"));
+}
+
+#[test]
+fn stacking_grad_vmap_can_disable_finite_diff_fallback() {
+    let jaxpr = build_program(ProgramSpec::Square);
+    let err = compose(jaxpr, vec![Transform::Grad, Transform::Vmap])
+        .with_finite_diff_grad_fallback(false)
+        .call(vec![Value::scalar_f64(2.0)])
+        .expect_err("public composed API should be able to deny finite-difference fallback");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("finite-difference grad fallback") && msg.contains("disabled"),
+        "error should identify disabled fallback policy: {msg}"
+    );
+    log_pass(
+        "stacking_grad_vmap_can_disable_finite_diff_fallback",
+        &("grad_vmap", "finite_diff_fallback=false"),
+    );
+}
+
+#[test]
+fn stacking_compose_can_enable_egraph_optimization() {
+    let jaxpr = build_program(ProgramSpec::Add2);
+    let result = compose(jaxpr, vec![Transform::Jit])
+        .with_egraph_optimization(true)
+        .call(vec![Value::scalar_i64(7), Value::scalar_i64(8)])
+        .expect("public composed API should pass egraph optimization option");
+    assert_eq!(result, vec![Value::scalar_i64(15)]);
+    log_pass(
+        "stacking_compose_can_enable_egraph_optimization",
+        &("jit", "egraph_optimize=true", "add2"),
+    );
 }
 
 #[test]

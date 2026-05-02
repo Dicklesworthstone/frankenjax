@@ -311,6 +311,40 @@ impl ComposedTransform {
         self
     }
 
+    #[must_use]
+    pub fn with_compile_option(mut self, key: &str, value: &str) -> Self {
+        self.compile_options
+            .insert(key.to_owned(), value.to_owned());
+        self
+    }
+
+    /// Set in_axes for the first `vmap` in this transform stack.
+    #[must_use]
+    pub fn with_vmap_in_axes(self, in_axes: &str) -> Self {
+        self.with_compile_option("vmap_in_axes", in_axes)
+    }
+
+    /// Set out_axes for the first `vmap` in this transform stack.
+    #[must_use]
+    pub fn with_vmap_out_axes(self, out_axes: &str) -> Self {
+        self.with_compile_option("vmap_out_axes", out_axes)
+    }
+
+    /// Enable or disable the finite-difference compatibility fallback for composed `grad` tails.
+    #[must_use]
+    pub fn with_finite_diff_grad_fallback(self, allow: bool) -> Self {
+        self.with_compile_option(
+            "allow_finite_diff_grad_fallback",
+            if allow { "true" } else { "false" },
+        )
+    }
+
+    /// Enable or disable dispatch-time e-graph optimization.
+    #[must_use]
+    pub fn with_egraph_optimization(self, enabled: bool) -> Self {
+        self.with_compile_option("egraph_optimize", if enabled { "true" } else { "false" })
+    }
+
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
         dispatch_with_options(
             self.jaxpr.clone(),
@@ -546,6 +580,70 @@ mod tests {
             .with_mode(CompatibilityMode::Hardened);
         assert_eq!(composed.backend, "tpu");
         assert_eq!(composed.mode, CompatibilityMode::Hardened);
+    }
+
+    #[test]
+    fn composed_builder_sets_dispatch_compile_options() {
+        let composed = compose(
+            make_mul_jaxpr(),
+            vec![Transform::Jit, Transform::Vmap, Transform::Grad],
+        )
+        .with_vmap_in_axes("none,0")
+        .with_vmap_out_axes("0")
+        .with_finite_diff_grad_fallback(false)
+        .with_egraph_optimization(true);
+
+        assert_eq!(
+            composed.compile_options.get("vmap_in_axes"),
+            Some(&"none,0".to_owned())
+        );
+        assert_eq!(
+            composed.compile_options.get("vmap_out_axes"),
+            Some(&"0".to_owned())
+        );
+        assert_eq!(
+            composed
+                .compile_options
+                .get("allow_finite_diff_grad_fallback"),
+            Some(&"false".to_owned())
+        );
+        assert_eq!(
+            composed.compile_options.get("egraph_optimize"),
+            Some(&"true".to_owned())
+        );
+    }
+
+    #[test]
+    fn composed_vmap_axes_apply_to_jit_vmap_call() {
+        let composed = jit(make_mul_jaxpr())
+            .compose_vmap()
+            .with_vmap_in_axes("none,0")
+            .with_vmap_out_axes("0");
+
+        let result = composed
+            .call(vec![
+                Value::scalar_f64(2.0),
+                Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector should build"),
+            ])
+            .expect("jit(vmap) should honor composed vmap axes");
+
+        let output = result[0].as_tensor().expect("output should be tensor");
+        let values = output.to_f64_vec().expect("f64 tensor");
+        assert_eq!(values, vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn composed_grad_tail_can_deny_finite_diff_fallback() {
+        let err = compose(make_mul_jaxpr(), vec![Transform::Grad, Transform::Vmap])
+            .with_finite_diff_grad_fallback(false)
+            .call(vec![Value::scalar_f64(2.0), Value::scalar_f64(3.0)])
+            .expect_err("disabled finite-difference fallback should reject grad(vmap)");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("finite-difference grad fallback") && msg.contains("disabled"),
+            "error should report the disabled fallback policy: {msg}"
+        );
     }
 
     // ── Execution ──
