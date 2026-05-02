@@ -165,26 +165,80 @@ fn security_validation_rejects_incomplete_fuzz_and_missing_evidence() {
 }
 
 #[test]
-fn security_outputs_round_trip() {
+fn security_validation_rejects_duplicate_ids_and_unbound_hashes() {
     let root = repo_root();
-    let temp = tempfile::tempdir().expect("tempdir");
+    let mut report = build_security_adversarial_report(&root);
+    assert!(
+        report.fuzz_families.len() > 3,
+        "report needs multiple fuzz families for integrity regression"
+    );
+    assert!(
+        !report.adversarial_rows.is_empty(),
+        "report needs adversarial rows for replay regression"
+    );
+
+    report
+        .threat_categories
+        .push(report.threat_categories[0].clone());
+    report.fuzz_families.push(report.fuzz_families[0].clone());
+    report
+        .adversarial_rows
+        .push(report.adversarial_rows[0].clone());
+    report.fuzz_families[0].artifact_hashes.clear();
+    report.fuzz_families[1].artifact_hashes.insert(
+        "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder/seed_strict_unknown_feature.json"
+            .to_owned(),
+        "0".repeat(64),
+    );
+    report.fuzz_families[2].artifact_hashes.insert(
+        "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder/seed_strict_unknown_feature.json"
+            .to_owned(),
+        "not-a-sha256".to_owned(),
+    );
+    report.fuzz_families[3].artifact_hashes.insert(
+        "crates/fj-conformance/fuzz/corpus/missing-security-seed".to_owned(),
+        "0".repeat(64),
+    );
+    report.adversarial_rows[0].replay_command.clear();
+
+    let issue_codes = validate_security_adversarial_report(&root, &report)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("duplicate_category_id"));
+    assert!(issue_codes.contains("duplicate_fuzz_family_id"));
+    assert!(issue_codes.contains("duplicate_adversarial_row_id"));
+    assert!(issue_codes.contains("missing_fuzz_artifact_hashes"));
+    assert!(issue_codes.contains("stale_fuzz_artifact_hash"));
+    assert!(issue_codes.contains("bad_fuzz_artifact_hash"));
+    assert!(issue_codes.contains("missing_hashed_fuzz_artifact"));
+    assert!(issue_codes.contains("missing_row_replay"));
+}
+
+#[test]
+fn security_outputs_round_trip() -> Result<(), Box<dyn std::error::Error>> {
+    let root = repo_root();
+    let temp = tempfile::tempdir()?;
     let threat_model_path = temp.path().join("security_threat_model.v1.json");
     let report_path = temp.path().join("security_adversarial_gate.v1.json");
     let markdown_path = temp.path().join("security_adversarial_gate.v1.md");
-    let report =
-        write_security_adversarial_outputs(&root, &threat_model_path, &report_path, &markdown_path)
-            .expect("security outputs should write");
+    let report = write_security_adversarial_outputs(
+        &root,
+        &threat_model_path,
+        &report_path,
+        &markdown_path,
+    )?;
 
-    let raw = std::fs::read_to_string(&report_path).expect("report should be readable");
-    let parsed: SecurityAdversarialReport =
-        serde_json::from_str(&raw).expect("report should parse");
+    let raw = std::fs::read_to_string(&report_path)?;
+    let parsed: SecurityAdversarialReport = serde_json::from_str(&raw)?;
     assert_eq!(parsed.status, report.status);
     assert_eq!(parsed.fuzz_families.len(), report.fuzz_families.len());
     assert!(validate_security_adversarial_report(&root, &parsed).is_empty());
 
-    let markdown = std::fs::read_to_string(&markdown_path).expect("markdown should be readable");
+    let markdown = std::fs::read_to_string(&markdown_path)?;
     assert!(markdown.contains("Security Adversarial Gate"));
     assert!(markdown.contains("No security adversarial gate issues found."));
+    Ok(())
 }
 
 #[test]
@@ -203,8 +257,8 @@ fn security_summary_is_dashboard_ready() {
 }
 
 #[test]
-fn security_e2e_log_schema_accepts_gate_shape() {
-    let temp = tempfile::tempdir().expect("tempdir");
+fn security_e2e_log_schema_accepts_gate_shape() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
     let log_path = temp.path().join("security.e2e.json");
     let mut log = E2EForensicLogV1::new(
         SECURITY_ADVERSARIAL_BEAD_ID,
@@ -219,6 +273,11 @@ fn security_e2e_log_schema_accepts_gate_shape() {
     log.oracle_ids = vec!["local:security-adversarial-gate.v1".to_owned()];
     log.transform_stack = vec!["cache".to_owned(), "jit".to_owned(), "ffi".to_owned()];
     log.replay_command = "./scripts/run_security_gate.sh --enforce".to_owned();
-    write_e2e_log(&log_path, &log).expect("write e2e log");
-    validate_e2e_log_path(&log_path, Path::new(".")).expect("e2e log should validate");
+    write_e2e_log(&log_path, &log)?;
+    let validation = validate_e2e_log_path(&log_path, Path::new("."));
+    assert!(
+        validation.is_ok(),
+        "e2e log should validate: {validation:#?}"
+    );
+    Ok(())
 }

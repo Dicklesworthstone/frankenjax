@@ -479,6 +479,43 @@ pub fn validate_security_adversarial_report(
         ));
     }
 
+    for duplicate in duplicate_ids(
+        report
+            .threat_categories
+            .iter()
+            .map(|category| category.category_id.as_str()),
+    ) {
+        issues.push(SecurityAdversarialIssue::new(
+            "duplicate_category_id",
+            "$.threat_categories",
+            format!("duplicate threat category id `{duplicate}`"),
+        ));
+    }
+    for duplicate in duplicate_ids(
+        report
+            .fuzz_families
+            .iter()
+            .map(|family| family.family_id.as_str()),
+    ) {
+        issues.push(SecurityAdversarialIssue::new(
+            "duplicate_fuzz_family_id",
+            "$.fuzz_families",
+            format!("duplicate fuzz family id `{duplicate}`"),
+        ));
+    }
+    for duplicate in duplicate_ids(
+        report
+            .adversarial_rows
+            .iter()
+            .map(|row| row.row_id.as_str()),
+    ) {
+        issues.push(SecurityAdversarialIssue::new(
+            "duplicate_adversarial_row_id",
+            "$.adversarial_rows",
+            format!("duplicate adversarial row id `{duplicate}`"),
+        ));
+    }
+
     let observed_categories = report
         .threat_categories
         .iter()
@@ -660,9 +697,52 @@ pub fn validate_security_adversarial_report(
         if !root.join(&family.corpus_path).exists() {
             issues.push(SecurityAdversarialIssue::new(
                 "missing_fuzz_corpus",
-                path,
+                path.clone(),
                 format!("{} corpus path is missing", family.corpus_path),
             ));
+        }
+        if family.artifact_hashes.is_empty() {
+            issues.push(SecurityAdversarialIssue::new(
+                "missing_fuzz_artifact_hashes",
+                path.clone(),
+                format!(
+                    "{} needs at least one hash-bound corpus artifact",
+                    family.family_id
+                ),
+            ));
+        }
+        for (artifact_path, artifact_hash) in &family.artifact_hashes {
+            let artifact_path_for_issue = format!("{path}.artifact_hashes.{artifact_path}");
+            if !is_sha256_hex(artifact_hash) {
+                issues.push(SecurityAdversarialIssue::new(
+                    "bad_fuzz_artifact_hash",
+                    artifact_path_for_issue.clone(),
+                    format!(
+                        "{} artifact hash for `{artifact_path}` is not SHA-256 hex",
+                        family.family_id
+                    ),
+                ));
+                continue;
+            }
+            match sha256_file(&root.join(artifact_path)) {
+                Ok(actual_hash) if actual_hash == *artifact_hash => {}
+                Ok(actual_hash) => issues.push(SecurityAdversarialIssue::new(
+                    "stale_fuzz_artifact_hash",
+                    artifact_path_for_issue,
+                    format!(
+                        "{} artifact hash for `{artifact_path}` is stale: expected {artifact_hash}, got {actual_hash}",
+                        family.family_id,
+                    ),
+                )),
+                Err(err) => issues.push(SecurityAdversarialIssue::new(
+                    "missing_hashed_fuzz_artifact",
+                    artifact_path_for_issue,
+                    format!(
+                        "{} artifact `{artifact_path}` could not be read for hash verification: {err}",
+                        family.family_id,
+                    ),
+                )),
+            }
         }
     }
 
@@ -683,6 +763,13 @@ pub fn validate_security_adversarial_report(
                 "missing_typed_error_class",
                 path.clone(),
                 format!("{} needs a typed error or recovery class", row.row_id),
+            ));
+        }
+        if row.replay_command.trim().is_empty() {
+            issues.push(SecurityAdversarialIssue::new(
+                "missing_row_replay",
+                path.clone(),
+                format!("{} needs a stable replay command", row.row_id),
             ));
         }
         if row.panic_status != "no_panic" {
@@ -1529,6 +1616,21 @@ fn json_contains_string(value: &JsonValue, needle: &str) -> bool {
         }
         _ => false,
     }
+}
+
+fn duplicate_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            duplicates.insert(id.to_owned());
+        }
+    }
+    duplicates.into_iter().collect()
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 fn repo_relative_artifact(root: &Path, path: &Path) -> String {
