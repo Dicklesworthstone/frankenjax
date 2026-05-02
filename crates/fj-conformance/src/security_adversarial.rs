@@ -478,6 +478,23 @@ pub fn validate_security_adversarial_report(
             "gate needs a stable replay command",
         ));
     }
+    if !matches!(report.status.as_str(), "pass" | "fail") {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_report_status",
+            "$.status",
+            format!(
+                "security gate status `{}` must be pass or fail",
+                report.status
+            ),
+        ));
+    }
+    if report.matrix_policy.trim().is_empty() {
+        issues.push(SecurityAdversarialIssue::new(
+            "empty_matrix_policy",
+            "$.matrix_policy",
+            "security gate needs a user-facing matrix policy",
+        ));
+    }
 
     for duplicate in duplicate_ids(
         report
@@ -521,6 +538,15 @@ pub fn validate_security_adversarial_report(
         .iter()
         .map(|category| category.category_id.as_str())
         .collect::<BTreeSet<_>>();
+    for category in &report.threat_categories {
+        if !REQUIRED_CATEGORIES.contains(&category.category_id.as_str()) {
+            issues.push(SecurityAdversarialIssue::new(
+                "unknown_threat_category",
+                "$.threat_categories",
+                format!("unknown threat category `{}`", category.category_id),
+            ));
+        }
+    }
     for required in REQUIRED_CATEGORIES {
         if !observed_categories.contains(required) {
             issues.push(SecurityAdversarialIssue::new(
@@ -809,6 +835,13 @@ pub fn validate_security_adversarial_report(
                 ),
             ));
         }
+        if row.evidence_refs.is_empty() {
+            issues.push(SecurityAdversarialIssue::new(
+                "missing_row_evidence",
+                path.clone(),
+                format!("{} needs evidence refs", row.row_id),
+            ));
+        }
         for reference in &row.evidence_refs {
             if !evidence_ref_exists(root, reference) {
                 issues.push(SecurityAdversarialIssue::new(
@@ -845,6 +878,13 @@ pub fn validate_security_adversarial_report(
             "required category count drifted",
         ));
     }
+    if report.coverage.observed_category_count != report.threat_categories.len() {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_observed_category_count",
+            "$.coverage.observed_category_count",
+            "observed category count must match threat category rows",
+        ));
+    }
     if report.coverage.green_category_count != report.threat_categories.len() {
         issues.push(SecurityAdversarialIssue::new(
             "bad_green_category_count",
@@ -852,11 +892,25 @@ pub fn validate_security_adversarial_report(
             "all categories must be green",
         ));
     }
+    if report.coverage.fuzz_family_count != report.fuzz_families.len() {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_fuzz_family_count",
+            "$.coverage.fuzz_family_count",
+            "fuzz family count must match fuzz family rows",
+        ));
+    }
     if report.coverage.fuzz_complete_count != report.fuzz_families.len() {
         issues.push(SecurityAdversarialIssue::new(
             "bad_fuzz_complete_count",
             "$.coverage.fuzz_complete_count",
             "all fuzz families must be complete",
+        ));
+    }
+    if report.coverage.adversarial_row_count != report.adversarial_rows.len() {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_adversarial_row_count",
+            "$.coverage.adversarial_row_count",
+            "adversarial row count must match adversarial rows",
         ));
     }
     if report.coverage.panic_free_row_count != report.adversarial_rows.len() {
@@ -871,6 +925,37 @@ pub fn validate_security_adversarial_report(
             "bad_typed_error_row_count",
             "$.coverage.typed_error_row_count",
             "all adversarial rows must bind typed error classes",
+        ));
+    }
+    if report.coverage.crash_free_family_count != report.fuzz_families.len() {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_crash_free_family_count",
+            "$.coverage.crash_free_family_count",
+            "all fuzz families must be crash-free",
+        ));
+    }
+    if report.coverage.timeout_free_family_count != report.fuzz_families.len() {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_timeout_free_family_count",
+            "$.coverage.timeout_free_family_count",
+            "all fuzz families must be timeout-free",
+        ));
+    }
+    let expected_evidence_ref_count = report
+        .threat_categories
+        .iter()
+        .map(|category| category.evidence_refs.len())
+        .sum::<usize>()
+        + report
+            .adversarial_rows
+            .iter()
+            .map(|row| row.evidence_refs.len())
+            .sum::<usize>();
+    if report.coverage.evidence_ref_count != expected_evidence_ref_count {
+        issues.push(SecurityAdversarialIssue::new(
+            "bad_evidence_ref_count",
+            "$.coverage.evidence_ref_count",
+            "evidence ref count must match category and adversarial row refs",
         ));
     }
 

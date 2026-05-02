@@ -154,6 +154,7 @@ fn security_validation_rejects_incomplete_fuzz_and_missing_evidence() {
     report.fuzz_families[0].deterministic_replay_count = 0;
     report.fuzz_families[0].actual_error_class = "missing_seed_corpus".to_owned();
     report.threat_categories[0].evidence_refs.clear();
+    report.adversarial_rows[0].evidence_refs.clear();
 
     let issue_codes = validate_security_adversarial_report(&root, &report)
         .into_iter()
@@ -162,6 +163,7 @@ fn security_validation_rejects_incomplete_fuzz_and_missing_evidence() {
     assert!(issue_codes.contains("insufficient_seed_corpus"));
     assert!(issue_codes.contains("bad_fuzz_error_class"));
     assert!(issue_codes.contains("missing_category_evidence"));
+    assert!(issue_codes.contains("missing_row_evidence"));
 }
 
 #[test]
@@ -213,6 +215,36 @@ fn security_validation_rejects_duplicate_ids_and_unbound_hashes() {
     assert!(issue_codes.contains("bad_fuzz_artifact_hash"));
     assert!(issue_codes.contains("missing_hashed_fuzz_artifact"));
     assert!(issue_codes.contains("missing_row_replay"));
+}
+
+#[test]
+fn security_validation_rejects_report_contract_and_coverage_drift() {
+    let root = repo_root();
+    let mut report = build_security_adversarial_report(&root);
+    report.status = "green".to_owned();
+    report.matrix_policy.clear();
+    report.threat_categories[0].category_id = "tc_untracked_boundary".to_owned();
+    report.coverage.observed_category_count += 1;
+    report.coverage.fuzz_family_count += 1;
+    report.coverage.adversarial_row_count += 1;
+    report.coverage.crash_free_family_count = 0;
+    report.coverage.timeout_free_family_count = 0;
+    report.coverage.evidence_ref_count += 1;
+
+    let issue_codes = validate_security_adversarial_report(&root, &report)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("bad_report_status"));
+    assert!(issue_codes.contains("empty_matrix_policy"));
+    assert!(issue_codes.contains("unknown_threat_category"));
+    assert!(issue_codes.contains("missing_required_category"));
+    assert!(issue_codes.contains("bad_observed_category_count"));
+    assert!(issue_codes.contains("bad_fuzz_family_count"));
+    assert!(issue_codes.contains("bad_adversarial_row_count"));
+    assert!(issue_codes.contains("bad_crash_free_family_count"));
+    assert!(issue_codes.contains("bad_timeout_free_family_count"));
+    assert!(issue_codes.contains("bad_evidence_ref_count"));
 }
 
 #[test]
