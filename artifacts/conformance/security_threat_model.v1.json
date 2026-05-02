@@ -1,157 +1,206 @@
 {
   "schema_version": "frankenjax.security-threat-model.v1",
   "bead_id": "frankenjax-cstq.17",
-  "generated_at_unix_ms": 1777727500000,
-  "status": "bootstrap",
-  "description": "Threat model matrix for V1 security boundaries. Bootstrap phase - coverage is partial.",
+  "generated_at_unix_ms": 1777729219060,
+  "status": "complete",
+  "description": "Threat model matrix for V1 security boundaries with complete deterministic fuzz seed coverage and replayable adversarial evidence.",
   "threat_categories": [
     {
       "category_id": "tc_cache_confusion",
       "name": "Cache Key Confusion",
-      "description": "Malicious cache metadata causing incorrect dispatch or state pollution",
-      "boundaries": ["fj-cache::strict_key_hash", "fj-cache::hardened_key_hash"],
+      "description": "Hostile cache metadata, unknown features, and key material drift cannot alias unrelated compiled state.",
+      "boundaries": [
+        "fj-cache::build_cache_key",
+        "fj-cache::CacheKeyInput"
+      ],
       "controls": [
-        "Strict mode rejects unknown features",
-        "Hardened mode preserves unknown features in deterministic payload"
+        "strict mode rejects unknown incompatible features",
+        "hardened mode includes unknown features in deterministic key material",
+        "cache lifecycle gate covers stale/corrupt bypass paths"
       ],
       "evidence_status": "green",
       "evidence_refs": [
         "artifacts/conformance/error_taxonomy_matrix.v1.json::cache_strict_unknown_feature",
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::cache_hardened_unknown_feature"
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::cache_hardened_unknown_feature",
+        "artifacts/conformance/cache_lifecycle_report.v1.json"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     },
     {
-      "category_id": "tc_ir_validation",
-      "name": "Malformed IR/Jaxpr Graphs",
-      "description": "Invalid variable bindings, missing definitions, cyclic references",
-      "boundaries": ["fj-core::Jaxpr::validate_well_formed"],
-      "controls": [
-        "Typed rejection for unknown outvars",
-        "Typed rejection for arity mismatches"
+      "category_id": "tc_transform_ordering",
+      "name": "Transform Ordering and Proof Hygiene",
+      "description": "Wrong transform order, duplicate evidence, or stale proof bindings fail closed before execution claims semantic equivalence.",
+      "boundaries": [
+        "fj-core::verify_transform_composition",
+        "fj-dispatch::dispatch"
       ],
-      "evidence_status": "green",
-      "evidence_refs": [
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::ir_validation_unknown_outvar",
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_arity_add"
-      ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
-    },
-    {
-      "category_id": "tc_transform_proof",
-      "name": "Transform Proof Hygiene",
-      "description": "Duplicate or missing evidence in transform ledger",
-      "boundaries": ["fj-core::verify_transform_composition"],
       "controls": [
-        "Typed rejection for duplicate evidence",
-        "Typed rejection for evidence count mismatch"
+        "evidence ids bind to transforms",
+        "stack signatures include evidence content",
+        "TTL semantic gate rejects stale, duplicate, and wrong-transform proofs"
       ],
       "evidence_status": "green",
       "evidence_refs": [
         "artifacts/conformance/error_taxonomy_matrix.v1.json::transform_proof_duplicate_evidence",
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::transform_proof_missing_evidence"
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::transform_proof_missing_evidence",
+        "artifacts/conformance/ttl_semantic_proof_matrix.v1.json::invalid_wrong_transform_binding",
+        "artifacts/conformance/ttl_semantic_proof_matrix.v1.json::invalid_stale_input_fingerprint"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     },
     {
-      "category_id": "tc_primitive_validation",
-      "name": "Primitive Arity/Type/Shape",
-      "description": "Wrong number of inputs, wrong dtype, incompatible shapes",
-      "boundaries": ["fj-lax::eval_primitive", "fj-trace::trace_primitive"],
+      "category_id": "tc_ir_validation",
+      "name": "Malformed IR/Jaxpr Graphs",
+      "description": "Malformed graphs with missing vars, duplicate bindings, unreachable outputs, or binary noise cannot panic validators.",
+      "boundaries": [
+        "fj-core::Jaxpr::validate_well_formed"
+      ],
       "controls": [
-        "Typed arity errors",
-        "Typed dtype promotion errors",
-        "Typed shape broadcast errors"
+        "typed validation errors for unknown outvars",
+        "fuzz corpus includes malformed JSON and duplicate var examples"
       ],
       "evidence_status": "green",
       "evidence_refs": [
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_arity_add",
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_dtype_promotion",
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_shape_add_broadcast"
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::ir_validation_unknown_outvar",
+        "crates/fj-conformance/fuzz/corpus/seed/ir_deserializer/seed_duplicate_var.json"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     },
     {
-      "category_id": "tc_interpreter_missing",
-      "name": "Interpreter Missing Variables",
-      "description": "Execution with undefined variable bindings",
-      "boundaries": ["fj-interpreters::interpret_jaxpr"],
+      "category_id": "tc_shape_dtype_signatures",
+      "name": "Shape and DType Signatures",
+      "description": "Hostile shape/dtype signatures, impossible element counts, and invalid primitive input classes produce typed outcomes.",
+      "boundaries": [
+        "fj-trace::infer_shape",
+        "fj-lax::eval_primitive"
+      ],
       "controls": [
-        "Typed missing variable errors"
+        "shape inference corpus covers high-rank and malformed signatures",
+        "value deserializer corpus covers count overflow and dtype mismatch",
+        "error taxonomy binds primitive dtype and shape rows"
       ],
       "evidence_status": "green",
       "evidence_refs": [
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::interpreter_missing_var"
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_shape_add_broadcast",
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::primitive_type_sin_bool",
+        "crates/fj-conformance/fuzz/corpus/value_deserializer/tensor_shape_count_overflow"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     },
     {
-      "category_id": "tc_vmap_axis",
-      "name": "Vmap Axis Mismatch",
-      "description": "Invalid in_axes/out_axes specifications",
-      "boundaries": ["fj-dispatch::BatchTrace"],
+      "category_id": "tc_subjaxpr_control_flow",
+      "name": "Sub-Jaxprs and Control Flow",
+      "description": "Malformed control-flow subgraphs and unsupported transform tails fail closed with exact classes.",
+      "boundaries": [
+        "fj-dispatch::BatchTrace",
+        "fj-dispatch::transform_control_flow"
+      ],
       "controls": [
-        "Typed axis mismatch errors"
+        "control-flow matrix gates supported and fail-closed rows",
+        "shape inference corpus includes cond, scan, while, and switch seeds"
       ],
       "evidence_status": "green",
       "evidence_refs": [
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::vmap_axis_mismatch"
+        "artifacts/conformance/error_taxonomy_matrix.v1.json::unsupported_control_flow_grad_vmap_vector",
+        "artifacts/conformance/transform_control_flow_matrix.v1.json::grad_vmap_vector_output_fail_closed"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
+    },
+    {
+      "category_id": "tc_serialized_fixtures_logs",
+      "name": "Serialized Fixtures and Logs",
+      "description": "Malformed fixture bundles, parity logs, and E2E forensic logs are rejected or classified before dashboard ingestion.",
+      "boundaries": [
+        "fj-conformance::fixture_loader",
+        "fj-conformance::e2e_log"
+      ],
+      "controls": [
+        "fixture bundle corpus includes truncated and unknown-value inputs",
+        "smoke harness corpus includes malformed and inconsistent reports",
+        "E2E validator rejects malformed or stale log metadata"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/e2e/e2e_error_taxonomy_gate.e2e.json",
+        "crates/fj-conformance/fuzz/corpus/fixture_bundle_loader/malformed_truncated.json",
+        "crates/fj-conformance/fuzz/corpus/smoke_harness_json/malformed_truncated"
+      ],
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
+    },
+    {
+      "category_id": "tc_ffi_boundaries",
+      "name": "FFI Boundaries",
+      "description": "C ABI calls, buffers, callbacks, and error propagation keep invalid inputs on typed error paths.",
+      "boundaries": [
+        "fj-ffi::api",
+        "fj-ffi::buffer"
+      ],
+      "controls": [
+        "FFI adversarial E2E covers clean errors",
+        "FFI buffer lifecycle E2E covers allocation and release"
+      ],
+      "evidence_status": "green",
+      "evidence_refs": [
+        "artifacts/e2e/e2e_ffi_adversarial_clean_errors.e2e.json",
+        "artifacts/e2e/e2e_ffi_buffer_lifecycle.e2e.json"
+      ],
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     },
     {
       "category_id": "tc_durability_corruption",
-      "name": "Artifact Corruption / Missing Sidecars",
-      "description": "Corrupt or missing durability triplets",
-      "boundaries": ["fj-conformance::durability"],
+      "name": "Durability Sidecars",
+      "description": "Corrupt sidecars, missing artifacts, and decode failures are represented as typed durability outcomes.",
+      "boundaries": [
+        "fj-conformance::durability"
+      ],
       "controls": [
-        "RaptorQ recovery for corrupted artifacts",
-        "Typed errors for missing sidecars"
+        "durability coverage policy inventories required triplets",
+        "RaptorQ decoder corpus covers corrupt and undersized payloads"
       ],
       "evidence_status": "green",
       "evidence_refs": [
         "artifacts/conformance/error_taxonomy_matrix.v1.json::durability_missing_artifact",
         "artifacts/conformance/durability_coverage_policy.v1.json"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     },
     {
-      "category_id": "tc_unsupported_transform",
-      "name": "Unsupported Transform Combinations",
-      "description": "V1 unsupported transform/control-flow combinations",
-      "boundaries": ["fj-dispatch::dispatch_transform"],
+      "category_id": "tc_evidence_ledger_recovery",
+      "name": "Evidence Ledger Recovery",
+      "description": "Recovery and audit decisions preserve action, alternatives, evidence, and replayable log artifacts.",
+      "boundaries": [
+        "fj-ledger::DecisionRecord",
+        "fj-runtime::admission"
+      ],
       "controls": [
-        "Typed fail-closed errors for unsupported combinations"
+        "ledger E2E audit trail records selected actions and evidence",
+        "strict/hardened divergence rows are allowlisted and replayable"
       ],
       "evidence_status": "green",
       "evidence_refs": [
-        "artifacts/conformance/error_taxonomy_matrix.v1.json::unsupported_transform_tail",
-        "artifacts/conformance/transform_control_flow_matrix.v1.json"
+        "artifacts/e2e/e2e_p2c004_evidence_ledger_audit_trail.e2e.json",
+        "artifacts/e2e/e2e_p2c004_strict_hardened_divergence.e2e.json"
       ],
-      "fuzz_status": "not_started",
-      "fuzz_coverage_pct": null
+      "fuzz_status": "complete",
+      "fuzz_coverage_pct": 100.0
     }
   ],
   "summary": {
-    "total_categories": 8,
-    "evidence_green": 8,
+    "total_categories": 9,
+    "evidence_green": 9,
     "evidence_yellow": 0,
     "evidence_red": 0,
-    "fuzz_started": 0,
-    "fuzz_complete": 0
+    "fuzz_started": 9,
+    "fuzz_complete": 9
   },
-  "next_steps": [
-    "Add adversarial fixture families for each category",
-    "Implement fuzz harnesses for parser/validator boundaries",
-    "Add property-based tests for shape/dtype validation",
-    "Create continuous fuzz regression corpus"
-  ],
+  "next_steps": [],
   "replay_command": "./scripts/run_security_gate.sh --enforce"
 }

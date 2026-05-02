@@ -2,48 +2,330 @@
   "schema_version": "frankenjax.e2e-forensic-log.v1",
   "bead_id": "frankenjax-cstq.17",
   "scenario_id": "e2e_security_gate",
-  "test_id": "security_gate_bootstrap",
+  "test_id": "fj_security_gate",
   "packet_id": null,
-  "command": ["./scripts/run_security_gate.sh", "--enforce"],
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-codex-cstq17/debug/fj_security_gate",
+    "--root",
+    "/data/projects/frankenjax",
+    "--threat-model",
+    "/data/projects/frankenjax/artifacts/conformance/security_threat_model.v1.json",
+    "--report",
+    "/data/projects/frankenjax/artifacts/conformance/security_adversarial_gate.v1.json",
+    "--markdown",
+    "/data/projects/frankenjax/artifacts/conformance/security_adversarial_gate.v1.md",
+    "--e2e",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_security_gate.e2e.json",
+    "--enforce"
+  ],
   "working_dir": "/data/projects/frankenjax",
   "environment": {
     "os": "linux",
     "arch": "x86_64",
-    "rust_version": "1.97.0-nightly",
-    "cargo_version": "1.97.0-nightly",
-    "cargo_target_dir": "/data/tmp/cargo-target",
-    "env_vars": {},
-    "timestamp_unix_ms": 1777727561000
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq17",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq17",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "timestamp_unix_ms": 1777729219101
   },
   "feature_flags": [],
-  "fixture_ids": [],
-  "oracle_ids": [],
-  "transform_stack": [],
+  "fixture_ids": [
+    "adv_cache_unknown_feature",
+    "adv_transform_duplicate_evidence",
+    "adv_ir_unknown_outvar",
+    "adv_shape_broadcast_mismatch",
+    "adv_value_count_overflow",
+    "adv_control_flow_unsupported_grad_vmap",
+    "adv_fixture_truncated_json",
+    "adv_ffi_clean_error",
+    "adv_durability_missing_artifact",
+    "adv_ledger_audit_recovery"
+  ],
+  "oracle_ids": [
+    "local:security-adversarial-gate.v1"
+  ],
+  "transform_stack": [
+    "cache",
+    "jit",
+    "grad",
+    "vmap",
+    "ffi",
+    "durability"
+  ],
   "mode": "strict",
   "inputs": {
-    "threat_model_path": "artifacts/conformance/security_threat_model.v1.json",
-    "error_taxonomy_path": "artifacts/conformance/error_taxonomy_matrix.v1.json"
+    "category_filter": null,
+    "family_filter": null,
+    "fuzz_families": [
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 3,
+        "family_id": "ff_cache_key_builder",
+        "observed_seed_count": 3,
+        "panic_status": "no_panic",
+        "target": "cache_key_builder",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/transform_composition_verifier",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 12,
+        "family_id": "ff_transform_composition_verifier",
+        "observed_seed_count": 12,
+        "panic_status": "no_panic",
+        "target": "transform_composition_verifier",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/ir_deserializer",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 3,
+        "family_id": "ff_ir_deserializer",
+        "observed_seed_count": 3,
+        "panic_status": "no_panic",
+        "target": "ir_deserializer",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/shape_inference_engine",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 55,
+        "family_id": "ff_shape_inference_engine",
+        "observed_seed_count": 55,
+        "panic_status": "no_panic",
+        "target": "shape_inference_engine",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/value_deserializer",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 13,
+        "family_id": "ff_value_deserializer",
+        "observed_seed_count": 13,
+        "panic_status": "no_panic",
+        "target": "value_deserializer",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/dispatch_request_builder",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 3,
+        "family_id": "ff_dispatch_request_builder",
+        "observed_seed_count": 3,
+        "panic_status": "no_panic",
+        "target": "dispatch_request_builder",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/fixture_bundle_loader",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 13,
+        "family_id": "ff_fixture_bundle_loader",
+        "observed_seed_count": 13,
+        "panic_status": "no_panic",
+        "target": "fixture_bundle_loader",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/smoke_harness_json",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 24,
+        "family_id": "ff_smoke_harness_json",
+        "observed_seed_count": 24,
+        "panic_status": "no_panic",
+        "target": "smoke_harness_json",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/raptorq_decoder",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 15,
+        "family_id": "ff_raptorq_decoder",
+        "observed_seed_count": 15,
+        "panic_status": "no_panic",
+        "target": "raptorq_decoder",
+        "timeout_status": "no_timeout"
+      }
+    ],
+    "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
+    "threat_categories": [
+      {
+        "boundaries": [
+          "fj-cache::build_cache_key",
+          "fj-cache::CacheKeyInput"
+        ],
+        "category_id": "tc_cache_confusion",
+        "required_adversarial_rows": [
+          "adv_cache_unknown_feature"
+        ],
+        "required_fuzz_families": [
+          "ff_cache_key_builder"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-core::verify_transform_composition",
+          "fj-dispatch::dispatch"
+        ],
+        "category_id": "tc_transform_ordering",
+        "required_adversarial_rows": [
+          "adv_transform_duplicate_evidence"
+        ],
+        "required_fuzz_families": [
+          "ff_transform_composition_verifier"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-core::Jaxpr::validate_well_formed"
+        ],
+        "category_id": "tc_ir_validation",
+        "required_adversarial_rows": [
+          "adv_ir_unknown_outvar"
+        ],
+        "required_fuzz_families": [
+          "ff_ir_deserializer"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-trace::infer_shape",
+          "fj-lax::eval_primitive"
+        ],
+        "category_id": "tc_shape_dtype_signatures",
+        "required_adversarial_rows": [
+          "adv_shape_broadcast_mismatch",
+          "adv_value_count_overflow"
+        ],
+        "required_fuzz_families": [
+          "ff_shape_inference_engine",
+          "ff_value_deserializer"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-dispatch::BatchTrace",
+          "fj-dispatch::transform_control_flow"
+        ],
+        "category_id": "tc_subjaxpr_control_flow",
+        "required_adversarial_rows": [
+          "adv_control_flow_unsupported_grad_vmap"
+        ],
+        "required_fuzz_families": [
+          "ff_shape_inference_engine",
+          "ff_dispatch_request_builder"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-conformance::fixture_loader",
+          "fj-conformance::e2e_log"
+        ],
+        "category_id": "tc_serialized_fixtures_logs",
+        "required_adversarial_rows": [
+          "adv_fixture_truncated_json"
+        ],
+        "required_fuzz_families": [
+          "ff_fixture_bundle_loader",
+          "ff_smoke_harness_json"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-ffi::api",
+          "fj-ffi::buffer"
+        ],
+        "category_id": "tc_ffi_boundaries",
+        "required_adversarial_rows": [
+          "adv_ffi_clean_error"
+        ],
+        "required_fuzz_families": [
+          "ff_value_deserializer"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-conformance::durability"
+        ],
+        "category_id": "tc_durability_corruption",
+        "required_adversarial_rows": [
+          "adv_durability_missing_artifact"
+        ],
+        "required_fuzz_families": [
+          "ff_raptorq_decoder"
+        ]
+      },
+      {
+        "boundaries": [
+          "fj-ledger::DecisionRecord",
+          "fj-runtime::admission"
+        ],
+        "category_id": "tc_evidence_ledger_recovery",
+        "required_adversarial_rows": [
+          "adv_ledger_audit_recovery"
+        ],
+        "required_fuzz_families": [
+          "ff_dispatch_request_builder"
+        ]
+      }
+    ],
+    "workspace_root": "/data/projects/frankenjax"
   },
   "expected": {
-    "taxonomy_status": "pass",
-    "all_categories_green": true
+    "all_categories_green": true,
+    "all_fuzz_families_complete": true,
+    "crash_status": "no_crash",
+    "gate_status": "pass",
+    "p0_open_crashes": 0,
+    "panic_status": "no_panic",
+    "required_category_count": 9,
+    "timeout_status": "no_timeout"
   },
   "actual": {
-    "taxonomy_status": "pass",
-    "threat_categories": 8,
-    "evidence_green": 8,
-    "evidence_yellow": 0,
-    "evidence_red": 0,
-    "model_status": "bootstrap"
+    "adversarial_row_count": 10,
+    "category_count": 9,
+    "coverage": {
+      "adversarial_row_count": 10,
+      "crash_free_family_count": 9,
+      "evidence_ref_count": 43,
+      "fuzz_complete_count": 9,
+      "fuzz_family_count": 9,
+      "green_category_count": 9,
+      "observed_category_count": 9,
+      "panic_free_row_count": 10,
+      "required_category_count": 9,
+      "timeout_free_family_count": 9,
+      "typed_error_row_count": 10
+    },
+    "crash_index": {
+      "exists": true,
+      "open_crash_count": 0,
+      "p0_open_crash_count": 0,
+      "path": "crates/fj-conformance/fuzz/corpus/crashes/index.v1.jsonl",
+      "status": "pass"
+    },
+    "fuzz_family_count": 9,
+    "issue_count": 0,
+    "issues": [],
+    "schema_version": "frankenjax.security-adversarial-gate.v1",
+    "status": "pass"
   },
   "tolerance": {
-    "policy_id": "security_bootstrap",
+    "policy_id": "exact_security_evidence_and_deterministic_fuzz_inventory",
     "atol": null,
     "rtol": null,
     "ulp": null,
-    "notes": "Bootstrap phase accepts yellow/partial evidence; enforcement phase requires all green"
+    "notes": "Security gate comparisons are exact: evidence refs must exist, fuzz corpus inventory must meet seed floors, rows must be typed and panic-free, and open P0 crash count must be zero."
   },
-  "error": null,
+  "error": {
+    "expected": null,
+    "actual": null,
+    "taxonomy_class": "none"
+  },
   "timings": {
     "setup_ms": 0,
     "trace_ms": 0,
@@ -60,15 +342,21 @@
   },
   "artifacts": [
     {
-      "kind": "threat_model",
+      "kind": "security_threat_model",
       "path": "artifacts/conformance/security_threat_model.v1.json",
-      "sha256": "d8a011141e92f4abcfa1a6ad93d8deac04831c7ab89bbcac43ebd63c552c1dec",
+      "sha256": "1cce5ec0714a146418ac74b722cdc0e7d310c54fe948a1fe08755d8e8d37b874",
       "required": true
     },
     {
-      "kind": "error_taxonomy",
-      "path": "artifacts/conformance/error_taxonomy_matrix.v1.json",
-      "sha256": "b097b49230743b162d0abd1f91c42772e9e4cf9ec7280b3ce953cfc0c3d57ecc",
+      "kind": "security_adversarial_report",
+      "path": "artifacts/conformance/security_adversarial_gate.v1.json",
+      "sha256": "a4094bc4a7234ffa785deb2dcbeb6bedf321692d9cb6056c74cb163f1001501a",
+      "required": true
+    },
+    {
+      "kind": "security_adversarial_markdown",
+      "path": "artifacts/conformance/security_adversarial_gate.v1.md",
+      "sha256": "b49537239e5d1e797d42c9929c30f77f5d92beab9074d3e419f4e0bb1426c4e6",
       "required": true
     }
   ],
@@ -81,6 +369,12 @@
       "id": "frankenjax-cstq.17",
       "title": "Prove security and adversarial fuzz gates"
     },
-    "bootstrap_phase": true
+    "crash_index": {
+      "exists": true,
+      "open_crash_count": 0,
+      "p0_open_crash_count": 0,
+      "path": "crates/fj-conformance/fuzz/corpus/crashes/index.v1.jsonl",
+      "status": "pass"
+    }
   }
 }

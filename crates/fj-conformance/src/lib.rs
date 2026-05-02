@@ -7,6 +7,7 @@ pub mod e2e_log;
 pub mod error_taxonomy;
 pub mod memory_performance;
 pub mod oracle_recapture;
+pub mod security_adversarial;
 pub mod transform_control_flow;
 pub mod ttl_semantic;
 

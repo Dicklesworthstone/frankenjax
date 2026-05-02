@@ -702,6 +702,18 @@ FrankenJAX defends against several threat categories relevant to ML infrastructu
 
 **Silent data corruption**: Conformance fixtures and benchmark baselines could be corrupted on disk or in transit. RaptorQ sidecars provide erasure coding that detects and recovers from partial data loss, with decode proofs that verify recovery correctness.
 
+The security/adversarial gate makes this threat model executable:
+
+```bash
+./scripts/run_security_gate.sh --enforce
+```
+
+It emits `artifacts/conformance/security_adversarial_gate.v1.json`,
+refreshes `artifacts/conformance/security_threat_model.v1.json`, and writes a
+shared E2E forensic log. The gate currently proves 9/9 threat categories green,
+9/9 fuzz seed families complete, 10/10 adversarial rows typed and panic-free,
+and 0 open P0 crash-index entries.
+
 ## Oracle Conformance
 
 FrankenJAX validates against real JAX output, not just hand-computed expected values:
