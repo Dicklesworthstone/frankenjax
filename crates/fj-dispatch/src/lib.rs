@@ -237,6 +237,13 @@ fn allows_finite_diff_grad_fallback(opts: &BTreeMap<String, String>) -> bool {
         })
 }
 
+fn compile_options_for_transform_tail(opts: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    opts.iter()
+        .filter(|(key, _)| key.as_str() != "vmap_in_axes" && key.as_str() != "vmap_out_axes")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
 fn transform_tail_summary(tail: &[Transform]) -> String {
     tail.iter()
         .map(|transform| transform.as_str())
@@ -820,6 +827,7 @@ fn execute_vmap_loop_and_stack(
     compile_options: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, DispatchError> {
     let mut per_output_values: Vec<Vec<Value>> = Vec::new();
+    let tail_compile_options = compile_options_for_transform_tail(compile_options);
 
     for index in 0..lead_len {
         let mut mapped_args = Vec::with_capacity(args.len());
@@ -852,9 +860,14 @@ fn execute_vmap_loop_and_stack(
             }
         }
 
-        let empty_opts = BTreeMap::new();
-        let mapped_output =
-            execute_with_transforms(root_jaxpr, tail, &mapped_args, backend, device, &empty_opts)?;
+        let mapped_output = execute_with_transforms(
+            root_jaxpr,
+            tail,
+            &mapped_args,
+            backend,
+            device,
+            &tail_compile_options,
+        )?;
         if index == 0 {
             per_output_values = vec![Vec::with_capacity(lead_len); mapped_output.len()];
         } else if mapped_output.len() != per_output_values.len() {
@@ -1161,6 +1174,37 @@ mod tests {
             unknown_incompatible_features: vec![],
         })
         .expect_err("finite-difference fallback should be gateable");
+
+        assert!(matches!(
+            err,
+            DispatchError::TransformExecution(
+                TransformExecutionError::FiniteDiffGradFallbackDisabled { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn dispatch_vmap_grad_grad_preserves_finite_diff_fallback_denial() {
+        let mut compile_options = BTreeMap::new();
+        compile_options.insert(
+            "allow_finite_diff_grad_fallback".to_owned(),
+            "false".to_owned(),
+        );
+        compile_options.insert("vmap_in_axes".to_owned(), "0".to_owned());
+
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(
+                ProgramSpec::Square,
+                &[Transform::Vmap, Transform::Grad, Transform::Grad],
+            ),
+            args: vec![Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vector should build")],
+            backend: "cpu".to_owned(),
+            compile_options,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("vmap tail must preserve finite-difference fallback denial");
 
         assert!(matches!(
             err,

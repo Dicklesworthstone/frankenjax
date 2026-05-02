@@ -1,0 +1,129 @@
+{
+  "actual": {
+    "grad_value": 13.0,
+    "jaxpr_equation_count": 4,
+    "jit_value": 40.0,
+    "value_and_grad_grad": 13.0,
+    "value_and_grad_value": 40.0,
+    "vmap_values": [
+      4.0,
+      10.0,
+      18.0
+    ]
+  },
+  "allocations": {
+    "allocated_bytes": null,
+    "allocation_count": null,
+    "measurement_backend": "not_measured",
+    "peak_rss_bytes": null
+  },
+  "artifacts": [
+    {
+      "kind": "readme_quick_example",
+      "path": "README.md",
+      "required": true,
+      "sha256": "609fd6ccd9eb5e71a47b8a48110226d2334afc9081466090b827d8380216bf97"
+    },
+    {
+      "kind": "executable_readme_quickstart",
+      "path": "crates/fj-api/examples/readme_quickstart.rs",
+      "required": true,
+      "sha256": "df433307bd153e110e33cd1cc9e650ad32c038e5a45952c4b65216a67aeeb4bb"
+    }
+  ],
+  "bead_id": "frankenjax-cstq.9",
+  "command": [
+    "/data/tmp/cargo-target-frankenjax-codex-cstq7-local/debug/examples/readme_quickstart",
+    "--json",
+    "/data/projects/frankenjax/artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
+  ],
+  "environment": {
+    "arch": "x86_64",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "env_vars": {
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
+      "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
+    },
+    "os": "linux",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "timestamp_unix_ms": 1777742228809
+  },
+  "error": {
+    "actual": null,
+    "expected": null,
+    "taxonomy_class": "none"
+  },
+  "expected": {
+    "grad_value": 13.0,
+    "jaxpr_equation_count": 4,
+    "jit_value": 40.0,
+    "value_and_grad_grad": 13.0,
+    "value_and_grad_value": 40.0,
+    "vmap_values": [
+      4.0,
+      10.0,
+      18.0
+    ]
+  },
+  "failure_summary": null,
+  "feature_flags": [],
+  "fixture_ids": [
+    "README.md#quick-example"
+  ],
+  "inputs": {
+    "abstract_input": {
+      "dtype": "f64",
+      "shape": []
+    },
+    "batch": [
+      1.0,
+      2.0,
+      3.0
+    ],
+    "scalar_x": 5.0
+  },
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.9",
+      "title": "Prove top-level user facade and README examples executable"
+    },
+    "documented_import_path": "fj_api",
+    "public_facade_crate": "fj-api"
+  },
+  "mode": "strict",
+  "oracle_ids": [
+    "README.md",
+    "crates/fj-api/examples/readme_quickstart.rs"
+  ],
+  "packet_id": null,
+  "redactions": [],
+  "replay_command": "./scripts/run_api_readme_examples.sh --enforce",
+  "scenario_id": "e2e_api_readme_quickstart",
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "status": "pass",
+  "test_id": "fj_api_readme_quickstart",
+  "timings": {
+    "dispatch_ms": 0,
+    "eval_ms": 0,
+    "setup_ms": 0,
+    "total_ms": 7,
+    "trace_ms": 0,
+    "verify_ms": 0
+  },
+  "tolerance": {
+    "atol": 0.001,
+    "notes": "jit/vmap/value checks are exact within f64 arithmetic; grad/value_and_grad use the public AD tolerance already documented by fj-api tests",
+    "policy_id": "readme_quickstart_exact_or_ad_tolerance",
+    "rtol": null,
+    "ulp": null
+  },
+  "transform_stack": [
+    "make_jaxpr",
+    "jit",
+    "grad",
+    "vmap",
+    "value_and_grad"
+  ],
+  "working_dir": "/data/projects/frankenjax"
+}
