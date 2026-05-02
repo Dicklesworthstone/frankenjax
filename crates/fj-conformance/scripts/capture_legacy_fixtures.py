@@ -58,14 +58,15 @@ def _try_import_jax(legacy_root: Path | None):
         sys.path.insert(0, str(legacy_root))
 
     import jax  # type: ignore
+    jax.config.update("jax_enable_x64", True)
     import jax.numpy as jnp  # type: ignore
     import jax.lax as lax  # type: ignore
 
     return jax, jnp, lax
 
 
-def _get_metadata(jax_version: str | None) -> dict[str, Any]:
-    return {
+def _get_metadata(jax_version: str | None, x64_enabled: bool | None) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
         "jax_version": jax_version or "unavailable",
         "python_version": platform.python_version(),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -73,6 +74,9 @@ def _get_metadata(jax_version: str | None) -> dict[str, Any]:
         "platform": platform.system(),
         "hostname": platform.node(),
     }
+    if x64_enabled is not None:
+        metadata["x64_enabled"] = x64_enabled
+    return metadata
 
 
 @dataclass
@@ -2428,6 +2432,7 @@ def main() -> int:
 
     capture_mode = "legacy_jax"
     jax_version = None
+    x64_enabled = None
     if args.force_fallback:
         capture_mode = "analytical_fallback"
         cases = build_cases_fallback()
@@ -2436,6 +2441,7 @@ def main() -> int:
         try:
             jax, jnp, lax_mod = _try_import_jax(legacy_root)
             jax_version = getattr(jax, "__version__", "unknown")
+            x64_enabled = True
             cases = build_cases_with_oracle(jax, jnp, lax_mod)
             random_cases = _build_random_cases_from_oracle(jax, jnp)
         except Exception as exc:
@@ -2452,7 +2458,7 @@ def main() -> int:
             cases = build_cases_fallback()
             random_cases = _build_random_cases_fallback()
 
-    metadata = _get_metadata(jax_version)
+    metadata = _get_metadata(jax_version, x64_enabled)
 
     bundle = {
         "schema_version": "frankenjax.transform-fixtures.v1",

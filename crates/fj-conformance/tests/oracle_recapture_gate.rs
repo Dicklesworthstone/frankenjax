@@ -28,7 +28,12 @@ fn spec_for(rel_path: &str, expected_count: usize) -> OracleFixtureSpec {
             symbol: "UnitTest".to_owned(),
             required: true,
         }],
-        recapture_command: vec!["python3".to_owned(), "capture.py".to_owned()],
+        recapture_command: vec![
+            "python3".to_owned(),
+            "capture.py".to_owned(),
+            "--legacy-root".to_owned(),
+            "legacy_jax_code/jax".to_owned(),
+        ],
     }
 }
 
@@ -97,6 +102,51 @@ fn committed_matrix_flags_stale_oracle_versions() {
 }
 
 #[test]
+fn committed_matrix_requires_explicit_x64_metadata() {
+    let root = repo_root();
+    let matrix = build_oracle_recapture_matrix(&root);
+    let codes: Vec<(&str, &str)> = matrix
+        .issues
+        .iter()
+        .map(|issue| {
+            (
+                issue.family_id.as_deref().unwrap_or("-"),
+                issue.code.as_str(),
+            )
+        })
+        .collect();
+
+    assert!(codes.contains(&("transforms", "x64_mode_mismatch")));
+    assert!(codes.contains(&("rng", "x64_mode_mismatch")));
+    assert!(
+        !codes.contains(&("linalg_fft", "x64_mode_mismatch")),
+        "linalg_fft fixture already records explicit x64 provenance"
+    );
+}
+
+#[test]
+fn default_recapture_commands_are_legacy_root_bound() {
+    let root = repo_root();
+    let matrix = build_oracle_recapture_matrix(&root);
+
+    for row in &matrix.rows {
+        assert!(
+            row.recapture_command
+                .iter()
+                .any(|argument| argument == "--legacy-root"),
+            "{} recapture command should bind legacy JAX root",
+            row.family_id
+        );
+        assert!(
+            !row.issue_codes
+                .contains(&"missing_legacy_root_argument".to_owned()),
+            "{} recapture command should satisfy legacy-root validation",
+            row.family_id
+        );
+    }
+}
+
+#[test]
 fn missing_required_family_is_rejected() {
     let root = repo_root();
     let mut matrix = build_oracle_recapture_matrix(&root);
@@ -131,6 +181,53 @@ fn duplicate_case_ids_are_rejected() {
     let row = matrix.rows.first().expect("one row");
     assert_eq!(row.duplicate_case_ids, vec!["dupe"]);
     assert!(row.issue_codes.contains(&"duplicate_case_ids".to_owned()));
+}
+
+#[test]
+fn strict_capture_flag_does_not_prove_x64_mode() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let rel = "fixtures/unit.json";
+    write_fixture(
+        tmp.path(),
+        rel,
+        json!({
+            "schema_version": "frankenjax.unit-fixtures.v1",
+            "metadata": {"jax_version": "0.9.2"},
+            "strict_capture": true,
+            "generated_by": "unit",
+            "cases": [{"case_id": "one"}]
+        }),
+    );
+
+    let matrix = build_oracle_recapture_matrix_from_specs(tmp.path(), &[spec_for(rel, 1)]);
+    let row = matrix.rows.first().expect("one row");
+    assert_eq!(row.x64_enabled, None);
+    assert!(row.issue_codes.contains(&"x64_mode_mismatch".to_owned()));
+}
+
+#[test]
+fn required_legacy_anchor_requires_legacy_root_argument() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let rel = "fixtures/unit.json";
+    write_fixture(
+        tmp.path(),
+        rel,
+        json!({
+            "schema_version": "frankenjax.unit-fixtures.v1",
+            "metadata": {"jax_version": "0.9.2", "x64_enabled": true},
+            "generated_by": "unit",
+            "cases": [{"case_id": "one"}]
+        }),
+    );
+
+    let mut spec = spec_for(rel, 1);
+    spec.recapture_command = vec!["python3".to_owned(), "capture.py".to_owned()];
+    let matrix = build_oracle_recapture_matrix_from_specs(tmp.path(), &[spec]);
+    let row = matrix.rows.first().expect("one row");
+    assert!(
+        row.issue_codes
+            .contains(&"missing_legacy_root_argument".to_owned())
+    );
 }
 
 #[test]

@@ -35,9 +35,7 @@ def _try_import_jax(legacy_root: Path):
                 break
 
     if legacy_root.exists():
-        # Keep the legacy checkout discoverable without shadowing the pinned wheel
-        # installed in .venv, which defines the actual capture runtime contract.
-        sys.path.append(str(legacy_root))
+        sys.path.insert(0, str(legacy_root))
 
     import jax  # type: ignore
     jax.config.update("jax_enable_x64", True)

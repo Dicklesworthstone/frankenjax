@@ -226,6 +226,8 @@ pub fn default_oracle_fixture_specs() -> Vec<OracleFixtureSpec> {
             recapture_command: vec![
                 "python3".to_owned(),
                 "crates/fj-conformance/scripts/capture_composition_oracle.py".to_owned(),
+                "--legacy-root".to_owned(),
+                "legacy_jax_code/jax".to_owned(),
                 "--output".to_owned(),
                 "crates/fj-conformance/fixtures/composition_oracle.v1.json".to_owned(),
             ],
@@ -246,6 +248,8 @@ pub fn default_oracle_fixture_specs() -> Vec<OracleFixtureSpec> {
             recapture_command: vec![
                 "python3".to_owned(),
                 "crates/fj-conformance/scripts/capture_dtype_promotion_oracle.py".to_owned(),
+                "--legacy-root".to_owned(),
+                "legacy_jax_code/jax".to_owned(),
                 "--output".to_owned(),
                 "crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json".to_owned(),
             ],
@@ -412,6 +416,14 @@ pub fn oracle_drift_report(
     for row in &current.rows {
         let baseline_row = baseline_rows.get(row.family_id.as_str()).copied();
         let mut issue_codes = row.issue_codes.clone();
+        let fixture_drifted = baseline_row.is_some_and(|baseline_row| {
+            baseline_row.fixture_sha256 != row.fixture_sha256
+                || baseline_row.actual_case_count != row.actual_case_count
+        });
+        if fixture_drifted {
+            changed.push(row.family_id.clone());
+            issue_codes.push("fixture_drift".to_owned());
+        }
         let status = if row
             .issue_codes
             .iter()
@@ -419,18 +431,12 @@ pub fn oracle_drift_report(
         {
             unsupported.push(row.family_id.clone());
             "unsupported_recapture"
+        } else if fixture_drifted {
+            "changed"
         } else if row.status != "pass" {
             "current_invalid"
-        } else if let Some(baseline_row) = baseline_row {
-            if baseline_row.fixture_sha256 != row.fixture_sha256
-                || baseline_row.actual_case_count != row.actual_case_count
-            {
-                changed.push(row.family_id.clone());
-                issue_codes.push("fixture_drift".to_owned());
-                "changed"
-            } else {
-                "unchanged"
-            }
+        } else if baseline_row.is_some() {
+            "unchanged"
         } else if baseline.is_some() {
             added.push(row.family_id.clone());
             issue_codes.push("added_family".to_owned());
@@ -674,18 +680,15 @@ fn build_fixture_row(root: &Path, spec: &OracleFixtureSpec) -> OracleFixtureRow 
         issue_codes.push("stale_oracle_version".to_owned());
     }
 
-    let x64_enabled = bool_at(&value, &["metadata", "x64_enabled"])
-        .or_else(|| bool_at(&value, &["x64_enabled"]))
-        .or_else(|| bool_at(&value, &["strict_capture"]));
+    let x64_enabled =
+        bool_at(&value, &["metadata", "x64_enabled"]).or_else(|| bool_at(&value, &["x64_enabled"]));
     if let Some(expected) = spec.expected_x64_enabled
         && x64_enabled != Some(expected)
     {
         issue_codes.push("x64_mode_mismatch".to_owned());
     }
 
-    if spec.recapture_command.is_empty() {
-        issue_codes.push("missing_recapture_command".to_owned());
-    }
+    push_recapture_command_issues(spec, &mut issue_codes);
 
     let status = if issue_codes.is_empty() {
         "pass"
@@ -736,6 +739,22 @@ fn validate_fixture_row(row: &OracleFixtureRow) -> Vec<OracleRecaptureIssue> {
     issues
 }
 
+fn push_recapture_command_issues(spec: &OracleFixtureSpec, issue_codes: &mut Vec<String>) {
+    if spec.recapture_command.is_empty() {
+        issue_codes.push("missing_recapture_command".to_owned());
+        return;
+    }
+
+    if spec.legacy_anchors.iter().any(|anchor| anchor.required)
+        && !spec
+            .recapture_command
+            .iter()
+            .any(|argument| argument == "--legacy-root")
+    {
+        issue_codes.push("missing_legacy_root_argument".to_owned());
+    }
+}
+
 fn issue_message(row: &OracleFixtureRow, code: &str) -> String {
     match code {
         "missing_fixture" => format!("fixture {} is missing", row.fixture_path),
@@ -764,6 +783,9 @@ fn issue_message(row: &OracleFixtureRow, code: &str) -> String {
         ),
         "missing_recapture_command" => {
             "family has no strict automated recapture command".to_owned()
+        }
+        "missing_legacy_root_argument" => {
+            "family recapture command does not bind an explicit legacy JAX root".to_owned()
         }
         _ => format!("{} failed validation", row.family_id),
     }

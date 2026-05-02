@@ -3,6 +3,7 @@
 
 Usage:
   python3 crates/fj-conformance/scripts/capture_dtype_promotion_oracle.py \
+      --legacy-root legacy_jax_code/jax \
       --output crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json
 
 This script records reference values for JAX dtype promotion rules across add/mul
@@ -28,8 +29,10 @@ def _try_import_jax(legacy_root: Path | None):
                 sys.path.insert(0, str(sp))
                 break
 
-    if legacy_root and legacy_root.exists():
-        sys.path.append(str(legacy_root))
+    if legacy_root:
+        if not legacy_root.exists():
+            raise FileNotFoundError(f"legacy JAX root does not exist: {legacy_root}")
+        sys.path.insert(0, str(legacy_root))
 
     import jax
     jax.config.update("jax_enable_x64", True)
@@ -126,6 +129,7 @@ def main():
         "schema_version": "frankenjax.dtype-promotion-oracle.v1",
         "generated_by": "capture_dtype_promotion_oracle.py",
         "generated_at_unix_ms": int(time.time() * 1000),
+        "oracle_root": str(args.legacy_root) if args.legacy_root else None,
         "jax_version": jax.__version__,
         "x64_enabled": True,
         "cases": cases,
