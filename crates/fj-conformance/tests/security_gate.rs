@@ -274,6 +274,124 @@ fn security_outputs_round_trip() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn security_gate_e2e_log_contains_required_fuzz_forensics() -> Result<(), Box<dyn std::error::Error>>
+{
+    let root = repo_root();
+    let temp = tempfile::tempdir()?;
+    let threat_model_path = temp.path().join("security_threat_model.v1.json");
+    let report_path = temp.path().join("security_adversarial_gate.v1.json");
+    let markdown_path = temp.path().join("security_adversarial_gate.v1.md");
+    let e2e_path = temp.path().join("e2e_security_gate.e2e.json");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_fj_security_gate"))
+        .arg("--root")
+        .arg(&root)
+        .arg("--threat-model")
+        .arg(&threat_model_path)
+        .arg("--report")
+        .arg(&report_path)
+        .arg("--markdown")
+        .arg(&markdown_path)
+        .arg("--e2e")
+        .arg(&e2e_path)
+        .arg("--enforce")
+        .output()?;
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    validate_e2e_log_path(&e2e_path, Path::new("."))
+        .map_err(|issues| format!("e2e log validation failed: {issues:#?}"))?;
+    let raw = std::fs::read_to_string(&e2e_path)?;
+    let log: serde_json::Value = serde_json::from_str(&raw)?;
+    let inputs = &log["inputs"];
+    let fuzz_families = inputs["fuzz_families"]
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("fuzz family forensics should be an array"))?;
+    assert!(!fuzz_families.is_empty());
+    for family in fuzz_families {
+        for key in [
+            "family_id",
+            "target",
+            "corpus_path",
+            "target_source",
+            "expected_error_class",
+            "actual_error_class",
+            "panic_status",
+            "crash_status",
+            "timeout_status",
+            "replay_command",
+        ] {
+            assert!(
+                family[key].as_str().is_some_and(|value| !value.is_empty()),
+                "missing {key} in family {family:#?}"
+            );
+        }
+        for key in [
+            "seed_floor",
+            "observed_seed_count",
+            "deterministic_replay_count",
+        ] {
+            assert!(
+                family[key].as_u64().is_some(),
+                "missing numeric {key} in family {family:#?}"
+            );
+        }
+        assert!(
+            family
+                .as_object()
+                .is_some_and(|object| object.contains_key("minimized_repro_path")),
+            "minimized repro path must be represented even when null: {family:#?}"
+        );
+        assert!(
+            family["artifact_hashes"]
+                .as_object()
+                .is_some_and(|hashes| !hashes.is_empty()),
+            "family must include hash-bound corpus artifacts: {family:#?}"
+        );
+    }
+
+    let rows = inputs["adversarial_rows"]
+        .as_array()
+        .ok_or_else(|| std::io::Error::other("adversarial row forensics should be an array"))?;
+    assert!(!rows.is_empty());
+    assert_eq!(inputs["case_count"].as_u64(), Some(rows.len() as u64));
+    for row in rows {
+        for key in [
+            "row_id",
+            "category_id",
+            "input_family",
+            "target_subsystem",
+            "expected_error_class",
+            "actual_error_class",
+            "strict_behavior",
+            "hardened_behavior",
+            "panic_status",
+            "crash_status",
+            "timeout_status",
+            "fuzz_family_id",
+            "replay_command",
+        ] {
+            assert!(
+                row[key].as_str().is_some_and(|value| !value.is_empty()),
+                "missing {key} in row {row:#?}"
+            );
+        }
+        assert!(
+            row["evidence_refs"]
+                .as_array()
+                .is_some_and(|refs| !refs.is_empty()),
+            "row must include evidence refs: {row:#?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
 fn security_summary_is_dashboard_ready() {
     let root = repo_root();
     let report = build_security_adversarial_report(&root);

@@ -1,7 +1,7 @@
 {
   "schema_version": "frankenjax.security-adversarial-gate.v1",
   "bead_id": "frankenjax-cstq.17",
-  "generated_at_unix_ms": 1777729219060,
+  "generated_at_unix_ms": 1777739466708,
   "status": "pass",
   "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
   "coverage": {
