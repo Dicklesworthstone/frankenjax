@@ -48,7 +48,7 @@ Tracker parent: `frankenjax-cstq`
 | Clean-room Rust implementation of scoped JAX transform semantics | Broadly implemented for declared primitives and core transforms | `frankenjax-cstq.1`, `frankenjax-cstq.2`, `frankenjax-cstq.7` |
 | Transform composition semantics are non-negotiable | Evidence/proof checks exist and were hardened, but semantic replay against oracle structures is not yet complete | `frankenjax-cstq.2`, `frankenjax-cstq.3` |
 | Strict/hardened compatibility split is enforced | Present in cache/dispatch paths, but cross-crate error taxonomy is distributed | `frankenjax-cstq.6`, `frankenjax-cstq.8` |
-| Profile-proven performance with trace/compile/execute and memory | Global gate exists for measured runtime phases; memory remains explicitly `not_measured` | `frankenjax-cstq.4`, `frankenjax-cstq.11` |
+| Profile-proven performance with trace/compile/execute and memory | Global gate exists for measured runtime phases and measured RSS memory workloads; hotspot prioritization remains tracked separately | `frankenjax-cstq.4`, `frankenjax-cstq.11` |
 | RaptorQ sidecars for all long-lived artifacts | Many sidecars/proofs exist, including Phase2C packets and E2E artifacts; authoritative all-artifact coverage needs machine enforcement | `frankenjax-cstq.5` |
 | Cache-key soundness against legacy behavior | Deterministic Rust keying exists; component-by-component legacy ledger is still needed | `frankenjax-cstq.6` |
 | Top-level usable library/API story | Multiple crates and examples exist; top-level facade and README executable proof remain ambiguous | `frankenjax-cstq.9`, `frankenjax-cstq.12` |
