@@ -164,7 +164,7 @@ fn write_forensic_log(
         "required_family_count": report.required_hotspot_families.len(),
         "follow_up_threshold": 2.0,
         "threshold_rows_have_br_followups": true,
-        "below_threshold_rows_have_no_followups": true,
+        "below_threshold_rows_have_no_unlisted_followups": true,
     });
     log.actual = optimization_hotspot_summary_json(report);
     log.tolerance = E2ETolerancePolicy {

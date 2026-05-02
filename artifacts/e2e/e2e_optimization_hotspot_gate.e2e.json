@@ -5,15 +5,7 @@
   "test_id": "fj_optimization_hotspot_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq11/debug/fj_optimization_hotspot_gate",
-    "--root",
-    "/data/projects/frankenjax",
-    "--report",
-    "/data/projects/frankenjax/artifacts/performance/optimization_hotspot_scoreboard.v1.json",
-    "--markdown",
-    "/data/projects/frankenjax/artifacts/performance/optimization_hotspot_scoreboard.v1.md",
-    "--e2e",
-    "/data/projects/frankenjax/artifacts/e2e/e2e_optimization_hotspot_gate.e2e.json",
+    "/data/tmp/cargo-target-frankenjax-codex-cstq10/debug/fj_optimization_hotspot_gate",
     "--enforce"
   ],
   "working_dir": "/data/projects/frankenjax",
@@ -22,19 +14,19 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq11",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq10",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq11",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq10",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777738845099
+    "timestamp_unix_ms": 1777743926731
   },
   "feature_flags": [],
   "fixture_ids": [
     "hotspot-egraph-saturation-001",
     "hotspot-vmap-multiplier-001",
-    "hotspot-fft-linalg-reduction-001",
     "hotspot-ad-tape-001",
+    "hotspot-fft-linalg-reduction-001",
     "hotspot-tensor-materialization-001",
     "hotspot-shape-kernels-001",
     "hotspot-cache-key-hashing-001",
@@ -78,11 +70,11 @@
         "samples": 32
       },
       {
-        "hotspot_id": "hotspot-fft-linalg-reduction-001",
+        "hotspot_id": "hotspot-ad-tape-001",
         "samples": 32
       },
       {
-        "hotspot_id": "hotspot-ad-tape-001",
+        "hotspot_id": "hotspot-fft-linalg-reduction-001",
         "samples": 32
       },
       {
@@ -105,7 +97,7 @@
     "workspace_root": "/data/projects/frankenjax"
   },
   "expected": {
-    "below_threshold_rows_have_no_followups": true,
+    "below_threshold_rows_have_no_unlisted_followups": true,
     "follow_up_threshold": 2.0,
     "gate_status": "pass",
     "required_family_count": 8,
@@ -157,11 +149,11 @@
         "follow_up_bead_id": "frankenjax-cstq.11.2",
         "hotspot_id": "hotspot-egraph-saturation-001",
         "owner_crate": "fj-egraph",
-        "p50_ns": 3423924,
-        "p95_ns": 4581286,
-        "p99_ns": 5023424,
-        "peak_rss_bytes": 9986048,
-        "priority_score": 2.43,
+        "p50_ns": 3443510,
+        "p95_ns": 5047567,
+        "p99_ns": 5244470,
+        "peak_rss_bytes": 10043392,
+        "priority_score": 2.65,
         "rank": 1
       },
       {
@@ -170,25 +162,12 @@
         "follow_up_bead_id": "frankenjax-cstq.11.1",
         "hotspot_id": "hotspot-vmap-multiplier-001",
         "owner_crate": "fj-dispatch",
-        "p50_ns": 55756,
-        "p95_ns": 74581,
-        "p99_ns": 74892,
-        "peak_rss_bytes": 8847360,
+        "p50_ns": 45125,
+        "p95_ns": 60936,
+        "p99_ns": 62358,
+        "peak_rss_bytes": 8904704,
         "priority_score": 2.15,
         "rank": 2
-      },
-      {
-        "confidence": 0.78,
-        "family": "fft_linalg_reduction_mixes",
-        "follow_up_bead_id": null,
-        "hotspot_id": "hotspot-fft-linalg-reduction-001",
-        "owner_crate": "fj-lax",
-        "p50_ns": 8897,
-        "p95_ns": 9228,
-        "p99_ns": 11923,
-        "peak_rss_bytes": 10788864,
-        "priority_score": 1.5,
-        "rank": 3
       },
       {
         "confidence": 0.8,
@@ -196,11 +175,24 @@
         "follow_up_bead_id": null,
         "hotspot_id": "hotspot-ad-tape-001",
         "owner_crate": "fj-ad",
-        "p50_ns": 66866,
-        "p95_ns": 88087,
-        "p99_ns": 96372,
-        "peak_rss_bytes": 10592256,
-        "priority_score": 1.49,
+        "p50_ns": 67698,
+        "p95_ns": 108866,
+        "p99_ns": 111902,
+        "peak_rss_bytes": 10653696,
+        "priority_score": 1.5,
+        "rank": 3
+      },
+      {
+        "confidence": 0.78,
+        "family": "fft_linalg_reduction_mixes",
+        "follow_up_bead_id": null,
+        "hotspot_id": "hotspot-fft-linalg-reduction-001",
+        "owner_crate": "fj-lax",
+        "p50_ns": 8697,
+        "p95_ns": 9197,
+        "p99_ns": 11923,
+        "peak_rss_bytes": 10850304,
+        "priority_score": 1.5,
         "rank": 4
       },
       {
@@ -209,10 +201,10 @@
         "follow_up_bead_id": null,
         "hotspot_id": "hotspot-tensor-materialization-001",
         "owner_crate": "fj-lax",
-        "p50_ns": 15990,
-        "p95_ns": 16993,
-        "p99_ns": 24546,
-        "peak_rss_bytes": 10788864,
+        "p50_ns": 12865,
+        "p95_ns": 13645,
+        "p99_ns": 26470,
+        "peak_rss_bytes": 10850304,
         "priority_score": 1.45,
         "rank": 5
       },
@@ -222,10 +214,10 @@
         "follow_up_bead_id": null,
         "hotspot_id": "hotspot-shape-kernels-001",
         "owner_crate": "fj-trace",
-        "p50_ns": 1683,
-        "p95_ns": 1863,
-        "p99_ns": 3376,
-        "peak_rss_bytes": 11321344,
+        "p50_ns": 1713,
+        "p95_ns": 1924,
+        "p99_ns": 3697,
+        "peak_rss_bytes": 11382784,
         "priority_score": 1.28,
         "rank": 6
       },
@@ -235,10 +227,10 @@
         "follow_up_bead_id": null,
         "hotspot_id": "hotspot-cache-key-hashing-001",
         "owner_crate": "fj-cache",
-        "p50_ns": 17433,
-        "p95_ns": 20078,
-        "p99_ns": 30979,
-        "peak_rss_bytes": 11321344,
+        "p50_ns": 17242,
+        "p95_ns": 17644,
+        "p99_ns": 19908,
+        "peak_rss_bytes": 11382784,
         "priority_score": 1.18,
         "rank": 7
       },
@@ -248,11 +240,11 @@
         "follow_up_bead_id": null,
         "hotspot_id": "hotspot-durability-encode-decode-001",
         "owner_crate": "fj-conformance",
-        "p50_ns": 3406312,
-        "p95_ns": 4301967,
-        "p99_ns": 12295135,
-        "peak_rss_bytes": 11190272,
-        "priority_score": 1.1,
+        "p50_ns": 3370422,
+        "p95_ns": 5839176,
+        "p99_ns": 6198125,
+        "peak_rss_bytes": 11251712,
+        "priority_score": 1.11,
         "rank": 8
       }
     ],
@@ -297,20 +289,20 @@
   "allocations": {
     "allocation_count": null,
     "allocated_bytes": null,
-    "peak_rss_bytes": 11321344,
+    "peak_rss_bytes": 11382784,
     "measurement_backend": "linux_procfs_status_vm_hwm"
   },
   "artifacts": [
     {
       "kind": "optimization_hotspot_report",
       "path": "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
-      "sha256": "37b2cbc1f38058fc241da6c4d1938aedeb2ef4c985dfffce153d211bc420ea6c",
+      "sha256": "2bc2bdcf9196cff2e1f303d05cc80b21a91dff161190dad36dd43e7ac39648ea",
       "required": true
     },
     {
       "kind": "optimization_hotspot_markdown",
       "path": "artifacts/performance/optimization_hotspot_scoreboard.v1.md",
-      "sha256": "fe751aeac095120415e7656042ca2b57560d76d06432bf5e00d2755a343220d3",
+      "sha256": "4f1d07305271d393c3b54fd08e654ec797ded29ba887c704ca80312f64be7de1",
       "required": true
     }
   ],

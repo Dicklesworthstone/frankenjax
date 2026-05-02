@@ -83,16 +83,21 @@ fn optimization_hotspot_rows_have_measurements_and_rank_order() {
 fn optimization_hotspot_threshold_controls_follow_up_beads() {
     let root = repo_root();
     let report = build_optimization_hotspot_report(&root);
+    let planned_follow_ups = report
+        .follow_up_beads
+        .iter()
+        .map(|bead| bead.bead_id.as_str())
+        .collect::<BTreeSet<_>>();
     for row in &report.rows {
         if row.priority_score >= HOTSPOT_FOLLOW_UP_THRESHOLD {
             assert!(
                 row.follow_up_bead_id.is_some(),
                 "threshold row needs br follow-up: {row:#?}"
             );
-        } else {
+        } else if let Some(follow_up) = row.follow_up_bead_id.as_deref() {
             assert!(
-                row.follow_up_bead_id.is_none(),
-                "below-threshold row must not create backlog noise: {row:#?}"
+                planned_follow_ups.contains(follow_up),
+                "below-threshold rows may only retain predeclared br follow-ups: {row:#?}"
             );
         }
     }

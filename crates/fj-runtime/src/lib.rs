@@ -136,6 +136,16 @@ mod tests {
         assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
     }
 
+    #[cfg(feature = "asupersync-integration")]
+    #[test]
+    fn asupersync_bridge_checkpoint_and_cancellation_roundtrip() {
+        let cx = asupersync::Cx::for_testing();
+
+        assert!(!super::asupersync_bridge::cancellation_requested(&cx));
+        super::asupersync_bridge::emit_checkpoint(&cx, "frankenjax runtime checkpoint")
+            .expect("test context should accept checkpoints");
+    }
+
     // ── Admission model boundary tests ────────────────────────
 
     #[test]

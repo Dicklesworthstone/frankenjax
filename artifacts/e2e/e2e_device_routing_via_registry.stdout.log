@@ -1,5 +1,5 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
-     Running tests/e2e_p2c006.rs (/data/tmp/cargo-target/debug/deps/e2e_p2c006-3666d8050ac16ef3)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.14s
+     Running tests/e2e_p2c006.rs (/data/tmp/cargo-target-frankenjax-codex-cstq10/debug/deps/e2e_p2c006-2bc98288c74bb123)
 
 running 1 test
 test e2e_device_routing_via_registry ... ok

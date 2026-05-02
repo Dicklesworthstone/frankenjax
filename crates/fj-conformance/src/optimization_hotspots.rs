@@ -567,12 +567,14 @@ fn validate_rows(
                     ),
                 )),
             }
-        } else if row.follow_up_bead_id.is_some() {
+        } else if let Some(id) = row.follow_up_bead_id.as_deref()
+            && !follow_up_ids.contains(id)
+        {
             issues.push(OptimizationHotspotIssue::new(
                 "unnecessary_follow_up",
                 format!("{path}.follow_up_bead_id"),
                 format!(
-                    "score {:.2} is below threshold {:.1}; do not create backlog noise",
+                    "score {:.2} is below threshold {:.1}; unlisted follow-up `{id}` would create backlog noise",
                     row.priority_score, HOTSPOT_FOLLOW_UP_THRESHOLD
                 ),
             ));
@@ -633,10 +635,9 @@ fn validate_follow_ups(
     report: &OptimizationHotspotReport,
     issues: &mut Vec<OptimizationHotspotIssue>,
 ) {
-    let threshold_rows = report
+    let declared_row_follow_ups = report
         .rows
         .iter()
-        .filter(|row| row.priority_score >= HOTSPOT_FOLLOW_UP_THRESHOLD)
         .filter_map(|row| row.follow_up_bead_id.as_deref())
         .collect::<BTreeSet<_>>();
     let row_ids = report
@@ -654,12 +655,12 @@ fn validate_follow_ups(
                 format!("duplicate follow-up bead `{}`", bead.bead_id),
             ));
         }
-        if !threshold_rows.contains(bead.bead_id.as_str()) {
+        if !declared_row_follow_ups.contains(bead.bead_id.as_str()) {
             issues.push(OptimizationHotspotIssue::new(
                 "follow_up_without_threshold_row",
                 path.clone(),
                 format!(
-                    "follow-up bead `{}` is not required by a threshold-crossing row",
+                    "follow-up bead `{}` is not declared by any hotspot row",
                     bead.bead_id
                 ),
             ));

@@ -804,6 +804,7 @@ dependencies = [
  "fj-core",
  "fj-test-utils",
  "proptest",
+ "smallvec",
 ]
 
 [[package]]

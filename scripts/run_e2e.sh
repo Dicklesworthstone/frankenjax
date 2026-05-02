@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ARTIFACT_DIR="${FJ_E2E_ARTIFACT_DIR:-$ROOT_DIR/artifacts/e2e}"
+CURRENT_FORENSIC_SCHEMA="frankenjax.e2e-forensic-log.v1"
+BEAD_ID="${FJ_E2E_BEAD_ID:-unassigned}"
 PACKET_FILTER=""
 SCENARIO_FILTER=""
 
@@ -32,6 +34,23 @@ normalize_packet() {
     return 0
   fi
   printf '%s' "$upper"
+}
+
+packet_from_name() {
+  local name="$1"
+  if [[ "$name" =~ p2c([0-9]{3}) ]]; then
+    printf 'P2C-%s' "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  printf 'UNSPECIFIED'
+}
+
+needs_fallback_log() {
+  local log_path="$1"
+  if [[ ! -f "$log_path" ]]; then
+    return 0
+  fi
+  ! grep -Eq "\"schema_version\"[[:space:]]*:[[:space:]]*\"$CURRENT_FORENSIC_SCHEMA\"" "$log_path"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -84,9 +103,9 @@ for test_file in "${E2E_FILES[@]}"; do
   )
 
   for scenario in "${discovered[@]}"; do
-    packet="UNSPECIFIED"
-    if [[ "$scenario" =~ p2c([0-9]{3}) ]]; then
-      packet="P2C-${BASH_REMATCH[1]}"
+    packet="$(packet_from_name "$scenario")"
+    if [[ "$packet" == "UNSPECIFIED" ]]; then
+      packet="$(packet_from_name "$test_bin")"
     fi
     SCENARIOS+=("$pkg|$test_bin|$scenario|$packet")
   done
@@ -139,7 +158,7 @@ for entry in "${SELECTED[@]}"; do
   end_ms="$(date +%s%3N)"
   duration_ms=$((end_ms - start_ms))
 
-  if [[ ! -f "$forensic_log" ]]; then
+  if needs_fallback_log "$forensic_log"; then
     stdout_hash="$(sha256sum "$stdout_log" | awk '{print $1}')"
     status="$( [[ $rc -eq 0 ]] && echo pass || echo fail )"
     failure_summary_json="null"
@@ -148,8 +167,8 @@ for entry in "${SELECTED[@]}"; do
     fi
     cat >"$forensic_log" <<JSON
 {
-  "schema_version": "frankenjax.e2e-forensic-log.v1",
-  "bead_id": "unassigned",
+  "schema_version": "$CURRENT_FORENSIC_SCHEMA",
+  "bead_id": "$BEAD_ID",
   "scenario_id": "$scenario",
   "test_id": "$test_bin::$scenario",
   "packet_id": "$packet",
@@ -181,7 +200,13 @@ for entry in "${SELECTED[@]}"; do
   "status": "$status",
   "failure_summary": $failure_summary_json,
   "redactions": [],
-  "metadata": {"emitter": "scripts/run_e2e.sh", "fallback": true}
+  "metadata": {
+    "emitter": "scripts/run_e2e.sh",
+    "fallback": true,
+    "fallback_reason": "scenario did not emit a current-schema forensic log",
+    "package": "$pkg",
+    "test_binary": "$test_bin"
+  }
 }
 JSON
   fi

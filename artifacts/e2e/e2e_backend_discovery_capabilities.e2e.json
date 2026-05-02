@@ -1,10 +1,42 @@
 {
-  "schema_version": "frankenjax.e2e.log.v1",
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.10",
   "scenario_id": "e2e_backend_discovery_capabilities",
-  "packet_id": "UNSPECIFIED",
-  "result": "pass",
-  "duration_ms": 223,
-  "details": "scenario did not emit forensic log; see stdout log",
+  "test_id": "e2e_p2c006::e2e_backend_discovery_capabilities",
+  "packet_id": "P2C-006",
+  "command": ["cargo", "test", "-p", "fj-conformance", "--test", "e2e_p2c006", "--", "e2e_backend_discovery_capabilities", "--exact", "--nocapture"],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "Linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq10",
+    "env_vars": {},
+    "timestamp_unix_ms": 1777742982275
+  },
+  "feature_flags": [],
+  "fixture_ids": [],
+  "oracle_ids": [],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {"scenario": "e2e_backend_discovery_capabilities", "packet": "P2C-006"},
+  "expected": {"exit_code": 0},
+  "actual": {"exit_code": 0},
+  "tolerance": {"policy_id": "exact_exit_code", "atol": null, "rtol": null, "ulp": null, "notes": "fallback log emitted by scripts/run_e2e.sh"},
+  "error": {"expected": null, "actual": null, "taxonomy_class": "none"},
+  "timings": {"setup_ms": 0, "trace_ms": 0, "dispatch_ms": 0, "eval_ms": 0, "verify_ms": 200, "total_ms": 200},
+  "allocations": {"allocation_count": null, "allocated_bytes": null, "peak_rss_bytes": null, "measurement_backend": "not_measured"},
+  "artifacts": [{"kind": "stdout_log", "path": "/data/projects/frankenjax/artifacts/e2e/e2e_backend_discovery_capabilities.stdout.log", "sha256": "f9c896db079664bd2c902e83f339d232ac079be48c04dcdc802fb4ffdd577b41", "required": true}],
   "replay_command": "cargo test -p fj-conformance --test e2e_p2c006 -- e2e_backend_discovery_capabilities --exact --nocapture",
-  "artifact_refs": ["/data/projects/frankenjax/artifacts/e2e/e2e_backend_discovery_capabilities.stdout.log"]
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "emitter": "scripts/run_e2e.sh",
+    "fallback": true,
+    "fallback_reason": "scenario did not emit a current-schema forensic log",
+    "package": "fj-conformance",
+    "test_binary": "e2e_p2c006"
+  }
 }

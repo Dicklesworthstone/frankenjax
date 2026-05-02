@@ -1,5 +1,5 @@
     Finished `test` profile [unoptimized + debuginfo] target(s) in 0.13s
-     Running tests/e2e_p2c007.rs (/data/tmp/cargo-target/debug/deps/e2e_p2c007-4f02254bbeb30f36)
+     Running tests/e2e_p2c007.rs (/data/tmp/cargo-target-frankenjax-codex-cstq10/debug/deps/e2e_p2c007-f489c420d51d6321)
 
 running 1 test
 test e2e_ffi_buffer_lifecycle ... ok

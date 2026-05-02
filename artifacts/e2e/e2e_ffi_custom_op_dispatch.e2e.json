@@ -1,10 +1,42 @@
 {
-  "schema_version": "frankenjax.e2e.log.v1",
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.10",
   "scenario_id": "e2e_ffi_custom_op_dispatch",
-  "packet_id": "UNSPECIFIED",
-  "result": "pass",
-  "duration_ms": 226,
-  "details": "scenario did not emit forensic log; see stdout log",
+  "test_id": "e2e_p2c007::e2e_ffi_custom_op_dispatch",
+  "packet_id": "P2C-007",
+  "command": ["cargo", "test", "-p", "fj-conformance", "--test", "e2e_p2c007", "--", "e2e_ffi_custom_op_dispatch", "--exact", "--nocapture"],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "Linux",
+    "arch": "x86_64",
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq10",
+    "env_vars": {},
+    "timestamp_unix_ms": 1777742990195
+  },
+  "feature_flags": [],
+  "fixture_ids": [],
+  "oracle_ids": [],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {"scenario": "e2e_ffi_custom_op_dispatch", "packet": "P2C-007"},
+  "expected": {"exit_code": 0},
+  "actual": {"exit_code": 0},
+  "tolerance": {"policy_id": "exact_exit_code", "atol": null, "rtol": null, "ulp": null, "notes": "fallback log emitted by scripts/run_e2e.sh"},
+  "error": {"expected": null, "actual": null, "taxonomy_class": "none"},
+  "timings": {"setup_ms": 0, "trace_ms": 0, "dispatch_ms": 0, "eval_ms": 0, "verify_ms": 195, "total_ms": 195},
+  "allocations": {"allocation_count": null, "allocated_bytes": null, "peak_rss_bytes": null, "measurement_backend": "not_measured"},
+  "artifacts": [{"kind": "stdout_log", "path": "/data/projects/frankenjax/artifacts/e2e/e2e_ffi_custom_op_dispatch.stdout.log", "sha256": "d3a289ea6cf16151a91a731def81a19f27429ee72a7a4b9d487a42a3e09f39d9", "required": true}],
   "replay_command": "cargo test -p fj-conformance --test e2e_p2c007 -- e2e_ffi_custom_op_dispatch --exact --nocapture",
-  "artifact_refs": ["/data/projects/frankenjax/artifacts/e2e/e2e_ffi_custom_op_dispatch.stdout.log"]
+  "status": "pass",
+  "failure_summary": null,
+  "redactions": [],
+  "metadata": {
+    "emitter": "scripts/run_e2e.sh",
+    "fallback": true,
+    "fallback_reason": "scenario did not emit a current-schema forensic log",
+    "package": "fj-conformance",
+    "test_binary": "e2e_p2c007"
+  }
 }

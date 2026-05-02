@@ -6,6 +6,7 @@
 use crate::buffer::FfiBuffer;
 use crate::error::FfiError;
 use crate::registry::{FfiRegistry, FfiTarget};
+use smallvec::SmallVec;
 
 /// Encapsulates an FFI call with pre-validated parameters.
 #[derive(Debug)]
@@ -72,8 +73,9 @@ impl FfiCall {
         }
 
         // 4. Build raw pointer arrays for the FFI boundary
-        let input_ptrs: Vec<*const u8> = inputs.iter().map(|b| b.as_ptr()).collect();
-        let mut output_ptrs: Vec<*mut u8> = outputs.iter_mut().map(|b| b.as_mut_ptr()).collect();
+        let input_ptrs: SmallVec<[*const u8; 4]> = inputs.iter().map(FfiBuffer::as_ptr).collect();
+        let mut output_ptrs: SmallVec<[*mut u8; 4]> =
+            outputs.iter_mut().map(FfiBuffer::as_mut_ptr).collect();
 
         // 5. Call the external function
         // SAFETY:

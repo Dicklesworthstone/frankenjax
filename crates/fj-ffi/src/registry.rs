@@ -110,14 +110,14 @@ impl FfiRegistry {
             .cloned()
             .ok_or_else(|| FfiError::TargetNotFound {
                 name: name.to_string(),
-                available: targets.keys().cloned().collect(),
+                available: sorted_target_names(&targets),
             })
     }
 
     /// List all registered target names.
     pub fn registered_names(&self) -> Vec<String> {
         let targets = self.targets_read();
-        targets.keys().cloned().collect()
+        sorted_target_names(&targets)
     }
 
     /// Number of registered targets.
@@ -143,9 +143,15 @@ impl std::fmt::Debug for FfiRegistry {
         let targets = self.targets_read();
         f.debug_struct("FfiRegistry")
             .field("target_count", &targets.len())
-            .field("targets", &targets.keys().collect::<Vec<_>>())
+            .field("targets", &sorted_target_names(&targets))
             .finish()
     }
+}
+
+fn sorted_target_names(targets: &HashMap<String, FfiTarget>) -> Vec<String> {
+    let mut names: Vec<String> = targets.keys().cloned().collect();
+    names.sort();
+    names
 }
 
 #[cfg(test)]
@@ -222,6 +228,24 @@ mod tests {
     }
 
     #[test]
+    fn registry_target_not_found_reports_sorted_available_names()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reg = FfiRegistry::new();
+        reg.register("zeta", mock_success)?;
+        reg.register("alpha", mock_success)?;
+        reg.register("middle", mock_success)?;
+
+        let err = reg.get("missing").expect_err("missing target should fail");
+        match err {
+            FfiError::TargetNotFound { available, .. } => {
+                assert_eq!(available, vec!["alpha", "middle", "zeta"]);
+                Ok(())
+            }
+            other => Err(format!("expected TargetNotFound, got: {other}").into()),
+        }
+    }
+
+    #[test]
     fn registry_recovers_from_poisoned_lock() -> Result<(), Box<dyn std::error::Error>> {
         let reg = Arc::new(FfiRegistry::new());
         let reg_for_thread = Arc::clone(&reg);
@@ -249,11 +273,9 @@ mod tests {
     #[test]
     fn registry_registered_names() -> Result<(), Box<dyn std::error::Error>> {
         let reg = FfiRegistry::new();
-        reg.register("alpha", mock_success)?;
         reg.register("beta", mock_error)?;
-        let mut names = reg.registered_names();
-        names.sort();
-        assert_eq!(names, vec!["alpha", "beta"]);
+        reg.register("alpha", mock_success)?;
+        assert_eq!(reg.registered_names(), vec!["alpha", "beta"]);
         Ok(())
     }
 
