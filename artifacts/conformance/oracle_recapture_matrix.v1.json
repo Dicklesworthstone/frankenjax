@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.oracle-recapture-matrix.v1",
-  "generated_at_unix_ms": 1777630850888,
+  "generated_at_unix_ms": 1777692058071,
   "repo_root": "/data/projects/frankenjax",
   "expected_total_cases": 848,
   "actual_total_cases": 848,
@@ -111,7 +111,7 @@
       "actual_case_count": 33,
       "oracle_version": "0.9.2",
       "expected_oracle_version_prefix": "0.9.2",
-      "x64_enabled": null,
+      "x64_enabled": true,
       "expected_x64_enabled": true,
       "capture_mode": "capture_linalg_fft_oracle.py",
       "generated_by": "capture_linalg_fft_oracle.py",
@@ -136,12 +136,10 @@
         "--output",
         "crates/fj-conformance/fixtures/linalg_fft_oracle.v1.json"
       ],
-      "fixture_sha256": "85e3ff94d800f0a081008f124d8ce44797c6e1c3a75e2d57c5538ff74eda0823",
+      "fixture_sha256": "71dbb67d983f4b891bef125844532f5301ce0a919a7fcce6ebc456184c445e97",
       "duplicate_case_ids": [],
-      "issue_codes": [
-        "x64_mode_mismatch"
-      ],
-      "status": "fail"
+      "issue_codes": [],
+      "status": "pass"
     },
     {
       "family_id": "composition",
@@ -170,12 +168,16 @@
           "required": true
         }
       ],
-      "recapture_command": [],
+      "recapture_command": [
+        "python3",
+        "crates/fj-conformance/scripts/capture_composition_oracle.py",
+        "--output",
+        "crates/fj-conformance/fixtures/composition_oracle.v1.json"
+      ],
       "fixture_sha256": "7596f063e3afcc904895d4781bc10f04666cb0266fc67c60aea2f8fb679f5bca",
       "duplicate_case_ids": [],
       "issue_codes": [
-        "stale_oracle_version",
-        "missing_recapture_command"
+        "stale_oracle_version"
       ],
       "status": "fail"
     },
@@ -201,46 +203,32 @@
           "required": true
         }
       ],
-      "recapture_command": [],
+      "recapture_command": [
+        "python3",
+        "crates/fj-conformance/scripts/capture_dtype_promotion_oracle.py",
+        "--output",
+        "crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json"
+      ],
       "fixture_sha256": "8af84f756fa8690e8a5c1feeca39d22b8e9279397f33d09d0e707125bf5cacb1",
       "duplicate_case_ids": [],
       "issue_codes": [
-        "stale_oracle_version",
-        "missing_recapture_command"
+        "stale_oracle_version"
       ],
       "status": "fail"
     }
   ],
   "issues": [
     {
-      "code": "x64_mode_mismatch",
-      "family_id": "linalg_fft",
-      "path": "$.rows.linalg_fft",
-      "message": "expected x64 Some(true), found None"
-    },
-    {
       "code": "stale_oracle_version",
       "family_id": "composition",
       "path": "$.rows.composition",
       "message": "expected oracle version prefix 0.9.2, found 0.9.1"
     },
     {
-      "code": "missing_recapture_command",
-      "family_id": "composition",
-      "path": "$.rows.composition",
-      "message": "family has no strict automated recapture command"
-    },
-    {
       "code": "stale_oracle_version",
       "family_id": "dtype_promotion",
       "path": "$.rows.dtype_promotion",
       "message": "expected oracle version prefix 0.9.2, found 0.9.1"
-    },
-    {
-      "code": "missing_recapture_command",
-      "family_id": "dtype_promotion",
-      "path": "$.rows.dtype_promotion",
-      "message": "family has no strict automated recapture command"
     }
   ],
   "status": "fail"

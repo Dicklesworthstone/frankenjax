@@ -5,7 +5,7 @@
   "test_id": "fj_memory_performance_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target/debug/fj_memory_performance_gate",
+    "target/debug/fj_memory_performance_gate",
     "--root",
     "/data/projects/frankenjax",
     "--report",
@@ -13,8 +13,7 @@
     "--markdown",
     "/data/projects/frankenjax/artifacts/performance/memory_performance_gate.v1.md",
     "--e2e",
-    "/data/projects/frankenjax/artifacts/e2e/e2e_memory_performance_gate.e2e.json",
-    "--enforce"
+    "/data/projects/frankenjax/artifacts/e2e/e2e_memory_performance_gate.e2e.json"
   ],
   "working_dir": "/data/projects/frankenjax",
   "environment": {
@@ -22,12 +21,11 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target",
+    "cargo_target_dir": "<default>",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777630901895
+    "timestamp_unix_ms": 1777692479914
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -78,62 +76,62 @@
   },
   "actual": {
     "issue_count": 0,
-    "max_peak_rss_bytes": 12480512,
+    "max_peak_rss_bytes": 12382208,
     "measurement_backend": "linux_procfs_status_vm_hwm",
     "schema_version": "frankenjax.memory-performance-gate.v1",
     "status": "pass",
     "workload_count": 8,
     "workloads": [
       {
-        "delta_rss_bytes": 1044480,
+        "delta_rss_bytes": 1220608,
         "iterations": 32,
         "logical_output_units": 3104,
-        "peak_rss_bytes": 5857280,
+        "peak_rss_bytes": 6053888,
         "phase_id": "trace",
         "status": "pass",
         "workload_id": "trace_canonical_fingerprint"
       },
       {
-        "delta_rss_bytes": 5046272,
+        "delta_rss_bytes": 4919296,
         "iterations": 16,
-        "logical_output_units": 1104,
-        "peak_rss_bytes": 11034624,
+        "logical_output_units": 1152,
+        "peak_rss_bytes": 11038720,
         "phase_id": "compile_dispatch",
         "status": "pass",
         "workload_id": "dispatch_jit_scalar"
       },
       {
-        "delta_rss_bytes": 598016,
+        "delta_rss_bytes": 536576,
         "iterations": 16,
         "logical_output_units": 112,
-        "peak_rss_bytes": 11636736,
+        "peak_rss_bytes": 11575296,
         "phase_id": "ad",
         "status": "pass",
         "workload_id": "ad_grad_scalar"
       },
       {
-        "delta_rss_bytes": 327680,
+        "delta_rss_bytes": 393216,
         "iterations": 16,
         "logical_output_units": 64,
-        "peak_rss_bytes": 11968512,
+        "peak_rss_bytes": 11972608,
         "phase_id": "vmap",
         "status": "pass",
         "workload_id": "vmap_vector_add_one"
       },
       {
-        "delta_rss_bytes": 196608,
+        "delta_rss_bytes": 233472,
         "iterations": 16,
         "logical_output_units": 64,
-        "peak_rss_bytes": 12165120,
+        "peak_rss_bytes": 12206080,
         "phase_id": "fft",
         "status": "pass",
         "workload_id": "fft_complex_vector"
       },
       {
-        "delta_rss_bytes": 65536,
+        "delta_rss_bytes": 0,
         "iterations": 16,
         "logical_output_units": 64,
-        "peak_rss_bytes": 12230656,
+        "peak_rss_bytes": 12206080,
         "phase_id": "linalg",
         "status": "pass",
         "workload_id": "linalg_cholesky_matrix"
@@ -142,16 +140,16 @@
         "delta_rss_bytes": 8192,
         "iterations": 32,
         "logical_output_units": 2080,
-        "peak_rss_bytes": 12238848,
+        "peak_rss_bytes": 12214272,
         "phase_id": "cache",
         "status": "pass",
         "workload_id": "cache_hit_miss"
       },
       {
-        "delta_rss_bytes": 241664,
+        "delta_rss_bytes": 167936,
         "iterations": 1,
         "logical_output_units": 3,
-        "peak_rss_bytes": 12480512,
+        "peak_rss_bytes": 12382208,
         "phase_id": "durability",
         "status": "pass",
         "workload_id": "durability_sidecar_round_trip"
@@ -181,24 +179,24 @@
   "allocations": {
     "allocation_count": null,
     "allocated_bytes": null,
-    "peak_rss_bytes": 12480512,
+    "peak_rss_bytes": 12382208,
     "measurement_backend": "linux_procfs_status_vm_hwm"
   },
   "artifacts": [
     {
       "kind": "memory_performance_report",
       "path": "artifacts/performance/memory_performance_gate.v1.json",
-      "sha256": "21a84aaa14c5fa7b07003ed5c4bb73230bfd46616108963bad878a0039bc1b89",
+      "sha256": "8c0e8b30d0582f04cf1708ae2af76245f8a2cc4cf40ffe267ac2df2e216ef86f",
       "required": true
     },
     {
       "kind": "memory_performance_markdown",
       "path": "artifacts/performance/memory_performance_gate.v1.md",
-      "sha256": "c949c2af488cc42e3c374f9458ab5bad2a3c65635e75e70a2fdb894da83492e0",
+      "sha256": "4376a75b4bee2e70a97d240e5247abef9ef7db7040f3d7c99a97b1a33272155b",
       "required": true
     }
   ],
-  "replay_command": "./scripts/run_memory_performance_gate.sh --enforce",
+  "replay_command": "./scripts/run_memory_performance_gate.sh",
   "status": "pass",
   "failure_summary": null,
   "redactions": [],

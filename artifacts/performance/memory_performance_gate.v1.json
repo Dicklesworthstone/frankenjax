@@ -1,7 +1,7 @@
 {
   "schema_version": "frankenjax.memory-performance-gate.v1",
   "bead_id": "frankenjax-cstq.4",
-  "generated_at_unix_ms": 1777630901869,
+  "generated_at_unix_ms": 1777692479882,
   "status": "pass",
   "measurement_policy": "Linux procfs VmRSS/VmHWM smoke workloads; no synthetic allocation counts",
   "measurement_backend": "linux_procfs_status_vm_hwm",
@@ -14,10 +14,10 @@
       "iterations": 32,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 4812800,
-      "rss_after_bytes": 5857280,
-      "peak_rss_bytes": 5857280,
-      "delta_rss_bytes": 1044480,
+      "rss_before_bytes": 4833280,
+      "rss_after_bytes": 6053888,
+      "peak_rss_bytes": 6053888,
+      "delta_rss_bytes": 1220608,
       "logical_output_units": 3104,
       "evidence_refs": [
         "benchmark:jaxpr_fingerprint/canonical_fingerprint/10"
@@ -36,11 +36,11 @@
       "iterations": 16,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 5988352,
-      "rss_after_bytes": 11034624,
-      "peak_rss_bytes": 11034624,
-      "delta_rss_bytes": 5046272,
-      "logical_output_units": 1104,
+      "rss_before_bytes": 6119424,
+      "rss_after_bytes": 11038720,
+      "peak_rss_bytes": 11038720,
+      "delta_rss_bytes": 4919296,
+      "logical_output_units": 1152,
       "evidence_refs": [
         "benchmark:dispatch_latency/jit/scalar_add"
       ],
@@ -59,9 +59,9 @@
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
       "rss_before_bytes": 11038720,
-      "rss_after_bytes": 11636736,
-      "peak_rss_bytes": 11636736,
-      "delta_rss_bytes": 598016,
+      "rss_after_bytes": 11575296,
+      "peak_rss_bytes": 11575296,
+      "delta_rss_bytes": 536576,
       "logical_output_units": 112,
       "evidence_refs": [
         "benchmark:dispatch_latency/grad/scalar_square"
@@ -80,10 +80,10 @@
       "iterations": 16,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 11640832,
-      "rss_after_bytes": 11968512,
-      "peak_rss_bytes": 11968512,
-      "delta_rss_bytes": 327680,
+      "rss_before_bytes": 11579392,
+      "rss_after_bytes": 11972608,
+      "peak_rss_bytes": 11972608,
+      "delta_rss_bytes": 393216,
       "logical_output_units": 64,
       "evidence_refs": [
         "benchmark:dispatch_latency/vmap/vector_add_one"
@@ -102,10 +102,10 @@
       "iterations": 16,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 11968512,
-      "rss_after_bytes": 12165120,
-      "peak_rss_bytes": 12165120,
-      "delta_rss_bytes": 196608,
+      "rss_before_bytes": 11972608,
+      "rss_after_bytes": 12206080,
+      "peak_rss_bytes": 12206080,
+      "delta_rss_bytes": 233472,
       "logical_output_units": 64,
       "evidence_refs": [
         "surface:lax_fft"
@@ -124,10 +124,10 @@
       "iterations": 16,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 12165120,
-      "rss_after_bytes": 12230656,
-      "peak_rss_bytes": 12230656,
-      "delta_rss_bytes": 65536,
+      "rss_before_bytes": 12206080,
+      "rss_after_bytes": 12206080,
+      "peak_rss_bytes": 12206080,
+      "delta_rss_bytes": 0,
       "logical_output_units": 64,
       "evidence_refs": [
         "surface:lax_linalg_cholesky"
@@ -135,7 +135,8 @@
       "replay_command": "./scripts/run_memory_performance_gate.sh --enforce",
       "notes": [
         "RSS is sampled from the gate process before and after the workload",
-        "Allocation counts are intentionally not synthesized"
+        "Allocation counts are intentionally not synthesized",
+        "VmRSS delta is zero because the workload reused process memory"
       ],
       "error": null
     },
@@ -146,9 +147,9 @@
       "iterations": 32,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 12230656,
-      "rss_after_bytes": 12238848,
-      "peak_rss_bytes": 12238848,
+      "rss_before_bytes": 12206080,
+      "rss_after_bytes": 12214272,
+      "peak_rss_bytes": 12214272,
       "delta_rss_bytes": 8192,
       "logical_output_units": 2080,
       "evidence_refs": [
@@ -169,10 +170,10 @@
       "iterations": 1,
       "measurement_backend": "linux_procfs_status_vm_hwm",
       "peak_rss_budget_bytes": 1073741824,
-      "rss_before_bytes": 12238848,
-      "rss_after_bytes": 12480512,
-      "peak_rss_bytes": 12480512,
-      "delta_rss_bytes": 241664,
+      "rss_before_bytes": 12214272,
+      "rss_after_bytes": 12382208,
+      "peak_rss_bytes": 12382208,
+      "delta_rss_bytes": 167936,
       "logical_output_units": 3,
       "evidence_refs": [
         "artifacts/performance/memory_durability_probe.v1.json",
