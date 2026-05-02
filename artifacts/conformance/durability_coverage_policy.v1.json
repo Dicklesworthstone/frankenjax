@@ -1,0 +1,65 @@
+{
+  "schema_version": "frankenjax.durability-coverage-policy.v1",
+  "bead_id": "frankenjax-cstq.5",
+  "generated_at_unix_ms": 1777693500000,
+  "policy_id": "v1_long_lived_artifacts",
+  "description": "RaptorQ durability coverage requirements for long-lived V1 artifacts",
+  "required_coverage": {
+    "fixtures": {
+      "path": "crates/fj-conformance/fixtures",
+      "description": "Oracle parity fixtures - correctness evidence",
+      "required": true,
+      "rationale": "Fixture corruption would silently invalidate conformance guarantees"
+    },
+    "oracle_recapture": {
+      "path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
+      "description": "Oracle recapture matrix - tracks fixture freshness",
+      "required": true,
+      "rationale": "Key evidence artifact for oracle parity claims"
+    },
+    "reliability_budgets": {
+      "path": "artifacts/ci/reliability_budgets.v1.json",
+      "description": "CI reliability budget constraints",
+      "required": true,
+      "rationale": "Corrupted budgets could mask reliability regressions"
+    },
+    "benchmark_baselines": {
+      "path": "artifacts/performance/*.baseline.*",
+      "description": "Performance regression baselines",
+      "required": true,
+      "rationale": "Baseline corruption would invalidate perf gate comparisons"
+    }
+  },
+  "excluded_scope": {
+    "e2e_logs": {
+      "path_pattern": "artifacts/e2e/e2e_*.e2e.json",
+      "description": "E2E forensic logs - ephemeral test evidence",
+      "excluded": true,
+      "rationale": "Regenerated on every test run; triplet would be stale immediately"
+    },
+    "schemas": {
+      "path_pattern": "artifacts/schemas/*.schema.json",
+      "description": "JSON schema definitions",
+      "excluded": true,
+      "rationale": "Version-controlled source files, not generated artifacts"
+    },
+    "phase2c_manifests": {
+      "path_pattern": "artifacts/phase2c/*.json",
+      "description": "Phase2C extraction manifests",
+      "excluded": true,
+      "rationale": "Historical migration artifacts; integrity verified at extraction time"
+    },
+    "stdout_logs": {
+      "path_pattern": "*.stdout.log",
+      "description": "Test stdout capture files",
+      "excluded": true,
+      "rationale": "Ephemeral test output, not evidence"
+    }
+  },
+  "coverage_target": {
+    "required_artifacts_coverage_pct": 100,
+    "notes": "All required artifacts must have sidecar + scrub + proof triplet"
+  },
+  "next_audit": "2026-06-01",
+  "replay_command": "./scripts/run_durability_coverage_gate.sh --enforce"
+}

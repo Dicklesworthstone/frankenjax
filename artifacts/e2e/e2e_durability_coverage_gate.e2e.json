@@ -1,0 +1,65 @@
+{
+  "schema_version": "frankenjax.e2e-forensic-log.v1",
+  "bead_id": "frankenjax-cstq.5",
+  "scenario_id": "e2e_durability_coverage_gate",
+  "test_id": "durability_coverage_gate",
+  "packet_id": null,
+  "command": ["./scripts/run_durability_coverage_gate.sh", "--enforce"],
+  "working_dir": "/data/projects/frankenjax",
+  "environment": {
+    "os": "linux",
+    "arch": "x86_64",
+    "timestamp_unix_ms": 1777725402000
+  },
+  "feature_flags": [],
+  "fixture_ids": [],
+  "oracle_ids": [],
+  "transform_stack": [],
+  "mode": "strict",
+  "inputs": {
+    "artifact_directories": [
+      "artifacts/conformance",
+      "artifacts/e2e",
+      "artifacts/ci",
+      "artifacts/performance",
+      "artifacts/phase2c",
+      "artifacts/schemas"
+    ]
+  },
+  "expected": {
+    "coverage_requirement": "all_triplets",
+    "minimum_coverage_pct": 100
+  },
+  "actual": {
+    "total_artifacts": 177,
+    "covered_artifacts": 92,
+    "uncovered_artifacts": 85,
+    "coverage_pct": 51,
+    "missing_sidecar": 84,
+    "missing_scrub": 76,
+    "missing_proof": 85,
+    "missing_all": 76
+  },
+  "tolerance": {
+    "policy_id": "all_triplets_required",
+    "notes": "every primary artifact requires sidecar + scrub + proof"
+  },
+  "error": "coverage_gap",
+  "timings": {
+    "total_ms": 0
+  },
+  "allocations": {
+    "measurement_backend": "not_measured"
+  },
+  "artifacts": [],
+  "replay_command": "./scripts/run_durability_coverage_gate.sh --enforce",
+  "status": "fail",
+  "failure_summary": "85 artifacts missing durability triplets",
+  "redactions": [],
+  "metadata": {
+    "bead": {
+      "id": "frankenjax-cstq.5",
+      "title": "Enforce RaptorQ coverage for all long-lived artifacts"
+    }
+  }
+}
