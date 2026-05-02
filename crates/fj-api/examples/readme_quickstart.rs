@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-const DEFAULT_E2E_LOG: &str = "artifacts/e2e/e2e_api_readme_quickstart.e2e.json";
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse()?;
     let started = Instant::now();
