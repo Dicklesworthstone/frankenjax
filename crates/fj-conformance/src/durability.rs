@@ -206,10 +206,11 @@ pub fn scrub_sidecar(
 ) -> Result<ScrubReport, DurabilityError> {
     let manifest = read_sidecar_manifest(sidecar_path)?;
     let original_data = fs::read(artifact_path)?;
+    let expected_hash = sha256_hex(&original_data);
+    validate_manifest_artifact_binding(&manifest, &expected_hash)?;
 
     let decoded = decode_from_sidecar_records(&manifest, &manifest.symbols)?;
     let decoded_hash = sha256_hex(&decoded);
-    let expected_hash = sha256_hex(&original_data);
 
     let report = ScrubReport {
         sidecar_path: sidecar_path.display().to_string(),
@@ -246,6 +247,7 @@ pub fn generate_decode_proof(
     let manifest = read_sidecar_manifest(sidecar_path)?;
     let original_data = fs::read(artifact_path)?;
     let expected_hash = sha256_hex(&original_data);
+    validate_manifest_artifact_binding(&manifest, &expected_hash)?;
 
     let (mut dropped_symbols, mut retained) =
         drop_symbols_by_kind(&manifest.symbols, "source", drop_source_count);
@@ -407,6 +409,17 @@ fn decode_from_sidecar_records(
 }
 
 fn validate_manifest(manifest: &SidecarManifest) -> Result<(), DurabilityError> {
+    if manifest.schema_version != "frankenjax.sidecar.v1" {
+        return Err(DurabilityError::InvalidConfig(format!(
+            "unsupported sidecar schema_version {}",
+            manifest.schema_version
+        )));
+    }
+    if !manifest.repair_overhead.is_finite() || manifest.repair_overhead < 1.0 {
+        return Err(DurabilityError::InvalidConfig(
+            "repair_overhead must be finite and >= 1.0".to_owned(),
+        ));
+    }
     if manifest.symbol_size == 0 {
         return Err(DurabilityError::InvalidConfig(
             "symbol_size must be non-zero".to_owned(),
@@ -422,6 +435,67 @@ fn validate_manifest(manifest: &SidecarManifest) -> Result<(), DurabilityError> 
             "source_blocks must be > 0 for non-empty artifacts".to_owned(),
         ));
     }
+    if manifest.artifact_size == 0
+        && (manifest.source_blocks != 0
+            || manifest.symbols_per_block != 0
+            || manifest.source_symbols != 0
+            || manifest.repair_symbols != 0
+            || manifest.total_symbols != 0
+            || !manifest.symbols.is_empty())
+    {
+        return Err(DurabilityError::InvalidConfig(
+            "empty artifacts must not declare source blocks or symbols".to_owned(),
+        ));
+    }
+    if manifest.artifact_size > 0 && manifest.symbols_per_block == 0 {
+        return Err(DurabilityError::InvalidConfig(
+            "symbols_per_block must be > 0 for non-empty artifacts".to_owned(),
+        ));
+    }
+
+    let expected_object_id = object_id_from_sha256(&manifest.artifact_sha256_hex)?;
+    if manifest.object_id_high != expected_object_id.high()
+        || manifest.object_id_low != expected_object_id.low()
+    {
+        return Err(DurabilityError::InvalidConfig(
+            "object id does not match artifact_sha256_hex".to_owned(),
+        ));
+    }
+
+    if manifest.total_symbols != manifest.symbols.len() {
+        return Err(DurabilityError::InvalidConfig(format!(
+            "total_symbols {} does not match symbol record count {}",
+            manifest.total_symbols,
+            manifest.symbols.len()
+        )));
+    }
+
+    let mut source_symbols = 0_usize;
+    let mut repair_symbols = 0_usize;
+    for record in &manifest.symbols {
+        match record.kind.as_str() {
+            "source" => source_symbols += 1,
+            "repair" => repair_symbols += 1,
+            other => {
+                return Err(DurabilityError::InvalidConfig(format!(
+                    "unknown symbol kind in manifest: {other}"
+                )));
+            }
+        }
+    }
+    if manifest.source_symbols != source_symbols {
+        return Err(DurabilityError::InvalidConfig(format!(
+            "source_symbols {} does not match source record count {}",
+            manifest.source_symbols, source_symbols
+        )));
+    }
+    if manifest.repair_symbols != repair_symbols {
+        return Err(DurabilityError::InvalidConfig(format!(
+            "repair_symbols {} does not match repair record count {}",
+            manifest.repair_symbols, repair_symbols
+        )));
+    }
+
     Ok(())
 }
 
@@ -436,9 +510,9 @@ fn validate_config(config: &SidecarConfig) -> Result<(), DurabilityError> {
             "max_block_size must be > 0".to_owned(),
         ));
     }
-    if config.repair_overhead < 1.0 {
+    if !config.repair_overhead.is_finite() || config.repair_overhead < 1.0 {
         return Err(DurabilityError::InvalidConfig(
-            "repair_overhead must be >= 1.0".to_owned(),
+            "repair_overhead must be finite and >= 1.0".to_owned(),
         ));
     }
     Ok(())
@@ -470,9 +544,14 @@ fn compute_symbols_per_block(
 }
 
 fn object_id_from_sha256(sha256_hex: &str) -> Result<ObjectId, DurabilityError> {
-    if sha256_hex.len() < 32 {
+    if sha256_hex.len() != 64 {
         return Err(DurabilityError::InvalidConfig(
-            "sha256 hex digest too short".to_owned(),
+            "sha256 hex digest must be exactly 64 characters".to_owned(),
+        ));
+    }
+    if !sha256_hex.as_bytes().iter().all(u8::is_ascii_hexdigit) {
+        return Err(DurabilityError::InvalidConfig(
+            "sha256 hex digest contains non-hex characters".to_owned(),
         ));
     }
 
@@ -484,6 +563,20 @@ fn object_id_from_sha256(sha256_hex: &str) -> Result<ObjectId, DurabilityError> 
     })?;
 
     Ok(ObjectId::new(high, low))
+}
+
+fn validate_manifest_artifact_binding(
+    manifest: &SidecarManifest,
+    artifact_sha256_hex: &str,
+) -> Result<(), DurabilityError> {
+    validate_manifest(manifest)?;
+    if manifest.artifact_sha256_hex != artifact_sha256_hex {
+        return Err(DurabilityError::Integrity(format!(
+            "manifest artifact sha256 {} does not match current artifact sha256 {}",
+            manifest.artifact_sha256_hex, artifact_sha256_hex
+        )));
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -512,8 +605,8 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        SidecarConfig, encode_artifact_to_sidecar, generate_decode_proof, read_sidecar_manifest,
-        scrub_sidecar,
+        DurabilityError, SidecarConfig, encode_artifact_to_sidecar, generate_decode_proof,
+        read_sidecar_manifest, scrub_sidecar,
     };
     use std::fs;
     use tempfile::tempdir;
@@ -542,5 +635,102 @@ mod tests {
         let proof = generate_decode_proof(&sidecar_path, &artifact_path, &proof_path, 1)
             .expect("decode proof generation should succeed");
         assert!(proof.recovered);
+    }
+
+    #[test]
+    fn scrub_rejects_sidecar_not_bound_to_artifact_hash() -> Result<(), String> {
+        let tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        let artifact_path = tmp.path().join("artifact.bin");
+        let sidecar_path = tmp.path().join("artifact.sidecar.json");
+        let scrub_path = tmp.path().join("artifact.scrub.json");
+
+        fs::write(&artifact_path, b"hash-bound durability payload")
+            .map_err(|err| format!("artifact should write: {err}"))?;
+
+        encode_artifact_to_sidecar(&artifact_path, &sidecar_path, &SidecarConfig::default())
+            .map_err(|err| format!("sidecar generation should succeed: {err}"))?;
+
+        let mut manifest = read_sidecar_manifest(&sidecar_path)
+            .map_err(|err| format!("manifest should parse: {err}"))?;
+        manifest.artifact_sha256_hex = "0".repeat(64);
+        manifest.object_id_high = 0;
+        manifest.object_id_low = 0;
+        fs::write(
+            &sidecar_path,
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|err| format!("manifest should serialize: {err}"))?,
+        )
+        .map_err(|err| format!("tampered sidecar should write: {err}"))?;
+
+        let err = match scrub_sidecar(&sidecar_path, &artifact_path, &scrub_path) {
+            Ok(_) => {
+                return Err("scrub should reject stale or tampered artifact binding".to_owned());
+            }
+            Err(err) => err,
+        };
+        let DurabilityError::Integrity(detail) = err else {
+            return Err(format!("expected integrity error, got {err}"));
+        };
+        assert!(detail.contains("manifest artifact sha256"));
+        assert!(detail.contains("current artifact sha256"));
+        Ok(())
+    }
+
+    #[test]
+    fn scrub_rejects_manifest_object_id_hash_mismatch() -> Result<(), String> {
+        let tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        let artifact_path = tmp.path().join("artifact.bin");
+        let sidecar_path = tmp.path().join("artifact.sidecar.json");
+        let scrub_path = tmp.path().join("artifact.scrub.json");
+
+        fs::write(&artifact_path, b"object id durability payload")
+            .map_err(|err| format!("artifact should write: {err}"))?;
+
+        encode_artifact_to_sidecar(&artifact_path, &sidecar_path, &SidecarConfig::default())
+            .map_err(|err| format!("sidecar generation should succeed: {err}"))?;
+
+        let mut manifest = read_sidecar_manifest(&sidecar_path)
+            .map_err(|err| format!("manifest should parse: {err}"))?;
+        manifest.object_id_low ^= 1;
+        fs::write(
+            &sidecar_path,
+            serde_json::to_string_pretty(&manifest)
+                .map_err(|err| format!("manifest should serialize: {err}"))?,
+        )
+        .map_err(|err| format!("tampered sidecar should write: {err}"))?;
+
+        let err = match scrub_sidecar(&sidecar_path, &artifact_path, &scrub_path) {
+            Ok(_) => return Err("scrub should reject object id drift".to_owned()),
+            Err(err) => err,
+        };
+        let DurabilityError::InvalidConfig(detail) = err else {
+            return Err(format!("expected invalid config error, got {err}"));
+        };
+        assert!(detail.contains("object id does not match"));
+        Ok(())
+    }
+
+    #[test]
+    fn sidecar_generation_rejects_nonfinite_repair_overhead() -> Result<(), String> {
+        let tmp = tempdir().map_err(|err| format!("tempdir should build: {err}"))?;
+        let artifact_path = tmp.path().join("artifact.bin");
+        let sidecar_path = tmp.path().join("artifact.sidecar.json");
+
+        fs::write(&artifact_path, b"invalid repair overhead payload")
+            .map_err(|err| format!("artifact should write: {err}"))?;
+
+        let config = SidecarConfig {
+            repair_overhead: f64::NAN,
+            ..SidecarConfig::default()
+        };
+        let err = match encode_artifact_to_sidecar(&artifact_path, &sidecar_path, &config) {
+            Ok(_) => return Err("nonfinite repair overhead should be rejected".to_owned()),
+            Err(err) => err,
+        };
+        let DurabilityError::InvalidConfig(detail) = err else {
+            return Err(format!("expected invalid config error, got {err}"));
+        };
+        assert!(detail.contains("repair_overhead must be finite"));
+        Ok(())
     }
 }
