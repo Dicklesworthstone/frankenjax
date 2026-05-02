@@ -48,6 +48,7 @@ fn decision_ledger_validation_rejects_bad_rows() {
     let root = repo_root();
     let mut report = build_decision_ledger_report(&root);
     report.rows[0].decision_id = report.rows[1].decision_id.clone();
+    report.rows[0].decision_class = "unknown_runtime_decision".to_owned();
     report.rows[0].alternatives_considered = vec!["kill".to_owned()];
     report.rows[0].confidence = 1.5;
     report.rows[0].evidence_signals.clear();
@@ -58,10 +59,34 @@ fn decision_ledger_validation_rejects_bad_rows() {
         .map(|issue| issue.code)
         .collect::<BTreeSet<_>>();
     assert!(issue_codes.contains("duplicate_decision_id"));
+    assert!(issue_codes.contains("unknown_decision_class"));
+    assert!(issue_codes.contains("missing_decision_class"));
     assert!(issue_codes.contains("missing_alternatives"));
     assert!(issue_codes.contains("bad_probability"));
     assert!(issue_codes.contains("missing_evidence_signals"));
     assert!(issue_codes.contains("missing_calibration_bucket"));
+}
+
+#[test]
+fn decision_ledger_validation_rejects_report_contract_drift() {
+    let root = repo_root();
+    let mut report = build_decision_ledger_report(&root);
+    report.status = "green".to_owned();
+    report.policy.clear();
+    report.required_decision_classes[0] = "unknown_runtime_decision".to_owned();
+    report
+        .strict_hardened_divergence_allowlist
+        .push("fallback_denial".to_owned());
+
+    let issue_codes = validate_decision_ledger_report(&root, &report)
+        .into_iter()
+        .map(|issue| issue.code)
+        .collect::<BTreeSet<_>>();
+    assert!(issue_codes.contains("bad_report_status"));
+    assert!(issue_codes.contains("empty_policy"));
+    assert!(issue_codes.contains("unknown_required_decision_class"));
+    assert!(issue_codes.contains("missing_required_decision_class"));
+    assert!(issue_codes.contains("unknown_divergence_allowlist_class"));
 }
 
 #[test]
@@ -72,6 +97,9 @@ fn decision_ledger_validation_rejects_bad_calibration_and_redaction() {
     report.calibration_buckets[1].count = 1;
     report.calibration_buckets[1].stale = false;
     report.calibration_buckets[1].observed_probability = 0.0;
+    report.calibration_buckets[2].lower_bound = 0.70;
+    report.calibration_buckets[2].drift_status = "blue".to_owned();
+    report.calibration_buckets[2].ece_contribution += 1.0;
     report.rows[0].evidence_signals[0].detail = "contains SECRET material".to_owned();
 
     let issue_codes = validate_decision_ledger_report(&root, &report)
@@ -79,8 +107,10 @@ fn decision_ledger_validation_rejects_bad_calibration_and_redaction() {
         .map(|issue| issue.code)
         .collect::<BTreeSet<_>>();
     assert!(issue_codes.contains("non_monotonic_calibration_bucket"));
+    assert!(issue_codes.contains("calibration_bucket_gap"));
     assert!(issue_codes.contains("stale_calibration_not_marked"));
     assert!(issue_codes.contains("bad_calibration_drift_status"));
+    assert!(issue_codes.contains("ece_contribution_mismatch"));
     assert!(issue_codes.contains("redaction_policy_violation"));
 }
 

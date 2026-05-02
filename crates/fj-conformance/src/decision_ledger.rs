@@ -294,11 +294,26 @@ pub fn validate_decision_ledger_report(
             "report needs a stable replay command",
         ));
     }
+    if !matches!(report.status.as_str(), "pass" | "fail") {
+        issues.push(DecisionLedgerIssue::new(
+            "bad_report_status",
+            "$.status",
+            format!("report status `{}` must be pass or fail", report.status),
+        ));
+    }
+    if report.policy.trim().is_empty() {
+        issues.push(DecisionLedgerIssue::new(
+            "empty_policy",
+            "$.policy",
+            "decision ledger report needs a user-facing policy",
+        ));
+    }
 
     let required = REQUIRED_DECISION_CLASSES
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
+    validate_declared_classes(report, &required, &mut issues);
     let observed = report
         .rows
         .iter()
@@ -346,12 +361,88 @@ pub fn validate_decision_ledger_report(
     issues
 }
 
+fn validate_declared_classes(
+    report: &DecisionLedgerReport,
+    required: &BTreeSet<&str>,
+    issues: &mut Vec<DecisionLedgerIssue>,
+) {
+    let mut declared = BTreeSet::new();
+    for class in &report.required_decision_classes {
+        if !declared.insert(class.as_str()) {
+            issues.push(DecisionLedgerIssue::new(
+                "duplicate_required_decision_class",
+                "$.required_decision_classes",
+                format!("duplicate required decision class `{class}`"),
+            ));
+        }
+        if !required.contains(class.as_str()) {
+            issues.push(DecisionLedgerIssue::new(
+                "unknown_required_decision_class",
+                "$.required_decision_classes",
+                format!("unknown required decision class `{class}`"),
+            ));
+        }
+    }
+    for class in required {
+        if !declared.contains(class) {
+            issues.push(DecisionLedgerIssue::new(
+                "missing_required_decision_class",
+                "$.required_decision_classes",
+                format!("required decision class `{class}` is absent from the report contract"),
+            ));
+        }
+    }
+
+    let allowed = ALLOWED_STRICT_HARDENED_DIVERGENCE
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut declared_allowlist = BTreeSet::new();
+    for class in &report.strict_hardened_divergence_allowlist {
+        if !declared_allowlist.insert(class.as_str()) {
+            issues.push(DecisionLedgerIssue::new(
+                "duplicate_divergence_allowlist_class",
+                "$.strict_hardened_divergence_allowlist",
+                format!("duplicate strict/hardened divergence allowlist class `{class}`"),
+            ));
+        }
+        if !allowed.contains(class.as_str()) {
+            issues.push(DecisionLedgerIssue::new(
+                "unknown_divergence_allowlist_class",
+                "$.strict_hardened_divergence_allowlist",
+                format!("unknown strict/hardened divergence allowlist class `{class}`"),
+            ));
+        }
+    }
+    for class in &allowed {
+        if !declared_allowlist.contains(class) {
+            issues.push(DecisionLedgerIssue::new(
+                "missing_divergence_allowlist_class",
+                "$.strict_hardened_divergence_allowlist",
+                format!("strict/hardened divergence allowlist is missing `{class}`"),
+            ));
+        }
+    }
+}
+
 fn validate_calibration_buckets(
     report: &DecisionLedgerReport,
     issues: &mut Vec<DecisionLedgerIssue>,
 ) {
     let mut seen = BTreeSet::new();
     let mut last_upper = 0.0;
+    let total_count = report
+        .calibration_buckets
+        .iter()
+        .map(|bucket| bucket.count)
+        .sum::<usize>();
+    if total_count == 0 {
+        issues.push(DecisionLedgerIssue::new(
+            "empty_calibration_evidence",
+            "$.calibration_buckets",
+            "calibration buckets need observed evidence counts",
+        ));
+    }
     for (idx, bucket) in report.calibration_buckets.iter().enumerate() {
         let path = format!("$.calibration_buckets[{idx}]");
         if !seen.insert(bucket.bucket_id.as_str()) {
@@ -374,6 +465,13 @@ fn validate_calibration_buckets(
                 ),
             ));
         }
+        if idx == 0 && bucket.lower_bound.abs() > f64::EPSILON {
+            issues.push(DecisionLedgerIssue::new(
+                "calibration_bucket_gap",
+                path.clone(),
+                format!("{} must start at 0.0", bucket.bucket_id),
+            ));
+        }
         if idx > 0 && bucket.lower_bound < last_upper {
             issues.push(DecisionLedgerIssue::new(
                 "non_monotonic_calibration_bucket",
@@ -384,7 +482,23 @@ fn validate_calibration_buckets(
                 ),
             ));
         }
+        if idx > 0 && bucket.lower_bound > last_upper {
+            issues.push(DecisionLedgerIssue::new(
+                "calibration_bucket_gap",
+                path.clone(),
+                format!("{} starts after the previous bucket ends", bucket.bucket_id),
+            ));
+        }
         last_upper = bucket.upper_bound;
+        if idx + 1 == report.calibration_buckets.len()
+            && (bucket.upper_bound - 1.0).abs() > f64::EPSILON
+        {
+            issues.push(DecisionLedgerIssue::new(
+                "calibration_bucket_gap",
+                path.clone(),
+                format!("{} must end at 1.0", bucket.bucket_id),
+            ));
+        }
         if !is_unit_interval(bucket.expected_probability)
             || !is_unit_interval(bucket.observed_probability)
         {
@@ -405,6 +519,13 @@ fn validate_calibration_buckets(
             ));
         }
         let drift = (bucket.expected_probability - bucket.observed_probability).abs();
+        if !matches!(bucket.drift_status.as_str(), "green" | "yellow" | "red") {
+            issues.push(DecisionLedgerIssue::new(
+                "bad_calibration_drift_status",
+                path.clone(),
+                format!("{} has invalid drift status", bucket.bucket_id),
+            ));
+        }
         if bucket.drift_status == "green" && drift > CALIBRATION_DRIFT_THRESHOLD {
             issues.push(DecisionLedgerIssue::new(
                 "bad_calibration_drift_status",
@@ -418,9 +539,22 @@ fn validate_calibration_buckets(
         if !bucket.ece_contribution.is_finite() || bucket.ece_contribution < 0.0 {
             issues.push(DecisionLedgerIssue::new(
                 "bad_ece_contribution",
-                path,
+                path.clone(),
                 format!("{} has invalid ECE contribution", bucket.bucket_id),
             ));
+        }
+        if total_count > 0 {
+            let expected_ece = drift * (bucket.count as f64 / total_count as f64);
+            if (bucket.ece_contribution - expected_ece).abs() > 1e-12 {
+                issues.push(DecisionLedgerIssue::new(
+                    "ece_contribution_mismatch",
+                    path,
+                    format!(
+                        "{} ECE contribution does not match drift/count",
+                        bucket.bucket_id
+                    ),
+                ));
+            }
         }
     }
 }
@@ -446,6 +580,16 @@ fn validate_row(
             "non_pass_row",
             path.clone(),
             format!("{} is not pass", row.decision_id),
+        ));
+    }
+    if !REQUIRED_DECISION_CLASSES.contains(&row.decision_class.as_str()) {
+        issues.push(DecisionLedgerIssue::new(
+            "unknown_decision_class",
+            path.clone(),
+            format!(
+                "{} has unknown decision class `{}`",
+                row.decision_id, row.decision_class
+            ),
         ));
     }
     if !matches!(row.mode.as_str(), "strict" | "hardened") {
