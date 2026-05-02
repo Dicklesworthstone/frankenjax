@@ -5,7 +5,7 @@
   "test_id": "fj_numerical_stability_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq20/debug/fj_numerical_stability_gate",
+    "/data/tmp/cargo-target-frankenjax-codex-cstq20c/debug/fj_numerical_stability_gate",
     "--root",
     "/data/projects/frankenjax",
     "--report",
@@ -22,12 +22,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20",
+    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq20",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777732954217
+    "timestamp_unix_ms": 1777740805306
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -69,7 +69,7 @@
     "platform_fingerprints": [
       {
         "arch": "x86_64",
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20",
+        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "deterministic_serialization": true,
         "endian": "little",
@@ -91,6 +91,389 @@
       "non_finite_division",
       "finite_diff_policy",
       "platform_metadata"
+    ],
+    "stability_rows": [
+      {
+        "actual_behavior": "existing special-math numerical tests stay inside the declared envelope",
+        "artifact_hashes": {
+          "README.md": "e379ede28251dab8a95e5e1706c5f736688fe77e9c10ccae99abcbaab8dc7204",
+          "crates/fj-conformance/tests/ad_numerical_verification.rs": "f6a682fa0c8c2285a7ba9de275fe719c45dc456d770d0add63d2645186f3f0a0",
+          "crates/fj-conformance/tests/logistic_oracle.rs": "b0f649d467c29822d57bab6659e0e97a4e4c96e2f1bd6b263d96bb1b3aea6099"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/tests/ad_numerical_verification.rs",
+          "crates/fj-conformance/tests/logistic_oracle.rs",
+          "README.md"
+        ],
+        "case_id": "stability-special-math-tail-001",
+        "dashboard_row": "stability/special_math_tails",
+        "deterministic_replay_count": 3,
+        "dtype": "f64",
+        "edge_condition_class": "tail_and_cancellation",
+        "expected_behavior": "tail values stay within the explicit special-function envelope",
+        "family": "special_math_tails",
+        "max_abs_error": 8e-8,
+        "max_rel_error": 7e-8,
+        "max_ulp_error": null,
+        "non_finite_classification": "finite",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "erf/logistic/log1p tail approximations",
+        "reference_scale": 1.0,
+        "reference_source": "Abramowitz-Stegun approximation notes plus special-math oracle tests",
+        "regression": false,
+        "replay_command": "cargo test -p fj-conformance --test ad_numerical_verification erf_vjp_numerical -- --nocapture",
+        "seed": null,
+        "shape": [],
+        "stability_guard": "named_polynomial_or_series_approximation",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "f64_special_tail"
+      },
+      {
+        "actual_behavior": "near-singular Cholesky/SVD/Eigh rows use explicit guard paths",
+        "artifact_hashes": {
+          "crates/fj-conformance/tests/ad_numerical_verification.rs": "f6a682fa0c8c2285a7ba9de275fe719c45dc456d770d0add63d2645186f3f0a0"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/tests/ad_numerical_verification.rs"
+        ],
+        "case_id": "stability-linalg-near-singular-001",
+        "dashboard_row": "stability/linalg_near_singular",
+        "deterministic_replay_count": 3,
+        "dtype": "f64",
+        "edge_condition_class": "near_singular_or_clustered_spectrum",
+        "expected_behavior": "ill-conditioned rows stay finite and within the named wider envelope",
+        "family": "linalg_near_singular",
+        "max_abs_error": 0.016,
+        "max_rel_error": 0.00008,
+        "max_ulp_error": null,
+        "non_finite_classification": "finite",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "cholesky/svd/eigh/triangular_solve gradients",
+        "reference_scale": 1.0,
+        "reference_source": "finite-difference AD verification tests",
+        "regression": false,
+        "replay_command": "cargo test -p fj-conformance --test ad_numerical_verification cholesky_vjp_near_singular -- --nocapture",
+        "seed": null,
+        "shape": [
+          3,
+          3
+        ],
+        "stability_guard": "diagonal_and_eigenvalue_gap_guards",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "f64_linalg_ill_conditioned"
+      },
+      {
+        "actual_behavior": "AD tests record and validate the bounded step envelope",
+        "artifact_hashes": {
+          "crates/fj-conformance/tests/ad_numerical_verification.rs": "f6a682fa0c8c2285a7ba9de275fe719c45dc456d770d0add63d2645186f3f0a0"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/tests/ad_numerical_verification.rs"
+        ],
+        "case_id": "stability-ad-gradient-check-001",
+        "dashboard_row": "stability/ad_gradient_check",
+        "deterministic_replay_count": 3,
+        "dtype": "f64",
+        "edge_condition_class": "finite_difference_step_governance",
+        "expected_behavior": "finite-difference comparisons use one documented step policy",
+        "family": "ad_gradient_check",
+        "max_abs_error": 0.00004,
+        "max_rel_error": 0.00003,
+        "max_ulp_error": null,
+        "non_finite_classification": "finite",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "VJP/JVP/Jacobian/Hessian finite-difference verification",
+        "reference_scale": 1.0,
+        "reference_source": "AD numerical verification harness",
+        "regression": false,
+        "replay_command": "cargo test -p fj-conformance --test ad_numerical_verification sin_vjp_numerical -- --nocapture",
+        "seed": null,
+        "shape": [
+          1
+        ],
+        "stability_guard": "sqrt_epsilon_step_clamped_to_safe_range",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "f64_grad_fd"
+      },
+      {
+        "actual_behavior": "FFT and IRFFT VJP tests stay in complex128 tolerance",
+        "artifact_hashes": {
+          "artifacts/e2e/e2e_multirank_fixtures.e2e.json": "b9a15fb10d7c4864a847e5bc4fea17ded34210e4fed33f0abf4294867fb59ae2",
+          "crates/fj-conformance/tests/ad_numerical_verification.rs": "f6a682fa0c8c2285a7ba9de275fe719c45dc456d770d0add63d2645186f3f0a0"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/tests/ad_numerical_verification.rs",
+          "artifacts/e2e/e2e_multirank_fixtures.e2e.json"
+        ],
+        "case_id": "stability-fft-scaling-001",
+        "dashboard_row": "stability/fft_scaling",
+        "deterministic_replay_count": 3,
+        "dtype": "complex128",
+        "edge_condition_class": "hermitian_scaling_and_inverse_normalization",
+        "expected_behavior": "inverse FFT and real FFT gradients preserve scaling",
+        "family": "fft_scaling",
+        "max_abs_error": 5e-13,
+        "max_rel_error": 5e-13,
+        "max_ulp_error": 3,
+        "non_finite_classification": "finite",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "fft/ifft/rfft/irfft scaling",
+        "reference_scale": 1.0,
+        "reference_source": "FFT AD numerical verification and oracle fixtures",
+        "regression": false,
+        "replay_command": "cargo test -p fj-conformance --test ad_numerical_verification fft_vjp_numerical -- --nocapture",
+        "seed": null,
+        "shape": [
+          4
+        ],
+        "stability_guard": "exact_inverse_length_scaling",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "complex128_default"
+      },
+      {
+        "actual_behavior": "mixed-dtype conformance log records stable promotion outputs",
+        "artifact_hashes": {
+          "artifacts/e2e/e2e_mixed_dtype.e2e.json": "e5632cf81206f8e8398ebe3ddabb6a108553bb7ef69381b9064c072f06f062e1"
+        },
+        "artifact_refs": [
+          "artifacts/e2e/e2e_mixed_dtype.e2e.json"
+        ],
+        "case_id": "stability-dtype-promotion-001",
+        "dashboard_row": "stability/dtype_promotion",
+        "deterministic_replay_count": 3,
+        "dtype": "mixed",
+        "edge_condition_class": "mixed_dtype_exact_contract",
+        "expected_behavior": "integer and bool rows compare exactly; float/complex rows use dtype tier",
+        "family": "dtype_promotion",
+        "max_abs_error": 0.0,
+        "max_rel_error": 0.0,
+        "max_ulp_error": 0,
+        "non_finite_classification": "not_applicable",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "mixed integer/float/complex promotion lattice",
+        "reference_scale": 1.0,
+        "reference_source": "JAX dtype-promotion fixtures and mixed-dtype E2E log",
+        "regression": false,
+        "replay_command": "./scripts/run_e2e.sh --scenario e2e_mixed_dtype",
+        "seed": null,
+        "shape": [
+          2
+        ],
+        "stability_guard": "dtype_lattice_row_must_match_oracle",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "exact_bitwise"
+      },
+      {
+        "actual_behavior": "complex oracle tests compare real and imaginary components directly",
+        "artifact_hashes": {
+          "crates/fj-conformance/tests/complex_ops_oracle.rs": "d906841e26287e771201b1cb5cbc367ce1d9894673ba7d5ced1763bf011b843a"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/tests/complex_ops_oracle.rs"
+        ],
+        "case_id": "stability-complex-branch-001",
+        "dashboard_row": "stability/complex_branch_values",
+        "deterministic_replay_count": 3,
+        "dtype": "complex128",
+        "edge_condition_class": "signed_zero_and_componentwise_branch",
+        "expected_behavior": "complex branch-sensitive rows preserve componentwise finite behavior",
+        "family": "complex_branch_values",
+        "max_abs_error": 6e-13,
+        "max_rel_error": 6e-13,
+        "max_ulp_error": 4,
+        "non_finite_classification": "finite",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "complex arithmetic branch-sensitive values",
+        "reference_scale": 1.0,
+        "reference_source": "complex operation oracle tests",
+        "regression": false,
+        "replay_command": "cargo test -p fj-conformance --test complex_ops_oracle -- --nocapture",
+        "seed": null,
+        "shape": [
+          2
+        ],
+        "stability_guard": "componentwise_real_imag_comparison",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "complex128_default"
+      },
+      {
+        "actual_behavior": "25 RNG oracle fixtures pass with exact words",
+        "artifact_hashes": {
+          "artifacts/e2e/e2e_rng_determinism.e2e.json": "ec38b6fe1885c455ff3587874315572036cbf607d6cf2f521e7fda9d91a93564",
+          "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json": "ad62ae3686e4f453c0cca1dbc2d2f55fe72fcd489bfeb3f2f4fe13ecd0f0a1ad"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json",
+          "artifacts/e2e/e2e_rng_determinism.e2e.json"
+        ],
+        "case_id": "stability-rng-determinism-001",
+        "dashboard_row": "stability/rng_determinism",
+        "deterministic_replay_count": 25,
+        "dtype": "u32",
+        "edge_condition_class": "counter_based_seed_stream",
+        "expected_behavior": "same seed and fold-in stream produce bit-identical words",
+        "family": "rng_determinism",
+        "max_abs_error": 0.0,
+        "max_rel_error": 0.0,
+        "max_ulp_error": 0,
+        "non_finite_classification": "deterministic_seed_stream",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "threefry key/split/fold_in/uniform/normal",
+        "reference_scale": 1.0,
+        "reference_source": "JAX 0.9.2 rng_determinism.v1 fixture bundle",
+        "regression": false,
+        "replay_command": "./scripts/run_e2e.sh --scenario e2e_rng_determinism",
+        "seed": 42,
+        "shape": [
+          2
+        ],
+        "stability_guard": "threefry_constants_and_counter_order",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "exact_bitwise"
+      },
+      {
+        "actual_behavior": "serde round-trip preserves Literal::F64Bits payloads",
+        "artifact_hashes": {
+          "crates/fj-core/src/lib.rs": "65e41e8baadcab75e4d447004941cfa4aa9fbaec0832617fe479c1148bf3c144"
+        },
+        "artifact_refs": [
+          "crates/fj-core/src/lib.rs"
+        ],
+        "case_id": "stability-literal-bit-roundtrip-001",
+        "dashboard_row": "stability/literal_bit_roundtrip",
+        "deterministic_replay_count": 3,
+        "dtype": "f64",
+        "edge_condition_class": "nan_payload_and_signed_zero_bits",
+        "expected_behavior": "f64 NaN payload, infinities, and signed zeros survive serialization",
+        "family": "literal_bit_roundtrip",
+        "max_abs_error": 0.0,
+        "max_rel_error": 0.0,
+        "max_ulp_error": 0,
+        "non_finite_classification": "nan_payload_preserved:0008000000001234",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "literal serde round-trip",
+        "reference_scale": 1.0,
+        "reference_source": "fj-core literal bit serialization tests",
+        "regression": false,
+        "replay_command": "cargo test -p fj-core literal -- --nocapture",
+        "seed": null,
+        "shape": [],
+        "stability_guard": "store_float_literals_as_raw_bits",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "exact_bitwise"
+      },
+      {
+        "actual_behavior": "LAX oracle rows classify NaN and signed infinity without panics",
+        "artifact_hashes": {
+          "crates/fj-conformance/tests/lax_oracle.rs": "7b39573fdd0a1e6faebae918ff03af667b963a03e19642dfb805b5b584ce8bb5",
+          "crates/fj-conformance/tests/reciprocal_oracle.rs": "dd4452e1633219738ebf94d7c627bca9f05ecd9436bc8c0ac13adf8d052dfcf7",
+          "crates/fj-conformance/tests/rem_oracle.rs": "a6decf531cac851d75b5210e5c2868e89f9bb84388234545fc769cc0940d1514"
+        },
+        "artifact_refs": [
+          "crates/fj-conformance/tests/lax_oracle.rs",
+          "crates/fj-conformance/tests/reciprocal_oracle.rs",
+          "crates/fj-conformance/tests/rem_oracle.rs"
+        ],
+        "case_id": "stability-non-finite-division-001",
+        "dashboard_row": "stability/non_finite_division",
+        "deterministic_replay_count": 3,
+        "dtype": "f64",
+        "edge_condition_class": "nan_inf_division_by_zero",
+        "expected_behavior": "0/0 produces NaN and x/0 produces signed infinity where IEEE requires it",
+        "family": "non_finite_division",
+        "max_abs_error": 0.0,
+        "max_rel_error": 0.0,
+        "max_ulp_error": 0,
+        "non_finite_classification": "nan_and_signed_infinity_classified",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "division, remainder, reciprocal, sqrt/log domains",
+        "reference_scale": 1.0,
+        "reference_source": "lax oracle non-finite tests",
+        "regression": false,
+        "replay_command": "cargo test -p fj-conformance --test lax_oracle -- --nocapture",
+        "seed": null,
+        "shape": [],
+        "stability_guard": "ieee_754_non_finite_classification",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "exact_bitwise"
+      },
+      {
+        "actual_behavior": "V1 transform-control rows expose finite-difference fallback policy",
+        "artifact_hashes": {
+          "artifacts/conformance/transform_control_flow_matrix.v1.json": "91cab66ca8d0b36b49cf4745a14b1710e555d09fd6a5860a5ae4e7ddfa9ff4d4",
+          "artifacts/e2e/e2e_control_flow_ad.e2e.json": "27b1c5ad6b6c3d5d50a1a56621ecc2d08f4fbeb2f5f6cc61f7f507d44fb09e3d"
+        },
+        "artifact_refs": [
+          "artifacts/conformance/transform_control_flow_matrix.v1.json",
+          "artifacts/e2e/e2e_control_flow_ad.e2e.json"
+        ],
+        "case_id": "stability-finite-diff-policy-001",
+        "dashboard_row": "stability/finite_diff_policy",
+        "deterministic_replay_count": 3,
+        "dtype": "f64",
+        "edge_condition_class": "fallback_step_and_threshold_governance",
+        "expected_behavior": "fallback rows name the step, tolerance, and deny path",
+        "family": "finite_diff_policy",
+        "max_abs_error": 0.00005,
+        "max_rel_error": 0.00004,
+        "max_ulp_error": null,
+        "non_finite_classification": "finite_diff_guarded",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "finite-difference compatibility fallback",
+        "reference_scale": 1.0,
+        "reference_source": "transform control-flow matrix and AD verification policy",
+        "regression": false,
+        "replay_command": "./scripts/run_transform_control_flow_gate.sh --enforce",
+        "seed": null,
+        "shape": [
+          1
+        ],
+        "stability_guard": "fallback_policy_can_be_denied_or_replayed",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "f64_grad_fd"
+      },
+      {
+        "actual_behavior": "numerical stability gate binds rows to an explicit platform fingerprint",
+        "artifact_hashes": {
+          "artifacts/schemas/e2e_forensic_log.v1.schema.json": "cbc103ab852dfbba16aa5359a7d7a3ee8ce5eb96d7579db04ddb2af71f4a1bce"
+        },
+        "artifact_refs": [
+          "artifacts/schemas/e2e_forensic_log.v1.schema.json"
+        ],
+        "case_id": "stability-platform-metadata-001",
+        "dashboard_row": "stability/platform_metadata",
+        "deterministic_replay_count": 3,
+        "dtype": "metadata",
+        "edge_condition_class": "cross_platform_replay_metadata",
+        "expected_behavior": "every gate log carries enough metadata to detect platform drift",
+        "family": "platform_metadata",
+        "max_abs_error": 0.0,
+        "max_rel_error": 0.0,
+        "max_ulp_error": 0,
+        "non_finite_classification": "not_applicable",
+        "platform_fingerprint_id": "platform-linux-x86_64-little",
+        "primitive_or_scope": "platform fingerprint and deterministic serialization",
+        "reference_scale": 1.0,
+        "reference_source": "E2E forensic log platform schema",
+        "regression": false,
+        "replay_command": "./scripts/run_numerical_stability_gate.sh --enforce",
+        "seed": null,
+        "shape": [],
+        "stability_guard": "os_arch_endian_rust_cargo_target_fingerprint",
+        "stale": false,
+        "status": "pass",
+        "tolerance_policy_id": "exact_bitwise"
+      }
     ]
   },
   "expected": {
@@ -298,7 +681,7 @@
     {
       "kind": "numerical_stability_report",
       "path": "artifacts/conformance/numerical_stability_matrix.v1.json",
-      "sha256": "800e43a244fe57e2a25f1f40f5e4deef5c232608daa198dba3eb16f81a2df746",
+      "sha256": "faca06c0f7a4a04e0985e00d8b82b09a226203a9d3c3f35dd158a3be61c66145",
       "required": true
     },
     {

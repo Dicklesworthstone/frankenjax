@@ -5,9 +5,10 @@ use fj_conformance::e2e_log::{
     E2ETolerancePolicy, artifact_sha256_hex, write_e2e_log,
 };
 use fj_conformance::numerical_stability::{
-    NumericalStabilityOutputPaths, numerical_stability_summary_json,
+    NumericalStabilityOutputPaths, NumericalStabilityRow, numerical_stability_summary_json,
     write_numerical_stability_outputs,
 };
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -125,6 +126,9 @@ fn write_forensic_log(
         "required_stability_families": report.required_stability_families,
         "report_path": repo_relative(&args.root, &args.report),
         "platform_fingerprints": report.platform_fingerprints,
+        "stability_rows": report.rows.iter().map(|row| {
+            stability_row_forensics(&args.root, row)
+        }).collect::<Result<Vec<_>, _>>()?,
     });
     log.expected = serde_json::json!({
         "gate_status": "pass",
@@ -183,6 +187,55 @@ fn write_forensic_log(
         }),
     );
     write_e2e_log(&args.e2e, &log)
+}
+
+fn stability_row_forensics(
+    root: &Path,
+    row: &NumericalStabilityRow,
+) -> Result<serde_json::Value, std::io::Error> {
+    Ok(serde_json::json!({
+        "case_id": row.case_id.as_str(),
+        "family": row.family.as_str(),
+        "primitive_or_scope": row.primitive_or_scope.as_str(),
+        "dtype": row.dtype.as_str(),
+        "shape": &row.shape,
+        "seed": row.seed,
+        "edge_condition_class": row.edge_condition_class.as_str(),
+        "reference_source": row.reference_source.as_str(),
+        "tolerance_policy_id": row.tolerance_policy_id.as_str(),
+        "reference_scale": row.reference_scale,
+        "stability_guard": row.stability_guard.as_str(),
+        "expected_behavior": row.expected_behavior.as_str(),
+        "actual_behavior": row.actual_behavior.as_str(),
+        "max_abs_error": row.max_abs_error,
+        "max_rel_error": row.max_rel_error,
+        "max_ulp_error": row.max_ulp_error,
+        "non_finite_classification": row.non_finite_classification.as_str(),
+        "deterministic_replay_count": row.deterministic_replay_count,
+        "platform_fingerprint_id": row.platform_fingerprint_id.as_str(),
+        "artifact_refs": &row.artifact_refs,
+        "artifact_hashes": artifact_hashes_for_refs(root, &row.artifact_refs)?,
+        "replay_command": row.replay_command.as_str(),
+        "dashboard_row": row.dashboard_row.as_str(),
+        "status": row.status.as_str(),
+        "stale": row.stale,
+        "regression": row.regression,
+    }))
+}
+
+fn artifact_hashes_for_refs(
+    root: &Path,
+    artifact_refs: &[String],
+) -> Result<BTreeMap<String, String>, std::io::Error> {
+    artifact_refs
+        .iter()
+        .map(|reference| {
+            Ok((
+                reference.clone(),
+                artifact_sha256_hex(&root.join(reference))?,
+            ))
+        })
+        .collect()
 }
 
 fn artifact_ref(root: &Path, path: &Path, kind: &str) -> Result<E2EArtifactRef, std::io::Error> {

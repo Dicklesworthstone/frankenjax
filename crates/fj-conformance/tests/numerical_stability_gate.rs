@@ -212,6 +212,58 @@ fn numerical_stability_outputs_write_and_validate_e2e_log() -> Result<(), String
         validate_e2e_log_path(&e2e_path, temp.path()).map_err(|issues| format!("{issues:#?}"))?;
     assert_eq!(parsed.status, E2ELogStatus::Pass);
     assert_eq!(parsed.bead_id, NUMERICAL_STABILITY_BEAD_ID);
+    let raw = std::fs::read_to_string(&e2e_path).map_err(|err| err.to_string())?;
+    let log: serde_json::Value = serde_json::from_str(&raw).map_err(|err| err.to_string())?;
+    let stability_rows = log["inputs"]["stability_rows"]
+        .as_array()
+        .ok_or_else(|| "numerical stability e2e log needs stability_rows".to_owned())?;
+    assert_eq!(stability_rows.len(), report.rows.len());
+    for row in stability_rows {
+        for key in [
+            "case_id",
+            "family",
+            "primitive_or_scope",
+            "dtype",
+            "edge_condition_class",
+            "reference_source",
+            "tolerance_policy_id",
+            "stability_guard",
+            "expected_behavior",
+            "actual_behavior",
+            "non_finite_classification",
+            "platform_fingerprint_id",
+            "replay_command",
+            "dashboard_row",
+            "status",
+        ] {
+            assert!(
+                row[key].as_str().is_some_and(|value| !value.is_empty()),
+                "missing {key} in stability row {row:#?}"
+            );
+        }
+        for key in ["reference_scale", "max_abs_error", "max_rel_error"] {
+            assert!(
+                row[key].as_f64().is_some(),
+                "missing numeric {key} in stability row {row:#?}"
+            );
+        }
+        assert!(
+            row["shape"].as_array().is_some(),
+            "shape must be represented as an array: {row:#?}"
+        );
+        assert!(
+            row["artifact_refs"]
+                .as_array()
+                .is_some_and(|refs| !refs.is_empty()),
+            "stability row needs artifact refs: {row:#?}"
+        );
+        assert!(
+            row["artifact_hashes"]
+                .as_object()
+                .is_some_and(|hashes| !hashes.is_empty()),
+            "stability row needs hash-bound artifacts: {row:#?}"
+        );
+    }
     Ok(())
 }
 
