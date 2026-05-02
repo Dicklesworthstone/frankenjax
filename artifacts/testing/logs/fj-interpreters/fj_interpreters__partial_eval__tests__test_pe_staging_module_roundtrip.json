@@ -7,8 +7,8 @@
   "env": {
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "os": "linux",
-    "cargo_target_dir": "/dev/shm/frankenjax-target-codex-vmap-axis1",
-    "timestamp_unix_ms": 1777524561586
+    "cargo_target_dir": "<default>",
+    "timestamp_unix_ms": 1777690994084
   },
   "artifact_refs": [
     "packet:FJ-P2C-003",

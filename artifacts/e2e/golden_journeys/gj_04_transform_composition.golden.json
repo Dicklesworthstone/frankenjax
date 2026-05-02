@@ -2,7 +2,7 @@
   "schema_version": "frankenjax.golden-journey.v1",
   "scenario_id": "gj_04_transform_composition",
   "scenario_category": "transform_composition",
-  "ts_utc_unix_ms": 1777524560010,
+  "ts_utc_unix_ms": 1777690991938,
   "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_04 --exact --nocapture",
   "input_capture": {
     "compositions_tested": [
@@ -30,7 +30,7 @@
     {
       "name": "composition_proof_jit_grad_valid",
       "passed": true,
-      "detail": "Ok(TransformCompositionProof { stack_signature: \"stack=jit>grad>|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|\", stack_hash_hex: \"af0b8b92669d4277\", transform_count: 2, evidence_count: 2 })"
+      "detail": "Ok(TransformCompositionProof { stack_signature: \"stack=jit>grad>|evidence=jit:8:gj-jit-0;grad:9:gj-grad-1;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|\", stack_hash_hex: \"4247c299d17c3ff9\", transform_count: 2, evidence_count: 2 })"
     }
   ],
   "output_capture": {

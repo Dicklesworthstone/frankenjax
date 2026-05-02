@@ -6,7 +6,7 @@
   "fixture_id": "9083b04a87375fe3f54db78b6c6e11707753f8d00d22339efae206998f3a8152",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1777524559300,
+  "ts_utc_unix_ms": 1777690990985,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -33,7 +33,7 @@
     },
     {
       "drift_count": 0,
-      "proof_sample": "TransformCompositionProof { stack_signature: \"stack=jit>grad>|jaxpr=in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(v1,i64:2,)->v3,{}|eqn:add(v2,v3,)->v4,{}|\", stack_hash_hex: \"63dec80c03d8df3e\", transform_count: 2, evidence_count: 2 }",
+      "proof_sample": "TransformCompositionProof { stack_signature: \"stack=jit>grad>|evidence=jit:9:e2e-0-jit;grad:10:e2e-1-grad;|jaxpr=in=[v1,]const=[]out=[v4,]eqn:mul(v1,v1,)->v2,{}|eqn:mul(v1,i64:2,)->v3,{}|eqn:add(v2,v3,)->v4,{}|\", stack_hash_hex: \"9e5a8842ce60a577\", transform_count: 2, evidence_count: 2 }",
       "step": "proof_check"
     }
   ],

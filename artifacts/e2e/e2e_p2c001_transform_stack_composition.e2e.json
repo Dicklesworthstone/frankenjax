@@ -6,7 +6,7 @@
   "fixture_id": "5adfb68d2fded890604faf8caf6f09db8bccb0553dddae10923d4c24f889f6e0",
   "seed": null,
   "mode": "strict",
-  "ts_utc_unix_ms": 1777524559301,
+  "ts_utc_unix_ms": 1777690990986,
   "env": {
     "arch": "x86_64",
     "os": "linux",
@@ -34,7 +34,7 @@
       ]
     },
     {
-      "proof_hash": "TransformCompositionProof { stack_signature: \"stack=jit>grad>|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|\", stack_hash_hex: \"af0b8b92669d4277\", transform_count: 2, evidence_count: 2 }",
+      "proof_hash": "TransformCompositionProof { stack_signature: \"stack=jit>grad>|evidence=jit:9:e2e-0-jit;grad:10:e2e-1-grad;|jaxpr=in=[v1,]const=[]out=[v2,]eqn:mul(v1,v1,)->v2,{}|\", stack_hash_hex: \"73dba63e3e3ceecc\", transform_count: 2, evidence_count: 2 }",
       "step": "composition_proof_passed"
     },
     {

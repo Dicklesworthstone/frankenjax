@@ -6,7 +6,7 @@
   "fixture_id": "p2c004-e2e-transform_composition_matrix",
   "seed": null,
   "mode": "Strict",
-  "ts_utc_unix_ms": 1777524559381,
+  "ts_utc_unix_ms": 1777690991138,
   "env": {
     "packet": "FJ-P2C-004",
     "rust_version": "0.1.0"
@@ -60,6 +60,6 @@
     "distinct_keys": 7
   },
   "result": "PASS",
-  "duration_ms": 6,
+  "duration_ms": 7,
   "details": null
 }
