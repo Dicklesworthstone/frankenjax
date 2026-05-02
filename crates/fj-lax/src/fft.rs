@@ -53,10 +53,14 @@ fn make_complex_literal(re: f64, im: f64, dtype: DType) -> Literal {
     }
 }
 
-/// Build a real Literal from an f64 value.
-/// All real dtypes use F64Bits storage internally; the tensor's DType tracks the logical type.
-fn make_real_literal(val: f64, _dtype: DType) -> Literal {
-    Literal::from_f64(val)
+/// Build a real Literal from an f64 value, preserving the tensor's logical dtype.
+fn make_real_literal(val: f64, dtype: DType) -> Literal {
+    match dtype {
+        DType::BF16 => Literal::from_bf16_f32(val as f32),
+        DType::F16 => Literal::from_f16_f32(val as f32),
+        DType::F32 => Literal::from_f32(val as f32),
+        _ => Literal::from_f64(val),
+    }
 }
 
 fn is_complex_dtype(dtype: DType) -> bool {
@@ -90,6 +94,34 @@ fn replace_last_axis_len(
     })?;
     *last = len;
     Ok(())
+}
+
+fn checked_fft_len(
+    primitive: Primitive,
+    len: usize,
+    description: &'static str,
+) -> Result<(), EvalError> {
+    u32::try_from(len)
+        .map(|_| ())
+        .map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: format!("{description} exceeds u32: {len}"),
+        })
+}
+
+fn checked_output_element_count(
+    primitive: Primitive,
+    batch_size: usize,
+    output_last: usize,
+) -> Result<usize, EvalError> {
+    batch_size
+        .checked_mul(output_last)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "FFT output element count overflows usize: batch_size={batch_size}, last_dim={output_last}"
+            ),
+        })
 }
 
 fn parse_optional_fft_length(
@@ -451,8 +483,15 @@ pub(crate) fn eval_rfft(
 
     let out_last = fft_length / 2 + 1;
     let batch_size = elements.len() / input_last;
+    checked_fft_len(primitive, fft_length, "RFFT fft_length")?;
+    let output_count = checked_output_element_count(primitive, batch_size, out_last)?;
 
-    let mut out_elements = Vec::with_capacity(batch_size * out_last);
+    // Build output shape before allocating transform buffers so hostile lengths fail closed.
+    let mut out_dims = shape.dims;
+    replace_last_axis_len(primitive, &mut out_dims, out_last)?;
+    let out_shape = Shape { dims: out_dims };
+
+    let mut out_elements = Vec::with_capacity(output_count);
     for batch in 0..batch_size {
         let start = batch * input_last;
         let batch_slice = &elements[start..start + input_last];
@@ -469,11 +508,6 @@ pub(crate) fn eval_rfft(
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }
     }
-
-    // Build output shape: replace last dim with out_last
-    let mut out_dims = shape.dims;
-    replace_last_axis_len(primitive, &mut out_dims, out_last)?;
-    let out_shape = Shape { dims: out_dims };
 
     let tensor =
         TensorValue::new(out_dtype, out_shape, out_elements).map_err(EvalError::InvalidTensor)?;
@@ -532,8 +566,15 @@ pub(crate) fn eval_irfft(
     }
 
     let batch_size = elements.len() / input_last;
+    checked_fft_len(primitive, fft_length, "IRFFT fft_length")?;
 
-    let mut out_elements = Vec::with_capacity(batch_size * fft_length);
+    // Build output shape before allocating transform buffers so hostile lengths fail closed.
+    let mut out_dims = shape.dims;
+    replace_last_axis_len(primitive, &mut out_dims, fft_length)?;
+    let out_shape = Shape { dims: out_dims };
+    let output_count = checked_output_element_count(primitive, batch_size, fft_length)?;
+
+    let mut out_elements = Vec::with_capacity(output_count);
     for batch in 0..batch_size {
         let start = batch * input_last;
         let half_spectrum = &elements[start..start + input_last];
@@ -566,11 +607,6 @@ pub(crate) fn eval_irfft(
         }
     }
 
-    // Build output shape: replace last dim with fft_length
-    let mut out_dims = shape.dims;
-    replace_last_axis_len(primitive, &mut out_dims, fft_length)?;
-    let out_shape = Shape { dims: out_dims };
-
     let tensor =
         TensorValue::new(out_dtype, out_shape, out_elements).map_err(EvalError::InvalidTensor)?;
     Ok(Value::Tensor(tensor))
@@ -600,6 +636,39 @@ mod tests {
             dims: vec![data.len() as u32],
         };
         Value::Tensor(TensorValue::new(DType::Complex128, shape, elements).unwrap())
+    }
+
+    fn make_complex64_vector(data: &[(f32, f32)]) -> Value {
+        let elements: Vec<Literal> = data
+            .iter()
+            .map(|&(re, im)| Literal::from_complex64(re, im))
+            .collect();
+        let shape = Shape {
+            dims: vec![data.len() as u32],
+        };
+        Value::Tensor(TensorValue::new(DType::Complex64, shape, elements).unwrap())
+    }
+
+    fn oversized_fft_length_params() -> BTreeMap<String, String> {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "fft_length".to_owned(),
+            (u64::from(u32::MAX) + 1).to_string(),
+        );
+        params
+    }
+
+    fn assert_oversized_fft_length_error(err: EvalError, expected_primitive: Primitive) {
+        match err {
+            EvalError::Unsupported { primitive, detail } => {
+                assert_eq!(primitive, expected_primitive);
+                assert!(
+                    detail.contains("fft_length") && detail.contains("exceeds u32"),
+                    "unexpected detail: {detail}"
+                );
+            }
+            other => panic!("unexpected error: {other}"),
+        }
     }
 
     fn extract_complex_elements(v: &Value) -> Vec<(f64, f64)> {
@@ -844,6 +913,14 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rfft_rejects_oversized_fft_length_before_allocation() {
+        let input = make_real_vector(&[1.0]);
+        let err = eval_rfft(&[input], &oversized_fft_length_params())
+            .expect_err("oversized RFFT length must fail before allocation");
+        assert_oversized_fft_length_error(err, Primitive::Rfft);
+    }
+
     // ── IRFFT tests ──────────────────────────────────────────
 
     #[test]
@@ -904,6 +981,36 @@ mod tests {
             err.to_string().contains("complex-valued input"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn irfft_rejects_oversized_fft_length_before_allocation() {
+        let input = make_complex_vector(&[(1.0, 0.0)]);
+        let err = eval_irfft(&[input], &oversized_fft_length_params())
+            .expect_err("oversized IRFFT length must fail before allocation");
+        assert_oversized_fft_length_error(err, Primitive::Irfft);
+    }
+
+    #[test]
+    fn irfft_complex64_output_uses_f32_literals() {
+        let input = make_complex64_vector(&[(1.0, 0.0), (0.0, 0.0)]);
+        let mut params = BTreeMap::new();
+        params.insert("fft_length".to_owned(), "2".to_owned());
+
+        let result = eval_irfft(&[input], &params).unwrap();
+        match result {
+            Value::Tensor(tensor) => {
+                assert_eq!(tensor.dtype, DType::F32);
+                assert!(
+                    tensor
+                        .elements
+                        .iter()
+                        .all(|element| matches!(element, Literal::F32Bits(_))),
+                    "IRFFT Complex64 output must store F32Bits elements"
+                );
+            }
+            Value::Scalar(_) => panic!("IRFFT must return a tensor"),
+        }
     }
 
     #[test]
