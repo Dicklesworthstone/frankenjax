@@ -9,6 +9,7 @@ use fj_dispatch::{DispatchRequest, dispatch};
 use crate::errors::ApiError;
 
 static CUSTOM_DERIVATIVE_WRAPPER_ID: AtomicU64 = AtomicU64::new(1);
+const CUSTOM_VJP_RULE_KEY_OPTION: &str = "custom_vjp_rule_key";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JitWrapped {
@@ -400,7 +401,7 @@ impl GradWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
         let mut compile_options = BTreeMap::new();
         if let Some(rule_key) = &self.custom_vjp_rule_key {
-            compile_options.insert("custom_vjp_rule_key".to_owned(), rule_key.clone());
+            compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
         dispatch_with_options(
             self.jaxpr.clone(),
@@ -535,8 +536,9 @@ impl ComposedTransform {
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
         let mut compile_options = self.compile_options.clone();
+        compile_options.remove(CUSTOM_VJP_RULE_KEY_OPTION);
         if let Some(rule_key) = &self.custom_vjp_rule_key {
-            compile_options.insert("custom_vjp_rule_key".to_owned(), rule_key.clone());
+            compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
         dispatch_with_options(
             self.jaxpr.clone(),
@@ -566,7 +568,7 @@ impl ValueAndGradWrapped {
         let mut compile_options = BTreeMap::new();
         compile_options.insert("value_and_grad".to_owned(), "true".to_owned());
         if let Some(rule_key) = &self.custom_vjp_rule_key {
-            compile_options.insert("custom_vjp_rule_key".to_owned(), rule_key.clone());
+            compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
         let outputs = dispatch_with_options(
             self.jaxpr.clone(),
@@ -983,6 +985,34 @@ mod tests {
         assert_eq!(
             composed.compile_options.get("egraph_optimize"),
             Some(&"true".to_owned())
+        );
+    }
+
+    #[test]
+    fn composed_transform_ignores_user_custom_vjp_rule_key_compile_option() {
+        let wrapped = custom_vjp(
+            make_mul_jaxpr(),
+            |primals| {
+                let x = primals[0].as_f64_scalar().ok_or_else(|| {
+                    fj_ad::AdError::EvalFailed("custom VJP forward expected scalar x".to_owned())
+                })?;
+                let y = primals[1].as_f64_scalar().ok_or_else(|| {
+                    fj_ad::AdError::EvalFailed("custom VJP forward expected scalar y".to_owned())
+                })?;
+                Ok((vec![Value::scalar_f64(x * y)], vec![]))
+            },
+            |_residuals, _cotangent| Ok(vec![Value::scalar_f64(123.0), Value::scalar_f64(456.0)]),
+        );
+
+        let result = compose(make_mul_jaxpr(), vec![Transform::Grad])
+            .with_compile_option(CUSTOM_VJP_RULE_KEY_OPTION, &wrapped.rule_key)
+            .call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)])
+            .expect("plain composed grad should ignore user-supplied custom VJP key");
+
+        let gradient = result[0].as_f64_scalar().expect("scalar gradient");
+        assert!(
+            (gradient - 4.0).abs() < 1e-10,
+            "plain grad should use ordinary AD, not the spoofed custom VJP gradient: {gradient}"
         );
     }
 
