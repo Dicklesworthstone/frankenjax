@@ -633,7 +633,15 @@ fj_ad::register_custom_vjp(Primitive::MyOp, |inputs, grad, params| {
 });
 ```
 
-Custom rules are stored in a global thread-safe registry (`RwLock<BTreeMap<Primitive, Arc<dyn Fn>>>`). During AD, the engine checks for custom rules before falling back to built-in rules. This enables:
+Function-level custom derivatives are exposed through `fj_api::custom_vjp`
+and `fj_api::custom_jvp`. These wrappers attach forward/backward or
+primal/tangent callbacks to a canonical Jaxpr fingerprint, so existing
+`grad`, `value_and_grad`, `jacobian`, and composed `jit(grad(...))` paths use
+the custom rule for matching traced functions.
+
+Custom rules are stored in a global thread-safe registry, keyed either by
+primitive or canonical Jaxpr fingerprint. During AD, the engine checks for
+custom rules before falling back to built-in rules. This enables:
 
 - Overriding gradients for numerically unstable primitives with stable alternatives
 - Implementing "stop gradient" by registering a zero-returning rule

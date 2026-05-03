@@ -73,10 +73,18 @@ type CustomJvpRule = Arc<
     dyn Fn(&[Value], &[Value], &BTreeMap<String, String>) -> Result<Value, AdError> + Send + Sync,
 >;
 
+type CustomJaxprVjpRule =
+    Arc<dyn Fn(&[Value], &[Value], &Value) -> Result<Vec<Value>, AdError> + Send + Sync>;
+
+type CustomJaxprJvpRule =
+    Arc<dyn Fn(&[Value], &[Value]) -> Result<JvpResult, AdError> + Send + Sync>;
+
 #[derive(Default)]
 struct CustomDerivativeRegistry {
     vjp_rules: BTreeMap<Primitive, CustomVjpRule>,
     jvp_rules: BTreeMap<Primitive, CustomJvpRule>,
+    jaxpr_vjp_rules: BTreeMap<String, CustomJaxprVjpRule>,
+    jaxpr_jvp_rules: BTreeMap<String, CustomJaxprJvpRule>,
 }
 
 static CUSTOM_DERIVATIVE_REGISTRY: OnceLock<RwLock<CustomDerivativeRegistry>> = OnceLock::new();
@@ -131,11 +139,41 @@ where
     });
 }
 
+/// Register a custom VJP rule for an entire Jaxpr.
+///
+/// Function-level rules are keyed by the Jaxpr's canonical fingerprint and
+/// override equation-by-equation reverse-mode AD for matching Jaxprs.
+pub fn register_custom_jaxpr_vjp<F>(jaxpr: &Jaxpr, rule: F)
+where
+    F: Fn(&[Value], &[Value], &Value) -> Result<Vec<Value>, AdError> + Send + Sync + 'static,
+{
+    let fingerprint = jaxpr.canonical_fingerprint().to_owned();
+    with_registry_write(|registry| {
+        registry.jaxpr_vjp_rules.insert(fingerprint, Arc::new(rule));
+    });
+}
+
+/// Register a custom JVP rule for an entire Jaxpr.
+///
+/// Function-level rules are keyed by the Jaxpr's canonical fingerprint and
+/// override equation-by-equation forward-mode AD for matching Jaxprs.
+pub fn register_custom_jaxpr_jvp<F>(jaxpr: &Jaxpr, rule: F)
+where
+    F: Fn(&[Value], &[Value]) -> Result<JvpResult, AdError> + Send + Sync + 'static,
+{
+    let fingerprint = jaxpr.canonical_fingerprint().to_owned();
+    with_registry_write(|registry| {
+        registry.jaxpr_jvp_rules.insert(fingerprint, Arc::new(rule));
+    });
+}
+
 /// Remove all custom derivative rules.
 pub fn clear_custom_derivative_rules() {
     with_registry_write(|registry| {
         registry.vjp_rules.clear();
         registry.jvp_rules.clear();
+        registry.jaxpr_vjp_rules.clear();
+        registry.jaxpr_jvp_rules.clear();
     });
 }
 
@@ -145,6 +183,24 @@ fn lookup_custom_vjp(primitive: Primitive) -> Option<CustomVjpRule> {
 
 fn lookup_custom_jvp(primitive: Primitive) -> Option<CustomJvpRule> {
     with_registry_read(|registry| registry.jvp_rules.get(&primitive).cloned())
+}
+
+fn lookup_custom_jaxpr_vjp(jaxpr: &Jaxpr) -> Option<CustomJaxprVjpRule> {
+    with_registry_read(|registry| {
+        registry
+            .jaxpr_vjp_rules
+            .get(jaxpr.canonical_fingerprint())
+            .cloned()
+    })
+}
+
+fn lookup_custom_jaxpr_jvp(jaxpr: &Jaxpr) -> Option<CustomJaxprJvpRule> {
+    with_registry_read(|registry| {
+        registry
+            .jaxpr_jvp_rules
+            .get(jaxpr.canonical_fingerprint())
+            .cloned()
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -5104,6 +5160,25 @@ pub fn jvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<JvpRe
         });
     }
 
+    if let Some(custom_rule) = lookup_custom_jaxpr_jvp(jaxpr) {
+        let result = custom_rule(primals, tangents)?;
+        if result.primals.len() != jaxpr.outvars.len() {
+            return Err(AdError::EvalFailed(format!(
+                "custom Jaxpr JVP primal arity mismatch: expected {}, got {}",
+                jaxpr.outvars.len(),
+                result.primals.len()
+            )));
+        }
+        if result.tangents.len() != jaxpr.outvars.len() {
+            return Err(AdError::EvalFailed(format!(
+                "custom Jaxpr JVP tangent arity mismatch: expected {}, got {}",
+                jaxpr.outvars.len(),
+                result.tangents.len()
+            )));
+        }
+        return Ok(result);
+    }
+
     let mut primal_env: BTreeMap<VarId, Value> = BTreeMap::new();
     let mut tangent_env: BTreeMap<VarId, Value> = BTreeMap::new();
 
@@ -6170,6 +6245,19 @@ fn value_and_grad_jaxpr_inner(
     }
 
     let seed = Value::scalar_f64(1.0);
+
+    if let Some(custom_rule) = lookup_custom_jaxpr_vjp(jaxpr) {
+        let grads = custom_rule(args, &outputs, &seed)?;
+        if grads.len() != jaxpr.invars.len() {
+            return Err(AdError::EvalFailed(format!(
+                "custom Jaxpr VJP cotangent arity mismatch: expected {}, got {}",
+                jaxpr.invars.len(),
+                grads.len()
+            )));
+        }
+        return Ok((outputs, grads, tape.entries.len()));
+    }
+
     let output_var = jaxpr.outvars[0];
     let grads = backward(&tape, output_var, seed, jaxpr, &env)?;
     Ok((outputs, grads, tape.entries.len()))
@@ -6179,6 +6267,25 @@ fn value_and_grad_jaxpr_inner(
 pub fn grad_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, AdError> {
     let (_, grads, _) = value_and_grad_jaxpr_inner(jaxpr, args)?;
     Ok(grads)
+}
+
+/// Compute gradients with a custom output cotangent (for checkpoint/remat).
+///
+/// Unlike `grad_jaxpr` which uses seed=1.0, this accepts an arbitrary cotangent
+/// to support re-running forward during backward pass of a checkpointed region.
+/// The cotangent is the gradient flowing back from downstream computations.
+pub fn grad_jaxpr_with_cotangent(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    cotangent: &Value,
+) -> Result<Vec<Value>, AdError> {
+    let (_, tape, env) = forward_with_tape(jaxpr, args)?;
+    let output_var = jaxpr
+        .outvars
+        .first()
+        .copied()
+        .ok_or(AdError::NonScalarGradientOutput)?;
+    backward(&tape, output_var, cotangent.clone(), jaxpr, &env)
 }
 
 /// Compute both value outputs and gradients in one shared forward pass.

@@ -4,13 +4,18 @@ pub mod errors;
 pub mod transforms;
 
 pub use errors::ApiError;
-pub use fj_ad::{clear_custom_derivative_rules, register_custom_jvp, register_custom_vjp};
+pub use fj_ad::{
+    AdError, JvpResult, clear_custom_derivative_rules, grad_jaxpr_with_cotangent,
+    register_custom_jaxpr_jvp, register_custom_jaxpr_vjp, register_custom_jvp, register_custom_vjp,
+};
 pub use fj_core::{DType, Shape, Value};
 pub use transforms::{
-    ComposedTransform, GradWrapped, HessianWrapped, JacobianWrapped, JitWrapped,
-    ValueAndGradWrapped, VmapWrapped,
+    CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
+    HessianWrapped, JacobianWrapped, JitWrapped, ValueAndGradWrapped, VmapWrapped,
 };
-pub use transforms::{compose, grad, hessian, jacobian, jit, value_and_grad, vmap};
+pub use transforms::{
+    checkpoint, compose, custom_jvp, custom_vjp, grad, hessian, jacobian, jit, value_and_grad, vmap,
+};
 
 // Re-export make_jaxpr tracing API from fj-trace
 pub use fj_trace::{ShapedArray, TracerRef, make_jaxpr, make_jaxpr_fallible};
@@ -29,6 +34,22 @@ mod tests {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         }
+    }
+
+    fn custom_square_jaxpr(input: u32, output: u32) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(input)],
+            vec![],
+            vec![VarId(output)],
+            vec![Equation {
+                primitive: Primitive::Mul,
+                inputs: vec![Atom::Var(VarId(input)), Atom::Var(VarId(input))].into(),
+                outputs: vec![VarId(output)].into(),
+                params: std::collections::BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            }],
+        )
     }
 
     // --- Basic transform tests ---
@@ -341,6 +362,91 @@ mod tests {
             .expect("jvp should use custom rule");
         let tangent = result.tangents[0].as_f64_scalar().expect("scalar tangent");
         assert!((tangent - 5.0).abs() < 1e-10);
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn function_custom_vjp_composes_through_jit_grad_and_value_and_grad() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let wrapped = custom_vjp(
+            custom_square_jaxpr(901, 902),
+            |primals| {
+                let x = primals[0].as_f64_scalar().ok_or_else(|| {
+                    AdError::EvalFailed("custom VJP forward expected scalar x".to_owned())
+                })?;
+                Ok((vec![Value::scalar_f64(x * x)], vec![Value::scalar_f64(x)]))
+            },
+            |residuals, cotangent| {
+                let x = residuals[0].as_f64_scalar().ok_or_else(|| {
+                    AdError::EvalFailed("custom VJP backward expected residual x".to_owned())
+                })?;
+                let g = cotangent.as_f64_scalar().ok_or_else(|| {
+                    AdError::EvalFailed("custom VJP backward expected scalar cotangent".to_owned())
+                })?;
+                Ok(vec![Value::scalar_f64(10.0 * x * g)])
+            },
+        );
+
+        let primal = wrapped
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("custom_vjp primal call should preserve original function");
+        assert!((primal[0].as_f64_scalar().expect("scalar primal") - 9.0).abs() < 1e-10);
+
+        let composed_grad = wrapped
+            .compose_jit_grad()
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("jit(grad(custom_vjp(f))) should use the custom VJP");
+        assert!((composed_grad[0].as_f64_scalar().expect("scalar gradient") - 30.0).abs() < 1e-10);
+
+        let (values, gradients) = wrapped
+            .value_and_grad()
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("value_and_grad(custom_vjp(f)) should use the custom VJP");
+        assert!((values[0].as_f64_scalar().expect("scalar value") - 16.0).abs() < 1e-10);
+        assert!((gradients[0].as_f64_scalar().expect("scalar gradient") - 40.0).abs() < 1e-10);
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn function_custom_jvp_drives_jvp_and_jacobian() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let wrapped = custom_jvp(custom_square_jaxpr(903, 904), |primals, tangents| {
+            let x = primals[0]
+                .as_f64_scalar()
+                .ok_or_else(|| AdError::EvalFailed("custom JVP expected scalar x".to_owned()))?;
+            let dx = tangents[0].as_f64_scalar().ok_or_else(|| {
+                AdError::EvalFailed("custom JVP expected scalar tangent".to_owned())
+            })?;
+            Ok((
+                vec![Value::scalar_f64(x * x)],
+                vec![Value::scalar_f64(40.0 + dx)],
+            ))
+        });
+
+        let jvp = wrapped
+            .jvp_call(vec![Value::scalar_f64(4.0)], vec![Value::scalar_f64(2.0)])
+            .expect("custom_jvp function rule should drive direct JVP");
+        assert!((jvp.primals[0].as_f64_scalar().expect("scalar primal") - 16.0).abs() < 1e-10);
+        assert!((jvp.tangents[0].as_f64_scalar().expect("scalar tangent") - 42.0).abs() < 1e-10);
+
+        let jacobian = wrapped
+            .jacobian()
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("jacobian(custom_jvp(f)) should use the custom JVP");
+        if let Some(value) = jacobian.as_f64_scalar() {
+            assert!((value - 41.0).abs() < 1e-10);
+        } else {
+            let tensor = jacobian.as_tensor().expect("jacobian tensor output");
+            let values = tensor.to_f64_vec().expect("f64 jacobian tensor");
+            assert_eq!(values.len(), 1);
+            assert!((values[0] - 41.0).abs() < 1e-10);
+        }
 
         clear_custom_derivative_rules();
     }

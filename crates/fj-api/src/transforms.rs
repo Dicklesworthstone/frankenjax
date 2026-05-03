@@ -38,6 +38,20 @@ pub struct ValueAndGradWrapped {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct CustomVjpWrapped {
+    jaxpr: Jaxpr,
+    backend: String,
+    mode: CompatibilityMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CustomJvpWrapped {
+    jaxpr: Jaxpr,
+    backend: String,
+    mode: CompatibilityMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct JacobianWrapped {
     jaxpr: Jaxpr,
 }
@@ -45,6 +59,13 @@ pub struct JacobianWrapped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HessianWrapped {
     jaxpr: Jaxpr,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckpointWrapped {
+    jaxpr: Jaxpr,
+    backend: String,
+    mode: CompatibilityMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -94,6 +115,85 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
     }
 }
 
+/// Attach function-level custom VJP callbacks to a Jaxpr.
+///
+/// The forward callback returns `(primal_outputs, residuals)`. The backward
+/// callback receives those residuals plus the output cotangent and returns one
+/// cotangent per input. The rule is keyed by the Jaxpr canonical fingerprint, so
+/// existing `grad`, `value_and_grad`, and composed `jit(grad(...))` paths use it
+/// for matching Jaxprs.
+#[must_use]
+pub fn custom_vjp<Fwd, Bwd>(jaxpr: Jaxpr, forward: Fwd, backward: Bwd) -> CustomVjpWrapped
+where
+    Fwd: Fn(&[Value]) -> Result<(Vec<Value>, Vec<Value>), fj_ad::AdError> + Send + Sync + 'static,
+    Bwd: Fn(&[Value], &Value) -> Result<Vec<Value>, fj_ad::AdError> + Send + Sync + 'static,
+{
+    let expected_outputs = jaxpr.outvars.len();
+    fj_ad::register_custom_jaxpr_vjp(&jaxpr, move |primals, primal_outputs, cotangent| {
+        let (forward_outputs, residuals) = forward(primals)?;
+        if forward_outputs.len() != expected_outputs {
+            return Err(fj_ad::AdError::EvalFailed(format!(
+                "custom VJP forward output arity mismatch: expected {expected_outputs}, got {}",
+                forward_outputs.len()
+            )));
+        }
+        if primal_outputs.len() != expected_outputs {
+            return Err(fj_ad::AdError::EvalFailed(format!(
+                "custom VJP primal output arity mismatch: expected {expected_outputs}, got {}",
+                primal_outputs.len()
+            )));
+        }
+        backward(&residuals, cotangent)
+    });
+
+    CustomVjpWrapped {
+        jaxpr,
+        backend: "cpu".to_owned(),
+        mode: CompatibilityMode::Strict,
+    }
+}
+
+/// Attach a function-level custom JVP callback to a Jaxpr.
+///
+/// The callback returns `(primal_outputs, tangent_outputs)`. The rule is keyed
+/// by the Jaxpr canonical fingerprint, so higher-level API paths that call
+/// forward-mode AD, such as `jacobian`, use it for matching Jaxprs.
+#[must_use]
+pub fn custom_jvp<F>(jaxpr: Jaxpr, rule: F) -> CustomJvpWrapped
+where
+    F: Fn(&[Value], &[Value]) -> Result<(Vec<Value>, Vec<Value>), fj_ad::AdError>
+        + Send
+        + Sync
+        + 'static,
+{
+    let expected_outputs = jaxpr.outvars.len();
+    fj_ad::register_custom_jaxpr_jvp(&jaxpr, move |primals, tangents| {
+        let (primals_out, tangents_out) = rule(primals, tangents)?;
+        if primals_out.len() != expected_outputs {
+            return Err(fj_ad::AdError::EvalFailed(format!(
+                "custom JVP primal output arity mismatch: expected {expected_outputs}, got {}",
+                primals_out.len()
+            )));
+        }
+        if tangents_out.len() != expected_outputs {
+            return Err(fj_ad::AdError::EvalFailed(format!(
+                "custom JVP tangent output arity mismatch: expected {expected_outputs}, got {}",
+                tangents_out.len()
+            )));
+        }
+        Ok(fj_ad::JvpResult {
+            primals: primals_out,
+            tangents: tangents_out,
+        })
+    });
+
+    CustomJvpWrapped {
+        jaxpr,
+        backend: "cpu".to_owned(),
+        mode: CompatibilityMode::Strict,
+    }
+}
+
 #[must_use]
 pub fn jacobian(jaxpr: Jaxpr) -> JacobianWrapped {
     JacobianWrapped { jaxpr }
@@ -102,6 +202,28 @@ pub fn jacobian(jaxpr: Jaxpr) -> JacobianWrapped {
 #[must_use]
 pub fn hessian(jaxpr: Jaxpr) -> HessianWrapped {
     HessianWrapped { jaxpr }
+}
+
+/// Wrap a Jaxpr for memory-efficient gradient computation (rematerialization).
+///
+/// During the backward pass, instead of using stored intermediate values,
+/// checkpoint re-runs the forward pass to recompute them. This trades compute
+/// for memory — useful for large models where storing all intermediates would
+/// exceed available memory.
+///
+/// JAX equivalent: `jax.checkpoint` / `jax.remat`
+#[must_use]
+pub fn checkpoint(jaxpr: Jaxpr) -> CheckpointWrapped {
+    let jaxpr_clone = jaxpr.clone();
+    fj_ad::register_custom_jaxpr_vjp(&jaxpr, move |primals, _primal_outputs, cotangent| {
+        fj_ad::grad_jaxpr_with_cotangent(&jaxpr_clone, primals, cotangent)
+    });
+
+    CheckpointWrapped {
+        jaxpr,
+        backend: "cpu".to_owned(),
+        mode: CompatibilityMode::Strict,
+    }
 }
 
 fn build_ledger(jaxpr: Jaxpr, transforms: &[Transform]) -> TraceTransformLedger {
@@ -398,6 +520,87 @@ impl ValueAndGradWrapped {
     }
 }
 
+impl CustomVjpWrapped {
+    #[must_use]
+    pub fn with_backend(mut self, backend: &str) -> Self {
+        self.backend = backend.to_owned();
+        self
+    }
+
+    #[must_use]
+    pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        dispatch_with(self.jaxpr.clone(), &[], args, &self.backend, self.mode)
+    }
+
+    #[must_use]
+    pub fn grad(&self) -> GradWrapped {
+        GradWrapped {
+            jaxpr: self.jaxpr.clone(),
+            backend: self.backend.clone(),
+            mode: self.mode,
+        }
+    }
+
+    #[must_use]
+    pub fn value_and_grad(&self) -> ValueAndGradWrapped {
+        ValueAndGradWrapped {
+            jaxpr: self.jaxpr.clone(),
+            backend: self.backend.clone(),
+            mode: self.mode,
+        }
+    }
+
+    /// Compose `jit(grad(custom_vjp(f)))`.
+    #[must_use]
+    pub fn compose_jit_grad(&self) -> ComposedTransform {
+        ComposedTransform {
+            jaxpr: self.jaxpr.clone(),
+            transforms: vec![Transform::Jit, Transform::Grad],
+            backend: self.backend.clone(),
+            mode: self.mode,
+            compile_options: BTreeMap::new(),
+        }
+    }
+}
+
+impl CustomJvpWrapped {
+    #[must_use]
+    pub fn with_backend(mut self, backend: &str) -> Self {
+        self.backend = backend.to_owned();
+        self
+    }
+
+    #[must_use]
+    pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        dispatch_with(self.jaxpr.clone(), &[], args, &self.backend, self.mode)
+    }
+
+    pub fn jvp_call(
+        &self,
+        primals: Vec<Value>,
+        tangents: Vec<Value>,
+    ) -> Result<fj_ad::JvpResult, ApiError> {
+        fj_ad::jvp(&self.jaxpr, &primals, &tangents).map_err(ApiError::from)
+    }
+
+    #[must_use]
+    pub fn jacobian(&self) -> JacobianWrapped {
+        JacobianWrapped {
+            jaxpr: self.jaxpr.clone(),
+        }
+    }
+}
+
 impl JacobianWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<Value, ApiError> {
         fj_ad::jacobian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
@@ -407,6 +610,55 @@ impl JacobianWrapped {
 impl HessianWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<Value, ApiError> {
         fj_ad::hessian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+    }
+}
+
+impl CheckpointWrapped {
+    #[must_use]
+    pub fn with_backend(mut self, backend: &str) -> Self {
+        self.backend = backend.to_owned();
+        self
+    }
+
+    #[must_use]
+    pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Execute the checkpointed function (forward pass only).
+    pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        dispatch_with(self.jaxpr.clone(), &[], args, &self.backend, self.mode)
+    }
+
+    /// Compute gradients of the checkpointed function.
+    ///
+    /// During backward pass, intermediates are recomputed rather than retrieved
+    /// from storage, saving memory at the cost of additional compute.
+    pub fn grad(&self) -> GradWrapped {
+        GradWrapped {
+            jaxpr: self.jaxpr.clone(),
+            backend: self.backend.clone(),
+            mode: self.mode,
+        }
+    }
+
+    /// Compute both value and gradients of the checkpointed function.
+    pub fn value_and_grad(&self) -> ValueAndGradWrapped {
+        ValueAndGradWrapped {
+            jaxpr: self.jaxpr.clone(),
+            backend: self.backend.clone(),
+            mode: self.mode,
+        }
+    }
+
+    /// Returns the number of tape entries that would be saved by checkpointing.
+    ///
+    /// This is the number of equations in the Jaxpr — without checkpoint, each
+    /// equation stores intermediate values; with checkpoint, none are stored.
+    #[must_use]
+    pub fn memory_savings_entries(&self) -> usize {
+        self.jaxpr.equations.len()
     }
 }
 
