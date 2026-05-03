@@ -1,7 +1,7 @@
 {
   "schema_version": "frankenjax.numerical-stability.v1",
   "bead_id": "frankenjax-cstq.20",
-  "generated_at_unix_ms": 1777740805274,
+  "generated_at_unix_ms": 1777772415615,
   "status": "pass",
   "policy": "Numerical-stability green requires explicit tolerance policy, edge-condition class, guard path, platform fingerprint, non-finite classification, artifact hash binding, deterministic replay count, and exact replay command for every stability family. Tolerances may not be widened silently; unstable or stale rows must surface as issues.",
   "required_stability_families": [
@@ -41,7 +41,7 @@
       "endian": "little",
       "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
       "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-      "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
+      "cargo_target_dir": "/data/tmp/cargo-target",
       "deterministic_serialization": true
     }
   ],

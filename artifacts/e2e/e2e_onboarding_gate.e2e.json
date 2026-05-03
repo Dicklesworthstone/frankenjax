@@ -5,14 +5,13 @@
   "test_id": "fj_onboarding_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq18b/debug/fj_onboarding_gate",
+    "/data/tmp/cargo-target/debug/fj_onboarding_gate",
     "--root",
     "/data/projects/frankenjax",
     "--inventory",
     "/data/projects/frankenjax/artifacts/conformance/onboarding_command_inventory.v1.json",
     "--e2e",
-    "/data/projects/frankenjax/artifacts/e2e/e2e_onboarding_gate.e2e.json",
-    "--enforce"
+    "/data/projects/frankenjax/artifacts/e2e/e2e_onboarding_gate.e2e.json"
   ],
   "working_dir": "/data/projects/frankenjax",
   "environment": {
@@ -20,12 +19,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+    "cargo_target_dir": "/data/tmp/cargo-target",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777740368145
+    "timestamp_unix_ms": 1777773725176
   },
   "feature_flags": [],
   "fixture_ids": [],
@@ -57,7 +56,7 @@
     "command_results": [
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "schematic",
         "command": "git clone https://github.com/Dicklesworthstone/frankenjax.git",
@@ -77,7 +76,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "rustup install nightly",
@@ -97,7 +96,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "rustup override set nightly",
@@ -117,7 +116,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo build --workspace",
@@ -140,7 +139,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo test --workspace",
@@ -163,7 +162,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "cargo build --workspace --release",
@@ -188,7 +187,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_api_readme_quickstart.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "mandatory_local_smoke",
         "command": "./scripts/run_api_readme_examples.sh --enforce",
@@ -213,7 +212,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_architecture_boundary_gate.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_architecture_boundary_gate.sh --enforce",
@@ -235,7 +234,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_cache_lifecycle_gate.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_cache_lifecycle_gate.sh --enforce",
@@ -257,7 +256,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_security_gate.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_security_gate.sh --enforce",
@@ -280,7 +279,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "uv venv --python 3.12 .venv",
@@ -300,7 +299,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "uv pip install --python .venv/bin/python jax jaxlib numpy",
@@ -320,7 +319,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "git clone --depth 1 https://github.com/jax-ml/jax.git legacy_jax_code/jax",
@@ -340,7 +339,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": ".venv/bin/python crates/fj-conformance/scripts/capture_legacy_fixtures.py --legacy-root legacy_jax_code/jax --output crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json --rng-output crates/fj-conformance/fixtures/rng/rng_determinism.v1.json --strict",
@@ -362,7 +361,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_oracle_recapture_gate.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "optional_oracle",
         "command": "./scripts/run_oracle_recapture_gate.sh",
@@ -384,7 +383,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_security_gate.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "mandatory_local_smoke",
         "command": "./scripts/validate_e2e_logs.sh",
@@ -409,7 +408,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_security_gate.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/validate_e2e_logs.sh --output artifacts/e2e/e2e_validation_report.json artifacts/e2e",
@@ -432,7 +431,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/run_e2e.sh",
@@ -458,7 +457,7 @@
         "artifact_refs": [
           "artifacts/e2e/e2e_p2c001_full_dispatch_pipeline.e2e.json"
         ],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "./scripts/run_e2e.sh --scenario e2e_p2c001_full_dispatch_pipeline",
@@ -482,7 +481,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/enforce_quality_gates.sh",
@@ -505,7 +504,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/enforce_quality_gates.sh --skip-coverage --flake-runs 3",
@@ -528,7 +527,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "./scripts/detect_flakes.sh --runs 10",
@@ -551,7 +550,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "schematic",
         "command": "cargo run -p fj-conformance --bin fj_durability -- pipeline --artifact <path> --sidecar <sidecar_path> --report <scrub_report_path> --proof <decode_proof_path>",
@@ -574,7 +573,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo run -p fj-conformance --bin fj_durability -- batch --dir artifacts/e2e --output artifacts/durability --json",
@@ -597,7 +596,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "cargo fuzz build",
@@ -622,7 +621,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "environment_specific",
         "command": "cargo fuzz run ir_deserializer corpus/seed/ir_deserializer",
@@ -647,7 +646,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo fmt --check",
@@ -669,7 +668,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo check --all-targets",
@@ -692,7 +691,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo clippy --all-targets -- -D warnings",
@@ -715,7 +714,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "ci_gate",
         "command": "cargo test -p fj-conformance -- --nocapture",
@@ -738,7 +737,7 @@
       },
       {
         "artifact_refs": [],
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq18b",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "classification": "long_running",
         "command": "cargo bench",
@@ -810,7 +809,7 @@
     {
       "kind": "onboarding_command_inventory",
       "path": "artifacts/conformance/onboarding_command_inventory.v1.json",
-      "sha256": "ac6d0121dc387944e8b7c06864c8954e5038a72df3ea362cc4ecc1bbe3a09a42",
+      "sha256": "ccc2024f6b20bc20e4a2714298dedd058c6fe1fcf55c3e5bc7d25e632ef4bc57",
       "required": true
     }
   ],

@@ -5,7 +5,7 @@
   "test_id": "fj_numerical_stability_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq20c/debug/fj_numerical_stability_gate",
+    "/data/tmp/cargo-target/debug/fj_numerical_stability_gate",
     "--root",
     "/data/projects/frankenjax",
     "--report",
@@ -13,8 +13,7 @@
     "--markdown",
     "/data/projects/frankenjax/artifacts/conformance/numerical_stability_matrix.v1.md",
     "--e2e",
-    "/data/projects/frankenjax/artifacts/e2e/e2e_numerical_stability_gate.e2e.json",
-    "--enforce"
+    "/data/projects/frankenjax/artifacts/e2e/e2e_numerical_stability_gate.e2e.json"
   ],
   "working_dir": "/data/projects/frankenjax",
   "environment": {
@@ -22,12 +21,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
+    "cargo_target_dir": "/data/tmp/cargo-target",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777740805306
+    "timestamp_unix_ms": 1777772415787
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -69,7 +68,7 @@
     "platform_fingerprints": [
       {
         "arch": "x86_64",
-        "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq20c",
+        "cargo_target_dir": "/data/tmp/cargo-target",
         "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
         "deterministic_serialization": true,
         "endian": "little",
@@ -96,7 +95,7 @@
       {
         "actual_behavior": "existing special-math numerical tests stay inside the declared envelope",
         "artifact_hashes": {
-          "README.md": "e379ede28251dab8a95e5e1706c5f736688fe77e9c10ccae99abcbaab8dc7204",
+          "README.md": "609fd6ccd9eb5e71a47b8a48110226d2334afc9081466090b827d8380216bf97",
           "crates/fj-conformance/tests/ad_numerical_verification.rs": "f6a682fa0c8c2285a7ba9de275fe719c45dc456d770d0add63d2645186f3f0a0",
           "crates/fj-conformance/tests/logistic_oracle.rs": "b0f649d467c29822d57bab6659e0e97a4e4c96e2f1bd6b263d96bb1b3aea6099"
         },
@@ -201,7 +200,7 @@
       {
         "actual_behavior": "FFT and IRFFT VJP tests stay in complex128 tolerance",
         "artifact_hashes": {
-          "artifacts/e2e/e2e_multirank_fixtures.e2e.json": "b9a15fb10d7c4864a847e5bc4fea17ded34210e4fed33f0abf4294867fb59ae2",
+          "artifacts/e2e/e2e_multirank_fixtures.e2e.json": "bddabfec49cf90f4aa226bcd83646f760b55028068c2d9dae495ddcb4634deb8",
           "crates/fj-conformance/tests/ad_numerical_verification.rs": "f6a682fa0c8c2285a7ba9de275fe719c45dc456d770d0add63d2645186f3f0a0"
         },
         "artifact_refs": [
@@ -237,7 +236,7 @@
       {
         "actual_behavior": "mixed-dtype conformance log records stable promotion outputs",
         "artifact_hashes": {
-          "artifacts/e2e/e2e_mixed_dtype.e2e.json": "e5632cf81206f8e8398ebe3ddabb6a108553bb7ef69381b9064c072f06f062e1"
+          "artifacts/e2e/e2e_mixed_dtype.e2e.json": "3a0422d7fc57ebabb54913d8c59b47788291b40b08e05187db3f7ce2bbf43f94"
         },
         "artifact_refs": [
           "artifacts/e2e/e2e_mixed_dtype.e2e.json"
@@ -305,7 +304,7 @@
       {
         "actual_behavior": "25 RNG oracle fixtures pass with exact words",
         "artifact_hashes": {
-          "artifacts/e2e/e2e_rng_determinism.e2e.json": "ec38b6fe1885c455ff3587874315572036cbf607d6cf2f521e7fda9d91a93564",
+          "artifacts/e2e/e2e_rng_determinism.e2e.json": "8bc742e04eddb01884b4c422ea49e55325b263b0895441e70ef51415fc001528",
           "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json": "ad62ae3686e4f453c0cca1dbc2d2f55fe72fcd489bfeb3f2f4fe13ecd0f0a1ad"
         },
         "artifact_refs": [
@@ -373,7 +372,7 @@
       {
         "actual_behavior": "LAX oracle rows classify NaN and signed infinity without panics",
         "artifact_hashes": {
-          "crates/fj-conformance/tests/lax_oracle.rs": "7b39573fdd0a1e6faebae918ff03af667b963a03e19642dfb805b5b584ce8bb5",
+          "crates/fj-conformance/tests/lax_oracle.rs": "0bb1d9d667274867159769ac2c4d6ed35097e74ec8953dbe1d04cd1899ac2c5a",
           "crates/fj-conformance/tests/reciprocal_oracle.rs": "dd4452e1633219738ebf94d7c627bca9f05ecd9436bc8c0ac13adf8d052dfcf7",
           "crates/fj-conformance/tests/rem_oracle.rs": "a6decf531cac851d75b5210e5c2868e89f9bb84388234545fc769cc0940d1514"
         },
@@ -410,7 +409,7 @@
         "actual_behavior": "V1 transform-control rows expose finite-difference fallback policy",
         "artifact_hashes": {
           "artifacts/conformance/transform_control_flow_matrix.v1.json": "91cab66ca8d0b36b49cf4745a14b1710e555d09fd6a5860a5ae4e7ddfa9ff4d4",
-          "artifacts/e2e/e2e_control_flow_ad.e2e.json": "27b1c5ad6b6c3d5d50a1a56621ecc2d08f4fbeb2f5f6cc61f7f507d44fb09e3d"
+          "artifacts/e2e/e2e_control_flow_ad.e2e.json": "181479d44d8760f7ff99f6049a69006f6ed2dbb0a05582429692bb92ebc8211b"
         },
         "artifact_refs": [
           "artifacts/conformance/transform_control_flow_matrix.v1.json",
@@ -681,7 +680,7 @@
     {
       "kind": "numerical_stability_report",
       "path": "artifacts/conformance/numerical_stability_matrix.v1.json",
-      "sha256": "faca06c0f7a4a04e0985e00d8b82b09a226203a9d3c3f35dd158a3be61c66145",
+      "sha256": "071e20467cda4b3a58460d72d600fd635116bcf64f625e5ac03ca7fc9cef8d3d",
       "required": true
     },
     {
@@ -691,7 +690,7 @@
       "required": true
     }
   ],
-  "replay_command": "./scripts/run_numerical_stability_gate.sh --enforce",
+  "replay_command": "./scripts/run_numerical_stability_gate.sh",
   "status": "pass",
   "failure_summary": null,
   "redactions": [],

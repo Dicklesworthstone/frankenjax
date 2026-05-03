@@ -1,7 +1,7 @@
 {
   "schema_version": "frankenjax.onboarding-command-inventory.v1",
   "bead_id": "frankenjax-cstq.18",
-  "generated_at_unix_ms": 1777740368039,
+  "generated_at_unix_ms": 1777773725133,
   "status": "pass",
   "description": "Replayable inventory of README and key-document commands for fresh-clone onboarding, CI gates, durability, E2E orchestration, fuzzing, and optional JAX oracle setup.",
   "source_docs": [
