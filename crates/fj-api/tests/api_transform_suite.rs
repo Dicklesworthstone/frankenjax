@@ -50,6 +50,40 @@ fn chained_unary_jaxpr(first: Primitive, second: Primitive) -> Jaxpr {
     )
 }
 
+fn triple_unary_jaxpr(first: Primitive, second: Primitive, third: Primitive) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(4)],
+        vec![
+            Equation {
+                primitive: first,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: second,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: third,
+                inputs: smallvec![Atom::Var(VarId(3))],
+                outputs: smallvec![VarId(4)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 // ============================================================================
 // 1. API Entry Point Tests
 // ============================================================================
@@ -270,6 +304,26 @@ fn stacking_egraph_optimization_in_strict_preserves_log_exp_overflow_boundary() 
     log_pass(
         "stacking_egraph_optimization_in_strict_preserves_log_exp_overflow_boundary",
         &("jit", "egraph_optimize=true", "strict", "log_exp_overflow"),
+    );
+}
+
+#[test]
+fn stacking_egraph_optimization_in_strict_preserves_nested_cbrt() {
+    let jaxpr = triple_unary_jaxpr(Primitive::Cbrt, Primitive::Cbrt, Primitive::Cbrt);
+    let result = compose(jaxpr, vec![Transform::Jit])
+        .with_mode(CompatibilityMode::Strict)
+        .with_egraph_optimization(true)
+        .call(vec![Value::scalar_f64(64.0)])
+        .expect("strict egraph optimized dispatch should preserve nested cbrt");
+    let value = result[0].as_f64_scalar().expect("scalar f64 output");
+    let expected = 64.0_f64.cbrt().cbrt().cbrt();
+    assert!(
+        (value - expected).abs() < 1e-12,
+        "strict egraph optimized cbrt(cbrt(cbrt(64.0))) must be {expected}, got {value}"
+    );
+    log_pass(
+        "stacking_egraph_optimization_in_strict_preserves_nested_cbrt",
+        &("jit", "egraph_optimize=true", "strict", "nested_cbrt"),
     );
 }
 

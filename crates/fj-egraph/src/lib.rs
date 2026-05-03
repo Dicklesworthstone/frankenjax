@@ -411,8 +411,6 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("integer-pow-zero"; "(integer_pow ?a 0)" => "1"),
         rewrite!("integer-pow-one"; "(integer_pow ?a 1)" => "?a"),
         rewrite!("integer-pow-two"; "(integer_pow ?a 2)" => "(mul ?a ?a)"),
-        // ── Cbrt rules ────────────────────────────────────────────────
-        rewrite!("cbrt-cbrt-cbrt"; "(cbrt (cbrt (cbrt ?a)))" => "(cbrt ?a)"),
         // ── Bitwise rules ─────────────────────────────────────────────
         rewrite!("bitwise-not-not"; "(bitwise_not (bitwise_not ?a))" => "?a"),
         rewrite!("bitwise-and-self"; "(bitwise_and ?a ?a)" => "?a"),
@@ -4356,6 +4354,41 @@ mod tests {
         )
     }
 
+    // Helper: build a chained unary triple: t1 = op1(in), t2 = op2(t1), out = op3(t2)
+    fn triple_unary_jaxpr(prim1: Primitive, prim2: Primitive, prim3: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: prim1,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: prim2,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: prim3,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
     // Helper: build a binary-op Jaxpr: out = op(lhs, rhs)
     fn binary_jaxpr(prim: Primitive, lhs: Atom, rhs: Atom) -> Jaxpr {
         let invars: Vec<VarId> = [&lhs, &rhs]
@@ -4854,44 +4887,24 @@ mod tests {
     }
 
     #[test]
-    fn rule_cbrt_triple_idempotent() {
-        // cbrt(cbrt(cbrt(x))) → cbrt(x)
-        let jaxpr = Jaxpr::new(
-            vec![VarId(1)],
-            vec![],
-            vec![VarId(4)],
-            vec![
-                Equation {
-                    primitive: Primitive::Cbrt,
-                    inputs: smallvec![Atom::Var(VarId(1))],
-                    outputs: smallvec![VarId(2)],
-                    effects: vec![],
-                    params: BTreeMap::new(),
-                    sub_jaxprs: vec![],
-                },
-                Equation {
-                    primitive: Primitive::Cbrt,
-                    inputs: smallvec![Atom::Var(VarId(2))],
-                    outputs: smallvec![VarId(3)],
-                    effects: vec![],
-                    params: BTreeMap::new(),
-                    sub_jaxprs: vec![],
-                },
-                Equation {
-                    primitive: Primitive::Cbrt,
-                    inputs: smallvec![Atom::Var(VarId(3))],
-                    outputs: smallvec![VarId(4)],
-                    effects: vec![],
-                    params: BTreeMap::new(),
-                    sub_jaxprs: vec![],
-                },
-            ],
-        );
-        let opt = optimize_jaxpr(&jaxpr);
+    fn cbrt_triple_preserves_nested_semantics() {
+        let jaxpr = triple_unary_jaxpr(Primitive::Cbrt, Primitive::Cbrt, Primitive::Cbrt);
+        let args = [Value::scalar_f64(64.0)];
+        let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+        let original_value = original[0].as_f64_scalar().expect("original scalar");
+        let single_cbrt = 64.0_f64.cbrt();
         assert!(
-            opt.equations.len() <= 1,
-            "cbrt(cbrt(cbrt(x))) should simplify to cbrt(x): got {} eqns",
-            opt.equations.len()
+            (original_value - single_cbrt).abs() > 1.0,
+            "test fixture must distinguish nested cbrt from cbrt(x)"
+        );
+
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        let optimized = eval_jaxpr(&opt, &args).expect("safe optimized eval");
+        let optimized_value = optimized[0].as_f64_scalar().expect("optimized scalar");
+        assert!(
+            (optimized_value - original_value).abs() < 1e-12,
+            "safe egraph optimization must preserve nested cbrt semantics: original={original_value}, optimized={optimized_value}, equations={:?}",
+            opt.equations
         );
     }
 

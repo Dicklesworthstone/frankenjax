@@ -31,7 +31,7 @@
 | Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | V1 matrix gated; unsupported rows fail closed |
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
-| E-graph equality saturation optimizer (87 algebraic rewrite rules) | All green |
+| E-graph equality saturation optimizer (86 algebraic rewrite rules) | All green |
 | 861 JAX oracle fixture cases for differential conformance | All green |
 | RaptorQ erasure-coded durability for current evidence bundles | Implemented; all-long-lived-artifact expansion tracked |
 | Strict/Hardened compatibility-security mode split | All green |
@@ -47,7 +47,7 @@
 | **Verifiable evidence** | Trace Transform Ledger | No | No | No | No |
 | **Oracle conformance** | 861 JAX-verified cases | N/A (is the oracle) | No | No | No |
 | **Artifact durability** | RaptorQ sidecars | No | No | No | No |
-| **E-graph optimization** | 87 rules, equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
+| **E-graph optimization** | 86 rules, equality saturation | XLA HLO passes | TorchScript/Inductor | LLVM passes | None |
 | **Embeddable** | Yes (Rust library + C FFI) | No (Python required) | Partially (libtorch) | Yes (LLVM plugin) | No |
 
 FrankenJAX is not a replacement for JAX in production ML training. It is a **reference implementation** of JAX's mathematical transform semantics that you can embed in Rust applications, use as a verification oracle, or study to understand how composable transforms work.
@@ -164,7 +164,7 @@ Transform Stack (fj-dispatch)
   |  jit    grad    vmap
   |    \      |      /
   v     v     v     v
-  +-- E-graph optimizer (fj-egraph: 87 rewrite rules)
+  +-- E-graph optimizer (fj-egraph: 86 rewrite rules)
   +-- AD engine (fj-ad: VJP + JVP for all 110 primitives)
   +-- Batch trace (fj-dispatch/batching: per-primitive vmap rules)
   +-- Evidence ledger (fj-ledger: transform composition proofs)
@@ -201,7 +201,7 @@ advanced transform/control-flow parity and public API example replay are green.
 | `fj-ad` | Automatic differentiation: VJP + JVP for all 110 primitives | 179 |
 | `fj-dispatch` | Transform dispatch, order-sensitive composition, batching | 55+ |
 | `fj-trace` | `make_jaxpr` tracing from Rust closures, nested trace contexts | 50 |
-| `fj-egraph` | E-graph equality saturation: 87 algebraic rewrite rules | 47 |
+| `fj-egraph` | E-graph equality saturation: 86 algebraic rewrite rules | 47 |
 | `fj-api` | User-facing API: `jit`, `grad`, `vmap`, `jacobian`, `hessian` | 38 |
 | `fj-cache` | Deterministic cache keys, strict/hardened gate behavior | Yes |
 | `fj-ledger` | Decision/evidence ledger, loss-matrix actions, audit trail | Yes |
@@ -221,7 +221,7 @@ advanced transform/control-flow parity and public API example replay are green.
 - **Full AD coverage**: all 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT
 - **Jacobian and Hessian** matrix computation via composable AD
 - **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes`, BatchTrace interpreter, and a 21-row transform/control-flow matrix gate
-- **E-graph optimizer**: 87 algebraic rewrite rules with equality saturation, verified to preserve program semantics
+- **E-graph optimizer**: 86 algebraic rewrite rules with equality saturation, verified to preserve program semantics
 - **ThreeFry2x32 RNG**: key/split/fold_in/uniform/normal/bernoulli/categorical with JAX-matched determinism
 - **Control flow**: `cond`, `scan`, `while_loop`, `fori_loop`, `switch` with AD support and explicit advanced transform-composition evidence
 - **861 JAX oracle fixture cases** captured from JAX 0.9.2 with x64 mode, covering transforms, AD, linalg, FFT, RNG, dtype promotion, and transform composition
@@ -423,7 +423,7 @@ The linalg decomposition VJPs follow Murray 2016 ("Differentiation of the Choles
 
 The optimizer converts Jaxpr programs into an **e-graph** (equivalence graph) and applies **equality saturation** via the `egg` library. Instead of choosing one rewrite direction, all applicable rewrites fire simultaneously, and a cost function extracts the cheapest equivalent program.
 
-87 algebraic rewrite rules, including:
+86 algebraic rewrite rules, including:
 
 | Category | Example Rule | Effect |
 |----------|-------------|--------|
@@ -1171,13 +1171,13 @@ A: Yes. All 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) r
 A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Verification binds evidence entries to their transforms, includes evidence content in the stack signature, and the TTL semantic gate replays representative stacks with canonical fingerprints, output shape/dtype metadata, fixture links, and deterministic rejection reasons for invalid proof chains.
 
 **Q: How fast is it?**
-A: Performance optimization is ongoing and evidence-gated. The CPU backend uses a dependency-wave parallel executor, the e-graph optimizer applies 87 algebraic simplification rules, and `artifacts/performance/global_performance_gate.v1.json` ties trace, compile/dispatch, execute, cold-cache, warm-cache, and memory phases to checked evidence. The memory phase links to `artifacts/performance/memory_performance_gate.v1.json`, which records Linux procfs RSS measurements for trace, dispatch, AD, vmap, FFT, linalg, cache hit/miss, and durability workloads without synthesizing allocation counts.
+A: Performance optimization is ongoing and evidence-gated. The CPU backend uses a dependency-wave parallel executor, the e-graph optimizer applies 86 algebraic simplification rules, and `artifacts/performance/global_performance_gate.v1.json` ties trace, compile/dispatch, execute, cold-cache, warm-cache, and memory phases to checked evidence. The memory phase links to `artifacts/performance/memory_performance_gate.v1.json`, which records Linux procfs RSS measurements for trace, dispatch, AD, vmap, FFT, linalg, cache hit/miss, and durability workloads without synthesizing allocation counts.
 
 **Q: What's the difference between Strict and Hardened mode?**
 A: Strict mode refuses to process anything it does not fully understand. Unknown features, incompatible cache entries, or ambiguous inputs cause hard failures. Hardened mode allows bounded defensive recovery: it can handle some malformed inputs and degrade gracefully, but logs every recovery action in the decision ledger for audit.
 
 **Q: How does the e-graph optimizer work?**
-A: It converts your Jaxpr into an equivalence graph where every algebraically equivalent form exists simultaneously (e.g., `x+x` and `2*x` coexist as equivalent). The 87 rewrite rules fire until saturation (no new equivalences found), then a cost function extracts the cheapest program. This can discover simplifications that sequential rule application would miss.
+A: It converts your Jaxpr into an equivalence graph where every algebraically equivalent form exists simultaneously (e.g., `x+x` and `2*x` coexist as equivalent). The 86 rewrite rules fire until saturation (no new equivalences found), then a cost function extracts the cheapest program. This can discover simplifications that sequential rule application would miss.
 
 **Q: Can I use FrankenJAX from Python/C?**
 A: The `fj-ffi` crate provides a C FFI surface for calling FrankenJAX from any language with C interop. Python bindings are not yet implemented but would be straightforward via PyO3 or cffi on top of fj-ffi.
