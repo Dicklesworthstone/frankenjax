@@ -6,9 +6,9 @@
   "frankenjax_version": "v1",
   "summary": {
     "total_jax_capabilities_audited": 25,
-    "well_covered": 21,
+    "well_covered": 22,
     "partial_coverage": 0,
-    "not_covered": 4,
+    "not_covered": 3,
     "out_of_scope_v1": 3
   },
   "well_covered": [
@@ -158,6 +158,13 @@
       "status": "parity_green",
       "evidence": "checkpoint() wrapper re-runs forward during backward via grad_jaxpr_with_cotangent",
       "evidence_refs": ["crates/fj-api/src/transforms.rs::checkpoint", "crates/fj-ad/src/lib.rs::grad_jaxpr_with_cotangent"]
+    },
+    {
+      "capability": "python_bindings",
+      "jax_module": "import frankenjax",
+      "status": "parity_green",
+      "evidence": "fj-py crate with PyO3: PyValue, PyJaxpr wrappers, jit/grad/vmap/value_and_grad/checkpoint exports",
+      "evidence_refs": ["crates/fj-py/src/lib.rs", "crates/fj-py/pyproject.toml"]
     }
   ],
   "partial_coverage": [],
@@ -181,16 +188,6 @@
       "effort_estimate": "large",
       "prerequisite": null,
       "bead_id": "frankenjax-82az"
-    },
-    {
-      "capability": "python_bindings",
-      "jax_module": "import jax",
-      "status": "not_implemented",
-      "gap_description": "Python bindings via PyO3 or cffi. README notes this as straightforward via fj-ffi.",
-      "priority": 2,
-      "effort_estimate": "medium",
-      "prerequisite": null,
-      "bead_id": "frankenjax-k58g"
     },
     {
       "capability": "sharding",
