@@ -242,6 +242,7 @@ pub struct OptimizationConfig {
     /// - `a/a => 1` (fails when a = 0, NaN, denormal)
     /// - `a * (1/a) => 1` (fails when a = 0)
     /// - `(a*b)/b => a` (fails when b = 0)
+    /// - `log(exp(a)) => a` (fails when exp(a) overflows to Inf)
     /// - `log(a*b) => log(a) + log(b)` (fails when a or b <= 0)
     /// - `log(a/b) => log(a) - log(b)` (fails when a <= 0 or b <= 0)
     pub numerical_safety_mode: bool,
@@ -321,7 +322,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("pow-one"; "(pow ?a 1)" => "?a"),
         // ── Exp / Log inverse pair ───────────────────────────────────
         // exp-log moved to numerically_unsafe_rules (fails when a <= 0)
-        rewrite!("log-exp"; "(log (exp ?a))" => "?a"),
+        // log-exp moved to numerically_unsafe_rules (fails when exp(a) overflows)
         // ── Sqrt / Rsqrt relationships ───────────────────────────────
         rewrite!("rsqrt-to-sqrt"; "(rsqrt ?a)" => "(pow (sqrt ?a) (neg 1))"),
         // ── Floor / Ceil / Round idempotence ─────────────────────────
@@ -430,6 +431,8 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("mul-reciprocal"; "(mul ?a (reciprocal ?a))" => "1"),
         // (a*b)/b => a fails when b = 0
         rewrite!("div-mul-cancel"; "(div (mul ?a ?b) ?b)" => "?a"),
+        // log(exp(a)) => a fails when exp(a) overflows to Inf
+        rewrite!("log-exp"; "(log (exp ?a))" => "?a"),
         // log(a*b) => log(a) + log(b) fails when a or b <= 0
         rewrite!("log-product"; "(log (mul ?a ?b))" => "(add (log ?a) (log ?b))"),
         // log(a/b) => log(a) - log(b) fails when a <= 0 or b <= 0
@@ -4942,6 +4945,47 @@ mod tests {
             !has_neg,
             "safety mode should still apply neg-neg rule: {:?}",
             opt.equations
+        );
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_log_exp_overflow_boundary() {
+        let jaxpr = chained_unary_jaxpr(Primitive::Exp, Primitive::Log);
+        let args = [Value::scalar_f64(1000.0)];
+
+        let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+        assert!(
+            original[0].as_f64_scalar().is_some_and(f64::is_infinite),
+            "log(exp(1000.0)) should observe exp overflow as Inf"
+        );
+
+        let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        assert!(
+            safe.equations
+                .iter()
+                .any(|equation| equation.primitive == Primitive::Exp),
+            "safe mode must keep exp in log(exp(x)): {:?}",
+            safe.equations
+        );
+        assert!(
+            safe.equations
+                .iter()
+                .any(|equation| equation.primitive == Primitive::Log),
+            "safe mode must keep log in log(exp(x)): {:?}",
+            safe.equations
+        );
+        let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+        assert!(
+            safe_value[0].as_f64_scalar().is_some_and(f64::is_infinite),
+            "safe optimized value should preserve overflow-visible Inf"
+        );
+
+        let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+        assert_eq!(
+            aggressive_value[0].as_f64_scalar(),
+            Some(1000.0),
+            "aggressive mode may apply the numerically unsafe log-exp rewrite"
         );
     }
 
