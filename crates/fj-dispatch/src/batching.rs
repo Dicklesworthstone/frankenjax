@@ -469,6 +469,15 @@ pub fn apply_batch_rule(
 
         // ── Windowed reduction ─────────────────────────────────
         Primitive::ReduceWindow => batch_reduce_window(inputs, params),
+
+        // ── Collective operations (pmap-only) ──────────────────
+        Primitive::Psum
+        | Primitive::Pmean
+        | Primitive::AllGather
+        | Primitive::AllToAll
+        | Primitive::AxisIndex => Err(BatchError::EvalError(
+            "collective operation requires pmap context (not yet implemented)".to_owned(),
+        )),
     }
 }
 

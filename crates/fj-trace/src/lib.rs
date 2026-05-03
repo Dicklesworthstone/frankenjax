@@ -1743,6 +1743,19 @@ impl SimpleTraceContext {
                 }])
             }
 
+            // Collective operations (pmap-only)
+            Primitive::Psum
+            | Primitive::Pmean
+            | Primitive::AllGather
+            | Primitive::AllToAll
+            | Primitive::AxisIndex => {
+                return Err(TraceError::ShapeInferenceFailed {
+                    primitive,
+                    detail: "collective operation requires pmap context (not yet implemented)"
+                        .to_owned(),
+                });
+            }
+
             Primitive::ReduceWindow => {
                 if inputs.is_empty() {
                     return Err(TraceError::ShapeInferenceFailed {

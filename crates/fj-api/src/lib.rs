@@ -11,10 +11,11 @@ pub use fj_ad::{
 pub use fj_core::{DType, Shape, Value};
 pub use transforms::{
     CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
-    HessianWrapped, JacobianWrapped, JitWrapped, ValueAndGradWrapped, VmapWrapped,
+    HessianWrapped, JacobianWrapped, JitWrapped, PmapWrapped, ValueAndGradWrapped, VmapWrapped,
 };
 pub use transforms::{
-    checkpoint, compose, custom_jvp, custom_vjp, grad, hessian, jacobian, jit, value_and_grad, vmap,
+    checkpoint, compose, custom_jvp, custom_vjp, grad, hessian, jacobian, jit, pmap, value_and_grad,
+    vmap,
 };
 
 // Re-export make_jaxpr tracing API from fj-trace

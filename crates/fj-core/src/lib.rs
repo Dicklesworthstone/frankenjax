@@ -193,6 +193,12 @@ pub enum Primitive {
     Scan,
     While,
     Switch,
+    // Collective operations (pmap axis-aware reductions)
+    Psum,
+    Pmean,
+    AllGather,
+    AllToAll,
+    AxisIndex,
     // Bitwise
     BitwiseAnd,
     BitwiseOr,
@@ -312,6 +318,11 @@ impl Primitive {
             Self::Scan => "scan",
             Self::While => "while_loop",
             Self::Switch => "switch",
+            Self::Psum => "psum",
+            Self::Pmean => "pmean",
+            Self::AllGather => "all_gather",
+            Self::AllToAll => "all_to_all",
+            Self::AxisIndex => "axis_index",
             Self::BitwiseAnd => "bitwise_and",
             Self::BitwiseOr => "bitwise_or",
             Self::BitwiseXor => "bitwise_xor",
@@ -331,6 +342,9 @@ pub enum Transform {
     Jit,
     Grad,
     Vmap,
+    /// Parallel map for multi-device SPMD execution.
+    /// V1: Scaffold only - returns NotImplemented.
+    Pmap,
 }
 
 impl Transform {
@@ -340,6 +354,7 @@ impl Transform {
             Self::Jit => "jit",
             Self::Grad => "grad",
             Self::Vmap => "vmap",
+            Self::Pmap => "pmap",
         }
     }
 }

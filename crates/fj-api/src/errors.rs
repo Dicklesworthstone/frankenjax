@@ -10,6 +10,7 @@ pub enum ApiError {
     InvalidComposition { detail: String },
     CacheKeyFailure { detail: String },
     EvalError { detail: String },
+    NotImplemented { feature: String, reason: String },
 }
 
 impl std::fmt::Display for ApiError {
@@ -32,6 +33,9 @@ impl std::fmt::Display for ApiError {
             }
             Self::EvalError { detail } => {
                 write!(f, "evaluation error: {detail}")
+            }
+            Self::NotImplemented { feature, reason } => {
+                write!(f, "{feature} not implemented: {reason}")
             }
         }
     }

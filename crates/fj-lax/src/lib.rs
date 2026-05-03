@@ -395,6 +395,16 @@ pub fn eval_primitive(
         Primitive::Scan => eval_scan(primitive, inputs, params),
         Primitive::While => eval_while_loop(primitive, inputs, params),
         Primitive::Switch => eval_switch(primitive, inputs, params),
+        // Collective operations (pmap-only, require multi-device runtime)
+        Primitive::Psum
+        | Primitive::Pmean
+        | Primitive::AllGather
+        | Primitive::AllToAll
+        | Primitive::AxisIndex => Err(EvalError::Unsupported {
+            primitive,
+            detail: "collective operation requires pmap context with multi-device backend"
+                .to_owned(),
+        }),
         // Bitwise
         Primitive::BitwiseAnd
         | Primitive::BitwiseOr

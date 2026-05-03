@@ -273,6 +273,7 @@ pub enum TransformExecutionError {
     FiniteDiffGradFallbackDisabled { tail: String },
     EmptyVmapOutput,
     TensorBuild(String),
+    PmapNotImplemented,
 }
 
 impl std::fmt::Display for TransformExecutionError {
@@ -338,6 +339,10 @@ impl std::fmt::Display for TransformExecutionError {
                 )
             }
             Self::TensorBuild(detail) => write!(f, "tensor build error: {detail}"),
+            Self::PmapNotImplemented => write!(
+                f,
+                "pmap not implemented: requires multi-device backend infrastructure (GPU/TPU)"
+            ),
         }
     }
 }
@@ -542,6 +547,9 @@ fn execute_with_transforms(
         }
         Transform::Grad => execute_grad(root_jaxpr, tail, args, backend, device, compile_options),
         Transform::Vmap => execute_vmap(root_jaxpr, tail, args, backend, device, compile_options),
+        Transform::Pmap => Err(DispatchError::TransformExecution(
+            TransformExecutionError::PmapNotImplemented,
+        )),
     }
 }
 

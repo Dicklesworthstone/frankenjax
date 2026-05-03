@@ -68,6 +68,18 @@ pub struct CheckpointWrapped {
     mode: CompatibilityMode,
 }
 
+/// Pmap wrapper for parallel map across multiple devices.
+///
+/// V1: Scaffold only - returns NotImplemented error on execution.
+/// Requires multi-device backend infrastructure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PmapWrapped {
+    jaxpr: Jaxpr,
+    backend: String,
+    mode: CompatibilityMode,
+    axis_name: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComposedTransform {
     jaxpr: Jaxpr,
@@ -112,6 +124,20 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
         jaxpr,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+    }
+}
+
+/// Create a pmap (parallel map) transform wrapper.
+///
+/// V1: Scaffold only - returns NotImplemented error on execution.
+/// Requires multi-device backend infrastructure for actual SPMD execution.
+#[must_use]
+pub fn pmap(jaxpr: Jaxpr) -> PmapWrapped {
+    PmapWrapped {
+        jaxpr,
+        backend: "cpu".to_owned(),
+        mode: CompatibilityMode::Strict,
+        axis_name: None,
     }
 }
 
@@ -662,6 +688,42 @@ impl CheckpointWrapped {
     }
 }
 
+impl PmapWrapped {
+    #[must_use]
+    pub fn with_backend(mut self, backend: &str) -> Self {
+        self.backend = backend.to_owned();
+        self
+    }
+
+    #[must_use]
+    pub fn with_mode(mut self, mode: CompatibilityMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set the axis name for collective operations within this pmap.
+    #[must_use]
+    pub fn with_axis_name(mut self, axis_name: &str) -> Self {
+        self.axis_name = Some(axis_name.to_owned());
+        self
+    }
+
+    /// Execute the pmap transform.
+    ///
+    /// V1: Returns NotImplemented error. Actual pmap requires:
+    /// - Multi-device backend infrastructure
+    /// - Device mesh configuration
+    /// - Collective operation support (psum, pmean, etc.)
+    pub fn call(&self, _args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        Err(ApiError::NotImplemented {
+            feature: "pmap".to_owned(),
+            reason: "pmap requires multi-device backend infrastructure (GPU/TPU) \
+                     which is not yet implemented"
+                .to_owned(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1070,5 +1132,25 @@ mod tests {
                 },
             ],
         )
+    }
+
+    #[test]
+    fn pmap_returns_not_implemented_error() {
+        let wrapped = pmap(make_add_jaxpr());
+        let result = wrapped.call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ApiError::NotImplemented { .. }),
+            "expected NotImplemented error, got: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn pmap_with_axis_name_still_returns_not_implemented() {
+        let wrapped = pmap(make_add_jaxpr()).with_axis_name("batch");
+        let result = wrapped.call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)]);
+        assert!(result.is_err());
     }
 }
