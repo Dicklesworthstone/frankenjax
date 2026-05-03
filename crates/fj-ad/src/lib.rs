@@ -153,6 +153,21 @@ where
     });
 }
 
+/// Register a custom VJP rule for an explicit wrapper-scoped key.
+///
+/// Scoped keys let higher-level APIs attach different custom rules to equal
+/// Jaxprs without mutating the Jaxpr fingerprint or replacing global rules.
+pub fn register_custom_jaxpr_vjp_with_key<F>(rule_key: &str, rule: F)
+where
+    F: Fn(&[Value], &[Value], &Value) -> Result<Vec<Value>, AdError> + Send + Sync + 'static,
+{
+    with_registry_write(|registry| {
+        registry
+            .jaxpr_vjp_rules
+            .insert(rule_key.to_owned(), Arc::new(rule));
+    });
+}
+
 /// Register a custom JVP rule for an entire Jaxpr.
 ///
 /// Function-level rules are keyed by the Jaxpr's canonical fingerprint and
@@ -164,6 +179,21 @@ where
     let fingerprint = jaxpr.canonical_fingerprint().to_owned();
     with_registry_write(|registry| {
         registry.jaxpr_jvp_rules.insert(fingerprint, Arc::new(rule));
+    });
+}
+
+/// Register a custom JVP rule for an explicit wrapper-scoped key.
+///
+/// Scoped keys let higher-level APIs attach different custom rules to equal
+/// Jaxprs without mutating the Jaxpr fingerprint or replacing global rules.
+pub fn register_custom_jaxpr_jvp_with_key<F>(rule_key: &str, rule: F)
+where
+    F: Fn(&[Value], &[Value]) -> Result<JvpResult, AdError> + Send + Sync + 'static,
+{
+    with_registry_write(|registry| {
+        registry
+            .jaxpr_jvp_rules
+            .insert(rule_key.to_owned(), Arc::new(rule));
     });
 }
 
@@ -194,6 +224,10 @@ fn lookup_custom_jaxpr_vjp(jaxpr: &Jaxpr) -> Option<CustomJaxprVjpRule> {
     })
 }
 
+fn lookup_custom_jaxpr_vjp_by_key(rule_key: &str) -> Option<CustomJaxprVjpRule> {
+    with_registry_read(|registry| registry.jaxpr_vjp_rules.get(rule_key).cloned())
+}
+
 fn lookup_custom_jaxpr_jvp(jaxpr: &Jaxpr) -> Option<CustomJaxprJvpRule> {
     with_registry_read(|registry| {
         registry
@@ -201,6 +235,10 @@ fn lookup_custom_jaxpr_jvp(jaxpr: &Jaxpr) -> Option<CustomJaxprJvpRule> {
             .get(jaxpr.canonical_fingerprint())
             .cloned()
     })
+}
+
+fn lookup_custom_jaxpr_jvp_by_key(rule_key: &str) -> Option<CustomJaxprJvpRule> {
+    with_registry_read(|registry| registry.jaxpr_jvp_rules.get(rule_key).cloned())
 }
 
 #[derive(Debug, Clone)]
@@ -5154,6 +5192,25 @@ pub struct JvpResult {
 /// Given primals `x` and tangent vector `dx`, computes `(f(x), df/dx · dx)`.
 /// Tangents are `Value` types (scalar or tensor) matching the shape of their primals.
 pub fn jvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<JvpResult, AdError> {
+    jvp_inner(jaxpr, primals, tangents, None)
+}
+
+/// Compute JVP using a wrapper-scoped custom JVP rule when present.
+pub fn jvp_with_custom_jvp_key(
+    jaxpr: &Jaxpr,
+    primals: &[Value],
+    tangents: &[Value],
+    rule_key: &str,
+) -> Result<JvpResult, AdError> {
+    jvp_inner(jaxpr, primals, tangents, Some(rule_key))
+}
+
+fn jvp_inner(
+    jaxpr: &Jaxpr,
+    primals: &[Value],
+    tangents: &[Value],
+    custom_jvp_rule_key: Option<&str>,
+) -> Result<JvpResult, AdError> {
     if primals.len() != jaxpr.invars.len() {
         return Err(AdError::InputArity {
             expected: jaxpr.invars.len(),
@@ -5167,7 +5224,10 @@ pub fn jvp(jaxpr: &Jaxpr, primals: &[Value], tangents: &[Value]) -> Result<JvpRe
         });
     }
 
-    if let Some(custom_rule) = lookup_custom_jaxpr_jvp(jaxpr) {
+    let custom_rule = custom_jvp_rule_key
+        .and_then(lookup_custom_jaxpr_jvp_by_key)
+        .or_else(|| lookup_custom_jaxpr_jvp(jaxpr));
+    if let Some(custom_rule) = custom_rule {
         let result = custom_rule(primals, tangents)?;
         if result.primals.len() != jaxpr.outvars.len() {
             return Err(AdError::EvalFailed(format!(
@@ -6249,6 +6309,14 @@ fn value_and_grad_jaxpr_inner(
     jaxpr: &Jaxpr,
     args: &[Value],
 ) -> Result<(Vec<Value>, Vec<Value>, usize), AdError> {
+    value_and_grad_jaxpr_inner_with_custom_vjp_key(jaxpr, args, None)
+}
+
+fn value_and_grad_jaxpr_inner_with_custom_vjp_key(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    custom_vjp_rule_key: Option<&str>,
+) -> Result<(Vec<Value>, Vec<Value>, usize), AdError> {
     let (outputs, tape, env) = forward_with_tape(jaxpr, args)?;
 
     let output_val = outputs.first().ok_or(AdError::NonScalarGradientOutput)?;
@@ -6260,7 +6328,10 @@ fn value_and_grad_jaxpr_inner(
 
     let seed = Value::scalar_f64(1.0);
 
-    if let Some(custom_rule) = lookup_custom_jaxpr_vjp(jaxpr) {
+    let custom_rule = custom_vjp_rule_key
+        .and_then(lookup_custom_jaxpr_vjp_by_key)
+        .or_else(|| lookup_custom_jaxpr_vjp(jaxpr));
+    if let Some(custom_rule) = custom_rule {
         let grads = custom_rule(args, &outputs, &seed)?;
         if grads.len() != jaxpr.invars.len() {
             return Err(AdError::EvalFailed(format!(
@@ -6280,6 +6351,17 @@ fn value_and_grad_jaxpr_inner(
 /// Compute gradients of a Jaxpr with respect to all inputs (tensor-aware).
 pub fn grad_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, AdError> {
     let (_, grads, _) = value_and_grad_jaxpr_inner(jaxpr, args)?;
+    Ok(grads)
+}
+
+/// Compute gradients using a wrapper-scoped custom VJP rule when present.
+pub fn grad_jaxpr_with_custom_vjp_key(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    rule_key: &str,
+) -> Result<Vec<Value>, AdError> {
+    let (_, grads, _) =
+        value_and_grad_jaxpr_inner_with_custom_vjp_key(jaxpr, args, Some(rule_key))?;
     Ok(grads)
 }
 
@@ -6308,6 +6390,18 @@ pub fn value_and_grad_jaxpr(
     args: &[Value],
 ) -> Result<(Vec<Value>, Vec<Value>), AdError> {
     let (values, grads, _) = value_and_grad_jaxpr_inner(jaxpr, args)?;
+    Ok((values, grads))
+}
+
+/// Compute both value outputs and gradients using a wrapper-scoped custom VJP
+/// rule when present.
+pub fn value_and_grad_jaxpr_with_custom_vjp_key(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    rule_key: &str,
+) -> Result<(Vec<Value>, Vec<Value>), AdError> {
+    let (values, grads, _) =
+        value_and_grad_jaxpr_inner_with_custom_vjp_key(jaxpr, args, Some(rule_key))?;
     Ok((values, grads))
 }
 
@@ -6448,6 +6542,23 @@ fn matrix_value(rows: usize, cols: usize, entries: Vec<f64>) -> Result<Value, Ad
 /// Output layout is row-major `[output_dim, input_dim]`, where both dimensions
 /// are flattened over all output/input values in argument order.
 pub fn jacobian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
+    jacobian_jaxpr_inner(jaxpr, args, None)
+}
+
+/// Compute Jacobian using a wrapper-scoped custom JVP rule when present.
+pub fn jacobian_jaxpr_with_custom_jvp_key(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    rule_key: &str,
+) -> Result<Value, AdError> {
+    jacobian_jaxpr_inner(jaxpr, args, Some(rule_key))
+}
+
+fn jacobian_jaxpr_inner(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    custom_jvp_rule_key: Option<&str>,
+) -> Result<Value, AdError> {
     if args.is_empty() {
         return Err(AdError::InputArity {
             expected: 1,
@@ -6479,7 +6590,7 @@ pub fn jacobian_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Value, AdError> {
         let mut tangents = zero_tangents.clone();
         tangents[arg_idx] = basis_value_like(&args[arg_idx], local_idx)?;
 
-        let jvp_result = jvp(jaxpr, args, &tangents)?;
+        let jvp_result = jvp_inner(jaxpr, args, &tangents, custom_jvp_rule_key)?;
         let tangent_flat = flatten_values_to_f64(&jvp_result.tangents)?;
         let current_output_dim = tangent_flat.len();
 

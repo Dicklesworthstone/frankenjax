@@ -1,11 +1,14 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fj_core::{CompatibilityMode, Jaxpr, TraceTransformLedger, Transform, Value};
 use fj_dispatch::{DispatchRequest, dispatch};
 
 use crate::errors::ApiError;
+
+static CUSTOM_DERIVATIVE_WRAPPER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JitWrapped {
@@ -19,6 +22,7 @@ pub struct GradWrapped {
     jaxpr: Jaxpr,
     backend: String,
     mode: CompatibilityMode,
+    custom_vjp_rule_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +39,7 @@ pub struct ValueAndGradWrapped {
     jaxpr: Jaxpr,
     backend: String,
     mode: CompatibilityMode,
+    custom_vjp_rule_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +47,7 @@ pub struct CustomVjpWrapped {
     jaxpr: Jaxpr,
     backend: String,
     mode: CompatibilityMode,
+    rule_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -49,11 +55,13 @@ pub struct CustomJvpWrapped {
     jaxpr: Jaxpr,
     backend: String,
     mode: CompatibilityMode,
+    rule_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JacobianWrapped {
     jaxpr: Jaxpr,
+    custom_jvp_rule_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -66,6 +74,7 @@ pub struct CheckpointWrapped {
     jaxpr: Jaxpr,
     backend: String,
     mode: CompatibilityMode,
+    custom_vjp_rule_key: String,
 }
 
 /// Pmap wrapper for parallel map across multiple devices.
@@ -87,6 +96,7 @@ pub struct ComposedTransform {
     backend: String,
     mode: CompatibilityMode,
     compile_options: BTreeMap<String, String>,
+    custom_vjp_rule_key: Option<String>,
 }
 
 #[must_use]
@@ -104,6 +114,7 @@ pub fn grad(jaxpr: Jaxpr) -> GradWrapped {
         jaxpr,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+        custom_vjp_rule_key: None,
     }
 }
 
@@ -124,6 +135,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
         jaxpr,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+        custom_vjp_rule_key: None,
     }
 }
 
@@ -145,45 +157,49 @@ pub fn pmap(jaxpr: Jaxpr) -> PmapWrapped {
 ///
 /// The forward callback returns `(primal_outputs, residuals)`. The backward
 /// callback receives those residuals plus the output cotangent and returns one
-/// cotangent per input. The rule is keyed by the Jaxpr canonical fingerprint, so
-/// existing `grad`, `value_and_grad`, and composed `jit(grad(...))` paths use it
-/// for matching Jaxprs.
+/// cotangent per input. The wrapper gets a private rule key so equal Jaxprs can
+/// carry different custom derivative callbacks without overwriting each other.
 #[must_use]
 pub fn custom_vjp<Fwd, Bwd>(jaxpr: Jaxpr, forward: Fwd, backward: Bwd) -> CustomVjpWrapped
 where
     Fwd: Fn(&[Value]) -> Result<(Vec<Value>, Vec<Value>), fj_ad::AdError> + Send + Sync + 'static,
     Bwd: Fn(&[Value], &Value) -> Result<Vec<Value>, fj_ad::AdError> + Send + Sync + 'static,
 {
+    let rule_key = custom_derivative_rule_key("custom_vjp");
     let expected_outputs = jaxpr.outvars.len();
-    fj_ad::register_custom_jaxpr_vjp(&jaxpr, move |primals, primal_outputs, cotangent| {
-        let (forward_outputs, residuals) = forward(primals)?;
-        if forward_outputs.len() != expected_outputs {
-            return Err(fj_ad::AdError::EvalFailed(format!(
-                "custom VJP forward output arity mismatch: expected {expected_outputs}, got {}",
-                forward_outputs.len()
-            )));
-        }
-        if primal_outputs.len() != expected_outputs {
-            return Err(fj_ad::AdError::EvalFailed(format!(
-                "custom VJP primal output arity mismatch: expected {expected_outputs}, got {}",
-                primal_outputs.len()
-            )));
-        }
-        backward(&residuals, cotangent)
-    });
+    fj_ad::register_custom_jaxpr_vjp_with_key(
+        &rule_key,
+        move |primals, primal_outputs, cotangent| {
+            let (forward_outputs, residuals) = forward(primals)?;
+            if forward_outputs.len() != expected_outputs {
+                return Err(fj_ad::AdError::EvalFailed(format!(
+                    "custom VJP forward output arity mismatch: expected {expected_outputs}, got {}",
+                    forward_outputs.len()
+                )));
+            }
+            if primal_outputs.len() != expected_outputs {
+                return Err(fj_ad::AdError::EvalFailed(format!(
+                    "custom VJP primal output arity mismatch: expected {expected_outputs}, got {}",
+                    primal_outputs.len()
+                )));
+            }
+            backward(&residuals, cotangent)
+        },
+    );
 
     CustomVjpWrapped {
         jaxpr,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+        rule_key,
     }
 }
 
 /// Attach a function-level custom JVP callback to a Jaxpr.
 ///
-/// The callback returns `(primal_outputs, tangent_outputs)`. The rule is keyed
-/// by the Jaxpr canonical fingerprint, so higher-level API paths that call
-/// forward-mode AD, such as `jacobian`, use it for matching Jaxprs.
+/// The callback returns `(primal_outputs, tangent_outputs)`. The wrapper gets a
+/// private rule key so equal Jaxprs can carry different custom derivative
+/// callbacks without overwriting each other.
 #[must_use]
 pub fn custom_jvp<F>(jaxpr: Jaxpr, rule: F) -> CustomJvpWrapped
 where
@@ -192,8 +208,9 @@ where
         + Sync
         + 'static,
 {
+    let rule_key = custom_derivative_rule_key("custom_jvp");
     let expected_outputs = jaxpr.outvars.len();
-    fj_ad::register_custom_jaxpr_jvp(&jaxpr, move |primals, tangents| {
+    fj_ad::register_custom_jaxpr_jvp_with_key(&rule_key, move |primals, tangents| {
         let (primals_out, tangents_out) = rule(primals, tangents)?;
         if primals_out.len() != expected_outputs {
             return Err(fj_ad::AdError::EvalFailed(format!(
@@ -217,12 +234,16 @@ where
         jaxpr,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+        rule_key,
     }
 }
 
 #[must_use]
 pub fn jacobian(jaxpr: Jaxpr) -> JacobianWrapped {
-    JacobianWrapped { jaxpr }
+    JacobianWrapped {
+        jaxpr,
+        custom_jvp_rule_key: None,
+    }
 }
 
 #[must_use]
@@ -240,16 +261,26 @@ pub fn hessian(jaxpr: Jaxpr) -> HessianWrapped {
 /// JAX equivalent: `jax.checkpoint` / `jax.remat`
 #[must_use]
 pub fn checkpoint(jaxpr: Jaxpr) -> CheckpointWrapped {
+    let rule_key = custom_derivative_rule_key("checkpoint");
     let jaxpr_clone = jaxpr.clone();
-    fj_ad::register_custom_jaxpr_vjp(&jaxpr, move |primals, _primal_outputs, cotangent| {
-        fj_ad::grad_jaxpr_with_cotangent(&jaxpr_clone, primals, cotangent)
-    });
+    fj_ad::register_custom_jaxpr_vjp_with_key(
+        &rule_key,
+        move |primals, _primal_outputs, cotangent| {
+            fj_ad::grad_jaxpr_with_cotangent(&jaxpr_clone, primals, cotangent)
+        },
+    );
 
     CheckpointWrapped {
         jaxpr,
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
+        custom_vjp_rule_key: rule_key,
     }
+}
+
+fn custom_derivative_rule_key(transform: &str) -> String {
+    let id = CUSTOM_DERIVATIVE_WRAPPER_ID.fetch_add(1, Ordering::Relaxed);
+    format!("fj-api:{transform}:{id}")
 }
 
 fn build_ledger(jaxpr: Jaxpr, transforms: &[Transform]) -> TraceTransformLedger {
@@ -299,6 +330,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
         compile_options: BTreeMap::new(),
+        custom_vjp_rule_key: None,
     }
 }
 
@@ -334,6 +366,7 @@ impl JitWrapped {
             backend: self.backend,
             mode: self.mode,
             compile_options: BTreeMap::new(),
+            custom_vjp_rule_key: None,
         }
     }
 
@@ -346,6 +379,7 @@ impl JitWrapped {
             backend: self.backend,
             mode: self.mode,
             compile_options: BTreeMap::new(),
+            custom_vjp_rule_key: None,
         }
     }
 }
@@ -364,12 +398,17 @@ impl GradWrapped {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(
+        let mut compile_options = BTreeMap::new();
+        if let Some(rule_key) = &self.custom_vjp_rule_key {
+            compile_options.insert("custom_vjp_rule_key".to_owned(), rule_key.clone());
+        }
+        dispatch_with_options(
             self.jaxpr.clone(),
             &[Transform::Grad],
             args,
             &self.backend,
             self.mode,
+            compile_options,
         )
     }
 }
@@ -442,6 +481,7 @@ impl VmapWrapped {
             backend: self.backend,
             mode: self.mode,
             compile_options,
+            custom_vjp_rule_key: None,
         }
     }
 }
@@ -494,13 +534,17 @@ impl ComposedTransform {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
+        let mut compile_options = self.compile_options.clone();
+        if let Some(rule_key) = &self.custom_vjp_rule_key {
+            compile_options.insert("custom_vjp_rule_key".to_owned(), rule_key.clone());
+        }
         dispatch_with_options(
             self.jaxpr.clone(),
             &self.transforms,
             args,
             &self.backend,
             self.mode,
-            self.compile_options.clone(),
+            compile_options,
         )
     }
 }
@@ -521,6 +565,9 @@ impl ValueAndGradWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<(Vec<Value>, Vec<Value>), ApiError> {
         let mut compile_options = BTreeMap::new();
         compile_options.insert("value_and_grad".to_owned(), "true".to_owned());
+        if let Some(rule_key) = &self.custom_vjp_rule_key {
+            compile_options.insert("custom_vjp_rule_key".to_owned(), rule_key.clone());
+        }
         let outputs = dispatch_with_options(
             self.jaxpr.clone(),
             &[Transform::Grad],
@@ -569,6 +616,7 @@ impl CustomVjpWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            custom_vjp_rule_key: Some(self.rule_key.clone()),
         }
     }
 
@@ -578,6 +626,7 @@ impl CustomVjpWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            custom_vjp_rule_key: Some(self.rule_key.clone()),
         }
     }
 
@@ -590,6 +639,7 @@ impl CustomVjpWrapped {
             backend: self.backend.clone(),
             mode: self.mode,
             compile_options: BTreeMap::new(),
+            custom_vjp_rule_key: Some(self.rule_key.clone()),
         }
     }
 }
@@ -616,20 +666,27 @@ impl CustomJvpWrapped {
         primals: Vec<Value>,
         tangents: Vec<Value>,
     ) -> Result<fj_ad::JvpResult, ApiError> {
-        fj_ad::jvp(&self.jaxpr, &primals, &tangents).map_err(ApiError::from)
+        fj_ad::jvp_with_custom_jvp_key(&self.jaxpr, &primals, &tangents, &self.rule_key)
+            .map_err(ApiError::from)
     }
 
     #[must_use]
     pub fn jacobian(&self) -> JacobianWrapped {
         JacobianWrapped {
             jaxpr: self.jaxpr.clone(),
+            custom_jvp_rule_key: Some(self.rule_key.clone()),
         }
     }
 }
 
 impl JacobianWrapped {
     pub fn call(&self, args: Vec<Value>) -> Result<Value, ApiError> {
-        fj_ad::jacobian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+        if let Some(rule_key) = &self.custom_jvp_rule_key {
+            fj_ad::jacobian_jaxpr_with_custom_jvp_key(&self.jaxpr, &args, rule_key)
+                .map_err(ApiError::from)
+        } else {
+            fj_ad::jacobian_jaxpr(&self.jaxpr, &args).map_err(ApiError::from)
+        }
     }
 }
 
@@ -666,6 +723,7 @@ impl CheckpointWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
         }
     }
 
@@ -675,6 +733,7 @@ impl CheckpointWrapped {
             jaxpr: self.jaxpr.clone(),
             backend: self.backend.clone(),
             mode: self.mode,
+            custom_vjp_rule_key: Some(self.custom_vjp_rule_key.clone()),
         }
     }
 

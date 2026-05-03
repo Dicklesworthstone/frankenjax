@@ -219,6 +219,12 @@ fn wants_value_and_grad(opts: &BTreeMap<String, String>) -> bool {
     })
 }
 
+fn custom_vjp_rule_key(opts: &BTreeMap<String, String>) -> Option<&str> {
+    opts.get("custom_vjp_rule_key")
+        .map(String::as_str)
+        .filter(|key| !key.is_empty())
+}
+
 fn wants_egraph_optimize(opts: &BTreeMap<String, String>) -> bool {
     opts.get("egraph_optimize").is_some_and(|raw| {
         raw.eq_ignore_ascii_case("true")
@@ -597,13 +603,17 @@ fn execute_symbolic_grad(
 ) -> Result<Vec<Value>, DispatchError> {
     if wants_value_and_grad(compile_options) {
         // Shared forward pass for value_and_grad mode.
-        let (mut values, grads) =
-            fj_ad::value_and_grad_jaxpr(root_jaxpr, args).map_err(|e| match e {
-                fj_ad::AdError::NonScalarGradientOutput => {
-                    TransformExecutionError::NonScalarGradientOutput
-                }
-                other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
-            })?;
+        let (mut values, grads) = if let Some(rule_key) = custom_vjp_rule_key(compile_options) {
+            fj_ad::value_and_grad_jaxpr_with_custom_vjp_key(root_jaxpr, args, rule_key)
+        } else {
+            fj_ad::value_and_grad_jaxpr(root_jaxpr, args)
+        }
+        .map_err(|e| match e {
+            fj_ad::AdError::NonScalarGradientOutput => {
+                TransformExecutionError::NonScalarGradientOutput
+            }
+            other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
+        })?;
         // value_and_grad returns the primal outputs followed by one gradient
         // per input, matching fj_ad::value_and_grad_jaxpr.
         values.extend(grads);
@@ -611,7 +621,12 @@ fn execute_symbolic_grad(
     }
 
     // Tensor-aware AD: grad_jaxpr returns Value gradients for all inputs.
-    let grads = fj_ad::grad_jaxpr(root_jaxpr, args).map_err(|e| match e {
+    let grads = if let Some(rule_key) = custom_vjp_rule_key(compile_options) {
+        fj_ad::grad_jaxpr_with_custom_vjp_key(root_jaxpr, args, rule_key)
+    } else {
+        fj_ad::grad_jaxpr(root_jaxpr, args)
+    }
+    .map_err(|e| match e {
         fj_ad::AdError::NonScalarGradientOutput => TransformExecutionError::NonScalarGradientOutput,
         other => TransformExecutionError::TensorBuild(format!("AD error: {other}")),
     })?;

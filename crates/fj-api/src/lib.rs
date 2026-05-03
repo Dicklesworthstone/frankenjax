@@ -413,6 +413,90 @@ mod tests {
     }
 
     #[test]
+    fn function_custom_vjp_wrappers_keep_equal_jaxpr_rules_isolated() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let make_wrapped = |scale: f64| {
+            custom_vjp(
+                custom_square_jaxpr(905, 906),
+                |primals| {
+                    let x = primals[0].as_f64_scalar().ok_or_else(|| {
+                        AdError::EvalFailed("custom VJP forward expected scalar x".to_owned())
+                    })?;
+                    Ok((vec![Value::scalar_f64(x * x)], vec![Value::scalar_f64(x)]))
+                },
+                move |residuals, cotangent| {
+                    let x = residuals[0].as_f64_scalar().ok_or_else(|| {
+                        AdError::EvalFailed("custom VJP backward expected residual x".to_owned())
+                    })?;
+                    let g = cotangent.as_f64_scalar().ok_or_else(|| {
+                        AdError::EvalFailed(
+                            "custom VJP backward expected scalar cotangent".to_owned(),
+                        )
+                    })?;
+                    Ok(vec![Value::scalar_f64(scale * x * g)])
+                },
+            )
+        };
+
+        let first = make_wrapped(10.0);
+        let second = make_wrapped(20.0);
+
+        let first_grad = first
+            .grad()
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("first custom_vjp grad should use first rule");
+        let second_grad = second
+            .grad()
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("second custom_vjp grad should use second rule");
+        assert!(
+            (first_grad[0]
+                .as_f64_scalar()
+                .expect("first scalar gradient")
+                - 30.0)
+                .abs()
+                < 1e-10
+        );
+        assert!(
+            (second_grad[0]
+                .as_f64_scalar()
+                .expect("second scalar gradient")
+                - 60.0)
+                .abs()
+                < 1e-10
+        );
+
+        let (_, first_value_grad) = first
+            .value_and_grad()
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("first value_and_grad should use first rule");
+        let first_composed_grad = first
+            .compose_jit_grad()
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("first jit(grad(custom_vjp)) should use first rule");
+        assert!(
+            (first_value_grad[0]
+                .as_f64_scalar()
+                .expect("first value_and_grad scalar gradient")
+                - 40.0)
+                .abs()
+                < 1e-10
+        );
+        assert!(
+            (first_composed_grad[0]
+                .as_f64_scalar()
+                .expect("first composed scalar gradient")
+                - 40.0)
+                .abs()
+                < 1e-10
+        );
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
     fn function_custom_jvp_drives_jvp_and_jacobian() {
         let _guard = custom_rule_test_guard();
         clear_custom_derivative_rules();
@@ -448,6 +532,68 @@ mod tests {
             assert_eq!(values.len(), 1);
             assert!((values[0] - 41.0).abs() < 1e-10);
         }
+
+        clear_custom_derivative_rules();
+    }
+
+    #[test]
+    fn function_custom_jvp_wrappers_keep_equal_jaxpr_rules_isolated() {
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let make_wrapped = |offset: f64| {
+            custom_jvp(custom_square_jaxpr(907, 908), move |primals, tangents| {
+                let x = primals[0].as_f64_scalar().ok_or_else(|| {
+                    AdError::EvalFailed("custom JVP expected scalar x".to_owned())
+                })?;
+                let dx = tangents[0].as_f64_scalar().ok_or_else(|| {
+                    AdError::EvalFailed("custom JVP expected scalar tangent".to_owned())
+                })?;
+                Ok((
+                    vec![Value::scalar_f64(x * x)],
+                    vec![Value::scalar_f64(offset + dx)],
+                ))
+            })
+        };
+
+        let first = make_wrapped(100.0);
+        let second = make_wrapped(200.0);
+
+        let first_jvp = first
+            .jvp_call(vec![Value::scalar_f64(4.0)], vec![Value::scalar_f64(2.0)])
+            .expect("first custom_jvp call should use first rule");
+        let second_jvp = second
+            .jvp_call(vec![Value::scalar_f64(4.0)], vec![Value::scalar_f64(2.0)])
+            .expect("second custom_jvp call should use second rule");
+        assert!(
+            (first_jvp.tangents[0]
+                .as_f64_scalar()
+                .expect("first scalar tangent")
+                - 102.0)
+                .abs()
+                < 1e-10
+        );
+        assert!(
+            (second_jvp.tangents[0]
+                .as_f64_scalar()
+                .expect("second scalar tangent")
+                - 202.0)
+                .abs()
+                < 1e-10
+        );
+
+        let first_jacobian = first
+            .jacobian()
+            .call(vec![Value::scalar_f64(4.0)])
+            .expect("first jacobian should use first rule");
+        let first_jacobian_value = first_jacobian
+            .as_f64_scalar()
+            .or_else(|| {
+                let tensor = first_jacobian.as_tensor()?;
+                tensor.to_f64_vec()?.first().copied()
+            })
+            .expect("first jacobian should be scalar-like");
+        assert!((first_jacobian_value - 101.0).abs() < 1e-10);
 
         clear_custom_derivative_rules();
     }
