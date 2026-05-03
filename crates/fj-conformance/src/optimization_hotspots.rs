@@ -62,7 +62,9 @@ pub struct OptimizationHotspotSummary {
     pub rows_with_p95: usize,
     pub rows_with_p99: usize,
     pub rows_with_memory: usize,
+    pub rows_with_behavior_witness: usize,
     pub rows_with_profile_artifacts: usize,
+    pub rows_with_profile_cases: usize,
     pub rows_with_behavior_proof_templates: usize,
     pub rows_with_replay: usize,
     pub follow_up_threshold_milli: u32,
@@ -84,12 +86,14 @@ pub struct OptimizationHotspotRow {
     pub peak_rss_bytes: Option<u64>,
     pub measurement_backend: String,
     pub sample_count: usize,
+    pub behavior_witness: u64,
     pub confidence: f64,
     pub priority_score: f64,
     pub score_components: HotspotScoreComponents,
     pub one_lever_candidate: String,
     pub behavior_proof_template_ref: String,
     pub profile_artifact_refs: Vec<String>,
+    pub profile_case_ids: Vec<String>,
     pub source_evidence_refs: Vec<String>,
     pub follow_up_bead_id: Option<String>,
     pub replay_command: String,
@@ -165,6 +169,7 @@ struct HotspotDefinition {
     one_lever_candidate: &'static str,
     behavior_proof_template_ref: &'static str,
     profile_artifact_refs: Vec<&'static str>,
+    profile_case_ids: Vec<&'static str>,
     source_evidence_refs: Vec<&'static str>,
     follow_up_bead_id: Option<&'static str>,
     replay_command: &'static str,
@@ -179,6 +184,7 @@ struct MeasuredHotspot {
     peak_rss_bytes: Option<u64>,
     measurement_backend: String,
     sample_count: usize,
+    behavior_witness: u64,
 }
 
 #[must_use]
@@ -266,8 +272,10 @@ pub fn optimization_hotspot_summary_json(report: &OptimizationHotspotReport) -> 
                 "p95_ns": row.p95_ns,
                 "p99_ns": row.p99_ns,
                 "peak_rss_bytes": row.peak_rss_bytes,
+                "behavior_witness": row.behavior_witness,
                 "confidence": row.confidence,
                 "priority_score": row.priority_score,
+                "profile_case_ids": row.profile_case_ids,
                 "follow_up_bead_id": row.follow_up_bead_id,
             })
         }).collect::<Vec<_>>(),
@@ -287,18 +295,20 @@ pub fn optimization_hotspot_markdown(report: &OptimizationHotspotReport) -> Stri
         report.follow_up_threshold,
         report.summary.row_count,
     ));
-    out.push_str("| Rank | Family | Hotspot | p95 ns | p99 ns | Peak RSS | Score | Follow-up |\n");
-    out.push_str("|---:|---|---|---:|---:|---:|---:|---|\n");
+    out.push_str("| Rank | Family | Hotspot | Cases | p95 ns | p99 ns | Peak RSS | Witness | Score | Follow-up |\n");
+    out.push_str("|---:|---|---|---:|---:|---:|---:|---:|---:|---|\n");
     for row in &report.rows {
         out.push_str(&format!(
-            "| `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{:.2}` | `{}` |\n",
+            "| `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{}` | `{:.2}` | `{}` |\n",
             row.rank,
             row.family,
             row.hotspot_id,
+            row.profile_case_ids.len(),
             row.p95_ns,
             row.p99_ns,
             row.peak_rss_bytes
                 .map_or_else(|| "n/a".to_owned(), |value| value.to_string()),
+            row.behavior_witness,
             row.priority_score,
             row.follow_up_bead_id.as_deref().unwrap_or("monitor"),
         ));
@@ -502,6 +512,23 @@ fn validate_rows(
                 "hotspot measurements need at least 16 samples",
             ));
         }
+        if row.behavior_witness == 0 {
+            issues.push(OptimizationHotspotIssue::new(
+                "missing_behavior_witness",
+                format!("{path}.behavior_witness"),
+                "row must record a non-zero behavior witness from the measured workload",
+            ));
+        }
+        if row.profile_case_ids.is_empty() {
+            issues.push(OptimizationHotspotIssue::new(
+                "missing_profile_cases",
+                format!("{path}.profile_case_ids"),
+                "row must name the concrete profiling cases covered by the measured workload",
+            ));
+        }
+        if row.family == "vmap_multiplier" {
+            validate_vmap_profile_cases(row, &path, issues);
+        }
         match row.peak_rss_bytes {
             Some(value) if value > 0 => {}
             _ => issues.push(OptimizationHotspotIssue::new(
@@ -605,6 +632,34 @@ fn validate_rows(
                 "rows must be sorted by descending priority score",
             ));
             break;
+        }
+    }
+}
+
+fn validate_vmap_profile_cases(
+    row: &OptimizationHotspotRow,
+    path: &str,
+    issues: &mut Vec<OptimizationHotspotIssue>,
+) {
+    let observed = row
+        .profile_case_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    for required in [
+        "batch_size_8_axis0",
+        "batch_size_64_axis0",
+        "rank2_axis0_batchtrace",
+        "rank2_axis1_loop_fallback",
+        "vmap_grad_vector",
+        "scan_scalar_carry_batched_xs",
+    ] {
+        if !observed.contains(required) {
+            issues.push(OptimizationHotspotIssue::new(
+                "missing_vmap_profile_case",
+                format!("{path}.profile_case_ids"),
+                format!("vmap multiplier row must include profile case `{required}`"),
+            ));
         }
     }
 }
@@ -745,9 +800,14 @@ fn summarize_rows(
             .iter()
             .filter(|row| row.peak_rss_bytes.is_some_and(|value| value > 0))
             .count(),
+        rows_with_behavior_witness: rows.iter().filter(|row| row.behavior_witness > 0).count(),
         rows_with_profile_artifacts: rows
             .iter()
             .filter(|row| !row.profile_artifact_refs.is_empty())
+            .count(),
+        rows_with_profile_cases: rows
+            .iter()
+            .filter(|row| !row.profile_case_ids.is_empty())
             .count(),
         rows_with_behavior_proof_templates: rows
             .iter()
@@ -786,6 +846,7 @@ fn build_row(root: &Path, definition: HotspotDefinition) -> OptimizationHotspotR
         peak_rss_bytes: sample_process_memory().peak_rss_bytes,
         measurement_backend: sample_process_memory().measurement_backend,
         sample_count: 0,
+        behavior_witness: 1,
     });
 
     OptimizationHotspotRow {
@@ -800,6 +861,7 @@ fn build_row(root: &Path, definition: HotspotDefinition) -> OptimizationHotspotR
         peak_rss_bytes: measured.peak_rss_bytes,
         measurement_backend: measured.measurement_backend,
         sample_count: measured.sample_count,
+        behavior_witness: measured.behavior_witness,
         confidence: definition.confidence,
         priority_score: 0.0,
         score_components: definition.score_components,
@@ -807,6 +869,11 @@ fn build_row(root: &Path, definition: HotspotDefinition) -> OptimizationHotspotR
         behavior_proof_template_ref: definition.behavior_proof_template_ref.to_owned(),
         profile_artifact_refs: definition
             .profile_artifact_refs
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        profile_case_ids: definition
+            .profile_case_ids
             .into_iter()
             .map(str::to_owned)
             .collect(),
@@ -871,6 +938,7 @@ where
         peak_rss_bytes: after.peak_rss_bytes.or(before.peak_rss_bytes),
         measurement_backend: after.measurement_backend,
         sample_count: durations.len(),
+        behavior_witness: witness,
     })
 }
 
@@ -895,6 +963,14 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/global_performance_gate.v1.json",
                 "artifacts/e2e/e2e_vmap_tensor_ops.e2e.json",
             ],
+            profile_case_ids: vec![
+                "batch_size_8_axis0",
+                "batch_size_64_axis0",
+                "rank2_axis0_batchtrace",
+                "rank2_axis1_loop_fallback",
+                "vmap_grad_vector",
+                "scan_scalar_carry_batched_xs",
+            ],
             source_evidence_refs: vec![
                 "crates/fj-dispatch/benches/dispatch_baseline.rs",
                 "artifacts/performance/profiling_workflow.md",
@@ -918,6 +994,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
                 "crates/fj-egraph/src/lib.rs",
             ],
+            profile_case_ids: vec!["multi_equation_tensor_shape_adjacent_saturation"],
             source_evidence_refs: vec![
                 "crates/fj-conformance/tests/egraph_preserves_semantics.rs",
                 "FEATURE_PARITY.md",
@@ -941,6 +1018,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/global_performance_gate.v1.json",
                 "artifacts/e2e/e2e_control_flow_ad.e2e.json",
             ],
+            profile_case_ids: vec!["reverse_mode_square_plus_linear_scalar"],
             source_evidence_refs: vec![
                 "crates/fj-ad/src/lib.rs",
                 "crates/fj-conformance/tests/ad_numerical_verification.rs",
@@ -961,6 +1039,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/global_performance_gate.v1.json",
                 "artifacts/e2e/e2e_multirank_fixtures.e2e.json",
             ],
+            profile_case_ids: vec!["fft_cholesky_reduce_sum_mix"],
             source_evidence_refs: vec![
                 "crates/fj-lax/benches/lax_baseline.rs",
                 "crates/fj-conformance/tests/lax_oracle.rs",
@@ -983,6 +1062,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/memory_performance_gate.v1.json",
                 "crates/fj-lax/benches/lax_baseline.rs",
             ],
+            profile_case_ids: vec!["i64_tensor_add_128_elements"],
             source_evidence_refs: vec![
                 "crates/fj-lax/src/arithmetic.rs",
                 "artifacts/performance/profiling_workflow.md",
@@ -1005,6 +1085,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/memory_performance_gate.v1.json",
                 "artifacts/durability/benchmark_baselines_v2.decode-proof.json",
             ],
+            profile_case_ids: vec!["raptorq_sidecar_scrub_decode_probe"],
             source_evidence_refs: vec![
                 "crates/fj-conformance/src/durability.rs",
                 "scripts/durability_ci_gate.sh",
@@ -1027,6 +1108,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/global_performance_gate.v1.json",
                 "artifacts/testing/logs/fj-trace/fj_trace__tests__prop_shape_inference_deterministic.json",
             ],
+            profile_case_ids: vec!["broadcast_in_dim_scalar_to_4x8"],
             source_evidence_refs: vec![
                 "crates/fj-trace/src/lib.rs",
                 "crates/fj-lax/src/tensor_ops.rs",
@@ -1049,6 +1131,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
                 "artifacts/performance/evidence/ir_core/streaming_cache_key_hasher.json",
                 "artifacts/performance/global_performance_gate.v1.json",
             ],
+            profile_case_ids: vec!["jit_vmap_add_one_mul_two_cache_key"],
             source_evidence_refs: vec![
                 "crates/fj-cache/src/lib.rs",
                 "crates/fj-cache/benches/cache_baseline.rs",
@@ -1116,13 +1199,51 @@ fn required_follow_up_evidence() -> Vec<String> {
 }
 
 fn workload_vmap_multiplier() -> Result<u64, String> {
-    let response = dispatch(dispatch_request(
+    let mut witness = dispatch_output_witness(dispatch_request(
         ProgramSpec::AddOne,
         &[Transform::Vmap],
         vec![Value::vector_i64(&[1, 2, 3, 4, 5, 6, 7, 8]).map_err(|err| err.to_string())?],
-    ))
-    .map_err(|err| format!("vmap dispatch failed: {err}"))?;
-    Ok(response.outputs.len() as u64 + response.cache_key.len() as u64)
+    ))?;
+
+    witness = witness.saturating_add(dispatch_output_witness(dispatch_request(
+        ProgramSpec::AddOne,
+        &[Transform::Vmap],
+        vec![i64_vector(64)?],
+    ))?);
+
+    witness = witness.saturating_add(dispatch_output_witness(dispatch_request(
+        ProgramSpec::AddOne,
+        &[Transform::Vmap],
+        vec![i64_tensor(&[16, 8])?],
+    ))?);
+
+    let mut axis_one_request = dispatch_request(
+        ProgramSpec::AddOne,
+        &[Transform::Vmap],
+        vec![i64_tensor(&[16, 8])?],
+    );
+    axis_one_request
+        .compile_options
+        .insert("vmap_in_axes".to_owned(), "1".to_owned());
+    witness = witness.saturating_add(dispatch_output_witness(axis_one_request)?);
+
+    witness = witness.saturating_add(dispatch_output_witness(dispatch_request(
+        ProgramSpec::Square,
+        &[Transform::Vmap, Transform::Grad],
+        vec![f64_vector(16)?],
+    ))?);
+
+    let mut scan_request = dispatch_request(
+        ProgramSpec::ScanAdd,
+        &[Transform::Vmap],
+        vec![Value::scalar_i64(0), i64_tensor(&[16, 8])?],
+    );
+    scan_request
+        .compile_options
+        .insert("vmap_in_axes".to_owned(), "none,0".to_owned());
+    witness = witness.saturating_add(dispatch_output_witness(scan_request)?);
+
+    Ok(witness)
 }
 
 fn workload_ad_tape_backward_map() -> Result<u64, String> {
@@ -1268,6 +1389,52 @@ fn tensor_len(value: &Value) -> u64 {
         .as_tensor()
         .map(|tensor| tensor.elements.len() as u64)
         .unwrap_or(0)
+}
+
+fn value_witness(value: &Value) -> u64 {
+    match value {
+        Value::Scalar(_) => 1,
+        Value::Tensor(tensor) => tensor.elements.len() as u64 + tensor.rank() as u64,
+    }
+}
+
+fn dispatch_output_witness(request: DispatchRequest) -> Result<u64, String> {
+    let response =
+        dispatch(request).map_err(|err| format!("vmap profile dispatch failed: {err}"))?;
+    let output_witness = response
+        .outputs
+        .iter()
+        .map(value_witness)
+        .sum::<u64>()
+        .max(1);
+    Ok(output_witness + response.cache_key.len() as u64)
+}
+
+fn i64_vector(len: usize) -> Result<Value, String> {
+    let values = (0..len).map(|idx| idx as i64).collect::<Vec<_>>();
+    Value::vector_i64(&values).map_err(|err| err.to_string())
+}
+
+fn f64_vector(len: usize) -> Result<Value, String> {
+    let values = (0..len)
+        .map(|idx| 1.0 + idx as f64 * 0.25)
+        .collect::<Vec<_>>();
+    Value::vector_f64(&values).map_err(|err| err.to_string())
+}
+
+fn i64_tensor(dims: &[u32]) -> Result<Value, String> {
+    let element_count = dims.iter().map(|dim| *dim as usize).product::<usize>();
+    TensorValue::new(
+        DType::I64,
+        Shape {
+            dims: dims.to_vec(),
+        },
+        (0..element_count)
+            .map(|idx| Literal::I64((idx % 97) as i64))
+            .collect(),
+    )
+    .map(Value::Tensor)
+    .map_err(|err| err.to_string())
 }
 
 fn dispatch_request(

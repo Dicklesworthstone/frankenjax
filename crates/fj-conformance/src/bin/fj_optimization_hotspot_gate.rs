@@ -156,6 +156,8 @@ fn write_forensic_log(
             serde_json::json!({
                 "hotspot_id": row.hotspot_id,
                 "samples": row.sample_count,
+                "behavior_witness": row.behavior_witness,
+                "profile_case_ids": row.profile_case_ids,
             })
         }).collect::<Vec<_>>(),
     });

@@ -73,10 +73,40 @@ fn optimization_hotspot_rows_have_measurements_and_rank_order() {
             "row: {row:#?}"
         );
         assert_ne!(row.measurement_backend, "unavailable");
+        assert!(row.behavior_witness > 0, "row: {row:#?}");
+        assert!(!row.profile_case_ids.is_empty(), "row: {row:#?}");
         assert!((0.0..=1.0).contains(&row.confidence));
         assert!(row.priority_score <= previous_score);
         previous_score = row.priority_score;
     }
+}
+
+#[test]
+fn optimization_hotspot_vmap_row_profiles_scaling_matrix() {
+    let root = repo_root();
+    let report = build_optimization_hotspot_report(&root);
+    let vmap_row = report
+        .rows
+        .iter()
+        .find(|row| row.hotspot_id == "hotspot-vmap-multiplier-001")
+        .expect("vmap hotspot row should exist");
+    let cases = vmap_row
+        .profile_case_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    assert!(cases.contains("batch_size_8_axis0"));
+    assert!(cases.contains("batch_size_64_axis0"));
+    assert!(cases.contains("rank2_axis0_batchtrace"));
+    assert!(cases.contains("rank2_axis1_loop_fallback"));
+    assert!(cases.contains("vmap_grad_vector"));
+    assert!(cases.contains("scan_scalar_carry_batched_xs"));
+    assert!(
+        vmap_row
+            .one_lever_candidate
+            .contains("BatchTrace vectorization"),
+        "row: {vmap_row:#?}"
+    );
 }
 
 #[test]
@@ -140,6 +170,8 @@ fn optimization_hotspot_validation_rejects_forged_rows() {
     report.rows[0].p95_ns = 0;
     report.rows[0].peak_rss_bytes = None;
     report.rows[0].measurement_backend = "unavailable".to_owned();
+    report.rows[0].behavior_witness = 0;
+    report.rows[0].profile_case_ids.clear();
     report.rows[0].confidence = 1.5;
     report.rows[0].behavior_proof_template_ref = "artifacts/missing/template.md".to_owned();
     report.rows[0].profile_artifact_refs.clear();
@@ -152,6 +184,8 @@ fn optimization_hotspot_validation_rejects_forged_rows() {
     assert!(codes.contains("missing_latency_quantile"));
     assert!(codes.contains("missing_peak_rss"));
     assert!(codes.contains("memory_not_measured"));
+    assert!(codes.contains("missing_behavior_witness"));
+    assert!(codes.contains("missing_profile_cases"));
     assert!(codes.contains("bad_confidence"));
     assert!(codes.contains("missing_artifact_ref"));
     assert!(codes.contains("missing_artifact_refs"));
