@@ -5107,9 +5107,7 @@ mod tests {
 
         let original_domain = eval_jaxpr(&expm1_log1p, &domain_args).expect("original eval");
         assert!(
-            original_domain[0]
-                .as_f64_scalar()
-                .is_some_and(f64::is_nan),
+            original_domain[0].as_f64_scalar().is_some_and(f64::is_nan),
             "expm1(log1p(-2.0)) should preserve log1p domain NaN"
         );
 
