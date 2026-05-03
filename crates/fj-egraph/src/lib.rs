@@ -247,6 +247,8 @@ pub struct OptimizationConfig {
     /// numerically unsafe near domain boundaries (0, NaN, Inf, denormals).
     ///
     /// Disabled rewrites in safety mode:
+    /// - Floating associativity/distributivity/factoring (changes rounding,
+    ///   overflow, and cancellation order)
     /// - `exp(log(a)) => a` (fails when a <= 0)
     /// - `a/a => 1` (fails when a = 0, NaN, denormal)
     /// - `a - a => 0` (fails when a is NaN or Inf)
@@ -305,8 +307,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("max-comm"; "(max ?a ?b)" => "(max ?b ?a)"),
         rewrite!("min-comm"; "(min ?a ?b)" => "(min ?b ?a)"),
         // ── Associativity ────────────────────────────────────────────
-        rewrite!("add-assoc"; "(add (add ?a ?b) ?c)" => "(add ?a (add ?b ?c))"),
-        rewrite!("mul-assoc"; "(mul (mul ?a ?b) ?c)" => "(mul ?a (mul ?b ?c))"),
+        // add-assoc, mul-assoc moved to numerically_unsafe_rules
+        // (floating association changes rounding, overflow, and cancellation order)
         rewrite!("max-assoc"; "(max (max ?a ?b) ?c)" => "(max ?a (max ?b ?c))"),
         rewrite!("min-assoc"; "(min (min ?a ?b) ?c)" => "(min ?a (min ?b ?c))"),
         // ── Additive identity / annihilation ─────────────────────────
@@ -319,8 +321,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // mul-zero moved to numerically_unsafe_rules (fails for NaN/Inf)
         rewrite!("mul-neg-one"; "(mul ?a (neg 1))" => "(neg ?a)"),
         // ── Distributivity ───────────────────────────────────────────
-        rewrite!("distribute"; "(mul ?a (add ?b ?c))" => "(add (mul ?a ?b) (mul ?a ?c))"),
-        rewrite!("factor"; "(add (mul ?a ?b) (mul ?a ?c))" => "(mul ?a (add ?b ?c))"),
+        // distribute, factor moved to numerically_unsafe_rules
+        // (floating distribution changes overflow and cancellation order)
         // ── Negation ─────────────────────────────────────────────────
         rewrite!("neg-neg"; "(neg (neg ?a))" => "?a"),
         rewrite!("neg-zero"; "(neg 0)" => "0"),
@@ -436,6 +438,16 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
 /// Disabled when `OptimizationConfig::numerical_safety_mode` is true.
 fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
     vec![
+        // Floating addition is not associative; reordering can change
+        // rounding and overflow-visible results.
+        rewrite!("add-assoc"; "(add (add ?a ?b) ?c)" => "(add ?a (add ?b ?c))"),
+        // Floating multiplication is not associative; reordering can change
+        // rounding and overflow-visible results.
+        rewrite!("mul-assoc"; "(mul (mul ?a ?b) ?c)" => "(mul ?a (mul ?b ?c))"),
+        // Distribution/factoring can erase overflow-visible NaNs, e.g.
+        // (x*2) + (x*-2) is NaN for x=Inf-ish overflow, while x*(2 + -2) is 0.
+        rewrite!("distribute"; "(mul ?a (add ?b ?c))" => "(add (mul ?a ?b) (mul ?a ?c))"),
+        rewrite!("factor"; "(add (mul ?a ?b) (mul ?a ?c))" => "(mul ?a (add ?b ?c))"),
         // exp(log(a)) => a fails when a <= 0 (log undefined)
         rewrite!("exp-log"; "(exp (log ?a))" => "?a"),
         // a/a => 1 fails when a = 0 (0/0 = NaN, not 1)
@@ -5279,6 +5291,70 @@ mod tests {
                 "{name}: aggressive mode may apply the numerically unsafe zero rewrite"
             );
         }
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_distributive_overflow_boundary() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(5)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(6)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+        let args = [
+            Value::scalar_f64(1e308),
+            Value::scalar_f64(2.0),
+            Value::scalar_f64(-2.0),
+        ];
+
+        let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+        assert!(
+            original[0].as_f64_scalar().is_some_and(f64::is_nan),
+            "original program should observe +Inf + -Inf as NaN, got {:?}",
+            original[0]
+        );
+
+        let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+        assert!(
+            safe_value[0].as_f64_scalar().is_some_and(f64::is_nan),
+            "safe optimized program should preserve overflow-visible NaN, got {:?} from {:?}",
+            safe_value[0],
+            safe.equations
+        );
+
+        let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+        assert_eq!(
+            aggressive_value[0].as_f64_scalar(),
+            Some(0.0),
+            "aggressive mode may factor through x * (y + z) and erase the overflow NaN"
+        );
     }
 
     #[test]
