@@ -6,14 +6,15 @@ use crate::durability::{
 use crate::memory_performance::sample_process_memory;
 use fj_cache::{CacheKeyInput, build_cache_key};
 use fj_core::{
-    CompatibilityMode, DType, Literal, Primitive, ProgramSpec, Shape, TensorValue,
-    TraceTransformLedger, Transform, Value, build_program,
+    Atom, CompatibilityMode, DType, Equation, Jaxpr, Literal, Primitive, ProgramSpec, Shape,
+    TensorValue, TraceTransformLedger, Transform, Value, VarId, build_program,
 };
 use fj_dispatch::{DispatchRequest, dispatch};
 use fj_egraph::optimize_jaxpr;
 use fj_lax::eval_primitive;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value as JsonValue, json};
+use smallvec::smallvec;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -988,7 +989,7 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
             owner_crate: "fj-egraph",
             confidence: 0.74,
             score_components: score_components(0.62, 0.70, 0.20, 0.74, 0.80),
-            one_lever_candidate: "Profile shape-adjacent tensor programs and choose one rewrite or extraction lever with semantics-preservation proof.",
+            one_lever_candidate: "Keep shape-parametric rewrites outside the algebraic e-graph; this slice profiles and applies only the rev(rev(x, axes), axes) pre-saturation cancellation lever.",
             behavior_proof_template_ref: proof_template,
             profile_artifact_refs: vec![
                 "artifacts/performance/benchmark_baselines_v2_2026-03-12.json",
@@ -1003,7 +1004,8 @@ fn hotspot_definitions() -> Vec<HotspotDefinition> {
             replay_command: "CARGO_TARGET_DIR=/data/tmp/frankenjax-hotspot-egraph rch exec -- cargo test -p fj-conformance --test egraph_preserves_semantics -- --nocapture",
             notes: vec![
                 "E-graph saturation is correctness-sensitive; every change must compare optimized and unoptimized behavior.",
-                "Score crosses threshold because shape-aware expansion is a known parity frontier with non-trivial compile risk.",
+                "The measured workload is shape-adjacent: it exercises Rev barriers before an algebraic add-zero/square cascade.",
+                "Broader shape primitive lowering remains rejected until a narrower parameter encoding can beat the prepass profile.",
             ],
         },
         HotspotDefinition {
@@ -1303,12 +1305,64 @@ fn workload_cache_key_hashing() -> Result<u64, String> {
 }
 
 fn workload_egraph_saturation() -> Result<u64, String> {
-    let input = build_program(ProgramSpec::AddOneMulTwo);
+    let input = shape_adjacent_egraph_workload_jaxpr();
     let optimized = optimize_jaxpr(&input);
     optimized
         .validate_well_formed()
         .map_err(|err| format!("optimized jaxpr invalid: {err}"))?;
     Ok(optimized.equations.len() as u64 + optimized.outvars.len() as u64)
+}
+
+fn shape_adjacent_egraph_workload_jaxpr() -> Jaxpr {
+    let mut rev_params = BTreeMap::new();
+    rev_params.insert("axes".to_owned(), "0".to_owned());
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(6)],
+        vec![
+            Equation {
+                primitive: Primitive::Rev,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: rev_params.clone(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Rev,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: rev_params,
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec![VarId(4)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Square,
+                inputs: smallvec![Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(6)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
 }
 
 fn workload_fft_linalg_reduction_mix() -> Result<u64, String> {
