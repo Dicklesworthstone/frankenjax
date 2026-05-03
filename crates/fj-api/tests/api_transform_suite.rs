@@ -2,10 +2,12 @@
 
 use fj_api::{ApiError, compose, grad, jit, value_and_grad, vmap};
 use fj_core::{
-    CompatibilityMode, DType, ProgramSpec, Shape, TensorValue, Transform, Value, build_program,
+    Atom, CompatibilityMode, DType, Equation, Jaxpr, Primitive, ProgramSpec, Shape, TensorValue,
+    Transform, Value, VarId, build_program,
 };
 use fj_test_utils::{TestLogV1, TestMode, TestResult, fixture_id_from_json, test_id};
 use proptest::prelude::*;
+use smallvec::smallvec;
 
 // ============================================================================
 // Structured logging helpers
@@ -20,6 +22,32 @@ fn log_pass(name: &str, fixture: &impl serde::Serialize) {
         TestResult::Pass,
     );
     assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
+}
+
+fn chained_unary_jaxpr(first: Primitive, second: Primitive) -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: first,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: second,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
 }
 
 // ============================================================================
@@ -223,6 +251,25 @@ fn stacking_compose_can_enable_egraph_optimization() {
     log_pass(
         "stacking_compose_can_enable_egraph_optimization",
         &("jit", "egraph_optimize=true", "add2"),
+    );
+}
+
+#[test]
+fn stacking_egraph_optimization_in_strict_preserves_log_exp_overflow_boundary() {
+    let jaxpr = chained_unary_jaxpr(Primitive::Exp, Primitive::Log);
+    let result = compose(jaxpr, vec![Transform::Jit])
+        .with_mode(CompatibilityMode::Strict)
+        .with_egraph_optimization(true)
+        .call(vec![Value::scalar_f64(1000.0)])
+        .expect("strict egraph optimized dispatch should succeed");
+    let value = result[0].as_f64_scalar().expect("scalar f64 output");
+    assert!(
+        value.is_infinite() && value.is_sign_positive(),
+        "strict egraph optimized log(exp(1000.0)) must preserve overflow-visible +Inf, got {value}"
+    );
+    log_pass(
+        "stacking_egraph_optimization_in_strict_preserves_log_exp_overflow_boundary",
+        &("jit", "egraph_optimize=true", "strict", "log_exp_overflow"),
     );
 }
 

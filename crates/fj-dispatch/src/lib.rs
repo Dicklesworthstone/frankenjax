@@ -434,7 +434,10 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
 
     // Optionally run e-graph equality saturation to simplify the Jaxpr.
     let exec_jaxpr = if wants_egraph_optimize(&request.compile_options) {
-        fj_egraph::optimize_jaxpr(&request.ledger.root_jaxpr)
+        fj_egraph::optimize_jaxpr_with_config(
+            &request.ledger.root_jaxpr,
+            &fj_egraph::OptimizationConfig::safe(),
+        )
     } else {
         request.ledger.root_jaxpr.clone()
     };
