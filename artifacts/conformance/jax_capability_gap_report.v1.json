@@ -1,0 +1,254 @@
+{
+  "schema_version": "frankenjax.jax-capability-gap-report.v1",
+  "generated_at_unix_ms": 1777773900000,
+  "generated_by": "cc_1 reality-check audit",
+  "jax_version_baseline": "0.9.2",
+  "frankenjax_version": "v1",
+  "summary": {
+    "total_jax_capabilities_audited": 25,
+    "well_covered": 18,
+    "partial_coverage": 2,
+    "not_covered": 5,
+    "out_of_scope_v1": 3
+  },
+  "well_covered": [
+    {
+      "capability": "jit",
+      "jax_module": "jax.jit",
+      "status": "parity_green",
+      "evidence": "Transform dispatch, caching, e-graph optimization",
+      "evidence_refs": ["crates/fj-dispatch/src/lib.rs", "crates/fj-cache/src/lib.rs", "crates/fj-egraph/src/lib.rs"]
+    },
+    {
+      "capability": "grad",
+      "jax_module": "jax.grad",
+      "status": "parity_green",
+      "evidence": "Tape-based reverse-mode AD, 110 primitives with VJP/JVP rules",
+      "evidence_refs": ["crates/fj-ad/src/lib.rs"]
+    },
+    {
+      "capability": "vmap",
+      "jax_module": "jax.vmap",
+      "status": "parity_green",
+      "evidence": "BatchTrace path, in_axes/out_axes support, 613 oracle fixtures",
+      "evidence_refs": ["crates/fj-dispatch/src/batching.rs"]
+    },
+    {
+      "capability": "value_and_grad",
+      "jax_module": "jax.value_and_grad",
+      "status": "parity_green",
+      "evidence": "Shared forward pass optimization",
+      "evidence_refs": ["crates/fj-ad/src/lib.rs"]
+    },
+    {
+      "capability": "jacobian",
+      "jax_module": "jax.jacobian",
+      "status": "parity_green",
+      "evidence": "Built on grad, E2E coverage",
+      "evidence_refs": ["crates/fj-ad/src/lib.rs"]
+    },
+    {
+      "capability": "hessian",
+      "jax_module": "jax.hessian",
+      "status": "parity_green",
+      "evidence": "Built on grad composition, E2E coverage",
+      "evidence_refs": ["crates/fj-ad/src/lib.rs"]
+    },
+    {
+      "capability": "make_jaxpr",
+      "jax_module": "jax.make_jaxpr",
+      "status": "parity_green",
+      "evidence": "69 trace tests, nested contexts",
+      "evidence_refs": ["crates/fj-trace/src/lib.rs"]
+    },
+    {
+      "capability": "lax_primitives",
+      "jax_module": "jax.lax.*",
+      "status": "parity_green",
+      "evidence": "110 primitives implemented with evaluation and shape inference",
+      "evidence_refs": ["crates/fj-lax/src/lib.rs", "crates/fj-core/src/lib.rs"]
+    },
+    {
+      "capability": "control_flow_cond",
+      "jax_module": "jax.lax.cond",
+      "status": "parity_green",
+      "evidence": "Sub-jaxpr evaluation, transform matrix coverage",
+      "evidence_refs": ["crates/fj-lax/src/lib.rs"]
+    },
+    {
+      "capability": "control_flow_scan",
+      "jax_module": "jax.lax.scan",
+      "status": "parity_green",
+      "evidence": "Multi-carry state, vmap(scan) optimizations",
+      "evidence_refs": ["crates/fj-lax/src/lib.rs"]
+    },
+    {
+      "capability": "control_flow_while",
+      "jax_module": "jax.lax.while_loop",
+      "status": "parity_green",
+      "evidence": "Bounded iteration, transform coverage",
+      "evidence_refs": ["crates/fj-lax/src/lib.rs"]
+    },
+    {
+      "capability": "control_flow_switch",
+      "jax_module": "jax.lax.switch",
+      "status": "parity_green",
+      "evidence": "Branch selection, batched index optimization",
+      "evidence_refs": ["crates/fj-lax/src/lib.rs"]
+    },
+    {
+      "capability": "random",
+      "jax_module": "jax.random.*",
+      "status": "parity_green",
+      "evidence": "ThreeFry2x32, key/split/fold_in/uniform/normal/bernoulli/categorical, 25 oracle fixtures",
+      "evidence_refs": ["crates/fj-lax/src/threefry.rs"]
+    },
+    {
+      "capability": "linalg",
+      "jax_module": "jax.numpy.linalg.*",
+      "status": "parity_green",
+      "evidence": "Cholesky, QR, SVD, Eigh, TriangularSolve with AD rules",
+      "evidence_refs": ["crates/fj-lax/src/linalg.rs"]
+    },
+    {
+      "capability": "fft",
+      "jax_module": "jax.numpy.fft.*",
+      "status": "parity_green",
+      "evidence": "FFT/IFFT/RFFT/IRFFT with radix-2 fast path and AD rules",
+      "evidence_refs": ["crates/fj-lax/src/fft.rs"]
+    },
+    {
+      "capability": "dtypes",
+      "jax_module": "jax.dtypes",
+      "status": "parity_green",
+      "evidence": "11 dtypes (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128), promotion rules, 162 oracle fixtures",
+      "evidence_refs": ["crates/fj-core/src/lib.rs"]
+    },
+    {
+      "capability": "c_ffi",
+      "jax_module": "N/A (Rust FFI)",
+      "status": "parity_green",
+      "evidence": "C ABI for language interop",
+      "evidence_refs": ["crates/fj-ffi/src/lib.rs"]
+    },
+    {
+      "capability": "primitive_custom_derivatives",
+      "jax_module": "register_custom_vjp/jvp at primitive level",
+      "status": "parity_green",
+      "evidence": "Primitive-level VJP/JVP override registration",
+      "evidence_refs": ["crates/fj-ad/src/lib.rs::register_custom_vjp", "crates/fj-ad/src/lib.rs::register_custom_jvp"]
+    }
+  ],
+  "partial_coverage": [
+    {
+      "capability": "custom_vjp_decorator",
+      "jax_module": "jax.custom_vjp",
+      "status": "partial",
+      "gap_description": "JAX @custom_vjp works at function level with fwd/bwd callbacks. FrankenJAX has primitive-level registration but not function-level decorator semantics.",
+      "priority": 2,
+      "effort_estimate": "medium",
+      "bead_id": "frankenjax-o67z"
+    },
+    {
+      "capability": "custom_jvp_decorator",
+      "jax_module": "jax.custom_jvp",
+      "status": "partial",
+      "gap_description": "JAX @custom_jvp works at function level with jvp_rules. FrankenJAX has primitive-level registration but not function-level decorator semantics.",
+      "priority": 2,
+      "effort_estimate": "medium",
+      "bead_id": "frankenjax-o67z"
+    }
+  ],
+  "not_covered": [
+    {
+      "capability": "pmap",
+      "jax_module": "jax.pmap",
+      "status": "not_implemented",
+      "gap_description": "Parallel map transform for multi-device SPMD execution. Requires multi-device backend infrastructure.",
+      "priority": 2,
+      "effort_estimate": "large",
+      "prerequisite": "Multi-device backend (GPU/TPU)",
+      "bead_id": "frankenjax-1d43"
+    },
+    {
+      "capability": "checkpoint_remat",
+      "jax_module": "jax.checkpoint / jax.remat",
+      "status": "not_implemented",
+      "gap_description": "Rematerialization for memory-efficient gradient computation. Trades compute for memory by recomputing intermediates during backward pass.",
+      "priority": 2,
+      "effort_estimate": "medium",
+      "prerequisite": null,
+      "bead_id": "frankenjax-vp08"
+    },
+    {
+      "capability": "gpu_backend",
+      "jax_module": "jax.devices('gpu')",
+      "status": "not_implemented",
+      "gap_description": "GPU acceleration via CUDA or Metal. CPU-only noted in README limitations.",
+      "priority": 2,
+      "effort_estimate": "large",
+      "prerequisite": null,
+      "bead_id": "frankenjax-82az"
+    },
+    {
+      "capability": "python_bindings",
+      "jax_module": "import jax",
+      "status": "not_implemented",
+      "gap_description": "Python bindings via PyO3 or cffi. README notes this as straightforward via fj-ffi.",
+      "priority": 2,
+      "effort_estimate": "medium",
+      "prerequisite": null,
+      "bead_id": "frankenjax-k58g"
+    },
+    {
+      "capability": "sharding",
+      "jax_module": "jax.sharding.*",
+      "status": "not_implemented",
+      "gap_description": "Array sharding specifications for distributed computation. Includes NamedSharding, PositionalSharding, PartitionSpec.",
+      "priority": 2,
+      "effort_estimate": "large",
+      "prerequisite": "pmap or pjit",
+      "bead_id": null
+    }
+  ],
+  "out_of_scope_v1": [
+    {
+      "capability": "pjit",
+      "jax_module": "jax.experimental.pjit",
+      "reason": "Partitioned JIT requires sharding infrastructure not in V1 scope"
+    },
+    {
+      "capability": "xmap",
+      "jax_module": "jax.experimental.maps.xmap",
+      "reason": "Named axes for distributed not in V1 scope"
+    },
+    {
+      "capability": "shard_map",
+      "jax_module": "jax.experimental.shard_map",
+      "reason": "Manual sharding control not in V1 scope"
+    }
+  ],
+  "recommendations": [
+    {
+      "priority": 1,
+      "recommendation": "Add checkpoint/remat support",
+      "rationale": "Works on CPU, enables memory-efficient AD for large models, no backend prerequisites"
+    },
+    {
+      "priority": 2,
+      "recommendation": "Add Python bindings",
+      "rationale": "Explicitly noted as straightforward in README, enables broader adoption"
+    },
+    {
+      "priority": 3,
+      "recommendation": "Add function-level custom_vjp/custom_jvp",
+      "rationale": "Extends existing primitive-level support to match JAX decorator API"
+    },
+    {
+      "priority": 4,
+      "recommendation": "Add GPU backend foundation",
+      "rationale": "Enables pmap and performance parity, but large effort"
+    }
+  ],
+  "replay_command": "cat artifacts/conformance/jax_capability_gap_report.v1.json | jq '.summary'"
+}
