@@ -226,9 +226,58 @@ impl std::fmt::Display for EGraphLoweringError {
 
 impl std::error::Error for EGraphLoweringError {}
 
+/// Configuration for e-graph optimization passes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OptimizationConfig {
+    /// When enabled, disables rewrites that are mathematically correct but
+    /// numerically unsafe near domain boundaries (0, NaN, Inf, denormals).
+    ///
+    /// Disabled rewrites in safety mode:
+    /// - `exp(log(a)) => a` (fails when a <= 0)
+    /// - `a/a => 1` (fails when a = 0, NaN, denormal)
+    /// - `a * (1/a) => 1` (fails when a = 0)
+    /// - `(a*b)/b => a` (fails when b = 0)
+    /// - `log(a*b) => log(a) + log(b)` (fails when a or b <= 0)
+    /// - `log(a/b) => log(a) - log(b)` (fails when a <= 0 or b <= 0)
+    pub numerical_safety_mode: bool,
+}
+
+impl OptimizationConfig {
+    /// Create a config with numerical safety mode enabled.
+    #[must_use]
+    pub fn safe() -> Self {
+        Self {
+            numerical_safety_mode: true,
+        }
+    }
+
+    /// Create a config with all optimizations enabled (default).
+    #[must_use]
+    pub fn aggressive() -> Self {
+        Self {
+            numerical_safety_mode: false,
+        }
+    }
+}
+
 /// Standard algebraic rewrite rules for FjLang.
 #[must_use]
 pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
+    algebraic_rules_with_config(&OptimizationConfig::default())
+}
+
+/// Algebraic rewrite rules respecting the given configuration.
+#[must_use]
+pub fn algebraic_rules_with_config(config: &OptimizationConfig) -> Vec<egg::Rewrite<FjLang, ()>> {
+    let mut rules = safe_algebraic_rules();
+    if !config.numerical_safety_mode {
+        rules.extend(numerically_unsafe_rules());
+    }
+    rules
+}
+
+/// Rules that are always safe regardless of input domain.
+fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
     vec![
         // ── Commutativity ────────────────────────────────────────────
         rewrite!("add-comm"; "(add ?a ?b)" => "(add ?b ?a)"),
@@ -266,7 +315,7 @@ pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("pow-zero"; "(pow ?a 0)" => "1"),
         rewrite!("pow-one"; "(pow ?a 1)" => "?a"),
         // ── Exp / Log inverse pair ───────────────────────────────────
-        rewrite!("exp-log"; "(exp (log ?a))" => "?a"),
+        // exp-log moved to numerically_unsafe_rules (fails when a <= 0)
         rewrite!("log-exp"; "(log (exp ?a))" => "?a"),
         // ── Sqrt / Rsqrt relationships ───────────────────────────────
         rewrite!("rsqrt-to-sqrt"; "(rsqrt ?a)" => "(pow (sqrt ?a) (neg 1))"),
@@ -289,7 +338,7 @@ pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("tanh-neg"; "(tanh (neg ?a))" => "(neg (tanh ?a))"),
         // ── Division rules ─────────────────────────────────────────────
         rewrite!("div-one"; "(div ?a 1)" => "?a"),
-        rewrite!("div-self"; "(div ?a ?a)" => "1"),
+        // div-self moved to numerically_unsafe_rules (fails when a = 0, NaN)
         // ── Square / Reciprocal rewrites ───────────────────────────────
         rewrite!("square-as-mul"; "(square ?a)" => "(mul ?a ?a)"),
         rewrite!("reciprocal-as-div"; "(reciprocal ?a)" => "(div 1 ?a)"),
@@ -314,14 +363,12 @@ pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("select-nest-true"; "(select ?c (select ?c ?a ?b) ?x)" => "(select ?c ?a ?x)"),
         rewrite!("select-nest-false"; "(select ?c ?x (select ?c ?a ?b))" => "(select ?c ?x ?b)"),
         // ── Multiplicative cancellation ──────────────────────────────
-        rewrite!("mul-reciprocal"; "(mul ?a (reciprocal ?a))" => "1"),
-        rewrite!("div-mul-cancel"; "(div (mul ?a ?b) ?b)" => "?a"),
+        // mul-reciprocal, div-mul-cancel moved to numerically_unsafe_rules
         // ── Additional power rules ────────────────────────────────────
         rewrite!("pow-neg-one"; "(pow ?a (neg 1))" => "(reciprocal ?a)"),
         rewrite!("pow-two"; "(pow ?a 2)" => "(mul ?a ?a)"),
         // ── Log decomposition ─────────────────────────────────────────
-        rewrite!("log-product"; "(log (mul ?a ?b))" => "(add (log ?a) (log ?b))"),
-        rewrite!("log-quotient"; "(log (div ?a ?b))" => "(sub (log ?a) (log ?b))"),
+        // log-product, log-quotient moved to numerically_unsafe_rules
         // ── Erf / Erfc identities ─────────────────────────────────────
         rewrite!("erf-neg"; "(erf (neg ?a))" => "(neg (erf ?a))"),
         // ── Max / Min absorption ──────────────────────────────────────
@@ -356,6 +403,32 @@ pub fn algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // ── IsFinite idempotence ──────────────────────────────────────
         rewrite!("is-finite-const-0"; "(is_finite 0)" => "1"),
         rewrite!("is-finite-const-1"; "(is_finite 1)" => "1"),
+    ]
+}
+
+/// Rules that are mathematically correct but numerically unsafe near domain boundaries.
+///
+/// These rewrites can change observable behavior when inputs include:
+/// - Zero (division, reciprocal)
+/// - Negative numbers (log)
+/// - NaN/Inf (cancellation patterns)
+/// - Denormals (underflow-prone intermediate results)
+///
+/// Disabled when `OptimizationConfig::numerical_safety_mode` is true.
+fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
+    vec![
+        // exp(log(a)) => a fails when a <= 0 (log undefined)
+        rewrite!("exp-log"; "(exp (log ?a))" => "?a"),
+        // a/a => 1 fails when a = 0 (0/0 = NaN, not 1)
+        rewrite!("div-self"; "(div ?a ?a)" => "1"),
+        // a * (1/a) => 1 fails when a = 0
+        rewrite!("mul-reciprocal"; "(mul ?a (reciprocal ?a))" => "1"),
+        // (a*b)/b => a fails when b = 0
+        rewrite!("div-mul-cancel"; "(div (mul ?a ?b) ?b)" => "?a"),
+        // log(a*b) => log(a) + log(b) fails when a or b <= 0
+        rewrite!("log-product"; "(log (mul ?a ?b))" => "(add (log ?a) (log ?b))"),
+        // log(a/b) => log(a) - log(b) fails when a <= 0 or b <= 0
+        rewrite!("log-quotient"; "(log (div ?a ?b))" => "(sub (log ?a) (log ?b))"),
     ]
 }
 
@@ -1637,6 +1710,15 @@ fn id_to_atom(id: Id, node_to_var: &BTreeMap<usize, VarId>, expr: &RecExpr<FjLan
 /// such as multi-output primitives, control flow, and shape-parametric ops.
 #[must_use]
 pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
+    optimize_jaxpr_with_config(jaxpr, &OptimizationConfig::default())
+}
+
+/// Optimize a Jaxpr with the given configuration.
+///
+/// When `config.numerical_safety_mode` is true, rewrites that could change
+/// observable behavior near domain boundaries (0, NaN, Inf) are disabled.
+#[must_use]
+pub fn optimize_jaxpr_with_config(jaxpr: &Jaxpr, config: &OptimizationConfig) -> Jaxpr {
     let jaxpr = optimize_shape_parametric_chains(jaxpr);
     let mut equations = Vec::new();
     let mut index = 0;
@@ -1657,7 +1739,8 @@ pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
 
         let (segment, preserved_outvars) =
             build_supported_segment_jaxpr(&jaxpr, segment_start, index);
-        let optimized = optimize_supported_segment(&segment, &preserved_outvars, &mut next_var);
+        let optimized =
+            optimize_supported_segment(&segment, &preserved_outvars, &mut next_var, config);
         equations.extend(optimized.equations);
         outvar_remap.extend(optimized.outvar_remap);
     }
@@ -1685,6 +1768,7 @@ fn optimize_supported_segment(
     jaxpr: &Jaxpr,
     preserved_outvars: &BTreeSet<VarId>,
     next_var: &mut u32,
+    config: &OptimizationConfig,
 ) -> SegmentOptimization {
     let (expr, var_map) = match jaxpr_to_egraph(jaxpr) {
         Ok(lowered) => lowered,
@@ -1711,7 +1795,7 @@ fn optimize_supported_segment(
     if let Some(root) = rec_id_to_egraph_id.last().copied() {
         runner.roots.push(root);
     }
-    let runner = runner.run(&algebraic_rules());
+    let runner = runner.run(&algebraic_rules_with_config(config));
     let extractor = egg::Extractor::new(&runner.egraph, OpCount);
 
     let mut merged_equations = Vec::new();
@@ -4774,5 +4858,86 @@ mod tests {
             "log(a/b) should not explode: got {} eqns",
             opt.equations.len()
         );
+    }
+
+    #[test]
+    fn numerical_safety_mode_disables_unsafe_rules() {
+        // In safety mode, div-self should NOT be applied (a/a could be NaN when a=0)
+        let jaxpr = binary_jaxpr(Primitive::Div, Atom::Var(VarId(1)), Atom::Var(VarId(1)));
+
+        // Default mode (unsafe rules enabled): a/a becomes 1
+        let opt_default = optimize_jaxpr(&jaxpr);
+        let has_div_default = opt_default
+            .equations
+            .iter()
+            .any(|eq| eq.primitive == Primitive::Div);
+
+        // Safety mode: a/a stays as a/a (div-self rule disabled)
+        let opt_safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        let has_div_safe = opt_safe
+            .equations
+            .iter()
+            .any(|eq| eq.primitive == Primitive::Div);
+
+        assert!(
+            !has_div_default,
+            "default mode should simplify a/a (no Div remaining)"
+        );
+        assert!(
+            has_div_safe,
+            "safety mode should preserve a/a (Div remains)"
+        );
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_safe_rules() {
+        // Even in safety mode, neg-neg should still work
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        // neg(neg(a)) should become just a, so no Neg in result
+        let has_neg = opt
+            .equations
+            .iter()
+            .any(|eq| eq.primitive == Primitive::Neg);
+        assert!(
+            !has_neg,
+            "safety mode should still apply neg-neg rule: {:?}",
+            opt.equations
+        );
+    }
+
+    #[test]
+    fn optimization_config_constructors() {
+        let safe = OptimizationConfig::safe();
+        assert!(safe.numerical_safety_mode);
+
+        let aggressive = OptimizationConfig::aggressive();
+        assert!(!aggressive.numerical_safety_mode);
+
+        let default = OptimizationConfig::default();
+        assert!(!default.numerical_safety_mode);
     }
 }
