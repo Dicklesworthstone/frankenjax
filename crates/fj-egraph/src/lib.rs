@@ -447,7 +447,11 @@ fn expand_dims_axis(params: &BTreeMap<String, String>) -> Option<usize> {
 }
 
 fn rev_axes(params: &BTreeMap<String, String>) -> Option<Vec<usize>> {
-    params.get("axes").and_then(|raw| parse_usize_csv(raw))
+    params.get("axes").and_then(|raw| {
+        let mut axes = parse_usize_csv(raw)?;
+        axes.sort_unstable();
+        Some(axes)
+    })
 }
 
 fn is_shape_identity(equation: &Equation) -> bool {
@@ -3949,6 +3953,63 @@ mod tests {
         assert_eq!(optimized.outvars, vec![VarId(1)]);
 
         let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn revrev_axes_canon() {
+        let mut first_rev_params = BTreeMap::new();
+        first_rev_params.insert("axes".to_owned(), "0,1".to_owned());
+        let mut second_rev_params = BTreeMap::new();
+        second_rev_params.insert("axes".to_owned(), "1,0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Rev,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: first_rev_params,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Rev,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: second_rev_params,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(
+            optimized.equations.is_empty(),
+            "rev pair with permuted axes should collapse to the input: {optimized:#?}"
+        );
+        assert_eq!(optimized.outvars, vec![VarId(1)]);
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
+                ],
+            )
+            .unwrap(),
+        );
         let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
         let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
         assert_eq!(original_out, optimized_out);
