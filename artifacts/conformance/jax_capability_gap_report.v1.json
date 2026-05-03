@@ -6,9 +6,9 @@
   "frankenjax_version": "v1",
   "summary": {
     "total_jax_capabilities_audited": 25,
-    "well_covered": 20,
+    "well_covered": 21,
     "partial_coverage": 0,
-    "not_covered": 5,
+    "not_covered": 4,
     "out_of_scope_v1": 3
   },
   "well_covered": [
@@ -151,6 +151,13 @@
       "status": "parity_green",
       "evidence": "Function-level custom_jvp with rule callback, drives jvp and jacobian",
       "evidence_refs": ["crates/fj-api/src/transforms.rs::custom_jvp", "crates/fj-ad/src/lib.rs::register_custom_jaxpr_jvp"]
+    },
+    {
+      "capability": "checkpoint_remat",
+      "jax_module": "jax.checkpoint / jax.remat",
+      "status": "parity_green",
+      "evidence": "checkpoint() wrapper re-runs forward during backward via grad_jaxpr_with_cotangent",
+      "evidence_refs": ["crates/fj-api/src/transforms.rs::checkpoint", "crates/fj-ad/src/lib.rs::grad_jaxpr_with_cotangent"]
     }
   ],
   "partial_coverage": [],
@@ -164,16 +171,6 @@
       "effort_estimate": "large",
       "prerequisite": "Multi-device backend (GPU/TPU)",
       "bead_id": "frankenjax-1d43"
-    },
-    {
-      "capability": "checkpoint_remat",
-      "jax_module": "jax.checkpoint / jax.remat",
-      "status": "not_implemented",
-      "gap_description": "Rematerialization for memory-efficient gradient computation. Trades compute for memory by recomputing intermediates during backward pass.",
-      "priority": 2,
-      "effort_estimate": "medium",
-      "prerequisite": null,
-      "bead_id": "frankenjax-vp08"
     },
     {
       "capability": "gpu_backend",
