@@ -567,7 +567,7 @@ pub fn validate_security_adversarial_report(
         .iter()
         .map(|family| family.target.as_str())
         .collect::<BTreeSet<_>>();
-    match manifest_fuzz_targets(root) {
+    match cargo_fuzz_manifest_targets(root) {
         Ok(manifest_targets) => {
             for target in manifest_targets {
                 if !covered_targets.contains(target.as_str()) {
@@ -1742,7 +1742,12 @@ fn count_corpus_files_inner(path: &Path, count: &mut usize) {
     }
 }
 
-fn manifest_fuzz_targets(root: &Path) -> Result<Vec<String>, std::io::Error> {
+/// Returns cargo-fuzz binary target names declared in the conformance fuzz manifest.
+///
+/// # Errors
+///
+/// Returns an I/O error when the fuzz manifest cannot be read.
+pub fn cargo_fuzz_manifest_targets(root: &Path) -> Result<Vec<String>, std::io::Error> {
     let manifest_path = root.join("crates/fj-conformance/fuzz/Cargo.toml");
     let raw = fs::read_to_string(manifest_path)?;
     let mut targets = Vec::new();

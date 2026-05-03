@@ -6,9 +6,9 @@ use fj_conformance::e2e_log::{
 use fj_conformance::security_adversarial::{
     SECURITY_ADVERSARIAL_BEAD_ID, SECURITY_ADVERSARIAL_REPORT_SCHEMA_VERSION,
     SECURITY_THREAT_MODEL_SCHEMA_VERSION, SecurityAdversarialReport,
-    build_security_adversarial_report, build_security_threat_model, security_adversarial_markdown,
-    security_adversarial_summary_json, validate_security_adversarial_report,
-    write_security_adversarial_outputs,
+    build_security_adversarial_report, build_security_threat_model, cargo_fuzz_manifest_targets,
+    security_adversarial_markdown, security_adversarial_summary_json,
+    validate_security_adversarial_report, write_security_adversarial_outputs,
 };
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -98,30 +98,26 @@ fn security_gate_fuzz_families_are_complete_and_replayable() {
 }
 
 #[test]
-fn security_gate_covers_every_manifest_fuzz_target() {
+fn security_gate_covers_every_manifest_fuzz_target() -> Result<(), Box<dyn std::error::Error>> {
     let root = repo_root();
     let report = build_security_adversarial_report(&root);
+    let manifest_targets = cargo_fuzz_manifest_targets(&root)?;
+    assert!(
+        !manifest_targets.is_empty(),
+        "cargo-fuzz manifest should declare binary targets"
+    );
     let covered_targets = report
         .fuzz_families
         .iter()
         .map(|family| family.target.as_str())
         .collect::<BTreeSet<_>>();
-    for target in [
-        "ir_deserializer",
-        "value_deserializer",
-        "shape_inference_engine",
-        "transform_composition_verifier",
-        "cache_key_builder",
-        "fixture_bundle_loader",
-        "raptorq_decoder",
-        "dispatch_request_builder",
-        "cache_persistence_format",
-        "primitive_eval_fuzzer",
-        "smoke_harness_json",
-        "partial_eval_fuzzer",
-    ] {
-        assert!(covered_targets.contains(target), "missing {target}");
+    for target in &manifest_targets {
+        assert!(
+            covered_targets.contains(target.as_str()),
+            "missing cargo-fuzz manifest target {target}"
+        );
     }
+    Ok(())
 }
 
 #[test]
