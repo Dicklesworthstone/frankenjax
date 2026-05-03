@@ -5,7 +5,7 @@
   "test_id": "fj_oracle_recapture_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq7-local/debug/fj_oracle_recapture_gate",
+    "/data/tmp/cargo-target/debug/fj_oracle_recapture_gate",
     "--root",
     "/data/projects/frankenjax",
     "--matrix",
@@ -23,12 +23,12 @@
     "arch": "x86_64",
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
+    "cargo_target_dir": "/data/tmp/cargo-target",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq7-local",
+      "CARGO_TARGET_DIR": "/data/tmp/cargo-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777742185007
+    "timestamp_unix_ms": 1777773011603
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -42,8 +42,8 @@
     "transforms:0.9.2.dev20260316+12a2449",
     "rng:0.9.2.dev20260316+12a2449",
     "linalg_fft:0.9.2",
-    "composition:0.9.1",
-    "dtype_promotion:0.9.1"
+    "composition:0.9.2",
+    "dtype_promotion:0.9.2"
   ],
   "transform_stack": [],
   "mode": "strict",
@@ -63,15 +63,10 @@
     "actual_total_cases": 861,
     "added": [],
     "changed": [],
-    "drift_gate_status": "fail",
+    "drift_gate_status": "pass",
     "expected_total_cases": 861,
-    "issue_codes": [
-      "x64_mode_mismatch",
-      "x64_mode_mismatch",
-      "stale_oracle_version",
-      "stale_oracle_version"
-    ],
-    "matrix_status": "fail",
+    "issue_codes": [],
+    "matrix_status": "pass",
     "removed": [],
     "required_families": [
       "transforms",
@@ -91,8 +86,8 @@
   },
   "error": {
     "expected": null,
-    "actual": "x64_mode_mismatch,x64_mode_mismatch,stale_oracle_version,stale_oracle_version",
-    "taxonomy_class": "oracle_recapture_drift"
+    "actual": null,
+    "taxonomy_class": "none"
   },
   "timings": {
     "setup_ms": 0,
@@ -112,25 +107,25 @@
     {
       "kind": "oracle_recapture_matrix",
       "path": "artifacts/conformance/oracle_recapture_matrix.v1.json",
-      "sha256": "3d32110cbfe37ccafa36f057580fc4b5d95d7a358b7ac95fe9922391c0e7e8e4",
+      "sha256": "0a65ee95cf3e932efed9b94d7fda235106d33ed83d5965ebb7c9ce32f0578e1d",
       "required": true
     },
     {
       "kind": "oracle_drift_report",
       "path": "artifacts/conformance/oracle_drift_report.v1.json",
-      "sha256": "81dd28d4f982a751ba828a390fa1e8e04aa4d71cd0cdf7933c93d49f2aa25fa4",
+      "sha256": "84333d5c4f3a4997a1f6ad980d5a1ac41ae22dd09d771403782e9e04255b70b2",
       "required": true
     },
     {
       "kind": "oracle_recapture_markdown",
       "path": "artifacts/conformance/oracle_recapture_matrix.v1.md",
-      "sha256": "5f9ebcb64b2a43d849b899e0c586f0f2883d012a16737018da87197ed12a20ed",
+      "sha256": "8d9dbc654cb8de29b8ca892317bc5dfa5b56a3a9f7f5925531fbad44081d049f",
       "required": true
     }
   ],
   "replay_command": "./scripts/run_oracle_recapture_gate.sh",
-  "status": "fail",
-  "failure_summary": "oracle recapture gate found 4 issue(s); see drift report",
+  "status": "pass",
+  "failure_summary": null,
   "redactions": [],
   "metadata": {
     "bead": {

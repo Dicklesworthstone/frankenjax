@@ -84,7 +84,7 @@ fn committed_matrix_counts_all_861_oracle_cases() {
 }
 
 #[test]
-fn committed_matrix_flags_stale_oracle_versions() {
+fn committed_matrix_has_no_stale_oracle_versions() {
     let root = repo_root();
     let matrix = build_oracle_recapture_matrix(&root);
     let codes: Vec<(&str, &str)> = matrix
@@ -98,8 +98,14 @@ fn committed_matrix_flags_stale_oracle_versions() {
         })
         .collect();
 
-    assert!(codes.contains(&("composition", "stale_oracle_version")));
-    assert!(codes.contains(&("dtype_promotion", "stale_oracle_version")));
+    assert!(
+        !codes.contains(&("composition", "stale_oracle_version")),
+        "composition fixture should be at JAX 0.9.2"
+    );
+    assert!(
+        !codes.contains(&("dtype_promotion", "stale_oracle_version")),
+        "dtype_promotion fixture should be at JAX 0.9.2"
+    );
     assert!(
         !codes.contains(&("composition", "missing_recapture_command")),
         "composition should have recapture command"
@@ -111,7 +117,7 @@ fn committed_matrix_flags_stale_oracle_versions() {
 }
 
 #[test]
-fn committed_matrix_requires_explicit_x64_metadata() {
+fn committed_matrix_has_explicit_x64_metadata() {
     let root = repo_root();
     let matrix = build_oracle_recapture_matrix(&root);
     let codes: Vec<(&str, &str)> = matrix
@@ -125,11 +131,17 @@ fn committed_matrix_requires_explicit_x64_metadata() {
         })
         .collect();
 
-    assert!(codes.contains(&("transforms", "x64_mode_mismatch")));
-    assert!(codes.contains(&("rng", "x64_mode_mismatch")));
+    assert!(
+        !codes.contains(&("transforms", "x64_mode_mismatch")),
+        "transforms fixture should have explicit x64_enabled metadata"
+    );
+    assert!(
+        !codes.contains(&("rng", "x64_mode_mismatch")),
+        "rng fixture should have explicit x64_enabled metadata"
+    );
     assert!(
         !codes.contains(&("linalg_fft", "x64_mode_mismatch")),
-        "linalg_fft fixture already records explicit x64 provenance"
+        "linalg_fft fixture should have explicit x64_enabled metadata"
     );
 }
 

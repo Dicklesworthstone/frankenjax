@@ -1,6 +1,6 @@
 {
   "schema_version": "frankenjax.oracle-recapture-matrix.v1",
-  "generated_at_unix_ms": 1777742184978,
+  "generated_at_unix_ms": 1777773011574,
   "repo_root": "/data/projects/frankenjax",
   "expected_total_cases": 861,
   "actual_total_cases": 861,
@@ -22,7 +22,7 @@
       "actual_case_count": 613,
       "oracle_version": "0.9.2.dev20260316+12a2449",
       "expected_oracle_version_prefix": "0.9.2",
-      "x64_enabled": null,
+      "x64_enabled": true,
       "expected_x64_enabled": true,
       "capture_mode": "legacy_jax",
       "generated_by": "legacy_jax_capture_script",
@@ -58,12 +58,10 @@
         "crates/fj-conformance/fixtures/transforms/legacy_transform_cases.v1.json",
         "--strict"
       ],
-      "fixture_sha256": "bb0eae2659e1bc5cff95f5958dc6c1fdc7af78964c469689142bed7fd005f3cc",
+      "fixture_sha256": "d96f4c324b7f403d093d0255a4d7ade381d12cbd44af16ff8a75b6c7ed0a316a",
       "duplicate_case_ids": [],
-      "issue_codes": [
-        "x64_mode_mismatch"
-      ],
-      "status": "fail"
+      "issue_codes": [],
+      "status": "pass"
     },
     {
       "family_id": "rng",
@@ -75,7 +73,7 @@
       "actual_case_count": 25,
       "oracle_version": "0.9.2.dev20260316+12a2449",
       "expected_oracle_version_prefix": "0.9.2",
-      "x64_enabled": null,
+      "x64_enabled": true,
       "expected_x64_enabled": true,
       "capture_mode": "legacy_jax",
       "generated_by": "legacy_jax_capture_script",
@@ -98,12 +96,10 @@
         "crates/fj-conformance/fixtures/rng/rng_determinism.v1.json",
         "--strict"
       ],
-      "fixture_sha256": "ad62ae3686e4f453c0cca1dbc2d2f55fe72fcd489bfeb3f2f4fe13ecd0f0a1ad",
+      "fixture_sha256": "857e785ee8985c7b4de6883982d5221437358c8ced3d61fe646ed1f278fbeeb7",
       "duplicate_case_ids": [],
-      "issue_codes": [
-        "x64_mode_mismatch"
-      ],
-      "status": "fail"
+      "issue_codes": [],
+      "status": "pass"
     },
     {
       "family_id": "linalg_fft",
@@ -153,13 +149,13 @@
       "expected_schema_version": "frankenjax.composition-oracle.v1",
       "expected_case_count": 15,
       "actual_case_count": 15,
-      "oracle_version": "0.9.1",
+      "oracle_version": "0.9.2",
       "expected_oracle_version_prefix": "0.9.2",
       "x64_enabled": true,
       "expected_x64_enabled": true,
       "capture_mode": "jax_composition_oracle",
       "generated_by": "jax_composition_oracle",
-      "generated_at_unix_ms": 1773715320917,
+      "generated_at_unix_ms": 1777746600000,
       "legacy_anchors": [
         {
           "path": "tests/api_test.py",
@@ -180,12 +176,10 @@
         "--output",
         "crates/fj-conformance/fixtures/composition_oracle.v1.json"
       ],
-      "fixture_sha256": "7596f063e3afcc904895d4781bc10f04666cb0266fc67c60aea2f8fb679f5bca",
+      "fixture_sha256": "a7bc864e046565e66cb89655c1e5765287803bd711ef9b69045d3c27ae382bfe",
       "duplicate_case_ids": [],
-      "issue_codes": [
-        "stale_oracle_version"
-      ],
-      "status": "fail"
+      "issue_codes": [],
+      "status": "pass"
     },
     {
       "family_id": "dtype_promotion",
@@ -195,13 +189,13 @@
       "expected_schema_version": "frankenjax.dtype-promotion-oracle.v1",
       "expected_case_count": 162,
       "actual_case_count": 162,
-      "oracle_version": "0.9.1",
+      "oracle_version": "0.9.2",
       "expected_oracle_version_prefix": "0.9.2",
       "x64_enabled": true,
       "expected_x64_enabled": true,
       "capture_mode": "jax_dtype_promotion_oracle",
       "generated_by": "jax_dtype_promotion_oracle",
-      "generated_at_unix_ms": 1773726283855,
+      "generated_at_unix_ms": 1777746600000,
       "legacy_anchors": [
         {
           "path": "tests/dtypes_test.py",
@@ -217,39 +211,12 @@
         "--output",
         "crates/fj-conformance/fixtures/dtype_promotion_oracle.v1.json"
       ],
-      "fixture_sha256": "8af84f756fa8690e8a5c1feeca39d22b8e9279397f33d09d0e707125bf5cacb1",
+      "fixture_sha256": "44b826de9373ffaa253470c4ba8dd24f83ebbb998338977947ac3a02489310b1",
       "duplicate_case_ids": [],
-      "issue_codes": [
-        "stale_oracle_version"
-      ],
-      "status": "fail"
+      "issue_codes": [],
+      "status": "pass"
     }
   ],
-  "issues": [
-    {
-      "code": "x64_mode_mismatch",
-      "family_id": "transforms",
-      "path": "$.rows.transforms",
-      "message": "expected x64 Some(true), found None"
-    },
-    {
-      "code": "x64_mode_mismatch",
-      "family_id": "rng",
-      "path": "$.rows.rng",
-      "message": "expected x64 Some(true), found None"
-    },
-    {
-      "code": "stale_oracle_version",
-      "family_id": "composition",
-      "path": "$.rows.composition",
-      "message": "expected oracle version prefix 0.9.2, found 0.9.1"
-    },
-    {
-      "code": "stale_oracle_version",
-      "family_id": "dtype_promotion",
-      "path": "$.rows.dtype_promotion",
-      "message": "expected oracle version prefix 0.9.2, found 0.9.1"
-    }
-  ],
-  "status": "fail"
+  "issues": [],
+  "status": "pass"
 }

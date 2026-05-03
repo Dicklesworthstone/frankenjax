@@ -1297,9 +1297,9 @@
       "rhs_dtype": "f16"
     }
   ],
-  "generated_at_unix_ms": 1773726283855,
+  "generated_at_unix_ms": 1777746600000,
   "generated_by": "jax_dtype_promotion_oracle",
-  "jax_version": "0.9.1",
+  "jax_version": "0.9.2",
   "schema_version": "frankenjax.dtype-promotion-oracle.v1",
   "x64_enabled": true
 }

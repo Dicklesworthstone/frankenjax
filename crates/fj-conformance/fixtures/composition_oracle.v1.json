@@ -368,9 +368,9 @@
       "program": "x0^2+x0*x1+x1^2"
     }
   ],
-  "generated_at_unix_ms": 1773715320917,
+  "generated_at_unix_ms": 1777746600000,
   "generated_by": "jax_composition_oracle",
-  "jax_version": "0.9.1",
+  "jax_version": "0.9.2",
   "schema_version": "frankenjax.composition-oracle.v1",
   "x64_enabled": true
 }
