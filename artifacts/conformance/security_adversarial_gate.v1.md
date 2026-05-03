@@ -4,7 +4,7 @@
 - Bead: `frankenjax-cstq.17`
 - Status: `pass`
 - Categories: `9`
-- Fuzz families: `9`
+- Fuzz families: `12`
 - Adversarial rows: `10`
 
 | Category | Evidence | Fuzz | Required Families |
@@ -29,6 +29,9 @@
 | `ff_dispatch_request_builder` | `3` | `cd crates/fj-conformance/fuzz && cargo fuzz run dispatch_request_builder corpus/seed/dispatch_request_builder -runs=3` | `no_panic/no_crash/no_timeout` |
 | `ff_fixture_bundle_loader` | `13` | `cd crates/fj-conformance/fuzz && cargo fuzz run fixture_bundle_loader corpus/fixture_bundle_loader -runs=13` | `no_panic/no_crash/no_timeout` |
 | `ff_smoke_harness_json` | `24` | `cd crates/fj-conformance/fuzz && cargo fuzz run smoke_harness_json corpus/smoke_harness_json -runs=24` | `no_panic/no_crash/no_timeout` |
+| `ff_cache_persistence_format` | `13` | `cd crates/fj-conformance/fuzz && cargo fuzz run cache_persistence_format corpus/seed/fuzz_target_1 -runs=13` | `no_panic/no_crash/no_timeout` |
+| `ff_primitive_eval_fuzzer` | `91` | `cd crates/fj-conformance/fuzz && cargo fuzz run primitive_eval_fuzzer corpus/primitive_eval_fuzzer -runs=91` | `no_panic/no_crash/no_timeout` |
+| `ff_partial_eval_fuzzer` | `16` | `cd crates/fj-conformance/fuzz && cargo fuzz run partial_eval_fuzzer corpus/partial_eval_fuzzer -runs=16` | `no_panic/no_crash/no_timeout` |
 | `ff_raptorq_decoder` | `15` | `cd crates/fj-conformance/fuzz && cargo fuzz run raptorq_decoder corpus/seed/raptorq_decoder -runs=15` | `no_panic/no_crash/no_timeout` |
 
 No security adversarial gate issues found.

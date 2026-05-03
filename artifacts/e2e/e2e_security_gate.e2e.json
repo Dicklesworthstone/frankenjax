@@ -5,7 +5,7 @@
   "test_id": "fj_security_gate",
   "packet_id": null,
   "command": [
-    "/data/tmp/cargo-target-frankenjax-codex-cstq17/debug/fj_security_gate",
+    ".rch-target/debug/fj_security_gate",
     "--root",
     "/data/projects/frankenjax",
     "--threat-model",
@@ -22,14 +22,14 @@
   "environment": {
     "os": "linux",
     "arch": "x86_64",
-    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
-    "cargo_version": "cargo 1.97.0-nightly (eb9b60f1f 2026-04-24)",
-    "cargo_target_dir": "/data/tmp/cargo-target-frankenjax-codex-cstq17",
+    "rust_version": "rustc 1.95.0-nightly (a33907a7a 2026-02-14)",
+    "cargo_version": "cargo 1.95.0-nightly (ce69df6f7 2026-02-12)",
+    "cargo_target_dir": "/data/projects/frankenjax/.rch-target",
     "env_vars": {
-      "CARGO_TARGET_DIR": "/data/tmp/cargo-target-frankenjax-codex-cstq17",
+      "CARGO_TARGET_DIR": "/data/projects/frankenjax/.rch-target",
       "RUSTUP_TOOLCHAIN": "nightly-x86_64-unknown-linux-gnu"
     },
-    "timestamp_unix_ms": 1777739466751
+    "timestamp_unix_ms": 1777775067080
   },
   "feature_flags": [],
   "fixture_ids": [
@@ -409,6 +409,66 @@
         "timeout_status": "no_timeout"
       },
       {
+        "actual_error_class": "typed_cache_persistence_result",
+        "artifact_hashes": {
+          "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1/corrupt_digest": "22c17e7b067de7f3e882fad8edbdccde2ea76bd285656acbddebe626a0e42bd3",
+          "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1/valid_binary": "db0c1c935ce6ac10353feb660309bb7a9ce8298a6418e03545d5308d5dca93d2"
+        },
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 13,
+        "expected_error_class": "typed_cache_persistence_result",
+        "family_id": "ff_cache_persistence_format",
+        "minimized_repro_path": null,
+        "observed_seed_count": 13,
+        "panic_status": "no_panic",
+        "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run cache_persistence_format corpus/seed/fuzz_target_1 -runs=13",
+        "seed_floor": 8,
+        "target": "cache_persistence_format",
+        "target_source": "crates/fj-conformance/fuzz/fuzz_targets/fuzz_target_1.rs",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "actual_error_class": "typed_primitive_eval_result",
+        "artifact_hashes": {
+          "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/conv_simple": "a2cc869c2f20c3ca0420750d0d27f2e531c52fbd9a6b1a6a05773770c2f56d9c",
+          "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/div_by_zero": "9633bfcbbc761269cebc076df63bed2821704ac0486b04824d073de955161b0a"
+        },
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 91,
+        "expected_error_class": "typed_primitive_eval_result",
+        "family_id": "ff_primitive_eval_fuzzer",
+        "minimized_repro_path": null,
+        "observed_seed_count": 91,
+        "panic_status": "no_panic",
+        "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run primitive_eval_fuzzer corpus/primitive_eval_fuzzer -runs=91",
+        "seed_floor": 32,
+        "target": "primitive_eval_fuzzer",
+        "target_source": "crates/fj-conformance/fuzz/fuzz_targets/primitive_eval_fuzzer.rs",
+        "timeout_status": "no_timeout"
+      },
+      {
+        "actual_error_class": "typed_partial_eval_result",
+        "artifact_hashes": {
+          "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/add2_all_known": "709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c",
+          "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/random_mix_1": "2cce524fd648301c82e6eef108606bbeea38b3316577b5ee410f889bb2094be1"
+        },
+        "corpus_path": "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer",
+        "crash_status": "no_crash",
+        "deterministic_replay_count": 16,
+        "expected_error_class": "typed_partial_eval_result",
+        "family_id": "ff_partial_eval_fuzzer",
+        "minimized_repro_path": null,
+        "observed_seed_count": 16,
+        "panic_status": "no_panic",
+        "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run partial_eval_fuzzer corpus/partial_eval_fuzzer -runs=16",
+        "seed_floor": 8,
+        "target": "partial_eval_fuzzer",
+        "target_source": "crates/fj-conformance/fuzz/fuzz_targets/partial_eval_fuzzer.rs",
+        "timeout_status": "no_timeout"
+      },
+      {
         "actual_error_class": "typed_durability_decode_result",
         "artifact_hashes": {
           "crates/fj-conformance/fuzz/corpus/seed/raptorq_decoder/corrupt_first_byte": "832c5ca17364c235dffd8b44ea5ffa3724f2e1e8e6089d6213d4ca5fa3623723",
@@ -429,7 +489,7 @@
         "timeout_status": "no_timeout"
       }
     ],
-    "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
+    "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, every cargo-fuzz manifest target represented as a fuzz family, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
     "threat_categories": [
       {
         "boundaries": [
@@ -568,15 +628,15 @@
     "category_count": 9,
     "coverage": {
       "adversarial_row_count": 10,
-      "crash_free_family_count": 9,
+      "crash_free_family_count": 12,
       "evidence_ref_count": 43,
-      "fuzz_complete_count": 9,
-      "fuzz_family_count": 9,
+      "fuzz_complete_count": 12,
+      "fuzz_family_count": 12,
       "green_category_count": 9,
       "observed_category_count": 9,
       "panic_free_row_count": 10,
       "required_category_count": 9,
-      "timeout_free_family_count": 9,
+      "timeout_free_family_count": 12,
       "typed_error_row_count": 10
     },
     "crash_index": {
@@ -586,7 +646,7 @@
       "path": "crates/fj-conformance/fuzz/corpus/crashes/index.v1.jsonl",
       "status": "pass"
     },
-    "fuzz_family_count": 9,
+    "fuzz_family_count": 12,
     "issue_count": 0,
     "issues": [],
     "schema_version": "frankenjax.security-adversarial-gate.v1",
@@ -622,19 +682,19 @@
     {
       "kind": "security_threat_model",
       "path": "artifacts/conformance/security_threat_model.v1.json",
-      "sha256": "281241dcd577cfc019239fa6f051c1f9a8949ab538a413dd70522ba4bbe93c13",
+      "sha256": "3fc62c74e4eb12efe1767c300d6ad19f8c17042a07a060c6f3127436891c2f02",
       "required": true
     },
     {
       "kind": "security_adversarial_report",
       "path": "artifacts/conformance/security_adversarial_gate.v1.json",
-      "sha256": "4663f9764c95243d54b6bbfb75605cda8e55a7d5e724a7556584472a50d714fc",
+      "sha256": "9b096d54e8f7be655798bf824e9affbc1e9be8568d1745fa2a456cc7e4ae7a3c",
       "required": true
     },
     {
       "kind": "security_adversarial_markdown",
       "path": "artifacts/conformance/security_adversarial_gate.v1.md",
-      "sha256": "b49537239e5d1e797d42c9929c30f77f5d92beab9074d3e419f4e0bb1426c4e6",
+      "sha256": "60a17d4e02f44cba9a0dc89e2b79167f7f89c52eb0a714c9a9ad46df60ed75b2",
       "required": true
     }
   ],

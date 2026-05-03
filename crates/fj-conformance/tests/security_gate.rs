@@ -98,6 +98,33 @@ fn security_gate_fuzz_families_are_complete_and_replayable() {
 }
 
 #[test]
+fn security_gate_covers_every_manifest_fuzz_target() {
+    let root = repo_root();
+    let report = build_security_adversarial_report(&root);
+    let covered_targets = report
+        .fuzz_families
+        .iter()
+        .map(|family| family.target.as_str())
+        .collect::<BTreeSet<_>>();
+    for target in [
+        "ir_deserializer",
+        "value_deserializer",
+        "shape_inference_engine",
+        "transform_composition_verifier",
+        "cache_key_builder",
+        "fixture_bundle_loader",
+        "raptorq_decoder",
+        "dispatch_request_builder",
+        "cache_persistence_format",
+        "primitive_eval_fuzzer",
+        "smoke_harness_json",
+        "partial_eval_fuzzer",
+    ] {
+        assert!(covered_targets.contains(target), "missing {target}");
+    }
+}
+
+#[test]
 fn security_gate_rows_are_typed_panic_free_and_evidence_linked() {
     let root = repo_root();
     let report = build_security_adversarial_report(&root);
@@ -230,6 +257,9 @@ fn security_validation_rejects_report_contract_and_coverage_drift() {
     report.coverage.crash_free_family_count = 0;
     report.coverage.timeout_free_family_count = 0;
     report.coverage.evidence_ref_count += 1;
+    report
+        .fuzz_families
+        .retain(|family| family.target != "partial_eval_fuzzer");
 
     let issue_codes = validate_security_adversarial_report(&root, &report)
         .into_iter()
@@ -245,6 +275,7 @@ fn security_validation_rejects_report_contract_and_coverage_drift() {
     assert!(issue_codes.contains("bad_crash_free_family_count"));
     assert!(issue_codes.contains("bad_timeout_free_family_count"));
     assert!(issue_codes.contains("bad_evidence_ref_count"));
+    assert!(issue_codes.contains("missing_manifest_fuzz_target"));
 }
 
 #[test]

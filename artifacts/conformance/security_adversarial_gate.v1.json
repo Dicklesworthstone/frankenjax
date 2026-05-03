@@ -1,20 +1,20 @@
 {
   "schema_version": "frankenjax.security-adversarial-gate.v1",
   "bead_id": "frankenjax-cstq.17",
-  "generated_at_unix_ms": 1777739466708,
+  "generated_at_unix_ms": 1777775067054,
   "status": "pass",
-  "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
+  "matrix_policy": "Security green requires every V1 threat category to have existing evidence refs, every cargo-fuzz manifest target represented as a fuzz family, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation.",
   "coverage": {
     "required_category_count": 9,
     "observed_category_count": 9,
     "green_category_count": 9,
-    "fuzz_family_count": 9,
-    "fuzz_complete_count": 9,
+    "fuzz_family_count": 12,
+    "fuzz_complete_count": 12,
     "adversarial_row_count": 10,
     "typed_error_row_count": 10,
     "panic_free_row_count": 10,
-    "crash_free_family_count": 9,
-    "timeout_free_family_count": 9,
+    "crash_free_family_count": 12,
+    "timeout_free_family_count": 12,
     "evidence_ref_count": 43
   },
   "threat_categories": [
@@ -437,6 +437,66 @@
         "crates/fj-conformance/fuzz/corpus/smoke_harness_json/parity_report_inconsistent": "237b86d3bbda191c0c370385a6ba0a167a06d18425f6d7d9dd6689bfa376a9e0"
       },
       "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run smoke_harness_json corpus/smoke_harness_json -runs=24"
+    },
+    {
+      "family_id": "ff_cache_persistence_format",
+      "target": "cache_persistence_format",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/fuzz_target_1.rs",
+      "seed_floor": 8,
+      "observed_seed_count": 13,
+      "deterministic_replay_count": 13,
+      "expected_error_class": "typed_cache_persistence_result",
+      "actual_error_class": "typed_cache_persistence_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1/corrupt_digest": "22c17e7b067de7f3e882fad8edbdccde2ea76bd285656acbddebe626a0e42bd3",
+        "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1/valid_binary": "db0c1c935ce6ac10353feb660309bb7a9ce8298a6418e03545d5308d5dca93d2"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run cache_persistence_format corpus/seed/fuzz_target_1 -runs=13"
+    },
+    {
+      "family_id": "ff_primitive_eval_fuzzer",
+      "target": "primitive_eval_fuzzer",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/primitive_eval_fuzzer.rs",
+      "seed_floor": 32,
+      "observed_seed_count": 91,
+      "deterministic_replay_count": 91,
+      "expected_error_class": "typed_primitive_eval_result",
+      "actual_error_class": "typed_primitive_eval_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/conv_simple": "a2cc869c2f20c3ca0420750d0d27f2e531c52fbd9a6b1a6a05773770c2f56d9c",
+        "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/div_by_zero": "9633bfcbbc761269cebc076df63bed2821704ac0486b04824d073de955161b0a"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run primitive_eval_fuzzer corpus/primitive_eval_fuzzer -runs=91"
+    },
+    {
+      "family_id": "ff_partial_eval_fuzzer",
+      "target": "partial_eval_fuzzer",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer",
+      "target_source": "crates/fj-conformance/fuzz/fuzz_targets/partial_eval_fuzzer.rs",
+      "seed_floor": 8,
+      "observed_seed_count": 16,
+      "deterministic_replay_count": 16,
+      "expected_error_class": "typed_partial_eval_result",
+      "actual_error_class": "typed_partial_eval_result",
+      "panic_status": "no_panic",
+      "crash_status": "no_crash",
+      "timeout_status": "no_timeout",
+      "minimized_repro_path": null,
+      "artifact_hashes": {
+        "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/add2_all_known": "709e80c88487a2411e1ee4dfb9f22a861492d20c4765150c0c794abd70f8147c",
+        "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/random_mix_1": "2cce524fd648301c82e6eef108606bbeea38b3316577b5ee410f889bb2094be1"
+      },
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run partial_eval_fuzzer corpus/partial_eval_fuzzer -runs=16"
     },
     {
       "family_id": "ff_raptorq_decoder",

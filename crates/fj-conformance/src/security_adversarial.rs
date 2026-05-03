@@ -268,7 +268,7 @@ pub fn build_security_adversarial_report_for_outputs(
         generated_at_unix_ms: now_unix_ms(),
         status: "pass".to_owned(),
         matrix_policy:
-            "Security green requires every V1 threat category to have existing evidence refs, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation."
+            "Security green requires every V1 threat category to have existing evidence refs, every cargo-fuzz manifest target represented as a fuzz family, complete deterministic fuzz seed coverage, typed panic-free adversarial rows, no open crash index entries, stable replay commands, and shared E2E log validation."
                 .to_owned(),
         coverage,
         threat_categories,
@@ -562,6 +562,29 @@ pub fn validate_security_adversarial_report(
         .iter()
         .map(|family| family.family_id.as_str())
         .collect::<BTreeSet<_>>();
+    let covered_targets = report
+        .fuzz_families
+        .iter()
+        .map(|family| family.target.as_str())
+        .collect::<BTreeSet<_>>();
+    match manifest_fuzz_targets(root) {
+        Ok(manifest_targets) => {
+            for target in manifest_targets {
+                if !covered_targets.contains(target.as_str()) {
+                    issues.push(SecurityAdversarialIssue::new(
+                        "missing_manifest_fuzz_target",
+                        "$.fuzz_families",
+                        format!("cargo-fuzz target `{target}` is not represented by a fuzz family"),
+                    ));
+                }
+            }
+        }
+        Err(err) => issues.push(SecurityAdversarialIssue::new(
+            "unreadable_fuzz_manifest",
+            "crates/fj-conformance/fuzz/Cargo.toml",
+            format!("could not read cargo-fuzz manifest: {err}"),
+        )),
+    }
     let row_ids = report
         .adversarial_rows
         .iter()
@@ -1062,10 +1085,7 @@ fn build_fuzz_families(root: &Path) -> Vec<SecurityFuzzFamily> {
                 family_id: spec.family_id.to_owned(),
                 target: spec.target.to_owned(),
                 corpus_path: spec.corpus_path.to_owned(),
-                target_source: format!(
-                    "crates/fj-conformance/fuzz/fuzz_targets/{}.rs",
-                    spec.target
-                ),
+                target_source: spec.target_source.to_owned(),
                 seed_floor: spec.seed_floor,
                 observed_seed_count,
                 deterministic_replay_count: observed_seed_count,
@@ -1359,6 +1379,7 @@ fn category_specs() -> Vec<CategorySpec> {
 struct FuzzSpec {
     family_id: &'static str,
     target: &'static str,
+    target_source: &'static str,
     corpus_path: &'static str,
     corpus_suffix: &'static str,
     seed_floor: usize,
@@ -1371,6 +1392,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_cache_key_builder",
             target: "cache_key_builder",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/cache_key_builder.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder",
             corpus_suffix: "seed/cache_key_builder",
             seed_floor: 2,
@@ -1382,6 +1404,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_transform_composition_verifier",
             target: "transform_composition_verifier",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/transform_composition_verifier.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/transform_composition_verifier",
             corpus_suffix: "transform_composition_verifier",
             seed_floor: 8,
@@ -1393,6 +1416,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_ir_deserializer",
             target: "ir_deserializer",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/ir_deserializer.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/seed/ir_deserializer",
             corpus_suffix: "seed/ir_deserializer",
             seed_floor: 3,
@@ -1404,6 +1428,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_shape_inference_engine",
             target: "shape_inference_engine",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/shape_inference_engine.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/shape_inference_engine",
             corpus_suffix: "shape_inference_engine",
             seed_floor: 32,
@@ -1416,6 +1441,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_value_deserializer",
             target: "value_deserializer",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/value_deserializer.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/value_deserializer",
             corpus_suffix: "value_deserializer",
             seed_floor: 8,
@@ -1428,6 +1454,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_dispatch_request_builder",
             target: "dispatch_request_builder",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/dispatch_request_builder.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/seed/dispatch_request_builder",
             corpus_suffix: "seed/dispatch_request_builder",
             seed_floor: 2,
@@ -1439,6 +1466,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_fixture_bundle_loader",
             target: "fixture_bundle_loader",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/fixture_bundle_loader.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/fixture_bundle_loader",
             corpus_suffix: "fixture_bundle_loader",
             seed_floor: 8,
@@ -1450,6 +1478,7 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
         FuzzSpec {
             family_id: "ff_smoke_harness_json",
             target: "smoke_harness_json",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/smoke_harness_json.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/smoke_harness_json",
             corpus_suffix: "smoke_harness_json",
             seed_floor: 8,
@@ -1460,8 +1489,48 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
             ],
         },
         FuzzSpec {
+            family_id: "ff_cache_persistence_format",
+            target: "cache_persistence_format",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/fuzz_target_1.rs",
+            corpus_path: "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1",
+            corpus_suffix: "seed/fuzz_target_1",
+            seed_floor: 8,
+            expected_error_class: "typed_cache_persistence_result",
+            hash_paths: &[
+                "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1/corrupt_digest",
+                "crates/fj-conformance/fuzz/corpus/seed/fuzz_target_1/valid_binary",
+            ],
+        },
+        FuzzSpec {
+            family_id: "ff_primitive_eval_fuzzer",
+            target: "primitive_eval_fuzzer",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/primitive_eval_fuzzer.rs",
+            corpus_path: "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer",
+            corpus_suffix: "primitive_eval_fuzzer",
+            seed_floor: 32,
+            expected_error_class: "typed_primitive_eval_result",
+            hash_paths: &[
+                "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/div_by_zero",
+                "crates/fj-conformance/fuzz/corpus/primitive_eval_fuzzer/conv_simple",
+            ],
+        },
+        FuzzSpec {
+            family_id: "ff_partial_eval_fuzzer",
+            target: "partial_eval_fuzzer",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/partial_eval_fuzzer.rs",
+            corpus_path: "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer",
+            corpus_suffix: "partial_eval_fuzzer",
+            seed_floor: 8,
+            expected_error_class: "typed_partial_eval_result",
+            hash_paths: &[
+                "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/add2_all_known",
+                "crates/fj-conformance/fuzz/corpus/partial_eval_fuzzer/random_mix_1",
+            ],
+        },
+        FuzzSpec {
             family_id: "ff_raptorq_decoder",
             target: "raptorq_decoder",
+            target_source: "crates/fj-conformance/fuzz/fuzz_targets/raptorq_decoder.rs",
             corpus_path: "crates/fj-conformance/fuzz/corpus/seed/raptorq_decoder",
             corpus_suffix: "seed/raptorq_decoder",
             seed_floor: 8,
@@ -1671,6 +1740,34 @@ fn count_corpus_files_inner(path: &Path, count: &mut usize) {
     for entry in entries.flatten() {
         count_corpus_files_inner(&entry.path(), count);
     }
+}
+
+fn manifest_fuzz_targets(root: &Path) -> Result<Vec<String>, std::io::Error> {
+    let manifest_path = root.join("crates/fj-conformance/fuzz/Cargo.toml");
+    let raw = fs::read_to_string(manifest_path)?;
+    let mut targets = Vec::new();
+    let mut in_bin = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[[bin]]" {
+            in_bin = true;
+            continue;
+        }
+        if trimmed.starts_with('[') {
+            in_bin = false;
+            continue;
+        }
+        if in_bin
+            && trimmed.starts_with("name")
+            && let Some((_, value)) = trimmed.split_once('=')
+        {
+            let name = value.trim().trim_matches('"');
+            if !name.is_empty() {
+                targets.push(name.to_owned());
+            }
+        }
+    }
+    Ok(targets)
 }
 
 fn evidence_ref_exists(root: &Path, reference: &str) -> bool {
