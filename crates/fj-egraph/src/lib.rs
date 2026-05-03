@@ -423,7 +423,7 @@ fn are_inverse_transposes(
                 && lhs
                     .iter()
                     .enumerate()
-                    .all(|(index, axis)| rhs[*axis] == index)
+                    .all(|(index, axis)| rhs.get(*axis).is_some_and(|rhs_axis| *rhs_axis == index))
         }
         (Some(TransposeSpec::Reverse), Some(TransposeSpec::Explicit(permutation)))
         | (Some(TransposeSpec::Explicit(permutation)), Some(TransposeSpec::Reverse)) => permutation
@@ -3781,6 +3781,41 @@ mod tests {
         let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
         let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
         assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn malformed_transpose_inverse_params_do_not_panic_or_elide() {
+        let mut first_params = BTreeMap::new();
+        first_params.insert("permutation".to_owned(), "2,0".to_owned());
+        let mut second_params = BTreeMap::new();
+        second_params.insert("permutation".to_owned(), "1,0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: first_params,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: second_params,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert_eq!(optimized.equations.len(), 2);
+        assert_eq!(optimized.outvars, vec![VarId(3)]);
     }
 
     #[test]
