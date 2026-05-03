@@ -45,7 +45,7 @@ pub mod registry;
 // Re-exports for convenience
 pub use buffer::FfiBuffer;
 pub use call::FfiCall;
-pub use callback::{CallbackFlavor, CallbackRegistry, FfiCallback};
+pub use callback::{CallbackFlavor, CallbackRegistry, FfiCallback, PurityConfig};
 pub use error::FfiError;
 pub use marshal::{buffer_to_value, value_to_buffer};
 pub use registry::{FfiFnPtr, FfiRegistry, FfiTarget};
@@ -273,6 +273,10 @@ mod tests {
                 value: 3,
             },
             FfiError::UnsupportedDtype { dtype: DType::F32 },
+            FfiError::PurityViolation {
+                callback_name: "cb".to_string(),
+                detail: "non-deterministic".to_string(),
+            },
         ];
         for err in &errors {
             let msg = err.to_string();

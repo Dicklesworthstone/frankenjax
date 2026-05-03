@@ -57,6 +57,12 @@ pub enum FfiError {
 
     /// Dtype not supported at the FFI boundary.
     UnsupportedDtype { dtype: fj_core::DType },
+
+    /// Pure callback violated purity contract (non-deterministic results).
+    PurityViolation {
+        callback_name: String,
+        detail: String,
+    },
 }
 
 impl fmt::Display for FfiError {
@@ -117,6 +123,13 @@ impl fmt::Display for FfiError {
             FfiError::UnsupportedDtype { dtype } => {
                 write!(f, "Dtype {dtype:?} is not supported at the FFI boundary")
             }
+            FfiError::PurityViolation {
+                callback_name,
+                detail,
+            } => write!(
+                f,
+                "Pure callback '{callback_name}' violated purity contract: {detail}"
+            ),
         }
     }
 }

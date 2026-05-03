@@ -2,10 +2,56 @@
 //!
 //! Pure callbacks have no side effects and can be reordered.
 //! IO callbacks are side-effecting and require effect token ordering.
+//!
+//! # Purity Verification
+//!
+//! The `Pure` vs `Io` distinction is declared by the caller, not verified.
+//! This is a fundamental limitation: Rust closures can capture mutable state,
+//! access globals, or perform I/O without the type system detecting it.
+//!
+//! To mitigate this, `PurityConfig` provides optional runtime checks:
+//! - `verify_idempotency`: calls Pure callbacks twice and compares results
+//! - `warn_on_pure_failure`: flags errors from Pure callbacks as suspicious
+//!
+//! These checks catch common impurity patterns but cannot guarantee purity.
 
 use fj_core::Value;
 
 use crate::error::FfiError;
+
+/// Configuration for purity verification at runtime.
+///
+/// These checks cannot guarantee purity but can detect common violations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PurityConfig {
+    /// When enabled, Pure callbacks are invoked twice with the same inputs.
+    /// If results differ, a `PurityViolation` error is returned.
+    /// This catches non-deterministic callbacks (RNG, timestamps, counters).
+    ///
+    /// Performance cost: 2x invocations for Pure callbacks.
+    pub verify_idempotency: bool,
+
+    /// When enabled, errors from Pure callbacks are logged as warnings,
+    /// since truly pure functions should not have observable failures.
+    pub warn_on_pure_failure: bool,
+}
+
+impl PurityConfig {
+    /// Strict mode: all verification enabled.
+    #[must_use]
+    pub fn strict() -> Self {
+        Self {
+            verify_idempotency: true,
+            warn_on_pure_failure: true,
+        }
+    }
+
+    /// Permissive mode: no verification (default).
+    #[must_use]
+    pub fn permissive() -> Self {
+        Self::default()
+    }
+}
 
 /// Type alias for the boxed callback function to keep struct definitions concise.
 type CallbackFn = Box<dyn Fn(&[Value]) -> Result<Vec<Value>, FfiError> + Send + Sync>;
@@ -64,6 +110,45 @@ impl FfiCallback {
     /// Invoke the callback with the given arguments.
     pub fn call(&self, args: &[Value]) -> Result<Vec<Value>, FfiError> {
         (self.func)(args)
+    }
+
+    /// Invoke the callback with purity verification.
+    ///
+    /// For Pure callbacks with `verify_idempotency` enabled, this calls the
+    /// callback twice and returns `PurityViolation` if results differ.
+    pub fn call_with_config(
+        &self,
+        args: &[Value],
+        config: &PurityConfig,
+    ) -> Result<Vec<Value>, FfiError> {
+        let result = (self.func)(args);
+
+        match (&self.flavor, &result) {
+            (CallbackFlavor::Pure, Err(_)) if config.warn_on_pure_failure => {
+                eprintln!(
+                    "[fj-ffi] warning: Pure callback '{}' returned an error, \
+                     which may indicate impurity (I/O, network, file access)",
+                    self.name
+                );
+            }
+            _ => {}
+        }
+
+        if self.flavor == CallbackFlavor::Pure && config.verify_idempotency {
+            let first = result?;
+            let second = (self.func)(args)?;
+
+            if first != second {
+                return Err(FfiError::PurityViolation {
+                    callback_name: self.name.clone(),
+                    detail: "callback returned different results on identical inputs".to_string(),
+                });
+            }
+
+            return Ok(first);
+        }
+
+        result
     }
 }
 
@@ -210,5 +295,95 @@ mod tests {
         });
         let err = cb.call(&[]).unwrap_err();
         assert!(matches!(err, FfiError::CallFailed { code: 1, .. }));
+    }
+
+    #[test]
+    fn purity_config_default_is_permissive() {
+        let config = PurityConfig::default();
+        assert!(!config.verify_idempotency);
+        assert!(!config.warn_on_pure_failure);
+    }
+
+    #[test]
+    fn purity_config_strict_enables_all() {
+        let config = PurityConfig::strict();
+        assert!(config.verify_idempotency);
+        assert!(config.warn_on_pure_failure);
+    }
+
+    #[test]
+    fn pure_callback_passes_idempotency_check() {
+        let cb = FfiCallback::pure_callback("double", |args| {
+            Ok(args
+                .iter()
+                .map(|v| {
+                    if let Value::Scalar(Literal::I64(n)) = v {
+                        Value::Scalar(Literal::I64(n * 2))
+                    } else {
+                        v.clone()
+                    }
+                })
+                .collect())
+        });
+
+        let args = vec![Value::Scalar(Literal::I64(21))];
+        let config = PurityConfig::strict();
+        let result = cb.call_with_config(&args, &config).unwrap();
+        assert_eq!(result, vec![Value::Scalar(Literal::I64(42))]);
+    }
+
+    #[test]
+    fn impure_callback_fails_idempotency_check() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
+
+        let counter = Arc::new(AtomicI64::new(0));
+        let counter_clone = counter.clone();
+
+        let cb = FfiCallback::pure_callback("impure_counter", move |_| {
+            let val = counter_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Value::Scalar(Literal::I64(val))])
+        });
+
+        let config = PurityConfig::strict();
+        let err = cb.call_with_config(&[], &config).unwrap_err();
+        assert!(matches!(err, FfiError::PurityViolation { .. }));
+    }
+
+    #[test]
+    fn io_callback_skips_idempotency_check() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
+
+        let counter = Arc::new(AtomicI64::new(0));
+        let counter_clone = counter.clone();
+
+        let cb = FfiCallback::io_callback("counter", move |_| {
+            let val = counter_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Value::Scalar(Literal::I64(val))])
+        });
+
+        let config = PurityConfig::strict();
+        let result = cb.call_with_config(&[], &config).unwrap();
+        assert_eq!(result, vec![Value::Scalar(Literal::I64(0))]);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn permissive_config_skips_all_checks() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
+
+        let counter = Arc::new(AtomicI64::new(0));
+        let counter_clone = counter.clone();
+
+        let cb = FfiCallback::pure_callback("impure_but_permissive", move |_| {
+            let val = counter_clone.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![Value::Scalar(Literal::I64(val))])
+        });
+
+        let config = PurityConfig::permissive();
+        let result = cb.call_with_config(&[], &config).unwrap();
+        assert_eq!(result, vec![Value::Scalar(Literal::I64(0))]);
     }
 }
