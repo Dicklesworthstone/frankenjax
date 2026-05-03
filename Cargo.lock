@@ -712,6 +712,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fj-backend-gpu"
+version = "0.1.0"
+dependencies = [
+ "fj-core",
+ "fj-interpreters",
+ "fj-runtime",
+]
+
+[[package]]
 name = "fj-cache"
 version = "0.1.0"
 dependencies = [

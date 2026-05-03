@@ -1,0 +1,20 @@
+[package]
+name = "fj-backend-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GPU backend scaffold for FrankenJAX (stub implementation)"
+
+[features]
+default = []
+# Future: enable CUDA support via cudarc
+cuda = []
+# Future: enable cross-platform GPU via wgpu
+wgpu = []
+
+[dependencies]
+fj-core = { path = "../fj-core" }
+fj-runtime = { path = "../fj-runtime" }
+fj-interpreters = { path = "../fj-interpreters" }
+
+[dev-dependencies]
