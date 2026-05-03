@@ -249,6 +249,9 @@ pub struct OptimizationConfig {
     /// Disabled rewrites in safety mode:
     /// - `exp(log(a)) => a` (fails when a <= 0)
     /// - `a/a => 1` (fails when a = 0, NaN, denormal)
+    /// - `a - a => 0` (fails when a is NaN or Inf)
+    /// - `a + -a => 0` (fails when a is NaN or Inf)
+    /// - `a * 0 => 0` (fails when a is NaN or Inf)
     /// - `a * (1/a) => 1` (fails when a = 0)
     /// - `(a*b)/b => a` (fails when b = 0)
     /// - `log(exp(a)) => a` (fails when exp(a) overflows to Inf)
@@ -309,11 +312,11 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // ── Additive identity / annihilation ─────────────────────────
         rewrite!("add-zero"; "(add ?a 0)" => "?a"),
         rewrite!("sub-zero"; "(sub ?a 0)" => "?a"),
-        rewrite!("sub-self"; "(sub ?a ?a)" => "0"),
+        // sub-self moved to numerically_unsafe_rules (fails for NaN/Inf)
         rewrite!("sub-to-add-neg"; "(sub ?a ?b)" => "(add ?a (neg ?b))"),
         // ── Multiplicative identity / annihilation ───────────────────
         rewrite!("mul-one"; "(mul ?a 1)" => "?a"),
-        rewrite!("mul-zero"; "(mul ?a 0)" => "0"),
+        // mul-zero moved to numerically_unsafe_rules (fails for NaN/Inf)
         rewrite!("mul-neg-one"; "(mul ?a (neg 1))" => "(neg ?a)"),
         // ── Distributivity ───────────────────────────────────────────
         rewrite!("distribute"; "(mul ?a (add ?b ?c))" => "(add (mul ?a ?b) (mul ?a ?c))"),
@@ -321,7 +324,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // ── Negation ─────────────────────────────────────────────────
         rewrite!("neg-neg"; "(neg (neg ?a))" => "?a"),
         rewrite!("neg-zero"; "(neg 0)" => "0"),
-        rewrite!("add-neg-self"; "(add ?a (neg ?a))" => "0"),
+        // add-neg-self moved to numerically_unsafe_rules (fails for NaN/Inf)
         // ── Abs idempotence ──────────────────────────────────────────
         rewrite!("abs-abs"; "(abs (abs ?a))" => "(abs ?a)"),
         rewrite!("abs-neg"; "(abs (neg ?a))" => "(abs ?a)"),
@@ -437,6 +440,12 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("exp-log"; "(exp (log ?a))" => "?a"),
         // a/a => 1 fails when a = 0 (0/0 = NaN, not 1)
         rewrite!("div-self"; "(div ?a ?a)" => "1"),
+        // a - a => 0 fails when a is NaN or Inf
+        rewrite!("sub-self"; "(sub ?a ?a)" => "0"),
+        // a + -a => 0 fails when a is NaN or Inf
+        rewrite!("add-neg-self"; "(add ?a (neg ?a))" => "0"),
+        // a * 0 => 0 fails when a is NaN or Inf
+        rewrite!("mul-zero"; "(mul ?a 0)" => "0"),
         // a * (1/a) => 1 fails when a = 0
         rewrite!("mul-reciprocal"; "(mul ?a (reciprocal ?a))" => "1"),
         // (a*b)/b => a fails when b = 0
@@ -5191,6 +5200,85 @@ mod tests {
             Some(1000.0),
             "aggressive mode may apply the numerically unsafe log1p-expm1 rewrite"
         );
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_nan_inf_cancellation_boundaries() {
+        let cases = [
+            (
+                "inf_sub_inf",
+                binary_jaxpr(Primitive::Sub, Atom::Var(VarId(1)), Atom::Var(VarId(1))),
+                Value::scalar_f64(f64::INFINITY),
+            ),
+            (
+                "nan_sub_nan",
+                binary_jaxpr(Primitive::Sub, Atom::Var(VarId(1)), Atom::Var(VarId(1))),
+                Value::scalar_f64(f64::NAN),
+            ),
+            (
+                "inf_add_neg_inf",
+                Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(3)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(3)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                ),
+                Value::scalar_f64(f64::INFINITY),
+            ),
+            (
+                "inf_mul_zero",
+                binary_jaxpr(
+                    Primitive::Mul,
+                    Atom::Var(VarId(1)),
+                    Atom::Lit(Literal::I64(0)),
+                ),
+                Value::scalar_f64(f64::INFINITY),
+            ),
+        ];
+
+        for (name, jaxpr, input) in cases {
+            let args = [input];
+            let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+            assert!(
+                original[0].as_f64_scalar().is_some_and(f64::is_nan),
+                "{name}: original program should preserve JAX/IEEE NaN boundary, got {:?}",
+                original[0]
+            );
+
+            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+            let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+            assert!(
+                safe_value[0].as_f64_scalar().is_some_and(f64::is_nan),
+                "{name}: safe optimized program should preserve NaN boundary, got {:?} from {:?}",
+                safe_value[0],
+                safe.equations
+            );
+
+            let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+            let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+            assert_eq!(
+                aggressive_value[0].as_f64_scalar(),
+                Some(0.0),
+                "{name}: aggressive mode may apply the numerically unsafe zero rewrite"
+            );
+        }
     }
 
     #[test]
