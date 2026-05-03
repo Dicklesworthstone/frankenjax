@@ -1,0 +1,17 @@
+[package]
+name = "fj-py"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Python bindings for FrankenJAX transforms"
+
+[lib]
+name = "frankenjax"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+fj-core = { path = "../fj-core" }
+fj-api = { path = "../fj-api" }
+fj-trace = { path = "../fj-trace" }
+fj-ad = { path = "../fj-ad" }
