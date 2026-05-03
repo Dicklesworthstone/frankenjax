@@ -446,6 +446,10 @@ fn expand_dims_axis(params: &BTreeMap<String, String>) -> Option<usize> {
     params.get("axis").and_then(|raw| raw.parse::<usize>().ok())
 }
 
+fn rev_axes(params: &BTreeMap<String, String>) -> Option<Vec<usize>> {
+    params.get("axes").and_then(|raw| parse_usize_csv(raw))
+}
+
 fn is_shape_identity(equation: &Equation) -> bool {
     match equation.primitive {
         Primitive::Transpose => is_identity_transpose(&equation.params),
@@ -464,6 +468,7 @@ fn cancels_shape_chain(previous: &Equation, current: &Equation) -> bool {
         (Primitive::Squeeze, Primitive::ExpandDims) => {
             squeeze_single_dimension(&previous.params) == expand_dims_axis(&current.params)
         }
+        (Primitive::Rev, Primitive::Rev) => rev_axes(&previous.params) == rev_axes(&current.params),
         _ => false,
     }
 }
@@ -3860,6 +3865,55 @@ mod tests {
             )
             .unwrap(),
         );
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn rev_inverse_pair_is_elided_before_egraph_saturation() {
+        let mut rev_params = BTreeMap::new();
+        rev_params.insert("axes".to_owned(), "0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Rev,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: rev_params.clone(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Rev,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: rev_params,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(
+            optimized.equations.is_empty(),
+            "rev pair plus add-zero should collapse to the input: {optimized:#?}"
+        );
+        assert_eq!(optimized.outvars, vec![VarId(1)]);
+
+        let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
         let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
         let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
         assert_eq!(original_out, optimized_out);
