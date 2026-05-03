@@ -6,8 +6,8 @@
   "frankenjax_version": "v1",
   "summary": {
     "total_jax_capabilities_audited": 25,
-    "well_covered": 18,
-    "partial_coverage": 2,
+    "well_covered": 20,
+    "partial_coverage": 0,
     "not_covered": 5,
     "out_of_scope_v1": 3
   },
@@ -137,28 +137,23 @@
       "status": "parity_green",
       "evidence": "Primitive-level VJP/JVP override registration",
       "evidence_refs": ["crates/fj-ad/src/lib.rs::register_custom_vjp", "crates/fj-ad/src/lib.rs::register_custom_jvp"]
-    }
-  ],
-  "partial_coverage": [
-    {
-      "capability": "custom_vjp_decorator",
-      "jax_module": "jax.custom_vjp",
-      "status": "partial",
-      "gap_description": "JAX @custom_vjp works at function level with fwd/bwd callbacks. FrankenJAX has primitive-level registration but not function-level decorator semantics.",
-      "priority": 2,
-      "effort_estimate": "medium",
-      "bead_id": "frankenjax-o67z"
     },
     {
-      "capability": "custom_jvp_decorator",
+      "capability": "function_custom_vjp",
+      "jax_module": "jax.custom_vjp",
+      "status": "parity_green",
+      "evidence": "Function-level custom_vjp with fwd/bwd callbacks, composes through jit/grad/value_and_grad",
+      "evidence_refs": ["crates/fj-api/src/transforms.rs::custom_vjp", "crates/fj-ad/src/lib.rs::register_custom_jaxpr_vjp"]
+    },
+    {
+      "capability": "function_custom_jvp",
       "jax_module": "jax.custom_jvp",
-      "status": "partial",
-      "gap_description": "JAX @custom_jvp works at function level with jvp_rules. FrankenJAX has primitive-level registration but not function-level decorator semantics.",
-      "priority": 2,
-      "effort_estimate": "medium",
-      "bead_id": "frankenjax-o67z"
+      "status": "parity_green",
+      "evidence": "Function-level custom_jvp with rule callback, drives jvp and jacobian",
+      "evidence_refs": ["crates/fj-api/src/transforms.rs::custom_jvp", "crates/fj-ad/src/lib.rs::register_custom_jaxpr_jvp"]
     }
   ],
+  "partial_coverage": [],
   "not_covered": [
     {
       "capability": "pmap",
