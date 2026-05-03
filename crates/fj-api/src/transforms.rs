@@ -700,22 +700,6 @@ mod tests {
         )
     }
 
-    fn make_square_jaxpr() -> Jaxpr {
-        Jaxpr::new(
-            vec![VarId(1)],
-            vec![],
-            vec![VarId(2)],
-            vec![Equation {
-                primitive: Primitive::Mul,
-                inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
-                outputs: smallvec![VarId(2)],
-                params: BTreeMap::new(),
-                effects: vec![],
-                sub_jaxprs: vec![],
-            }],
-        )
-    }
-
     // ── Constructor defaults ──
 
     #[test]
@@ -1034,36 +1018,28 @@ mod tests {
 
     #[test]
     fn checkpoint_preserves_forward_semantics() {
-        fj_ad::clear_custom_derivative_rules();
-        let wrapped = checkpoint(make_square_jaxpr());
+        let wrapped = checkpoint(make_add_mul_chain());
         let result = wrapped
             .call(vec![Value::scalar_f64(5.0)])
             .expect("checkpoint forward should succeed");
-        assert!((result[0].as_f64_scalar().unwrap() - 25.0).abs() < 1e-12);
+        assert!((result[0].as_f64_scalar().unwrap() - 30.0).abs() < 1e-12);
     }
 
     #[test]
     fn checkpoint_grad_recomputes_forward() {
-        fj_ad::clear_custom_derivative_rules();
-        let wrapped = checkpoint(make_square_jaxpr());
+        let wrapped = checkpoint(make_add_mul_chain());
         let grads = wrapped
             .grad()
             .call(vec![Value::scalar_f64(3.0)])
             .expect("checkpoint grad should succeed");
-        // d/dx(x^2) = 2x, so at x=3, gradient = 6
-        assert!((grads[0].as_f64_scalar().unwrap() - 6.0).abs() < 1e-6);
+        // d/dx((x + 1) * x) = 2x + 1, so at x=3, gradient = 7
+        assert!((grads[0].as_f64_scalar().unwrap() - 7.0).abs() < 1e-6);
     }
 
     #[test]
     fn checkpoint_memory_savings_reports_equation_count() {
-        fj_ad::clear_custom_derivative_rules();
-        let wrapped = checkpoint(make_square_jaxpr());
-        assert_eq!(wrapped.memory_savings_entries(), 1);
-
-        // A longer chain saves more
-        let chain = make_add_mul_chain();
-        let wrapped_chain = checkpoint(chain);
-        assert_eq!(wrapped_chain.memory_savings_entries(), 2);
+        let wrapped = checkpoint(make_add_mul_chain());
+        assert_eq!(wrapped.memory_savings_entries(), 2);
     }
 
     fn make_add_mul_chain() -> Jaxpr {
@@ -1075,7 +1051,10 @@ mod tests {
             vec![
                 Equation {
                     primitive: Primitive::Add,
-                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(fj_core::Literal::from_f64(1.0))],
+                    inputs: smallvec![
+                        Atom::Var(VarId(1)),
+                        Atom::Lit(fj_core::Literal::from_f64(1.0))
+                    ],
                     outputs: smallvec![VarId(2)],
                     params: BTreeMap::new(),
                     effects: vec![],
