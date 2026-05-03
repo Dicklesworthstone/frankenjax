@@ -10,7 +10,11 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1.0.139"
+smallvec = "1.15.1"
 tempfile = "3.17.1"
+
+[dependencies.fj-ad]
+path = "../../fj-ad"
 
 [dependencies.fj-cache]
 path = "../../fj-cache"
@@ -23,6 +27,9 @@ path = "../../fj-core"
 
 [dependencies.fj-dispatch]
 path = "../../fj-dispatch"
+
+[dependencies.fj-egraph]
+path = "../../fj-egraph"
 
 [dependencies.fj-lax]
 path = "../../fj-lax"
@@ -113,6 +120,20 @@ bench = false
 [[bin]]
 name = "partial_eval_fuzzer"
 path = "fuzz_targets/partial_eval_fuzzer.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "egraph_rewrite_rules"
+path = "fuzz_targets/egraph_rewrite_rules.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ad_gradient_computation"
+path = "fuzz_targets/ad_gradient_computation.rs"
 test = false
 doc = false
 bench = false

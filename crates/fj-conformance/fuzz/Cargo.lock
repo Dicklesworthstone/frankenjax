@@ -424,15 +424,18 @@ dependencies = [
 name = "fj-conformance-fuzz"
 version = "0.0.0"
 dependencies = [
+ "fj-ad",
  "fj-cache",
  "fj-conformance",
  "fj-core",
  "fj-dispatch",
+ "fj-egraph",
  "fj-interpreters",
  "fj-lax",
  "fj-trace",
  "libfuzzer-sys",
  "serde_json",
+ "smallvec",
  "tempfile",
 ]
 
