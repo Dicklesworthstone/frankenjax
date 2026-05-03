@@ -180,7 +180,6 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::ShiftLeft
         | Primitive::ShiftRightArithmetic
         | Primitive::ShiftRightLogical
-        | Primitive::IntegerPow
         | Primitive::Nextafter
         | Primitive::TriangularSolve => 2,
         Primitive::Select | Primitive::Scatter | Primitive::Clamp | Primitive::Cond => 3,
@@ -256,14 +255,42 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Squeeze
         | Primitive::Split
         | Primitive::ExpandDims
-        | Primitive::While => 3,
+        | Primitive::IntegerPow
+        | Primitive::BitcastConvertType
+        | Primitive::ReducePrecision => 1,
         Primitive::Iota | Primitive::BroadcastedIota | Primitive::AxisIndex => 0,
-        Primitive::DynamicUpdateSlice => 3,
+        Primitive::DynamicUpdateSlice | Primitive::While => 3,
         Primitive::Conv => 2,
         Primitive::Scan => 2,
         Primitive::Switch => 3,
-        Primitive::BitcastConvertType | Primitive::ReducePrecision => 1,
     }
+}
+
+#[test]
+fn primitive_arity_matches_runtime_contract_for_reviewed_edges() {
+    for primitive in [
+        Primitive::Neg,
+        Primitive::IntegerPow,
+        Primitive::Copy,
+        Primitive::Rev,
+        Primitive::Squeeze,
+        Primitive::Split,
+        Primitive::ExpandDims,
+        Primitive::Psum,
+        Primitive::Pmean,
+        Primitive::AllGather,
+        Primitive::AllToAll,
+    ] {
+        assert_eq!(
+            primitive_arity(primitive),
+            1,
+            "{primitive:?} should exercise its one-input runtime path"
+        );
+    }
+
+    assert_eq!(primitive_arity(Primitive::AxisIndex), 0);
+    assert_eq!(primitive_arity(Primitive::While), 3);
+    assert_eq!(primitive_arity(Primitive::Switch), 3);
 }
 
 fn params_for(primitive: Primitive, dtype: DType) -> BTreeMap<String, String> {
@@ -429,6 +456,11 @@ fn make_lowering_jaxpr(primitive: Primitive) -> Jaxpr {
         .map(Atom::Var)
         .collect::<smallvec::SmallVec<[Atom; 4]>>();
     let outvar = VarId((input_count + 1) as u32);
+    let params = if primitive == Primitive::IntegerPow {
+        BTreeMap::from([("exponent".to_owned(), "2".to_owned())])
+    } else {
+        BTreeMap::new()
+    };
     Jaxpr::new(
         invars,
         vec![],
@@ -437,7 +469,7 @@ fn make_lowering_jaxpr(primitive: Primitive) -> Jaxpr {
             primitive,
             inputs,
             outputs: smallvec![outvar],
-            params: BTreeMap::new(),
+            params,
             effects: vec![],
             sub_jaxprs: vec![],
         }],

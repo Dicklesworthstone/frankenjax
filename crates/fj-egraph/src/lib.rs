@@ -127,6 +127,10 @@ pub enum EGraphLoweringError {
         primitive: Primitive,
         reason: ExclusionReason,
     },
+    InvalidPrimitiveParams {
+        primitive: Primitive,
+        detail: String,
+    },
     MissingLoweringCase {
         primitive: Primitive,
     },
@@ -219,6 +223,11 @@ impl std::fmt::Display for EGraphLoweringError {
                 primitive.as_str(),
                 reason.category(),
                 reason.detail()
+            ),
+            Self::InvalidPrimitiveParams { primitive, detail } => write!(
+                f,
+                "primitive {} has invalid egraph lowering parameters: {detail}",
+                primitive.as_str()
             ),
             Self::MissingLoweringCase { primitive } => write!(
                 f,
@@ -775,7 +784,11 @@ pub fn jaxpr_to_egraph(
             Primitive::ReduceOr => FjLang::ReduceOr([input_ids[0]]),
             Primitive::ReduceXor => FjLang::ReduceXor([input_ids[0]]),
             // New binary ops
-            Primitive::IntegerPow => FjLang::IntegerPow([input_ids[0], input_ids[1]]),
+            Primitive::IntegerPow => {
+                let exponent = integer_pow_exponent_param(&eqn.params)?;
+                let exponent_id = expr.add(FjLang::Num(i64::from(exponent)));
+                FjLang::IntegerPow([input_ids[0], exponent_id])
+            }
             Primitive::Nextafter => FjLang::Nextafter([input_ids[0], input_ids[1]]),
             Primitive::BitwiseAnd => FjLang::BitwiseAnd([input_ids[0], input_ids[1]]),
             Primitive::BitwiseOr => FjLang::BitwiseOr([input_ids[0], input_ids[1]]),
@@ -797,6 +810,18 @@ pub fn jaxpr_to_egraph(
     }
 
     Ok((expr, var_map))
+}
+
+fn integer_pow_exponent_param(
+    params: &BTreeMap<String, String>,
+) -> Result<i32, EGraphLoweringError> {
+    params
+        .get("exponent")
+        .and_then(|raw| raw.trim().parse::<i32>().ok())
+        .ok_or_else(|| EGraphLoweringError::InvalidPrimitiveParams {
+            primitive: Primitive::IntegerPow,
+            detail: "integer_pow requires integer 'exponent' param".to_owned(),
+        })
 }
 
 fn decode_symbol_literal(sym: &egg::Symbol) -> Option<Literal> {
@@ -1427,9 +1452,8 @@ pub fn egraph_to_jaxpr(
                 &mut equations,
                 expr,
             ),
-            FjLang::IntegerPow([a, b]) => push_binary(
+            FjLang::IntegerPow([a, b]) => push_integer_pow(
                 idx,
-                Primitive::IntegerPow,
                 *a,
                 *b,
                 &mut node_to_var,
@@ -1662,6 +1686,52 @@ fn push_unary(
         params: BTreeMap::new(),
         sub_jaxprs: vec![],
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_integer_pow(
+    idx: usize,
+    base: Id,
+    exponent: Id,
+    node_to_var: &mut BTreeMap<usize, VarId>,
+    next_var: &mut u32,
+    equations: &mut Vec<Equation>,
+    expr: &RecExpr<FjLang>,
+) {
+    let exponent_atom = id_to_atom(exponent, node_to_var, expr);
+    let Some(exponent) = integer_pow_exponent_from_atom(&exponent_atom) else {
+        push_binary(
+            idx,
+            Primitive::IntegerPow,
+            base,
+            exponent,
+            node_to_var,
+            next_var,
+            equations,
+            expr,
+        );
+        return;
+    };
+
+    let out = resolve_or_create(idx, node_to_var, next_var);
+    let base_atom = id_to_atom(base, node_to_var, expr);
+    equations.push(Equation {
+        primitive: Primitive::IntegerPow,
+        inputs: smallvec![base_atom],
+        outputs: smallvec![out],
+        effects: vec![],
+        params: BTreeMap::from([("exponent".to_owned(), exponent.to_string())]),
+        sub_jaxprs: vec![],
+    });
+}
+
+fn integer_pow_exponent_from_atom(atom: &Atom) -> Option<i32> {
+    match atom {
+        Atom::Lit(Literal::I64(value)) => i32::try_from(*value).ok(),
+        Atom::Lit(Literal::U32(value)) => i32::try_from(*value).ok(),
+        Atom::Lit(Literal::U64(value)) => i32::try_from(*value).ok(),
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2248,6 +2318,42 @@ mod tests {
                 primitive: Primitive::Transpose,
                 reason: ExclusionReason::ShapeManipulation,
             }
+        );
+    }
+
+    #[test]
+    fn integer_pow_lowering_uses_exponent_param_contract() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::IntegerPow,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: BTreeMap::from([("exponent".to_owned(), "2".to_owned())]),
+                sub_jaxprs: vec![],
+            }],
+        );
+
+        let (expr, _) = jaxpr_to_egraph(&jaxpr).expect("integer_pow should lower");
+        assert!(
+            expr.as_ref()
+                .iter()
+                .any(|node| matches!(node, FjLang::IntegerPow(_))),
+            "integer_pow should be represented in the egraph expression"
+        );
+
+        let roundtrip = egraph_to_jaxpr(&expr, &[VarId(1)], &[], &[VarId(2)]);
+        assert_eq!(roundtrip.equations.len(), 1);
+        let equation = &roundtrip.equations[0];
+        assert_eq!(equation.primitive, Primitive::IntegerPow);
+        assert_eq!(equation.inputs.len(), 1);
+        assert_eq!(equation.inputs[0], Atom::Var(VarId(1)));
+        assert_eq!(
+            equation.params.get("exponent").map(String::as_str),
+            Some("2")
         );
     }
 
