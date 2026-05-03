@@ -252,6 +252,8 @@ pub struct OptimizationConfig {
     /// - `a * (1/a) => 1` (fails when a = 0)
     /// - `(a*b)/b => a` (fails when b = 0)
     /// - `log(exp(a)) => a` (fails when exp(a) overflows to Inf)
+    /// - `expm1(log1p(a)) => a` (fails when a <= -1)
+    /// - `log1p(expm1(a)) => a` (fails when expm1(a) overflows to Inf)
     /// - `log(a*b) => log(a) + log(b)` (fails when a or b <= 0)
     /// - `log(a/b) => log(a) - log(b)` (fails when a <= 0 or b <= 0)
     pub numerical_safety_mode: bool,
@@ -358,8 +360,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("square-as-mul"; "(square ?a)" => "(mul ?a ?a)"),
         rewrite!("reciprocal-as-div"; "(reciprocal ?a)" => "(div 1 ?a)"),
         // ── Expm1 / Log1p inverses ─────────────────────────────────────
-        rewrite!("expm1-log1p"; "(expm1 (log1p ?a))" => "?a"),
-        rewrite!("log1p-expm1"; "(log1p (expm1 ?a))" => "?a"),
+        // expm1-log1p, log1p-expm1 moved to numerically_unsafe_rules
         // ── Reciprocal involution ────────────────────────────────────────
         rewrite!("reciprocal-reciprocal"; "(reciprocal (reciprocal ?a))" => "?a"),
         // ── Sign idempotence ────────────────────────────────────────────
@@ -442,6 +443,10 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("div-mul-cancel"; "(div (mul ?a ?b) ?b)" => "?a"),
         // log(exp(a)) => a fails when exp(a) overflows to Inf
         rewrite!("log-exp"; "(log (exp ?a))" => "?a"),
+        // expm1(log1p(a)) => a fails when a <= -1 (log1p is NaN)
+        rewrite!("expm1-log1p"; "(expm1 (log1p ?a))" => "?a"),
+        // log1p(expm1(a)) => a fails when expm1(a) overflows to Inf
+        rewrite!("log1p-expm1"; "(log1p (expm1 ?a))" => "?a"),
         // log(a*b) => log(a) + log(b) fails when a or b <= 0
         rewrite!("log-product"; "(log (mul ?a ?b))" => "(add (log ?a) (log ?b))"),
         // log(a/b) => log(a) - log(b) fails when a <= 0 or b <= 0
@@ -5092,6 +5097,101 @@ mod tests {
             aggressive_value[0].as_f64_scalar(),
             Some(1000.0),
             "aggressive mode may apply the numerically unsafe log-exp rewrite"
+        );
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_log1p_expm1_boundaries() {
+        let expm1_log1p = chained_unary_jaxpr(Primitive::Log1p, Primitive::Expm1);
+        let domain_args = [Value::scalar_f64(-2.0)];
+
+        let original_domain = eval_jaxpr(&expm1_log1p, &domain_args).expect("original eval");
+        assert!(
+            original_domain[0]
+                .as_f64_scalar()
+                .is_some_and(f64::is_nan),
+            "expm1(log1p(-2.0)) should preserve log1p domain NaN"
+        );
+
+        let safe_domain = optimize_jaxpr_with_config(&expm1_log1p, &OptimizationConfig::safe());
+        assert!(
+            safe_domain
+                .equations
+                .iter()
+                .any(|equation| equation.primitive == Primitive::Log1p),
+            "safe mode must keep log1p in expm1(log1p(x)): {:?}",
+            safe_domain.equations
+        );
+        assert!(
+            safe_domain
+                .equations
+                .iter()
+                .any(|equation| equation.primitive == Primitive::Expm1),
+            "safe mode must keep expm1 in expm1(log1p(x)): {:?}",
+            safe_domain.equations
+        );
+        let safe_domain_value = eval_jaxpr(&safe_domain, &domain_args).expect("safe eval");
+        assert!(
+            safe_domain_value[0]
+                .as_f64_scalar()
+                .is_some_and(f64::is_nan),
+            "safe optimized value should preserve log1p domain NaN"
+        );
+
+        let aggressive_domain =
+            optimize_jaxpr_with_config(&expm1_log1p, &OptimizationConfig::aggressive());
+        let aggressive_domain_value =
+            eval_jaxpr(&aggressive_domain, &domain_args).expect("aggressive eval");
+        assert_eq!(
+            aggressive_domain_value[0].as_f64_scalar(),
+            Some(-2.0),
+            "aggressive mode may apply the numerically unsafe expm1-log1p rewrite"
+        );
+
+        let log1p_expm1 = chained_unary_jaxpr(Primitive::Expm1, Primitive::Log1p);
+        let overflow_args = [Value::scalar_f64(1000.0)];
+
+        let original_overflow = eval_jaxpr(&log1p_expm1, &overflow_args).expect("original eval");
+        assert!(
+            original_overflow[0]
+                .as_f64_scalar()
+                .is_some_and(f64::is_infinite),
+            "log1p(expm1(1000.0)) should observe expm1 overflow as Inf"
+        );
+
+        let safe_overflow = optimize_jaxpr_with_config(&log1p_expm1, &OptimizationConfig::safe());
+        assert!(
+            safe_overflow
+                .equations
+                .iter()
+                .any(|equation| equation.primitive == Primitive::Expm1),
+            "safe mode must keep expm1 in log1p(expm1(x)): {:?}",
+            safe_overflow.equations
+        );
+        assert!(
+            safe_overflow
+                .equations
+                .iter()
+                .any(|equation| equation.primitive == Primitive::Log1p),
+            "safe mode must keep log1p in log1p(expm1(x)): {:?}",
+            safe_overflow.equations
+        );
+        let safe_overflow_value = eval_jaxpr(&safe_overflow, &overflow_args).expect("safe eval");
+        assert!(
+            safe_overflow_value[0]
+                .as_f64_scalar()
+                .is_some_and(f64::is_infinite),
+            "safe optimized value should preserve overflow-visible Inf"
+        );
+
+        let aggressive_overflow =
+            optimize_jaxpr_with_config(&log1p_expm1, &OptimizationConfig::aggressive());
+        let aggressive_overflow_value =
+            eval_jaxpr(&aggressive_overflow, &overflow_args).expect("aggressive eval");
+        assert_eq!(
+            aggressive_overflow_value[0].as_f64_scalar(),
+            Some(1000.0),
+            "aggressive mode may apply the numerically unsafe log1p-expm1 rewrite"
         );
     }
 
