@@ -84,6 +84,56 @@ fn triple_unary_jaxpr(first: Primitive, second: Primitive, third: Primitive) -> 
     )
 }
 
+fn sin2_cos2_jaxpr() -> Jaxpr {
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(6)],
+        vec![
+            Equation {
+                primitive: Primitive::Sin,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Cos,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(4)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(5))],
+                outputs: smallvec![VarId(6)],
+                effects: vec![],
+                params: Default::default(),
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 // ============================================================================
 // 1. API Entry Point Tests
 // ============================================================================
@@ -324,6 +374,24 @@ fn stacking_egraph_optimization_in_strict_preserves_nested_cbrt() {
     log_pass(
         "stacking_egraph_optimization_in_strict_preserves_nested_cbrt",
         &("jit", "egraph_optimize=true", "strict", "nested_cbrt"),
+    );
+}
+
+#[test]
+fn stacking_egraph_optimization_in_strict_preserves_trig_nan_boundary() {
+    let result = compose(sin2_cos2_jaxpr(), vec![Transform::Jit])
+        .with_mode(CompatibilityMode::Strict)
+        .with_egraph_optimization(true)
+        .call(vec![Value::scalar_f64(f64::INFINITY)])
+        .expect("strict egraph optimized dispatch should preserve trig NaN boundary");
+    let value = result[0].as_f64_scalar().expect("scalar f64 output");
+    assert!(
+        value.is_nan(),
+        "strict egraph optimized sin(inf)^2 + cos(inf)^2 must preserve NaN, got {value}"
+    );
+    log_pass(
+        "stacking_egraph_optimization_in_strict_preserves_trig_nan_boundary",
+        &("jit", "egraph_optimize=true", "strict", "sin2_cos2_inf"),
     );
 }
 

@@ -261,6 +261,8 @@ pub struct OptimizationConfig {
     /// - `log1p(expm1(a)) => a` (fails when expm1(a) overflows to Inf)
     /// - `log(a*b) => log(a) + log(b)` (fails when a or b <= 0)
     /// - `log(a/b) => log(a) - log(b)` (fails when a <= 0 or b <= 0)
+    /// - Exact trig/hyperbolic/logistic identities (erase NaN/Inf boundaries)
+    /// - Max/min absorption (fails when repeated operand is NaN)
     pub numerical_safety_mode: bool,
 }
 
@@ -370,12 +372,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("reciprocal-reciprocal"; "(reciprocal (reciprocal ?a))" => "?a"),
         // ── Sign idempotence ────────────────────────────────────────────
         rewrite!("sign-sign"; "(sign (sign ?a))" => "(sign ?a)"),
-        // ── Trigonometric identities ────────────────────────────────────
-        rewrite!("sin2-cos2"; "(add (mul (sin ?a) (sin ?a)) (mul (cos ?a) (cos ?a)))" => "1"),
-        // ── Hyperbolic identities ───────────────────────────────────────
-        rewrite!("cosh2-sinh2"; "(sub (mul (cosh ?a) (cosh ?a)) (mul (sinh ?a) (sinh ?a)))" => "1"),
-        // ── Logistic identity ───────────────────────────────────────────
-        rewrite!("logistic-complement"; "(add (logistic ?a) (logistic (neg ?a)))" => "1"),
+        // ── Trigonometric / hyperbolic / logistic identities ────────────
+        // Exact identities moved to numerically_unsafe_rules (erase NaN/Inf boundaries)
         // ── Select with constant condition ─────────────────────────────
         rewrite!("select-true"; "(select 1 ?a ?b)" => "?a"),
         rewrite!("select-false"; "(select 0 ?a ?b)" => "?b"),
@@ -393,8 +391,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // ── Erf / Erfc identities ─────────────────────────────────────
         rewrite!("erf-neg"; "(erf (neg ?a))" => "(neg (erf ?a))"),
         // ── Max / Min absorption ──────────────────────────────────────
-        rewrite!("max-min-absorb"; "(max ?a (min ?a ?b))" => "?a"),
-        rewrite!("min-max-absorb"; "(min ?a (max ?a ?b))" => "?a"),
+        // max-min-absorb, min-max-absorb moved to numerically_unsafe_rules
+        // (fail when the repeated operand is NaN)
         // ── Clamp rules ─────────────────────────────────────────────────
         // clamp(x, lo, hi) = min(max(x, lo), hi)
         rewrite!("clamp-to-minmax"; "(clamp ?x ?lo ?hi)" => "(min (max ?x ?lo) ?hi)"),
@@ -470,6 +468,15 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("log-product"; "(log (mul ?a ?b))" => "(add (log ?a) (log ?b))"),
         // log(a/b) => log(a) - log(b) fails when a <= 0 or b <= 0
         rewrite!("log-quotient"; "(log (div ?a ?b))" => "(sub (log ?a) (log ?b))"),
+        // sin(inf), cos(inf), and NaN inputs should remain NaN-observable.
+        rewrite!("sin2-cos2"; "(add (mul (sin ?a) (sin ?a)) (mul (cos ?a) (cos ?a)))" => "1"),
+        // cosh/sinh overflow makes the original expression observe Inf - Inf = NaN.
+        rewrite!("cosh2-sinh2"; "(sub (mul (cosh ?a) (cosh ?a)) (mul (sinh ?a) (sinh ?a)))" => "1"),
+        // logistic(NaN) + logistic(-NaN) is NaN, not 1.
+        rewrite!("logistic-complement"; "(add (logistic ?a) (logistic (neg ?a)))" => "1"),
+        // max/min absorption changes results when the repeated operand is NaN.
+        rewrite!("max-min-absorb"; "(max ?a (min ?a ?b))" => "?a"),
+        rewrite!("min-max-absorb"; "(min ?a (max ?a ?b))" => "?a"),
     ]
 }
 
@@ -4415,6 +4422,128 @@ mod tests {
         )
     }
 
+    fn unary_square_identity_jaxpr(
+        first: Primitive,
+        second: Primitive,
+        combine: Primitive,
+    ) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(7)],
+            vec![
+                Equation {
+                    primitive: first,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: second,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: combine,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(5))],
+                    outputs: smallvec![VarId(7)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn logistic_complement_jaxpr() -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Logistic,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Neg,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Logistic,
+                    inputs: smallvec![Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn minmax_absorption_jaxpr(outer: Primitive, inner: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: inner,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: outer,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
     #[test]
     fn rule_sub_zero() {
         // x - 0 → x
@@ -5368,6 +5497,93 @@ mod tests {
             Some(0.0),
             "aggressive mode may factor through x * (y + z) and erase the overflow NaN"
         );
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_exact_identity_nan_boundaries() {
+        let cases = [
+            (
+                "sin2_cos2_inf",
+                unary_square_identity_jaxpr(Primitive::Sin, Primitive::Cos, Primitive::Add),
+                Value::scalar_f64(f64::INFINITY),
+            ),
+            (
+                "cosh2_sinh2_overflow",
+                unary_square_identity_jaxpr(Primitive::Cosh, Primitive::Sinh, Primitive::Sub),
+                Value::scalar_f64(1000.0),
+            ),
+            (
+                "logistic_complement_nan",
+                logistic_complement_jaxpr(),
+                Value::scalar_f64(f64::NAN),
+            ),
+        ];
+
+        for (name, jaxpr, input) in cases {
+            let args = [input];
+            let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+            assert!(
+                original[0].as_f64_scalar().is_some_and(f64::is_nan),
+                "{name}: original program should observe NaN, got {:?}",
+                original[0]
+            );
+
+            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+            let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+            assert!(
+                safe_value[0].as_f64_scalar().is_some_and(f64::is_nan),
+                "{name}: safe optimized program should preserve NaN boundary, got {:?} from {:?}",
+                safe_value[0],
+                safe.equations
+            );
+
+            let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+            let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+            assert_eq!(
+                aggressive_value[0].as_f64_scalar(),
+                Some(1.0),
+                "{name}: aggressive mode may apply the numerically unsafe exact identity"
+            );
+        }
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_max_min_absorption_nan_boundary() {
+        let cases = [
+            (
+                "max_min_absorb_nan",
+                minmax_absorption_jaxpr(Primitive::Max, Primitive::Min),
+            ),
+            (
+                "min_max_absorb_nan",
+                minmax_absorption_jaxpr(Primitive::Min, Primitive::Max),
+            ),
+        ];
+        let args = [Value::scalar_f64(f64::NAN), Value::scalar_f64(5.0)];
+
+        for (name, jaxpr) in cases {
+            let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+            assert_eq!(
+                original[0].as_f64_scalar(),
+                Some(5.0),
+                "{name}: original program should return the non-NaN operand"
+            );
+
+            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+            let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+            assert_eq!(
+                safe_value[0].as_f64_scalar(),
+                Some(5.0),
+                "{name}: safe optimized program should preserve NaN-skipping max/min semantics"
+            );
+
+            let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+            let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+            assert!(
+                aggressive_value[0].as_f64_scalar().is_some_and(f64::is_nan),
+                "{name}: aggressive mode may apply the unsafe absorption identity"
+            );
+        }
     }
 
     #[test]
