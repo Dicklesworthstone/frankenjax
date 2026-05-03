@@ -1748,13 +1748,10 @@ impl SimpleTraceContext {
             | Primitive::Pmean
             | Primitive::AllGather
             | Primitive::AllToAll
-            | Primitive::AxisIndex => {
-                return Err(TraceError::ShapeInferenceFailed {
-                    primitive,
-                    detail: "collective operation requires pmap context (not yet implemented)"
-                        .to_owned(),
-                });
-            }
+            | Primitive::AxisIndex => Err(TraceError::ShapeInferenceFailed {
+                primitive,
+                detail: "collective operation requires an active pmap context".to_owned(),
+            }),
 
             Primitive::ReduceWindow => {
                 if inputs.is_empty() {

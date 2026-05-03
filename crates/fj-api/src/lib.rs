@@ -14,8 +14,8 @@ pub use transforms::{
     HessianWrapped, JacobianWrapped, JitWrapped, PmapWrapped, ValueAndGradWrapped, VmapWrapped,
 };
 pub use transforms::{
-    checkpoint, compose, custom_jvp, custom_vjp, grad, hessian, jacobian, jit, pmap, value_and_grad,
-    vmap,
+    checkpoint, compose, custom_jvp, custom_vjp, grad, hessian, jacobian, jit, pmap,
+    value_and_grad, vmap,
 };
 
 // Re-export make_jaxpr tracing API from fj-trace

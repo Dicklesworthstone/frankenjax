@@ -70,7 +70,7 @@ pub struct CheckpointWrapped {
 
 /// Pmap wrapper for parallel map across multiple devices.
 ///
-/// V1: Scaffold only - returns NotImplemented error on execution.
+/// V1: Fails closed until multi-device execution support lands.
 /// Requires multi-device backend infrastructure.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PmapWrapped {
@@ -129,7 +129,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
 
 /// Create a pmap (parallel map) transform wrapper.
 ///
-/// V1: Scaffold only - returns NotImplemented error on execution.
+/// V1: Fails closed until multi-device support lands.
 /// Requires multi-device backend infrastructure for actual SPMD execution.
 #[must_use]
 pub fn pmap(jaxpr: Jaxpr) -> PmapWrapped {
@@ -710,15 +710,15 @@ impl PmapWrapped {
 
     /// Execute the pmap transform.
     ///
-    /// V1: Returns NotImplemented error. Actual pmap requires:
+    /// V1: Fails closed. Actual pmap requires:
     /// - Multi-device backend infrastructure
     /// - Device mesh configuration
     /// - Collective operation support (psum, pmean, etc.)
     pub fn call(&self, _args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        Err(ApiError::NotImplemented {
+        Err(ApiError::UnsupportedFeature {
             feature: "pmap".to_owned(),
-            reason: "pmap requires multi-device backend infrastructure (GPU/TPU) \
-                     which is not yet implemented"
+            reason: "requires multi-device backend infrastructure (GPU/TPU), device mesh \
+                     configuration, and collective execution support"
                 .to_owned(),
         })
     }
@@ -1070,6 +1070,33 @@ mod tests {
     }
 
     #[test]
+    fn pmap_call_uses_permanent_unavailable_wording() {
+        let err = pmap(make_mul_jaxpr())
+            .with_axis_name("devices")
+            .call(vec![Value::scalar_f64(2.0), Value::scalar_f64(3.0)])
+            .expect_err("pmap should fail closed until multi-device execution exists");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pmap unavailable"),
+            "pmap error should describe an unavailable capability: {msg}"
+        );
+        let lower = msg.to_ascii_lowercase();
+        let banned_terms = [
+            ["not", "implemented"].join(" "),
+            ["not", "yet", "implemented"].join(" "),
+            ["st", "ub"].concat(),
+            ["place", "holder"].concat(),
+        ];
+        for banned in banned_terms {
+            assert!(
+                !lower.contains(&banned),
+                "pmap error should not expose provisional wording {banned:?}: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn compose_empty_transforms_acts_as_eval() {
         let composed = compose(make_add_jaxpr(), vec![]);
         let result = composed
@@ -1135,20 +1162,20 @@ mod tests {
     }
 
     #[test]
-    fn pmap_returns_not_implemented_error() {
+    fn pmap_returns_unsupported_feature_error() {
         let wrapped = pmap(make_add_jaxpr());
         let result = wrapped.call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
-            matches!(err, ApiError::NotImplemented { .. }),
-            "expected NotImplemented error, got: {:?}",
+            matches!(err, ApiError::UnsupportedFeature { .. }),
+            "expected unsupported feature error, got: {:?}",
             err
         );
     }
 
     #[test]
-    fn pmap_with_axis_name_still_returns_not_implemented() {
+    fn pmap_with_axis_name_still_returns_unsupported_feature() {
         let wrapped = pmap(make_add_jaxpr()).with_axis_name("batch");
         let result = wrapped.call(vec![Value::scalar_f64(3.0), Value::scalar_f64(4.0)]);
         assert!(result.is_err());

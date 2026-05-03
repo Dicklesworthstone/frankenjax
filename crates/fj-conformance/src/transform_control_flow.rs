@@ -2161,6 +2161,7 @@ fn transform_error_class(err: &TransformExecutionError) -> &'static str {
         }
         TransformExecutionError::EmptyVmapOutput => "empty_vmap_output",
         TransformExecutionError::TensorBuild(_) => "tensor_build",
+        TransformExecutionError::PmapUnavailable => "pmap_unavailable",
     }
 }
 

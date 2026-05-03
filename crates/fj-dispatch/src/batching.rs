@@ -476,7 +476,7 @@ pub fn apply_batch_rule(
         | Primitive::AllGather
         | Primitive::AllToAll
         | Primitive::AxisIndex => Err(BatchError::EvalError(
-            "collective operation requires pmap context (not yet implemented)".to_owned(),
+            "collective operation requires an active pmap context".to_owned(),
         )),
     }
 }

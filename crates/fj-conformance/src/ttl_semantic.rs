@@ -1110,6 +1110,7 @@ fn classify_transform_execution_error(err: &TransformExecutionError) -> String {
         }
         TransformExecutionError::EmptyVmapOutput => "transform_execution.empty_vmap_output",
         TransformExecutionError::TensorBuild(_) => "transform_execution.tensor_build",
+        TransformExecutionError::PmapUnavailable => "transform_execution.pmap_unavailable",
     }
     .to_owned()
 }

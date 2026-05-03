@@ -5759,7 +5759,7 @@ fn jvp_rule(
         | Primitive::Pmean
         | Primitive::AllGather
         | Primitive::AllToAll
-        | Primitive::AxisIndex => return Err(AdError::UnsupportedPrimitive(primitive)),
+        | Primitive::AxisIndex => Err(AdError::UnsupportedPrimitive(primitive)),
 
         // Cbrt JVP: d cbrt(x) = tangent / (3 * cbrt(x)^2)
         Primitive::Cbrt => {

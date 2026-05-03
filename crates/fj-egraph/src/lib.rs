@@ -145,6 +145,7 @@ pub enum ExclusionReason {
     Cumulative,
     Windowed,
     Encoding,
+    Collective,
 }
 
 impl ExclusionReason {
@@ -162,6 +163,7 @@ impl ExclusionReason {
             Self::Cumulative => "cumulative",
             Self::Windowed => "windowed",
             Self::Encoding => "encoding",
+            Self::Collective => "collective",
         }
     }
 
@@ -200,6 +202,9 @@ impl ExclusionReason {
             }
             Self::Encoding => {
                 "requires category-depth and axis metadata not representable in the algebraic e-graph"
+            }
+            Self::Collective => {
+                "requires pmap axis context and multi-device semantics outside the algebraic e-graph"
             }
         }
     }
@@ -2137,6 +2142,12 @@ fn excluded_primitive_reason(primitive: Primitive) -> Option<ExclusionReason> {
         Primitive::ReduceWindow => Some(ExclusionReason::Windowed),
         // OneHot needs category-depth and axis metadata.
         Primitive::OneHot => Some(ExclusionReason::Encoding),
+        // Collectives depend on active pmap axis context and device topology.
+        Primitive::Psum
+        | Primitive::Pmean
+        | Primitive::AllGather
+        | Primitive::AllToAll
+        | Primitive::AxisIndex => Some(ExclusionReason::Collective),
         _ => None,
     }
 }
@@ -2284,6 +2295,11 @@ mod tests {
             (Primitive::Cumprod, ExclusionReason::Cumulative),
             (Primitive::ReduceWindow, ExclusionReason::Windowed),
             (Primitive::OneHot, ExclusionReason::Encoding),
+            (Primitive::Psum, ExclusionReason::Collective),
+            (Primitive::Pmean, ExclusionReason::Collective),
+            (Primitive::AllGather, ExclusionReason::Collective),
+            (Primitive::AllToAll, ExclusionReason::Collective),
+            (Primitive::AxisIndex, ExclusionReason::Collective),
         ];
 
         for (primitive, reason) in cases {

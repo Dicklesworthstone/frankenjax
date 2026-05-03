@@ -1,8 +1,12 @@
 use fj_ad::AdError;
+use fj_api::ApiError;
 use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
-use fj_dispatch::batching::{BatchTracer, batch_eval_jaxpr};
+use fj_dispatch::{
+    TransformExecutionError,
+    batching::{BatchTracer, batch_eval_jaxpr},
+};
 use fj_egraph::{EGraphLoweringError, ExclusionReason, jaxpr_to_egraph};
 use fj_interpreters::eval_jaxpr;
 use fj_lax::{EvalError, eval_primitive};
@@ -130,6 +134,11 @@ fn all_primitives() -> &'static [Primitive] {
         Primitive::Scan,
         Primitive::While,
         Primitive::Switch,
+        Primitive::Psum,
+        Primitive::Pmean,
+        Primitive::AllGather,
+        Primitive::AllToAll,
+        Primitive::AxisIndex,
         Primitive::BitwiseAnd,
         Primitive::BitwiseOr,
         Primitive::BitwiseXor,
@@ -238,13 +247,17 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Cumprod
         | Primitive::Sort
         | Primitive::Argsort
+        | Primitive::Psum
+        | Primitive::Pmean
+        | Primitive::AllGather
+        | Primitive::AllToAll
         | Primitive::Copy
         | Primitive::Rev
         | Primitive::Squeeze
         | Primitive::Split
         | Primitive::ExpandDims
         | Primitive::While => 3,
-        Primitive::Iota | Primitive::BroadcastedIota => 0,
+        Primitive::Iota | Primitive::BroadcastedIota | Primitive::AxisIndex => 0,
         Primitive::DynamicUpdateSlice => 3,
         Primitive::Conv => 2,
         Primitive::Scan => 2,
@@ -564,6 +577,12 @@ fn no_stub_regression_matrix() {
         }
         .to_string(),
         AdError::UnsupportedPrimitive(Primitive::Scan).to_string(),
+        TransformExecutionError::PmapUnavailable.to_string(),
+        ApiError::UnsupportedFeature {
+            feature: "pmap".to_owned(),
+            reason: "multi-device backend infrastructure is unavailable in V1".to_owned(),
+        }
+        .to_string(),
     ];
 
     for rendered in display_cases {

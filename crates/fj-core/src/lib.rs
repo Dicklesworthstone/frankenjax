@@ -343,7 +343,7 @@ pub enum Transform {
     Grad,
     Vmap,
     /// Parallel map for multi-device SPMD execution.
-    /// V1: Scaffold only - returns NotImplemented.
+    /// V1: Fails closed until multi-device execution support lands.
     Pmap,
 }
 

@@ -15,7 +15,7 @@
 use fj_core::{DType, Jaxpr, Value};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
-use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
+use fj_runtime::device::{DeviceId, DeviceInfo};
 
 /// GPU backend implementation (stub).
 ///
@@ -99,10 +99,7 @@ impl Backend for GpuBackend {
     }
 
     fn default_device(&self) -> DeviceId {
-        self.devices
-            .first()
-            .map(|d| d.id)
-            .unwrap_or(DeviceId(0))
+        self.devices.first().map(|d| d.id).unwrap_or(DeviceId(0))
     }
 
     fn execute(
@@ -171,13 +168,7 @@ impl Backend for GpuBackend {
 
         // Future: Query actual GPU capabilities
         BackendCapabilities {
-            supported_dtypes: vec![
-                DType::F32,
-                DType::F64,
-                DType::I32,
-                DType::I64,
-                DType::Bool,
-            ],
+            supported_dtypes: vec![DType::F32, DType::F64, DType::I32, DType::I64, DType::Bool],
             max_tensor_rank: 8,
             memory_limit_bytes: None, // Query from device
             multi_device: true,       // GPU backends typically support multi-device

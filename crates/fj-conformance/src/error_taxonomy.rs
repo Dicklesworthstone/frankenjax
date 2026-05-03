@@ -1295,6 +1295,11 @@ fn classify_transform_execution_error(err: &TransformExecutionError) -> Observed
             "TransformExecutionError::TensorBuild",
             "tensor build error: {detail}",
         ),
+        TransformExecutionError::PmapUnavailable => (
+            "transform_execution.pmap_unavailable",
+            "TransformExecutionError::PmapUnavailable",
+            "pmap unsupported: multi-device backend infrastructure (GPU/TPU) is unavailable in V1",
+        ),
     };
     observed(class, variant, shape, err.to_string())
 }
