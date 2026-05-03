@@ -3,7 +3,7 @@ name = "fj-backend-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GPU backend scaffold for FrankenJAX (stub implementation)"
+description = "GPU backend foundation for FrankenJAX with a V1 unavailable execution path"
 
 [features]
 default = []

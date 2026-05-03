@@ -1,11 +1,11 @@
-//! GPU backend scaffold for FrankenJAX.
+//! GPU backend foundation for FrankenJAX.
 //!
 //! This crate provides the architectural foundation for GPU acceleration.
-//! V1 implementation returns "unavailable" - actual GPU support requires:
+//! V1 reports unavailable because GPU execution requires future backend work:
 //! - CUDA backend via cudarc (NVIDIA GPUs)
 //! - Cross-platform via wgpu (Vulkan/Metal/DX12)
 //!
-//! The Backend trait implementation is complete but stubbed, enabling:
+//! The Backend trait implementation is wired for:
 //! - Device discovery infrastructure
 //! - Backend registry integration
 //! - Future GPU kernel compilation paths
@@ -17,7 +17,7 @@ use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo};
 
-/// GPU backend implementation (stub).
+/// GPU backend implementation.
 ///
 /// Currently returns "unavailable" for all operations.
 /// Future implementations will detect GPU hardware and provide:
@@ -40,7 +40,7 @@ impl Default for GpuBackend {
 impl GpuBackend {
     /// Create a new GPU backend, probing for available hardware.
     ///
-    /// V1: Always returns unavailable (no GPU implementation yet).
+    /// V1: Always returns unavailable because no GPU execution path is shipped.
     /// Future: Will probe CUDA/wgpu for GPU devices.
     #[must_use]
     pub fn new() -> Self {
@@ -50,21 +50,20 @@ impl GpuBackend {
 
     /// Probe for GPU devices.
     ///
-    /// V1: Returns (false, empty) - no GPU support yet.
+    /// V1: Returns (false, empty) because GPU support is outside the shipped V1 scope.
     /// Future CUDA path: Query cudaGetDeviceCount, cudaGetDeviceProperties.
     /// Future wgpu path: Query wgpu::Instance::enumerate_adapters.
     fn probe_gpu_devices() -> (bool, Vec<DeviceInfo>) {
-        // V1: No GPU support - return unavailable
-        // Future: Probe CUDA or wgpu for devices
+        // V1: GPU support is unavailable; future code should probe CUDA or wgpu for devices.
         #[cfg(feature = "cuda")]
         {
-            // TODO: cudarc device enumeration
+            // cudarc device enumeration belongs here when CUDA execution ships.
             // let device_count = cudarc::driver::CudaDevice::count()?;
         }
 
         #[cfg(feature = "wgpu")]
         {
-            // TODO: wgpu adapter enumeration
+            // wgpu adapter enumeration belongs here when cross-platform GPU execution ships.
             // let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
             // let adapters = instance.enumerate_adapters(wgpu::Backends::all());
         }
@@ -84,7 +83,7 @@ impl GpuBackend {
         if self.available {
             ""
         } else {
-            "GPU backend not yet implemented (V1 scaffold only)"
+            "GPU backend unavailable in V1 (hardware execution backend absent)"
         }
     }
 }
@@ -114,10 +113,9 @@ impl Backend for GpuBackend {
             });
         }
 
-        // V1: Not implemented
-        // Future: Compile jaxpr to GPU kernels, execute on device
+        // Future: Compile jaxpr to GPU kernels, execute on device.
         Err(BackendError::ExecutionFailed {
-            detail: "GPU execution not yet implemented".to_owned(),
+            detail: "GPU execution unavailable in V1".to_owned(),
         })
     }
 
@@ -128,11 +126,10 @@ impl Backend for GpuBackend {
             });
         }
 
-        // V1: Not implemented
-        // Future: Allocate GPU device memory
+        // Future: Allocate GPU device memory.
         Err(BackendError::AllocationFailed {
             device,
-            detail: format!("GPU allocation of {size_bytes} bytes not yet implemented"),
+            detail: format!("GPU allocation of {size_bytes} bytes unavailable in V1"),
         })
     }
 
@@ -143,17 +140,16 @@ impl Backend for GpuBackend {
             });
         }
 
-        // V1: Not implemented
-        // Future: DMA transfer between host and device
+        // Future: DMA transfer between host and device.
         Err(BackendError::TransferFailed {
             source: DeviceId(0),
             target,
-            detail: "GPU transfer not yet implemented".to_owned(),
+            detail: "GPU transfer unavailable in V1".to_owned(),
         })
     }
 
     fn version(&self) -> &str {
-        "gpu-v1-scaffold"
+        "gpu-v1-unavailable"
     }
 
     fn capabilities(&self) -> BackendCapabilities {

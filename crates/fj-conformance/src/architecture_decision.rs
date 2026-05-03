@@ -616,7 +616,9 @@ fn layer_for_crate(name: &str) -> Option<CrateLayer> {
         "fj-core" | "fj-test-utils" => CrateLayer::Model,
         "fj-trace" | "fj-lax" | "fj-cache" | "fj-ledger" => CrateLayer::Semantics,
         "fj-interpreters" | "fj-ad" | "fj-runtime" | "fj-egraph" => CrateLayer::Execution,
-        "fj-dispatch" | "fj-api" | "fj-backend-cpu" | "fj-ffi" => CrateLayer::FacadeBackend,
+        "fj-dispatch" | "fj-api" | "fj-backend-cpu" | "fj-backend-gpu" | "fj-ffi" | "fj-py" => {
+            CrateLayer::FacadeBackend
+        }
         "fj-conformance" => CrateLayer::OpsHarness,
         _ => return None,
     })
@@ -634,8 +636,10 @@ const REQUIRED_CRATES: &[&str] = &[
     "fj-egraph",
     "fj-dispatch",
     "fj-backend-cpu",
+    "fj-backend-gpu",
     "fj-api",
     "fj-ffi",
+    "fj-py",
     "fj-conformance",
     "fj-test-utils",
 ];
@@ -645,16 +649,20 @@ fn boundary_decisions() -> Vec<BoundaryDecision> {
         BoundaryDecision {
             boundary_id: "user_api_facade".to_owned(),
             title: "User API facade".to_owned(),
-            owner_crates: vec!["fj-api".to_owned(), "fj-trace".to_owned()],
+            owner_crates: vec![
+                "fj-api".to_owned(),
+                "fj-trace".to_owned(),
+                "fj-py".to_owned(),
+            ],
             current_state:
-                "fj-api is the V1 user-facing transform facade for jit, grad, vmap, value_and_grad, jacobian, hessian, and make_jaxpr."
+                "fj-api is the V1 Rust transform facade for jit, grad, vmap, value_and_grad, jacobian, hessian, and make_jaxpr; fj-py is the Python binding facade over that surface."
                     .to_owned(),
             decision: BoundaryDecisionKind::KeepCurrentBoundary,
             user_outcome:
                 "Users get one explicit Rust transform facade now; no extra compatibility wrapper or package rename is introduced in this bead."
                     .to_owned(),
             dependency_graph_impact:
-                "fj-api depends only on trace/core/dispatch/ad plus dev-only test helpers, so it remains above semantic crates without reverse edges."
+                "fj-api depends only on trace/core/dispatch/ad plus dev-only test helpers, and fj-py stays at the facade layer above api/trace/ad/core without reverse edges."
                     .to_owned(),
             compile_time_impact:
                 "Keeping the facade avoids adding another workspace crate and keeps incremental compile churn lower while public examples are still being proven."
@@ -738,10 +746,11 @@ fn boundary_decisions() -> Vec<BoundaryDecision> {
                 "fj-interpreters".to_owned(),
                 "fj-dispatch".to_owned(),
                 "fj-backend-cpu".to_owned(),
+                "fj-backend-gpu".to_owned(),
                 "fj-runtime".to_owned(),
             ],
             current_state:
-                "V1 lowers to canonical IR evaluated by interpreter/dispatch paths; fj-backend-cpu owns dependency-wave CPU execution and fj-runtime owns admission policy."
+                "V1 lowers to canonical IR evaluated by interpreter/dispatch paths; fj-backend-cpu owns dependency-wave CPU execution, fj-backend-gpu owns fail-closed GPU admission, and fj-runtime owns backend policy."
                     .to_owned(),
             decision: BoundaryDecisionKind::DeferExtraction,
             user_outcome:

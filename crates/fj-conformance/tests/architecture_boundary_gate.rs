@@ -30,7 +30,7 @@ fn current_workspace_architecture_boundary_report_passes() {
     );
     assert_eq!(report.bead_id, "frankenjax-cstq.12");
     assert_eq!(report.status, "pass");
-    assert_eq!(report.crate_count, 15);
+    assert_eq!(report.crate_count, 17);
     assert!(report.issues.is_empty());
     assert!(
         report
@@ -48,7 +48,19 @@ fn current_workspace_architecture_boundary_report_passes() {
         report
             .workspace_crates
             .iter()
+            .any(|krate| krate.name == "fj-backend-gpu")
+    );
+    assert!(
+        report
+            .workspace_crates
+            .iter()
             .any(|krate| krate.name == "fj-ffi")
+    );
+    assert!(
+        report
+            .workspace_crates
+            .iter()
+            .any(|krate| krate.name == "fj-py")
     );
     assert!(
         report
@@ -118,7 +130,7 @@ fn generated_markdown_and_summary_are_dashboard_ready() {
 
     let summary = architecture_boundary_summary_json(&report);
     assert_eq!(summary["status"], "pass");
-    assert_eq!(summary["crate_count"], 15);
+    assert_eq!(summary["crate_count"], 17);
     assert_eq!(summary["issue_count"], 0);
     assert!(
         summary["decisions"]
