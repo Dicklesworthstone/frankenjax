@@ -22,6 +22,7 @@ fuzz_target!(|data: &[u8]| {
     if let Ok(bundle) = read_transform_fixture_bundle(&fixture_path) {
         let config = HarnessConfig::default();
         let _ = run_transform_fixture_bundle(&config, &bundle);
-        let _ = run_transform_fixture_bundle_batched(&config, &bundle, &BatchRunnerConfig::default());
+        let _ =
+            run_transform_fixture_bundle_batched(&config, &bundle, &BatchRunnerConfig::default());
     }
 });

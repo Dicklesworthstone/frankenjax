@@ -2,7 +2,9 @@
 
 mod common;
 
-use common::{ByteCursor, primitive_arity, sample_dtype, sample_primitive, sample_primitive_params};
+use common::{
+    ByteCursor, primitive_arity, sample_dtype, sample_primitive, sample_primitive_params,
+};
 use fj_lax::eval_primitive;
 use fj_trace::{ShapedArray, SimpleTraceContext, TraceContext};
 use libfuzzer_sys::fuzz_target;

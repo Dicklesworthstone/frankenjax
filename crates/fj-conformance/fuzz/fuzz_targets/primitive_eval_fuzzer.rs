@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{primitive_arity, sample_primitive, sample_value, ByteCursor};
+use common::{ByteCursor, primitive_arity, sample_primitive, sample_value};
 use fj_lax::eval_primitive;
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
@@ -31,21 +31,19 @@ fuzz_target!(|data: &[u8]| {
     let params = BTreeMap::new();
 
     match eval_primitive(primitive, &inputs, &params) {
-        Ok(value) => {
-            match &value {
-                fj_core::Value::Scalar(lit) => {
-                    let _ = lit.as_f64();
-                    let _ = lit.as_i64();
-                }
-                fj_core::Value::Tensor(t) => {
-                    assert_eq!(
-                        t.shape.element_count().unwrap_or(0) as usize,
-                        t.elements.len(),
-                        "shape/element count mismatch"
-                    );
-                }
+        Ok(value) => match &value {
+            fj_core::Value::Scalar(lit) => {
+                let _ = lit.as_f64();
+                let _ = lit.as_i64();
             }
-        }
+            fj_core::Value::Tensor(t) => {
+                assert_eq!(
+                    t.shape.element_count().unwrap_or(0) as usize,
+                    t.elements.len(),
+                    "shape/element count mismatch"
+                );
+            }
+        },
         Err(_) => {
             // Expected: many random inputs produce typed errors.
             // The critical invariant is no panic.

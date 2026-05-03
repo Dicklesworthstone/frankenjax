@@ -1,7 +1,7 @@
 #![no_main]
 
-use fj_cache::persistence::{deserialize, serialize};
 use fj_cache::backend::CachedArtifact;
+use fj_cache::persistence::{deserialize, serialize};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
@@ -13,8 +13,8 @@ fuzz_target!(|data: &[u8]| {
             // If deserialization succeeds, verify round-trip stability:
             // re-serializing and deserializing must produce the same artifact.
             let re_serialized = serialize(&artifact);
-            let re_deserialized = deserialize(&re_serialized)
-                .expect("round-trip re-deserialization must succeed");
+            let re_deserialized =
+                deserialize(&re_serialized).expect("round-trip re-deserialization must succeed");
             assert_eq!(artifact.data, re_deserialized.data);
             assert_eq!(
                 artifact.integrity_sha256_hex,
@@ -34,8 +34,8 @@ fuzz_target!(|data: &[u8]| {
             integrity_sha256_hex: String::new(), // ignored by serialize
         };
         let serialized = serialize(&artifact);
-        let restored = deserialize(&serialized)
-            .expect("serialized artifact must always deserialize");
+        let restored =
+            deserialize(&serialized).expect("serialized artifact must always deserialize");
         assert_eq!(restored.data, data);
     }
 });

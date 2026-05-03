@@ -106,6 +106,11 @@ const ALL_PRIMITIVES: &[Primitive] = &[
     Primitive::Scan,
     Primitive::While,
     Primitive::Switch,
+    Primitive::Psum,
+    Primitive::Pmean,
+    Primitive::AllGather,
+    Primitive::AllToAll,
+    Primitive::AxisIndex,
     Primitive::BitwiseAnd,
     Primitive::BitwiseOr,
     Primitive::BitwiseXor,
@@ -239,10 +244,11 @@ pub fn sample_program(cursor: &mut ByteCursor<'_>) -> ProgramSpec {
 
 #[must_use]
 pub fn sample_transform(cursor: &mut ByteCursor<'_>) -> Transform {
-    match cursor.take_u8() % 3 {
+    match cursor.take_u8() % 4 {
         0 => Transform::Jit,
         1 => Transform::Grad,
-        _ => Transform::Vmap,
+        2 => Transform::Vmap,
+        _ => Transform::Pmap,
     }
 }
 
@@ -349,12 +355,16 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Ifft
         | Primitive::Rfft
         | Primitive::Irfft
+        | Primitive::Psum
+        | Primitive::Pmean
+        | Primitive::AllGather
+        | Primitive::AllToAll
         | Primitive::BitwiseNot
         | Primitive::ReduceWindow
         | Primitive::PopulationCount
         | Primitive::CountLeadingZeros => 1,
         // Nullary ops
-        Primitive::Iota | Primitive::BroadcastedIota => 0,
+        Primitive::Iota | Primitive::BroadcastedIota | Primitive::AxisIndex => 0,
         // Parameterized primitives with fixed or minimum input counts.
         Primitive::DynamicUpdateSlice => 3,
         Primitive::OneHot
@@ -716,8 +726,8 @@ pub fn sample_primitive_params(
 
 #[cfg(test)]
 mod tests {
-    use super::primitive_arity;
-    use fj_core::Primitive;
+    use super::{ALL_PRIMITIVES, ByteCursor, primitive_arity, sample_transform};
+    use fj_core::{Primitive, Transform};
 
     #[test]
     fn primitive_arity_uses_real_counts_for_parameterized_primitives() {
@@ -733,5 +743,32 @@ mod tests {
         assert_eq!(primitive_arity(Primitive::While), 3);
         assert_eq!(primitive_arity(Primitive::Switch), 2);
         assert_eq!(primitive_arity(Primitive::BroadcastedIota), 0);
+        assert_eq!(primitive_arity(Primitive::Psum), 1);
+        assert_eq!(primitive_arity(Primitive::Pmean), 1);
+        assert_eq!(primitive_arity(Primitive::AllGather), 1);
+        assert_eq!(primitive_arity(Primitive::AllToAll), 1);
+        assert_eq!(primitive_arity(Primitive::AxisIndex), 0);
+    }
+
+    #[test]
+    fn primitive_sampler_includes_pmap_collectives() {
+        for primitive in [
+            Primitive::Psum,
+            Primitive::Pmean,
+            Primitive::AllGather,
+            Primitive::AllToAll,
+            Primitive::AxisIndex,
+        ] {
+            assert!(
+                ALL_PRIMITIVES.contains(&primitive),
+                "{primitive:?} should be reachable by primitive fuzz targets"
+            );
+        }
+    }
+
+    #[test]
+    fn transform_sampler_includes_pmap() {
+        let mut cursor = ByteCursor::new(&[3]);
+        assert_eq!(sample_transform(&mut cursor), Transform::Pmap);
     }
 }

@@ -4,7 +4,7 @@ mod common;
 
 use common::{ByteCursor, sample_program};
 use fj_core::build_program;
-use fj_interpreters::partial_eval::{partial_eval_jaxpr, PartialEvalResult};
+use fj_interpreters::partial_eval::{PartialEvalResult, partial_eval_jaxpr};
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {

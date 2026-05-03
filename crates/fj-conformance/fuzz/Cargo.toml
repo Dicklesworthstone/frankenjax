@@ -117,6 +117,10 @@ test = false
 doc = false
 bench = false
 
+[[test]]
+name = "fuzz_common"
+path = "fuzz_targets/common.rs"
+
 # Keep fuzzing package separate from the workspace package graph.
 [workspace]
 members = ["."]
