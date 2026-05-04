@@ -410,13 +410,9 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("sign-sign"; "(sign (sign ?a))" => "(sign ?a)"),
         // ── Trigonometric / hyperbolic / logistic identities ────────────
         // Exact identities moved to numerically_unsafe_rules (erase NaN/Inf boundaries)
-        // ── Select with constant condition ─────────────────────────────
-        rewrite!("select-true"; "(select 1 ?a ?b)" => "?a"),
-        rewrite!("select-false"; "(select 0 ?a ?b)" => "?b"),
-        rewrite!("select-same"; "(select ?c ?a ?a)" => "?a"),
-        // ── Nested select with same condition ──────────────────────────
-        rewrite!("select-nest-true"; "(select ?c (select ?c ?a ?b) ?x)" => "(select ?c ?a ?x)"),
-        rewrite!("select-nest-false"; "(select ?c ?x (select ?c ?a ?b))" => "(select ?c ?x ?b)"),
+        // ── Select rewrites ───────────────────────────────────────────
+        // Select simplifications moved to numerically_unsafe_rules
+        // because they can skip predicate, branch kind, and shape validation.
         // ── Multiplicative cancellation ──────────────────────────────
         // mul-reciprocal, div-mul-cancel moved to numerically_unsafe_rules
         // ── Additional power rules ────────────────────────────────────
@@ -523,6 +519,12 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("cosh2-sinh2"; "(sub (mul (cosh ?a) (cosh ?a)) (mul (sinh ?a) (sinh ?a)))" => "1"),
         // logistic(NaN) + logistic(-NaN) is NaN, not 1.
         rewrite!("logistic-complement"; "(add (logistic ?a) (logistic (neg ?a)))" => "1"),
+        // Select simplifications can remove eval_select validation errors.
+        rewrite!("select-true"; "(select 1 ?a ?b)" => "?a"),
+        rewrite!("select-false"; "(select 0 ?a ?b)" => "?b"),
+        rewrite!("select-same"; "(select ?c ?a ?a)" => "?a"),
+        rewrite!("select-nest-true"; "(select ?c (select ?c ?a ?b) ?x)" => "(select ?c ?a ?x)"),
+        rewrite!("select-nest-false"; "(select ?c ?x (select ?c ?a ?b))" => "(select ?c ?x ?b)"),
         // max/min absorption changes results when the repeated operand is NaN.
         rewrite!("max-min-absorb"; "(max ?a (min ?a ?b))" => "?a"),
         rewrite!("min-max-absorb"; "(min ?a (max ?a ?b))" => "?a"),
@@ -3262,10 +3264,10 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() <= jaxpr.equations.len(),
-            "select(c, a, a) should not increase equation count"
+            "aggressive select(c, a, a) should not increase equation count"
         );
     }
 
@@ -3624,7 +3626,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() <= jaxpr.equations.len(),
             "nested select should not increase equation count: got {} eqns (was {})",
@@ -3668,7 +3670,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() <= jaxpr.equations.len(),
             "nested select should not increase equation count: got {} eqns (was {})",
@@ -5391,7 +5393,7 @@ mod tests {
                 sub_jaxprs: vec![],
             }],
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "select(1,a,b) should simplify to a: got {} eqns",
@@ -5419,7 +5421,7 @@ mod tests {
                 sub_jaxprs: vec![],
             }],
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "select(0,a,b) should simplify to b: got {} eqns",
@@ -5733,6 +5735,128 @@ mod tests {
             Some(1e-320),
             "aggressive mode may apply the numerically unsafe reciprocal-reciprocal rewrite"
         );
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_select_validation_errors() {
+        let tensor_arg = || {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: vec![1] },
+                    vec![Literal::from_f64(3.0)],
+                )
+                .expect("valid tensor"),
+            )
+        };
+        let cases = [
+            (
+                "complex_condition_select_same",
+                Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(3)],
+                    vec![Equation {
+                        primitive: Primitive::Select,
+                        inputs: smallvec![
+                            Atom::Var(VarId(1)),
+                            Atom::Var(VarId(2)),
+                            Atom::Var(VarId(2))
+                        ],
+                        outputs: smallvec![VarId(3)],
+                        effects: vec![],
+                        params: BTreeMap::new(),
+                        sub_jaxprs: vec![],
+                    }],
+                ),
+                vec![
+                    Value::Scalar(Literal::from_complex128(1.0, 0.0)),
+                    Value::scalar_f64(7.0),
+                ],
+            ),
+            (
+                "literal_true_mismatched_branch_kinds",
+                Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(3)],
+                    vec![Equation {
+                        primitive: Primitive::Select,
+                        inputs: smallvec![
+                            Atom::Lit(Literal::I64(1)),
+                            Atom::Var(VarId(1)),
+                            Atom::Var(VarId(2))
+                        ],
+                        outputs: smallvec![VarId(3)],
+                        effects: vec![],
+                        params: BTreeMap::new(),
+                        sub_jaxprs: vec![],
+                    }],
+                ),
+                vec![Value::scalar_f64(7.0), tensor_arg()],
+            ),
+            (
+                "nested_select_mismatched_inner_branch_kinds",
+                Jaxpr::new(
+                    vec![VarId(1), VarId(2), VarId(3), VarId(4)],
+                    vec![],
+                    vec![VarId(6)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Select,
+                            inputs: smallvec![
+                                Atom::Var(VarId(1)),
+                                Atom::Var(VarId(2)),
+                                Atom::Var(VarId(3))
+                            ],
+                            outputs: smallvec![VarId(5)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Select,
+                            inputs: smallvec![
+                                Atom::Var(VarId(1)),
+                                Atom::Var(VarId(5)),
+                                Atom::Var(VarId(4))
+                            ],
+                            outputs: smallvec![VarId(6)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                ),
+                vec![
+                    Value::Scalar(Literal::Bool(true)),
+                    Value::scalar_f64(1.0),
+                    tensor_arg(),
+                    Value::scalar_f64(9.0),
+                ],
+            ),
+        ];
+
+        for (name, jaxpr, args) in cases {
+            assert!(
+                eval_jaxpr(&jaxpr, &args).is_err(),
+                "{name}: original invalid select should fail"
+            );
+
+            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+            assert!(
+                eval_jaxpr(&safe, &args).is_err(),
+                "{name}: safe optimization should preserve select validation failure, got {:?}",
+                safe.equations
+            );
+
+            let default = optimize_jaxpr(&jaxpr);
+            assert!(
+                eval_jaxpr(&default, &args).is_err(),
+                "{name}: default optimization should preserve select validation failure, got {:?}",
+                default.equations
+            );
+        }
     }
 
     #[test]
