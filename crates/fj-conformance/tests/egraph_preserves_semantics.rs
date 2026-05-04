@@ -700,11 +700,12 @@ fn egraph_preserves_multi_output_independent() {
 
 #[test]
 fn egraph_preserves_multi_output_shared() {
+    // Uses neg(neg(x)) which is in numerically_unsafe_rules, so use aggressive mode
     let jaxpr = make_multi_output_shared_jaxpr();
-    let optimized = optimize_jaxpr(&jaxpr);
+    let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
     assert!(
         optimized.equations.len() < jaxpr.equations.len(),
-        "shared multi-output jaxpr should shrink after optimization"
+        "aggressive shared multi-output jaxpr should shrink after optimization"
     );
     verify_optimization_preserves_semantics(
         &jaxpr,
@@ -717,11 +718,12 @@ fn egraph_preserves_multi_output_shared() {
 
 #[test]
 fn egraph_preserves_multi_output_barrier_regions() {
+    // Uses neg(neg(x)) which is in numerically_unsafe_rules, so use aggressive mode
     let jaxpr = make_multi_output_barrier_jaxpr();
-    let optimized = optimize_jaxpr(&jaxpr);
+    let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
     assert!(
         optimized.equations.len() < jaxpr.equations.len(),
-        "supported region after multi-output barrier should still optimize"
+        "aggressive supported region after multi-output barrier should still optimize"
     );
 
     let matrix = Value::Tensor(
@@ -849,10 +851,12 @@ fn egraph_preserves_gaussian_like() {
     verify_optimization_preserves_semantics(&jaxpr, &[s_f64(1.5)], &[], 1e-12, "x*exp(-x^2)");
 }
 
-/// neg(neg(sin(x))) — double negation around a trig function (should cancel)
+/// neg(neg(sin(x))) — double negation around a trig function (should cancel in aggressive mode)
 #[test]
 fn egraph_preserves_double_neg_sin() {
     // v2 = sin(v1), v3 = neg(v2), v4 = neg(v3) => should simplify to sin(v1)
+    // Note: neg-neg is in numerically_unsafe_rules (bypasses bool validation),
+    // so this optimization only happens in aggressive mode.
     let jaxpr = Jaxpr::new(
         vec![VarId(1)],
         vec![],
@@ -884,10 +888,10 @@ fn egraph_preserves_double_neg_sin() {
             },
         ],
     );
-    let optimized = optimize_jaxpr(&jaxpr);
+    let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
     assert!(
         optimized.equations.len() < jaxpr.equations.len(),
-        "neg(neg(sin(x))) should simplify (got {} eqns, original {})",
+        "aggressive neg(neg(sin(x))) should simplify (got {} eqns, original {})",
         optimized.equations.len(),
         jaxpr.equations.len()
     );
