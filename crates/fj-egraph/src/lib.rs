@@ -362,7 +362,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // distribute, factor moved to numerically_unsafe_rules
         // (floating distribution changes overflow and cancellation order)
         // ── Negation ─────────────────────────────────────────────────
-        rewrite!("neg-neg"; "(neg (neg ?a))" => "?a"),
+        // neg-neg moved to numerically_unsafe_rules (bypasses bool validation in eval_neg)
         rewrite!("neg-zero"; "(neg 0)" => "0"),
         // add-neg-self moved to numerically_unsafe_rules (fails for NaN/Inf)
         // ── Abs idempotence ──────────────────────────────────────────
@@ -548,6 +548,8 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("is-finite-const-1"; "(is_finite 1)" => "1"),
         // reciprocal(reciprocal(a)) => a fails for tiny subnormals: 1/(1/1e-320) = 1/+Inf = 0
         rewrite!("reciprocal-reciprocal"; "(reciprocal (reciprocal ?a))" => "?a"),
+        // neg(neg(a)) => a bypasses eval_neg bool validation (neg rejects bool inputs)
+        rewrite!("neg-neg"; "(neg (neg ?a))" => "?a"),
     ]
 }
 
