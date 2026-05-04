@@ -400,6 +400,9 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("sinh-neg"; "(sinh (neg ?a))" => "(neg (sinh ?a))"),
         rewrite!("cosh-neg"; "(cosh (neg ?a))" => "(cosh ?a)"),
         rewrite!("tanh-neg"; "(tanh (neg ?a))" => "(neg (tanh ?a))"),
+        // ── Inverse hyperbolic negation rules (oddness) ────────────────
+        rewrite!("asinh-neg"; "(asinh (neg ?a))" => "(neg (asinh ?a))"),
+        rewrite!("atanh-neg"; "(atanh (neg ?a))" => "(neg (atanh ?a))"),
         // ── Division rules ─────────────────────────────────────────────
         // div-one moved to numerically_unsafe_rules
         // (literal operands can change promoted output dtype)
@@ -5209,6 +5212,28 @@ mod tests {
         assert!(
             opt.equations.len() <= 2,
             "tanh(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_asinh_neg() {
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Asinh);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "asinh(neg(x)) should not grow: got {} eqns",
+            opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn rule_atanh_neg() {
+        let jaxpr = chained_unary_jaxpr(Primitive::Neg, Primitive::Atanh);
+        let opt = optimize_jaxpr(&jaxpr);
+        assert!(
+            opt.equations.len() <= 2,
+            "atanh(neg(x)) should not grow: got {} eqns",
             opt.equations.len()
         );
     }
