@@ -6,6 +6,8 @@ pub mod legacy_parity;
 pub mod persistence;
 pub mod stability;
 
+pub use backend::CachedArtifact;
+
 use fj_core::{CompatibilityMode, Jaxpr, Transform};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -358,7 +360,7 @@ impl CacheManager {
     }
 }
 
-pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
+pub fn bytes_to_hex(bytes: &[u8]) -> String {
     const HEX_LUT: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
@@ -368,8 +370,8 @@ pub(crate) fn bytes_to_hex(bytes: &[u8]) -> String {
     out
 }
 
-/// Compute SHA-256 hex digest of arbitrary bytes (used by submodules).
-pub(crate) fn sha256_hex(data: &[u8]) -> String {
+/// Compute SHA-256 hex digest of arbitrary bytes.
+pub fn sha256_hex(data: &[u8]) -> String {
     bytes_to_hex(&sha256_bytes(data))
 }
 

@@ -1,0 +1,32 @@
+[package]
+name = "frankenjax-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.fj-core]
+path = "../crates/fj-core"
+
+[dependencies.fj-cache]
+path = "../crates/fj-cache"
+
+[[bin]]
+name = "fuzz_cache_deserialize"
+path = "fuzz_targets/fuzz_cache_deserialize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_cache_roundtrip"
+path = "fuzz_targets/fuzz_cache_roundtrip.rs"
+test = false
+doc = false
+bench = false
