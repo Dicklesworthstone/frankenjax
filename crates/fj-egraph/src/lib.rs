@@ -421,7 +421,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // mul-reciprocal, div-mul-cancel moved to numerically_unsafe_rules
         // ── Additional power rules ────────────────────────────────────
         rewrite!("pow-neg-one"; "(pow ?a (neg 1))" => "(reciprocal ?a)"),
-        rewrite!("pow-two"; "(pow ?a 2)" => "(mul ?a ?a)"),
+        // pow-two moved to numerically_unsafe_rules
+        // (rewriting to mul can change promoted output dtype)
         // ── Log decomposition ─────────────────────────────────────────
         // log-product, log-quotient moved to numerically_unsafe_rules
         // ── Erf / Erfc identities ─────────────────────────────────────
@@ -445,7 +446,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // integer-pow-zero moved to numerically_unsafe_rules (erases output dtype)
         // integer-pow-one moved to numerically_unsafe_rules
         // (current eval returns f64, not the input dtype)
-        rewrite!("integer-pow-two"; "(integer_pow ?a 2)" => "(mul ?a ?a)"),
+        // integer-pow-two moved to numerically_unsafe_rules
+        // (current eval returns f64, not the input dtype)
         // ── Bitwise rules ─────────────────────────────────────────────
         rewrite!("bitwise-not-not"; "(bitwise_not (bitwise_not ?a))" => "?a"),
         rewrite!("bitwise-and-self"; "(bitwise_and ?a ?a)" => "?a"),
@@ -529,6 +531,8 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // E.g., pow(f32, 0) => 1 loses the f32 dtype; is_finite(0) => 1 should be Bool.
         rewrite!("pow-zero"; "(pow ?a 0)" => "1"),
         rewrite!("integer-pow-zero"; "(integer_pow ?a 0)" => "1"),
+        rewrite!("pow-two"; "(pow ?a 2)" => "(mul ?a ?a)"),
+        rewrite!("integer-pow-two"; "(integer_pow ?a 2)" => "(mul ?a ?a)"),
         rewrite!("bitwise-xor-self"; "(bitwise_xor ?a ?a)" => "0"),
         rewrite!("is-finite-const-0"; "(is_finite 0)" => "1"),
         rewrite!("is-finite-const-1"; "(is_finite 1)" => "1"),
@@ -5773,6 +5777,20 @@ mod tests {
             (
                 "integer_pow_one",
                 integer_pow_jaxpr(1),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "pow_two",
+                binary_jaxpr(
+                    Primitive::Pow,
+                    Atom::Var(VarId(1)),
+                    Atom::Lit(Literal::I64(2)),
+                ),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "integer_pow_two",
+                integer_pow_jaxpr(2),
                 vec![Value::scalar_u32(7)],
             ),
         ];
