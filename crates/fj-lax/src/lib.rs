@@ -16,11 +16,11 @@ use fj_core::{Literal, Primitive, Shape, TensorValue, Value, ValueError};
 use std::collections::BTreeMap;
 
 use arithmetic::{
-    erf_approx, eval_abs, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
-    eval_cosh, eval_digamma, eval_dot, eval_erf_inv, eval_exp, eval_imag, eval_integer_pow,
-    eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_real, eval_round,
-    eval_select, eval_sin, eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise,
-    eval_unary_int_or_float,
+    erf_approx, eval_abs, eval_acosh, eval_asinh, eval_atanh, eval_binary_elementwise, eval_clamp,
+    eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_erf_inv, eval_exp,
+    eval_imag, eval_integer_pow, eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter,
+    eval_real, eval_round, eval_select, eval_sin, eval_sinh, eval_tan, eval_tanh,
+    eval_unary_elementwise, eval_unary_int_or_float,
 };
 
 use comparison::eval_comparison;
@@ -197,6 +197,9 @@ pub fn eval_primitive(
         Primitive::Sinh => eval_sinh(primitive, inputs),
         Primitive::Cosh => eval_cosh(primitive, inputs),
         Primitive::Tanh => eval_tanh(primitive, inputs),
+        Primitive::Asinh => eval_asinh(primitive, inputs),
+        Primitive::Acosh => eval_acosh(primitive, inputs),
+        Primitive::Atanh => eval_atanh(primitive, inputs),
         // Additional math
         Primitive::Expm1 => eval_unary_elementwise(primitive, inputs, f64::exp_m1),
         Primitive::Log1p => eval_unary_elementwise(primitive, inputs, f64::ln_1p),
@@ -9566,6 +9569,63 @@ mod prop_tests {
         )
         .unwrap();
         assert_complex128_close(&out, 0.0, 1.0_f64.tan(), 1e-12);
+    }
+
+    #[test]
+    fn test_asinh_real() {
+        let out = eval_primitive(Primitive::Asinh, &[Value::scalar_f64(0.0)], &no_params()).unwrap();
+        assert!((out.as_f64_scalar().unwrap() - 0.0).abs() < 1e-12);
+        let out = eval_primitive(Primitive::Asinh, &[Value::scalar_f64(1.0)], &no_params()).unwrap();
+        assert!((out.as_f64_scalar().unwrap() - 1.0_f64.asinh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_acosh_real() {
+        let out = eval_primitive(Primitive::Acosh, &[Value::scalar_f64(1.0)], &no_params()).unwrap();
+        assert!((out.as_f64_scalar().unwrap() - 0.0).abs() < 1e-12);
+        let out = eval_primitive(Primitive::Acosh, &[Value::scalar_f64(2.0)], &no_params()).unwrap();
+        assert!((out.as_f64_scalar().unwrap() - 2.0_f64.acosh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_atanh_real() {
+        let out = eval_primitive(Primitive::Atanh, &[Value::scalar_f64(0.0)], &no_params()).unwrap();
+        assert!((out.as_f64_scalar().unwrap() - 0.0).abs() < 1e-12);
+        let out = eval_primitive(Primitive::Atanh, &[Value::scalar_f64(0.5)], &no_params()).unwrap();
+        assert!((out.as_f64_scalar().unwrap() - 0.5_f64.atanh()).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_complex_asinh() {
+        let out = eval_primitive(
+            Primitive::Asinh,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, std::f64::consts::FRAC_PI_2, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_acosh() {
+        let out = eval_primitive(
+            Primitive::Acosh,
+            &[Value::scalar_complex128(0.0, 0.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, std::f64::consts::FRAC_PI_2, 1e-12);
+    }
+
+    #[test]
+    fn test_complex_atanh() {
+        let out = eval_primitive(
+            Primitive::Atanh,
+            &[Value::scalar_complex128(0.0, 1.0)],
+            &no_params(),
+        )
+        .unwrap();
+        assert_complex128_close(&out, 0.0, std::f64::consts::FRAC_PI_4, 1e-12);
     }
 
     #[test]

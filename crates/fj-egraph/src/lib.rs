@@ -42,6 +42,9 @@ define_language! {
         "sinh" = Sinh([Id; 1]),
         "cosh" = Cosh([Id; 1]),
         "tanh" = Tanh([Id; 1]),
+        "asinh" = Asinh([Id; 1]),
+        "acosh" = Acosh([Id; 1]),
+        "atanh" = Atanh([Id; 1]),
         // Special functions
         "logistic" = Logistic([Id; 1]),
         "erf" = Erf([Id; 1]),
@@ -829,6 +832,9 @@ pub fn jaxpr_to_egraph(
             Primitive::Sinh => FjLang::Sinh([input_ids[0]]),
             Primitive::Cosh => FjLang::Cosh([input_ids[0]]),
             Primitive::Tanh => FjLang::Tanh([input_ids[0]]),
+            Primitive::Asinh => FjLang::Asinh([input_ids[0]]),
+            Primitive::Acosh => FjLang::Acosh([input_ids[0]]),
+            Primitive::Atanh => FjLang::Atanh([input_ids[0]]),
             Primitive::Logistic => FjLang::Logistic([input_ids[0]]),
             Primitive::Erf => FjLang::Erf([input_ids[0]]),
             Primitive::Erfc => FjLang::Erfc([input_ids[0]]),
@@ -956,6 +962,9 @@ fn expected_egraph_input_arity(primitive: Primitive) -> Option<usize> {
         | Primitive::Sinh
         | Primitive::Cosh
         | Primitive::Tanh
+        | Primitive::Asinh
+        | Primitive::Acosh
+        | Primitive::Atanh
         | Primitive::Logistic
         | Primitive::Erf
         | Primitive::Erfc
@@ -1473,6 +1482,33 @@ pub fn egraph_to_jaxpr(
             FjLang::Tanh([a]) => push_unary(
                 idx,
                 Primitive::Tanh,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Asinh([a]) => push_unary(
+                idx,
+                Primitive::Asinh,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Acosh([a]) => push_unary(
+                idx,
+                Primitive::Acosh,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Atanh([a]) => push_unary(
+                idx,
+                Primitive::Atanh,
                 *a,
                 &mut node_to_var,
                 &mut next_var,

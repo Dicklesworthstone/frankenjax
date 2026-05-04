@@ -1127,6 +1127,46 @@ pub(crate) fn eval_tanh(primitive: Primitive, inputs: &[Value]) -> Result<Value,
     }
 }
 
+pub(crate) fn eval_asinh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            let z_sq = (a * a - b * b + 1.0, 2.0 * a * b);
+            let sqrt = complex_sqrt(z_sq);
+            let w = (a + sqrt.0, b + sqrt.1);
+            complex_log(w)
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::asinh)
+    }
+}
+
+pub(crate) fn eval_acosh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            let z_sq = (a * a - b * b - 1.0, 2.0 * a * b);
+            let sqrt = complex_sqrt(z_sq);
+            let w = (a + sqrt.0, b + sqrt.1);
+            complex_log(w)
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::acosh)
+    }
+}
+
+pub(crate) fn eval_atanh(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.first().is_some_and(value_contains_complex) {
+        eval_unary_complex_map(primitive, inputs, |a, b| {
+            let numer = (1.0 + a, b);
+            let denom = (1.0 - a, -b);
+            let div = complex_div(numer, denom);
+            let log = complex_log(div);
+            (0.5 * log.0, 0.5 * log.1)
+        })
+    } else {
+        eval_unary_elementwise(primitive, inputs, f64::atanh)
+    }
+}
+
 /// Unary elementwise operation that converts to f64 first (exp, log, sqrt, etc.).
 #[inline]
 pub(crate) fn eval_unary_elementwise(
