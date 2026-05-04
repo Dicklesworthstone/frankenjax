@@ -198,21 +198,39 @@ fn extract_tensor_complex(
 
 // ── DFT core ─────────────────────────────────────────────────────────
 
+/// Precompute n-th roots of unity: e^{-2πi·k/n} for k = 0..n (forward DFT).
+/// Returns (cos, sin) pairs for lookup by index.
+#[inline]
+fn precompute_twiddles(n: usize, inverse: bool) -> Vec<(f64, f64)> {
+    let sign = if inverse { 1.0 } else { -1.0 };
+    (0..n)
+        .map(|k| {
+            let angle = sign * 2.0 * PI * (k as f64) / (n as f64);
+            let (sin_a, cos_a) = angle.sin_cos();
+            (cos_a, sin_a)
+        })
+        .collect()
+}
+
 /// Compute 1D DFT of a complex signal of length n.
 /// X[k] = Σ_{j=0}^{n-1} x[j] * e^{-2πi·j·k/n}
+///
+/// Uses precomputed twiddle factors to reduce trig calls from O(n²) to O(n).
 fn dft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let n = input.len();
     if n == 0 {
         return vec![];
     }
+
+    let twiddles = precompute_twiddles(n, false);
     let mut output = vec![(0.0, 0.0); n];
+
     for (k, out) in output.iter_mut().enumerate() {
         let mut re_sum = 0.0;
         let mut im_sum = 0.0;
         for (j, &(xr, xi)) in input.iter().enumerate() {
-            let angle = -2.0 * PI * (j as f64) * (k as f64) / (n as f64);
-            let (sin_a, cos_a) = angle.sin_cos();
-            // (xr + i·xi) * (cos_a + i·sin_a) = (xr·cos_a - xi·sin_a) + i·(xr·sin_a + xi·cos_a)
+            let idx = (j * k) % n;
+            let (cos_a, sin_a) = twiddles[idx];
             re_sum += xr * cos_a - xi * sin_a;
             im_sum += xr * sin_a + xi * cos_a;
         }
@@ -223,19 +241,24 @@ fn dft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
 
 /// Compute 1D inverse DFT of a complex signal of length n.
 /// x[j] = (1/n) Σ_{k=0}^{n-1} X[k] * e^{2πi·j·k/n}
+///
+/// Uses precomputed twiddle factors to reduce trig calls from O(n²) to O(n).
 fn idft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let n = input.len();
     if n == 0 {
         return vec![];
     }
-    let mut output = vec![(0.0, 0.0); n];
+
+    let twiddles = precompute_twiddles(n, true);
     let inv_n = 1.0 / (n as f64);
+    let mut output = vec![(0.0, 0.0); n];
+
     for (j, out) in output.iter_mut().enumerate() {
         let mut re_sum = 0.0;
         let mut im_sum = 0.0;
         for (k, &(xr, xi)) in input.iter().enumerate() {
-            let angle = 2.0 * PI * (j as f64) * (k as f64) / (n as f64);
-            let (sin_a, cos_a) = angle.sin_cos();
+            let idx = (j * k) % n;
+            let (cos_a, sin_a) = twiddles[idx];
             re_sum += xr * cos_a - xi * sin_a;
             im_sum += xr * sin_a + xi * cos_a;
         }
