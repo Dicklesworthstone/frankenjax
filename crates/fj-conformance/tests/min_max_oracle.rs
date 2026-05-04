@@ -3,8 +3,7 @@
 //! min(a, b) = smaller of a and b
 //! max(a, b) = larger of a and b
 //!
-//! NaN semantics: IEEE 754-2008 minNum/maxNum - returns the non-NaN operand
-//! when exactly one operand is NaN.
+//! NaN semantics: JAX maximum/minimum propagate NaN when either operand is NaN.
 //!
 //! Tests:
 //! - Basic comparison
@@ -12,7 +11,7 @@
 //! - Negative values
 //! - Zero handling
 //! - Infinity
-//! - NaN handling (minNum/maxNum semantics)
+//! - NaN handling
 //! - Tensor shapes
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
@@ -166,15 +165,14 @@ fn oracle_min_neg_inf() {
     assert!(val.is_infinite() && val < 0.0, "min(-inf, 5) = -inf");
 }
 
-// ======================== Min: NaN (IEEE 754-2008 minNum semantics) ========================
+// ======================== Min: NaN ========================
 
 #[test]
 fn oracle_min_nan_first() {
-    // IEEE 754-2008 minNum: if one operand is NaN, return the other
     let a = make_f64_tensor(&[], vec![f64::NAN]);
     let b = make_f64_tensor(&[], vec![5.0]);
     let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 5.0, "min(NaN, 5) = 5");
+    assert!(extract_f64_scalar(&result).is_nan(), "min(NaN, 5) = NaN");
 }
 
 #[test]
@@ -182,7 +180,7 @@ fn oracle_min_nan_second() {
     let a = make_f64_tensor(&[], vec![5.0]);
     let b = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 5.0, "min(5, NaN) = 5");
+    assert!(extract_f64_scalar(&result).is_nan(), "min(5, NaN) = NaN");
 }
 
 #[test]
@@ -220,6 +218,19 @@ fn oracle_min_1d() {
     let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     assert_eq!(extract_f64_vec(&result), vec![1.0, 3.0, 3.0, 6.0]);
+}
+
+#[test]
+fn oracle_min_1d_nan_propagates() {
+    let a = make_f64_tensor(&[4], vec![1.0, f64::NAN, 3.0, 7.0]);
+    let b = make_f64_tensor(&[4], vec![2.0, 3.0, f64::NAN, 6.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let values = extract_f64_vec(&result);
+    assert_eq!(values[0], 1.0);
+    assert!(values[1].is_nan());
+    assert!(values[2].is_nan());
+    assert_eq!(values[3], 6.0);
 }
 
 // ====================== MAX TESTS ======================
@@ -305,15 +316,14 @@ fn oracle_max_neg_inf() {
     assert_eq!(extract_f64_scalar(&result), 5.0, "max(-inf, 5) = 5");
 }
 
-// ======================== Max: NaN (IEEE 754-2008 maxNum semantics) ========================
+// ======================== Max: NaN ========================
 
 #[test]
 fn oracle_max_nan_first() {
-    // IEEE 754-2008 maxNum: if one operand is NaN, return the other
     let a = make_f64_tensor(&[], vec![f64::NAN]);
     let b = make_f64_tensor(&[], vec![5.0]);
     let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 5.0, "max(NaN, 5) = 5");
+    assert!(extract_f64_scalar(&result).is_nan(), "max(NaN, 5) = NaN");
 }
 
 #[test]
@@ -321,7 +331,7 @@ fn oracle_max_nan_second() {
     let a = make_f64_tensor(&[], vec![5.0]);
     let b = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 5.0, "max(5, NaN) = 5");
+    assert!(extract_f64_scalar(&result).is_nan(), "max(5, NaN) = NaN");
 }
 
 #[test]
@@ -359,6 +369,19 @@ fn oracle_max_1d() {
     let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     assert_eq!(extract_f64_vec(&result), vec![2.0, 5.0, 4.0, 7.0]);
+}
+
+#[test]
+fn oracle_max_1d_nan_propagates() {
+    let a = make_f64_tensor(&[4], vec![1.0, f64::NAN, 3.0, 7.0]);
+    let b = make_f64_tensor(&[4], vec![2.0, 3.0, f64::NAN, 6.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let values = extract_f64_vec(&result);
+    assert_eq!(values[0], 2.0);
+    assert!(values[1].is_nan());
+    assert!(values[2].is_nan());
+    assert_eq!(values[3], 7.0);
 }
 
 // ====================== MIN/MAX RELATIONSHIP ======================

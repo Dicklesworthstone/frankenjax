@@ -134,6 +134,24 @@ impl From<ValueError> for EvalError {
 }
 
 #[inline]
+fn jax_max_f64(left: f64, right: f64) -> f64 {
+    if left.is_nan() || right.is_nan() {
+        f64::NAN
+    } else {
+        left.max(right)
+    }
+}
+
+#[inline]
+fn jax_min_f64(left: f64, right: f64) -> f64 {
+    if left.is_nan() || right.is_nan() {
+        f64::NAN
+    } else {
+        left.min(right)
+    }
+}
+
+#[inline]
 pub fn eval_primitive(
     primitive: Primitive,
     inputs: &[Value],
@@ -150,8 +168,8 @@ pub fn eval_primitive(
         Primitive::Mul => {
             eval_binary_elementwise(primitive, inputs, |a, b| a.wrapping_mul(b), |a, b| a * b)
         }
-        Primitive::Max => eval_binary_elementwise(primitive, inputs, |a, b| a.max(b), f64::max),
-        Primitive::Min => eval_binary_elementwise(primitive, inputs, |a, b| a.min(b), f64::min),
+        Primitive::Max => eval_binary_elementwise(primitive, inputs, |a, b| a.max(b), jax_max_f64),
+        Primitive::Min => eval_binary_elementwise(primitive, inputs, |a, b| a.min(b), jax_min_f64),
         Primitive::Pow => eval_binary_elementwise(
             primitive,
             inputs,
@@ -266,7 +284,7 @@ pub fn eval_primitive(
             i64::MIN,
             f64::NEG_INFINITY,
             i64::max,
-            f64::max,
+            jax_max_f64,
         ),
         Primitive::ReduceMin => eval_reduce_axes(
             primitive,
@@ -275,7 +293,7 @@ pub fn eval_primitive(
             i64::MAX,
             f64::INFINITY,
             i64::min,
-            f64::min,
+            jax_min_f64,
         ),
         Primitive::ReduceProd => eval_reduce_axes(
             primitive,
@@ -2991,24 +3009,27 @@ mod tests {
 
     #[test]
     fn reduce_max_with_nan() {
-        // f64::max returns the non-NaN value (Rust/JAX behavior)
         let input = Value::vector_f64(&[1.0, f64::NAN, 3.0]).unwrap();
         let out = eval_primitive(Primitive::ReduceMax, &[input], &no_params()).unwrap();
-        let v = out.as_f64_scalar().unwrap();
-        assert!((v - 3.0).abs() < 1e-10);
+        assert!(out.as_f64_scalar().unwrap().is_nan());
     }
 
     #[test]
-    fn max_nan_returns_other() {
-        // f64::max(NaN, x) returns x (Rust/JAX behavior, not IEEE 754-2019 maximum)
+    fn reduce_min_with_nan() {
+        let input = Value::vector_f64(&[1.0, f64::NAN, 3.0]).unwrap();
+        let out = eval_primitive(Primitive::ReduceMin, &[input], &no_params()).unwrap();
+        assert!(out.as_f64_scalar().unwrap().is_nan());
+    }
+
+    #[test]
+    fn max_nan_propagates() {
         let out = eval_primitive(
             Primitive::Max,
             &[Value::scalar_f64(f64::NAN), Value::scalar_f64(5.0)],
             &no_params(),
         )
         .unwrap();
-        let v = out.as_f64_scalar().unwrap();
-        assert!((v - 5.0).abs() < 1e-10);
+        assert!(out.as_f64_scalar().unwrap().is_nan());
     }
 
     #[test]
