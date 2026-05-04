@@ -363,7 +363,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // (floating distribution changes overflow and cancellation order)
         // ── Negation ─────────────────────────────────────────────────
         // neg-neg moved to numerically_unsafe_rules (bypasses bool validation in eval_neg)
-        rewrite!("neg-zero"; "(neg 0)" => "0"),
+        // neg-zero moved to numerically_unsafe_rules (erases output dtype)
         // add-neg-self moved to numerically_unsafe_rules (fails for NaN/Inf)
         // ── Abs idempotence ──────────────────────────────────────────
         rewrite!("abs-abs"; "(abs (abs ?a))" => "(abs ?a)"),
@@ -403,7 +403,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // div-self moved to numerically_unsafe_rules (fails when a = 0, NaN)
         // ── Square / Reciprocal rewrites ───────────────────────────────
         rewrite!("square-as-mul"; "(square ?a)" => "(mul ?a ?a)"),
-        rewrite!("reciprocal-as-div"; "(reciprocal ?a)" => "(div 1 ?a)"),
+        // reciprocal-as-div moved to numerically_unsafe_rules (erases output dtype via literal 1)
         // ── Expm1 / Log1p inverses ─────────────────────────────────────
         // expm1-log1p, log1p-expm1 moved to numerically_unsafe_rules
         // reciprocal-reciprocal moved to numerically_unsafe_rules (subnormal overflow)
@@ -550,6 +550,10 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("reciprocal-reciprocal"; "(reciprocal (reciprocal ?a))" => "?a"),
         // neg(neg(a)) => a bypasses eval_neg bool validation (neg rejects bool inputs)
         rewrite!("neg-neg"; "(neg (neg ?a))" => "?a"),
+        // neg(0) => 0 erases output dtype (neg(0.0_f32) should return f32, not untyped 0)
+        rewrite!("neg-zero"; "(neg 0)" => "0"),
+        // reciprocal(a) => div(1, a) erases output dtype via untyped literal 1
+        rewrite!("reciprocal-as-div"; "(reciprocal ?a)" => "(div 1 ?a)"),
     ]
 }
 
