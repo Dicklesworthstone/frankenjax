@@ -402,8 +402,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("reciprocal-as-div"; "(reciprocal ?a)" => "(div 1 ?a)"),
         // ── Expm1 / Log1p inverses ─────────────────────────────────────
         // expm1-log1p, log1p-expm1 moved to numerically_unsafe_rules
-        // ── Reciprocal involution ────────────────────────────────────────
-        rewrite!("reciprocal-reciprocal"; "(reciprocal (reciprocal ?a))" => "?a"),
+        // reciprocal-reciprocal moved to numerically_unsafe_rules (subnormal overflow)
         // ── Sign idempotence ────────────────────────────────────────────
         rewrite!("sign-sign"; "(sign (sign ?a))" => "(sign ?a)"),
         // ── Trigonometric / hyperbolic / logistic identities ────────────
@@ -517,6 +516,8 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("bitwise-xor-self"; "(bitwise_xor ?a ?a)" => "0"),
         rewrite!("is-finite-const-0"; "(is_finite 0)" => "1"),
         rewrite!("is-finite-const-1"; "(is_finite 1)" => "1"),
+        // reciprocal(reciprocal(a)) => a fails for tiny subnormals: 1/(1/1e-320) = 1/+Inf = 0
+        rewrite!("reciprocal-reciprocal"; "(reciprocal (reciprocal ?a))" => "?a"),
     ]
 }
 
