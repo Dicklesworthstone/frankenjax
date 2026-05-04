@@ -10639,4 +10639,130 @@ mod prop_tests {
             "nextafter(1.0, 0.0) should be very close to 1.0"
         );
     }
+
+    // ── Metamorphic property tests ────────────────────────────────────────
+    // These verify algebraic invariants that must hold across all inputs.
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(100))]
+
+        #[test]
+        fn metamorphic_exp_sum_is_product(a in -10.0f64..10.0, b in -10.0f64..10.0) {
+            // exp(a + b) == exp(a) * exp(b)
+            let sum = eval_primitive(
+                Primitive::Add,
+                &[Value::scalar_f64(a), Value::scalar_f64(b)],
+                &BTreeMap::new(),
+            ).unwrap();
+            let exp_sum = eval_primitive(Primitive::Exp, &[sum], &BTreeMap::new()).unwrap();
+
+            let exp_a = eval_primitive(Primitive::Exp, &[Value::scalar_f64(a)], &BTreeMap::new()).unwrap();
+            let exp_b = eval_primitive(Primitive::Exp, &[Value::scalar_f64(b)], &BTreeMap::new()).unwrap();
+            let product = eval_primitive(Primitive::Mul, &[exp_a, exp_b], &BTreeMap::new()).unwrap();
+
+            let lhs = exp_sum.as_f64_scalar().unwrap();
+            let rhs = product.as_f64_scalar().unwrap();
+            let rel_err = if rhs.abs() > 1e-10 { (lhs - rhs).abs() / rhs.abs() } else { (lhs - rhs).abs() };
+            prop_assert!(rel_err < 1e-10, "exp(a+b) != exp(a)*exp(b): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_log_product_is_sum(a in 0.1f64..100.0, b in 0.1f64..100.0) {
+            // log(a * b) == log(a) + log(b) for positive a, b
+            let product = eval_primitive(
+                Primitive::Mul,
+                &[Value::scalar_f64(a), Value::scalar_f64(b)],
+                &BTreeMap::new(),
+            ).unwrap();
+            let log_product = eval_primitive(Primitive::Log, &[product], &BTreeMap::new()).unwrap();
+
+            let log_a = eval_primitive(Primitive::Log, &[Value::scalar_f64(a)], &BTreeMap::new()).unwrap();
+            let log_b = eval_primitive(Primitive::Log, &[Value::scalar_f64(b)], &BTreeMap::new()).unwrap();
+            let sum = eval_primitive(Primitive::Add, &[log_a, log_b], &BTreeMap::new()).unwrap();
+
+            let lhs = log_product.as_f64_scalar().unwrap();
+            let rhs = sum.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-10, "log(a*b) != log(a)+log(b): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_sin_odd_function(x in -10.0f64..10.0) {
+            // sin(-x) == -sin(x)
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sin_neg_x = eval_primitive(Primitive::Sin, &[neg_x], &BTreeMap::new()).unwrap();
+
+            let sin_x = eval_primitive(Primitive::Sin, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let neg_sin_x = eval_primitive(Primitive::Neg, &[sin_x], &BTreeMap::new()).unwrap();
+
+            let lhs = sin_neg_x.as_f64_scalar().unwrap();
+            let rhs = neg_sin_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-14, "sin(-x) != -sin(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_cos_even_function(x in -10.0f64..10.0) {
+            // cos(-x) == cos(x)
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cos_neg_x = eval_primitive(Primitive::Cos, &[neg_x], &BTreeMap::new()).unwrap();
+            let cos_x = eval_primitive(Primitive::Cos, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+
+            let lhs = cos_neg_x.as_f64_scalar().unwrap();
+            let rhs = cos_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-14, "cos(-x) != cos(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_sinh_odd_function(x in -5.0f64..5.0) {
+            // sinh(-x) == -sinh(x)
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sinh_neg_x = eval_primitive(Primitive::Sinh, &[neg_x], &BTreeMap::new()).unwrap();
+
+            let sinh_x = eval_primitive(Primitive::Sinh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let neg_sinh_x = eval_primitive(Primitive::Neg, &[sinh_x], &BTreeMap::new()).unwrap();
+
+            let lhs = sinh_neg_x.as_f64_scalar().unwrap();
+            let rhs = neg_sinh_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-12, "sinh(-x) != -sinh(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_cosh_even_function(x in -5.0f64..5.0) {
+            // cosh(-x) == cosh(x)
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cosh_neg_x = eval_primitive(Primitive::Cosh, &[neg_x], &BTreeMap::new()).unwrap();
+            let cosh_x = eval_primitive(Primitive::Cosh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+
+            let lhs = cosh_neg_x.as_f64_scalar().unwrap();
+            let rhs = cosh_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-12, "cosh(-x) != cosh(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_pythagorean_identity(x in -10.0f64..10.0) {
+            // sin^2(x) + cos^2(x) == 1
+            let sin_x = eval_primitive(Primitive::Sin, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cos_x = eval_primitive(Primitive::Cos, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sin2 = eval_primitive(Primitive::Mul, &[sin_x.clone(), sin_x], &BTreeMap::new()).unwrap();
+            let cos2 = eval_primitive(Primitive::Mul, &[cos_x.clone(), cos_x], &BTreeMap::new()).unwrap();
+            let sum = eval_primitive(Primitive::Add, &[sin2, cos2], &BTreeMap::new()).unwrap();
+
+            let result = sum.as_f64_scalar().unwrap();
+            prop_assert!((result - 1.0).abs() < 1e-14, "sin^2(x) + cos^2(x) != 1: got {}", result);
+        }
+
+        #[test]
+        fn metamorphic_hyperbolic_identity(x in -5.0f64..5.0) {
+            // cosh^2(x) - sinh^2(x) == 1
+            let sinh_x = eval_primitive(Primitive::Sinh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cosh_x = eval_primitive(Primitive::Cosh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sinh2 = eval_primitive(Primitive::Mul, &[sinh_x.clone(), sinh_x], &BTreeMap::new()).unwrap();
+            let cosh2 = eval_primitive(Primitive::Mul, &[cosh_x.clone(), cosh_x], &BTreeMap::new()).unwrap();
+            let diff = eval_primitive(Primitive::Sub, &[cosh2, sinh2], &BTreeMap::new()).unwrap();
+
+            let result = diff.as_f64_scalar().unwrap();
+            prop_assert!((result - 1.0).abs() < 1e-10, "cosh^2(x) - sinh^2(x) != 1: got {}", result);
+        }
+    }
 }
