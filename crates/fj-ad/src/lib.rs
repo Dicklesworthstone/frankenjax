@@ -9234,6 +9234,21 @@ mod tests {
     }
 
     #[test]
+    fn vjp_vs_numerical_asinh() {
+        assert_grad_matches(Primitive::Asinh, 1.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_acosh() {
+        assert_grad_matches(Primitive::Acosh, 2.0, 1e-4);
+    }
+
+    #[test]
+    fn vjp_vs_numerical_atanh() {
+        assert_grad_matches(Primitive::Atanh, 0.5, 1e-4);
+    }
+
+    #[test]
     fn vjp_vs_numerical_expm1() {
         assert_grad_matches(Primitive::Expm1, 0.5, 1e-4);
     }
