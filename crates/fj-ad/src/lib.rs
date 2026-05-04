@@ -1234,6 +1234,31 @@ pub fn vjp(
             let one_minus = value_sub(&ones_like(x), &tanh2)?;
             Ok(vec![value_mul(g, &one_minus)?])
         }
+        Primitive::Asinh => {
+            // d/dx asinh(x) = 1 / sqrt(x² + 1)
+            let x = &inputs[0];
+            let x2 = value_mul(x, x)?;
+            let sum = value_add(&ones_like(x), &x2)?;
+            let denom = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&sum), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![value_div(g, &denom)?])
+        }
+        Primitive::Acosh => {
+            // d/dx acosh(x) = 1 / sqrt(x² - 1)
+            let x = &inputs[0];
+            let x2 = value_mul(x, x)?;
+            let diff = value_sub(&x2, &ones_like(x))?;
+            let denom = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&diff), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![value_div(g, &denom)?])
+        }
+        Primitive::Atanh => {
+            // d/dx atanh(x) = 1 / (1 - x²)
+            let x = &inputs[0];
+            let x2 = value_mul(x, x)?;
+            let denom = value_sub(&ones_like(x), &x2)?;
+            Ok(vec![value_div(g, &denom)?])
+        }
         Primitive::Expm1 => {
             // d/dx expm1(x) = exp(x)
             let x = &inputs[0];
@@ -5488,6 +5513,35 @@ fn jvp_rule(
             let th_sq = ep(Primitive::Mul, &[th.clone(), th])?;
             let one = Value::scalar_f64(1.0);
             let coeff = ep(Primitive::Sub, &[one, th_sq])?;
+            ep(Primitive::Mul, &[coeff, tangents[0].clone()])
+        }
+
+        Primitive::Asinh => {
+            // d/dx asinh(x) = 1 / sqrt(x² + 1)
+            let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
+            let one = Value::scalar_f64(1.0);
+            let sum = ep(Primitive::Add, &[x_sq, one])?;
+            let denom = ep(Primitive::Sqrt, &[sum])?;
+            let coeff = ep(Primitive::Reciprocal, &[denom])?;
+            ep(Primitive::Mul, &[coeff, tangents[0].clone()])
+        }
+
+        Primitive::Acosh => {
+            // d/dx acosh(x) = 1 / sqrt(x² - 1)
+            let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
+            let one = Value::scalar_f64(1.0);
+            let diff = ep(Primitive::Sub, &[x_sq, one])?;
+            let denom = ep(Primitive::Sqrt, &[diff])?;
+            let coeff = ep(Primitive::Reciprocal, &[denom])?;
+            ep(Primitive::Mul, &[coeff, tangents[0].clone()])
+        }
+
+        Primitive::Atanh => {
+            // d/dx atanh(x) = 1 / (1 - x²)
+            let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
+            let one = Value::scalar_f64(1.0);
+            let denom = ep(Primitive::Sub, &[one, x_sq])?;
+            let coeff = ep(Primitive::Reciprocal, &[denom])?;
             ep(Primitive::Mul, &[coeff, tangents[0].clone()])
         }
 

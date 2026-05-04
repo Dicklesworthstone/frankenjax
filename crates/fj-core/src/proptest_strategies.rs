@@ -75,6 +75,9 @@ pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
         Just(Primitive::Sinh),
         Just(Primitive::Cosh),
         Just(Primitive::Tanh),
+        Just(Primitive::Asinh),
+        Just(Primitive::Acosh),
+        Just(Primitive::Atanh),
         // Additional math
         Just(Primitive::Expm1),
         Just(Primitive::Log1p),

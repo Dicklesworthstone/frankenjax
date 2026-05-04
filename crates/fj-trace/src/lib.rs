@@ -623,6 +623,9 @@ impl SimpleTraceContext {
             | Primitive::Sinh
             | Primitive::Cosh
             | Primitive::Tanh
+            | Primitive::Asinh
+            | Primitive::Acosh
+            | Primitive::Atanh
             | Primitive::Expm1
             | Primitive::Log1p
             | Primitive::Sign

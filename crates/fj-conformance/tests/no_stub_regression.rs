@@ -58,6 +58,9 @@ fn all_primitives() -> &'static [Primitive] {
         Primitive::Sinh,
         Primitive::Cosh,
         Primitive::Tanh,
+        Primitive::Asinh,
+        Primitive::Acosh,
+        Primitive::Atanh,
         Primitive::Expm1,
         Primitive::Log1p,
         Primitive::Sign,
@@ -201,6 +204,9 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Sinh
         | Primitive::Cosh
         | Primitive::Tanh
+        | Primitive::Asinh
+        | Primitive::Acosh
+        | Primitive::Atanh
         | Primitive::Expm1
         | Primitive::Log1p
         | Primitive::Sign
