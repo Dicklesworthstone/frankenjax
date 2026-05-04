@@ -1604,8 +1604,8 @@ fn reduce_window_accumulate_literal(
         ReduceWindowAccumulator::F64(value) => {
             let input = literal.as_f64().unwrap_or(0.0);
             match reduce_op {
-                "max" => *value = (*value).max(input),
-                "min" => *value = (*value).min(input),
+                "max" => *value = jax_max_f64(*value, input),
+                "min" => *value = jax_min_f64(*value, input),
                 _ => *value += input,
             }
         }

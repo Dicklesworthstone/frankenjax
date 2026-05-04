@@ -585,3 +585,84 @@ fn oracle_reduce_window_scalar_passthrough() {
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 42.0).abs() < 1e-10);
 }
+
+// ======================== NaN Propagation Tests ========================
+// JAX lax.reduce_window with max/min propagates NaN like jax.numpy.maximum/minimum
+
+#[test]
+fn oracle_reduce_window_max_nan_propagates() {
+    // input=[1.0, NaN, 3.0], window=2, stride=1, valid
+    // window [1.0, NaN] -> NaN, window [NaN, 3.0] -> NaN
+    let input = make_f64_tensor(&[3], vec![1.0, f64::NAN, 3.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &max_window("2", "1", "valid"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_f64_vec(&result);
+    assert!(
+        vals[0].is_nan(),
+        "max window containing NaN should return NaN"
+    );
+    assert!(
+        vals[1].is_nan(),
+        "max window containing NaN should return NaN"
+    );
+}
+
+#[test]
+fn oracle_reduce_window_min_nan_propagates() {
+    // input=[1.0, NaN, 3.0], window=2, stride=1, valid
+    // window [1.0, NaN] -> NaN, window [NaN, 3.0] -> NaN
+    let input = make_f64_tensor(&[3], vec![1.0, f64::NAN, 3.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &min_window("2", "1", "valid"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_f64_vec(&result);
+    assert!(
+        vals[0].is_nan(),
+        "min window containing NaN should return NaN"
+    );
+    assert!(
+        vals[1].is_nan(),
+        "min window containing NaN should return NaN"
+    );
+}
+
+#[test]
+fn oracle_reduce_window_max_no_nan_untouched() {
+    // When no NaN present, max behaves normally
+    let input = make_f64_tensor(&[4], vec![1.0, 4.0, 2.0, 3.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &max_window("2", "1", "valid"),
+    )
+    .unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 4.0).abs() < 1e-10);
+    assert!((vals[1] - 4.0).abs() < 1e-10);
+    assert!((vals[2] - 3.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_reduce_window_min_no_nan_untouched() {
+    // When no NaN present, min behaves normally
+    let input = make_f64_tensor(&[4], vec![1.0, 4.0, 2.0, 3.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &min_window("2", "1", "valid"),
+    )
+    .unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 1.0).abs() < 1e-10);
+    assert!((vals[1] - 2.0).abs() < 1e-10);
+    assert!((vals[2] - 2.0).abs() < 1e-10);
+}
