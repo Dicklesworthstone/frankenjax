@@ -1713,6 +1713,50 @@ fn cosh_vjp_numerical() {
 }
 
 #[test]
+fn asinh_vjp_numerical() {
+    // asinh'(x) = 1/sqrt(x^2 + 1), defined for all real x
+    verify_unary_scalar_vjp(Primitive::Asinh, 0.0, 1.0, 1e-5, "asinh VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Asinh, 1.0, 1.0, 1e-5, "asinh VJP at x=1");
+    verify_unary_scalar_vjp(
+        Primitive::Asinh,
+        -0.5,
+        2.0,
+        1e-5,
+        "asinh VJP at x=-0.5, g=2",
+    );
+    verify_unary_scalar_vjp(Primitive::Asinh, 2.0, 0.5, 1e-5, "asinh VJP at x=2, g=0.5");
+}
+
+#[test]
+fn acosh_vjp_numerical() {
+    // acosh'(x) = 1/sqrt(x^2 - 1), x > 1
+    verify_unary_scalar_vjp(Primitive::Acosh, 1.5, 1.0, 1e-5, "acosh VJP at x=1.5");
+    verify_unary_scalar_vjp(Primitive::Acosh, 2.0, 1.0, 1e-5, "acosh VJP at x=2");
+    verify_unary_scalar_vjp(Primitive::Acosh, 3.0, 0.5, 1e-5, "acosh VJP at x=3, g=0.5");
+}
+
+#[test]
+fn atanh_vjp_numerical() {
+    // atanh'(x) = 1/(1 - x^2), |x| < 1
+    verify_unary_scalar_vjp(Primitive::Atanh, 0.0, 1.0, 1e-5, "atanh VJP at x=0");
+    verify_unary_scalar_vjp(Primitive::Atanh, 0.5, 1.0, 1e-5, "atanh VJP at x=0.5");
+    verify_unary_scalar_vjp(
+        Primitive::Atanh,
+        -0.3,
+        2.0,
+        1e-5,
+        "atanh VJP at x=-0.3, g=2",
+    );
+    verify_unary_scalar_vjp(
+        Primitive::Atanh,
+        0.8,
+        0.5,
+        1e-5,
+        "atanh VJP at x=0.8, g=0.5",
+    );
+}
+
+#[test]
 fn tan_vjp_numerical() {
     verify_unary_scalar_vjp(Primitive::Tan, 0.5, 1.0, 1e-5, "tan VJP at x=0.5");
     verify_unary_scalar_vjp(Primitive::Tan, -0.3, 1.0, 1e-5, "tan VJP at x=-0.3");
