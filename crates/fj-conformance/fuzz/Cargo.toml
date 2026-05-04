@@ -138,6 +138,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "primitive_params_fuzzer"
+path = "fuzz_targets/primitive_params_fuzzer.rs"
+test = false
+doc = false
+bench = false
+
 [[test]]
 name = "fuzz_common"
 path = "fuzz_targets/common.rs"
