@@ -278,3 +278,61 @@ fn oracle_dot_3x3() {
         vec![30.0, 24.0, 18.0, 84.0, 69.0, 54.0, 138.0, 114.0, 90.0]
     );
 }
+
+// ====================== SPECIAL FLOATING-POINT VALUES ======================
+// JAX parity: NaN and Inf propagation in dot products
+
+#[test]
+fn oracle_dot_nan_propagates() {
+    // JAX: jnp.dot([1.0, nan, 3.0], [4.0, 5.0, 6.0]) = nan
+    let a = make_f64_tensor(&[3], vec![1.0, f64::NAN, 3.0]);
+    let b = make_f64_tensor(&[3], vec![4.0, 5.0, 6.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert!(val.is_nan(), "dot with NaN element should produce NaN");
+}
+
+#[test]
+fn oracle_dot_inf_propagates() {
+    // JAX: jnp.dot([1.0, inf, 3.0], [4.0, 5.0, 6.0]) = inf
+    let a = make_f64_tensor(&[3], vec![1.0, f64::INFINITY, 3.0]);
+    let b = make_f64_tensor(&[3], vec![4.0, 5.0, 6.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert!(
+        val.is_infinite() && val > 0.0,
+        "dot with +Inf should produce +Inf"
+    );
+}
+
+#[test]
+fn oracle_dot_inf_times_zero_is_nan() {
+    // JAX: jnp.dot([inf], [0.0]) = nan (because inf * 0 = nan)
+    let a = make_f64_tensor(&[1], vec![f64::INFINITY]);
+    let b = make_f64_tensor(&[1], vec![0.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert!(val.is_nan(), "inf * 0 in dot should produce NaN");
+}
+
+#[test]
+fn oracle_dot_inf_minus_inf_is_nan() {
+    // JAX: jnp.dot([inf, -inf], [1.0, 1.0]) = nan (because inf + (-inf) = nan)
+    let a = make_f64_tensor(&[2], vec![f64::INFINITY, f64::NEG_INFINITY]);
+    let b = make_f64_tensor(&[2], vec![1.0, 1.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert!(val.is_nan(), "inf + (-inf) in dot should produce NaN");
+}
+
+#[test]
+fn oracle_dot_matrix_nan_row() {
+    // JAX: matrix with NaN in one row, only that row of output is NaN
+    let a = make_f64_tensor(&[2, 2], vec![1.0, 2.0, f64::NAN, 4.0]);
+    let b = make_f64_tensor(&[2], vec![1.0, 1.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals.len(), 2);
+    assert!((vals[0] - 3.0).abs() < 1e-10, "row 0 should be 1+2=3");
+    assert!(vals[1].is_nan(), "row 1 with NaN should produce NaN");
+}
