@@ -356,7 +356,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // mul-one moved to numerically_unsafe_rules
         // (literal operands can change promoted output dtype)
         // mul-zero moved to numerically_unsafe_rules (fails for NaN/Inf)
-        rewrite!("mul-neg-one"; "(mul ?a (neg 1))" => "(neg ?a)"),
+        // mul-neg-one moved to numerically_unsafe_rules
+        // (unary neg can change promoted unsigned/integer output dtype)
         // ── Distributivity ───────────────────────────────────────────
         // distribute, factor moved to numerically_unsafe_rules
         // (floating distribution changes overflow and cancellation order)
@@ -427,15 +428,11 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // max-min-absorb, min-max-absorb moved to numerically_unsafe_rules
         // (fail when the repeated operand is NaN)
         // ── Clamp rules ─────────────────────────────────────────────────
-        // clamp(x, lo, hi) = min(max(x, lo), hi)
-        rewrite!("clamp-to-minmax"; "(clamp ?x ?lo ?hi)" => "(min (max ?x ?lo) ?hi)"),
-        // clamp(x, x, x) = x (identity)
-        rewrite!("clamp-same"; "(clamp ?a ?a ?a)" => "?a"),
+        // clamp rewrites moved to numerically_unsafe_rules
+        // (can skip clamp dtype, kind, and shape validation)
         // ── Complex number rules ──────────────────────────────────────
-        rewrite!("conj-conj"; "(conj (conj ?a))" => "?a"),
-        rewrite!("real-complex"; "(real (complex ?r ?i))" => "?r"),
-        rewrite!("imag-complex"; "(imag (complex ?r ?i))" => "?i"),
-        rewrite!("complex-real-imag"; "(complex (real ?z) (imag ?z))" => "?z"),
+        // complex rewrites moved to numerically_unsafe_rules
+        // (can skip complex dtype/part validation)
         // ── Copy elimination ──────────────────────────────────────────
         rewrite!("copy-elim"; "(copy ?a)" => "?a"),
         // ── Integer power rules ───────────────────────────────────────
@@ -445,9 +442,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // integer-pow-two moved to numerically_unsafe_rules
         // (current eval returns f64, not the input dtype)
         // ── Bitwise rules ─────────────────────────────────────────────
-        rewrite!("bitwise-not-not"; "(bitwise_not (bitwise_not ?a))" => "?a"),
-        rewrite!("bitwise-and-self"; "(bitwise_and ?a ?a)" => "?a"),
-        rewrite!("bitwise-or-self"; "(bitwise_or ?a ?a)" => "?a"),
+        // bitwise self/not-not rewrites moved to numerically_unsafe_rules
+        // (can skip integer dtype validation)
         // bitwise-xor-self moved to numerically_unsafe_rules (erases output dtype)
         rewrite!("bitwise-and-comm"; "(bitwise_and ?a ?b)" => "(bitwise_and ?b ?a)"),
         rewrite!("bitwise-or-comm"; "(bitwise_or ?a ?b)" => "(bitwise_or ?b ?a)"),
@@ -482,6 +478,7 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("add-zero"; "(add ?a 0)" => "?a"),
         rewrite!("sub-zero"; "(sub ?a 0)" => "?a"),
         rewrite!("mul-one"; "(mul ?a 1)" => "?a"),
+        rewrite!("mul-neg-one"; "(mul ?a (neg 1))" => "(neg ?a)"),
         rewrite!("div-one"; "(div ?a 1)" => "?a"),
         rewrite!("pow-one"; "(pow ?a 1)" => "?a"),
         rewrite!("integer-pow-one"; "(integer_pow ?a 1)" => "?a"),
@@ -525,6 +522,17 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("select-same"; "(select ?c ?a ?a)" => "?a"),
         rewrite!("select-nest-true"; "(select ?c (select ?c ?a ?b) ?x)" => "(select ?c ?a ?x)"),
         rewrite!("select-nest-false"; "(select ?c ?x (select ?c ?a ?b))" => "(select ?c ?x ?b)"),
+        // Clamp and complex simplifications can remove validation errors.
+        rewrite!("clamp-to-minmax"; "(clamp ?x ?lo ?hi)" => "(min (max ?x ?lo) ?hi)"),
+        rewrite!("clamp-same"; "(clamp ?a ?a ?a)" => "?a"),
+        rewrite!("conj-conj"; "(conj (conj ?a))" => "?a"),
+        rewrite!("real-complex"; "(real (complex ?r ?i))" => "?r"),
+        rewrite!("imag-complex"; "(imag (complex ?r ?i))" => "?i"),
+        rewrite!("complex-real-imag"; "(complex (real ?z) (imag ?z))" => "?z"),
+        // Bitwise simplifications can remove integer dtype validation errors.
+        rewrite!("bitwise-not-not"; "(bitwise_not (bitwise_not ?a))" => "?a"),
+        rewrite!("bitwise-and-self"; "(bitwise_and ?a ?a)" => "?a"),
+        rewrite!("bitwise-or-self"; "(bitwise_or ?a ?a)" => "?a"),
         // max/min absorption changes results when the repeated operand is NaN.
         rewrite!("max-min-absorb"; "(max ?a (min ?a ?b))" => "?a"),
         rewrite!("min-max-absorb"; "(min ?a (max ?a ?b))" => "?a"),
@@ -4013,10 +4021,10 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
-            "conj(conj(x)) should simplify: got {} eqns (was {})",
+            "aggressive conj(conj(x)) should simplify: got {} eqns (was {})",
             optimized.equations.len(),
             jaxpr.equations.len(),
         );
@@ -4049,10 +4057,10 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
-            "real(complex(r, i)) should simplify: got {} eqns (was {})",
+            "aggressive real(complex(r, i)) should simplify: got {} eqns (was {})",
             optimized.equations.len(),
             jaxpr.equations.len(),
         );
@@ -4085,10 +4093,10 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
-            "imag(complex(r, i)) should simplify: got {} eqns (was {})",
+            "aggressive imag(complex(r, i)) should simplify: got {} eqns (was {})",
             optimized.equations.len(),
             jaxpr.equations.len(),
         );
@@ -4199,10 +4207,10 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
-            "bitwise_not(bitwise_not(x)) should simplify: got {} eqns (was {})",
+            "aggressive bitwise_not(bitwise_not(x)) should simplify: got {} eqns (was {})",
             optimized.equations.len(),
             jaxpr.equations.len(),
         );
@@ -4926,10 +4934,10 @@ mod tests {
                 },
             ],
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.len() <= 1,
-            "x*(-1) should simplify to neg(x): got {} eqns",
+            "aggressive x*(-1) should simplify to neg(x): got {} eqns",
             opt.equations.len()
         );
     }
@@ -5232,10 +5240,10 @@ mod tests {
             Atom::Var(VarId(1)),
             Atom::Var(VarId(1)),
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
-            "x&x should simplify to x: got {} eqns",
+            "aggressive x&x should simplify to x: got {} eqns",
             opt.equations.len()
         );
     }
@@ -5248,10 +5256,10 @@ mod tests {
             Atom::Var(VarId(1)),
             Atom::Var(VarId(1)),
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
-            "x|x should simplify to x: got {} eqns",
+            "aggressive x|x should simplify to x: got {} eqns",
             opt.equations.len()
         );
     }
@@ -5314,10 +5322,10 @@ mod tests {
                 },
             ],
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
-            "complex(real(z), imag(z)) should simplify to z: got {} eqns",
+            "aggressive complex(real(z), imag(z)) should simplify to z: got {} eqns",
             opt.equations.len()
         );
     }
@@ -5365,10 +5373,10 @@ mod tests {
     fn rule_bitwise_not_not_chain() {
         // bitwise_not(bitwise_not(x)) → x
         let jaxpr = chained_unary_jaxpr(Primitive::BitwiseNot, Primitive::BitwiseNot);
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
-            "not(not(x)) should simplify to x: got {} eqns",
+            "aggressive not(not(x)) should simplify to x: got {} eqns",
             opt.equations.len()
         );
     }
@@ -5860,6 +5868,178 @@ mod tests {
     }
 
     #[test]
+    fn numerical_safety_mode_preserves_complex_validation_errors() {
+        let cases = [
+            (
+                "complex_real_imag_non_complex",
+                Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Real,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Imag,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Complex,
+                            inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(3))],
+                            outputs: smallvec![VarId(4)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                ),
+                vec![Value::scalar_f64(3.0)],
+            ),
+            (
+                "real_complex_invalid_imag_part",
+                Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Complex,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(3)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Real,
+                            inputs: smallvec![Atom::Var(VarId(3))],
+                            outputs: smallvec![VarId(4)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                ),
+                vec![Value::scalar_f64(1.0), Value::Scalar(Literal::Bool(true))],
+            ),
+            (
+                "conj_conj_non_complex",
+                chained_unary_jaxpr(Primitive::Conj, Primitive::Conj),
+                vec![Value::scalar_f64(3.0)],
+            ),
+        ];
+
+        for (name, jaxpr, args) in cases {
+            assert_safe_and_default_preserve_error(name, &jaxpr, &args);
+        }
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_clamp_validation_errors() {
+        let tensor_arg = || {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: vec![1] },
+                    vec![Literal::from_f64(0.0)],
+                )
+                .expect("valid tensor"),
+            )
+        };
+        let cases = [
+            (
+                "clamp_same_complex",
+                Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(2)],
+                    vec![Equation {
+                        primitive: Primitive::Clamp,
+                        inputs: smallvec![
+                            Atom::Var(VarId(1)),
+                            Atom::Var(VarId(1)),
+                            Atom::Var(VarId(1))
+                        ],
+                        outputs: smallvec![VarId(2)],
+                        effects: vec![],
+                        params: BTreeMap::new(),
+                        sub_jaxprs: vec![],
+                    }],
+                ),
+                vec![Value::Scalar(Literal::from_complex128(1.0, 0.0))],
+            ),
+            (
+                "clamp_scalar_tensor_bounds",
+                Jaxpr::new(
+                    vec![VarId(1), VarId(2), VarId(3)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![Equation {
+                        primitive: Primitive::Clamp,
+                        inputs: smallvec![
+                            Atom::Var(VarId(1)),
+                            Atom::Var(VarId(2)),
+                            Atom::Var(VarId(3))
+                        ],
+                        outputs: smallvec![VarId(4)],
+                        effects: vec![],
+                        params: BTreeMap::new(),
+                        sub_jaxprs: vec![],
+                    }],
+                ),
+                vec![Value::scalar_f64(2.0), tensor_arg(), tensor_arg()],
+            ),
+        ];
+
+        for (name, jaxpr, args) in cases {
+            assert_safe_and_default_preserve_error(name, &jaxpr, &args);
+        }
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_bitwise_validation_errors() {
+        let cases = [
+            (
+                "bitwise_and_float_self",
+                binary_jaxpr(
+                    Primitive::BitwiseAnd,
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(1)),
+                ),
+                vec![Value::scalar_f64(1.0)],
+            ),
+            (
+                "bitwise_or_float_self",
+                binary_jaxpr(
+                    Primitive::BitwiseOr,
+                    Atom::Var(VarId(1)),
+                    Atom::Var(VarId(1)),
+                ),
+                vec![Value::scalar_f64(1.0)],
+            ),
+            (
+                "bitwise_not_not_float",
+                chained_unary_jaxpr(Primitive::BitwiseNot, Primitive::BitwiseNot),
+                vec![Value::scalar_f64(1.0)],
+            ),
+        ];
+
+        for (name, jaxpr, args) in cases {
+            assert_safe_and_default_preserve_error(name, &jaxpr, &args);
+        }
+    }
+
+    #[test]
     fn numerical_safety_mode_preserves_promoted_dtype_identity_boundaries() {
         let cases = [
             (
@@ -5886,6 +6066,33 @@ mod tests {
                     Primitive::Mul,
                     Atom::Var(VarId(1)),
                     Atom::Lit(Literal::I64(1)),
+                ),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "mul_neg_one",
+                Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(3)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Neg,
+                            inputs: smallvec![Atom::Lit(Literal::I64(1))],
+                            outputs: smallvec![VarId(2)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Mul,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(3)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                    ],
                 ),
                 vec![Value::scalar_u32(7)],
             ),
@@ -6239,6 +6446,27 @@ mod tests {
 
         let default = OptimizationConfig::default();
         assert!(default.numerical_safety_mode);
+    }
+
+    fn assert_safe_and_default_preserve_error(name: &str, jaxpr: &Jaxpr, args: &[Value]) {
+        assert!(
+            eval_jaxpr(jaxpr, args).is_err(),
+            "{name}: original invalid program should fail"
+        );
+
+        let safe = optimize_jaxpr_with_config(jaxpr, &OptimizationConfig::safe());
+        assert!(
+            eval_jaxpr(&safe, args).is_err(),
+            "{name}: safe optimization should preserve validation failure, got {:?}",
+            safe.equations
+        );
+
+        let default = optimize_jaxpr(jaxpr);
+        assert!(
+            eval_jaxpr(&default, args).is_err(),
+            "{name}: default optimization should preserve validation failure, got {:?}",
+            default.equations
+        );
     }
 
     fn same_f64_scalar_value(left: &Value, right: &Value) -> bool {
