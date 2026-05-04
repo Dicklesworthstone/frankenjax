@@ -5635,6 +5635,45 @@ mod tests {
     }
 
     #[test]
+    fn numerical_safety_mode_preserves_reciprocal_subnormal_boundary() {
+        let jaxpr = chained_unary_jaxpr(Primitive::Reciprocal, Primitive::Reciprocal);
+        let args = [Value::scalar_f64(1e-320)];
+
+        let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+        assert_eq!(
+            original[0].as_f64_scalar(),
+            Some(0.0),
+            "reciprocal(reciprocal(1e-320)) should observe intermediate overflow"
+        );
+
+        let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+        assert_eq!(
+            safe_value[0].as_f64_scalar(),
+            Some(0.0),
+            "safe optimized value should preserve subnormal overflow boundary: {:?}",
+            safe.equations
+        );
+
+        let default = optimize_jaxpr(&jaxpr);
+        let default_value = eval_jaxpr(&default, &args).expect("default eval");
+        assert_eq!(
+            default_value[0].as_f64_scalar(),
+            Some(0.0),
+            "default optimized value should preserve subnormal overflow boundary: {:?}",
+            default.equations
+        );
+
+        let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+        assert_eq!(
+            aggressive_value[0].as_f64_scalar(),
+            Some(1e-320),
+            "aggressive mode may apply the numerically unsafe reciprocal-reciprocal rewrite"
+        );
+    }
+
+    #[test]
     fn numerical_safety_mode_preserves_nan_inf_cancellation_boundaries() {
         let cases = [
             (
