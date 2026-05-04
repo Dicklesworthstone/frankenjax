@@ -4,7 +4,7 @@
 //! by running Jaxpr programs both with and without optimization and comparing results.
 
 use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
-use fj_egraph::optimize_jaxpr;
+use fj_egraph::{OptimizationConfig, optimize_jaxpr, optimize_jaxpr_with_config};
 use fj_interpreters::eval_jaxpr;
 use smallvec::smallvec;
 use std::collections::BTreeMap;
@@ -184,7 +184,13 @@ fn assert_values_close(a: &Value, b: &Value, tol: f64, context: &str) {
                 );
             }
         }
-        _ => panic!("{context}: value kind mismatch"),
+        _ => {
+            let same_kind = matches!(
+                (a, b),
+                (Value::Scalar(_), Value::Scalar(_)) | (Value::Tensor(_), Value::Tensor(_))
+            );
+            assert!(same_kind, "{context}: value kind mismatch");
+        }
     }
 }
 
@@ -939,12 +945,20 @@ fn egraph_preserves_exp_log_product() {
             },
         ],
     );
-    let optimized = optimize_jaxpr(&jaxpr);
+    let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
     assert!(
         optimized.equations.len() < jaxpr.equations.len(),
-        "exp(log(x))*exp(log(y)) should simplify (got {} eqns, original {})",
+        "aggressive exp(log(x))*exp(log(y)) should simplify (got {} eqns, original {})",
         optimized.equations.len(),
         jaxpr.equations.len()
+    );
+    let original_result = eval_jaxpr(&jaxpr, &[s_f64(3.0), s_f64(5.0)]).unwrap();
+    let optimized_result = eval_jaxpr(&optimized, &[s_f64(3.0), s_f64(5.0)]).unwrap();
+    assert_values_close(
+        &original_result[0],
+        &optimized_result[0],
+        1e-10,
+        "aggressive exp(log(x))*exp(log(y))",
     );
     verify_optimization_preserves_semantics(
         &jaxpr,

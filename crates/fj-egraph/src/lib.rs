@@ -127,6 +127,16 @@ pub enum EGraphLoweringError {
         primitive: Primitive,
         reason: ExclusionReason,
     },
+    MissingVariable {
+        var: VarId,
+    },
+    InvalidEquationArity {
+        primitive: Primitive,
+        expected_inputs: usize,
+        actual_inputs: usize,
+        expected_outputs: usize,
+        actual_outputs: usize,
+    },
     InvalidPrimitiveParams {
         primitive: Primitive,
         detail: String,
@@ -224,6 +234,24 @@ impl std::fmt::Display for EGraphLoweringError {
                 reason.category(),
                 reason.detail()
             ),
+            Self::MissingVariable { var } => {
+                write!(
+                    f,
+                    "egraph lowering input references unbound variable v{}",
+                    var.0
+                )
+            }
+            Self::InvalidEquationArity {
+                primitive,
+                expected_inputs,
+                actual_inputs,
+                expected_outputs,
+                actual_outputs,
+            } => write!(
+                f,
+                "primitive {} has invalid egraph lowering arity: expected {expected_inputs} inputs/{expected_outputs} outputs, got {actual_inputs} inputs/{actual_outputs} outputs",
+                primitive.as_str()
+            ),
             Self::InvalidPrimitiveParams { primitive, detail } => write!(
                 f,
                 "primitive {} has invalid egraph lowering parameters: {detail}",
@@ -241,7 +269,7 @@ impl std::fmt::Display for EGraphLoweringError {
 impl std::error::Error for EGraphLoweringError {}
 
 /// Configuration for e-graph optimization passes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OptimizationConfig {
     /// When enabled, disables rewrites that are mathematically correct but
     /// numerically unsafe near domain boundaries (0, NaN, Inf, denormals).
@@ -275,12 +303,18 @@ impl OptimizationConfig {
         }
     }
 
-    /// Create a config with all optimizations enabled (default).
+    /// Create a config with all optimizations enabled.
     #[must_use]
     pub fn aggressive() -> Self {
         Self {
             numerical_safety_mode: false,
         }
+    }
+}
+
+impl Default for OptimizationConfig {
+    fn default() -> Self {
+        Self::safe()
     }
 }
 
@@ -630,7 +664,8 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
         let previous = equations.last();
         let can_cancel = if rewritten.outputs.len() == 1 && rewritten.inputs.len() == 1 {
             if let (Some(previous), Atom::Var(input_var)) = (previous, &rewritten.inputs[0]) {
-                previous.outputs.len() == 1
+                previous.inputs.len() == 1
+                    && previous.outputs.len() == 1
                     && previous.outputs[0] == *input_var
                     && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
                     && cancels_shape_chain(previous, &rewritten)
@@ -691,58 +726,19 @@ pub fn jaxpr_to_egraph(
 
     // Process equations
     for eqn in &jaxpr.equations {
-        let input_ids: Vec<Id> = eqn
-            .inputs
-            .iter()
-            .map(|atom| match atom {
-                Atom::Var(var) => var_map[var],
-                Atom::Lit(Literal::I64(n)) => expr.add(FjLang::Num(*n)),
-                Atom::Lit(Literal::U32(n)) => {
-                    let sym = egg::Symbol::from(format!("u32:{n}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::U64(n)) => {
-                    let sym = egg::Symbol::from(format!("u64:{n}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::F64Bits(bits)) => {
-                    // Encode as symbol to preserve bit-exactness
-                    let sym = egg::Symbol::from(format!("f64:{bits}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::F32Bits(bits)) => {
-                    let sym = egg::Symbol::from(format!("f32:{bits}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::Bool(b)) => {
-                    let sym = egg::Symbol::from(format!("bool:{}", if *b { 1 } else { 0 }));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::BF16Bits(bits)) => {
-                    let sym = egg::Symbol::from(format!("bf16:{bits}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::F16Bits(bits)) => {
-                    let sym = egg::Symbol::from(format!("f16:{bits}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::Complex64Bits(re, im)) => {
-                    let sym = egg::Symbol::from(format!("c64:{re}:{im}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-                Atom::Lit(Literal::Complex128Bits(re, im)) => {
-                    let sym = egg::Symbol::from(format!("c128:{re}:{im}"));
-                    expr.add(FjLang::Symbol(sym))
-                }
-            })
-            .collect();
-
         if let Some(reason) = excluded_primitive_reason(eqn.primitive) {
             return Err(EGraphLoweringError::UnsupportedPrimitive {
                 primitive: eqn.primitive,
                 reason,
             });
         }
+        validate_egraph_equation_arity(eqn)?;
+
+        let input_ids: Vec<Id> = eqn
+            .inputs
+            .iter()
+            .map(|atom| add_atom_to_egraph(atom, &mut expr, &var_map))
+            .collect::<Result<_, _>>()?;
 
         let node = match eqn.primitive {
             Primitive::Add => FjLang::Add([input_ids[0], input_ids[1]]),
@@ -841,6 +837,155 @@ pub fn jaxpr_to_egraph(
     }
 
     Ok((expr, var_map))
+}
+
+fn validate_egraph_equation_arity(eqn: &Equation) -> Result<(), EGraphLoweringError> {
+    let Some(expected_inputs) = expected_egraph_input_arity(eqn.primitive) else {
+        return Err(EGraphLoweringError::MissingLoweringCase {
+            primitive: eqn.primitive,
+        });
+    };
+    let expected_outputs = 1;
+    if eqn.inputs.len() == expected_inputs && eqn.outputs.len() == expected_outputs {
+        return Ok(());
+    }
+
+    Err(EGraphLoweringError::InvalidEquationArity {
+        primitive: eqn.primitive,
+        expected_inputs,
+        actual_inputs: eqn.inputs.len(),
+        expected_outputs,
+        actual_outputs: eqn.outputs.len(),
+    })
+}
+
+fn expected_egraph_input_arity(primitive: Primitive) -> Option<usize> {
+    let arity = match primitive {
+        Primitive::Add
+        | Primitive::Sub
+        | Primitive::Mul
+        | Primitive::Max
+        | Primitive::Min
+        | Primitive::Pow
+        | Primitive::Dot
+        | Primitive::Eq
+        | Primitive::Ne
+        | Primitive::Lt
+        | Primitive::Le
+        | Primitive::Gt
+        | Primitive::Ge
+        | Primitive::Div
+        | Primitive::Rem
+        | Primitive::Atan2
+        | Primitive::Complex
+        | Primitive::Nextafter
+        | Primitive::BitwiseAnd
+        | Primitive::BitwiseOr
+        | Primitive::BitwiseXor
+        | Primitive::ShiftLeft
+        | Primitive::ShiftRightArithmetic
+        | Primitive::ShiftRightLogical => 2,
+        Primitive::Select | Primitive::Clamp => 3,
+        Primitive::Neg
+        | Primitive::Abs
+        | Primitive::Exp
+        | Primitive::Log
+        | Primitive::Sqrt
+        | Primitive::Rsqrt
+        | Primitive::Floor
+        | Primitive::Ceil
+        | Primitive::Round
+        | Primitive::Sin
+        | Primitive::Cos
+        | Primitive::ReduceSum
+        | Primitive::ReduceMax
+        | Primitive::ReduceMin
+        | Primitive::ReduceProd
+        | Primitive::Sign
+        | Primitive::Square
+        | Primitive::Reciprocal
+        | Primitive::Expm1
+        | Primitive::Log1p
+        | Primitive::Tan
+        | Primitive::Asin
+        | Primitive::Acos
+        | Primitive::Atan
+        | Primitive::Sinh
+        | Primitive::Cosh
+        | Primitive::Tanh
+        | Primitive::Logistic
+        | Primitive::Erf
+        | Primitive::Erfc
+        | Primitive::Conj
+        | Primitive::Real
+        | Primitive::Imag
+        | Primitive::Cbrt
+        | Primitive::Lgamma
+        | Primitive::Digamma
+        | Primitive::ErfInv
+        | Primitive::IsFinite
+        | Primitive::Copy
+        | Primitive::BitwiseNot
+        | Primitive::PopulationCount
+        | Primitive::CountLeadingZeros
+        | Primitive::ReduceAnd
+        | Primitive::ReduceOr
+        | Primitive::ReduceXor
+        | Primitive::IntegerPow => 1,
+        _ => return None,
+    };
+    Some(arity)
+}
+
+fn add_atom_to_egraph(
+    atom: &Atom,
+    expr: &mut RecExpr<FjLang>,
+    var_map: &BTreeMap<VarId, Id>,
+) -> Result<Id, EGraphLoweringError> {
+    let id = match atom {
+        Atom::Var(var) => var_map
+            .get(var)
+            .copied()
+            .ok_or(EGraphLoweringError::MissingVariable { var: *var })?,
+        Atom::Lit(Literal::I64(n)) => expr.add(FjLang::Num(*n)),
+        Atom::Lit(Literal::U32(n)) => {
+            let sym = egg::Symbol::from(format!("u32:{n}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::U64(n)) => {
+            let sym = egg::Symbol::from(format!("u64:{n}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::F64Bits(bits)) => {
+            let sym = egg::Symbol::from(format!("f64:{bits}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::F32Bits(bits)) => {
+            let sym = egg::Symbol::from(format!("f32:{bits}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::Bool(b)) => {
+            let sym = egg::Symbol::from(format!("bool:{}", if *b { 1 } else { 0 }));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::BF16Bits(bits)) => {
+            let sym = egg::Symbol::from(format!("bf16:{bits}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::F16Bits(bits)) => {
+            let sym = egg::Symbol::from(format!("f16:{bits}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::Complex64Bits(re, im)) => {
+            let sym = egg::Symbol::from(format!("c64:{re}:{im}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+        Atom::Lit(Literal::Complex128Bits(re, im)) => {
+            let sym = egg::Symbol::from(format!("c128:{re}:{im}"));
+            expr.add(FjLang::Symbol(sym))
+        }
+    };
+    Ok(id)
 }
 
 fn integer_pow_exponent_param(
@@ -2322,7 +2467,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert_eq!(
             optimized
                 .equations
@@ -2350,6 +2495,114 @@ mod tests {
                 reason: ExclusionReason::ShapeManipulation,
             }
         );
+    }
+
+    #[test]
+    fn public_lowering_returns_error_for_missing_variable() {
+        let jaxpr = Jaxpr::new(
+            vec![],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        );
+
+        let err = jaxpr_to_egraph(&jaxpr).unwrap_err();
+        assert_eq!(err, EGraphLoweringError::MissingVariable { var: VarId(1) });
+        assert!(
+            err.to_string().contains("unbound variable v1"),
+            "missing-variable error should be actionable: {err}"
+        );
+    }
+
+    #[test]
+    fn public_lowering_returns_error_for_input_and_output_arity_mismatch() {
+        let missing_input = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        );
+        assert_eq!(
+            jaxpr_to_egraph(&missing_input).unwrap_err(),
+            EGraphLoweringError::InvalidEquationArity {
+                primitive: Primitive::Add,
+                expected_inputs: 2,
+                actual_inputs: 1,
+                expected_outputs: 1,
+                actual_outputs: 1,
+            }
+        );
+
+        let missing_output = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![],
+            vec![Equation {
+                primitive: Primitive::Neg,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            }],
+        );
+        assert_eq!(
+            jaxpr_to_egraph(&missing_output).unwrap_err(),
+            EGraphLoweringError::InvalidEquationArity {
+                primitive: Primitive::Neg,
+                expected_inputs: 1,
+                actual_inputs: 1,
+                expected_outputs: 1,
+                actual_outputs: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn shape_chain_prepass_does_not_panic_on_missing_previous_input() {
+        let mut reverse_params = BTreeMap::new();
+        reverse_params.insert("permutation".to_owned(), "reverse".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: reverse_params.clone(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: reverse_params,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert_eq!(optimized.equations.len(), 2);
+        assert_eq!(optimized.outvars, vec![VarId(3)]);
     }
 
     #[test]
@@ -2483,7 +2736,7 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         // Optimized should have fewer or equal equations
         assert!(
             optimized.equations.len() <= jaxpr.equations.len(),
@@ -2540,7 +2793,7 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
 
         for &x in &[0.0, 1.0, 3.0, -4.0] {
             let orig_out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x)]).unwrap();
@@ -2663,7 +2916,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         // Double negation should be eliminated
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
@@ -2695,7 +2948,7 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         // The optimizer should recognize sub(x,x) = 0 and simplify
         assert!(
             optimized.equations.len() <= jaxpr.equations.len(),
@@ -2730,7 +2983,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "exp(log(x)) should simplify: got {} eqns (was {})",
@@ -2766,7 +3019,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "abs(abs(x)) should simplify: got {} eqns (was {})",
@@ -2797,7 +3050,7 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         let orig_out = eval_jaxpr(&jaxpr, &[Value::scalar_i64(42)]).unwrap();
         let opt_out = eval_jaxpr(&optimized, &[Value::scalar_i64(42)]).unwrap();
         assert_eq!(orig_out, opt_out);
@@ -2952,7 +3205,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "expm1(log1p(x)) should simplify: got {} eqns (was {})",
@@ -3188,7 +3441,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "sin^2(x)+cos^2(x) should simplify: got {} eqns (was {})",
@@ -3248,7 +3501,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "cosh^2(x)-sinh^2(x) should simplify: got {} eqns (was {})",
@@ -3300,7 +3553,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "logistic(x)+logistic(-x) should simplify: got {} eqns (was {})",
@@ -3426,7 +3679,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "mul(x, reciprocal(x)) should simplify to 1: got {} eqns (was {})",
@@ -3462,7 +3715,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "div(mul(a,b), b) should simplify: got {} eqns (was {})",
@@ -3644,7 +3897,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "max(a, min(a, b)) should simplify to a: got {} eqns (was {})",
@@ -3680,7 +3933,7 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "min(a, max(a, b)) should simplify to a: got {} eqns (was {})",
@@ -4648,7 +4901,7 @@ mod tests {
                 },
             ],
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.len() <= 1,
             "x+neg(x) should simplify to 0: got {} eqns",
@@ -4692,7 +4945,7 @@ mod tests {
     fn rule_log_exp_inverse() {
         // log(exp(x)) → x
         let jaxpr = chained_unary_jaxpr(Primitive::Exp, Primitive::Log);
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "log(exp(x)) should simplify to x: got {} eqns",
@@ -4843,7 +5096,7 @@ mod tests {
     fn rule_div_self() {
         // x / x → 1 (extraction may keep a constant-binding equation)
         let jaxpr = binary_jaxpr(Primitive::Div, Atom::Var(VarId(1)), Atom::Var(VarId(1)));
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.len() <= 1,
             "x/x should simplify: got {} eqns",
@@ -4855,7 +5108,7 @@ mod tests {
     fn rule_log1p_expm1_inverse() {
         // log1p(expm1(x)) → x
         let jaxpr = chained_unary_jaxpr(Primitive::Expm1, Primitive::Log1p);
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "log1p(expm1(x)) should simplify to x: got {} eqns",
@@ -5144,7 +5397,7 @@ mod tests {
                 },
             ],
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         // May decompose to sub(log(a), log(b)) which is 3 eqns, or stay as 2
         assert!(
             opt.equations.len() <= 3,
@@ -5158,27 +5411,36 @@ mod tests {
         // In safety mode, div-self should NOT be applied (a/a could be NaN when a=0)
         let jaxpr = binary_jaxpr(Primitive::Div, Atom::Var(VarId(1)), Atom::Var(VarId(1)));
 
-        // Default mode (unsafe rules enabled): a/a becomes 1
+        // Default mode is safe: a/a stays as a/a (div-self rule disabled).
         let opt_default = optimize_jaxpr(&jaxpr);
         let has_div_default = opt_default
             .equations
             .iter()
             .any(|eq| eq.primitive == Primitive::Div);
 
-        // Safety mode: a/a stays as a/a (div-self rule disabled)
         let opt_safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
         let has_div_safe = opt_safe
             .equations
             .iter()
             .any(|eq| eq.primitive == Primitive::Div);
 
+        let opt_aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        let has_div_aggressive = opt_aggressive
+            .equations
+            .iter()
+            .any(|eq| eq.primitive == Primitive::Div);
+
         assert!(
-            !has_div_default,
-            "default mode should simplify a/a (no Div remaining)"
+            has_div_default,
+            "default optimizer should preserve a/a (Div remains)"
         );
         assert!(
             has_div_safe,
             "safety mode should preserve a/a (Div remains)"
+        );
+        assert!(
+            !has_div_aggressive,
+            "aggressive mode should simplify a/a (no Div remaining)"
         );
     }
 
@@ -5252,6 +5514,15 @@ mod tests {
         assert!(
             safe_value[0].as_f64_scalar().is_some_and(f64::is_infinite),
             "safe optimized value should preserve overflow-visible Inf"
+        );
+
+        let default = optimize_jaxpr(&jaxpr);
+        let default_value = eval_jaxpr(&default, &args).expect("default eval");
+        assert!(
+            default_value[0]
+                .as_f64_scalar()
+                .is_some_and(f64::is_infinite),
+            "default optimized value should preserve overflow-visible Inf"
         );
 
         let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
@@ -5559,29 +5830,32 @@ mod tests {
                 minmax_absorption_jaxpr(Primitive::Min, Primitive::Max),
             ),
         ];
-        let args = [Value::scalar_f64(f64::NAN), Value::scalar_f64(5.0)];
-
         for (name, jaxpr) in cases {
-            let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
-            assert_eq!(
-                original[0].as_f64_scalar(),
-                Some(5.0),
-                "{name}: original program should return the non-NaN operand"
-            );
+            let mut aggressive_changed_nan_boundary = false;
+            for (arg_order, a, b) in [("nan_first", f64::NAN, 5.0), ("nan_second", 5.0, f64::NAN)] {
+                let args = [Value::scalar_f64(a), Value::scalar_f64(b)];
+                let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
 
-            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
-            let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
-            assert_eq!(
-                safe_value[0].as_f64_scalar(),
-                Some(5.0),
-                "{name}: safe optimized program should preserve NaN-skipping max/min semantics"
-            );
+                let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+                let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+                assert!(
+                    same_f64_scalar_value(&safe_value[0], &original[0]),
+                    "{name}/{arg_order}: safe optimized program should preserve current max/min NaN semantics, got {:?} from {:?}, expected {:?}",
+                    safe_value[0],
+                    safe.equations,
+                    original[0]
+                );
 
-            let aggressive = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
-            let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+                let aggressive =
+                    optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+                let aggressive_value = eval_jaxpr(&aggressive, &args).expect("aggressive eval");
+                aggressive_changed_nan_boundary |=
+                    !same_f64_scalar_value(&aggressive_value[0], &original[0]);
+            }
+
             assert!(
-                aggressive_value[0].as_f64_scalar().is_some_and(f64::is_nan),
-                "{name}: aggressive mode may apply the unsafe absorption identity"
+                aggressive_changed_nan_boundary,
+                "{name}: aggressive absorption should expose a NaN-boundary mismatch for at least one operand order"
             );
         }
     }
@@ -5595,6 +5869,13 @@ mod tests {
         assert!(!aggressive.numerical_safety_mode);
 
         let default = OptimizationConfig::default();
-        assert!(!default.numerical_safety_mode);
+        assert!(default.numerical_safety_mode);
+    }
+
+    fn same_f64_scalar_value(left: &Value, right: &Value) -> bool {
+        match (left.as_f64_scalar(), right.as_f64_scalar()) {
+            (Some(left), Some(right)) => left == right || (left.is_nan() && right.is_nan()),
+            _ => false,
+        }
     }
 }
