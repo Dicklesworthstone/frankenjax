@@ -1,6 +1,6 @@
 //! bd-3dl.20: User Workflow Scenario Corpus + Golden Journeys
 //!
-//! 8 golden journey scenarios reflecting real JAX user patterns:
+//! 9 golden journey scenarios reflecting real JAX user patterns:
 //!   1. Basic Transform — jit a simple function, check output matches eager
 //!   2. Gradient Computation — grad of polynomial, verify against analytical derivative
 //!   3. Batched Computation — vmap over batch dimension, compare to manual loop
@@ -8,7 +8,8 @@
 //!   5. Cache Hit/Miss — repeat dispatch, verify cache key determinism
 //!   6. Error Recovery — malformed input, shape mismatch, error message quality
 //!   7. Large Program — 100+ equation Jaxpr, verify correctness and timing
-//!   8. Ledger Inspection — multi-dispatch session, inspect decision ledger
+//!   8. Transcendental Gradients — inverse hyperbolic function derivatives
+//!   9. Ledger Inspection — multi-dispatch session, inspect decision ledger
 
 #![forbid(unsafe_code)]
 
@@ -649,11 +650,106 @@ fn golden_journey_07_large_program() {
 }
 
 // ---------------------------------------------------------------------------
-// Journey 8: Ledger Inspection — multi-dispatch session consistency
+// Journey 8: Transcendental Gradients — inverse hyperbolic functions
 // ---------------------------------------------------------------------------
 
 #[test]
-fn golden_journey_08_ledger_inspection() {
+fn golden_journey_08_transcendental_gradients() {
+    let start = Instant::now();
+    let mut assertions = Vec::new();
+
+    // Test grad of inverse hyperbolic functions against analytical derivatives
+    // asinh'(x) = 1/sqrt(x^2 + 1)
+    // acosh'(x) = 1/sqrt(x^2 - 1), x > 1
+    // atanh'(x) = 1/(1 - x^2), |x| < 1
+
+    // asinh at multiple points
+    for &x in &[0.5f64, 1.0, 2.0, -1.5] {
+        let resp = dispatch(make_request(
+            ProgramSpec::LaxAsinh,
+            &[Transform::Grad],
+            vec![Value::scalar_f64(x)],
+        ))
+        .expect("grad(asinh) should succeed");
+
+        let derivative = resp.outputs[0].as_f64_scalar().expect("grad returns f64");
+        let expected = 1.0 / (x * x + 1.0).sqrt();
+        let matches = (derivative - expected).abs() < 1e-4;
+
+        assertions.push(JourneyAssertion {
+            name: format!("grad_asinh_at_{x}"),
+            passed: matches,
+            detail: format!("expected {expected}, got {derivative}"),
+        });
+    }
+
+    // acosh at x > 1 (domain constraint)
+    for &x in &[1.5f64, 2.0, 3.0] {
+        let resp = dispatch(make_request(
+            ProgramSpec::LaxAcosh,
+            &[Transform::Grad],
+            vec![Value::scalar_f64(x)],
+        ))
+        .expect("grad(acosh) should succeed");
+
+        let derivative = resp.outputs[0].as_f64_scalar().expect("grad returns f64");
+        let expected = 1.0 / (x * x - 1.0).sqrt();
+        let matches = (derivative - expected).abs() < 1e-4;
+
+        assertions.push(JourneyAssertion {
+            name: format!("grad_acosh_at_{x}"),
+            passed: matches,
+            detail: format!("expected {expected}, got {derivative}"),
+        });
+    }
+
+    // atanh at |x| < 1 (domain constraint)
+    for &x in &[0.3f64, 0.5, -0.4, 0.8] {
+        let resp = dispatch(make_request(
+            ProgramSpec::LaxAtanh,
+            &[Transform::Grad],
+            vec![Value::scalar_f64(x)],
+        ))
+        .expect("grad(atanh) should succeed");
+
+        let derivative = resp.outputs[0].as_f64_scalar().expect("grad returns f64");
+        let expected = 1.0 / (1.0 - x * x);
+        let matches = (derivative - expected).abs() < 1e-4;
+
+        assertions.push(JourneyAssertion {
+            name: format!("grad_atanh_at_{x}"),
+            passed: matches,
+            detail: format!("expected {expected}, got {derivative}"),
+        });
+    }
+
+    let all_passed = assertions.iter().all(|a| a.passed);
+    let duration_ms = start.elapsed().as_millis();
+
+    write_journey_log(&GoldenJourneyLog {
+        schema_version: "frankenjax.golden-journey.v1",
+        scenario_id: "gj_08_transcendental_gradients".into(),
+        scenario_category: "transcendental_gradients".into(),
+        ts_utc_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+        replay_command: "cargo test -p fj-conformance --test golden_journeys -- golden_journey_08_transcendental --exact --nocapture".into(),
+        input_capture: json!({"functions": ["asinh", "acosh", "atanh"], "transform": "Grad"}),
+        assertions: assertions.clone(),
+        output_capture: json!({"total_assertions": assertions.len(), "all_passed": all_passed}),
+        result: if all_passed { "pass" } else { "fail" }.into(),
+        duration_ms,
+    });
+
+    for a in &assertions {
+        assert!(a.passed, "assertion '{}' failed: {}", a.name, a.detail);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Journey 9: Ledger Inspection — multi-dispatch session consistency
+// ---------------------------------------------------------------------------
+
+#[test]
+fn golden_journey_09_ledger_inspection() {
     let start = Instant::now();
     let mut assertions = Vec::new();
 
@@ -728,10 +824,10 @@ fn golden_journey_08_ledger_inspection() {
 
     write_journey_log(&GoldenJourneyLog {
         schema_version: "frankenjax.golden-journey.v1",
-        scenario_id: "gj_08_ledger_inspection".into(),
+        scenario_id: "gj_09_ledger_inspection".into(),
         scenario_category: "ledger_inspection".into(),
         ts_utc_unix_ms: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
-        replay_command: "cargo test -p fj-conformance --test golden_journeys -- golden_journey_08 --exact --nocapture".into(),
+        replay_command: "cargo test -p fj-conformance --test golden_journeys -- golden_journey_09 --exact --nocapture".into(),
         input_capture: json!({"dispatch_count": dispatches.len(), "programs": ["Add2", "Square", "AddOne", "Square"]}),
         assertions: assertions.clone(),
         output_capture: json!({"cache_keys": all_cache_keys, "ledger_lengths": all_ledgers.iter().map(|l| l.len()).collect::<Vec<_>>()}),
