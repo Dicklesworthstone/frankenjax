@@ -370,7 +370,7 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("max-self"; "(max ?a ?a)" => "?a"),
         rewrite!("min-self"; "(min ?a ?a)" => "?a"),
         // ── Power rules ──────────────────────────────────────────────
-        rewrite!("pow-zero"; "(pow ?a 0)" => "1"),
+        // pow-zero moved to numerically_unsafe_rules (erases output dtype)
         rewrite!("pow-one"; "(pow ?a 1)" => "?a"),
         // ── Exp / Log inverse pair ───────────────────────────────────
         // exp-log moved to numerically_unsafe_rules (fails when a <= 0)
@@ -440,20 +440,18 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // ── Copy elimination ──────────────────────────────────────────
         rewrite!("copy-elim"; "(copy ?a)" => "?a"),
         // ── Integer power rules ───────────────────────────────────────
-        rewrite!("integer-pow-zero"; "(integer_pow ?a 0)" => "1"),
+        // integer-pow-zero moved to numerically_unsafe_rules (erases output dtype)
         rewrite!("integer-pow-one"; "(integer_pow ?a 1)" => "?a"),
         rewrite!("integer-pow-two"; "(integer_pow ?a 2)" => "(mul ?a ?a)"),
         // ── Bitwise rules ─────────────────────────────────────────────
         rewrite!("bitwise-not-not"; "(bitwise_not (bitwise_not ?a))" => "?a"),
         rewrite!("bitwise-and-self"; "(bitwise_and ?a ?a)" => "?a"),
         rewrite!("bitwise-or-self"; "(bitwise_or ?a ?a)" => "?a"),
-        rewrite!("bitwise-xor-self"; "(bitwise_xor ?a ?a)" => "0"),
+        // bitwise-xor-self moved to numerically_unsafe_rules (erases output dtype)
         rewrite!("bitwise-and-comm"; "(bitwise_and ?a ?b)" => "(bitwise_and ?b ?a)"),
         rewrite!("bitwise-or-comm"; "(bitwise_or ?a ?b)" => "(bitwise_or ?b ?a)"),
         rewrite!("bitwise-xor-comm"; "(bitwise_xor ?a ?b)" => "(bitwise_xor ?b ?a)"),
-        // ── IsFinite idempotence ──────────────────────────────────────
-        rewrite!("is-finite-const-0"; "(is_finite 0)" => "1"),
-        rewrite!("is-finite-const-1"; "(is_finite 1)" => "1"),
+        // is-finite-const-0/1 moved to numerically_unsafe_rules (erases output dtype: should be Bool)
     ]
 }
 
@@ -511,6 +509,14 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // max/min absorption changes results when the repeated operand is NaN.
         rewrite!("max-min-absorb"; "(max ?a (min ?a ?b))" => "?a"),
         rewrite!("min-max-absorb"; "(min ?a (max ?a ?b))" => "?a"),
+        // ── Dtype-erasing rewrites ────────────────────────────────────────
+        // These rewrites produce untyped literal constants that erase the output dtype.
+        // E.g., pow(f32, 0) => 1 loses the f32 dtype; is_finite(0) => 1 should be Bool.
+        rewrite!("pow-zero"; "(pow ?a 0)" => "1"),
+        rewrite!("integer-pow-zero"; "(integer_pow ?a 0)" => "1"),
+        rewrite!("bitwise-xor-self"; "(bitwise_xor ?a ?a)" => "0"),
+        rewrite!("is-finite-const-0"; "(is_finite 0)" => "1"),
+        rewrite!("is-finite-const-1"; "(is_finite 1)" => "1"),
     ]
 }
 
