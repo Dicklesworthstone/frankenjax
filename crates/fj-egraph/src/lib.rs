@@ -340,20 +340,21 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // ── Commutativity ────────────────────────────────────────────
         rewrite!("add-comm"; "(add ?a ?b)" => "(add ?b ?a)"),
         rewrite!("mul-comm"; "(mul ?a ?b)" => "(mul ?b ?a)"),
-        rewrite!("max-comm"; "(max ?a ?b)" => "(max ?b ?a)"),
-        rewrite!("min-comm"; "(min ?a ?b)" => "(min ?b ?a)"),
+        // max/min commutativity moved to numerically_unsafe_rules
+        // (signed-zero results are operand-order visible)
         // ── Associativity ────────────────────────────────────────────
         // add-assoc, mul-assoc moved to numerically_unsafe_rules
         // (floating association changes rounding, overflow, and cancellation order)
-        rewrite!("max-assoc"; "(max (max ?a ?b) ?c)" => "(max ?a (max ?b ?c))"),
-        rewrite!("min-assoc"; "(min (min ?a ?b) ?c)" => "(min ?a (min ?b ?c))"),
+        // max/min associativity moved to numerically_unsafe_rules
+        // (signed-zero results are grouping-order visible)
         // ── Additive identity / annihilation ─────────────────────────
-        rewrite!("add-zero"; "(add ?a 0)" => "?a"),
-        rewrite!("sub-zero"; "(sub ?a 0)" => "?a"),
+        // add-zero, sub-zero moved to numerically_unsafe_rules
+        // (literal operands can change promoted output dtype)
         // sub-self moved to numerically_unsafe_rules (fails for NaN/Inf)
         rewrite!("sub-to-add-neg"; "(sub ?a ?b)" => "(add ?a (neg ?b))"),
         // ── Multiplicative identity / annihilation ───────────────────
-        rewrite!("mul-one"; "(mul ?a 1)" => "?a"),
+        // mul-one moved to numerically_unsafe_rules
+        // (literal operands can change promoted output dtype)
         // mul-zero moved to numerically_unsafe_rules (fails for NaN/Inf)
         rewrite!("mul-neg-one"; "(mul ?a (neg 1))" => "(neg ?a)"),
         // ── Distributivity ───────────────────────────────────────────
@@ -371,7 +372,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("min-self"; "(min ?a ?a)" => "?a"),
         // ── Power rules ──────────────────────────────────────────────
         // pow-zero moved to numerically_unsafe_rules (erases output dtype)
-        rewrite!("pow-one"; "(pow ?a 1)" => "?a"),
+        // pow-one moved to numerically_unsafe_rules
+        // (literal operands can change promoted output dtype)
         // ── Exp / Log inverse pair ───────────────────────────────────
         // exp-log moved to numerically_unsafe_rules (fails when a <= 0)
         // log-exp moved to numerically_unsafe_rules (fails when exp(a) overflows)
@@ -395,7 +397,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("cosh-neg"; "(cosh (neg ?a))" => "(cosh ?a)"),
         rewrite!("tanh-neg"; "(tanh (neg ?a))" => "(neg (tanh ?a))"),
         // ── Division rules ─────────────────────────────────────────────
-        rewrite!("div-one"; "(div ?a 1)" => "?a"),
+        // div-one moved to numerically_unsafe_rules
+        // (literal operands can change promoted output dtype)
         // div-self moved to numerically_unsafe_rules (fails when a = 0, NaN)
         // ── Square / Reciprocal rewrites ───────────────────────────────
         rewrite!("square-as-mul"; "(square ?a)" => "(mul ?a ?a)"),
@@ -440,7 +443,8 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("copy-elim"; "(copy ?a)" => "?a"),
         // ── Integer power rules ───────────────────────────────────────
         // integer-pow-zero moved to numerically_unsafe_rules (erases output dtype)
-        rewrite!("integer-pow-one"; "(integer_pow ?a 1)" => "?a"),
+        // integer-pow-one moved to numerically_unsafe_rules
+        // (current eval returns f64, not the input dtype)
         rewrite!("integer-pow-two"; "(integer_pow ?a 2)" => "(mul ?a ?a)"),
         // ── Bitwise rules ─────────────────────────────────────────────
         rewrite!("bitwise-not-not"; "(bitwise_not (bitwise_not ?a))" => "?a"),
@@ -471,6 +475,18 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // Floating multiplication is not associative; reordering can change
         // rounding and overflow-visible results.
         rewrite!("mul-assoc"; "(mul (mul ?a ?b) ?c)" => "(mul ?a (mul ?b ?c))"),
+        // max/min order and grouping are visible for signed-zero operands.
+        rewrite!("max-comm"; "(max ?a ?b)" => "(max ?b ?a)"),
+        rewrite!("min-comm"; "(min ?a ?b)" => "(min ?b ?a)"),
+        rewrite!("max-assoc"; "(max (max ?a ?b) ?c)" => "(max ?a (max ?b ?c))"),
+        rewrite!("min-assoc"; "(min (min ?a ?b) ?c)" => "(min ?a (min ?b ?c))"),
+        // These identities can erase promoted result dtypes.
+        rewrite!("add-zero"; "(add ?a 0)" => "?a"),
+        rewrite!("sub-zero"; "(sub ?a 0)" => "?a"),
+        rewrite!("mul-one"; "(mul ?a 1)" => "?a"),
+        rewrite!("div-one"; "(div ?a 1)" => "?a"),
+        rewrite!("pow-one"; "(pow ?a 1)" => "?a"),
+        rewrite!("integer-pow-one"; "(integer_pow ?a 1)" => "?a"),
         // Distribution/factoring can erase overflow-visible NaNs, e.g.
         // (x*2) + (x*-2) is NaN for x=Inf-ish overflow, while x*(2 + -2) is 0.
         rewrite!("distribute"; "(mul ?a (add ?b ?c))" => "(add (mul ?a ?b) (mul ?a ?c))"),
@@ -4682,6 +4698,48 @@ mod tests {
         )
     }
 
+    fn nested_binary_jaxpr(prim: Primitive) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1), VarId(2), VarId(3)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: prim,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: prim,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(5)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        )
+    }
+
+    fn integer_pow_jaxpr(exponent: i32) -> Jaxpr {
+        Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::IntegerPow,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: BTreeMap::from([("exponent".to_owned(), exponent.to_string())]),
+                sub_jaxprs: vec![],
+            }],
+        )
+    }
+
     fn unary_square_identity_jaxpr(
         first: Primitive,
         second: Primitive,
@@ -5674,6 +5732,129 @@ mod tests {
     }
 
     #[test]
+    fn numerical_safety_mode_preserves_promoted_dtype_identity_boundaries() {
+        let cases = [
+            (
+                "add_zero",
+                binary_jaxpr(
+                    Primitive::Add,
+                    Atom::Var(VarId(1)),
+                    Atom::Lit(Literal::I64(0)),
+                ),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "sub_zero",
+                binary_jaxpr(
+                    Primitive::Sub,
+                    Atom::Var(VarId(1)),
+                    Atom::Lit(Literal::I64(0)),
+                ),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "mul_one",
+                binary_jaxpr(
+                    Primitive::Mul,
+                    Atom::Var(VarId(1)),
+                    Atom::Lit(Literal::I64(1)),
+                ),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "pow_one",
+                binary_jaxpr(
+                    Primitive::Pow,
+                    Atom::Var(VarId(1)),
+                    Atom::Lit(Literal::I64(1)),
+                ),
+                vec![Value::scalar_u32(7)],
+            ),
+            (
+                "integer_pow_one",
+                integer_pow_jaxpr(1),
+                vec![Value::scalar_u32(7)],
+            ),
+        ];
+
+        for (name, jaxpr, args) in cases {
+            let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+            let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+            assert_eq!(
+                safe_value, original,
+                "{name}: safe optimized program should preserve promoted dtype/value, got {:?} from {:?}, expected {:?}",
+                safe_value, safe.equations, original
+            );
+
+            let default = optimize_jaxpr(&jaxpr);
+            let default_value = eval_jaxpr(&default, &args).expect("default eval");
+            assert_eq!(
+                default_value, original,
+                "{name}: default optimized program should preserve promoted dtype/value, got {:?} from {:?}, expected {:?}",
+                default_value, default.equations, original
+            );
+        }
+    }
+
+    #[test]
+    fn numerical_safety_mode_preserves_max_min_signed_zero_order() {
+        let cases = [
+            (
+                "max_pair",
+                binary_jaxpr(Primitive::Max, Atom::Var(VarId(1)), Atom::Var(VarId(2))),
+                vec![Value::scalar_f64(0.0), Value::scalar_f64(-0.0)],
+            ),
+            (
+                "min_pair",
+                binary_jaxpr(Primitive::Min, Atom::Var(VarId(1)), Atom::Var(VarId(2))),
+                vec![Value::scalar_f64(0.0), Value::scalar_f64(-0.0)],
+            ),
+            (
+                "max_nested",
+                nested_binary_jaxpr(Primitive::Max),
+                vec![
+                    Value::scalar_f64(0.0),
+                    Value::scalar_f64(-0.0),
+                    Value::scalar_f64(-0.0),
+                ],
+            ),
+            (
+                "min_nested",
+                nested_binary_jaxpr(Primitive::Min),
+                vec![
+                    Value::scalar_f64(0.0),
+                    Value::scalar_f64(-0.0),
+                    Value::scalar_f64(0.0),
+                ],
+            ),
+        ];
+
+        for (name, jaxpr, args) in cases {
+            let original = eval_jaxpr(&jaxpr, &args).expect("original eval");
+            let safe = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+            let safe_value = eval_jaxpr(&safe, &args).expect("safe eval");
+            assert!(
+                same_f64_scalar_bits(&safe_value[0], &original[0]),
+                "{name}: safe optimized program should preserve signed-zero bits, got {:?} from {:?}, expected {:?}",
+                safe_value[0],
+                safe.equations,
+                original[0]
+            );
+
+            let default = optimize_jaxpr(&jaxpr);
+            let default_value = eval_jaxpr(&default, &args).expect("default eval");
+            assert!(
+                same_f64_scalar_bits(&default_value[0], &original[0]),
+                "{name}: default optimized program should preserve signed-zero bits, got {:?} from {:?}, expected {:?}",
+                default_value[0],
+                default.equations,
+                original[0]
+            );
+        }
+    }
+
+    #[test]
     fn numerical_safety_mode_preserves_nan_inf_cancellation_boundaries() {
         let cases = [
             (
@@ -5921,6 +6102,13 @@ mod tests {
     fn same_f64_scalar_value(left: &Value, right: &Value) -> bool {
         match (left.as_f64_scalar(), right.as_f64_scalar()) {
             (Some(left), Some(right)) => left == right || (left.is_nan() && right.is_nan()),
+            _ => false,
+        }
+    }
+
+    fn same_f64_scalar_bits(left: &Value, right: &Value) -> bool {
+        match (left.as_f64_scalar(), right.as_f64_scalar()) {
+            (Some(left), Some(right)) => left.to_bits() == right.to_bits(),
             _ => false,
         }
     }
