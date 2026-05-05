@@ -178,9 +178,14 @@ pub(crate) fn eval_triangular_solve(
     // Solve column by column: for each column j of B, solve A x_j = b_j
     let mut x = vec![0.0_f64; n * n_b];
 
+    // Reuse buffer across column iterations to avoid O(n_b) allocations
+    let mut b_col = vec![0.0_f64; n];
+
     for col in 0..n_b {
-        // Extract column `col` from B
-        let mut b_col: Vec<f64> = (0..n).map(|row| b[row * n_b + col]).collect();
+        // Extract column `col` from B into reused buffer
+        for row in 0..n {
+            b_col[row] = b[row * n_b + col];
+        }
 
         if lower && !transpose_a {
             // Forward substitution (lower triangular)
