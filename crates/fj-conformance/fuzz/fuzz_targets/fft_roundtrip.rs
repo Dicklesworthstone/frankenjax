@@ -35,29 +35,24 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
     }
 }
 
-fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
-    Value::Tensor(
-        TensorValue::new(
-            DType::Complex128,
-            Shape {
-                dims: shape.to_vec(),
-            },
-            data.into_iter()
-                .map(|(re, im)| Literal::from_complex128(re, im))
-                .collect(),
-        )
-        .unwrap(),
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Option<Value> {
+    TensorValue::new(
+        DType::Complex128,
+        Shape {
+            dims: shape.to_vec(),
+        },
+        data.into_iter()
+            .map(|(re, im)| Literal::from_complex128(re, im))
+            .collect(),
     )
+    .ok()
+    .map(Value::Tensor)
 }
 
-fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+fn extract_complex128_vec(v: &Value) -> Option<Vec<(f64, f64)>> {
     match v {
-        Value::Tensor(t) => t
-            .elements
-            .iter()
-            .map(|l| l.as_complex128().unwrap())
-            .collect(),
-        Value::Scalar(l) => vec![l.as_complex128().unwrap()],
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128()).collect(),
+        Value::Scalar(l) => l.as_complex128().map(|value| vec![value]),
     }
 }
 
@@ -118,7 +113,10 @@ fuzz_target!(|data: &[u8]| {
         complex_signal.push((fuzz_unit(&mut cursor), fuzz_unit(&mut cursor)));
     }
 
-    let complex_input = make_complex128_tensor(&[complex_len as u32], complex_signal.clone());
+    let Some(complex_input) = make_complex128_tensor(&[complex_len as u32], complex_signal.clone())
+    else {
+        return;
+    };
 
     let fft_result = match eval_primitive(
         Primitive::Fft,
@@ -138,7 +136,9 @@ fuzz_target!(|data: &[u8]| {
         Err(_) => return,
     };
 
-    let complex_recovered = extract_complex128_vec(&ifft_result);
+    let Some(complex_recovered) = extract_complex128_vec(&ifft_result) else {
+        panic!("complex FFT/IFFT round-trip returned non-complex output");
+    };
     assert_eq!(
         complex_recovered.len(),
         complex_signal.len(),

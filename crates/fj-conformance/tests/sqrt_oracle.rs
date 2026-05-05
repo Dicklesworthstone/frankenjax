@@ -321,3 +321,68 @@ fn oracle_sqrt_small() {
         "sqrt(1e-100) = 1e-50",
     );
 }
+
+// ======================== METAMORPHIC: sqrt(x)^2 = x ========================
+
+#[test]
+fn metamorphic_sqrt_mul_identity() {
+    // sqrt(x)^2 = x for x >= 0, using Mul primitive for squaring
+    for x in [0.0, 0.25, 1.0, 2.0, 4.0, 10.0, 100.0, 1000.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let sqrt_result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
+        let squared = eval_primitive(
+            Primitive::Mul,
+            &[sqrt_result.clone(), sqrt_result],
+            &no_params(),
+        )
+        .unwrap();
+
+        assert_close(
+            extract_f64_scalar(&squared),
+            x,
+            1e-12,
+            &format!("sqrt({})^2 = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: sqrt(x^2) = |x| ========================
+
+#[test]
+fn metamorphic_square_sqrt_abs() {
+    // sqrt(x^2) = |x| for all real x
+    for x in [-100.0, -10.0, -1.0, -0.5, 0.0, 0.5, 1.0, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let squared = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
+        let sqrt_squared = eval_primitive(Primitive::Sqrt, &[squared], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&sqrt_squared),
+            x.abs(),
+            1e-12,
+            &format!("sqrt({}^2) = |{}| = {}", x, x, x.abs()),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_sqrt_tensor_roundtrip() {
+    // For a tensor of non-negative values: sqrt(x)^2 = x
+    let input = make_f64_tensor(&[6], vec![0.0, 0.25, 1.0, 4.0, 9.0, 100.0]);
+    let sqrt_result = eval_primitive(Primitive::Sqrt, &[input.clone()], &no_params()).unwrap();
+    let squared = eval_primitive(
+        Primitive::Mul,
+        &[sqrt_result.clone(), sqrt_result],
+        &no_params(),
+    )
+    .unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&squared);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("sqrt({})^2 = {}", orig, orig));
+    }
+}
