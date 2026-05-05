@@ -68,6 +68,14 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
         .collect()
 }
 
+fn extract_i64_scalar(v: &Value) -> i64 {
+    match v {
+        Value::Scalar(l) => l.as_i64().unwrap(),
+        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements[0].as_i64().unwrap(),
+        _ => panic!("expected scalar or 0-d tensor"),
+    }
+}
+
 // ======================== Cumsum Oracle Tests ========================
 
 #[test]
@@ -223,4 +231,58 @@ fn oracle_cumulative_rejects_invalid_reverse_param() {
         err.to_string().contains("reverse"),
         "unexpected error: {err}"
     );
+}
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_cumsum_last_equals_sum() {
+    // last(cumsum(x)) = reduce_sum(x)
+    let input = make_i64_tensor(&[5], vec![3, 1, 4, 1, 5]);
+    let cumsum_result = eval_primitive(Primitive::Cumsum, &[input.clone()], &no_params()).unwrap();
+    let cumsum_vals = extract_i64_vec(&cumsum_result);
+
+    let sum_result = eval_primitive(Primitive::ReduceSum, &[input], &axis_params(0)).unwrap();
+    let sum_val = extract_i64_scalar(&sum_result);
+
+    assert_eq!(
+        cumsum_vals.last().copied(),
+        Some(sum_val),
+        "last(cumsum(x)) should equal reduce_sum(x)"
+    );
+}
+
+#[test]
+fn metamorphic_cumsum_first_element_identity() {
+    // cumsum(x)[0] = x[0]
+    let input = make_i64_tensor(&[4], vec![7, 2, 9, 3]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals[0], 7, "cumsum(x)[0] should equal x[0]");
+}
+
+#[test]
+fn metamorphic_cumprod_last_equals_product() {
+    // last(cumprod(x)) = reduce_prod(x)
+    let input = make_i64_tensor(&[4], vec![2, 3, 4, 5]);
+    let cumprod_result = eval_primitive(Primitive::Cumprod, &[input.clone()], &no_params()).unwrap();
+    let cumprod_vals = extract_i64_vec(&cumprod_result);
+
+    let prod_result = eval_primitive(Primitive::ReduceProd, &[input], &axis_params(0)).unwrap();
+    let prod_val = extract_i64_scalar(&prod_result);
+
+    assert_eq!(
+        cumprod_vals.last().copied(),
+        Some(prod_val),
+        "last(cumprod(x)) should equal reduce_prod(x)"
+    );
+}
+
+#[test]
+fn metamorphic_cumprod_first_element_identity() {
+    // cumprod(x)[0] = x[0]
+    let input = make_i64_tensor(&[4], vec![5, 3, 2, 4]);
+    let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals[0], 5, "cumprod(x)[0] should equal x[0]");
 }
