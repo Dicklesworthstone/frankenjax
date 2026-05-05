@@ -438,3 +438,175 @@ fn oracle_min_max_ordering() {
         );
     }
 }
+
+// ======================== METAMORPHIC: commutativity ========================
+
+#[test]
+fn metamorphic_min_commutative() {
+    // min(x, y) = min(y, x)
+    for (x, y) in [(3.0, 5.0), (-2.0, 4.0), (0.0, -1.0), (7.0, 7.0)] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let b = make_f64_tensor(&[], vec![y]);
+
+        let min_ab = eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let min_ba = eval_primitive(Primitive::Min, &[b, a], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&min_ab),
+            extract_f64_scalar(&min_ba),
+            "min({}, {}) = min({}, {})",
+            x,
+            y,
+            y,
+            x
+        );
+    }
+}
+
+#[test]
+fn metamorphic_max_commutative() {
+    // max(x, y) = max(y, x)
+    for (x, y) in [(3.0, 5.0), (-2.0, 4.0), (0.0, -1.0), (7.0, 7.0)] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let b = make_f64_tensor(&[], vec![y]);
+
+        let max_ab = eval_primitive(Primitive::Max, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let max_ba = eval_primitive(Primitive::Max, &[b, a], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&max_ab),
+            extract_f64_scalar(&max_ba),
+            "max({}, {}) = max({}, {})",
+            x,
+            y,
+            y,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: idempotence ========================
+
+#[test]
+fn metamorphic_min_idempotent() {
+    // min(x, x) = x
+    for x in [-5.0, 0.0, 3.0, f64::INFINITY] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let result = eval_primitive(Primitive::Min, &[a.clone(), a], &no_params()).unwrap();
+        assert_eq!(extract_f64_scalar(&result), x, "min({}, {}) = {}", x, x, x);
+    }
+}
+
+#[test]
+fn metamorphic_max_idempotent() {
+    // max(x, x) = x
+    for x in [-5.0, 0.0, 3.0, f64::INFINITY] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let result = eval_primitive(Primitive::Max, &[a.clone(), a], &no_params()).unwrap();
+        assert_eq!(extract_f64_scalar(&result), x, "max({}, {}) = {}", x, x, x);
+    }
+}
+
+// ======================== METAMORPHIC: associativity ========================
+
+#[test]
+fn metamorphic_min_associative() {
+    // min(min(x, y), z) = min(x, min(y, z))
+    for (x, y, z) in [(1.0, 2.0, 3.0), (5.0, 3.0, 4.0), (-1.0, 0.0, 1.0)] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let b = make_f64_tensor(&[], vec![y]);
+        let c = make_f64_tensor(&[], vec![z]);
+
+        let min_ab = eval_primitive(Primitive::Min, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let left = eval_primitive(Primitive::Min, &[min_ab, c.clone()], &no_params()).unwrap();
+
+        let min_bc = eval_primitive(Primitive::Min, &[b, c], &no_params()).unwrap();
+        let right = eval_primitive(Primitive::Min, &[a, min_bc], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&left),
+            extract_f64_scalar(&right),
+            "min(min({}, {}), {}) = min({}, min({}, {}))",
+            x,
+            y,
+            z,
+            x,
+            y,
+            z
+        );
+    }
+}
+
+#[test]
+fn metamorphic_max_associative() {
+    // max(max(x, y), z) = max(x, max(y, z))
+    for (x, y, z) in [(1.0, 2.0, 3.0), (5.0, 3.0, 4.0), (-1.0, 0.0, 1.0)] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let b = make_f64_tensor(&[], vec![y]);
+        let c = make_f64_tensor(&[], vec![z]);
+
+        let max_ab = eval_primitive(Primitive::Max, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let left = eval_primitive(Primitive::Max, &[max_ab, c.clone()], &no_params()).unwrap();
+
+        let max_bc = eval_primitive(Primitive::Max, &[b, c], &no_params()).unwrap();
+        let right = eval_primitive(Primitive::Max, &[a, max_bc], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&left),
+            extract_f64_scalar(&right),
+            "max(max({}, {}), {}) = max({}, max({}, {}))",
+            x,
+            y,
+            z,
+            x,
+            y,
+            z
+        );
+    }
+}
+
+// ======================== METAMORPHIC: absorption ========================
+
+#[test]
+fn metamorphic_max_absorbs_min() {
+    // max(x, min(x, y)) = x (absorption law)
+    for (x, y) in [(5.0, 3.0), (3.0, 5.0), (0.0, -1.0), (-2.0, 4.0)] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let b = make_f64_tensor(&[], vec![y]);
+
+        let min_xy = eval_primitive(Primitive::Min, &[a.clone(), b], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::Max, &[a, min_xy], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&result),
+            x,
+            "max({}, min({}, {})) = {}",
+            x,
+            x,
+            y,
+            x
+        );
+    }
+}
+
+#[test]
+fn metamorphic_min_absorbs_max() {
+    // min(x, max(x, y)) = x (absorption law)
+    for (x, y) in [(5.0, 3.0), (3.0, 5.0), (0.0, -1.0), (-2.0, 4.0)] {
+        let a = make_f64_tensor(&[], vec![x]);
+        let b = make_f64_tensor(&[], vec![y]);
+
+        let max_xy = eval_primitive(Primitive::Max, &[a.clone(), b], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::Min, &[a, max_xy], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&result),
+            x,
+            "min({}, max({}, {})) = {}",
+            x,
+            x,
+            y,
+            x
+        );
+    }
+}
