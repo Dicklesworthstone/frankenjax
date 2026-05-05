@@ -33,7 +33,8 @@ fn parse_reduction_axes(
     raw_axes: &str,
     rank: usize,
 ) -> Result<Vec<usize>, EvalError> {
-    let mut axes = Vec::new();
+    let estimated_count = raw_axes.matches(',').count() + 1;
+    let mut axes = Vec::with_capacity(estimated_count.min(rank));
     for raw_axis in raw_axes.split(',') {
         let trimmed = raw_axis.trim();
         let axis = trimmed.parse::<i64>().map_err(|_| EvalError::Unsupported {
