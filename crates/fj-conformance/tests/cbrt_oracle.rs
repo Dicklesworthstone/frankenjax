@@ -244,3 +244,89 @@ fn oracle_cbrt_tensor_special_values() {
     assert!(vals[2].is_nan(), "cbrt(NaN) = NaN");
     assert!(vals[3] == 0.0 && vals[3].is_sign_negative(), "cbrt(-0.0) = -0.0");
 }
+
+// ======================== METAMORPHIC: cbrt(x)^3 = x ========================
+
+fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
+    assert!(
+        (actual - expected).abs() < tol,
+        "{}: expected {}, got {}, diff={}",
+        msg,
+        expected,
+        actual,
+        (actual - expected).abs()
+    );
+}
+
+#[test]
+fn metamorphic_cbrt_cubed_identity() {
+    // cbrt(x)^3 = x for all real x, using Mul primitive for cubing
+    for x in [-27.0, -8.0, -1.0, 0.0, 1.0, 8.0, 27.0, 64.0, 125.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let cbrt_result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+        // Cube: cbrt(x) * cbrt(x) * cbrt(x)
+        let squared = eval_primitive(
+            Primitive::Mul,
+            &[cbrt_result.clone(), cbrt_result.clone()],
+            &no_params(),
+        )
+        .unwrap();
+        let cubed = eval_primitive(Primitive::Mul, &[squared, cbrt_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_vec(&cubed)[0],
+            x,
+            1e-10,
+            &format!("cbrt({})^3 = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: cbrt(x*x*x) = x ========================
+
+#[test]
+fn metamorphic_cube_cbrt_identity() {
+    // cbrt(x*x*x) = x for all real x, using Mul primitive for cubing
+    for x in [-5.0, -2.0, -1.0, 0.0, 1.0, 2.0, 5.0, 10.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        // Cube: x * x * x
+        let squared = eval_primitive(
+            Primitive::Mul,
+            &[input.clone(), input.clone()],
+            &no_params(),
+        )
+        .unwrap();
+        let cubed = eval_primitive(Primitive::Mul, &[squared, input], &no_params()).unwrap();
+        let cbrt_cubed = eval_primitive(Primitive::Cbrt, &[cubed], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_vec(&cbrt_cubed)[0],
+            x,
+            1e-10,
+            &format!("cbrt({}^3) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_cbrt_tensor_roundtrip() {
+    // For a tensor: cbrt(x)^3 = x
+    let input = make_f64_tensor(&[6], vec![-27.0, -8.0, 0.0, 1.0, 8.0, 27.0]);
+    let cbrt_result = eval_primitive(Primitive::Cbrt, &[input.clone()], &no_params()).unwrap();
+    let squared = eval_primitive(
+        Primitive::Mul,
+        &[cbrt_result.clone(), cbrt_result.clone()],
+        &no_params(),
+    )
+    .unwrap();
+    let cubed = eval_primitive(Primitive::Mul, &[squared, cbrt_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&cubed);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-10, &format!("cbrt({})^3 = {}", orig, orig));
+    }
+}
