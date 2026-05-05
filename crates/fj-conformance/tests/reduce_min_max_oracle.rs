@@ -420,3 +420,211 @@ fn oracle_reduce_max_with_zeros() {
     let result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
     assert_eq!(extract_f64_scalar(&result), 0.0);
 }
+
+// ====================== METAMORPHIC TESTS ======================
+
+fn concat_params(axis: i64) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::new();
+    params.insert("dimension".to_string(), axis.to_string());
+    params
+}
+
+fn no_params() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+#[test]
+fn metamorphic_reduce_max_distributive_over_concat() {
+    // max(concat(x, y)) = max(max(x), max(y))
+    let x = vec![1.0, 5.0, 3.0];
+    let y = vec![4.0, 2.0, 8.0];
+
+    let max_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMax,
+            &[make_f64_tensor(&[3], x.clone())],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let max_y = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMax,
+            &[make_f64_tensor(&[3], y.clone())],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let concat_xy = eval_primitive(
+        Primitive::Concatenate,
+        &[make_f64_tensor(&[3], x), make_f64_tensor(&[3], y)],
+        &concat_params(0),
+    )
+    .unwrap();
+
+    let max_concat = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceMax, &[concat_xy], &params_with_axes(&[0])).unwrap(),
+    );
+
+    assert_eq!(
+        max_concat,
+        max_x.max(max_y),
+        "max(concat(x, y)) = max(max(x), max(y))"
+    );
+}
+
+#[test]
+fn metamorphic_reduce_min_distributive_over_concat() {
+    // min(concat(x, y)) = min(min(x), min(y))
+    let x = vec![3.0, 1.0, 5.0];
+    let y = vec![4.0, 2.0, 6.0];
+
+    let min_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMin,
+            &[make_f64_tensor(&[3], x.clone())],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let min_y = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMin,
+            &[make_f64_tensor(&[3], y.clone())],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let concat_xy = eval_primitive(
+        Primitive::Concatenate,
+        &[make_f64_tensor(&[3], x), make_f64_tensor(&[3], y)],
+        &concat_params(0),
+    )
+    .unwrap();
+
+    let min_concat = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceMin, &[concat_xy], &params_with_axes(&[0])).unwrap(),
+    );
+
+    assert_eq!(
+        min_concat,
+        min_x.min(min_y),
+        "min(concat(x, y)) = min(min(x), min(y))"
+    );
+}
+
+#[test]
+fn metamorphic_reduce_max_geq_min() {
+    // max(x) >= min(x) for any non-empty x
+    for data in [
+        vec![1.0, 2.0, 3.0],
+        vec![-5.0, -3.0, -1.0],
+        vec![0.0, 0.0, 0.0],
+        vec![-10.0, 5.0, 0.0],
+    ] {
+        let tensor = make_f64_tensor(&[data.len() as u32], data.clone());
+
+        let max_val = extract_f64_scalar(
+            &eval_primitive(
+                Primitive::ReduceMax,
+                &[tensor.clone()],
+                &params_with_axes(&[0]),
+            )
+            .unwrap(),
+        );
+
+        let min_val = extract_f64_scalar(
+            &eval_primitive(Primitive::ReduceMin, &[tensor], &params_with_axes(&[0])).unwrap(),
+        );
+
+        assert!(
+            max_val >= min_val,
+            "max({:?}) = {} should be >= min = {}",
+            data,
+            max_val,
+            min_val
+        );
+    }
+}
+
+#[test]
+fn metamorphic_reduce_max_neg_eq_neg_min() {
+    // max(neg(x)) = -min(x)
+    let x = vec![3.0, -2.0, 5.0, -1.0];
+    let neg_x: Vec<f64> = x.iter().map(|v| -v).collect();
+
+    let max_neg_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMax,
+            &[make_f64_tensor(&[4], neg_x)],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let min_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMin,
+            &[make_f64_tensor(&[4], x)],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(max_neg_x, -min_x, "max(neg(x)) = -min(x)");
+}
+
+#[test]
+fn metamorphic_reduce_min_neg_eq_neg_max() {
+    // min(neg(x)) = -max(x)
+    let x = vec![3.0, -2.0, 5.0, -1.0];
+    let neg_x: Vec<f64> = x.iter().map(|v| -v).collect();
+
+    let min_neg_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMin,
+            &[make_f64_tensor(&[4], neg_x)],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let max_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceMax,
+            &[make_f64_tensor(&[4], x)],
+            &params_with_axes(&[0]),
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(min_neg_x, -max_x, "min(neg(x)) = -max(x)");
+}
+
+#[test]
+fn metamorphic_reduce_max_single_element() {
+    // max([a]) = a
+    for val in [0.0, 1.0, -1.0, 42.5, f64::NEG_INFINITY, f64::INFINITY] {
+        let tensor = make_f64_tensor(&[1], vec![val]);
+        let result = extract_f64_scalar(
+            &eval_primitive(Primitive::ReduceMax, &[tensor], &params_with_axes(&[0])).unwrap(),
+        );
+        assert_eq!(result, val, "max([{}]) = {}", val, val);
+    }
+}
+
+#[test]
+fn metamorphic_reduce_min_single_element() {
+    // min([a]) = a
+    for val in [0.0, 1.0, -1.0, 42.5, f64::NEG_INFINITY, f64::INFINITY] {
+        let tensor = make_f64_tensor(&[1], vec![val]);
+        let result = extract_f64_scalar(
+            &eval_primitive(Primitive::ReduceMin, &[tensor], &params_with_axes(&[0])).unwrap(),
+        );
+        assert_eq!(result, val, "min([{}]) = {}", val, val);
+    }
+}
