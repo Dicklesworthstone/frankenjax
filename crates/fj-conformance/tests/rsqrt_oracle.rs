@@ -357,3 +357,92 @@ fn oracle_rsqrt_squared_identity() {
         );
     }
 }
+
+// ======================== METAMORPHIC: rsqrt(x) = Reciprocal(Sqrt(x)) ========================
+
+#[test]
+fn metamorphic_rsqrt_equals_reciprocal_sqrt() {
+    // rsqrt(x) = Reciprocal(Sqrt(x)) using primitives
+    for x in [1.0, 2.0, 4.0, 9.0, 16.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // rsqrt(x)
+        let rsqrt_result = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+
+        // Reciprocal(Sqrt(x))
+        let sqrt_x = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
+        let recip_sqrt = eval_primitive(Primitive::Reciprocal, &[sqrt_x], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&rsqrt_result),
+            extract_f64_scalar(&recip_sqrt),
+            1e-14,
+            &format!("rsqrt({}) = Reciprocal(Sqrt({}))", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Square(rsqrt(x)) = Reciprocal(x) ========================
+
+#[test]
+fn metamorphic_rsqrt_squared_reciprocal() {
+    // Square(rsqrt(x)) = Reciprocal(x) using primitives
+    for x in [1.0, 2.0, 4.0, 9.0, 16.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // Square(rsqrt(x))
+        let rsqrt_x = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+        let squared = eval_primitive(Primitive::Square, &[rsqrt_x], &no_params()).unwrap();
+
+        // Reciprocal(x)
+        let recip_x = eval_primitive(Primitive::Reciprocal, &[input], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&squared),
+            extract_f64_scalar(&recip_x),
+            1e-14,
+            &format!("Square(rsqrt({})) = Reciprocal({})", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Mul(rsqrt(x), Sqrt(x)) = 1 ========================
+
+#[test]
+fn metamorphic_rsqrt_mul_sqrt_one() {
+    // Mul(rsqrt(x), Sqrt(x)) = 1 using primitives
+    for x in [1.0, 2.0, 4.0, 9.0, 16.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let rsqrt_x = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+        let sqrt_x = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
+        let product = eval_primitive(Primitive::Mul, &[rsqrt_x, sqrt_x], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&product),
+            1.0,
+            1e-14,
+            &format!("Mul(rsqrt({}), Sqrt({})) = 1", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor rsqrt = reciprocal(sqrt) ========================
+
+#[test]
+fn metamorphic_rsqrt_tensor_reciprocal_sqrt() {
+    // For tensor: rsqrt(x) = Reciprocal(Sqrt(x))
+    let data = vec![1.0, 4.0, 9.0, 16.0, 25.0];
+    let input = make_f64_tensor(&[5], data);
+
+    let rsqrt_result = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+    let sqrt_x = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
+    let recip_sqrt = eval_primitive(Primitive::Reciprocal, &[sqrt_x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&rsqrt_result), vec![5]);
+    let rsqrt_vec = extract_f64_vec(&rsqrt_result);
+    let recip_sqrt_vec = extract_f64_vec(&recip_sqrt);
+    for (i, (&r1, &r2)) in rsqrt_vec.iter().zip(recip_sqrt_vec.iter()).enumerate() {
+        assert_close(r1, r2, 1e-14, &format!("element {}", i));
+    }
+}
