@@ -288,4 +288,111 @@ mod tests {
         assert_eq!(reg.len(), 10);
         Ok(())
     }
+
+    // ====================== THREAD SAFETY TESTS ======================
+
+    #[test]
+    fn registry_concurrent_registration_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let reg = Arc::new(FfiRegistry::new());
+        let mut handles = vec![];
+
+        for t in 0..4 {
+            let reg = Arc::clone(&reg);
+            handles.push(thread::spawn(move || {
+                for i in 0..25 {
+                    let name = format!("thread_{}_fn_{}", t, i);
+                    let _ = reg.register(&name, mock_success);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not deadlock or panic");
+        }
+
+        assert_eq!(reg.len(), 100, "all 100 registrations should succeed");
+    }
+
+    #[test]
+    fn registry_concurrent_read_write_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let reg = Arc::new(FfiRegistry::new());
+
+        for i in 0..10 {
+            reg.register(&format!("initial_{}", i), mock_success)
+                .expect("initial registration should succeed");
+        }
+
+        let mut handles = vec![];
+
+        for _ in 0..4 {
+            let reg = Arc::clone(&reg);
+            handles.push(thread::spawn(move || {
+                for _ in 0..500 {
+                    let _ = reg.get("initial_5");
+                    let _ = reg.registered_names();
+                }
+            }));
+        }
+
+        for t in 0..2 {
+            let reg = Arc::clone(&reg);
+            handles.push(thread::spawn(move || {
+                for i in 0..25 {
+                    let name = format!("writer_{}_fn_{}", t, i);
+                    let _ = reg.register(&name, mock_success);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not deadlock");
+        }
+
+        assert!(reg.len() >= 10, "at least initial entries should exist");
+    }
+
+    #[test]
+    fn registry_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<FfiRegistry>();
+    }
+
+    #[test]
+    fn registry_is_sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<FfiRegistry>();
+    }
+
+    #[test]
+    fn registry_concurrent_get_returns_consistent_data() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let reg = Arc::new(FfiRegistry::new());
+        reg.register("target_fn", mock_success)
+            .expect("registration should succeed");
+
+        let mut handles = vec![];
+
+        for _ in 0..8 {
+            let reg = Arc::clone(&reg);
+            handles.push(thread::spawn(move || {
+                for _ in 0..1000 {
+                    let target = reg.get("target_fn").expect("target should exist");
+                    assert_eq!(target.name, "target_fn");
+                    assert_eq!(target.fn_ptr as usize, mock_success as usize);
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not panic");
+        }
+    }
 }
