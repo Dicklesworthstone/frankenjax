@@ -375,3 +375,84 @@ fn oracle_reciprocal_negative_symmetry() {
         );
     }
 }
+
+// ======================== METAMORPHIC: reciprocal(reciprocal(x)) = x ========================
+
+#[test]
+fn metamorphic_reciprocal_involution() {
+    // reciprocal is an involution: reciprocal(reciprocal(x)) = x
+    for x in [0.5, 1.0, 2.0, 3.0, 10.0, -1.0, -5.0, 0.001, 1000.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let recip1 = eval_primitive(Primitive::Reciprocal, &[input], &no_params()).unwrap();
+        let recip2 = eval_primitive(Primitive::Reciprocal, &[recip1], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&recip2),
+            x,
+            1e-12,
+            &format!("reciprocal(reciprocal({}))", x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Mul(x, reciprocal(x)) = 1 ========================
+
+#[test]
+fn metamorphic_reciprocal_mul_identity() {
+    // Mul(x, reciprocal(x)) = 1 using Mul primitive
+    for x in [0.5, 1.0, 2.0, 3.0, 10.0, -1.0, -5.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let recip = eval_primitive(Primitive::Reciprocal, &[input.clone()], &no_params()).unwrap();
+        let product = eval_primitive(Primitive::Mul, &[input, recip], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&product),
+            1.0,
+            1e-14,
+            &format!("Mul({}, reciprocal({}))", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: reciprocal(Neg(x)) = Neg(reciprocal(x)) ========================
+
+#[test]
+fn metamorphic_reciprocal_negation() {
+    // reciprocal(-x) = -reciprocal(x) using Neg primitive
+    for x in [1.0, 2.0, 0.5, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // reciprocal(Neg(x))
+        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let recip_neg = eval_primitive(Primitive::Reciprocal, &[neg_x], &no_params()).unwrap();
+
+        // Neg(reciprocal(x))
+        let recip_x = eval_primitive(Primitive::Reciprocal, &[input], &no_params()).unwrap();
+        let neg_recip = eval_primitive(Primitive::Neg, &[recip_x], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&recip_neg),
+            extract_f64_scalar(&neg_recip),
+            1e-14,
+            &format!("reciprocal(Neg({})) = Neg(reciprocal({}))", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor reciprocal involution ========================
+
+#[test]
+fn metamorphic_reciprocal_tensor_involution() {
+    // For tensor: reciprocal(reciprocal(x)) = x
+    let data = vec![0.5, 1.0, 2.0, -0.5, -1.0, -2.0];
+    let input = make_f64_tensor(&[6], data.clone());
+
+    let recip1 = eval_primitive(Primitive::Reciprocal, &[input], &no_params()).unwrap();
+    let recip2 = eval_primitive(Primitive::Reciprocal, &[recip1], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&recip2), vec![6]);
+    let result = extract_f64_vec(&recip2);
+    for (i, (&orig, &rec)) in data.iter().zip(result.iter()).enumerate() {
+        assert_close(rec, orig, 1e-12, &format!("element {}", i));
+    }
+}
