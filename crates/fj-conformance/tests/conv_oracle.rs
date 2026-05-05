@@ -456,3 +456,87 @@ fn oracle_conv_2d_empty_both_same_padding() {
     assert_eq!(extract_shape(&result), vec![1, 0, 0, 1]);
     assert!(extract_f64_vec(&result).is_empty());
 }
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_conv_zero_kernel() {
+    // Conv(x, 0) = 0
+    let lhs = make_f64_tensor(&[1, 5, 1], vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    let rhs = make_f64_tensor(&[3, 1, 1], vec![0.0, 0.0, 0.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+    let vals = extract_f64_vec(&result);
+    for v in vals {
+        assert!(v.abs() < 1e-10, "Conv with zero kernel should be zero, got {v}");
+    }
+}
+
+#[test]
+fn metamorphic_conv_scaling() {
+    // Conv(c*x, k) = c * Conv(x, k)
+    let c = 3.0;
+    let lhs = make_f64_tensor(&[1, 5, 1], vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    let lhs_scaled = make_f64_tensor(&[1, 5, 1], vec![3.0, 6.0, 9.0, 12.0, 15.0]);
+    let rhs = make_f64_tensor(&[3, 1, 1], vec![1.0, 2.0, 1.0]);
+
+    let result = eval_primitive(Primitive::Conv, &[lhs, rhs.clone()], &conv_params("valid", "1")).unwrap();
+    let result_scaled = eval_primitive(Primitive::Conv, &[lhs_scaled, rhs], &conv_params("valid", "1")).unwrap();
+
+    let vals = extract_f64_vec(&result);
+    let vals_scaled = extract_f64_vec(&result_scaled);
+
+    for (v, vs) in vals.iter().zip(vals_scaled.iter()) {
+        assert!(
+            (vs - c * v).abs() < 1e-10,
+            "Conv(c*x, k) = c*Conv(x, k): got {vs}, expected {}",
+            c * v
+        );
+    }
+}
+
+#[test]
+fn metamorphic_conv_1x1_identity_kernel() {
+    // Conv with 1x1 kernel of value 1 preserves input values
+    let lhs = make_f64_tensor(&[1, 3, 3, 2], vec![
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
+        7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        13.0, 14.0, 15.0, 16.0, 17.0, 18.0,
+    ]);
+    let rhs = make_f64_tensor(&[1, 1, 2, 2], vec![1.0, 0.0, 0.0, 1.0]);
+    let result = eval_primitive(Primitive::Conv, &[lhs.clone(), rhs], &conv_params("same", "1")).unwrap();
+    let input_vals = extract_f64_vec(&lhs);
+    let output_vals = extract_f64_vec(&result);
+    assert_eq!(input_vals.len(), output_vals.len());
+    for (inp, out) in input_vals.iter().zip(output_vals.iter()) {
+        assert!(
+            (inp - out).abs() < 1e-10,
+            "1x1 identity kernel should preserve values: got {out}, expected {inp}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_conv_additivity() {
+    // Conv(x, k1 + k2) = Conv(x, k1) + Conv(x, k2)
+    let lhs = make_f64_tensor(&[1, 5, 1], vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    let k1 = make_f64_tensor(&[3, 1, 1], vec![1.0, 0.0, 0.0]);
+    let k2 = make_f64_tensor(&[3, 1, 1], vec![0.0, 1.0, 1.0]);
+    let k_sum = make_f64_tensor(&[3, 1, 1], vec![1.0, 1.0, 1.0]);
+
+    let r1 = eval_primitive(Primitive::Conv, &[lhs.clone(), k1], &conv_params("valid", "1")).unwrap();
+    let r2 = eval_primitive(Primitive::Conv, &[lhs.clone(), k2], &conv_params("valid", "1")).unwrap();
+    let r_sum = eval_primitive(Primitive::Conv, &[lhs, k_sum], &conv_params("valid", "1")).unwrap();
+
+    let v1 = extract_f64_vec(&r1);
+    let v2 = extract_f64_vec(&r2);
+    let v_sum = extract_f64_vec(&r_sum);
+
+    for i in 0..v1.len() {
+        assert!(
+            (v1[i] + v2[i] - v_sum[i]).abs() < 1e-10,
+            "Conv(x, k1+k2) = Conv(x, k1) + Conv(x, k2): got {}, expected {}",
+            v_sum[i],
+            v1[i] + v2[i]
+        );
+    }
+}
