@@ -354,3 +354,57 @@ fn oracle_sinh_identity_formula() {
         );
     }
 }
+
+// ======================== METAMORPHIC: asinh(sinh(x)) = x ========================
+
+#[test]
+fn metamorphic_asinh_sinh_identity() {
+    // asinh(sinh(x)) = x for all x
+    for x in [-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let sinh_result = eval_primitive(Primitive::Sinh, &[input], &no_params()).unwrap();
+        let asinh_sinh = eval_primitive(Primitive::Asinh, &[sinh_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&asinh_sinh),
+            x,
+            1e-12,
+            &format!("asinh(sinh({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: sinh(asinh(x)) = x ========================
+
+#[test]
+fn metamorphic_sinh_asinh_identity() {
+    // sinh(asinh(x)) = x for all real x
+    for x in [-100.0, -10.0, -1.0, -0.5, 0.0, 0.5, 1.0, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let asinh_result = eval_primitive(Primitive::Asinh, &[input], &no_params()).unwrap();
+        let sinh_asinh = eval_primitive(Primitive::Sinh, &[asinh_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&sinh_asinh),
+            x,
+            1e-12,
+            &format!("sinh(asinh({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_sinh_tensor_roundtrip() {
+    let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+    let sinh_result = eval_primitive(Primitive::Sinh, &[input.clone()], &no_params()).unwrap();
+    let asinh_sinh = eval_primitive(Primitive::Asinh, &[sinh_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&asinh_sinh);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("asinh(sinh({})) = {}", orig, orig));
+    }
+}
