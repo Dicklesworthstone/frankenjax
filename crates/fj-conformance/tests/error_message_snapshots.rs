@@ -240,19 +240,40 @@ fn snapshot_cholesky_scalar_input_error() {
     insta::assert_snapshot!(err.to_string(), @"unsupported cholesky behavior: expected matrix (rank-2 tensor), got scalar");
 }
 
-// ====================== While Loop Error Variants ======================
+// ====================== Additional Primitive Error Variants ======================
 
 #[test]
-fn snapshot_max_iterations_exceeded_error() {
-    // Create a while loop that never terminates (always-true condition) with low max_iter
-    let init = Value::scalar_f64(0.0);
-    let step = Value::scalar_f64(0.0); // add 0, never changes
-    let threshold = Value::scalar_f64(-1.0); // 0 >= -1 always true if cond_op=ge
+fn snapshot_transpose_invalid_permutation_length() {
+    // Transpose with wrong number of permutation indices
+    let tensor = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 3] },
+            vec![fj_core::Literal::from_f64(1.0); 6],
+        )
+        .unwrap(),
+    );
     let mut params = BTreeMap::new();
-    params.insert("body_op".to_string(), "add".to_string());
-    params.insert("cond_op".to_string(), "ge".to_string()); // 0 >= -1 = true forever
-    params.insert("max_iter".to_string(), "5".to_string());
+    params.insert("permutation".to_string(), "0,1,2".to_string()); // 3 indices for rank-2 tensor
 
-    let err = eval_primitive(Primitive::While, &[init, step, threshold], &params).unwrap_err();
-    insta::assert_snapshot!(err.to_string(), @"while_loop exceeded max iterations (5)");
+    let err = eval_primitive(Primitive::Transpose, &[tensor], &params).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"unsupported transpose behavior: permutation length 3 does not match rank 2");
+}
+
+#[test]
+fn snapshot_reshape_element_count_mismatch() {
+    // Reshape with mismatched element counts
+    let tensor = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 3] }, // 6 elements
+            vec![fj_core::Literal::from_f64(1.0); 6],
+        )
+        .unwrap(),
+    );
+    let mut params = BTreeMap::new();
+    params.insert("new_shape".to_string(), "2,2".to_string()); // 4 elements - mismatch
+
+    let err = eval_primitive(Primitive::Reshape, &[tensor], &params).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"shape mismatch for reshape: left=[2, 3] right=[2, 2]");
 }
