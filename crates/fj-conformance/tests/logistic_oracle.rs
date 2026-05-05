@@ -409,3 +409,82 @@ fn oracle_logistic_very_large_negative() {
     let result = eval_primitive(Primitive::Logistic, &[input], &no_params()).unwrap();
     assert_eq!(extract_f64_scalar(&result), 0.0, "logistic(-1000) = 0");
 }
+
+// ======================== METAMORPHIC: logistic(-x) = 1 - logistic(x) ========================
+
+#[test]
+fn metamorphic_logistic_symmetry() {
+    // logistic(Neg(x)) + logistic(x) = 1 using primitives
+    for x in [0.5, 1.0, 2.0, 3.0, 5.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // logistic(x)
+        let logistic_x = eval_primitive(Primitive::Logistic, &[input.clone()], &no_params()).unwrap();
+
+        // logistic(Neg(x))
+        let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
+        let logistic_neg_x = eval_primitive(Primitive::Logistic, &[neg_x], &no_params()).unwrap();
+
+        // Add(logistic(x), logistic(-x)) should equal 1
+        let sum = eval_primitive(
+            Primitive::Add,
+            &[logistic_x, logistic_neg_x],
+            &no_params(),
+        )
+        .unwrap();
+
+        assert_close(
+            extract_f64_scalar(&sum),
+            1.0,
+            1e-14,
+            &format!("logistic({}) + logistic(-{}) = 1", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: logistic(x) = Reciprocal(1 + exp(-x)) ========================
+
+#[test]
+fn metamorphic_logistic_definition() {
+    // logistic(x) = Reciprocal(Add(1, Exp(Neg(x))))
+    for x in [-2.0, -1.0, 0.0, 1.0, 2.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let one = make_f64_tensor(&[], vec![1.0]);
+
+        // logistic(x) directly
+        let logistic_x = eval_primitive(Primitive::Logistic, &[input.clone()], &no_params()).unwrap();
+
+        // Reciprocal(Add(1, Exp(Neg(x))))
+        let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
+        let exp_neg_x = eval_primitive(Primitive::Exp, &[neg_x], &no_params()).unwrap();
+        let one_plus_exp = eval_primitive(Primitive::Add, &[one, exp_neg_x], &no_params()).unwrap();
+        let recip = eval_primitive(Primitive::Reciprocal, &[one_plus_exp], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&logistic_x),
+            extract_f64_scalar(&recip),
+            1e-14,
+            &format!("logistic({}) = 1/(1+exp(-{}))", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor logistic symmetry ========================
+
+#[test]
+fn metamorphic_logistic_tensor_symmetry() {
+    // For tensor: logistic(x) + logistic(-x) = 1
+    let data = vec![0.5, 1.0, 2.0, 3.0, 5.0];
+    let input = make_f64_tensor(&[5], data);
+
+    let logistic_x = eval_primitive(Primitive::Logistic, &[input.clone()], &no_params()).unwrap();
+    let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
+    let logistic_neg_x = eval_primitive(Primitive::Logistic, &[neg_x], &no_params()).unwrap();
+    let sum = eval_primitive(Primitive::Add, &[logistic_x, logistic_neg_x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&sum), vec![5]);
+    let sum_vec = extract_f64_vec(&sum);
+    for (i, &s) in sum_vec.iter().enumerate() {
+        assert_close(s, 1.0, 1e-14, &format!("element {}", i));
+    }
+}
