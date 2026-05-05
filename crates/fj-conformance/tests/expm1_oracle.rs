@@ -375,3 +375,59 @@ fn oracle_expm1_log1p_inverse() {
         assert_close(roundtrip, x, 1e-14, &format!("log1p(expm1({})) = {}", x, x));
     }
 }
+
+// ======================== METAMORPHIC: expm1(log1p(x)) = x ========================
+
+#[test]
+fn metamorphic_expm1_log1p_identity() {
+    // expm1(log1p(x)) = x for x > -1
+    // This tests the OTHER direction of the inverse relationship
+    for x in [0.0, 0.5, 1.0, 2.0, 5.0, 10.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let log1p_result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+        let expm1_log1p = eval_primitive(Primitive::Expm1, &[log1p_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&expm1_log1p),
+            x,
+            1e-12,
+            &format!("expm1(log1p({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: log1p(expm1(x)) = x (relabeled for consistency) ========================
+
+#[test]
+fn metamorphic_log1p_expm1_identity() {
+    // log1p(expm1(x)) = x for all finite x
+    for x in [-5.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 5.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let expm1_result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+        let log1p_expm1 = eval_primitive(Primitive::Log1p, &[expm1_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&log1p_expm1),
+            x,
+            1e-12,
+            &format!("log1p(expm1({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_expm1_log1p_tensor_roundtrip() {
+    // For a tensor: expm1(log1p(x)) = x for x > -1
+    let input = make_f64_tensor(&[6], vec![0.0, 0.5, 1.0, 2.0, 5.0, 10.0]);
+    let log1p_result = eval_primitive(Primitive::Log1p, &[input.clone()], &no_params()).unwrap();
+    let roundtrip = eval_primitive(Primitive::Expm1, &[log1p_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let recovered = extract_f64_vec(&roundtrip);
+
+    for (orig, rec) in original.iter().zip(recovered.iter()) {
+        assert_close(*rec, *orig, 1e-12, &format!("expm1(log1p({})) = {}", orig, orig));
+    }
+}
