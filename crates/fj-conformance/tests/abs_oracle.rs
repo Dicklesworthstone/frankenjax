@@ -469,3 +469,85 @@ fn oracle_abs_triangle_inequality_check() {
         );
     }
 }
+
+// ======================== METAMORPHIC: abs(Neg(x)) = abs(x) ========================
+
+#[test]
+fn metamorphic_abs_negation_invariant() {
+    // abs(-x) = abs(x) using Neg primitive
+    for x in [-5.5, -1.0, 0.0, 1.0, 5.5, f64::INFINITY] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let negated = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+
+        let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
+        let abs_neg_x = eval_primitive(Primitive::Abs, &[negated], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&abs_neg_x),
+            extract_f64_scalar(&abs_x),
+            "abs(Neg({})) = abs({})",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: abs(x*y) = abs(x)*abs(y) ========================
+
+#[test]
+fn metamorphic_abs_multiplicative() {
+    // abs(Mul(x, y)) = Mul(abs(x), abs(y))
+    let test_pairs = [
+        (2.0, 3.0),
+        (-2.0, 3.0),
+        (2.0, -3.0),
+        (-2.0, -3.0),
+        (0.5, 4.0),
+        (-0.5, -4.0),
+    ];
+    for (x, y) in test_pairs {
+        let x_tensor = make_f64_tensor(&[], vec![x]);
+        let y_tensor = make_f64_tensor(&[], vec![y]);
+
+        // abs(Mul(x, y))
+        let product = eval_primitive(Primitive::Mul, &[x_tensor.clone(), y_tensor.clone()], &no_params()).unwrap();
+        let abs_product = eval_primitive(Primitive::Abs, &[product], &no_params()).unwrap();
+
+        // Mul(abs(x), abs(y))
+        let abs_x = eval_primitive(Primitive::Abs, &[x_tensor], &no_params()).unwrap();
+        let abs_y = eval_primitive(Primitive::Abs, &[y_tensor], &no_params()).unwrap();
+        let product_of_abs = eval_primitive(Primitive::Mul, &[abs_x, abs_y], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&abs_product),
+            extract_f64_scalar(&product_of_abs),
+            1e-14,
+            &format!("abs({}*{}) = abs({})*abs({})", x, y, x, y),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor abs multiplicative ========================
+
+#[test]
+fn metamorphic_abs_tensor_multiplicative() {
+    // For tensors: abs(Mul(x, y)) = Mul(abs(x), abs(y))
+    let x_tensor = make_f64_tensor(&[4], vec![-2.0, 3.0, -4.0, 5.0]);
+    let y_tensor = make_f64_tensor(&[4], vec![1.5, -2.5, 3.5, -4.5]);
+
+    // abs(Mul(x, y))
+    let product = eval_primitive(Primitive::Mul, &[x_tensor.clone(), y_tensor.clone()], &no_params()).unwrap();
+    let abs_product = eval_primitive(Primitive::Abs, &[product], &no_params()).unwrap();
+
+    // Mul(abs(x), abs(y))
+    let abs_x = eval_primitive(Primitive::Abs, &[x_tensor], &no_params()).unwrap();
+    let abs_y = eval_primitive(Primitive::Abs, &[y_tensor], &no_params()).unwrap();
+    let product_of_abs = eval_primitive(Primitive::Mul, &[abs_x, abs_y], &no_params()).unwrap();
+
+    let result1 = extract_f64_vec(&abs_product);
+    let result2 = extract_f64_vec(&product_of_abs);
+
+    for (i, (a, b)) in result1.iter().zip(result2.iter()).enumerate() {
+        assert_close(*a, *b, 1e-14, &format!("element {}", i));
+    }
+}
