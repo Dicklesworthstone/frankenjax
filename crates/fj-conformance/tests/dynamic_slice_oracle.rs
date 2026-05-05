@@ -152,3 +152,73 @@ fn dynamic_slice_start_clamping_matches_jax_reference() -> Result<(), String> {
 
     Ok(())
 }
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_dynamic_slice_full_is_identity() {
+    // DynamicSlice with start=0 and slice_sizes=shape returns original
+    let operand = tensor_i64(&[4], &[10, 20, 30, 40]).unwrap();
+    let start = Value::scalar_i64(0);
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "4".to_owned());
+
+    let result = eval_primitive(Primitive::DynamicSlice, &[operand, start], &params).unwrap();
+    let (_, vals) = tensor_i64_parts(&result).unwrap();
+    assert_eq!(vals, vec![10, 20, 30, 40], "full slice should be identity");
+}
+
+#[test]
+fn metamorphic_dynamic_slice_single_element() {
+    // DynamicSlice of size 1 at index i extracts element i
+    let operand = tensor_i64(&[5], &[100, 200, 300, 400, 500]).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "1".to_owned());
+
+    for i in 0..5i64 {
+        let start = Value::scalar_i64(i);
+        let result =
+            eval_primitive(Primitive::DynamicSlice, &[operand.clone(), start], &params).unwrap();
+        let (_, vals) = tensor_i64_parts(&result).unwrap();
+        assert_eq!(
+            vals,
+            vec![(i + 1) * 100],
+            "single element slice at {i} should be element {i}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_dynamic_slice_adjacent_cover() {
+    // Two adjacent slices of size 2 should cover all 4 elements
+    let operand = tensor_i64(&[4], &[1, 2, 3, 4]).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "2".to_owned());
+
+    let slice0 =
+        eval_primitive(Primitive::DynamicSlice, &[operand.clone(), Value::scalar_i64(0)], &params)
+            .unwrap();
+    let slice1 =
+        eval_primitive(Primitive::DynamicSlice, &[operand, Value::scalar_i64(2)], &params).unwrap();
+
+    let (_, v0) = tensor_i64_parts(&slice0).unwrap();
+    let (_, v1) = tensor_i64_parts(&slice1).unwrap();
+
+    let mut combined: Vec<i64> = v0;
+    combined.extend(v1);
+    assert_eq!(combined, vec![1, 2, 3, 4], "adjacent slices should cover all");
+}
+
+#[test]
+fn metamorphic_dynamic_slice_preserves_dtype() {
+    let operand = tensor_i64(&[3], &[7, 8, 9]).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "2".to_owned());
+
+    let result =
+        eval_primitive(Primitive::DynamicSlice, &[operand, Value::scalar_i64(0)], &params).unwrap();
+    match result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::I64, "dtype should be preserved"),
+        _ => panic!("expected tensor"),
+    }
+}
