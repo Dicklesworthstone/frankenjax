@@ -207,3 +207,35 @@ fn snapshot_while_max_iterations_exceeded() {
     let err = eval_primitive(Primitive::While, &[init, step, threshold], &params).unwrap_err();
     insta::assert_snapshot!(err.to_string(), @"while_loop exceeded max iterations (5)");
 }
+
+#[test]
+fn snapshot_qr_scalar_input_error() {
+    // QR expects matrix, not scalar
+    let scalar = Value::scalar_f64(1.0);
+    let err = eval_primitive(Primitive::Qr, &[scalar], &no_params()).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"unsupported qr behavior: expected matrix (rank-2 tensor), got scalar");
+}
+
+#[test]
+fn snapshot_svd_scalar_input_error() {
+    // SVD expects matrix, not scalar
+    let scalar = Value::scalar_f64(1.0);
+    let err = eval_primitive(Primitive::Svd, &[scalar], &no_params()).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"unsupported svd behavior: expected matrix (rank-2 tensor), got scalar");
+}
+
+#[test]
+fn snapshot_eigh_scalar_input_error() {
+    // Eigh expects matrix, not scalar
+    let scalar = Value::scalar_f64(1.0);
+    let err = eval_primitive(Primitive::Eigh, &[scalar], &no_params()).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"unsupported eigh behavior: expected matrix (rank-2 tensor), got scalar");
+}
+
+#[test]
+fn snapshot_cholesky_scalar_input_error() {
+    // Cholesky expects matrix, not scalar
+    let scalar = Value::scalar_f64(1.0);
+    let err = eval_primitive(Primitive::Cholesky, &[scalar], &no_params()).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"unsupported cholesky behavior: expected matrix (rank-2 tensor), got scalar");
+}
