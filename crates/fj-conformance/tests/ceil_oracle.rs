@@ -339,3 +339,88 @@ fn oracle_ceil_idempotent() {
         assert_eq!(ceiled, double_ceiled, "ceil(ceil({})) = ceil({})", x, x);
     }
 }
+
+// ======================== METAMORPHIC: ceil(x) >= x ========================
+
+#[test]
+fn metamorphic_ceil_geq_x() {
+    // ceil(x) >= x for all finite x
+    for x in [-2.7, -1.5, -0.1, 0.0, 0.1, 1.5, 2.7, 100.9] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let ceiled = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
+        let ceil_val = extract_f64_scalar(&ceiled);
+
+        assert!(
+            ceil_val >= x,
+            "ceil({}) = {} should be >= {}",
+            x,
+            ceil_val,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: ceil(Neg(x)) = Neg(floor(x)) ========================
+
+#[test]
+fn metamorphic_ceil_neg_floor() {
+    // ceil(-x) = -floor(x) for all finite x
+    for x in [-2.7, -1.5, -0.1, 0.0, 0.1, 1.5, 2.7] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // ceil(Neg(x))
+        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let ceil_neg = eval_primitive(Primitive::Ceil, &[neg_x], &no_params()).unwrap();
+
+        // Neg(floor(x))
+        let floor_x = eval_primitive(Primitive::Floor, &[input], &no_params()).unwrap();
+        let neg_floor = eval_primitive(Primitive::Neg, &[floor_x], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&ceil_neg),
+            extract_f64_scalar(&neg_floor),
+            "ceil(Neg({})) = Neg(floor({}))",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: ceil idempotent via primitive ========================
+
+#[test]
+fn metamorphic_ceil_idempotent() {
+    // ceil(ceil(x)) = ceil(x) using Ceil primitive twice
+    for x in [-2.7, -1.5, 0.0, 1.5, 2.7, 100.9] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let ceil1 = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
+        let ceil2 = eval_primitive(Primitive::Ceil, &[ceil1.clone()], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&ceil1),
+            extract_f64_scalar(&ceil2),
+            "ceil(ceil({})) = ceil({})",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor ceil idempotent ========================
+
+#[test]
+fn metamorphic_ceil_tensor_idempotent() {
+    // For tensor: ceil(ceil(x)) = ceil(x)
+    let data = vec![-2.7, -1.5, 0.0, 1.5, 2.7];
+    let input = make_f64_tensor(&[5], data);
+
+    let ceil1 = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
+    let ceil2 = eval_primitive(Primitive::Ceil, &[ceil1.clone()], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&ceil1), vec![5]);
+    let vec1 = extract_f64_vec(&ceil1);
+    let vec2 = extract_f64_vec(&ceil2);
+    for (i, (&c1, &c2)) in vec1.iter().zip(vec2.iter()).enumerate() {
+        assert_eq!(c1, c2, "element {}: ceil idempotent", i);
+    }
+}
