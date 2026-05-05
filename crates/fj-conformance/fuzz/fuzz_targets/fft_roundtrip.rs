@@ -15,23 +15,22 @@ use fj_lax::eval_primitive;
 use libfuzzer_sys::fuzz_target;
 use std::collections::BTreeMap;
 
-fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
-    Value::Tensor(
-        TensorValue::new(
-            DType::F64,
-            Shape {
-                dims: shape.to_vec(),
-            },
-            data.into_iter().map(Literal::from_f64).collect(),
-        )
-        .unwrap(),
+fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Option<Value> {
+    TensorValue::new(
+        DType::F64,
+        Shape {
+            dims: shape.to_vec(),
+        },
+        data.into_iter().map(Literal::from_f64).collect(),
     )
+    .ok()
+    .map(Value::Tensor)
 }
 
-fn extract_f64_vec(v: &Value) -> Vec<f64> {
+fn extract_f64_vec(v: &Value) -> Option<Vec<f64>> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
-        Value::Scalar(l) => vec![l.as_f64().unwrap()],
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64()).collect(),
+        Value::Scalar(l) => l.as_f64().map(|value| vec![value]),
     }
 }
 
@@ -74,7 +73,9 @@ fuzz_target!(|data: &[u8]| {
         signal.push(fuzz_unit(&mut cursor));
     }
 
-    let input = make_f64_tensor(&[len as u32], signal.clone());
+    let Some(input) = make_f64_tensor(&[len as u32], signal.clone()) else {
+        return;
+    };
 
     // RFFT → IRFFT round-trip
     let mut params = BTreeMap::new();
@@ -90,7 +91,9 @@ fuzz_target!(|data: &[u8]| {
         Err(_) => return,
     };
 
-    let recovered = extract_f64_vec(&irfft_result);
+    let Some(recovered) = extract_f64_vec(&irfft_result) else {
+        panic!("RFFT/IRFFT round-trip returned non-f64 output");
+    };
 
     // Verify round-trip: IRFFT(RFFT(x)) ≈ x
     // Tolerance accounts for floating-point accumulation in FFT
