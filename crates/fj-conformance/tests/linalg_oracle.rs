@@ -480,3 +480,72 @@ fn oracle_triangular_solve_transpose_unit_diagonal_multiple_rhs() {
         "triangular solve with transpose_a and unit_diagonal",
     );
 }
+
+// ======================== 1x1 Matrix Edge Cases ========================
+
+#[test]
+fn oracle_cholesky_1x1() {
+    // Cholesky of [[4]] = [[2]]
+    let a = make_f64_matrix(1, 1, &[4.0]);
+    let result =
+        eval_primitive_multi(Primitive::Cholesky, std::slice::from_ref(&a), &no_params()).unwrap();
+    let l = extract_f64_matrix(&result[0]);
+    assert_close(&l, &[2.0], 1e-12, "cholesky([[4]]) = [[2]]");
+}
+
+#[test]
+fn oracle_qr_1x1() {
+    // QR of [[3]]: Q = [[1]] or [[-1]], R = [[3]] or [[-3]]
+    let a = make_f64_matrix(1, 1, &[3.0]);
+    let result =
+        eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &no_params()).unwrap();
+    assert_eq!(result.len(), 2);
+    let q = extract_f64_matrix(&result[0]);
+    let r = extract_f64_matrix(&result[1]);
+    // Q*R should equal A
+    let qr = q[0] * r[0];
+    assert_close(&[qr], &[3.0], 1e-12, "Q*R = [[3]]");
+    // |Q| = 1
+    assert_close(&[q[0].abs()], &[1.0], 1e-12, "|Q| = 1");
+}
+
+#[test]
+fn oracle_svd_1x1() {
+    // SVD of [[5]]: U = [[±1]], S = [[5]], V = [[±1]]
+    let a = make_f64_matrix(1, 1, &[5.0]);
+    let result =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
+    assert_eq!(result.len(), 3);
+    let u = extract_f64_matrix(&result[0]);
+    let s = extract_f64_vec_from_value(&result[1]);
+    let vt = extract_f64_matrix(&result[2]);
+    // U * S * V^T = A
+    let usv = u[0] * s[0] * vt[0];
+    assert_close(&[usv], &[5.0], 1e-12, "U*S*V^T = [[5]]");
+    // S = 5
+    assert_close(&[s[0]], &[5.0], 1e-12, "singular value = 5");
+}
+
+#[test]
+fn oracle_eigh_1x1() {
+    // Eigh of [[7]]: eigenvalue = 7, eigenvector = [[1]] (or [[-1]])
+    // Output order is [W, V] where W=eigenvalues, V=eigenvectors
+    let a = make_f64_matrix(1, 1, &[7.0]);
+    let result =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params()).unwrap();
+    assert_eq!(result.len(), 2);
+    let eigenvalues = extract_f64_vec_from_value(&result[0]);
+    let eigenvectors = extract_f64_matrix(&result[1]);
+    assert_close(&eigenvalues, &[7.0], 1e-12, "eigenvalue = 7");
+    assert_close(&[eigenvectors[0].abs()], &[1.0], 1e-12, "|eigenvector| = 1");
+}
+
+#[test]
+fn oracle_triangular_solve_1x1() {
+    // Solve [[2]] @ x = [[6]] → x = [[3]]
+    let a = make_f64_matrix(1, 1, &[2.0]);
+    let b = make_f64_matrix(1, 1, &[6.0]);
+    let result = eval_primitive_multi(Primitive::TriangularSolve, &[a, b], &no_params()).unwrap();
+    let x = extract_f64_matrix(&result[0]);
+    assert_close(&x, &[3.0], 1e-12, "[[2]] @ x = [[6]] → x = [[3]]");
+}
