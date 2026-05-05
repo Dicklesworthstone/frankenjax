@@ -382,3 +382,167 @@ fn oracle_reduce_prod_associativity() {
     assert_eq!(extract_i64_scalar(&result1), extract_i64_scalar(&result2));
     assert_eq!(extract_i64_scalar(&result1), 210); // 2*3*5*7
 }
+
+// ======================== Metamorphic Tests ========================
+
+fn concat_params(axis: i64) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::new();
+    params.insert("dimension".to_string(), axis.to_string());
+    params
+}
+
+fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
+    assert!(
+        (actual - expected).abs() < tol,
+        "{}: expected {}, got {}, diff={}",
+        msg,
+        expected,
+        actual,
+        (actual - expected).abs()
+    );
+}
+
+#[test]
+fn metamorphic_reduce_prod_distributive_over_concat() {
+    // prod(concat(x, y)) = prod(x) * prod(y)
+    let x = vec![2.0, 3.0];
+    let y = vec![4.0, 5.0];
+
+    let prod_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[2], x.clone())],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    let prod_y = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[2], y.clone())],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    let concat_xy = eval_primitive(
+        Primitive::Concatenate,
+        &[make_f64_tensor(&[2], x), make_f64_tensor(&[2], y)],
+        &concat_params(0),
+    )
+    .unwrap();
+
+    let prod_concat = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceProd, &[concat_xy], &no_params()).unwrap(),
+    );
+
+    assert_close(
+        prod_concat,
+        prod_x * prod_y,
+        1e-14,
+        "prod(concat(x, y)) = prod(x) * prod(y)",
+    );
+}
+
+#[test]
+fn metamorphic_reduce_prod_one_identity() {
+    // prod(x) * prod([1, 1, 1]) = prod(x)
+    let x = vec![2.0, 3.0, 5.0];
+    let ones = vec![1.0, 1.0, 1.0];
+
+    let prod_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[3], x.clone())],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    let prod_ones = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[3], ones)],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(prod_ones, 1.0, "prod of ones = 1");
+    assert_eq!(prod_x * prod_ones, prod_x, "prod(x) * prod(ones) = prod(x)");
+}
+
+#[test]
+fn metamorphic_reduce_prod_reciprocal_cancels() {
+    // prod(x) * prod(1/x) = 1 for non-zero x
+    let x = vec![2.0, 3.0, 5.0];
+    let recip_x: Vec<f64> = x.iter().map(|v| 1.0 / v).collect();
+
+    let prod_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[3], x)],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    let prod_recip_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[3], recip_x)],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    assert_close(prod_x * prod_recip_x, 1.0, 1e-14, "prod(x) * prod(1/x) = 1");
+}
+
+#[test]
+fn metamorphic_reduce_prod_commutative() {
+    // prod(x) * prod(y) = prod(y) * prod(x)
+    let x = vec![2.0, 3.0];
+    let y = vec![5.0, 7.0];
+
+    let prod_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[2], x.clone())],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    let prod_y = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceProd,
+            &[make_f64_tensor(&[2], y.clone())],
+            &no_params(),
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(prod_x * prod_y, prod_y * prod_x, "prod(x) * prod(y) = prod(y) * prod(x)");
+}
+
+#[test]
+fn metamorphic_reduce_prod_zero_absorbs() {
+    // prod(concat(x, [0])) = 0 regardless of x
+    let x = vec![1000.0, 2000.0, 3000.0];
+    let zero = vec![0.0];
+
+    let concat_with_zero = eval_primitive(
+        Primitive::Concatenate,
+        &[make_f64_tensor(&[3], x), make_f64_tensor(&[1], zero)],
+        &concat_params(0),
+    )
+    .unwrap();
+
+    let prod_with_zero = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceProd, &[concat_with_zero], &no_params()).unwrap(),
+    );
+
+    assert_eq!(prod_with_zero, 0.0, "prod with zero = 0");
+}
