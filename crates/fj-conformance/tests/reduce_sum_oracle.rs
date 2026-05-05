@@ -353,3 +353,187 @@ fn oracle_reduce_sum_3d_axes_12() {
     // First batch: 1+2+3+4=10, Second batch: 5+6+7+8=26
     assert_eq!(extract_f64_vec(&result), vec![10.0, 26.0]);
 }
+
+// ====================== METAMORPHIC: DISTRIBUTIVITY OVER CONCAT ======================
+
+fn concat_params(axis: i64) -> BTreeMap<String, String> {
+    let mut params = BTreeMap::new();
+    params.insert("dimension".to_string(), axis.to_string());
+    params
+}
+
+#[test]
+fn metamorphic_reduce_sum_distributive_over_concat() {
+    // sum(concat(x, y)) = sum(x) + sum(y)
+    let x = vec![1.0, 2.0, 3.0];
+    let y = vec![4.0, 5.0, 6.0];
+
+    let sum_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[3], x.clone())],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let sum_y = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[3], y.clone())],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let concat_xy = eval_primitive(
+        Primitive::Concatenate,
+        &[make_f64_tensor(&[3], x), make_f64_tensor(&[3], y)],
+        &concat_params(0),
+    )
+    .unwrap();
+
+    let sum_concat = extract_f64_scalar(
+        &eval_primitive(Primitive::ReduceSum, &[concat_xy], &reduce_params(&[0])).unwrap(),
+    );
+
+    assert_close(
+        sum_concat,
+        sum_x + sum_y,
+        1e-14,
+        "sum(concat(x, y)) = sum(x) + sum(y)",
+    );
+}
+
+#[test]
+fn metamorphic_reduce_sum_distributive_over_concat_2d() {
+    // For 2D tensors along axis 0: sum(concat(A, B, axis=0), axis=0) = sum(A, axis=0) + sum(B, axis=0)
+    let a = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]; // [2, 3]
+    let b = vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0]; // [2, 3]
+
+    let sum_a = eval_primitive(
+        Primitive::ReduceSum,
+        &[make_f64_tensor(&[2, 3], a.clone())],
+        &reduce_params(&[0]),
+    )
+    .unwrap();
+
+    let sum_b = eval_primitive(
+        Primitive::ReduceSum,
+        &[make_f64_tensor(&[2, 3], b.clone())],
+        &reduce_params(&[0]),
+    )
+    .unwrap();
+
+    let concat_ab = eval_primitive(
+        Primitive::Concatenate,
+        &[
+            make_f64_tensor(&[2, 3], a),
+            make_f64_tensor(&[2, 3], b),
+        ],
+        &concat_params(0),
+    )
+    .unwrap();
+
+    let sum_concat = eval_primitive(
+        Primitive::ReduceSum,
+        &[concat_ab],
+        &reduce_params(&[0]),
+    )
+    .unwrap();
+
+    let sum_a_vec = extract_f64_vec(&sum_a);
+    let sum_b_vec = extract_f64_vec(&sum_b);
+    let sum_concat_vec = extract_f64_vec(&sum_concat);
+
+    for i in 0..3 {
+        assert_close(
+            sum_concat_vec[i],
+            sum_a_vec[i] + sum_b_vec[i],
+            1e-14,
+            &format!("sum(concat(A, B), axis=0)[{}] = sum(A)[{}] + sum(B)[{}]", i, i, i),
+        );
+    }
+}
+
+#[test]
+fn metamorphic_reduce_sum_commutative_with_add() {
+    // sum(x) + sum(y) = sum(y) + sum(x) (trivially true, but exercises the relation)
+    let x = vec![1.5, 2.5, 3.5];
+    let y = vec![4.5, 5.5, 6.5];
+
+    let sum_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[3], x.clone())],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let sum_y = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[3], y.clone())],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(sum_x + sum_y, sum_y + sum_x, "sum(x) + sum(y) = sum(y) + sum(x)");
+}
+
+#[test]
+fn metamorphic_reduce_sum_zero_identity() {
+    // sum(x) + sum([0, 0, 0]) = sum(x)
+    let x = vec![1.0, 2.0, 3.0, 4.0];
+    let zeros = vec![0.0, 0.0, 0.0, 0.0];
+
+    let sum_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[4], x.clone())],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let sum_zeros = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[4], zeros)],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    assert_eq!(sum_zeros, 0.0, "sum of zeros = 0");
+    assert_eq!(sum_x + sum_zeros, sum_x, "sum(x) + sum(zeros) = sum(x)");
+}
+
+#[test]
+fn metamorphic_reduce_sum_negation_cancels() {
+    // sum(x) + sum(neg(x)) = 0
+    let x = vec![1.0, 2.0, 3.0, 4.0];
+    let neg_x: Vec<f64> = x.iter().map(|v| -v).collect();
+
+    let sum_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[4], x)],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    let sum_neg_x = extract_f64_scalar(
+        &eval_primitive(
+            Primitive::ReduceSum,
+            &[make_f64_tensor(&[4], neg_x)],
+            &reduce_params(&[0]),
+        )
+        .unwrap(),
+    );
+
+    assert_close(sum_x + sum_neg_x, 0.0, 1e-14, "sum(x) + sum(neg(x)) = 0");
+}
