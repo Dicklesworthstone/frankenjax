@@ -482,3 +482,99 @@ fn oracle_dot_complex128_preserves_dtype() {
         Value::Scalar(l) => assert!(l.is_complex()),
     }
 }
+
+fn reduce_sum_params() -> BTreeMap<String, String> {
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_string(), "0".to_string());
+    p
+}
+
+// ======================== METAMORPHIC: Dot(a, b) = ReduceSum(Mul(a, b)) for vectors ========================
+
+#[test]
+fn metamorphic_dot_equals_reduce_sum_mul() {
+    // For vectors: Dot(a, b) = ReduceSum(Mul(a, b))
+    let a = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let b = make_f64_tensor(&[4], vec![5.0, 6.0, 7.0, 8.0]);
+
+    // Direct dot product
+    let dot_result = eval_primitive(Primitive::Dot, &[a.clone(), b.clone()], &no_params()).unwrap();
+
+    // Element-wise multiply then sum
+    let mul_result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
+    let sum_result = eval_primitive(Primitive::ReduceSum, &[mul_result], &reduce_sum_params()).unwrap();
+
+    assert_close(
+        extract_f64_scalar(&dot_result),
+        extract_f64_scalar(&sum_result),
+        1e-14,
+        "Dot(a, b) = ReduceSum(Mul(a, b))",
+    );
+}
+
+// ======================== METAMORPHIC: Dot(k*a, b) = k * Dot(a, b) ========================
+
+#[test]
+fn metamorphic_dot_scalar_factor_out() {
+    // Dot(k*a, b) = k * Dot(a, b) (scalar multiplication factors out)
+    let k = 3.0;
+    let a = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let b = make_f64_tensor(&[3], vec![4.0, 5.0, 6.0]);
+    let k_val = make_f64_tensor(&[3], vec![k, k, k]);
+
+    // Dot(a, b)
+    let dot_ab = eval_primitive(Primitive::Dot, &[a.clone(), b.clone()], &no_params()).unwrap();
+
+    // Dot(k*a, b)
+    let ka = eval_primitive(Primitive::Mul, &[k_val, a], &no_params()).unwrap();
+    let dot_ka_b = eval_primitive(Primitive::Dot, &[ka, b], &no_params()).unwrap();
+
+    assert_close(
+        extract_f64_scalar(&dot_ka_b),
+        k * extract_f64_scalar(&dot_ab),
+        1e-12,
+        "Dot(k*a, b) = k * Dot(a, b)",
+    );
+}
+
+// ======================== METAMORPHIC: Dot(a, a) >= 0 (non-negative for real vectors) ========================
+
+#[test]
+fn metamorphic_dot_self_nonnegative() {
+    // Dot(a, a) >= 0 for any real vector (squared magnitude)
+    for vals in [
+        vec![1.0, 2.0, 3.0],
+        vec![-1.0, -2.0, -3.0],
+        vec![0.0, 0.0, 0.0],
+        vec![0.5, -0.5, 0.5, -0.5],
+    ] {
+        let a = make_f64_tensor(&[vals.len() as u32], vals.clone());
+        let result = eval_primitive(Primitive::Dot, &[a.clone(), a], &no_params()).unwrap();
+        let dot_val = extract_f64_scalar(&result);
+        assert!(
+            dot_val >= 0.0,
+            "Dot(a, a) >= 0 for {:?}, got {}",
+            vals,
+            dot_val
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Dot(a, 0) = 0 ========================
+
+#[test]
+fn metamorphic_dot_with_zero_vector() {
+    // Dot(a, 0) = 0 for any vector a
+    for vals in [vec![1.0, 2.0, 3.0], vec![-5.0, 10.0], vec![0.0, 0.0, 0.0, 0.0]] {
+        let len = vals.len() as u32;
+        let a = make_f64_tensor(&[len], vals.clone());
+        let zero = make_f64_tensor(&[len], vec![0.0; vals.len()]);
+        let result = eval_primitive(Primitive::Dot, &[a, zero], &no_params()).unwrap();
+        assert_close(
+            extract_f64_scalar(&result),
+            0.0,
+            1e-14,
+            &format!("Dot({:?}, 0) = 0", vals),
+        );
+    }
+}
