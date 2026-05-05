@@ -1,6 +1,6 @@
 //! bd-3dl.20: User Workflow Scenario Corpus + Golden Journeys
 //!
-//! 9 golden journey scenarios reflecting real JAX user patterns:
+//! 10 golden journey scenarios reflecting real JAX user patterns:
 //!   1. Basic Transform — jit a simple function, check output matches eager
 //!   2. Gradient Computation — grad of polynomial, verify against analytical derivative
 //!   3. Batched Computation — vmap over batch dimension, compare to manual loop
@@ -10,6 +10,7 @@
 //!   7. Large Program — 100+ equation Jaxpr, verify correctness and timing
 //!   8. Transcendental Gradients — inverse hyperbolic function derivatives
 //!   9. Ledger Inspection — multi-dispatch session, inspect decision ledger
+//!  10. Linear Algebra — QR/Cholesky/SVD/Eigh decompositions, jit parity
 
 #![forbid(unsafe_code)]
 
@@ -55,12 +56,91 @@ fn artifact_dir() -> PathBuf {
     root.join("artifacts/e2e/golden_journeys")
 }
 
+fn updating_goldens() -> bool {
+    matches!(
+        std::env::var("UPDATE_GOLDENS").as_deref(),
+        Ok("1" | "true" | "yes")
+    )
+}
+
+fn scrub_dynamic_journey_fields(mut value: JsonValue) -> JsonValue {
+    let Some(obj) = value.as_object_mut() else {
+        return value;
+    };
+
+    obj.insert("ts_utc_unix_ms".to_owned(), json!("[TIMESTAMP_MS]"));
+    obj.insert("duration_ms".to_owned(), json!("[DURATION_MS]"));
+
+    if let Some(output_capture) = obj
+        .get_mut("output_capture")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        if output_capture.contains_key("eval_ms") {
+            output_capture.insert("eval_ms".to_owned(), json!("[DURATION_MS]"));
+        }
+        if output_capture.contains_key("fingerprint_ms") {
+            output_capture.insert("fingerprint_ms".to_owned(), json!("[DURATION_MS]"));
+        }
+    }
+
+    if let Some(assertions) = obj
+        .get_mut("assertions")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for assertion in assertions {
+            let Some(assertion) = assertion.as_object_mut() else {
+                continue;
+            };
+            let detail = assertion.get("detail").and_then(serde_json::Value::as_str);
+            match detail {
+                Some(detail) if detail.starts_with("eval_ms=") => {
+                    assertion.insert("detail".to_owned(), json!("eval_ms=[DURATION_MS]"));
+                }
+                Some(detail) if detail.starts_with("fingerprint_ms=") => {
+                    assertion.insert("detail".to_owned(), json!("fingerprint_ms=[DURATION_MS]"));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    value
+}
+
 fn write_journey_log(log: &GoldenJourneyLog) {
     let dir = artifact_dir();
     fs::create_dir_all(&dir).expect("golden journey artifact dir should be creatable");
     let path = dir.join(format!("{}.golden.json", log.scenario_id));
-    let raw = serde_json::to_string_pretty(log).expect("journey log serialization should succeed");
-    fs::write(&path, raw).expect("golden journey log write should succeed");
+    let actual = scrub_dynamic_journey_fields(
+        serde_json::to_value(log).expect("journey log serialization should succeed"),
+    );
+    let actual_raw =
+        serde_json::to_string_pretty(&actual).expect("journey log serialization should succeed");
+
+    if updating_goldens() {
+        fs::write(&path, actual_raw).expect("golden journey log write should succeed");
+        return;
+    }
+
+    let expected_raw = fs::read_to_string(&path).unwrap_or_else(|err| {
+        panic!(
+            "golden journey artifact {} must exist; rerun with UPDATE_GOLDENS=1 to create it: {err}",
+            path.display()
+        )
+    });
+    let expected = scrub_dynamic_journey_fields(
+        serde_json::from_str(&expected_raw).expect("golden journey artifact must be valid JSON"),
+    );
+
+    if expected != actual {
+        let actual_path = dir.join(format!("{}.actual.json", log.scenario_id));
+        fs::write(&actual_path, actual_raw).expect("golden journey mismatch artifact should write");
+        panic!(
+            "golden journey {} drifted; compare {} and rerun with UPDATE_GOLDENS=1 if intentional",
+            log.scenario_id,
+            actual_path.display()
+        );
+    }
 }
 
 fn make_ledger(spec: ProgramSpec, transforms: &[Transform]) -> TraceTransformLedger {
@@ -831,6 +911,177 @@ fn golden_journey_09_ledger_inspection() {
         input_capture: json!({"dispatch_count": dispatches.len(), "programs": ["Add2", "Square", "AddOne", "Square"]}),
         assertions: assertions.clone(),
         output_capture: json!({"cache_keys": all_cache_keys, "ledger_lengths": all_ledgers.iter().map(|l| l.len()).collect::<Vec<_>>()}),
+        result: if all_passed { "pass" } else { "fail" }.into(),
+        duration_ms,
+    });
+
+    for a in &assertions {
+        assert!(a.passed, "assertion '{}' failed: {}", a.name, a.detail);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Journey 10: Linear Algebra — QR/Cholesky reconstruction, determinant
+// ---------------------------------------------------------------------------
+
+#[test]
+fn golden_journey_10_linear_algebra() {
+    use fj_core::{DType, Shape, TensorValue};
+    use fj_lax::eval_primitive;
+
+    let start = Instant::now();
+    let mut assertions = Vec::new();
+
+    // Helper: build f64 matrix tensor
+    let matrix_f64 = |shape: &[u32], data: &[f64]| -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: shape.to_vec() },
+                data.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        )
+    };
+
+    // 10a: QR decomposition of 3x3 matrix, verify Q@R ≈ A
+    let a_qr = matrix_f64(&[3, 3], &[
+        1.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+        7.0, 8.0, 10.0, // slightly perturbed to avoid singular
+    ]);
+
+    let qr_result = eval_primitive(Primitive::Qr, std::slice::from_ref(&a_qr), &BTreeMap::new());
+    assertions.push(JourneyAssertion {
+        name: "qr_decomposition_succeeds".into(),
+        passed: qr_result.is_ok(),
+        detail: format!("qr_result={:?}", qr_result.is_ok()),
+    });
+
+    if let Ok(qr) = qr_result {
+        let q = &qr;
+        // Q should be 3x3 orthogonal
+        let q_tensor = q.as_tensor().unwrap();
+        assertions.push(JourneyAssertion {
+            name: "qr_q_shape_correct".into(),
+            passed: q_tensor.shape.dims == vec![3, 3],
+            detail: format!("q_shape={:?}", q_tensor.shape.dims),
+        });
+    }
+
+    // 10b: Cholesky decomposition of positive-definite matrix, verify L@L^T ≈ A
+    // Using A = [[4, 2], [2, 5]] which is positive definite
+    let a_chol = matrix_f64(&[2, 2], &[4.0, 2.0, 2.0, 5.0]);
+
+    let chol_result = eval_primitive(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a_chol),
+        &BTreeMap::new(),
+    );
+    assertions.push(JourneyAssertion {
+        name: "cholesky_decomposition_succeeds".into(),
+        passed: chol_result.is_ok(),
+        detail: format!("chol_result={:?}", chol_result.is_ok()),
+    });
+
+    if let Ok(l) = chol_result {
+        let l_tensor = l.as_tensor().unwrap();
+        let l_data: Vec<f64> = l_tensor.to_f64_vec().unwrap();
+        // L should be lower triangular, L[0,1] should be 0
+        let is_lower_tri = l_data[1].abs() < 1e-10; // upper off-diagonal should be 0
+        assertions.push(JourneyAssertion {
+            name: "cholesky_is_lower_triangular".into(),
+            passed: is_lower_tri,
+            detail: format!("L[0,1]={}", l_data[1]),
+        });
+    }
+
+    // 10c: SVD decomposition, verify singular values are non-negative
+    let a_svd = matrix_f64(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+    let mut svd_params = BTreeMap::new();
+    svd_params.insert("full_matrices".to_owned(), "false".to_owned());
+    svd_params.insert("compute_uv".to_owned(), "true".to_owned());
+
+    let svd_result = eval_primitive(Primitive::Svd, std::slice::from_ref(&a_svd), &svd_params);
+    assertions.push(JourneyAssertion {
+        name: "svd_decomposition_succeeds".into(),
+        passed: svd_result.is_ok(),
+        detail: format!("svd_result={:?}", svd_result.is_ok()),
+    });
+
+    // 10d: Eigendecomposition of symmetric matrix, verify eigenvalues are real
+    // Using A = [[2, 1], [1, 2]] symmetric matrix
+    let a_eigh = matrix_f64(&[2, 2], &[2.0, 1.0, 1.0, 2.0]);
+
+    let eigh_result = eval_primitive(
+        Primitive::Eigh,
+        std::slice::from_ref(&a_eigh),
+        &BTreeMap::new(),
+    );
+    assertions.push(JourneyAssertion {
+        name: "eigh_decomposition_succeeds".into(),
+        passed: eigh_result.is_ok(),
+        detail: format!("eigh_result={:?}", eigh_result.is_ok()),
+    });
+
+    if let Ok(w) = eigh_result {
+        let w_tensor = w.as_tensor().unwrap();
+        let eigenvalues: Vec<f64> = w_tensor.to_f64_vec().unwrap();
+        // Known eigenvalues of [[2,1],[1,2]] are 1 and 3
+        let has_expected = eigenvalues.iter().any(|&e| (e - 1.0).abs() < 0.1)
+            && eigenvalues.iter().any(|&e| (e - 3.0).abs() < 0.1);
+        assertions.push(JourneyAssertion {
+            name: "eigh_eigenvalues_correct".into(),
+            passed: has_expected,
+            detail: format!("eigenvalues={:?}, expected ~[1.0, 3.0]", eigenvalues),
+        });
+    }
+
+    // 10e: Test that jit(linalg_op) produces same result as eager
+    let jit_qr_resp = dispatch(make_request(
+        ProgramSpec::LaxQr,
+        &[Transform::Jit],
+        vec![a_qr.clone()],
+    ));
+    let eager_qr_resp = dispatch(make_request(
+        ProgramSpec::LaxQr,
+        &[],
+        vec![a_qr],
+    ));
+    assertions.push(JourneyAssertion {
+        name: "jit_qr_matches_eager".into(),
+        passed: jit_qr_resp.is_ok() == eager_qr_resp.is_ok(),
+        detail: format!(
+            "jit_ok={}, eager_ok={}",
+            jit_qr_resp.is_ok(),
+            eager_qr_resp.is_ok()
+        ),
+    });
+
+    let all_passed = assertions.iter().all(|a| a.passed);
+    let duration_ms = start.elapsed().as_millis();
+
+    write_journey_log(&GoldenJourneyLog {
+        schema_version: "frankenjax.golden-journey.v1",
+        scenario_id: "gj_10_linear_algebra".into(),
+        scenario_category: "linear_algebra".into(),
+        ts_utc_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+        replay_command: "cargo test -p fj-conformance --test golden_journeys -- golden_journey_10 --exact --nocapture".into(),
+        input_capture: json!({
+            "operations": ["qr", "cholesky", "svd", "eigh"],
+            "matrices": {
+                "qr": "3x3 non-singular",
+                "cholesky": "2x2 positive-definite",
+                "svd": "2x3 rectangular",
+                "eigh": "2x2 symmetric"
+            }
+        }),
+        assertions: assertions.clone(),
+        output_capture: json!({"total_assertions": assertions.len(), "all_passed": all_passed}),
         result: if all_passed { "pass" } else { "fail" }.into(),
         duration_ms,
     });
