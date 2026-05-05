@@ -472,9 +472,10 @@ fn eval_binary_elementwise_complex(
                 let lhs_strides = broadcast_strides(&lhs.shape, &out_shape);
                 let rhs_strides = broadcast_strides(&rhs.shape, &out_shape);
 
+                let mut multi = Vec::with_capacity(out_strides.len());
                 let mut elements = Vec::with_capacity(out_count);
                 for flat_idx in 0..out_count {
-                    let multi = flat_to_multi(flat_idx, &out_strides);
+                    flat_to_multi_into(flat_idx, &out_strides, &mut multi);
                     let lhs_idx = broadcast_flat_index(&multi, &lhs_strides);
                     let rhs_idx = broadcast_flat_index(&multi, &rhs_strides);
                     elements.push(complex_binary_literal_op(
@@ -542,11 +543,10 @@ fn broadcast_binary_tensors(
     let lhs_strides = broadcast_strides(&lhs.shape, &out_shape);
     let rhs_strides = broadcast_strides(&rhs.shape, &out_shape);
 
+    let mut multi = Vec::with_capacity(out_strides.len());
     let mut elements = Vec::with_capacity(out_count);
     for flat_idx in 0..out_count {
-        // Convert output flat index to multi-index
-        let multi = flat_to_multi(flat_idx, &out_strides);
-        // Map to input indices
+        flat_to_multi_into(flat_idx, &out_strides, &mut multi);
         let lhs_idx = broadcast_flat_index(&multi, &lhs_strides);
         let rhs_idx = broadcast_flat_index(&multi, &rhs_strides);
 
@@ -599,14 +599,13 @@ fn compute_strides(dims: &[u32]) -> Vec<usize> {
     strides
 }
 
-fn flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
-    let mut multi = Vec::with_capacity(strides.len());
+fn flat_to_multi_into(flat: usize, strides: &[usize], out: &mut Vec<usize>) {
+    out.clear();
     let mut remainder = flat;
     for &stride in strides {
-        multi.push(remainder / stride);
+        out.push(remainder / stride);
         remainder %= stride;
     }
-    multi
 }
 
 /// Compute strides for a tensor being broadcast to out_shape.
@@ -767,9 +766,10 @@ pub(crate) fn eval_complex(primitive: Primitive, inputs: &[Value]) -> Result<Val
                 let real_strides = broadcast_strides(&real.shape, &out_shape);
                 let imag_strides = broadcast_strides(&imag.shape, &out_shape);
 
+                let mut multi = Vec::with_capacity(out_strides.len());
                 let mut elements = Vec::with_capacity(out_count);
                 for flat_idx in 0..out_count {
-                    let multi = flat_to_multi(flat_idx, &out_strides);
+                    flat_to_multi_into(flat_idx, &out_strides, &mut multi);
                     let real_idx = broadcast_flat_index(&multi, &real_strides);
                     let imag_idx = broadcast_flat_index(&multi, &imag_strides);
                     elements.push(complex_literal_from_parts_fast(
