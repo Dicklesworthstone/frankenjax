@@ -197,3 +197,62 @@ fn oracle_erf_inv_known_values() {
     assert!((vals[1] - 0.1791).abs() < 0.01);
     assert!((vals[2] - 0.2725).abs() < 0.01);
 }
+
+// ======================== Special Values ========================
+
+#[test]
+fn oracle_erf_inv_outside_domain_positive() {
+    // erfinv(x) for x > 1 is undefined (NaN)
+    let input = Value::Scalar(Literal::from_f64(1.5));
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "erfinv(1.5) should be NaN (outside domain)");
+}
+
+#[test]
+fn oracle_erf_inv_outside_domain_negative() {
+    // erfinv(x) for x < -1 is undefined (NaN)
+    let input = Value::Scalar(Literal::from_f64(-1.5));
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "erfinv(-1.5) should be NaN (outside domain)");
+}
+
+#[test]
+fn oracle_erf_inv_nan() {
+    // erfinv(NaN) = NaN
+    let input = Value::Scalar(Literal::from_f64(f64::NAN));
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "erfinv(NaN) should be NaN");
+}
+
+#[test]
+fn oracle_erf_inv_positive_infinity() {
+    // erfinv(+inf) is outside domain, should be NaN
+    let input = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "erfinv(+inf) should be NaN (outside domain)");
+}
+
+#[test]
+fn oracle_erf_inv_negative_infinity() {
+    // erfinv(-inf) is outside domain, should be NaN
+    let input = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "erfinv(-inf) should be NaN (outside domain)");
+}
+
+#[test]
+fn oracle_erf_inv_tensor_special_values() {
+    // Test mixed special values in tensor form
+    let input = make_f64_tensor(&[4], vec![1.5, -1.5, f64::NAN, f64::INFINITY]);
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_nan(), "erfinv(1.5) = NaN");
+    assert!(vals[1].is_nan(), "erfinv(-1.5) = NaN");
+    assert!(vals[2].is_nan(), "erfinv(NaN) = NaN");
+    assert!(vals[3].is_nan(), "erfinv(+inf) = NaN");
+}
