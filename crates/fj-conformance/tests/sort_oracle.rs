@@ -294,6 +294,106 @@ fn oracle_argsort_stability_check() {
     assert_eq!(extract_i64_vec(&result), vec![0, 1, 2]);
 }
 
+// ======================== Metamorphic Properties ========================
+
+#[test]
+fn metamorphic_sort_idempotent() {
+    // Metamorphic: sort(sort(x)) = sort(x) — sorting is idempotent
+    let data = vec![7i64, 2, 9, 1, 5, 3, 8, 4, 6];
+    let input = make_i64_tensor(&[9u32], data);
+
+    let sorted_once =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
+    let sorted_twice =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&sorted_once), &no_params()).unwrap();
+
+    assert_eq!(
+        extract_i64_vec(&sorted_once),
+        extract_i64_vec(&sorted_twice),
+        "sort should be idempotent"
+    );
+}
+
+#[test]
+fn metamorphic_sort_idempotent_f64() {
+    // Idempotence with f64 including negative values
+    let data = vec![-3.5, 2.1, -1.0, 0.0, 5.5, -2.2, 4.4];
+    let input = make_f64_tensor(&[7u32], data);
+
+    let sorted_once =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
+    let sorted_twice =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&sorted_once), &no_params()).unwrap();
+
+    let vals1 = extract_f64_vec(&sorted_once);
+    let vals2 = extract_f64_vec(&sorted_twice);
+    for (a, b) in vals1.iter().zip(vals2.iter()) {
+        assert!((a - b).abs() < 1e-15, "sort should be idempotent for f64");
+    }
+}
+
+#[test]
+fn metamorphic_sort_2d_idempotent() {
+    // Idempotence for 2D tensors along default axis
+    let data = vec![9i64, 3, 7, 1, 8, 2, 6, 4, 5];
+    let input = make_i64_tensor(&[3u32, 3], data);
+
+    let sorted_once =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
+    let sorted_twice =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&sorted_once), &no_params()).unwrap();
+
+    assert_eq!(
+        extract_i64_vec(&sorted_once),
+        extract_i64_vec(&sorted_twice),
+        "2D sort should be idempotent"
+    );
+}
+
+#[test]
+fn metamorphic_argsort_applied_is_sorted() {
+    // Metamorphic: x[argsort(x)] produces a sorted array
+    // This is stronger than consistency — the result must be monotonically increasing
+    let data = vec![7i64, 2, 9, 1, 5, 3, 8, 4, 6];
+    let input = make_i64_tensor(&[9u32], data.clone());
+
+    let indices = eval_primitive(Primitive::Argsort, &[input], &no_params()).unwrap();
+    let idx_vals = extract_i64_vec(&indices);
+    let applied: Vec<i64> = idx_vals.iter().map(|&i| data[i as usize]).collect();
+
+    // Verify monotonically non-decreasing
+    for i in 1..applied.len() {
+        assert!(
+            applied[i] >= applied[i - 1],
+            "x[argsort(x)] must be sorted: {} >= {} at index {}",
+            applied[i],
+            applied[i - 1],
+            i
+        );
+    }
+}
+
+#[test]
+fn metamorphic_sort_descending_reverses_ascending() {
+    // Metamorphic: sort_desc(x) = reverse(sort_asc(x))
+    let data = vec![7i64, 2, 9, 1, 5, 3, 8, 4, 6];
+    let input = make_i64_tensor(&[9u32], data);
+
+    let sorted_asc =
+        eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
+    let sorted_desc =
+        eval_primitive(Primitive::Sort, &[input], &descending_params()).unwrap();
+
+    let asc_vals = extract_i64_vec(&sorted_asc);
+    let desc_vals = extract_i64_vec(&sorted_desc);
+
+    let reversed_asc: Vec<i64> = asc_vals.iter().rev().copied().collect();
+    assert_eq!(
+        reversed_asc, desc_vals,
+        "descending sort should be reverse of ascending"
+    );
+}
+
 // ======================== Sort+Argsort Consistency ========================
 
 #[test]

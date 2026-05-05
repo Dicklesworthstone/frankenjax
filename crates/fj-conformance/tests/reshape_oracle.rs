@@ -329,3 +329,99 @@ fn oracle_reshape_scalar_to_3d() {
     assert_eq!(extract_shape(&result), vec![1, 1, 1]);
     assert_eq!(extract_i64_vec(&result), vec![99]);
 }
+
+// ======================== Metamorphic Properties ========================
+
+#[test]
+fn metamorphic_reshape_roundtrip_2d_to_1d_back() {
+    // Metamorphic: reshape(reshape(x, s1), original_shape) = x
+    let data: Vec<i64> = (1..=12).collect();
+    let input = make_i64_tensor(&[3, 4], data.clone());
+
+    let flattened =
+        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[12])).unwrap();
+    let restored =
+        eval_primitive(Primitive::Reshape, &[flattened], &reshape_params(&[3, 4])).unwrap();
+
+    assert_eq!(extract_shape(&restored), vec![3, 4]);
+    assert_eq!(extract_i64_vec(&restored), data);
+}
+
+#[test]
+fn metamorphic_reshape_roundtrip_3d_to_2d_back() {
+    // Reshape 3D -> 2D -> 3D preserves data
+    let data: Vec<i64> = (1..=24).collect();
+    let input = make_i64_tensor(&[2, 3, 4], data.clone());
+
+    let reshaped =
+        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[6, 4])).unwrap();
+    let restored =
+        eval_primitive(Primitive::Reshape, &[reshaped], &reshape_params(&[2, 3, 4])).unwrap();
+
+    assert_eq!(extract_shape(&restored), vec![2, 3, 4]);
+    assert_eq!(extract_i64_vec(&restored), data);
+}
+
+#[test]
+fn metamorphic_reshape_any_shape_same_elements() {
+    // Metamorphic: any reshape to any compatible shape preserves element order
+    let data: Vec<i64> = (1..=24).collect();
+    let shapes = vec![
+        vec![24],
+        vec![1, 24],
+        vec![24, 1],
+        vec![2, 12],
+        vec![3, 8],
+        vec![4, 6],
+        vec![6, 4],
+        vec![2, 3, 4],
+        vec![2, 4, 3],
+        vec![3, 2, 4],
+        vec![4, 2, 3],
+    ];
+
+    let input = make_i64_tensor(&[24], data.clone());
+
+    for shape in shapes {
+        let shape_i64: Vec<i64> = shape.iter().map(|&x| x as i64).collect();
+        let result =
+            eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&shape_i64))
+                .unwrap();
+        assert_eq!(
+            extract_i64_vec(&result),
+            data,
+            "reshape to {:?} should preserve elements",
+            shape
+        );
+    }
+}
+
+#[test]
+fn metamorphic_reshape_flatten_and_restore_f64() {
+    // Roundtrip with f64 data
+    let data: Vec<f64> = (0..20).map(|i| i as f64 * 0.5).collect();
+    let input = make_f64_tensor(&[4, 5], data.clone());
+
+    let flattened =
+        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[20])).unwrap();
+    let restored =
+        eval_primitive(Primitive::Reshape, &[flattened], &reshape_params(&[4, 5])).unwrap();
+
+    let restored_vals = extract_f64_vec(&restored);
+    for (a, b) in data.iter().zip(restored_vals.iter()) {
+        assert!((a - b).abs() < 1e-15, "f64 reshape roundtrip should be exact");
+    }
+}
+
+#[test]
+fn metamorphic_reshape_same_shape_is_identity() {
+    // Reshaping to the same shape should return identical tensor
+    let data: Vec<i64> = (1..=12).collect();
+    let input = make_i64_tensor(&[3, 4], data.clone());
+
+    let same =
+        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[3, 4])).unwrap();
+
+    assert_eq!(extract_shape(&same), vec![3, 4]);
+    assert_eq!(extract_i64_vec(&same), data);
+}
