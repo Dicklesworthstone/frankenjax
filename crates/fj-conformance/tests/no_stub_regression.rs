@@ -689,3 +689,74 @@ fn no_stub_regression_covers_interpreter_invalid_sub_jaxpr_error() {
         "interpreter error should describe the permanent validation rule: {rendered}"
     );
 }
+
+#[test]
+fn no_stub_source_code_markers_via_grep() {
+    use std::process::Command;
+
+    let stub_patterns = [
+        "unimplemented!",
+        "todo!",
+        r#"panic!("not impl"#,
+        "STUB",
+        "PLACEHOLDER",
+        "MOCK",
+    ];
+
+    let src_dirs = ["crates/fj-lax/src", "crates/fj-ad/src", "crates/fj-core/src"];
+
+    for pattern in stub_patterns {
+        for dir in &src_dirs {
+            let output = Command::new("grep")
+                .args(["-rn", pattern, dir])
+                .output()
+                .expect("grep should execute");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let matches: Vec<&str> = stdout
+                .lines()
+                .filter(|line| !line.contains("test") && !line.contains("Test"))
+                .collect();
+
+            assert!(
+                matches.is_empty(),
+                "Found stub marker `{pattern}` in {dir}:\n{}",
+                matches.join("\n")
+            );
+        }
+    }
+}
+
+#[test]
+fn no_stub_suspicious_default_returns() {
+    use std::process::Command;
+
+    let suspicious_patterns = [
+        r"return Ok\(Default::default\(\)\)",
+        r"return Ok\(vec!\[\]\)",
+    ];
+
+    let src_files = ["crates/fj-lax/src/lib.rs", "crates/fj-ad/src/lib.rs"];
+
+    for pattern in suspicious_patterns {
+        for file in &src_files {
+            let output = Command::new("grep")
+                .args(["-En", pattern, file])
+                .output()
+                .expect("grep should execute");
+
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let matches: Vec<&str> = stdout
+                .lines()
+                .filter(|line| !line.contains("test") && !line.contains("Test"))
+                .collect();
+
+            assert!(
+                matches.is_empty(),
+                "Found suspicious default return `{pattern}` in {file}:\n{}\n\
+                 These patterns often indicate stub implementations.",
+                matches.join("\n")
+            );
+        }
+    }
+}
