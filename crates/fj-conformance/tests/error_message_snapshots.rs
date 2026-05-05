@@ -194,3 +194,16 @@ fn snapshot_cumsum_axis_out_of_bounds() {
     let err = eval_primitive(Primitive::Cumsum, &[input], &params).unwrap_err();
     insta::assert_snapshot!(err.to_string(), @"unsupported cumsum behavior: axis 5 out of bounds for rank 1");
 }
+
+#[test]
+fn snapshot_while_max_iterations_exceeded() {
+    let init = Value::scalar_f64(0.0);
+    let step = Value::scalar_f64(0.0);
+    let threshold = Value::scalar_f64(10.0);
+    let mut params = BTreeMap::new();
+    params.insert("body_op".to_string(), "add".to_string());
+    params.insert("cond_op".to_string(), "lt".to_string());
+    params.insert("max_iter".to_string(), "5".to_string());
+    let err = eval_primitive(Primitive::While, &[init, step, threshold], &params).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"while_loop exceeded max iterations (5)");
+}
