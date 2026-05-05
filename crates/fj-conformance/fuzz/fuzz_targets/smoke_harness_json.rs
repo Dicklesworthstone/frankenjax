@@ -1,8 +1,13 @@
 #![no_main]
 
 use fj_conformance::{
-    FixtureNote, HarnessConfig, ParityCase, ParityReport, evaluate_parity, read_fixture_note,
-    run_smoke,
+    FixtureNote, HarnessConfig, ParityCase, ParityReport,
+    architecture_decision::{
+        ARCHITECTURE_BOUNDARY_REPORT_SCHEMA_VERSION, ArchitectureBoundaryReport,
+        architecture_boundary_summary_json, build_architecture_boundary_report,
+        snapshot_from_metadata_json,
+    },
+    evaluate_parity, read_fixture_note, run_smoke,
 };
 use libfuzzer_sys::fuzz_target;
 use std::fs;
@@ -18,6 +23,7 @@ fuzz_target!(|data: &[u8]| {
     exercise_fixture_note_loader(data);
     exercise_parity_case_loader(data);
     exercise_parity_report_loader(data);
+    exercise_architecture_metadata_loader(data);
 });
 
 fn exercise_fixture_note_loader(data: &[u8]) {
@@ -105,6 +111,48 @@ fn exercise_parity_report_loader(data: &[u8]) {
         return;
     };
     let Ok(decoded) = serde_json::from_slice::<ParityReport>(&encoded) else {
+        return;
+    };
+    assert_eq!(report, decoded);
+}
+
+fn exercise_architecture_metadata_loader(data: &[u8]) {
+    let Ok(raw) = std::str::from_utf8(data) else {
+        return;
+    };
+    let Ok(snapshot) = snapshot_from_metadata_json(raw) else {
+        return;
+    };
+
+    let report = build_architecture_boundary_report(snapshot);
+    assert_eq!(
+        report.schema_version,
+        ARCHITECTURE_BOUNDARY_REPORT_SCHEMA_VERSION
+    );
+    assert_eq!(report.crate_count, report.workspace_crates.len());
+
+    let summary = architecture_boundary_summary_json(&report);
+    assert_eq!(
+        summary["crate_count"].as_u64(),
+        u64::try_from(report.crate_count).ok()
+    );
+    assert_eq!(
+        summary["normal_edge_count"].as_u64(),
+        u64::try_from(report.normal_edges.len()).ok()
+    );
+    assert_eq!(
+        summary["decision_count"].as_u64(),
+        u64::try_from(report.decisions.len()).ok()
+    );
+    assert_eq!(
+        summary["issue_count"].as_u64(),
+        u64::try_from(report.issues.len()).ok()
+    );
+
+    let Ok(encoded) = serde_json::to_vec(&report) else {
+        return;
+    };
+    let Ok(decoded) = serde_json::from_slice::<ArchitectureBoundaryReport>(&encoded) else {
         return;
     };
     assert_eq!(report, decoded);
