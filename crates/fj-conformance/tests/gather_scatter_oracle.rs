@@ -524,3 +524,98 @@ fn oracle_scatter_wrong_update_shape() {
     );
     assert!(result.is_err());
 }
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_gather_consecutive_indices_identity() {
+    // Gather with [0,1,2,...] returns elements in original order
+    let operand = make_i64_tensor(&[5], vec![10, 20, 30, 40, 50]);
+    let indices = make_i64_tensor(&[5], vec![0, 1, 2, 3, 4]);
+    let result = eval_primitive(
+        Primitive::Gather,
+        &[operand, indices],
+        &gather_params(&[1]),
+    )
+    .unwrap();
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![10, 20, 30, 40, 50],
+        "Gather with consecutive indices should preserve order"
+    );
+}
+
+#[test]
+fn metamorphic_scatter_gather_roundtrip() {
+    // Scatter values at indices, then Gather at same indices = scattered values
+    let operand = make_i64_tensor(&[5], vec![0, 0, 0, 0, 0]);
+    let indices = make_i64_tensor(&[3], vec![1, 3, 4]);
+    let updates = make_i64_tensor(&[3], vec![100, 300, 400]);
+
+    let scattered = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices.clone(), updates.clone()],
+        &scatter_params(),
+    )
+    .unwrap();
+
+    let gathered = eval_primitive(
+        Primitive::Gather,
+        &[scattered, indices],
+        &gather_params(&[1]),
+    )
+    .unwrap();
+
+    assert_eq!(
+        extract_i64_vec(&gathered),
+        vec![100, 300, 400],
+        "Scatter then Gather at same indices should return scattered values"
+    );
+}
+
+#[test]
+fn metamorphic_gather_output_element_count() {
+    // Output element count = num_indices * elements_per_slice
+    let operand = make_i64_tensor(&[4, 3], (0..12).collect());
+    let indices = make_i64_tensor(&[2], vec![0, 2]);
+    let result = eval_primitive(
+        Primitive::Gather,
+        &[operand, indices],
+        &gather_params(&[1, 3]),
+    )
+    .unwrap();
+    let vals = extract_i64_vec(&result);
+    assert_eq!(
+        vals.len(),
+        2 * 3,
+        "Output should have num_indices * slice_elements = 6 elements"
+    );
+}
+
+#[test]
+fn metamorphic_scatter_idempotent() {
+    // Scatter same value at same index twice = single scatter
+    let operand = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
+    let indices = make_i64_tensor(&[1], vec![2]);
+    let updates = make_i64_tensor(&[1], vec![99]);
+
+    let once = eval_primitive(
+        Primitive::Scatter,
+        &[operand.clone(), indices.clone(), updates.clone()],
+        &scatter_params(),
+    )
+    .unwrap();
+
+    let twice = eval_primitive(
+        Primitive::Scatter,
+        &[once.clone(), indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        extract_i64_vec(&once),
+        extract_i64_vec(&twice),
+        "Scatter same value twice should be idempotent"
+    );
+}
