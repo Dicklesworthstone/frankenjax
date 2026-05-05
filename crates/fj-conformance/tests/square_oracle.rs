@@ -404,3 +404,82 @@ fn oracle_square_symmetry() {
         );
     }
 }
+
+// ======================== METAMORPHIC: square(x) = Mul(x, x) ========================
+
+#[test]
+fn metamorphic_square_equals_mul() {
+    // square(x) = Mul(x, x) using Mul primitive
+    for x in [-2.5, -1.0, 0.0, 1.0, 2.5, 10.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let square_result = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+        let mul_result = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&square_result),
+            extract_f64_scalar(&mul_result),
+            1e-14,
+            &format!("square({}) = Mul({}, {})", x, x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: sqrt(square(x)) = abs(x) ========================
+
+#[test]
+fn metamorphic_sqrt_square_abs() {
+    // sqrt(square(x)) = abs(x) using Sqrt and Abs primitives
+    for x in [-2.5, -1.0, 0.0, 1.0, 2.5, 10.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let squared = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+        let sqrt_squared = eval_primitive(Primitive::Sqrt, &[squared], &no_params()).unwrap();
+        let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&sqrt_squared),
+            extract_f64_scalar(&abs_x),
+            1e-14,
+            &format!("sqrt(square({})) = abs({})", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: square(Neg(x)) = square(x) ========================
+
+#[test]
+fn metamorphic_square_negation_invariant() {
+    // square(Neg(x)) = square(x) (even function) using Neg primitive
+    for x in [1.0, 2.0, 0.5, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+
+        let square_x = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+        let square_neg_x = eval_primitive(Primitive::Square, &[neg_x], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&square_neg_x),
+            extract_f64_scalar(&square_x),
+            1e-14,
+            &format!("square(Neg({})) = square({})", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor square = Mul ========================
+
+#[test]
+fn metamorphic_square_tensor_mul() {
+    // For tensor: square(x) = Mul(x, x)
+    let data = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
+    let input = make_f64_tensor(&[5], data);
+
+    let square_result = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+    let mul_result = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&square_result), vec![5]);
+    let sq_vec = extract_f64_vec(&square_result);
+    let mul_vec = extract_f64_vec(&mul_result);
+    for (i, (&sq, &mul)) in sq_vec.iter().zip(mul_vec.iter()).enumerate() {
+        assert_close(sq, mul, 1e-14, &format!("element {}", i));
+    }
+}
