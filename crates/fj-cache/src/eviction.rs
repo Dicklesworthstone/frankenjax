@@ -614,4 +614,117 @@ mod tests {
         assert_eq!(config.lru.max_entries, 1024);
         assert_eq!(config.lru.max_bytes, 256 * 1024 * 1024);
     }
+
+    // ====================== THREAD SAFETY TESTS ======================
+
+    #[test]
+    fn lru_concurrent_get_does_not_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let config = LruConfig {
+            max_entries: 100,
+            max_bytes: 0,
+        };
+        let mut cache = LruCache::new(InMemoryCache::new(), config);
+
+        for i in 0..10 {
+            cache.put(&test_key(&format!("key{}", i)), test_artifact(b"data"));
+        }
+
+        let cache = Arc::new(cache);
+        let mut handles = vec![];
+
+        for t in 0..4 {
+            let cache = Arc::clone(&cache);
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    for i in 0..10 {
+                        let _ = cache.get(&test_key(&format!("key{}", (i + t) % 10)));
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not panic");
+        }
+    }
+
+    #[test]
+    fn lru_order_mutex_not_poisoned_on_panic_recovery() {
+        use std::panic;
+
+        let config = LruConfig {
+            max_entries: 10,
+            max_bytes: 0,
+        };
+        let cache = LruCache::new(InMemoryCache::new(), config);
+
+        let result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
+            let _guard = cache.order.lock().unwrap();
+            panic!("intentional panic while holding lock");
+        }));
+
+        assert!(result.is_err(), "panic should be caught");
+
+        let guard_result = cache.order.lock();
+        assert!(
+            guard_result.is_err(),
+            "mutex should be poisoned after panic"
+        );
+
+        let guard = guard_result.unwrap_or_else(|e| e.into_inner());
+        drop(guard);
+    }
+
+    #[test]
+    fn lru_get_touch_is_atomic() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let config = LruConfig {
+            max_entries: 3,
+            max_bytes: 0,
+        };
+        let mut cache = LruCache::new(InMemoryCache::new(), config);
+
+        cache.put(&test_key("a"), test_artifact(b"A"));
+        cache.put(&test_key("b"), test_artifact(b"B"));
+        cache.put(&test_key("c"), test_artifact(b"C"));
+
+        let cache = Arc::new(cache);
+
+        let cache_a = Arc::clone(&cache);
+        let handle_a = thread::spawn(move || {
+            for _ in 0..1000 {
+                let _ = cache_a.get(&test_key("a"));
+            }
+        });
+
+        let cache_b = Arc::clone(&cache);
+        let handle_b = thread::spawn(move || {
+            for _ in 0..1000 {
+                let _ = cache_b.get(&test_key("b"));
+            }
+        });
+
+        handle_a.join().expect("thread a should not panic");
+        handle_b.join().expect("thread b should not panic");
+
+        let order = cache.order.lock().unwrap();
+        assert_eq!(order.len(), 3, "all keys should remain in order queue");
+    }
+
+    #[test]
+    fn lru_cache_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<LruCache<InMemoryCache>>();
+    }
+
+    #[test]
+    fn lru_cache_is_sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<LruCache<InMemoryCache>>();
+    }
 }
