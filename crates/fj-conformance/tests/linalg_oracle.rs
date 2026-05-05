@@ -549,3 +549,81 @@ fn oracle_triangular_solve_1x1() {
     let x = extract_f64_matrix(&result[0]);
     assert_close(&x, &[3.0], 1e-12, "[[2]] @ x = [[6]] → x = [[3]]");
 }
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_qr_reconstruction() {
+    // Q @ R = A
+    let a = make_f64_matrix(3, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
+    let result =
+        eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &no_params()).unwrap();
+    let q = extract_f64_matrix(&result[0]);
+    let r = extract_f64_matrix(&result[1]);
+    let qr = matmul(3, 3, 3, &q, &r);
+    assert_close(
+        &qr,
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0],
+        1e-10,
+        "Q @ R should reconstruct A",
+    );
+}
+
+#[test]
+fn metamorphic_svd_reconstruction() {
+    // U @ diag(S) @ V^T = A
+    let a = make_f64_matrix(2, 2, &[3.0, 1.0, 1.0, 2.0]);
+    let result =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
+    let u = extract_f64_matrix(&result[0]);
+    let s = extract_f64_vec_from_value(&result[1]);
+    let vt = extract_f64_matrix(&result[2]);
+
+    // Build diag(S) * V^T
+    let svt = [s[0] * vt[0], s[0] * vt[1], s[1] * vt[2], s[1] * vt[3]];
+    let usv = matmul(2, 2, 2, &u, &svt);
+    assert_close(
+        &usv,
+        &[3.0, 1.0, 1.0, 2.0],
+        1e-10,
+        "U @ diag(S) @ V^T should reconstruct A",
+    );
+}
+
+#[test]
+fn metamorphic_cholesky_reconstruction() {
+    // L @ L^T = A for positive definite A
+    let a = make_f64_matrix(2, 2, &[4.0, 2.0, 2.0, 3.0]);
+    let result =
+        eval_primitive_multi(Primitive::Cholesky, std::slice::from_ref(&a), &no_params()).unwrap();
+    let l = extract_f64_matrix(&result[0]);
+    let lt = transpose(2, 2, &l);
+    let llt = matmul(2, 2, 2, &l, &lt);
+    assert_close(
+        &llt,
+        &[4.0, 2.0, 2.0, 3.0],
+        1e-10,
+        "L @ L^T should reconstruct A",
+    );
+}
+
+#[test]
+fn metamorphic_eigh_reconstruction() {
+    // V @ diag(W) @ V^T = A for symmetric A
+    let a = make_f64_matrix(2, 2, &[3.0, 1.0, 1.0, 2.0]);
+    let result =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params()).unwrap();
+    let w = extract_f64_vec_from_value(&result[0]);
+    let v = extract_f64_matrix(&result[1]);
+    let vt = transpose(2, 2, &v);
+
+    // Build V @ diag(W)
+    let vw = [v[0] * w[0], v[1] * w[1], v[2] * w[0], v[3] * w[1]];
+    let reconstructed = matmul(2, 2, 2, &vw, &vt);
+    assert_close(
+        &reconstructed,
+        &[3.0, 1.0, 1.0, 2.0],
+        1e-10,
+        "V @ diag(W) @ V^T should reconstruct A",
+    );
+}
