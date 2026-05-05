@@ -381,3 +381,57 @@ fn oracle_tanh_derivative_at_zero() {
     let approx_derivative = val / h;
     assert_close(approx_derivative, 1.0, 1e-6, "tanh'(0) ≈ 1");
 }
+
+// ======================== METAMORPHIC: atanh(tanh(x)) = x ========================
+
+#[test]
+fn metamorphic_atanh_tanh_identity() {
+    // atanh(tanh(x)) = x for x in reasonable range (|x| < ~18 to avoid saturation)
+    for x in [-3.0, -2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0, 3.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let tanh_result = eval_primitive(Primitive::Tanh, &[input], &no_params()).unwrap();
+        let atanh_tanh = eval_primitive(Primitive::Atanh, &[tanh_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&atanh_tanh),
+            x,
+            1e-12,
+            &format!("atanh(tanh({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tanh(atanh(x)) = x ========================
+
+#[test]
+fn metamorphic_tanh_atanh_identity() {
+    // tanh(atanh(x)) = x for x in (-1, 1)
+    for x in [-0.9, -0.5, -0.1, 0.0, 0.1, 0.5, 0.9] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let atanh_result = eval_primitive(Primitive::Atanh, &[input], &no_params()).unwrap();
+        let tanh_atanh = eval_primitive(Primitive::Tanh, &[atanh_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&tanh_atanh),
+            x,
+            1e-14,
+            &format!("tanh(atanh({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_tanh_tensor_roundtrip() {
+    let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+    let tanh_result = eval_primitive(Primitive::Tanh, &[input.clone()], &no_params()).unwrap();
+    let atanh_tanh = eval_primitive(Primitive::Atanh, &[tanh_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&atanh_tanh);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("atanh(tanh({})) = {}", orig, orig));
+    }
+}
