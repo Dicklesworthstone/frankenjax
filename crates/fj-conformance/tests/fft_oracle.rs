@@ -362,3 +362,88 @@ fn oracle_rfft_known_values() {
         "RFFT([1,2,3,4])",
     );
 }
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_fft_ifft_roundtrip() {
+    // IFFT(FFT(x)) = x
+    let x = make_complex_tensor(&[(1.0, 2.0), (3.0, -1.0), (0.5, 0.5), (-2.0, 1.0)]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let fft_result = eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &params).unwrap();
+    let roundtrip =
+        eval_primitive(Primitive::Ifft, std::slice::from_ref(&fft_result), &params).unwrap();
+    let original = extract_complex_vec(&x);
+    let recovered = extract_complex_vec(&roundtrip);
+    assert_complex_close(&recovered, &original, 1e-10, "IFFT(FFT(x)) = x");
+}
+
+#[test]
+fn metamorphic_fft_dc_equals_sum() {
+    // FFT(x)[0] = sum(x) - DC component equals sum of input
+    let x = make_complex_tensor(&[(1.0, 2.0), (3.0, -1.0), (0.5, 0.5), (-2.0, 1.0)]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let result = eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &params).unwrap();
+    let y = extract_complex_vec(&result);
+
+    let sum_re = 1.0 + 3.0 + 0.5 - 2.0;
+    let sum_im = 2.0 - 1.0 + 0.5 + 1.0;
+
+    assert!(
+        (y[0].0 - sum_re).abs() < 1e-10 && (y[0].1 - sum_im).abs() < 1e-10,
+        "FFT(x)[0] should equal sum(x): got ({}, {}), expected ({}, {})",
+        y[0].0,
+        y[0].1,
+        sum_re,
+        sum_im
+    );
+}
+
+#[test]
+fn metamorphic_fft_scaling() {
+    // FFT(c*x) = c*FFT(x)
+    let x = make_complex_tensor(&[(1.0, 0.0), (2.0, 1.0), (-1.0, 0.5), (0.0, -1.0)]);
+    let c = 3.0;
+    let scaled_data: Vec<(f64, f64)> = [(1.0, 0.0), (2.0, 1.0), (-1.0, 0.5), (0.0, -1.0)]
+        .iter()
+        .map(|(re, im)| (c * re, c * im))
+        .collect();
+    let cx = make_complex_tensor(&scaled_data);
+
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+
+    let fft_x = eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &params).unwrap();
+    let fft_cx = eval_primitive(Primitive::Fft, std::slice::from_ref(&cx), &params).unwrap();
+
+    let y = extract_complex_vec(&fft_x);
+    let cy = extract_complex_vec(&fft_cx);
+
+    let expected: Vec<(f64, f64)> = y.iter().map(|(re, im)| (c * re, c * im)).collect();
+    assert_complex_close(&cy, &expected, 1e-10, "FFT(c*x) = c*FFT(x)");
+}
+
+#[test]
+fn metamorphic_fft_parseval_energy() {
+    // Parseval's theorem: sum(|x|^2) = sum(|FFT(x)|^2) / n
+    let x = make_complex_tensor(&[(1.0, 2.0), (3.0, -1.0), (0.5, 0.5), (-2.0, 1.0)]);
+    let n = 4.0;
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+
+    let fft_x = eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &params).unwrap();
+    let x_vals = extract_complex_vec(&x);
+    let y_vals = extract_complex_vec(&fft_x);
+
+    let energy_x: f64 = x_vals.iter().map(|(re, im)| re * re + im * im).sum();
+    let energy_y: f64 = y_vals.iter().map(|(re, im)| re * re + im * im).sum();
+
+    assert!(
+        (energy_x - energy_y / n).abs() < 1e-10,
+        "Parseval: sum(|x|^2) = {} but sum(|FFT(x)|^2)/n = {}",
+        energy_x,
+        energy_y / n
+    );
+}
