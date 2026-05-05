@@ -455,3 +455,77 @@ fn oracle_log_2d() {
     assert_close(vals[2], std::f64::consts::LN_2, 1e-14, "");
     assert_close(vals[3], std::f64::consts::LN_10, 1e-14, "");
 }
+
+// ======================== METAMORPHIC: log(x*y) = log(x) + log(y) ========================
+
+#[test]
+fn metamorphic_log_product_sum() {
+    // log(Mul(x, y)) = Add(log(x), log(y)), using actual primitives
+    for (x, y) in [(2.0, 3.0), (10.0, 5.0), (std::f64::consts::E, 4.0)] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+        let y_val = make_f64_tensor(&[], vec![y]);
+
+        // Compute log(x * y) using Mul then Log
+        let product = eval_primitive(
+            Primitive::Mul,
+            &[x_val.clone(), y_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
+        let log_product = eval_primitive(Primitive::Log, &[product], &no_params()).unwrap();
+
+        // Compute log(x) + log(y) using Log then Add
+        let log_x = eval_primitive(Primitive::Log, &[x_val], &no_params()).unwrap();
+        let log_y = eval_primitive(Primitive::Log, &[y_val], &no_params()).unwrap();
+        let sum_logs = eval_primitive(Primitive::Add, &[log_x, log_y], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&log_product),
+            extract_f64_scalar(&sum_logs),
+            1e-12,
+            &format!("log({} * {}) = log({}) + log({})", x, y, x, y),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: exp(log(x)) = x ========================
+
+#[test]
+fn metamorphic_exp_log_identity() {
+    // exp(log(x)) = x for x > 0
+    for x in [0.5, 1.0, 2.0, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let log_result = eval_primitive(Primitive::Log, &[input], &no_params()).unwrap();
+        let exp_log = eval_primitive(Primitive::Exp, &[log_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&exp_log),
+            x,
+            1e-12,
+            &format!("exp(log({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor product rule ========================
+
+#[test]
+fn metamorphic_log_tensor_product_sum() {
+    // For tensors: log(x * y) = log(x) + log(y)
+    let x = make_f64_tensor(&[4], vec![2.0, 3.0, 4.0, 5.0]);
+    let y = make_f64_tensor(&[4], vec![5.0, 4.0, 3.0, 2.0]);
+
+    let product = eval_primitive(Primitive::Mul, &[x.clone(), y.clone()], &no_params()).unwrap();
+    let log_product = eval_primitive(Primitive::Log, &[product], &no_params()).unwrap();
+
+    let log_x = eval_primitive(Primitive::Log, &[x], &no_params()).unwrap();
+    let log_y = eval_primitive(Primitive::Log, &[y], &no_params()).unwrap();
+    let sum_logs = eval_primitive(Primitive::Add, &[log_x, log_y], &no_params()).unwrap();
+
+    let lp_vals = extract_f64_vec(&log_product);
+    let sl_vals = extract_f64_vec(&sum_logs);
+
+    for (lp, sl) in lp_vals.iter().zip(sl_vals.iter()) {
+        assert_close(*lp, *sl, 1e-12, "log(x*y) = log(x) + log(y) element-wise");
+    }
+}

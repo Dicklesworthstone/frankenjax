@@ -1625,7 +1625,11 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             return f64::NAN;
         }
         let lower_bounded = if x < lo { lo } else { x };
-        if lower_bounded > hi { hi } else { lower_bounded }
+        if lower_bounded > hi {
+            hi
+        } else {
+            lower_bounded
+        }
     }
 
     fn clamp_f32(lo: f32, x: f32, hi: f32) -> f32 {
@@ -1633,7 +1637,11 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             return f32::NAN;
         }
         let lower_bounded = if x < lo { lo } else { x };
-        if lower_bounded > hi { hi } else { lower_bounded }
+        if lower_bounded > hi {
+            hi
+        } else {
+            lower_bounded
+        }
     }
 
     fn clamp_literal(lo: Literal, x: Literal, hi: Literal) -> Result<Literal, &'static str> {
@@ -2462,6 +2470,9 @@ mod tests {
     fn s_f64(v: f64) -> Value {
         Value::Scalar(Literal::from_f64(v))
     }
+    fn s_f32(v: f32) -> Value {
+        Value::Scalar(Literal::from_f32(v))
+    }
     fn s_i64(v: i64) -> Value {
         Value::Scalar(Literal::I64(v))
     }
@@ -2473,6 +2484,18 @@ mod tests {
                     dims: vec![data.len() as u32],
                 },
                 data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+    fn v_f32(data: &[f32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![data.len() as u32],
+                },
+                data.iter().map(|&v| Literal::from_f32(v)).collect(),
             )
             .unwrap(),
         )
@@ -3146,5 +3169,46 @@ mod tests {
         let val = extract_f64(&result);
         assert!(val < 1.0);
         assert!(val > 1.0 - 1e-10);
+    }
+
+    #[test]
+    fn nextafter_f32_scalar_preserves_dtype() {
+        let result = eval_nextafter(Primitive::Nextafter, &[s_f32(1.0), s_f32(2.0)]).unwrap();
+        let Value::Scalar(Literal::F32Bits(bits)) = result else {
+            assert!(
+                matches!(result, Value::Scalar(Literal::F32Bits(_))),
+                "expected F32 scalar nextafter output"
+            );
+            return;
+        };
+        let val = f32::from_bits(bits);
+        assert!(val > 1.0);
+        assert!(val < 1.0 + 1e-5);
+    }
+
+    #[test]
+    fn nextafter_f32_tensor_preserves_dtype() {
+        let lhs = v_f32(&[1.0, 2.0, 0.0]);
+        let rhs = v_f32(&[2.0, 1.0, -1.0]);
+        let result = eval_nextafter(Primitive::Nextafter, &[lhs, rhs]).unwrap();
+        let Value::Tensor(tensor) = result else {
+            assert!(matches!(result, Value::Tensor(_)), "expected tensor output");
+            return;
+        };
+        assert_eq!(tensor.dtype, DType::F32);
+        let mut vals = Vec::with_capacity(tensor.elements.len());
+        for literal in &tensor.elements {
+            assert!(
+                matches!(literal, Literal::F32Bits(_)),
+                "expected F32Bits element"
+            );
+            let Literal::F32Bits(bits) = literal else {
+                return;
+            };
+            vals.push(f32::from_bits(*bits));
+        }
+        assert!(vals[0] > 1.0);
+        assert!(vals[1] < 2.0);
+        assert!(vals[2] < 0.0);
     }
 }
