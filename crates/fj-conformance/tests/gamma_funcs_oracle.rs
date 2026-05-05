@@ -241,3 +241,69 @@ fn oracle_digamma_single_element() {
     let euler_mascheroni = 0.5772156649;
     assert!((vals[0] - (-euler_mascheroni)).abs() < 0.01);
 }
+
+// ======================== Special Values ========================
+
+#[test]
+fn oracle_lgamma_positive_infinity() {
+    let input = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val > 0.0, "lgamma(+inf) = +inf");
+}
+
+#[test]
+fn oracle_lgamma_nan() {
+    let input = Value::Scalar(Literal::from_f64(f64::NAN));
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "lgamma(NaN) = NaN");
+}
+
+#[test]
+fn oracle_lgamma_zero() {
+    let input = Value::Scalar(Literal::from_f64(0.0));
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val > 0.0, "lgamma(0) = +inf (pole)");
+}
+
+#[test]
+fn oracle_lgamma_negative_integer() {
+    let input = Value::Scalar(Literal::from_f64(-1.0));
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val > 0.0, "lgamma(-1) = +inf (pole)");
+}
+
+#[test]
+fn oracle_digamma_positive_infinity() {
+    let input = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val > 0.0, "digamma(+inf) = +inf");
+}
+
+#[test]
+fn oracle_digamma_nan() {
+    let input = Value::Scalar(Literal::from_f64(f64::NAN));
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "digamma(NaN) = NaN");
+}
+
+#[test]
+fn oracle_digamma_zero() {
+    let input = Value::Scalar(Literal::from_f64(0.0));
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val < 0.0, "digamma(0) = -inf (pole)");
+}
+
+#[test]
+fn oracle_digamma_negative_integer() {
+    let input = Value::Scalar(Literal::from_f64(-1.0));
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite(), "digamma(-1) = +/-inf (pole)");
+}
