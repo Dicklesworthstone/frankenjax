@@ -294,3 +294,98 @@ fn oracle_clamp_tensor_special_values() {
     assert!(vals[2].is_nan(), "clamp(0, NaN, 10) = NaN");
     assert!((vals[3] - 5.0).abs() < 1e-10, "clamp(-Inf, 5, +Inf) = 5");
 }
+
+// ======================== METAMORPHIC: idempotence ========================
+
+#[test]
+fn metamorphic_clamp_idempotent() {
+    // clamp(lo, clamp(lo, x, hi), hi) = clamp(lo, x, hi)
+    // Once clamped, clamping again with the same bounds produces the same result
+    for x in [-10.0, -1.0, 0.5, 5.0, 15.0] {
+        let lo = make_f64_tensor(&[], vec![0.0]);
+        let hi = make_f64_tensor(&[], vec![10.0]);
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let clamp1 = eval_primitive(
+            Primitive::Clamp,
+            &[lo.clone(), input, hi.clone()],
+            &no_params(),
+        )
+        .unwrap();
+        let clamp2 = eval_primitive(
+            Primitive::Clamp,
+            &[lo.clone(), clamp1.clone(), hi.clone()],
+            &no_params(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&clamp1),
+            extract_f64_scalar(&clamp2),
+            "clamp(0, clamp(0, {}, 10), 10) = clamp(0, {}, 10)",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: output always in range ========================
+
+#[test]
+fn metamorphic_clamp_output_in_range() {
+    // For any x, lo <= clamp(lo, x, hi) <= hi (when lo <= hi)
+    let lo = 0.0;
+    let hi = 10.0;
+
+    for x in [-100.0, -1.0, 0.0, 5.0, 10.0, 100.0, f64::INFINITY, f64::NEG_INFINITY] {
+        let lo_val = make_f64_tensor(&[], vec![lo]);
+        let hi_val = make_f64_tensor(&[], vec![hi]);
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let result = eval_primitive(
+            Primitive::Clamp,
+            &[lo_val, input, hi_val],
+            &no_params(),
+        )
+        .unwrap();
+        let val = extract_f64_scalar(&result);
+
+        if !x.is_nan() {
+            assert!(
+                val >= lo && val <= hi,
+                "clamp(0, {}, 10) = {} should be in [0, 10]",
+                x,
+                val
+            );
+        }
+    }
+}
+
+// ======================== METAMORPHIC: tensor idempotence ========================
+
+#[test]
+fn metamorphic_clamp_tensor_idempotent() {
+    let lo = make_f64_tensor(&[5], vec![0.0, 0.0, 0.0, 0.0, 0.0]);
+    let x = make_f64_tensor(&[5], vec![-5.0, 0.0, 5.0, 10.0, 15.0]);
+    let hi = make_f64_tensor(&[5], vec![10.0, 10.0, 10.0, 10.0, 10.0]);
+
+    let clamp1 = eval_primitive(
+        Primitive::Clamp,
+        &[lo.clone(), x, hi.clone()],
+        &no_params(),
+    )
+    .unwrap();
+    let clamp2 = eval_primitive(
+        Primitive::Clamp,
+        &[lo.clone(), clamp1.clone(), hi.clone()],
+        &no_params(),
+    )
+    .unwrap();
+
+    let vals1 = extract_f64_vec(&clamp1);
+    let vals2 = extract_f64_vec(&clamp2);
+
+    for (v1, v2) in vals1.iter().zip(vals2.iter()) {
+        assert_eq!(*v1, *v2, "clamp is idempotent for tensors");
+    }
+}
