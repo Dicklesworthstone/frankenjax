@@ -320,3 +320,102 @@ fn oracle_tan_derivative_identity() {
         assert_close(lhs, rhs, 1e-13, &format!("1 + tan^2({}) = sec^2({})", x, x));
     }
 }
+
+// ====================== METAMORPHIC PROPERTIES ======================
+
+#[test]
+fn metamorphic_tan_equals_sin_over_cos() {
+    // tan(x) = sin(x) / cos(x) for all x where cos(x) != 0
+    for x in [0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let tan_result = eval_primitive(Primitive::Tan, &[input.clone()], &no_params()).unwrap();
+        let sin_result = eval_primitive(Primitive::Sin, &[input.clone()], &no_params()).unwrap();
+        let cos_result = eval_primitive(Primitive::Cos, &[input], &no_params()).unwrap();
+
+        let tan_val = extract_f64_scalar(&tan_result);
+        let sin_val = extract_f64_scalar(&sin_result);
+        let cos_val = extract_f64_scalar(&cos_result);
+
+        if cos_val.abs() > 1e-10 {
+            let sin_over_cos = sin_val / cos_val;
+            assert_close(
+                tan_val,
+                sin_over_cos,
+                1e-12,
+                &format!("tan({}) = sin({})/cos({})", x, x, x),
+            );
+        }
+    }
+}
+
+#[test]
+fn metamorphic_tan_odd_function() {
+    // tan(-x) = -tan(x) for all x
+    for x in [0.25, 0.5, 1.0, 1.5, 2.0, 2.5] {
+        let pos_input = make_f64_tensor(&[], vec![x]);
+        let neg_input = make_f64_tensor(&[], vec![-x]);
+
+        let tan_pos = eval_primitive(Primitive::Tan, &[pos_input], &no_params()).unwrap();
+        let tan_neg = eval_primitive(Primitive::Tan, &[neg_input], &no_params()).unwrap();
+
+        let pos_val = extract_f64_scalar(&tan_pos);
+        let neg_val = extract_f64_scalar(&tan_neg);
+
+        assert_close(
+            neg_val,
+            -pos_val,
+            1e-12,
+            &format!("tan(-{}) = -tan({})", x, x),
+        );
+    }
+}
+
+#[test]
+fn metamorphic_tan_period_pi() {
+    // tan(x + π) = tan(x) for all x
+    let pi = std::f64::consts::PI;
+    for x in [0.0, 0.25, 0.5, 1.0, 1.2] {
+        let input_x = make_f64_tensor(&[], vec![x]);
+        let input_x_plus_pi = make_f64_tensor(&[], vec![x + pi]);
+
+        let tan_x = eval_primitive(Primitive::Tan, &[input_x], &no_params()).unwrap();
+        let tan_x_pi = eval_primitive(Primitive::Tan, &[input_x_plus_pi], &no_params()).unwrap();
+
+        let val_x = extract_f64_scalar(&tan_x);
+        let val_x_pi = extract_f64_scalar(&tan_x_pi);
+
+        assert_close(
+            val_x,
+            val_x_pi,
+            1e-12,
+            &format!("tan({}) = tan({} + π)", x, x),
+        );
+    }
+}
+
+#[test]
+fn metamorphic_tan_tensor_sin_over_cos() {
+    // tan(x) = sin(x) / cos(x) for 1D tensor
+    let x = make_f64_tensor(&[5], vec![0.1, 0.5, 1.0, 1.5, 2.0]);
+
+    let tan_result = eval_primitive(Primitive::Tan, &[x.clone()], &no_params()).unwrap();
+    let sin_result = eval_primitive(Primitive::Sin, &[x.clone()], &no_params()).unwrap();
+    let cos_result = eval_primitive(Primitive::Cos, &[x], &no_params()).unwrap();
+
+    let tan_vals = extract_f64_vec(&tan_result);
+    let sin_vals = extract_f64_vec(&sin_result);
+    let cos_vals = extract_f64_vec(&cos_result);
+
+    for i in 0..5 {
+        if cos_vals[i].abs() > 1e-10 {
+            let expected = sin_vals[i] / cos_vals[i];
+            assert_close(
+                tan_vals[i],
+                expected,
+                1e-12,
+                &format!("tan = sin/cos element {}", i),
+            );
+        }
+    }
+}
