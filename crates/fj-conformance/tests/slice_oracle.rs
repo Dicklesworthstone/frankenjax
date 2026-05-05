@@ -468,3 +468,65 @@ fn oracle_slice_stride_single_result() {
     assert_eq!(extract_shape(&result), vec![1]);
     assert_eq!(extract_i64_vec(&result), vec![1]);
 }
+
+// ======================== METAMORPHIC: Slice(x, 0, shape) = x ========================
+
+#[test]
+fn metamorphic_slice_full_range_identity() {
+    // Slicing the entire tensor is identity
+    let input = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let result = eval_primitive(Primitive::Slice, &[input.clone()], &slice_params(&[0], &[4])).unwrap();
+    assert_eq!(extract_i64_vec(&result), extract_i64_vec(&input));
+}
+
+// ======================== METAMORPHIC: Slice output length = limit - start ========================
+
+#[test]
+fn metamorphic_slice_output_length() {
+    // Output length equals (limit - start) for each dimension
+    for (start, limit) in [(0, 3), (1, 4), (2, 5), (0, 5)] {
+        let input = make_i64_tensor(&[5], vec![0, 1, 2, 3, 4]);
+        let result = eval_primitive(Primitive::Slice, &[input], &slice_params(&[start], &[limit])).unwrap();
+        let expected_len = (limit - start) as u32;
+        assert_eq!(
+            extract_shape(&result),
+            vec![expected_len],
+            "Slice[{}:{}] should have length {}",
+            start, limit, expected_len
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Nested slices compose ========================
+
+#[test]
+fn metamorphic_slice_composition() {
+    // Slice(Slice(x, s1, l1), s2, l2) = Slice(x, s1+s2, s1+s2+(l2-s2))
+    let input = make_i64_tensor(&[10], (0..10).collect());
+
+    // First slice: [2:8] -> [2, 3, 4, 5, 6, 7]
+    let slice1 = eval_primitive(Primitive::Slice, &[input.clone()], &slice_params(&[2], &[8])).unwrap();
+
+    // Second slice of result: [1:4] -> [3, 4, 5]
+    let slice2 = eval_primitive(Primitive::Slice, &[slice1], &slice_params(&[1], &[4])).unwrap();
+
+    // Equivalent single slice: [3:6] -> [3, 4, 5]
+    let direct = eval_primitive(Primitive::Slice, &[input], &slice_params(&[3], &[6])).unwrap();
+
+    assert_eq!(
+        extract_i64_vec(&slice2),
+        extract_i64_vec(&direct),
+        "Nested slices should compose"
+    );
+}
+
+// ======================== METAMORPHIC: Slice preserves element values ========================
+
+#[test]
+fn metamorphic_slice_preserves_values() {
+    // Elements in slice should match corresponding elements in original
+    let input = make_i64_tensor(&[6], vec![10, 20, 30, 40, 50, 60]);
+    let result = eval_primitive(Primitive::Slice, &[input], &slice_params(&[2], &[5])).unwrap();
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals, vec![30, 40, 50], "Slice should preserve exact values");
+}
