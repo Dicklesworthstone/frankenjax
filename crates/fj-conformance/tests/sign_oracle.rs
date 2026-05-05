@@ -380,3 +380,71 @@ fn oracle_sign_idempotent() {
         assert_eq!(sign1, sign2, "sign(sign({})) should equal sign({})", x, x);
     }
 }
+
+// ======================== METAMORPHIC: sign(Neg(x)) = Neg(sign(x)) ========================
+
+#[test]
+fn metamorphic_sign_negation() {
+    // sign(-x) = -sign(x) for x != 0
+    for x in [-5.5, -1.0, 1.0, 5.5, f64::INFINITY, f64::NEG_INFINITY] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // sign(Neg(x))
+        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let sign_neg_x = eval_primitive(Primitive::Sign, &[neg_x], &no_params()).unwrap();
+
+        // Neg(sign(x))
+        let sign_x = eval_primitive(Primitive::Sign, &[input], &no_params()).unwrap();
+        let neg_sign_x = eval_primitive(Primitive::Neg, &[sign_x], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&sign_neg_x),
+            extract_f64_scalar(&neg_sign_x),
+            "sign(Neg({})) = Neg(sign({}))",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Mul(sign(x), abs(x)) = x ========================
+
+#[test]
+fn metamorphic_sign_abs_reconstruction() {
+    // x = sign(x) * abs(x) for finite non-zero x
+    for x in [-5.5, -1.0, 1.0, 5.5, 100.0, -100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let sign_x = eval_primitive(Primitive::Sign, &[input.clone()], &no_params()).unwrap();
+        let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
+        let reconstructed = eval_primitive(Primitive::Mul, &[sign_x, abs_x], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&reconstructed),
+            x,
+            "Mul(sign({}), abs({})) = {}",
+            x,
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor sign reconstruction ========================
+
+#[test]
+fn metamorphic_sign_abs_tensor_reconstruction() {
+    // For tensor: Mul(sign(x), abs(x)) = x
+    let data = vec![-3.0, -1.0, 1.0, 3.0, -2.5, 2.5];
+    let input = make_f64_tensor(&[6], data.clone());
+
+    let sign_x = eval_primitive(Primitive::Sign, &[input.clone()], &no_params()).unwrap();
+    let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
+    let reconstructed = eval_primitive(Primitive::Mul, &[sign_x, abs_x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&reconstructed), vec![6]);
+    let result = extract_f64_vec(&reconstructed);
+    for (i, (&orig, &rec)) in data.iter().zip(result.iter()).enumerate() {
+        assert_eq!(rec, orig, "element {}: Mul(sign, abs) should reconstruct", i);
+    }
+}
