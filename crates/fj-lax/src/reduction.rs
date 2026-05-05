@@ -254,8 +254,9 @@ pub(crate) fn eval_reduce_axes(
                     float_init,
                 )?;
                 let total = tensor.elements.len();
+                let mut multi = Vec::with_capacity(strides.len());
                 for flat_idx in 0..total {
-                    let multi = flat_to_multi(flat_idx, &strides);
+                    flat_to_multi_into(flat_idx, &strides, &mut multi);
                     let out_idx = multi_to_out_flat(
                         primitive,
                         "reduction output",
@@ -287,10 +288,9 @@ pub(crate) fn eval_reduce_axes(
                     int_init,
                 )?;
                 let total = tensor.elements.len();
+                let mut multi = Vec::with_capacity(strides.len());
                 for flat_idx in 0..total {
-                    // Compute multi-index from flat index
-                    let multi = flat_to_multi(flat_idx, &strides);
-                    // Compute output flat index from kept dimensions
+                    flat_to_multi_into(flat_idx, &strides, &mut multi);
                     let out_idx = multi_to_out_flat(
                         primitive,
                         "reduction output",
@@ -321,8 +321,9 @@ pub(crate) fn eval_reduce_axes(
                     float_init,
                 )?;
                 let total = tensor.elements.len();
+                let mut multi = Vec::with_capacity(strides.len());
                 for flat_idx in 0..total {
-                    let multi = flat_to_multi(flat_idx, &strides);
+                    flat_to_multi_into(flat_idx, &strides, &mut multi);
                     let out_idx = multi_to_out_flat(
                         primitive,
                         "reduction output",
@@ -447,8 +448,9 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         out_count,
                         bool_init,
                     )?;
+                    let mut multi = Vec::with_capacity(strides.len());
                     for flat_idx in 0..tensor.elements.len() {
-                        let multi = flat_to_multi(flat_idx, &strides);
+                        flat_to_multi_into(flat_idx, &strides, &mut multi);
                         let out_idx = multi_to_out_flat(
                             primitive,
                             "bitwise reduction output",
@@ -519,8 +521,9 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         out_count,
                         int_init,
                     )?;
+                    let mut multi = Vec::with_capacity(strides.len());
                     for flat_idx in 0..tensor.elements.len() {
-                        let multi = flat_to_multi(flat_idx, &strides);
+                        flat_to_multi_into(flat_idx, &strides, &mut multi);
                         let out_idx = multi_to_out_flat(
                             primitive,
                             "bitwise reduction output",
@@ -606,14 +609,13 @@ fn try_filled_vec<T: Clone>(
     Ok(values)
 }
 
-fn flat_to_multi(flat: usize, strides: &[usize]) -> Vec<usize> {
-    let mut multi = Vec::with_capacity(strides.len());
+fn flat_to_multi_into(flat: usize, strides: &[usize], out: &mut Vec<usize>) {
+    out.clear();
     let mut remainder = flat;
     for &stride in strides {
-        multi.push(remainder / stride);
+        out.push(remainder / stride);
         remainder %= stride;
     }
-    multi
 }
 
 fn multi_to_out_flat(
