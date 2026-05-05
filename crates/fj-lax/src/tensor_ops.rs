@@ -3744,7 +3744,13 @@ pub(crate) fn eval_split(
                             detail: "split axis span overflows usize".to_owned(),
                         })?;
 
-                let mut result = Vec::new();
+                let total_elements = outer_size
+                    .checked_mul(elements_per_slice)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "split total element count overflows usize".to_owned(),
+                    })?;
+                let mut result = Vec::with_capacity(total_elements);
                 for outer in 0..outer_size {
                     let base = outer.checked_mul(axis_stride_span).ok_or_else(|| {
                         EvalError::Unsupported {
