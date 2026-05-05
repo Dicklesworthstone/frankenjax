@@ -449,3 +449,94 @@ fn oracle_sub_integer_1d() {
     let result = eval_primitive(Primitive::Sub, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![99, 198, 297]);
 }
+
+// ======================== METAMORPHIC: Sub(x, y) = Add(x, Neg(y)) ========================
+
+#[test]
+fn metamorphic_sub_equals_add_neg() {
+    // Sub(x, y) = Add(x, Neg(y)) using Neg primitive
+    for (x, y) in [(6.0, 2.0), (10.0, 5.0), (3.0, 7.0), (-1.0, 4.0), (0.5, 0.3)] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+        let y_val = make_f64_tensor(&[], vec![y]);
+
+        // Sub(x, y)
+        let sub_direct = eval_primitive(Primitive::Sub, &[x_val.clone(), y_val.clone()], &no_params()).unwrap();
+
+        // Add(x, Neg(y))
+        let neg_y = eval_primitive(Primitive::Neg, &[y_val], &no_params()).unwrap();
+        let add_neg = eval_primitive(Primitive::Add, &[x_val, neg_y], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&sub_direct),
+            extract_f64_scalar(&add_neg),
+            1e-14,
+            &format!("Sub({}, {}) = Add({}, Neg({}))", x, y, x, y),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Add(x, Neg(x)) = 0 ========================
+
+#[test]
+fn metamorphic_add_neg_equals_zero() {
+    // Add(x, Neg(x)) = 0 (additive inverse)
+    for x in [0.5, 1.0, 2.0, 3.14, -2.0, -0.5, 100.0] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::Add, &[x_val, neg_x], &no_params()).unwrap();
+        assert_close(
+            extract_f64_scalar(&result),
+            0.0,
+            1e-14,
+            &format!("Add({}, Neg({})) = 0", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Add(Neg(x), Neg(y)) = Neg(Add(x, y)) ========================
+
+#[test]
+fn metamorphic_neg_distributes_over_add() {
+    // Add(Neg(x), Neg(y)) = Neg(Add(x, y))
+    for (x, y) in [(2.0, 3.0), (5.0, 7.0), (0.5, 2.0), (1.0, 1.0), (-1.0, 3.0)] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+        let y_val = make_f64_tensor(&[], vec![y]);
+
+        // Add(Neg(x), Neg(y))
+        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let neg_y = eval_primitive(Primitive::Neg, &[y_val.clone()], &no_params()).unwrap();
+        let add_negs = eval_primitive(Primitive::Add, &[neg_x, neg_y], &no_params()).unwrap();
+
+        // Neg(Add(x, y))
+        let add_xy = eval_primitive(Primitive::Add, &[x_val, y_val], &no_params()).unwrap();
+        let neg_add = eval_primitive(Primitive::Neg, &[add_xy], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&add_negs),
+            extract_f64_scalar(&neg_add),
+            1e-14,
+            &format!("Add(Neg({}), Neg({})) = Neg(Add({}, {}))", x, y, x, y),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Sub(0, x) = Neg(x) ========================
+
+#[test]
+fn metamorphic_sub_zero_equals_neg() {
+    // Sub(0, x) = Neg(x)
+    for x in [1.0, 2.0, 3.14, -2.0, 0.5, 100.0] {
+        let zero = make_f64_tensor(&[], vec![0.0]);
+        let x_val = make_f64_tensor(&[], vec![x]);
+
+        let sub_zero = eval_primitive(Primitive::Sub, &[zero, x_val.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, &[x_val], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&sub_zero),
+            extract_f64_scalar(&neg_x),
+            1e-14,
+            &format!("Sub(0, {}) = Neg({})", x, x),
+        );
+    }
+}
