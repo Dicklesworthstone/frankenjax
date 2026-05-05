@@ -301,3 +301,60 @@ fn oracle_atan_monotonic() {
         );
     }
 }
+
+// ======================== METAMORPHIC: tan(atan(x)) = x ========================
+
+#[test]
+fn metamorphic_tan_atan_identity() {
+    // tan(atan(x)) = x for all real x
+    // Use relative tolerance for large values where absolute error grows
+    for x in [-100.0, -10.0, -1.0, -0.5, 0.0, 0.5, 1.0, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let atan_result = eval_primitive(Primitive::Atan, &[input], &no_params()).unwrap();
+        let tan_atan = eval_primitive(Primitive::Tan, &[atan_result], &no_params()).unwrap();
+
+        let tol = if x.abs() > 10.0 { 1e-10 } else { 1e-12 };
+        assert_close(
+            extract_f64_scalar(&tan_atan),
+            x,
+            tol,
+            &format!("tan(atan({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: atan(tan(x)) = x for x in (-π/2, π/2) ========================
+
+#[test]
+fn metamorphic_atan_tan_identity() {
+    // atan(tan(x)) = x for x in (-π/2, π/2)
+    // Use values well within the domain to avoid precision issues near boundaries
+    for x in [-1.0, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let tan_result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+        let atan_tan = eval_primitive(Primitive::Atan, &[tan_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&atan_tan),
+            x,
+            1e-12,
+            &format!("atan(tan({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_atan_tensor_roundtrip() {
+    let input = make_f64_tensor(&[5], vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
+    let atan_result = eval_primitive(Primitive::Atan, &[input.clone()], &no_params()).unwrap();
+    let tan_atan = eval_primitive(Primitive::Tan, &[atan_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&tan_atan);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("tan(atan({})) = {}", orig, orig));
+    }
+}
