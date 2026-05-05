@@ -2348,7 +2348,7 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
         });
     }
 
-    fn next_after(x: f64, y: f64) -> f64 {
+    fn next_after_f64(x: f64, y: f64) -> f64 {
         if x.is_nan() || y.is_nan() {
             return f64::NAN;
         }
@@ -2371,17 +2371,57 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
         f64::from_bits(result_bits)
     }
 
+    fn next_after_f32(x: f32, y: f32) -> f32 {
+        if x.is_nan() || y.is_nan() {
+            return f32::NAN;
+        }
+        if x == y {
+            return y;
+        }
+        if x == 0.0 {
+            if y > 0.0 {
+                return f32::from_bits(1);
+            }
+            return f32::from_bits(1 | (1_u32 << 31));
+        }
+        let bits = x.to_bits();
+        let result_bits = if (x < y) == (x > 0.0) {
+            bits + 1
+        } else {
+            bits - 1
+        };
+        f32::from_bits(result_bits)
+    }
+
+    fn next_after_literal(
+        primitive: Primitive,
+        lhs: Literal,
+        rhs: Literal,
+    ) -> Result<Literal, EvalError> {
+        match (lhs, rhs) {
+            (Literal::F32Bits(left), Literal::F32Bits(right)) => Ok(Literal::from_f32(
+                next_after_f32(f32::from_bits(left), f32::from_bits(right)),
+            )),
+            (Literal::F64Bits(left), Literal::F64Bits(right)) => Ok(Literal::from_f64(
+                next_after_f64(f64::from_bits(left), f64::from_bits(right)),
+            )),
+            (left, right) => {
+                let x = left.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric nextafter lhs",
+                })?;
+                let y = right.as_f64().ok_or(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric nextafter rhs",
+                })?;
+                Ok(Literal::from_f64(next_after_f64(x, y)))
+            }
+        }
+    }
+
     match (&inputs[0], &inputs[1]) {
         (Value::Scalar(lhs), Value::Scalar(rhs)) => {
-            let x = lhs.as_f64().ok_or(EvalError::TypeMismatch {
-                primitive,
-                detail: "expected numeric scalar",
-            })?;
-            let y = rhs.as_f64().ok_or(EvalError::TypeMismatch {
-                primitive,
-                detail: "expected numeric scalar",
-            })?;
-            Ok(Value::scalar_f64(next_after(x, y)))
+            Ok(Value::Scalar(next_after_literal(primitive, *lhs, *rhs)?))
         }
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
             if lhs.shape != rhs.shape {
@@ -2393,19 +2433,16 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
             }
             let mut elements = Vec::with_capacity(lhs.elements.len());
             for (l, r) in lhs.elements.iter().zip(rhs.elements.iter()) {
-                let x = l.as_f64().ok_or(EvalError::TypeMismatch {
-                    primitive,
-                    detail: "expected numeric tensor elements",
-                })?;
-                let y = r.as_f64().ok_or(EvalError::TypeMismatch {
-                    primitive,
-                    detail: "expected numeric tensor elements",
-                })?;
-                elements.push(Literal::from_f64(next_after(x, y)));
+                elements.push(next_after_literal(primitive, *l, *r)?);
             }
 
+            let dtype = match (lhs.dtype, rhs.dtype) {
+                (DType::F32, DType::F32) => DType::F32,
+                (DType::F64, DType::F64) => DType::F64,
+                _ => DType::F64,
+            };
             Ok(Value::Tensor(TensorValue::new(
-                DType::F64,
+                dtype,
                 lhs.shape.clone(),
                 elements,
             )?))
