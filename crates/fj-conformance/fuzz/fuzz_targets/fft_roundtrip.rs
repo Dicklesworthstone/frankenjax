@@ -35,6 +35,36 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
     }
 }
 
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
+        Value::Scalar(l) => vec![l.as_complex128().unwrap()],
+    }
+}
+
+fn fuzz_unit(cursor: &mut ByteCursor<'_>) -> f64 {
+    (cursor.take_u8() as f64 / 255.0) * 2.0 - 1.0
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.len() < 16 {
         return;
@@ -46,9 +76,7 @@ fuzz_target!(|data: &[u8]| {
     let len = 4 + (cursor.take_u8() % 61) as usize;
     let mut signal = Vec::with_capacity(len);
     for _ in 0..len {
-        let byte = cursor.take_u8();
-        let val = (byte as f64 / 255.0) * 2.0 - 1.0; // Normalize to [-1, 1]
-        signal.push(val);
+        signal.push(fuzz_unit(&mut cursor));
     }
 
     let input = make_f64_tensor(&[len as u32], signal.clone());
@@ -57,7 +85,7 @@ fuzz_target!(|data: &[u8]| {
     let mut params = BTreeMap::new();
     params.insert("fft_length".to_string(), len.to_string());
 
-    let rfft_result = match eval_primitive(Primitive::Rfft, &[input.clone()], &params) {
+    let rfft_result = match eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &params) {
         Ok(v) => v,
         Err(_) => return, // Some inputs may be invalid
     };
@@ -82,5 +110,54 @@ fuzz_target!(|data: &[u8]| {
                 diff
             );
         }
+    }
+
+    let complex_len = 4 + (cursor.take_u8() % 61) as usize;
+    let mut complex_signal = Vec::with_capacity(complex_len);
+    for _ in 0..complex_len {
+        complex_signal.push((fuzz_unit(&mut cursor), fuzz_unit(&mut cursor)));
+    }
+
+    let complex_input = make_complex128_tensor(&[complex_len as u32], complex_signal.clone());
+
+    let fft_result = match eval_primitive(
+        Primitive::Fft,
+        std::slice::from_ref(&complex_input),
+        &BTreeMap::new(),
+    ) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let ifft_result = match eval_primitive(
+        Primitive::Ifft,
+        std::slice::from_ref(&fft_result),
+        &BTreeMap::new(),
+    ) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let complex_recovered = extract_complex128_vec(&ifft_result);
+    assert_eq!(
+        complex_recovered.len(),
+        complex_signal.len(),
+        "complex FFT/IFFT round-trip changed element count"
+    );
+    for ((orig_re, orig_im), (rec_re, rec_im)) in
+        complex_signal.iter().zip(complex_recovered.iter())
+    {
+        let re_diff = (orig_re - rec_re).abs();
+        let im_diff = (orig_im - rec_im).abs();
+        assert!(
+            re_diff < 1e-10 && im_diff < 1e-10,
+            "complex FFT/IFFT round-trip error too large: orig=({}, {}), recovered=({}, {}), diff=({}, {})",
+            orig_re,
+            orig_im,
+            rec_re,
+            rec_im,
+            re_diff,
+            im_diff
+        );
     }
 });
