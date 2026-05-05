@@ -586,16 +586,21 @@ pub(crate) fn eval_rfft(
     let out_shape = Shape { dims: out_dims };
 
     let mut out_elements = Vec::with_capacity(output_count);
+    let copy_len = fft_length.min(input_last);
+
+    // Reuse buffers across batch iterations to avoid O(batch_size) allocations
+    let mut padded = vec![(0.0, 0.0); fft_length];
+    let mut transformed = Vec::with_capacity(fft_length);
+
     for batch in 0..batch_size {
         let start = batch * input_last;
         let batch_slice = &elements[start..start + input_last];
 
-        // Zero-pad or truncate to fft_length
-        let mut padded = vec![(0.0, 0.0); fft_length];
-        let copy_len = fft_length.min(input_last);
+        // Zero-pad or truncate to fft_length (reuse buffer)
         padded[..copy_len].copy_from_slice(&batch_slice[..copy_len]);
+        padded[copy_len..].fill((0.0, 0.0));
 
-        let transformed = fft_1d(&padded);
+        fft_1d_into(&padded, &mut transformed);
 
         // Keep only the first fft_length/2 + 1 elements
         for &(re, im) in &transformed[..out_last] {
@@ -669,15 +674,20 @@ pub(crate) fn eval_irfft(
     let output_count = checked_output_element_count(primitive, batch_size, fft_length)?;
 
     let mut out_elements = Vec::with_capacity(output_count);
+    let copy_len = fft_length.min(input_last);
+
+    // Reuse buffers across batch iterations to avoid O(batch_size) allocations
+    let mut full = vec![(0.0, 0.0); fft_length];
+    let mut transformed = Vec::with_capacity(fft_length);
+
     for batch in 0..batch_size {
         let start = batch * input_last;
         let half_spectrum = &elements[start..start + input_last];
 
-        // Reconstruct full spectrum using Hermitian symmetry:
+        // Reconstruct full spectrum using Hermitian symmetry (reuse buffer)
         // X[k] = conj(X[n-k]) for k = n/2+1..n-1
-        let mut full = vec![(0.0, 0.0); fft_length];
-        let copy_len = fft_length.min(input_last);
         full[..copy_len].copy_from_slice(&half_spectrum[..copy_len]);
+        full[copy_len..].fill((0.0, 0.0));
 
         // Fill conjugate-symmetric part
         for (k, slot) in full
@@ -693,7 +703,7 @@ pub(crate) fn eval_irfft(
             }
         }
 
-        let transformed = ifft_1d(&full);
+        ifft_1d_into(&full, &mut transformed);
 
         // Take real part only
         for &(re, _) in &transformed {
