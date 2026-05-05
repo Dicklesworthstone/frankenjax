@@ -185,3 +185,72 @@ fn oracle_clamp_f64_scalar() {
         _ => panic!("expected scalar"),
     }
 }
+
+// ======================== Special Values ========================
+
+#[test]
+fn oracle_clamp_positive_infinity_clamped() {
+    // clamp(0, +Inf, 10) => 10 (clamped to max)
+    let lo = Value::Scalar(Literal::from_f64(0.0));
+    let x = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let hi = Value::Scalar(Literal::from_f64(10.0));
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    match result {
+        Value::Scalar(lit) => assert!((lit.as_f64().unwrap() - 10.0).abs() < 1e-10),
+        _ => panic!("expected scalar"),
+    }
+}
+
+#[test]
+fn oracle_clamp_negative_infinity_clamped() {
+    // clamp(0, -Inf, 10) => 0 (clamped to min)
+    let lo = Value::Scalar(Literal::from_f64(0.0));
+    let x = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let hi = Value::Scalar(Literal::from_f64(10.0));
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    match result {
+        Value::Scalar(lit) => assert!((lit.as_f64().unwrap() - 0.0).abs() < 1e-10),
+        _ => panic!("expected scalar"),
+    }
+}
+
+#[test]
+fn oracle_clamp_nan_propagates() {
+    // clamp(0, NaN, 10) => NaN (NaN propagates)
+    let lo = Value::Scalar(Literal::from_f64(0.0));
+    let x = Value::Scalar(Literal::from_f64(f64::NAN));
+    let hi = Value::Scalar(Literal::from_f64(10.0));
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    match result {
+        Value::Scalar(lit) => assert!(lit.as_f64().unwrap().is_nan(), "clamp(0, NaN, 10) = NaN"),
+        _ => panic!("expected scalar"),
+    }
+}
+
+#[test]
+fn oracle_clamp_infinite_bounds() {
+    // clamp(-Inf, 5, +Inf) => 5 (finite value in infinite range)
+    let lo = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let x = Value::Scalar(Literal::from_f64(5.0));
+    let hi = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    match result {
+        Value::Scalar(lit) => assert!((lit.as_f64().unwrap() - 5.0).abs() < 1e-10),
+        _ => panic!("expected scalar"),
+    }
+}
+
+#[test]
+fn oracle_clamp_tensor_special_values() {
+    // Test special values in tensor form
+    let lo = make_f64_tensor(&[4], vec![0.0, 0.0, 0.0, f64::NEG_INFINITY]);
+    let x = make_f64_tensor(&[4], vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 5.0]);
+    let hi = make_f64_tensor(&[4], vec![10.0, 10.0, 10.0, f64::INFINITY]);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+
+    assert!((vals[0] - 10.0).abs() < 1e-10, "clamp(0, +Inf, 10) = 10");
+    assert!((vals[1] - 0.0).abs() < 1e-10, "clamp(0, -Inf, 10) = 0");
+    assert!(vals[2].is_nan(), "clamp(0, NaN, 10) = NaN");
+    assert!((vals[3] - 5.0).abs() < 1e-10, "clamp(-Inf, 5, +Inf) = 5");
+}

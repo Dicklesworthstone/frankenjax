@@ -1629,12 +1629,20 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 let xf = f64::from_bits(xb);
                 let lof = f64::from_bits(lob);
                 let hif = f64::from_bits(hib);
+                // Propagate NaN (unlike Rust's max/min which ignore NaN)
+                if xf.is_nan() || lof.is_nan() || hif.is_nan() {
+                    return Ok(Literal::from_f64(f64::NAN));
+                }
                 Ok(Literal::from_f64(xf.max(lof).min(hif)))
             }
             (Literal::F32Bits(xb), Literal::F32Bits(lob), Literal::F32Bits(hib)) => {
                 let xf = f32::from_bits(xb);
                 let lof = f32::from_bits(lob);
                 let hif = f32::from_bits(hib);
+                // Propagate NaN (unlike Rust's max/min which ignore NaN)
+                if xf.is_nan() || lof.is_nan() || hif.is_nan() {
+                    return Ok(Literal::from_f32(f32::NAN));
+                }
                 Ok(Literal::from_f32(xf.max(lof).min(hif)))
             }
             _ => {
@@ -1678,6 +1686,10 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                         return Err("clamp is not supported for complex dtypes");
                     }
                 };
+                // Propagate NaN (unlike Rust's max/min which ignore NaN)
+                if xf.is_nan() || lof.is_nan() || hif.is_nan() {
+                    return Ok(Literal::from_f64(f64::NAN));
+                }
                 Ok(Literal::from_f64(xf.max(lof).min(hif)))
             }
         }
