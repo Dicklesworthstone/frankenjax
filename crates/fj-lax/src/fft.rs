@@ -285,6 +285,57 @@ fn bit_reverse_permute(values: &mut [(f64, f64)]) {
     }
 }
 
+fn radix2_fft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>, inverse: bool) {
+    let n = input.len();
+    output.clear();
+    output.extend_from_slice(input);
+    if n <= 1 {
+        return;
+    }
+    bit_reverse_permute(output);
+
+    let mut len = 2_usize;
+    while len <= n {
+        let half = len / 2;
+        let angle = if inverse {
+            2.0 * PI / (len as f64)
+        } else {
+            -2.0 * PI / (len as f64)
+        };
+        let (sin_step, cos_step) = angle.sin_cos();
+
+        for start in (0..n).step_by(len) {
+            let mut twiddle_re = 1.0;
+            let mut twiddle_im = 0.0;
+
+            for offset in 0..half {
+                let even = output[start + offset];
+                let odd = output[start + offset + half];
+                let rotated_re = odd.0 * twiddle_re - odd.1 * twiddle_im;
+                let rotated_im = odd.0 * twiddle_im + odd.1 * twiddle_re;
+
+                output[start + offset] = (even.0 + rotated_re, even.1 + rotated_im);
+                output[start + offset + half] = (even.0 - rotated_re, even.1 - rotated_im);
+
+                let next_re = twiddle_re * cos_step - twiddle_im * sin_step;
+                let next_im = twiddle_re * sin_step + twiddle_im * cos_step;
+                twiddle_re = next_re;
+                twiddle_im = next_im;
+            }
+        }
+
+        len *= 2;
+    }
+
+    if inverse {
+        let inv_n = 1.0 / (n as f64);
+        for value in output.iter_mut() {
+            value.0 *= inv_n;
+            value.1 *= inv_n;
+        }
+    }
+}
+
 fn radix2_fft_1d(input: &[(f64, f64)], inverse: bool) -> Vec<(f64, f64)> {
     let n = input.len();
     if n <= 1 {
@@ -346,11 +397,29 @@ fn fft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     }
 }
 
+fn fft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
+    if input.len().is_power_of_two() {
+        radix2_fft_1d_into(input, output, false);
+    } else {
+        output.clear();
+        output.extend(dft_1d(input));
+    }
+}
+
 fn ifft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     if input.len().is_power_of_two() {
         radix2_fft_1d(input, true)
     } else {
         idft_1d(input)
+    }
+}
+
+fn ifft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
+    if input.len().is_power_of_two() {
+        radix2_fft_1d_into(input, output, true);
+    } else {
+        output.clear();
+        output.extend(idft_1d(input));
     }
 }
 
@@ -387,11 +456,12 @@ pub(crate) fn eval_fft(
     let batch_size = elements.len() / n;
 
     let mut out_elements = Vec::with_capacity(elements.len());
+    let mut transform_buf = Vec::with_capacity(n);
     for batch in 0..batch_size {
         let start = batch * n;
         let slice = &elements[start..start + n];
-        let transformed = fft_1d(slice);
-        for &(re, im) in &transformed {
+        fft_1d_into(slice, &mut transform_buf);
+        for &(re, im) in &transform_buf {
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }
     }
@@ -440,11 +510,12 @@ pub(crate) fn eval_ifft(
     let batch_size = elements.len() / n;
 
     let mut out_elements = Vec::with_capacity(elements.len());
+    let mut transform_buf = Vec::with_capacity(n);
     for batch in 0..batch_size {
         let start = batch * n;
         let slice = &elements[start..start + n];
-        let transformed = ifft_1d(slice);
-        for &(re, im) in &transformed {
+        ifft_1d_into(slice, &mut transform_buf);
+        for &(re, im) in &transform_buf {
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }
     }
