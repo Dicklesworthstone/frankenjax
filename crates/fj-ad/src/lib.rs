@@ -13354,4 +13354,102 @@ mod tests {
             );
         }
     }
+
+    // ======================== Thread Safety Tests ========================
+
+    #[test]
+    fn custom_derivative_registry_concurrent_read_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let mut handles = vec![];
+
+        for _ in 0..4 {
+            handles.push(thread::spawn(move || {
+                for _ in 0..100 {
+                    super::with_registry_read(|_registry| {});
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not deadlock");
+        }
+    }
+
+    #[test]
+    fn custom_derivative_registry_concurrent_write_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let mut handles = vec![];
+
+        for t in 0..4 {
+            handles.push(thread::spawn(move || {
+                for i in 0..10 {
+                    let primitive = match (t * 10 + i) % 5 {
+                        0 => Primitive::Add,
+                        1 => Primitive::Mul,
+                        2 => Primitive::Sub,
+                        3 => Primitive::Div,
+                        _ => Primitive::Pow,
+                    };
+                    super::register_custom_vjp(primitive, |_primals, cotangent, _params| {
+                        Ok(vec![cotangent.clone()])
+                    });
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not deadlock");
+        }
+    }
+
+    #[test]
+    fn custom_derivative_registry_concurrent_read_write_no_deadlock() {
+        use std::sync::Arc;
+        use std::thread;
+
+        let mut handles = vec![];
+
+        for _ in 0..4 {
+            handles.push(thread::spawn(move || {
+                for _ in 0..50 {
+                    super::with_registry_read(|_registry| {});
+                }
+            }));
+        }
+
+        for t in 0..2 {
+            handles.push(thread::spawn(move || {
+                for i in 0..10 {
+                    let primitive = if (t + i) % 2 == 0 {
+                        Primitive::Sin
+                    } else {
+                        Primitive::Cos
+                    };
+                    super::register_custom_jvp(primitive, |_primals, tangents, _params| {
+                        Ok(tangents[0].clone())
+                    });
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should not deadlock");
+        }
+    }
+
+    #[test]
+    fn custom_derivative_registry_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<super::CustomDerivativeRegistry>();
+    }
+
+    #[test]
+    fn custom_derivative_registry_is_sync() {
+        fn assert_sync<T: Sync>() {}
+        assert_sync::<super::CustomDerivativeRegistry>();
+    }
 }
