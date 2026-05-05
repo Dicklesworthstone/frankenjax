@@ -303,3 +303,61 @@ fn oracle_shift_left_right_inverse() {
     .unwrap();
     assert_eq!(extract_i64_vec(&shifted_back), vec![1, 2, 3, 4]);
 }
+
+// ======================== Large Shift Amount Tests ========================
+// JAX/XLA semantics: shift amounts are taken mod bit-width (wrapping)
+
+#[test]
+fn oracle_shift_left_large_amount_wraps_i64() {
+    // Shift by 64 on i64 wraps to shift by 0 (64 mod 64 = 0)
+    let a = Value::scalar_i64(42);
+    let b = Value::scalar_i64(64);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![42]); // Unchanged
+}
+
+#[test]
+fn oracle_shift_left_large_amount_wraps_i64_65() {
+    // Shift by 65 on i64 wraps to shift by 1 (65 mod 64 = 1)
+    let a = Value::scalar_i64(42);
+    let b = Value::scalar_i64(65);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![84]); // 42 << 1 = 84
+}
+
+#[test]
+fn oracle_shift_right_arithmetic_large_amount_wraps() {
+    // Shift by 64 on i64 wraps to shift by 0
+    let a = Value::scalar_i64(-100);
+    let b = Value::scalar_i64(64);
+    let result =
+        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![-100]); // Unchanged
+}
+
+#[test]
+fn oracle_shift_right_logical_large_amount_wraps() {
+    // Shift by 128 on i64 wraps to shift by 0 (128 mod 64 = 0)
+    let a = Value::scalar_i64(-1); // All bits set
+    let b = Value::scalar_i64(128);
+    let result = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![-1]); // Unchanged
+}
+
+#[test]
+fn oracle_shift_left_u32_large_amount_wraps() {
+    // Shift by 32 on u32 wraps to shift by 0 (32 mod 32 = 0)
+    let a = Value::Scalar(Literal::U32(7));
+    let b = Value::Scalar(Literal::U32(32));
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_u32_vec(&result), vec![7]); // Unchanged
+}
+
+#[test]
+fn oracle_shift_left_u32_33_wraps_to_1() {
+    // Shift by 33 on u32 wraps to shift by 1 (33 mod 32 = 1)
+    let a = Value::Scalar(Literal::U32(7));
+    let b = Value::Scalar(Literal::U32(33));
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_u32_vec(&result), vec![14]); // 7 << 1 = 14
+}
