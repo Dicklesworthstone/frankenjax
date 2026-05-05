@@ -1239,8 +1239,12 @@ pub fn vjp(
             let x = &inputs[0];
             let x2 = value_mul(x, x)?;
             let sum = value_add(&ones_like(x), &x2)?;
-            let denom = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&sum), &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let denom = eval_primitive(
+                Primitive::Sqrt,
+                std::slice::from_ref(&sum),
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_div(g, &denom)?])
         }
         Primitive::Acosh => {
@@ -1248,8 +1252,12 @@ pub fn vjp(
             let x = &inputs[0];
             let x2 = value_mul(x, x)?;
             let diff = value_sub(&x2, &ones_like(x))?;
-            let denom = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&diff), &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let denom = eval_primitive(
+                Primitive::Sqrt,
+                std::slice::from_ref(&diff),
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_div(g, &denom)?])
         }
         Primitive::Atanh => {
@@ -13359,7 +13367,6 @@ mod tests {
 
     #[test]
     fn custom_derivative_registry_concurrent_read_no_deadlock() {
-        use std::sync::Arc;
         use std::thread;
 
         let mut handles = vec![];
@@ -13379,7 +13386,6 @@ mod tests {
 
     #[test]
     fn custom_derivative_registry_concurrent_write_no_deadlock() {
-        use std::sync::Arc;
         use std::thread;
 
         let mut handles = vec![];
@@ -13408,7 +13414,6 @@ mod tests {
 
     #[test]
     fn custom_derivative_registry_concurrent_read_write_no_deadlock() {
-        use std::sync::Arc;
         use std::thread;
 
         let mut handles = vec![];
