@@ -360,6 +360,42 @@ fn oracle_asin_sin_identity() {
     }
 }
 
+// ======================== METAMORPHIC: asin(sin(x)) = x for x in [-π/2, π/2] ========================
+
+#[test]
+fn metamorphic_asin_sin_identity() {
+    // asin(sin(x)) = x for x in [-π/2, π/2]
+    for x in [-1.0, -0.5, -0.1, 0.0, 0.1, 0.5, 1.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let sin_result = eval_primitive(Primitive::Sin, &[input], &no_params()).unwrap();
+        let asin_sin = eval_primitive(Primitive::Asin, &[sin_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&asin_sin),
+            x,
+            1e-12,
+            &format!("asin(sin({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_asin_tensor_roundtrip() {
+    // Test both directions on a tensor
+    let input = make_f64_tensor(&[5], vec![-0.9, -0.5, 0.0, 0.5, 0.9]);
+    let asin_result = eval_primitive(Primitive::Asin, &[input.clone()], &no_params()).unwrap();
+    let sin_asin = eval_primitive(Primitive::Sin, &[asin_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&sin_asin);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("sin(asin({})) = {}", orig, orig));
+    }
+}
+
 // ======================== Relationship: asin(x) + acos(x) = π/2 ========================
 
 #[test]
