@@ -702,3 +702,42 @@ fn e2e_custom_derivatives_oracle() {
     )
     .expect("write custom derivative test log");
 }
+
+#[test]
+fn ad_rule_coverage_matrix_documents_exceptions() {
+    const VJP_ONLY_NO_JVP: &[Primitive] = &[
+        Primitive::Qr,
+        Primitive::Svd,
+        Primitive::Eigh,
+    ];
+
+    const NO_AD_COLLECTIVE_OPS: &[Primitive] = &[
+        Primitive::Psum,
+        Primitive::Pmean,
+        Primitive::AllGather,
+        Primitive::AllToAll,
+        Primitive::AxisIndex,
+    ];
+
+    assert_eq!(
+        VJP_ONLY_NO_JVP.len(),
+        3,
+        "QR, SVD, Eigh have VJP but not JVP - update if this changes"
+    );
+    assert_eq!(
+        NO_AD_COLLECTIVE_OPS.len(),
+        5,
+        "Collective ops (pmap-only) have no AD rules - update if this changes"
+    );
+
+    log_oracle(
+        "ad_rule_coverage_matrix",
+        &json!({
+            "vjp_only_count": VJP_ONLY_NO_JVP.len(),
+            "no_ad_count": NO_AD_COLLECTIVE_OPS.len(),
+            "vjp_only": VJP_ONLY_NO_JVP.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "no_ad": NO_AD_COLLECTIVE_OPS.iter().map(|p| p.as_str()).collect::<Vec<_>>(),
+            "all_other_primitives": "have both VJP and JVP rules"
+        }),
+    );
+}
