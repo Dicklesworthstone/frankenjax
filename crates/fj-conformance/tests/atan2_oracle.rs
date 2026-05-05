@@ -377,3 +377,100 @@ fn oracle_atan2_tan_identity() {
         );
     }
 }
+
+// ======================== METAMORPHIC: scaling invariance ========================
+
+#[test]
+fn metamorphic_atan2_scaling_invariant() {
+    // atan2(k*y, k*x) = atan2(y, x) for k > 0
+    for (y, x) in [(1.0, 2.0), (3.0, 4.0), (-1.0, 2.0), (1.0, -2.0)] {
+        let y_t = make_f64_tensor(&[], vec![y]);
+        let x_t = make_f64_tensor(&[], vec![x]);
+        let base = eval_primitive(Primitive::Atan2, &[y_t, x_t], &no_params()).unwrap();
+
+        for k in [2.0, 10.0, 0.5, 100.0] {
+            let ky_t = make_f64_tensor(&[], vec![k * y]);
+            let kx_t = make_f64_tensor(&[], vec![k * x]);
+            let scaled =
+                eval_primitive(Primitive::Atan2, &[ky_t, kx_t], &no_params()).unwrap();
+
+            assert_close(
+                extract_f64_scalar(&scaled),
+                extract_f64_scalar(&base),
+                1e-12,
+                &format!("atan2({}*{}, {}*{}) = atan2({}, {})", k, y, k, x, y, x),
+            );
+        }
+    }
+}
+
+// ======================== METAMORPHIC: sin/cos relationship ========================
+
+#[test]
+fn metamorphic_atan2_sin_cos_div() {
+    // sin(atan2(y,x)) / cos(atan2(y,x)) = y/x for x > 0
+    // This verifies atan2 via the Sin and Cos primitives
+    for (y, x) in [(1.0, 2.0), (3.0, 4.0), (1.0, 1.0), (-2.0, 3.0)] {
+        let y_t = make_f64_tensor(&[], vec![y]);
+        let x_t = make_f64_tensor(&[], vec![x]);
+        let angle = eval_primitive(Primitive::Atan2, &[y_t, x_t], &no_params()).unwrap();
+
+        let sin_angle = eval_primitive(Primitive::Sin, &[angle.clone()], &no_params()).unwrap();
+        let cos_angle = eval_primitive(Primitive::Cos, &[angle], &no_params()).unwrap();
+
+        let sin_div_cos =
+            extract_f64_scalar(&sin_angle) / extract_f64_scalar(&cos_angle);
+
+        assert_close(
+            sin_div_cos,
+            y / x,
+            1e-12,
+            &format!("sin(atan2({},{}))/cos(atan2({},{})) = {}/{}", y, x, y, x, y, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: y-negation odd symmetry ========================
+
+#[test]
+fn metamorphic_atan2_y_negation() {
+    // atan2(-y, x) = -atan2(y, x) for x > 0
+    for (y, x) in [(1.0, 2.0), (3.0, 4.0), (2.0, 1.0), (0.5, 3.0)] {
+        let y_pos = make_f64_tensor(&[], vec![y]);
+        let y_neg = make_f64_tensor(&[], vec![-y]);
+        let x_t = make_f64_tensor(&[], vec![x]);
+
+        let result_pos =
+            eval_primitive(Primitive::Atan2, &[y_pos, x_t.clone()], &no_params()).unwrap();
+        let result_neg = eval_primitive(Primitive::Atan2, &[y_neg, x_t], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&result_neg),
+            -extract_f64_scalar(&result_pos),
+            1e-12,
+            &format!("atan2(-{}, {}) = -atan2({}, {})", y, x, y, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor scaling invariance ========================
+
+#[test]
+fn metamorphic_atan2_tensor_scaling() {
+    let y = make_f64_tensor(&[4], vec![1.0, -1.0, 2.0, -2.0]);
+    let x = make_f64_tensor(&[4], vec![2.0, 3.0, 1.0, 4.0]);
+    let base = eval_primitive(Primitive::Atan2, &[y.clone(), x.clone()], &no_params()).unwrap();
+
+    // Scale by 5
+    let k = 5.0;
+    let ky = make_f64_tensor(&[4], vec![k * 1.0, k * -1.0, k * 2.0, k * -2.0]);
+    let kx = make_f64_tensor(&[4], vec![k * 2.0, k * 3.0, k * 1.0, k * 4.0]);
+    let scaled = eval_primitive(Primitive::Atan2, &[ky, kx], &no_params()).unwrap();
+
+    let base_vals = extract_f64_vec(&base);
+    let scaled_vals = extract_f64_vec(&scaled);
+
+    for (b, s) in base_vals.iter().zip(scaled_vals.iter()) {
+        assert_close(*s, *b, 1e-12, "atan2(k*y, k*x) = atan2(y, x) element-wise");
+    }
+}
