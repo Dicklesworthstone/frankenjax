@@ -391,3 +391,103 @@ fn oracle_round_idempotent() {
         );
     }
 }
+
+fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
+    assert!(
+        (actual - expected).abs() < tol,
+        "{}: expected {}, got {}, diff={}",
+        msg,
+        expected,
+        actual,
+        (actual - expected).abs()
+    );
+}
+
+// ======================== METAMORPHIC: Round(Neg(x)) = Neg(Round(x)) ========================
+
+#[test]
+fn metamorphic_round_neg_commutes() {
+    // Round(Neg(x)) = Neg(Round(x)) - round commutes with negation
+    for x in [0.5, 1.4, 1.5, 1.6, 2.5, 3.7, 0.0, 100.3] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+
+        // Round(Neg(x))
+        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let round_neg = eval_primitive(Primitive::Round, &[neg_x], &no_params()).unwrap();
+
+        // Neg(Round(x))
+        let round_x = eval_primitive(Primitive::Round, &[x_val], &no_params()).unwrap();
+        let neg_round = eval_primitive(Primitive::Neg, &[round_x], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&round_neg),
+            extract_f64_scalar(&neg_round),
+            1e-14,
+            &format!("Round(Neg({})) = Neg(Round({}))", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Round(x + n) = Round(x) + n for integer n ========================
+
+#[test]
+fn metamorphic_round_integer_translation() {
+    // Round(x + n) = Round(x) + n for integer n (when x is not exactly at a half-boundary)
+    // Note: values ending in .5 require special handling due to round-away-from-zero semantics
+    for (x, n) in [(0.3, 5.0), (1.7, 10.0), (0.0, 7.0), (-0.4, 2.0), (2.3, -3.0)] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+        let n_val = make_f64_tensor(&[], vec![n]);
+
+        // Round(x + n)
+        let x_plus_n = eval_primitive(Primitive::Add, &[x_val.clone(), n_val.clone()], &no_params()).unwrap();
+        let round_sum = eval_primitive(Primitive::Round, &[x_plus_n], &no_params()).unwrap();
+
+        // Round(x) + n
+        let round_x = eval_primitive(Primitive::Round, &[x_val], &no_params()).unwrap();
+        let round_plus_n = eval_primitive(Primitive::Add, &[round_x, n_val], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&round_sum),
+            extract_f64_scalar(&round_plus_n),
+            1e-14,
+            &format!("Round({} + {}) = Round({}) + {}", x, n, x, n),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: |Round(x) - x| <= 0.5 ========================
+
+#[test]
+fn metamorphic_round_bounded_distance() {
+    // |Round(x) - x| <= 0.5 (rounding moves to nearest, ties away from zero)
+    for x in [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, -0.5, -1.5, 2.5, -2.5, 3.14] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+        let round_x = eval_primitive(Primitive::Round, &[x_val], &no_params()).unwrap();
+        let distance = (extract_f64_scalar(&round_x) - x).abs();
+        assert!(
+            distance <= 0.5 + 1e-14,
+            "|Round({}) - {}| = {} should be <= 0.5",
+            x, x, distance
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Floor(x) <= Round(x) <= Ceil(x) ========================
+
+#[test]
+fn metamorphic_round_between_floor_ceil() {
+    // Floor(x) <= Round(x) <= Ceil(x) for all x
+    for x in [0.3, 0.5, 0.7, 1.4, 1.5, 1.6, -0.3, -0.5, -0.7, 2.5] {
+        let x_val = make_f64_tensor(&[], vec![x]);
+
+        let floor_x = extract_f64_scalar(&eval_primitive(Primitive::Floor, &[x_val.clone()], &no_params()).unwrap());
+        let round_x = extract_f64_scalar(&eval_primitive(Primitive::Round, &[x_val.clone()], &no_params()).unwrap());
+        let ceil_x = extract_f64_scalar(&eval_primitive(Primitive::Ceil, &[x_val], &no_params()).unwrap());
+
+        assert!(
+            floor_x <= round_x && round_x <= ceil_x,
+            "Floor({}) <= Round({}) <= Ceil({}): {} <= {} <= {}",
+            x, x, x, floor_x, round_x, ceil_x
+        );
+    }
+}
