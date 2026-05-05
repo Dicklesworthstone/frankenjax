@@ -52,6 +52,16 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
     }
 }
 
+fn extract_f64_scalar(v: &Value) -> f64 {
+    match v {
+        Value::Scalar(lit) => lit.as_f64().unwrap(),
+        Value::Tensor(t) => {
+            assert_eq!(t.shape.dims.len(), 0, "expected scalar tensor");
+            t.elements[0].as_f64().unwrap()
+        }
+    }
+}
+
 // ======================== Scalar Tests ========================
 
 #[test]
@@ -225,6 +235,36 @@ fn oracle_clamp_nan_propagates() {
         Value::Scalar(lit) => assert!(lit.as_f64().unwrap().is_nan(), "clamp(0, NaN, 10) = NaN"),
         _ => panic!("expected scalar"),
     }
+}
+
+#[test]
+fn oracle_clamp_preserves_negative_zero_operand_at_lower_bound() {
+    // JAX: lax.clamp(+0.0, -0.0, 1.0) returns the in-range operand, not the bound.
+    let lo = Value::Scalar(Literal::from_f64(0.0));
+    let x = Value::Scalar(Literal::from_f64(-0.0));
+    let hi = Value::Scalar(Literal::from_f64(1.0));
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert_eq!(val, 0.0);
+    assert!(
+        val.is_sign_negative(),
+        "clamp should preserve the operand's -0.0 sign at an equal lower bound"
+    );
+}
+
+#[test]
+fn oracle_clamp_preserves_positive_zero_operand_at_upper_bound() {
+    // JAX: lax.clamp(-1.0, +0.0, -0.0) returns the in-range operand, not the bound.
+    let lo = Value::Scalar(Literal::from_f64(-1.0));
+    let x = Value::Scalar(Literal::from_f64(0.0));
+    let hi = Value::Scalar(Literal::from_f64(-0.0));
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert_eq!(val, 0.0);
+    assert!(
+        val.is_sign_positive(),
+        "clamp should preserve the operand's +0.0 sign at an equal upper bound"
+    );
 }
 
 #[test]

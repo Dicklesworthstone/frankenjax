@@ -1609,7 +1609,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     }
 }
 
-/// Clamp: clamp(x, lo, hi) = min(max(x, lo), hi).
+/// Clamp: clamp(lo, x, hi) = min(max(lo, x), hi).
 /// Supports scalar and tensor inputs with broadcasting.
 pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 3 {
@@ -1620,34 +1620,42 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         });
     }
 
-    fn clamp_literal(x: Literal, lo: Literal, hi: Literal) -> Result<Literal, &'static str> {
-        match (x, lo, hi) {
-            (Literal::I64(xv), Literal::I64(lov), Literal::I64(hiv)) => {
-                Ok(Literal::I64(xv.max(lov).min(hiv)))
+    fn clamp_f64(lo: f64, x: f64, hi: f64) -> f64 {
+        if lo.is_nan() || x.is_nan() || hi.is_nan() {
+            return f64::NAN;
+        }
+        let lower_bounded = if x < lo { lo } else { x };
+        if lower_bounded > hi { hi } else { lower_bounded }
+    }
+
+    fn clamp_f32(lo: f32, x: f32, hi: f32) -> f32 {
+        if lo.is_nan() || x.is_nan() || hi.is_nan() {
+            return f32::NAN;
+        }
+        let lower_bounded = if x < lo { lo } else { x };
+        if lower_bounded > hi { hi } else { lower_bounded }
+    }
+
+    fn clamp_literal(lo: Literal, x: Literal, hi: Literal) -> Result<Literal, &'static str> {
+        match (lo, x, hi) {
+            (Literal::I64(lov), Literal::I64(xv), Literal::I64(hiv)) => {
+                Ok(Literal::I64(lov.max(xv).min(hiv)))
             }
-            (Literal::F64Bits(xb), Literal::F64Bits(lob), Literal::F64Bits(hib)) => {
-                let xf = f64::from_bits(xb);
+            (Literal::F64Bits(lob), Literal::F64Bits(xb), Literal::F64Bits(hib)) => {
                 let lof = f64::from_bits(lob);
+                let xf = f64::from_bits(xb);
                 let hif = f64::from_bits(hib);
-                // Propagate NaN (unlike Rust's max/min which ignore NaN)
-                if xf.is_nan() || lof.is_nan() || hif.is_nan() {
-                    return Ok(Literal::from_f64(f64::NAN));
-                }
-                Ok(Literal::from_f64(xf.max(lof).min(hif)))
+                Ok(Literal::from_f64(clamp_f64(lof, xf, hif)))
             }
-            (Literal::F32Bits(xb), Literal::F32Bits(lob), Literal::F32Bits(hib)) => {
-                let xf = f32::from_bits(xb);
+            (Literal::F32Bits(lob), Literal::F32Bits(xb), Literal::F32Bits(hib)) => {
                 let lof = f32::from_bits(lob);
+                let xf = f32::from_bits(xb);
                 let hif = f32::from_bits(hib);
-                // Propagate NaN (unlike Rust's max/min which ignore NaN)
-                if xf.is_nan() || lof.is_nan() || hif.is_nan() {
-                    return Ok(Literal::from_f32(f32::NAN));
-                }
-                Ok(Literal::from_f32(xf.max(lof).min(hif)))
+                Ok(Literal::from_f32(clamp_f32(lof, xf, hif)))
             }
             _ => {
                 // Mixed types: promote to f64
-                let xf = match x {
+                let lof = match lo {
                     Literal::I64(v) => v as f64,
                     Literal::U32(v) => v as f64,
                     Literal::U64(v) => v as f64,
@@ -1660,7 +1668,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                         return Err("clamp is not supported for complex dtypes");
                     }
                 };
-                let lof = match lo {
+                let xf = match x {
                     Literal::I64(v) => v as f64,
                     Literal::U32(v) => v as f64,
                     Literal::U64(v) => v as f64,
@@ -1686,18 +1694,14 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                         return Err("clamp is not supported for complex dtypes");
                     }
                 };
-                // Propagate NaN (unlike Rust's max/min which ignore NaN)
-                if xf.is_nan() || lof.is_nan() || hif.is_nan() {
-                    return Ok(Literal::from_f64(f64::NAN));
-                }
-                Ok(Literal::from_f64(xf.max(lof).min(hif)))
+                Ok(Literal::from_f64(clamp_f64(lof, xf, hif)))
             }
         }
     }
 
     match (&inputs[0], &inputs[1], &inputs[2]) {
-        (Value::Scalar(x), Value::Scalar(lo), Value::Scalar(hi)) => {
-            let result = clamp_literal(*x, *lo, *hi)
+        (Value::Scalar(lo), Value::Scalar(x), Value::Scalar(hi)) => {
+            let result = clamp_literal(*lo, *x, *hi)
                 .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?;
             Ok(Value::Scalar(result))
         }
@@ -1705,7 +1709,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             let mut elements = Vec::with_capacity(x.elements.len());
             for elem in x.elements.iter().copied() {
                 elements.push(
-                    clamp_literal(elem, *lo, *hi)
+                    clamp_literal(*lo, elem, *hi)
                         .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
                 );
             }
@@ -1715,7 +1719,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 elements,
             )?))
         }
-        (Value::Tensor(x), Value::Tensor(lo), Value::Tensor(hi)) => {
+        (Value::Tensor(lo), Value::Tensor(x), Value::Tensor(hi)) => {
             if x.shape != lo.shape || x.shape != hi.shape {
                 return Err(EvalError::Unsupported {
                     primitive,
@@ -1723,21 +1727,21 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 });
             }
             let mut elements = Vec::with_capacity(x.elements.len());
-            for ((xv, lov), hiv) in x
+            for ((lov, xv), hiv) in lo
                 .elements
                 .iter()
                 .copied()
-                .zip(lo.elements.iter().copied())
+                .zip(x.elements.iter().copied())
                 .zip(hi.elements.iter().copied())
             {
                 elements.push(
-                    clamp_literal(xv, lov, hiv)
+                    clamp_literal(lov, xv, hiv)
                         .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
                 );
             }
             Ok(Value::Tensor(TensorValue::new(
-                x.dtype,
-                x.shape.clone(),
+                lo.dtype,
+                lo.shape.clone(),
                 elements,
             )?))
         }
