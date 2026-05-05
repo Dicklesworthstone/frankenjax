@@ -559,3 +559,78 @@ fn oracle_bitwise_and_3d() {
         vec![0x0F, 0x00, 0x0F, 0x00, 0x0A, 0x05, 0x03, 0x0C]
     );
 }
+
+// ======================== METAMORPHIC: BitwiseNot(BitwiseNot(x)) = x ========================
+
+#[test]
+fn metamorphic_bitwise_not_involution() {
+    // BitwiseNot(BitwiseNot(x)) = x (double negation is identity)
+    for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
+        let x_val = make_i64_tensor(&[], vec![x]);
+        let not_x = eval_primitive(Primitive::BitwiseNot, &[x_val.clone()], &no_params()).unwrap();
+        let not_not_x = eval_primitive(Primitive::BitwiseNot, &[not_x], &no_params()).unwrap();
+        assert_eq!(
+            extract_i64_scalar(&not_not_x),
+            x,
+            "BitwiseNot(BitwiseNot({})) = {}",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: BitwiseXor(x, x) = 0 ========================
+
+#[test]
+fn metamorphic_bitwise_xor_self_zero() {
+    // BitwiseXor(x, x) = 0 (XOR with self is always zero)
+    for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
+        let x_val = make_i64_tensor(&[], vec![x]);
+        let result = eval_primitive(Primitive::BitwiseXor, &[x_val.clone(), x_val], &no_params()).unwrap();
+        assert_eq!(
+            extract_i64_scalar(&result),
+            0,
+            "BitwiseXor({}, {}) = 0",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: BitwiseAnd(x, BitwiseNot(x)) = 0 ========================
+
+#[test]
+fn metamorphic_bitwise_and_complement_zero() {
+    // BitwiseAnd(x, BitwiseNot(x)) = 0 (AND with complement is zero)
+    for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
+        let x_val = make_i64_tensor(&[], vec![x]);
+        let not_x = eval_primitive(Primitive::BitwiseNot, &[x_val.clone()], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::BitwiseAnd, &[x_val, not_x], &no_params()).unwrap();
+        assert_eq!(
+            extract_i64_scalar(&result),
+            0,
+            "BitwiseAnd({}, BitwiseNot({})) = 0",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: BitwiseOr(x, BitwiseNot(x)) = -1 ========================
+
+#[test]
+fn metamorphic_bitwise_or_complement_all_ones() {
+    // BitwiseOr(x, BitwiseNot(x)) = -1 (all ones in two's complement)
+    for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
+        let x_val = make_i64_tensor(&[], vec![x]);
+        let not_x = eval_primitive(Primitive::BitwiseNot, &[x_val.clone()], &no_params()).unwrap();
+        let result = eval_primitive(Primitive::BitwiseOr, &[x_val, not_x], &no_params()).unwrap();
+        assert_eq!(
+            extract_i64_scalar(&result),
+            -1,
+            "BitwiseOr({}, BitwiseNot({})) = -1",
+            x,
+            x
+        );
+    }
+}
