@@ -377,3 +377,71 @@ fn oracle_transpose_large_2d() {
     assert_eq!(vals[2], 11);
     assert_eq!(vals[3], 16);
 }
+
+// ======================== METAMORPHIC: Transpose(Transpose(x)) = x for 2D ========================
+
+#[test]
+fn metamorphic_transpose_2d_involution() {
+    // Transpose(Transpose(x)) = x for 2D matrices (default permutation swaps twice = identity)
+    let input = make_f64_tensor(&[3, 4], (1..=12).map(|i| i as f64).collect());
+    let once = eval_primitive(Primitive::Transpose, &[input.clone()], &no_params()).unwrap();
+    let twice = eval_primitive(Primitive::Transpose, &[once], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&twice), extract_shape(&input));
+    assert_eq!(extract_f64_vec(&twice), extract_f64_vec(&input));
+}
+
+// ======================== METAMORPHIC: Transpose preserves element sum ========================
+
+#[test]
+fn metamorphic_transpose_preserves_sum() {
+    // Sum of elements is invariant under transpose
+    let input = make_f64_tensor(&[3, 4], (1..=12).map(|i| i as f64).collect());
+    let transposed = eval_primitive(Primitive::Transpose, &[input.clone()], &no_params()).unwrap();
+
+    let orig_sum: f64 = extract_f64_vec(&input).iter().sum();
+    let trans_sum: f64 = extract_f64_vec(&transposed).iter().sum();
+
+    assert!(
+        (orig_sum - trans_sum).abs() < 1e-10,
+        "Transpose preserves sum: {} vs {}",
+        orig_sum,
+        trans_sum
+    );
+}
+
+// ======================== METAMORPHIC: Identity permutation gives original ========================
+
+#[test]
+fn metamorphic_transpose_identity_permutation() {
+    // Transpose(x, identity_perm) = x
+    let input = make_f64_tensor(&[2, 3, 4], (1..=24).map(|i| i as f64).collect());
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input.clone()],
+        &transpose_params(&[0, 1, 2]),  // identity permutation
+    ).unwrap();
+
+    assert_eq!(extract_shape(&result), extract_shape(&input));
+    assert_eq!(extract_f64_vec(&result), extract_f64_vec(&input));
+}
+
+// ======================== METAMORPHIC: Transpose produces correct output shape ========================
+
+#[test]
+fn metamorphic_transpose_shape_permutation() {
+    // shape(Transpose(x, [2, 0, 1])) = [shape[2], shape[0], shape[1]]
+    let input = make_f64_tensor(&[2, 3, 5], (1..=30).map(|i| i as f64).collect());
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[2, 0, 1]),
+    ).unwrap();
+
+    // Original shape [2, 3, 5] with permutation [2, 0, 1] -> [5, 2, 3]
+    assert_eq!(
+        extract_shape(&result),
+        vec![5, 2, 3],
+        "shape permuted by [2, 0, 1]"
+    );
+}
