@@ -653,6 +653,24 @@ pub fn sample_primitive_params(
             params.insert("padding_high".to_owned(), highs);
             params.insert("padding_interior".to_owned(), interiors);
         }
+        Primitive::Rev | Primitive::Squeeze => {
+            let rank = 1 + cursor.take_usize(3);
+            let dimensions = (0..rank)
+                .map(|_| cursor.take_usize(3).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            params.insert("dimensions".to_owned(), dimensions);
+        }
+        Primitive::Split => {
+            params.insert("axis".to_owned(), cursor.take_usize(3).to_string());
+            params.insert(
+                "num_sections".to_owned(),
+                (1 + cursor.take_usize(8)).to_string(),
+            );
+        }
+        Primitive::ExpandDims => {
+            params.insert("axis".to_owned(), cursor.take_usize(4).to_string());
+        }
         Primitive::Iota => {
             params.insert("length".to_owned(), (1 + cursor.take_usize(8)).to_string());
             let dtype = match cursor.take_u8() % 4 {
@@ -724,6 +742,96 @@ pub fn sample_primitive_params(
             let exponent = (raw % 11) - 5;
             params.insert("exponent".to_owned(), exponent.to_string());
         }
+        Primitive::Cumsum | Primitive::Cumprod => {
+            params.insert("axis".to_owned(), cursor.take_usize(3).to_string());
+            if cursor.take_bool() {
+                params.insert("reverse".to_owned(), cursor.take_bool().to_string());
+            }
+        }
+        Primitive::Sort | Primitive::Argsort => {
+            params.insert("axis".to_owned(), cursor.take_usize(3).to_string());
+            if cursor.take_bool() {
+                params.insert("descending".to_owned(), cursor.take_bool().to_string());
+            }
+        }
+        Primitive::Fft | Primitive::Ifft | Primitive::Rfft | Primitive::Irfft => {
+            params.insert(
+                "fft_length".to_owned(),
+                (1 + cursor.take_usize(1023)).to_string(),
+            );
+        }
+        Primitive::Cholesky => {
+            params.insert("lower".to_owned(), cursor.take_bool().to_string());
+        }
+        Primitive::TriangularSolve => {
+            if cursor.take_bool() {
+                params.insert("lower".to_owned(), cursor.take_bool().to_string());
+            }
+            if cursor.take_bool() {
+                params.insert("transpose_a".to_owned(), cursor.take_bool().to_string());
+            }
+            if cursor.take_bool() {
+                params.insert("unit_diagonal".to_owned(), cursor.take_bool().to_string());
+            }
+        }
+        Primitive::Qr | Primitive::Svd => {
+            params.insert("full_matrices".to_owned(), cursor.take_bool().to_string());
+        }
+        Primitive::Conv => {
+            let padding = match cursor.take_u8() % 4 {
+                0 => "VALID",
+                1 => "SAME",
+                2 => "SAME_LOWER",
+                _ => "UNKNOWN",
+            };
+            params.insert("padding".to_owned(), padding.to_owned());
+            if cursor.take_bool() {
+                params.insert("strides".to_owned(), (1 + cursor.take_usize(3)).to_string());
+            }
+        }
+        Primitive::ReduceWindow => {
+            let rank = 1 + cursor.take_usize(3);
+            let window = (0..rank)
+                .map(|_| (1 + cursor.take_usize(3)).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            let strides = (0..rank)
+                .map(|_| (1 + cursor.take_usize(3)).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            params.insert("window_dimensions".to_owned(), window);
+            params.insert("window_strides".to_owned(), strides);
+            if cursor.take_bool() {
+                let reduce_op = match cursor.take_u8() % 4 {
+                    0 => "sum",
+                    1 => "max",
+                    2 => "min",
+                    _ => "prod",
+                };
+                params.insert("reduce_op".to_owned(), reduce_op.to_owned());
+            }
+        }
+        Primitive::Scan => {
+            if cursor.take_bool() {
+                let body_op = match cursor.take_u8() % 3 {
+                    0 => "add",
+                    1 => "mul",
+                    _ => "sub",
+                };
+                params.insert("body_op".to_owned(), body_op.to_owned());
+            }
+            if cursor.take_bool() {
+                params.insert("reverse".to_owned(), cursor.take_bool().to_string());
+            }
+        }
+        Primitive::While => {
+            if cursor.take_bool() {
+                params.insert("body_op".to_owned(), "add".to_owned());
+            }
+            if cursor.take_bool() {
+                params.insert("cond_op".to_owned(), "lt".to_owned());
+            }
+        }
         _ => {}
     }
 
@@ -732,7 +840,9 @@ pub fn sample_primitive_params(
 
 #[cfg(test)]
 mod tests {
-    use super::{ALL_PRIMITIVES, ByteCursor, primitive_arity, sample_transform};
+    use super::{
+        ALL_PRIMITIVES, ByteCursor, primitive_arity, sample_primitive_params, sample_transform,
+    };
     use fj_core::{Primitive, Transform};
 
     #[test]
@@ -776,5 +886,44 @@ mod tests {
     fn transform_sampler_includes_pmap() {
         let mut cursor = ByteCursor::new(&[3]);
         assert_eq!(sample_transform(&mut cursor), Transform::Pmap);
+    }
+
+    #[test]
+    fn primitive_param_sampler_uses_current_eval_key_names() {
+        let cases: &[(Primitive, &[&str], &[&str])] = &[
+            (Primitive::Reshape, &["new_shape"], &["new_sizes"]),
+            (
+                Primitive::Pad,
+                &["padding_low", "padding_high", "padding_interior"],
+                &["padding_config"],
+            ),
+            (Primitive::OneHot, &["num_classes"], &["depth"]),
+            (
+                Primitive::Iota,
+                &["length", "dtype"],
+                &["shape", "dimension"],
+            ),
+            (Primitive::BroadcastedIota, &["shape", "dtype"], &["length"]),
+            (Primitive::ExpandDims, &["axis"], &["dimensions"]),
+            (Primitive::Sort, &["axis"], &["dimension", "is_stable"]),
+        ];
+
+        for (primitive, required, forbidden) in cases {
+            let mut cursor = ByteCursor::new(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            let params = sample_primitive_params(&mut cursor, *primitive);
+
+            for key in *required {
+                assert!(
+                    params.contains_key(*key),
+                    "{primitive:?} params should include evaluator key {key:?}; got {params:?}"
+                );
+            }
+            for key in *forbidden {
+                assert!(
+                    !params.contains_key(*key),
+                    "{primitive:?} params should not include stale key {key:?}; got {params:?}"
+                );
+            }
+        }
     }
 }
