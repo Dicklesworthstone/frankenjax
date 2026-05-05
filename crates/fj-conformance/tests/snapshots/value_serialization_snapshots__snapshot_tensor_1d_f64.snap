@@ -1,0 +1,25 @@
+---
+source: crates/fj-conformance/tests/value_serialization_snapshots.rs
+expression: json
+---
+{
+  "Tensor": {
+    "dtype": "F64",
+    "shape": {
+      "dims": [
+        3
+      ]
+    },
+    "elements": [
+      {
+        "F64Bits": 4607182418800017408
+      },
+      {
+        "F64Bits": 4611686018427387904
+      },
+      {
+        "F64Bits": 4613937818241073152
+      }
+    ]
+  }
+}

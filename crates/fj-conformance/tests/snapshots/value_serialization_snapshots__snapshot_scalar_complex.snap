@@ -1,0 +1,12 @@
+---
+source: crates/fj-conformance/tests/value_serialization_snapshots.rs
+expression: json
+---
+{
+  "Scalar": {
+    "Complex128Bits": [
+      4607182418800017408,
+      13835058055282163712
+    ]
+  }
+}

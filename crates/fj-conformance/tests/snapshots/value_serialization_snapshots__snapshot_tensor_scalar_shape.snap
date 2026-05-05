@@ -1,0 +1,17 @@
+---
+source: crates/fj-conformance/tests/value_serialization_snapshots.rs
+expression: json
+---
+{
+  "Tensor": {
+    "dtype": "F32",
+    "shape": {
+      "dims": []
+    },
+    "elements": [
+      {
+        "F32Bits": 1069547520
+      }
+    ]
+  }
+}
