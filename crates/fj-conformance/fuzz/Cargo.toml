@@ -145,6 +145,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "proc_status_parser"
+path = "fuzz_targets/proc_status_parser.rs"
+test = false
+doc = false
+bench = false
+
 [[test]]
 name = "fuzz_common"
 path = "fuzz_targets/common.rs"
