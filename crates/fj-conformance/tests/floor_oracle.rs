@@ -343,3 +343,88 @@ fn oracle_floor_idempotent() {
         );
     }
 }
+
+// ======================== METAMORPHIC: floor(x) <= x ========================
+
+#[test]
+fn metamorphic_floor_leq_x() {
+    // floor(x) <= x for all finite x
+    for x in [-2.7, -1.5, -0.1, 0.0, 0.1, 1.5, 2.7, 100.9] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let floored = eval_primitive(Primitive::Floor, &[input], &no_params()).unwrap();
+        let floor_val = extract_f64_scalar(&floored);
+
+        assert!(
+            floor_val <= x,
+            "floor({}) = {} should be <= {}",
+            x,
+            floor_val,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: floor(Neg(x)) = Neg(ceil(x)) ========================
+
+#[test]
+fn metamorphic_floor_neg_ceil() {
+    // floor(-x) = -ceil(x) for all finite x
+    for x in [-2.7, -1.5, -0.1, 0.0, 0.1, 1.5, 2.7] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        // floor(Neg(x))
+        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let floor_neg = eval_primitive(Primitive::Floor, &[neg_x], &no_params()).unwrap();
+
+        // Neg(ceil(x))
+        let ceil_x = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
+        let neg_ceil = eval_primitive(Primitive::Neg, &[ceil_x], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&floor_neg),
+            extract_f64_scalar(&neg_ceil),
+            "floor(Neg({})) = Neg(ceil({}))",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: floor idempotent via primitive ========================
+
+#[test]
+fn metamorphic_floor_idempotent() {
+    // floor(floor(x)) = floor(x) using Floor primitive twice
+    for x in [-2.7, -1.5, 0.0, 1.5, 2.7, 100.9] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let floor1 = eval_primitive(Primitive::Floor, &[input], &no_params()).unwrap();
+        let floor2 = eval_primitive(Primitive::Floor, &[floor1.clone()], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_f64_scalar(&floor1),
+            extract_f64_scalar(&floor2),
+            "floor(floor({})) = floor({})",
+            x,
+            x
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor floor idempotent ========================
+
+#[test]
+fn metamorphic_floor_tensor_idempotent() {
+    // For tensor: floor(floor(x)) = floor(x)
+    let data = vec![-2.7, -1.5, 0.0, 1.5, 2.7];
+    let input = make_f64_tensor(&[5], data);
+
+    let floor1 = eval_primitive(Primitive::Floor, &[input], &no_params()).unwrap();
+    let floor2 = eval_primitive(Primitive::Floor, &[floor1.clone()], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&floor1), vec![5]);
+    let vec1 = extract_f64_vec(&floor1);
+    let vec2 = extract_f64_vec(&floor2);
+    for (i, (&f1, &f2)) in vec1.iter().zip(vec2.iter()).enumerate() {
+        assert_eq!(f1, f2, "element {}: floor idempotent", i);
+    }
+}
