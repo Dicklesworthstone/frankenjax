@@ -437,3 +437,91 @@ fn oracle_select_2d_unit_col() {
     assert_eq!(extract_shape(&result), vec![4, 1]);
     assert_eq!(extract_i64_vec(&result), vec![1, 20, 3, 40]);
 }
+
+fn extract_f64_scalar(v: &Value) -> f64 {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_f64().unwrap()
+        }
+        Value::Scalar(l) => l.as_f64().unwrap(),
+    }
+}
+
+fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
+    assert!(
+        (actual - expected).abs() < tol,
+        "{}: expected {}, got {}, diff={}",
+        msg,
+        expected,
+        actual,
+        (actual - expected).abs()
+    );
+}
+
+// ======================== METAMORPHIC: Select(cond, a, a) = a ========================
+
+#[test]
+fn metamorphic_select_same_branches() {
+    // Select(cond, a, a) = a regardless of condition
+    for x in [1.0, 2.0, 3.14, -5.0, 0.0] {
+        for cond_val in [true, false] {
+            let cond = Value::Scalar(Literal::Bool(cond_val));
+            let a = make_f64_tensor(&[], vec![x]);
+            let result = eval_primitive(Primitive::Select, &[cond, a.clone(), a], &no_params()).unwrap();
+            assert_close(
+                extract_f64_scalar(&result),
+                x,
+                1e-14,
+                &format!("Select({}, {}, {}) = {}", cond_val, x, x, x),
+            );
+        }
+    }
+}
+
+// ======================== METAMORPHIC: Select(all_true, a, b) = a ========================
+
+#[test]
+fn metamorphic_select_all_true_tensor() {
+    // When condition is all-true, result = on_true
+    let cond = make_bool_tensor(&[4], vec![true, true, true, true]);
+    let on_true = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let on_false = make_f64_tensor(&[4], vec![10.0, 20.0, 30.0, 40.0]);
+    let result = eval_primitive(Primitive::Select, &[cond, on_true.clone(), on_false], &no_params()).unwrap();
+    assert_eq!(
+        extract_f64_vec(&result),
+        extract_f64_vec(&on_true),
+        "Select(all_true, a, b) = a"
+    );
+}
+
+// ======================== METAMORPHIC: Select(all_false, a, b) = b ========================
+
+#[test]
+fn metamorphic_select_all_false_tensor() {
+    // When condition is all-false, result = on_false
+    let cond = make_bool_tensor(&[4], vec![false, false, false, false]);
+    let on_true = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let on_false = make_f64_tensor(&[4], vec![10.0, 20.0, 30.0, 40.0]);
+    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false.clone()], &no_params()).unwrap();
+    assert_eq!(
+        extract_f64_vec(&result),
+        extract_f64_vec(&on_false),
+        "Select(all_false, a, b) = b"
+    );
+}
+
+// ======================== METAMORPHIC: Select preserves dtype ========================
+
+#[test]
+fn metamorphic_select_preserves_dtype() {
+    // Result dtype matches input branches' dtype
+    let cond = make_bool_tensor(&[3], vec![true, false, true]);
+    let on_true = make_i64_tensor(&[3], vec![1, 2, 3]);
+    let on_false = make_i64_tensor(&[3], vec![10, 20, 30]);
+    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+
+    // Verify we can extract as i64 (would fail if dtype changed)
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals, vec![1, 20, 3], "Select preserves i64 dtype");
+}
