@@ -351,6 +351,16 @@ fn select_literal_as_dtype(
     }
 }
 
+fn select_bool_condition(primitive: Primitive, value: Literal) -> Result<bool, EvalError> {
+    match value {
+        Literal::Bool(flag) => Ok(flag),
+        _ => Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "select condition must be boolean",
+        }),
+    }
+}
+
 fn complex_lex_ge(lhs: (f64, f64), rhs: (f64, f64)) -> bool {
     lhs.0 > rhs.0 || (lhs.0 == rhs.0 && lhs.1 >= rhs.1)
 }
@@ -1440,26 +1450,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
 
     match (&inputs[0], &inputs[1], &inputs[2]) {
         (Value::Scalar(cond), Value::Scalar(on_true), Value::Scalar(on_false)) => {
-            let c = match cond {
-                Literal::Bool(b) => *b,
-                Literal::I64(v) => *v != 0,
-                Literal::U32(v) => *v != 0,
-                Literal::U64(v) => *v != 0,
-                Literal::BF16Bits(bits) => {
-                    Literal::BF16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                }
-                Literal::F16Bits(bits) => {
-                    Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                }
-                Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
-                Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
-                Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                    return Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "select condition must be boolean, got complex dtype",
-                    });
-                }
-            };
+            let c = select_bool_condition(primitive, *cond)?;
             let val = if c { *on_true } else { *on_false };
             let lhs_dtype = literal_dtype(*on_true);
             let rhs_dtype = literal_dtype(*on_false);
@@ -1490,26 +1481,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 .zip(on_true.elements.iter().copied())
                 .zip(on_false.elements.iter().copied())
             {
-                let flag = match c {
-                    Literal::Bool(b) => b,
-                    Literal::I64(v) => v != 0,
-                    Literal::U32(v) => v != 0,
-                    Literal::U64(v) => v != 0,
-                    Literal::BF16Bits(bits) => {
-                        Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
-                    }
-                    Literal::F16Bits(bits) => {
-                        Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
-                    }
-                    Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
-                    Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
-                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                        return Err(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "select condition must be boolean, got complex dtype",
-                        });
-                    }
-                };
+                let flag = select_bool_condition(primitive, c)?;
                 let val = if flag { t } else { f };
                 elements.push(select_literal_as_dtype(
                     primitive,
@@ -1531,26 +1503,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
             let dtype = promote_dtype(literal_dtype(*on_true), literal_dtype(*on_false));
             let mut elements = Vec::with_capacity(cond.elements.len());
             for c in cond.elements.iter().copied() {
-                let flag = match c {
-                    Literal::Bool(b) => b,
-                    Literal::I64(v) => v != 0,
-                    Literal::U32(v) => v != 0,
-                    Literal::U64(v) => v != 0,
-                    Literal::BF16Bits(bits) => {
-                        Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
-                    }
-                    Literal::F16Bits(bits) => {
-                        Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)
-                    }
-                    Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
-                    Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
-                    Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                        return Err(EvalError::TypeMismatch {
-                            primitive,
-                            detail: "select condition must be boolean, got complex dtype",
-                        });
-                    }
-                };
+                let flag = select_bool_condition(primitive, c)?;
                 let val = if flag { *on_true } else { *on_false };
                 elements.push(select_literal_as_dtype(
                     primitive,
@@ -1576,26 +1529,7 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                         .to_owned(),
                 });
             }
-            let flag = match cond {
-                Literal::Bool(b) => *b,
-                Literal::I64(v) => *v != 0,
-                Literal::U32(v) => *v != 0,
-                Literal::U64(v) => *v != 0,
-                Literal::BF16Bits(bits) => {
-                    Literal::BF16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                }
-                Literal::F16Bits(bits) => {
-                    Literal::F16Bits(*bits).as_f64().is_some_and(|v| v != 0.0)
-                }
-                Literal::F32Bits(bits) => f32::from_bits(*bits) != 0.0,
-                Literal::F64Bits(bits) => f64::from_bits(*bits) != 0.0,
-                Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-                    return Err(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "select condition must be boolean, got complex dtype",
-                    });
-                }
-            };
+            let flag = select_bool_condition(primitive, *cond)?;
             if flag {
                 Ok(Value::Tensor(on_true.clone()))
             } else {

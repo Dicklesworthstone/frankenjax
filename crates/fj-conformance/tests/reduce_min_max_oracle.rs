@@ -429,10 +429,6 @@ fn concat_params(axis: i64) -> BTreeMap<String, String> {
     params
 }
 
-fn no_params() -> BTreeMap<String, String> {
-    BTreeMap::new()
-}
-
 #[test]
 fn metamorphic_reduce_max_distributive_over_concat() {
     // max(concat(x, y)) = max(max(x), max(y))
@@ -531,7 +527,7 @@ fn metamorphic_reduce_max_geq_min() {
         let max_val = extract_f64_scalar(
             &eval_primitive(
                 Primitive::ReduceMax,
-                &[tensor.clone()],
+                std::slice::from_ref(&tensor),
                 &params_with_axes(&[0]),
             )
             .unwrap(),

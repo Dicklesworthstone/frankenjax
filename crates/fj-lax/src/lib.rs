@@ -9157,8 +9157,7 @@ mod prop_tests {
         )
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("select condition must be boolean, got complex dtype"),
+            err.to_string().contains("select condition must be boolean"),
             "unexpected error: {err}"
         );
     }
@@ -10702,8 +10701,6 @@ mod prop_tests {
 
     // ── Metamorphic property tests ────────────────────────────────────────
     // These verify algebraic invariants that must hold across all inputs.
-
-    use proptest::prelude::*;
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(100))]

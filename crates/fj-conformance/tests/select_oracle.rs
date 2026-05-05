@@ -1,7 +1,7 @@
 //! Oracle tests for Select primitive.
 //!
 //! Tests against expected behavior matching JAX/lax.select:
-//! - condition: boolean (or truthy) tensor/scalar
+//! - condition: boolean tensor/scalar
 //! - on_true: value to use where condition is true
 //! - on_false: value to use where condition is false
 //! - All inputs must have same shape (for tensor case)
@@ -127,36 +127,29 @@ fn oracle_select_scalar_f64() {
 }
 
 #[test]
-fn oracle_select_scalar_int_cond_true() {
-    // Non-zero integer as condition (truthy)
+fn oracle_select_rejects_scalar_integer_condition() {
     let cond = Value::scalar_i64(1);
     let on_true = Value::scalar_i64(100);
     let on_false = Value::scalar_i64(200);
-    let result =
-        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&result), vec![100]);
+    let err = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params())
+        .expect_err("lax.select requires a boolean predicate");
+    assert!(
+        err.to_string().contains("select condition must be boolean"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
-fn oracle_select_scalar_int_cond_false() {
-    // Zero integer as condition (falsy)
-    let cond = Value::scalar_i64(0);
-    let on_true = Value::scalar_i64(100);
-    let on_false = Value::scalar_i64(200);
-    let result =
-        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&result), vec![200]);
-}
-
-#[test]
-fn oracle_select_scalar_negative_int_cond() {
-    // Negative integer is truthy
-    let cond = Value::scalar_i64(-5);
+fn oracle_select_rejects_scalar_float_condition() {
+    let cond = Value::Scalar(Literal::from_f64(1.0));
     let on_true = Value::scalar_i64(1);
     let on_false = Value::scalar_i64(0);
-    let result =
-        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&result), vec![1]);
+    let err = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params())
+        .expect_err("lax.select requires a boolean predicate");
+    assert!(
+        err.to_string().contains("select condition must be boolean"),
+        "unexpected error: {err}"
+    );
 }
 
 // ======================== 1D Tensor Tests ========================
@@ -220,14 +213,16 @@ fn oracle_select_1d_f64() {
 }
 
 #[test]
-fn oracle_select_1d_int_cond() {
-    // Integer condition: 0 = false, non-zero = true
+fn oracle_select_rejects_tensor_integer_condition() {
     let cond = make_i64_tensor(&[4], vec![0, 1, 0, -1]);
     let on_true = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
     let on_false = make_i64_tensor(&[4], vec![100, 200, 300, 400]);
-    let result =
-        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&result), vec![100, 20, 300, 40]);
+    let err = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params())
+        .expect_err("lax.select requires a boolean predicate");
+    assert!(
+        err.to_string().contains("select condition must be boolean"),
+        "unexpected error: {err}"
+    );
 }
 
 // ======================== 2D Tensor Tests ========================
