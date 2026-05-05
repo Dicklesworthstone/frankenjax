@@ -336,6 +336,7 @@ fn radix2_fft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>, invers
     }
 }
 
+#[cfg(test)]
 fn radix2_fft_1d(input: &[(f64, f64)], inverse: bool) -> Vec<(f64, f64)> {
     let n = input.len();
     if n <= 1 {
@@ -389,6 +390,7 @@ fn radix2_fft_1d(input: &[(f64, f64)], inverse: bool) -> Vec<(f64, f64)> {
     output
 }
 
+#[cfg(test)]
 fn fft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     if input.len().is_power_of_two() {
         radix2_fft_1d(input, false)
@@ -406,6 +408,7 @@ fn fft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
     }
 }
 
+#[cfg(test)]
 fn ifft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
     if input.len().is_power_of_two() {
         radix2_fft_1d(input, true)
