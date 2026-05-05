@@ -205,3 +205,87 @@ fn oracle_asinh_stdlib() {
         );
     }
 }
+
+// ======================== Tensor Shape Tests ========================
+
+fn extract_f64_vec(v: &Value) -> Vec<f64> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_shape(v: &Value) -> Vec<u32> {
+    match v {
+        Value::Tensor(t) => t.shape.dims.clone(),
+        Value::Scalar(_) => vec![],
+    }
+}
+
+#[test]
+fn oracle_asinh_1d() {
+    let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Asinh, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![5]);
+    let vals = extract_f64_vec(&result);
+    let expected: [f64; 5] = [-2.0, -1.0, 0.0, 1.0, 2.0];
+    for (v, &x) in vals.iter().zip(expected.iter()) {
+        assert_close(*v, x.asinh(), 1e-14, &format!("asinh({})", x));
+    }
+}
+
+#[test]
+fn oracle_asinh_2d() {
+    let input = make_f64_tensor(&[2, 2], vec![-1.0, 0.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Asinh, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_f64_vec(&result);
+    let expected: [f64; 4] = [-1.0, 0.0, 1.0, 2.0];
+    for (v, &x) in vals.iter().zip(expected.iter()) {
+        assert_close(*v, x.asinh(), 1e-14, &format!("asinh({})", x));
+    }
+}
+
+#[test]
+fn oracle_asinh_tensor_special_values() {
+    let input = make_f64_tensor(&[4], vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0]);
+    let result = eval_primitive(Primitive::Asinh, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+
+    assert!(vals[0].is_infinite() && vals[0] > 0.0, "asinh(+inf) = +inf");
+    assert!(vals[1].is_infinite() && vals[1] < 0.0, "asinh(-inf) = -inf");
+    assert!(vals[2].is_nan(), "asinh(NaN) = NaN");
+    assert_eq!(vals[3], 0.0, "asinh(0) = 0");
+}
+
+// ======================== Tensor Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_asinh_tensor_odd_function() {
+    let input_pos = make_f64_tensor(&[4], vec![0.5, 1.0, 2.0, 5.0]);
+    let input_neg = make_f64_tensor(&[4], vec![-0.5, -1.0, -2.0, -5.0]);
+
+    let result_pos = eval_primitive(Primitive::Asinh, &[input_pos], &no_params()).unwrap();
+    let result_neg = eval_primitive(Primitive::Asinh, &[input_neg], &no_params()).unwrap();
+
+    let vals_pos = extract_f64_vec(&result_pos);
+    let vals_neg = extract_f64_vec(&result_neg);
+
+    for (vp, vn) in vals_pos.iter().zip(vals_neg.iter()) {
+        assert_close(*vn, -(*vp), 1e-14, "asinh(-x) = -asinh(x)");
+    }
+}
+
+#[test]
+fn metamorphic_asinh_tensor_sinh_inverse() {
+    let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+    let asinh_result = eval_primitive(Primitive::Asinh, &[input.clone()], &no_params()).unwrap();
+    let sinh_asinh = eval_primitive(Primitive::Sinh, &[asinh_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&sinh_asinh);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("sinh(asinh({})) = {}", orig, orig));
+    }
+}
