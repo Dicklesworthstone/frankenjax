@@ -336,3 +336,149 @@ fn oracle_dot_matrix_nan_row() {
     assert!((vals[0] - 3.0).abs() < 1e-10, "row 0 should be 1+2=3");
     assert!(vals[1].is_nan(), "row 1 with NaN should produce NaN");
 }
+
+// ====================== COMPLEX NUMBER TESTS ======================
+// JAX parity: Complex64 and Complex128 matrix multiplication
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
+        Value::Scalar(l) => vec![l.as_complex128().unwrap()],
+    }
+}
+
+fn assert_complex_close(actual: (f64, f64), expected: (f64, f64), tol: f64, msg: &str) {
+    let diff = ((actual.0 - expected.0).powi(2) + (actual.1 - expected.1).powi(2)).sqrt();
+    assert!(
+        diff < tol,
+        "{msg}: expected ({}, {}i), got ({}, {}i), diff = {}",
+        expected.0,
+        expected.1,
+        actual.0,
+        actual.1,
+        diff
+    );
+}
+
+#[test]
+fn oracle_dot_complex128_vector_dot_product() {
+    // JAX: jnp.dot(jnp.array([1+2j, 3+4j]), jnp.array([5+6j, 7+8j]))
+    // = (1+2j)*(5+6j) + (3+4j)*(7+8j)
+    // = (1*5 - 2*6) + (1*6 + 2*5)j + (3*7 - 4*8) + (3*8 + 4*7)j
+    // = (5-12) + (6+10)j + (21-32) + (24+28)j
+    // = -7 + 16j + -11 + 52j
+    // = -18 + 68j
+    let a = make_complex128_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
+    let b = make_complex128_tensor(&[2], vec![(5.0, 6.0), (7.0, 8.0)]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals.len(), 1);
+    assert_complex_close(vals[0], (-18.0, 68.0), 1e-10, "complex vector dot");
+}
+
+#[test]
+fn oracle_dot_complex128_matmul_2x2() {
+    // JAX: [[1+1j, 2+0j], [0+1j, 1-1j]] @ [[1+0j, 0+1j], [1+1j, 0+0j]]
+    // Row 0: (1+1j)*(1+0j) + (2+0j)*(1+1j) = (1+1j) + (2+2j) = 3+3j
+    //        (1+1j)*(0+1j) + (2+0j)*(0+0j) = (-1+1j) + 0 = -1+1j
+    // Row 1: (0+1j)*(1+0j) + (1-1j)*(1+1j) = (0+1j) + (1+1-1+1j) = (0+1j) + (2+0j) = 2+1j
+    //        (0+1j)*(0+1j) + (1-1j)*(0+0j) = -1 + 0 = -1+0j
+    let a = make_complex128_tensor(&[2, 2], vec![(1.0, 1.0), (2.0, 0.0), (0.0, 1.0), (1.0, -1.0)]);
+    let b = make_complex128_tensor(&[2, 2], vec![(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (0.0, 0.0)]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_complex128_vec(&result);
+    assert_complex_close(vals[0], (3.0, 3.0), 1e-10, "C[0,0]");
+    assert_complex_close(vals[1], (-1.0, 1.0), 1e-10, "C[0,1]");
+    assert_complex_close(vals[2], (2.0, 1.0), 1e-10, "C[1,0]");
+    assert_complex_close(vals[3], (-1.0, 0.0), 1e-10, "C[1,1]");
+}
+
+#[test]
+fn oracle_dot_complex64_vector_dot_product() {
+    // Same as complex128 but with f32 precision
+    let a = make_complex64_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
+    let b = make_complex64_tensor(&[2], vec![(5.0, 6.0), (7.0, 8.0)]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    // Complex64 result - extract as f32 then convert
+    let val = match &result {
+        Value::Tensor(t) => t.elements[0].as_complex64().unwrap(),
+        Value::Scalar(l) => l.as_complex64().unwrap(),
+    };
+    let val_f64 = (val.0 as f64, val.1 as f64);
+    assert_complex_close(val_f64, (-18.0, 68.0), 1e-4, "complex64 vector dot");
+}
+
+#[test]
+fn oracle_dot_complex128_matrix_vector() {
+    // JAX: [[1+0j, 0+1j], [1+1j, 1-1j]] @ [1+0j, 0+1j]
+    // Row 0: (1+0j)*(1+0j) + (0+1j)*(0+1j) = 1 + (-1) = 0+0j
+    // Row 1: (1+1j)*(1+0j) + (1-1j)*(0+1j) = (1+1j) + (1+1j) = 2+2j
+    let a = make_complex128_tensor(&[2, 2], vec![(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, -1.0)]);
+    let b = make_complex128_tensor(&[2], vec![(1.0, 0.0), (0.0, 1.0)]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_complex128_vec(&result);
+    assert_complex_close(vals[0], (0.0, 0.0), 1e-10, "row 0");
+    assert_complex_close(vals[1], (2.0, 2.0), 1e-10, "row 1");
+}
+
+#[test]
+fn oracle_dot_complex128_identity_matrix() {
+    // A @ I = A for complex matrices
+    let a = make_complex128_tensor(&[2, 2], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+    let identity =
+        make_complex128_tensor(&[2, 2], vec![(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)]);
+    let result = eval_primitive(Primitive::Dot, &[a, identity], &no_params()).unwrap();
+    let vals = extract_complex128_vec(&result);
+    assert_complex_close(vals[0], (1.0, 2.0), 1e-10, "A[0,0]");
+    assert_complex_close(vals[1], (3.0, 4.0), 1e-10, "A[0,1]");
+    assert_complex_close(vals[2], (5.0, 6.0), 1e-10, "A[1,0]");
+    assert_complex_close(vals[3], (7.0, 8.0), 1e-10, "A[1,1]");
+}
+
+#[test]
+fn oracle_dot_complex128_preserves_dtype() {
+    // Result dtype should be Complex128 when inputs are Complex128
+    let a = make_complex128_tensor(&[2], vec![(1.0, 0.0), (0.0, 1.0)]);
+    let b = make_complex128_tensor(&[2], vec![(1.0, 0.0), (0.0, 1.0)]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    match result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::Complex128),
+        Value::Scalar(l) => assert!(l.is_complex()),
+    }
+}
