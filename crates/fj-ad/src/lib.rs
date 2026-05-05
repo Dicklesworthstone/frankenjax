@@ -1655,7 +1655,7 @@ pub fn vjp(
             // Determine which output axes are "broadcast axes" that need reduction:
             // 1. Output axes not mapped from any input axis
             // 2. Output axes mapped from a size-1 input dim (implicit broadcast)
-            let mut reduce_axes: Vec<usize> = Vec::new();
+            let mut reduce_axes: Vec<usize> = Vec::with_capacity(out_rank);
             for out_axis in 0..out_rank {
                 if let Some(pos) = broadcast_dims.iter().position(|&d| d == out_axis) {
                     // This output axis maps to input axis `pos`
