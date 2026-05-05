@@ -445,3 +445,57 @@ fn oracle_exp_2d() {
     assert_close(vals[2], 1.0 / e, 1e-14, "");
     assert_close(vals[3], e * e, 1e-14, "");
 }
+
+// ======================== METAMORPHIC: log(exp(x)) = x ========================
+
+#[test]
+fn metamorphic_log_exp_identity() {
+    // log(exp(x)) = x for all real x
+    for x in [-10.0, -5.0, -1.0, 0.0, 1.0, 5.0, 10.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let exp_result = eval_primitive(Primitive::Exp, &[input], &no_params()).unwrap();
+        let log_exp = eval_primitive(Primitive::Log, &[exp_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&log_exp),
+            x,
+            1e-12,
+            &format!("log(exp({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: exp(log(x)) = x for x > 0 ========================
+
+#[test]
+fn metamorphic_exp_log_identity() {
+    // exp(log(x)) = x for x > 0
+    for x in [0.01, 0.1, 0.5, 1.0, 2.0, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let log_result = eval_primitive(Primitive::Log, &[input], &no_params()).unwrap();
+        let exp_log = eval_primitive(Primitive::Exp, &[log_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&exp_log),
+            x,
+            1e-12,
+            &format!("exp(log({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_exp_tensor_roundtrip() {
+    let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
+    let exp_result = eval_primitive(Primitive::Exp, &[input.clone()], &no_params()).unwrap();
+    let log_exp = eval_primitive(Primitive::Log, &[exp_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&log_exp);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("log(exp({})) = {}", orig, orig));
+    }
+}
