@@ -357,3 +357,101 @@ fn oracle_pow_identity() {
         );
     }
 }
+
+// ======================== Metamorphic: Power Law Properties ========================
+
+#[test]
+fn metamorphic_pow_exponent_sum() {
+    // x^(a+b) = x^a * x^b
+    for (x, a, b) in [(2.0, 3.0, 2.0), (3.0, 1.5, 0.5), (1.5, 2.0, 3.0), (4.0, 0.5, 1.5)] {
+        let base = make_f64_tensor(&[], vec![x]);
+        let exp_sum = make_f64_tensor(&[], vec![a + b]);
+        let exp_a = make_f64_tensor(&[], vec![a]);
+        let exp_b = make_f64_tensor(&[], vec![b]);
+
+        let lhs = eval_primitive(Primitive::Pow, &[base.clone(), exp_sum], &no_params()).unwrap();
+        let pow_a = eval_primitive(Primitive::Pow, &[base.clone(), exp_a], &no_params()).unwrap();
+        let pow_b = eval_primitive(Primitive::Pow, &[base, exp_b], &no_params()).unwrap();
+        let rhs = eval_primitive(Primitive::Mul, &[pow_a, pow_b], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&lhs),
+            extract_f64_scalar(&rhs),
+            1e-12,
+            &format!("{}^({} + {}) = {}^{} * {}^{}", x, a, b, x, a, x, b),
+        );
+    }
+}
+
+#[test]
+fn metamorphic_pow_product_base() {
+    // (x*y)^a = x^a * y^a
+    for (x, y, a) in [(2.0, 3.0, 2.0), (1.5, 2.0, 3.0), (4.0, 0.5, 2.5)] {
+        let base_x = make_f64_tensor(&[], vec![x]);
+        let base_y = make_f64_tensor(&[], vec![y]);
+        let exp = make_f64_tensor(&[], vec![a]);
+
+        let product = eval_primitive(Primitive::Mul, &[base_x.clone(), base_y.clone()], &no_params()).unwrap();
+        let lhs = eval_primitive(Primitive::Pow, &[product, exp.clone()], &no_params()).unwrap();
+
+        let pow_x = eval_primitive(Primitive::Pow, &[base_x, exp.clone()], &no_params()).unwrap();
+        let pow_y = eval_primitive(Primitive::Pow, &[base_y, exp], &no_params()).unwrap();
+        let rhs = eval_primitive(Primitive::Mul, &[pow_x, pow_y], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&lhs),
+            extract_f64_scalar(&rhs),
+            1e-12,
+            &format!("({} * {})^{} = {}^{} * {}^{}", x, y, a, x, a, y, a),
+        );
+    }
+}
+
+#[test]
+fn metamorphic_pow_power_of_power() {
+    // (x^a)^b = x^(a*b)
+    for (x, a, b) in [(2.0, 2.0, 3.0), (3.0, 0.5, 4.0), (1.5, 2.0, 1.5)] {
+        let base = make_f64_tensor(&[], vec![x]);
+        let exp_a = make_f64_tensor(&[], vec![a]);
+        let exp_b = make_f64_tensor(&[], vec![b]);
+        let exp_ab = make_f64_tensor(&[], vec![a * b]);
+
+        let inner = eval_primitive(Primitive::Pow, &[base.clone(), exp_a], &no_params()).unwrap();
+        let lhs = eval_primitive(Primitive::Pow, &[inner, exp_b], &no_params()).unwrap();
+        let rhs = eval_primitive(Primitive::Pow, &[base, exp_ab], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&lhs),
+            extract_f64_scalar(&rhs),
+            1e-11,
+            &format!("({}^{})^{} = {}^({} * {})", x, a, b, x, a, b),
+        );
+    }
+}
+
+#[test]
+fn metamorphic_pow_exponent_sum_tensor() {
+    // x^(a+b) = x^a * x^b for 1D tensors
+    let x = make_f64_tensor(&[4], vec![2.0, 3.0, 4.0, 5.0]);
+    let a = make_f64_tensor(&[4], vec![2.0, 1.5, 0.5, 2.0]);
+    let b = make_f64_tensor(&[4], vec![1.0, 0.5, 1.5, 1.0]);
+
+    let sum_ab = eval_primitive(Primitive::Add, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let lhs = eval_primitive(Primitive::Pow, &[x.clone(), sum_ab], &no_params()).unwrap();
+
+    let pow_a = eval_primitive(Primitive::Pow, &[x.clone(), a], &no_params()).unwrap();
+    let pow_b = eval_primitive(Primitive::Pow, &[x, b], &no_params()).unwrap();
+    let rhs = eval_primitive(Primitive::Mul, &[pow_a, pow_b], &no_params()).unwrap();
+
+    let lhs_vals = extract_f64_vec(&lhs);
+    let rhs_vals = extract_f64_vec(&rhs);
+
+    for i in 0..4 {
+        assert_close(
+            lhs_vals[i],
+            rhs_vals[i],
+            1e-12,
+            &format!("exponent sum rule element {}", i),
+        );
+    }
+}
