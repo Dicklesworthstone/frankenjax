@@ -197,3 +197,50 @@ fn oracle_cbrt_single_element() {
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 5.0).abs() < 1e-10);
 }
+
+// ======================== Special Values ========================
+
+#[test]
+fn oracle_cbrt_positive_infinity() {
+    let input = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val > 0.0, "cbrt(+inf) = +inf");
+}
+
+#[test]
+fn oracle_cbrt_negative_infinity() {
+    let input = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_infinite() && val < 0.0, "cbrt(-inf) = -inf");
+}
+
+#[test]
+fn oracle_cbrt_nan() {
+    let input = Value::Scalar(Literal::from_f64(f64::NAN));
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val.is_nan(), "cbrt(NaN) = NaN");
+}
+
+#[test]
+fn oracle_cbrt_negative_zero() {
+    let input = Value::Scalar(Literal::from_f64(-0.0));
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    assert!(val == 0.0, "cbrt(-0.0) magnitude is 0");
+    assert!(val.is_sign_negative(), "cbrt(-0.0) preserves sign");
+}
+
+#[test]
+fn oracle_cbrt_tensor_special_values() {
+    let input = make_f64_tensor(&[4], vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -0.0]);
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+
+    assert!(vals[0].is_infinite() && vals[0] > 0.0, "cbrt(+inf) = +inf");
+    assert!(vals[1].is_infinite() && vals[1] < 0.0, "cbrt(-inf) = -inf");
+    assert!(vals[2].is_nan(), "cbrt(NaN) = NaN");
+    assert!(vals[3] == 0.0 && vals[3].is_sign_negative(), "cbrt(-0.0) = -0.0");
+}
