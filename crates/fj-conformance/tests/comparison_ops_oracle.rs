@@ -539,3 +539,107 @@ fn oracle_trichotomy() {
         );
     }
 }
+
+// ======================== METAMORPHIC: Lt(Neg(a), Neg(b)) = Gt(a, b) ========================
+
+#[test]
+fn metamorphic_lt_neg_equals_gt() {
+    // Lt(Neg(a), Neg(b)) = Gt(a, b) - negating both flips the inequality
+    for (a_val, b_val) in [(1.0, 2.0), (5.0, 3.0), (3.0, 3.0), (-1.0, 2.0), (0.5, 0.3)] {
+        let a = make_f64_tensor(&[], vec![a_val]);
+        let b = make_f64_tensor(&[], vec![b_val]);
+
+        // Lt(Neg(a), Neg(b))
+        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let lt_neg = eval_primitive(Primitive::Lt, &[neg_a, neg_b], &no_params()).unwrap();
+
+        // Gt(a, b)
+        let gt = eval_primitive(Primitive::Gt, &[a, b], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_bool_scalar(&lt_neg),
+            extract_bool_scalar(&gt),
+            "Lt(Neg({}), Neg({})) = Gt({}, {})",
+            a_val, b_val, a_val, b_val
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Gt(Neg(a), Neg(b)) = Lt(a, b) ========================
+
+#[test]
+fn metamorphic_gt_neg_equals_lt() {
+    // Gt(Neg(a), Neg(b)) = Lt(a, b) - negating both flips the inequality
+    for (a_val, b_val) in [(1.0, 2.0), (5.0, 3.0), (3.0, 3.0), (-1.0, 2.0)] {
+        let a = make_f64_tensor(&[], vec![a_val]);
+        let b = make_f64_tensor(&[], vec![b_val]);
+
+        // Gt(Neg(a), Neg(b))
+        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let gt_neg = eval_primitive(Primitive::Gt, &[neg_a, neg_b], &no_params()).unwrap();
+
+        // Lt(a, b)
+        let lt = eval_primitive(Primitive::Lt, &[a, b], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_bool_scalar(&gt_neg),
+            extract_bool_scalar(&lt),
+            "Gt(Neg({}), Neg({})) = Lt({}, {})",
+            a_val, b_val, a_val, b_val
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Le(Neg(a), Neg(b)) = Ge(a, b) ========================
+
+#[test]
+fn metamorphic_le_neg_equals_ge() {
+    // Le(Neg(a), Neg(b)) = Ge(a, b) - negating both flips the inequality
+    for (a_val, b_val) in [(1.0, 2.0), (5.0, 3.0), (3.0, 3.0), (-1.0, 2.0)] {
+        let a = make_f64_tensor(&[], vec![a_val]);
+        let b = make_f64_tensor(&[], vec![b_val]);
+
+        // Le(Neg(a), Neg(b))
+        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let le_neg = eval_primitive(Primitive::Le, &[neg_a, neg_b], &no_params()).unwrap();
+
+        // Ge(a, b)
+        let ge = eval_primitive(Primitive::Ge, &[a, b], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_bool_scalar(&le_neg),
+            extract_bool_scalar(&ge),
+            "Le(Neg({}), Neg({})) = Ge({}, {})",
+            a_val, b_val, a_val, b_val
+        );
+    }
+}
+
+// ======================== METAMORPHIC: Ge(Neg(a), Neg(b)) = Le(a, b) ========================
+
+#[test]
+fn metamorphic_ge_neg_equals_le() {
+    // Ge(Neg(a), Neg(b)) = Le(a, b) - negating both flips the inequality
+    for (a_val, b_val) in [(1.0, 2.0), (5.0, 3.0), (3.0, 3.0), (-1.0, 2.0)] {
+        let a = make_f64_tensor(&[], vec![a_val]);
+        let b = make_f64_tensor(&[], vec![b_val]);
+
+        // Ge(Neg(a), Neg(b))
+        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let ge_neg = eval_primitive(Primitive::Ge, &[neg_a, neg_b], &no_params()).unwrap();
+
+        // Le(a, b)
+        let le = eval_primitive(Primitive::Le, &[a, b], &no_params()).unwrap();
+
+        assert_eq!(
+            extract_bool_scalar(&ge_neg),
+            extract_bool_scalar(&le),
+            "Ge(Neg({}), Neg({})) = Le({}, {})",
+            a_val, b_val, a_val, b_val
+        );
+    }
+}
