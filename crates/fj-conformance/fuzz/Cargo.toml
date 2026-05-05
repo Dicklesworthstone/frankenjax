@@ -152,6 +152,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "jaxpr_serde_roundtrip"
+path = "fuzz_targets/jaxpr_serde_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
 [[test]]
 name = "fuzz_common"
 path = "fuzz_targets/common.rs"
