@@ -259,3 +259,106 @@ fn oracle_integer_pow_i64_tensor() {
     assert!((vals[1] - 9.0).abs() < 1e-10);
     assert!((vals[2] - 16.0).abs() < 1e-10);
 }
+
+fn no_params() -> BTreeMap<String, String> {
+    BTreeMap::new()
+}
+
+fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
+    assert!(
+        (actual - expected).abs() < tol,
+        "{}: expected {}, got {}, diff={}",
+        msg,
+        expected,
+        actual,
+        (actual - expected).abs()
+    );
+}
+
+fn extract_f64_scalar(v: &Value) -> f64 {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_f64().unwrap()
+        }
+        Value::Scalar(l) => l.as_f64().unwrap(),
+    }
+}
+
+// ======================== METAMORPHIC: IntegerPow(x, 2) = Square(x) ========================
+
+#[test]
+fn metamorphic_integer_pow_2_equals_square() {
+    // IntegerPow(x, 2) = Square(x) using primitives
+    for x in [0.5, 1.0, 2.0, 3.0, -2.0, -3.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let pow2 = eval_primitive(Primitive::IntegerPow, &[input.clone()], &pow_params(2)).unwrap();
+        let squared = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&pow2),
+            extract_f64_scalar(&squared),
+            1e-14,
+            &format!("IntegerPow({}, 2) = Square({})", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: IntegerPow(x, 1) = x ========================
+
+#[test]
+fn metamorphic_integer_pow_1_identity() {
+    // IntegerPow(x, 1) = x
+    for x in [0.5, 1.0, 2.0, 3.0, -2.0, -3.0, 0.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let pow1 = eval_primitive(Primitive::IntegerPow, &[input], &pow_params(1)).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&pow1),
+            x,
+            1e-14,
+            &format!("IntegerPow({}, 1) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: IntegerPow(x, 3) = Mul(Square(x), x) ========================
+
+#[test]
+fn metamorphic_integer_pow_3_equals_square_mul() {
+    // IntegerPow(x, 3) = Mul(Square(x), x)
+    for x in [0.5, 1.0, 2.0, 3.0, -2.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+
+        let pow3 = eval_primitive(Primitive::IntegerPow, &[input.clone()], &pow_params(3)).unwrap();
+        let squared = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+        let cubed = eval_primitive(Primitive::Mul, &[squared, input], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&pow3),
+            extract_f64_scalar(&cubed),
+            1e-14,
+            &format!("IntegerPow({}, 3) = Mul(Square({}), {})", x, x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor IntegerPow(x, 2) = Square(x) ========================
+
+#[test]
+fn metamorphic_integer_pow_tensor_square() {
+    // For tensor: IntegerPow(x, 2) = Square(x)
+    let data = vec![0.5, 1.0, 2.0, 3.0, -2.0];
+    let input = make_f64_tensor(&[5], data);
+
+    let pow2 = eval_primitive(Primitive::IntegerPow, &[input.clone()], &pow_params(2)).unwrap();
+    let squared = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&pow2), vec![5]);
+    let pow2_vec = extract_f64_vec(&pow2);
+    let sq_vec = extract_f64_vec(&squared);
+    for (i, (&p, &s)) in pow2_vec.iter().zip(sq_vec.iter()).enumerate() {
+        assert_close(p, s, 1e-14, &format!("element {}", i));
+    }
+}
