@@ -371,6 +371,41 @@ fn oracle_acos_cos_identity() {
     }
 }
 
+// ======================== METAMORPHIC: acos(cos(x)) = x for x in [0, π] ========================
+
+#[test]
+fn metamorphic_acos_cos_identity() {
+    // acos(cos(x)) = x for x in [0, π]
+    for x in [0.1, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let cos_result = eval_primitive(Primitive::Cos, &[input], &no_params()).unwrap();
+        let acos_cos = eval_primitive(Primitive::Acos, &[cos_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&acos_cos),
+            x,
+            1e-12,
+            &format!("acos(cos({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_acos_tensor_roundtrip() {
+    let input = make_f64_tensor(&[5], vec![-0.9, -0.5, 0.0, 0.5, 0.9]);
+    let acos_result = eval_primitive(Primitive::Acos, &[input.clone()], &no_params()).unwrap();
+    let cos_acos = eval_primitive(Primitive::Cos, &[acos_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&cos_acos);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(*rt, *orig, 1e-12, &format!("cos(acos({})) = {}", orig, orig));
+    }
+}
+
 // ======================== Relationship: acos(x) + asin(x) = π/2 ========================
 
 #[test]
