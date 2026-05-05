@@ -322,3 +322,59 @@ fn oracle_erf_erfc_relationship() {
         );
     }
 }
+
+// ======================== METAMORPHIC: erfinv(erf(x)) = x ========================
+
+#[test]
+fn metamorphic_erfinv_erf_identity() {
+    // erfinv(erf(x)) = x for "moderate" x (erf approaches ±1 asymptotically)
+    // Use values where erf(x) is not too close to ±1 for numerical stability
+    for x in [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let erf_result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
+        let erfinv_erf = eval_primitive(Primitive::ErfInv, &[erf_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&erfinv_erf),
+            x,
+            1e-10,
+            &format!("erfinv(erf({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: erf(erfinv(y)) = y ========================
+
+#[test]
+fn metamorphic_erf_erfinv_identity() {
+    // erf(erfinv(y)) = y for y in (-1, 1)
+    for y in [-0.9, -0.5, -0.1, 0.0, 0.1, 0.5, 0.9] {
+        let input = make_f64_tensor(&[], vec![y]);
+        let erfinv_result = eval_primitive(Primitive::ErfInv, &[input], &no_params()).unwrap();
+        let erf_erfinv = eval_primitive(Primitive::Erf, &[erfinv_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&erf_erfinv),
+            y,
+            1e-10,
+            &format!("erf(erfinv({})) = {}", y, y),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_erf_erfinv_tensor_roundtrip() {
+    // For a tensor with values in (-1, 1): erf(erfinv(y)) = y
+    let input = make_f64_tensor(&[5], vec![-0.8, -0.4, 0.0, 0.4, 0.8]);
+    let erfinv_result = eval_primitive(Primitive::ErfInv, &[input.clone()], &no_params()).unwrap();
+    let roundtrip = eval_primitive(Primitive::Erf, &[erfinv_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let recovered = extract_f64_vec(&roundtrip);
+
+    for (orig, rec) in original.iter().zip(recovered.iter()) {
+        assert_close(*rec, *orig, 1e-10, &format!("erf(erfinv({})) = {}", orig, orig));
+    }
+}
