@@ -239,3 +239,20 @@ fn snapshot_cholesky_scalar_input_error() {
     let err = eval_primitive(Primitive::Cholesky, &[scalar], &no_params()).unwrap_err();
     insta::assert_snapshot!(err.to_string(), @"unsupported cholesky behavior: expected matrix (rank-2 tensor), got scalar");
 }
+
+// ====================== While Loop Error Variants ======================
+
+#[test]
+fn snapshot_max_iterations_exceeded_error() {
+    // Create a while loop that never terminates (always-true condition) with low max_iter
+    let init = Value::scalar_f64(0.0);
+    let step = Value::scalar_f64(0.0); // add 0, never changes
+    let threshold = Value::scalar_f64(-1.0); // 0 >= -1 always true if cond_op=ge
+    let mut params = BTreeMap::new();
+    params.insert("body_op".to_string(), "add".to_string());
+    params.insert("cond_op".to_string(), "ge".to_string()); // 0 >= -1 = true forever
+    params.insert("max_iter".to_string(), "5".to_string());
+
+    let err = eval_primitive(Primitive::While, &[init, step, threshold], &params).unwrap_err();
+    insta::assert_snapshot!(err.to_string(), @"while_loop exceeded max iterations (5)");
+}
