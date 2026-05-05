@@ -512,6 +512,14 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("expm1-log1p"; "(expm1 (log1p ?a))" => "?a"),
         // log1p(expm1(a)) => a fails when expm1(a) overflows to Inf
         rewrite!("log1p-expm1"; "(log1p (expm1 ?a))" => "?a"),
+        // sinh(asinh(a)) => a, asinh is the inverse of sinh (always valid)
+        rewrite!("sinh-asinh"; "(sinh (asinh ?a))" => "?a"),
+        // asinh(sinh(a)) => a, sinh is the inverse of asinh (always valid)
+        rewrite!("asinh-sinh"; "(asinh (sinh ?a))" => "?a"),
+        // tanh(atanh(a)) => a fails when |a| >= 1 (atanh undefined)
+        rewrite!("tanh-atanh"; "(tanh (atanh ?a))" => "?a"),
+        // atanh(tanh(a)) => a, tanh output is always in (-1, 1) so atanh is valid
+        rewrite!("atanh-tanh"; "(atanh (tanh ?a))" => "?a"),
         // log(a*b) => log(a) + log(b) fails when a or b <= 0
         rewrite!("log-product"; "(log (mul ?a ?b))" => "(add (log ?a) (log ?b))"),
         // log(a/b) => log(a) - log(b) fails when a <= 0 or b <= 0
@@ -6533,6 +6541,76 @@ mod tests {
             eval_jaxpr(&default, args).is_err(),
             "{name}: default optimization should preserve validation failure, got {:?}",
             default.equations
+        );
+    }
+
+    #[test]
+    fn sinh_asinh_inverse() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Asinh,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Sinh,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        assert!(
+            optimized.equations.len() < jaxpr.equations.len(),
+            "sinh(asinh(x)) should simplify: got {} eqns (was {})",
+            optimized.equations.len(),
+            jaxpr.equations.len(),
+        );
+    }
+
+    #[test]
+    fn tanh_atanh_inverse() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Atanh,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Tanh,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        assert!(
+            optimized.equations.len() < jaxpr.equations.len(),
+            "tanh(atanh(x)) should simplify: got {} eqns (was {})",
+            optimized.equations.len(),
+            jaxpr.equations.len(),
         );
     }
 
