@@ -350,3 +350,63 @@ fn oracle_cosh_identity_formula() {
         );
     }
 }
+
+// ======================== METAMORPHIC: cosh(acosh(x)) = x for x >= 1 ========================
+
+#[test]
+fn metamorphic_cosh_acosh_identity() {
+    // cosh(acosh(x)) = x for x >= 1 (domain of acosh)
+    for x in [1.0, 1.5, 2.0, 5.0, 10.0, 100.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let acosh_result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
+        let cosh_acosh = eval_primitive(Primitive::Cosh, &[acosh_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&cosh_acosh),
+            x,
+            1e-12,
+            &format!("cosh(acosh({})) = {}", x, x),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: acosh(cosh(x)) = |x| ========================
+
+#[test]
+fn metamorphic_acosh_cosh_abs_identity() {
+    // acosh(cosh(x)) = |x| since cosh is even (cosh(-x) = cosh(x))
+    for x in [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0] {
+        let input = make_f64_tensor(&[], vec![x]);
+        let cosh_result = eval_primitive(Primitive::Cosh, &[input], &no_params()).unwrap();
+        let acosh_cosh = eval_primitive(Primitive::Acosh, &[cosh_result], &no_params()).unwrap();
+
+        assert_close(
+            extract_f64_scalar(&acosh_cosh),
+            x.abs(),
+            1e-12,
+            &format!("acosh(cosh({})) = |{}| = {}", x, x, x.abs()),
+        );
+    }
+}
+
+// ======================== METAMORPHIC: tensor round-trip ========================
+
+#[test]
+fn metamorphic_cosh_tensor_roundtrip() {
+    // For positive values, acosh(cosh(x)) = x
+    let input = make_f64_tensor(&[5], vec![0.0, 0.5, 1.0, 2.0, 3.0]);
+    let cosh_result = eval_primitive(Primitive::Cosh, &[input.clone()], &no_params()).unwrap();
+    let acosh_cosh = eval_primitive(Primitive::Acosh, &[cosh_result], &no_params()).unwrap();
+
+    let original = extract_f64_vec(&input);
+    let round_trip = extract_f64_vec(&acosh_cosh);
+
+    for (orig, rt) in original.iter().zip(round_trip.iter()) {
+        assert_close(
+            *rt,
+            orig.abs(),
+            1e-12,
+            &format!("acosh(cosh({})) = {}", orig, orig.abs()),
+        );
+    }
+}
