@@ -432,6 +432,7 @@ dependencies = [
  "fj-egraph",
  "fj-interpreters",
  "fj-lax",
+ "fj-ledger",
  "fj-trace",
  "libfuzzer-sys",
  "serde_json",

@@ -40,6 +40,9 @@ path = "../../fj-trace"
 [dependencies.fj-interpreters]
 path = "../../fj-interpreters"
 
+[dependencies.fj-ledger]
+path = "../../fj-ledger"
+
 [[bin]]
 name = "ir_deserializer"
 path = "fuzz_targets/ir_deserializer.rs"
@@ -162,6 +165,13 @@ bench = false
 [[bin]]
 name = "fft_roundtrip"
 path = "fuzz_targets/fft_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ledger_deserializer"
+path = "fuzz_targets/ledger_deserializer.rs"
 test = false
 doc = false
 bench = false
