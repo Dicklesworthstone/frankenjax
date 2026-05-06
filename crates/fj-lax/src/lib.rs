@@ -10994,5 +10994,33 @@ mod prop_tests {
             let min_val = min_ab.as_f64_scalar().unwrap();
             prop_assert!(min_val <= max_val, "min(a,b) > max(a,b): {} > {}", min_val, max_val);
         }
+
+        #[test]
+        fn metamorphic_select_same_branches(cond in proptest::bool::ANY, a in -100.0f64..100.0) {
+            // select(cond, a, a) == a for any condition
+            let vcond = Value::scalar_bool(cond);
+            let va = Value::scalar_f64(a);
+            let result = eval_primitive(Primitive::Select, &[vcond, va.clone(), va.clone()], &BTreeMap::new()).unwrap();
+            let result_val = result.as_f64_scalar().unwrap();
+            prop_assert!((result_val - a).abs() < 1e-15, "select(cond, a, a) != a: {} != {}", result_val, a);
+        }
+
+        #[test]
+        fn metamorphic_select_integer_cond_consistency(cond in -100i64..100, a in -100.0f64..100.0, b in -100.0f64..100.0) {
+            // select with integer condition should match boolean interpretation
+            let bool_cond = cond != 0;
+            let vint_cond = Value::scalar_i64(cond);
+            let vbool_cond = Value::scalar_bool(bool_cond);
+            let va = Value::scalar_f64(a);
+            let vb = Value::scalar_f64(b);
+
+            let result_int = eval_primitive(Primitive::Select, &[vint_cond, va.clone(), vb.clone()], &BTreeMap::new()).unwrap();
+            let result_bool = eval_primitive(Primitive::Select, &[vbool_cond, va, vb], &BTreeMap::new()).unwrap();
+
+            let val_int = result_int.as_f64_scalar().unwrap();
+            let val_bool = result_bool.as_f64_scalar().unwrap();
+            prop_assert!((val_int - val_bool).abs() < 1e-15,
+                "select(int, a, b) != select(bool, a, b): {} != {} for cond={}", val_int, val_bool, cond);
+        }
     }
 }
