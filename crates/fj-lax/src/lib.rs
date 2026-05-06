@@ -11022,5 +11022,57 @@ mod prop_tests {
             prop_assert!((val_int - val_bool).abs() < 1e-15,
                 "select(int, a, b) != select(bool, a, b): {} != {} for cond={}", val_int, val_bool, cond);
         }
+
+        #[test]
+        fn metamorphic_asin_sin_inverse(x in -0.99f64..0.99) {
+            // asin(x) should satisfy sin(asin(x)) == x for x in (-1, 1)
+            let asin_x = eval_primitive(Primitive::Asin, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sin_asin_x = eval_primitive(Primitive::Sin, &[asin_x], &BTreeMap::new()).unwrap();
+
+            let result = sin_asin_x.as_f64_scalar().unwrap();
+            prop_assert!((result - x).abs() < 1e-14, "sin(asin(x)) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_acos_cos_inverse(x in -0.99f64..0.99) {
+            // acos(x) should satisfy cos(acos(x)) == x for x in (-1, 1)
+            let acos_x = eval_primitive(Primitive::Acos, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cos_acos_x = eval_primitive(Primitive::Cos, &[acos_x], &BTreeMap::new()).unwrap();
+
+            let result = cos_acos_x.as_f64_scalar().unwrap();
+            prop_assert!((result - x).abs() < 1e-14, "cos(acos(x)) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_atan_tan_inverse(x in -10.0f64..10.0) {
+            // tan(atan(x)) == x for any finite x
+            let atan_x = eval_primitive(Primitive::Atan, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let tan_atan_x = eval_primitive(Primitive::Tan, &[atan_x], &BTreeMap::new()).unwrap();
+
+            let result = tan_atan_x.as_f64_scalar().unwrap();
+            let rel_err = if x.abs() > 1e-10 { (result - x).abs() / x.abs() } else { (result - x).abs() };
+            prop_assert!(rel_err < 1e-12, "tan(atan(x)) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_asinh_sinh_inverse(x in -10.0f64..10.0) {
+            // sinh(asinh(x)) == x for any finite x
+            let asinh_x = eval_primitive(Primitive::Asinh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sinh_asinh_x = eval_primitive(Primitive::Sinh, &[asinh_x], &BTreeMap::new()).unwrap();
+
+            let result = sinh_asinh_x.as_f64_scalar().unwrap();
+            let rel_err = if x.abs() > 1e-10 { (result - x).abs() / x.abs() } else { (result - x).abs() };
+            prop_assert!(rel_err < 1e-12, "sinh(asinh(x)) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_atanh_tanh_inverse(x in -0.99f64..0.99) {
+            // tanh(atanh(x)) == x for x in (-1, 1)
+            let atanh_x = eval_primitive(Primitive::Atanh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let tanh_atanh_x = eval_primitive(Primitive::Tanh, &[atanh_x], &BTreeMap::new()).unwrap();
+
+            let result = tanh_atanh_x.as_f64_scalar().unwrap();
+            prop_assert!((result - x).abs() < 1e-14, "tanh(atanh(x)) != x: {} != {}", result, x);
+        }
     }
 }
