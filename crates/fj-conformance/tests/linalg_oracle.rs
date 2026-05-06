@@ -627,3 +627,96 @@ fn metamorphic_eigh_reconstruction() {
         "V @ diag(W) @ V^T should reconstruct A",
     );
 }
+
+// ======================== Scaling Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_svd_scaling() {
+    // If A has SVD U*S*V^T, then c*A has singular values c*S (for c > 0)
+    let a_data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+    let scale = 3.0;
+    let scaled_data: Vec<f64> = a_data.iter().map(|&x| x * scale).collect();
+
+    let a = make_f64_matrix(2, 3, &a_data);
+    let scaled_a = make_f64_matrix(2, 3, &scaled_data);
+
+    let result_a =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
+    let result_scaled =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&scaled_a), &no_params())
+            .unwrap();
+
+    let s_a = extract_f64_vec_from_value(&result_a[1]);
+    let s_scaled = extract_f64_vec_from_value(&result_scaled[1]);
+
+    let expected_scaled_s: Vec<f64> = s_a.iter().map(|&x| x * scale).collect();
+    assert_close(
+        &s_scaled,
+        &expected_scaled_s,
+        1e-10,
+        "SVD singular values should scale linearly",
+    );
+}
+
+#[test]
+fn metamorphic_cholesky_scaling() {
+    // If A = L*L^T, then c²*A = (c*L)*(c*L)^T (for c > 0)
+    let a_data = [4.0, 2.0, 2.0, 5.0];
+    let scale = 2.0;
+    let scaled_data: Vec<f64> = a_data.iter().map(|&x| x * scale * scale).collect();
+
+    let a = make_f64_matrix(2, 2, &a_data);
+    let scaled_a = make_f64_matrix(2, 2, &scaled_data);
+
+    let result_a = eval_primitive_multi(
+        Primitive::Cholesky,
+        std::slice::from_ref(&a),
+        &no_params(),
+    )
+    .unwrap();
+    let result_scaled = eval_primitive_multi(
+        Primitive::Cholesky,
+        std::slice::from_ref(&scaled_a),
+        &no_params(),
+    )
+    .unwrap();
+
+    let l_a = extract_f64_matrix(&result_a[0]);
+    let l_scaled = extract_f64_matrix(&result_scaled[0]);
+
+    let expected_scaled_l: Vec<f64> = l_a.iter().map(|&x| x * scale).collect();
+    assert_close(
+        &l_scaled,
+        &expected_scaled_l,
+        1e-10,
+        "Cholesky L should scale by sqrt of matrix scale factor",
+    );
+}
+
+#[test]
+fn metamorphic_eigh_scaling() {
+    // If A has eigenvalues W, then c*A has eigenvalues c*W
+    let a_data = [3.0, 1.0, 1.0, 2.0];
+    let scale = 4.0;
+    let scaled_data: Vec<f64> = a_data.iter().map(|&x| x * scale).collect();
+
+    let a = make_f64_matrix(2, 2, &a_data);
+    let scaled_a = make_f64_matrix(2, 2, &scaled_data);
+
+    let result_a =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params()).unwrap();
+    let result_scaled =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&scaled_a), &no_params())
+            .unwrap();
+
+    let w_a = extract_f64_vec_from_value(&result_a[0]);
+    let w_scaled = extract_f64_vec_from_value(&result_scaled[0]);
+
+    let expected_scaled_w: Vec<f64> = w_a.iter().map(|&x| x * scale).collect();
+    assert_close(
+        &w_scaled,
+        &expected_scaled_w,
+        1e-10,
+        "Eigh eigenvalues should scale linearly",
+    );
+}
