@@ -12,3 +12,8 @@ smallvec = { workspace = true }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-test-utils = { path = "../fj-test-utils" }
 proptest = { workspace = true }
+criterion = "0.5"
+
+[[bench]]
+name = "ad_baseline"
+harness = false
