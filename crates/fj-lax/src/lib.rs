@@ -10881,5 +10881,90 @@ mod prop_tests {
             let result = diff.as_f64_scalar().unwrap();
             prop_assert!((result - 1.0).abs() < 1e-10, "cosh^2(x) - sinh^2(x) != 1: got {}", result);
         }
+
+        #[test]
+        fn metamorphic_exp_log_inverse(x in 0.01f64..100.0) {
+            // exp(log(x)) == x for positive x
+            let log_x = eval_primitive(Primitive::Log, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let exp_log_x = eval_primitive(Primitive::Exp, &[log_x], &BTreeMap::new()).unwrap();
+
+            let result = exp_log_x.as_f64_scalar().unwrap();
+            let rel_err = (result - x).abs() / x.abs();
+            prop_assert!(rel_err < 1e-14, "exp(log(x)) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_sqrt_square_inverse(x in 0.0f64..1000.0) {
+            // sqrt(x)^2 == x for non-negative x
+            let sqrt_x = eval_primitive(Primitive::Sqrt, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let sq = eval_primitive(Primitive::Mul, &[sqrt_x.clone(), sqrt_x], &BTreeMap::new()).unwrap();
+
+            let result = sq.as_f64_scalar().unwrap();
+            let rel_err = if x > 1e-10 { (result - x).abs() / x } else { (result - x).abs() };
+            prop_assert!(rel_err < 1e-14, "sqrt(x)^2 != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_tan_odd_function(x in -1.5f64..1.5) {
+            // tan(-x) == -tan(x), avoiding poles near ±π/2
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let tan_neg_x = eval_primitive(Primitive::Tan, &[neg_x], &BTreeMap::new()).unwrap();
+
+            let tan_x = eval_primitive(Primitive::Tan, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let neg_tan_x = eval_primitive(Primitive::Neg, &[tan_x], &BTreeMap::new()).unwrap();
+
+            let lhs = tan_neg_x.as_f64_scalar().unwrap();
+            let rhs = neg_tan_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-12, "tan(-x) != -tan(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_tanh_odd_function(x in -5.0f64..5.0) {
+            // tanh(-x) == -tanh(x)
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let tanh_neg_x = eval_primitive(Primitive::Tanh, &[neg_x], &BTreeMap::new()).unwrap();
+
+            let tanh_x = eval_primitive(Primitive::Tanh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let neg_tanh_x = eval_primitive(Primitive::Neg, &[tanh_x], &BTreeMap::new()).unwrap();
+
+            let lhs = tanh_neg_x.as_f64_scalar().unwrap();
+            let rhs = neg_tanh_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-14, "tanh(-x) != -tanh(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_rsqrt_identity(x in 0.01f64..1000.0) {
+            // rsqrt(x)^2 * x == 1 for positive x
+            let rsqrt_x = eval_primitive(Primitive::Rsqrt, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let rsqrt2 = eval_primitive(Primitive::Mul, &[rsqrt_x.clone(), rsqrt_x], &BTreeMap::new()).unwrap();
+            let product = eval_primitive(Primitive::Mul, &[rsqrt2, Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+
+            let result = product.as_f64_scalar().unwrap();
+            prop_assert!((result - 1.0).abs() < 1e-12, "rsqrt(x)^2 * x != 1: got {}", result);
+        }
+
+        #[test]
+        fn metamorphic_abs_even_function(x in -100.0f64..100.0) {
+            // abs(-x) == abs(x)
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let abs_neg_x = eval_primitive(Primitive::Abs, &[neg_x], &BTreeMap::new()).unwrap();
+            let abs_x = eval_primitive(Primitive::Abs, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+
+            let lhs = abs_neg_x.as_f64_scalar().unwrap();
+            let rhs = abs_x.as_f64_scalar().unwrap();
+            prop_assert!((lhs - rhs).abs() < 1e-15, "abs(-x) != abs(x): {} != {}", lhs, rhs);
+        }
+
+        #[test]
+        fn metamorphic_cbrt_cube_inverse(x in -100.0f64..100.0) {
+            // cbrt(x)^3 == x
+            let cbrt_x = eval_primitive(Primitive::Cbrt, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cbrt2 = eval_primitive(Primitive::Mul, &[cbrt_x.clone(), cbrt_x.clone()], &BTreeMap::new()).unwrap();
+            let cube = eval_primitive(Primitive::Mul, &[cbrt2, cbrt_x], &BTreeMap::new()).unwrap();
+
+            let result = cube.as_f64_scalar().unwrap();
+            let rel_err = if x.abs() > 1e-10 { (result - x).abs() / x.abs() } else { (result - x).abs() };
+            prop_assert!(rel_err < 1e-12, "cbrt(x)^3 != x: {} != {}", result, x);
+        }
     }
 }
