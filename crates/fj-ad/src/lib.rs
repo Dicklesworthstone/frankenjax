@@ -2100,6 +2100,9 @@ pub fn vjp(
 
                     // For each position along the non-cumsum axes, do reverse cumsum
                     let axis_len = dims[axis];
+                    if axis_len == 0 {
+                        return Ok(vec![g.clone()]);
+                    }
                     let axis_stride = strides[axis];
                     let outer_count = total / axis_len;
 
@@ -2172,6 +2175,9 @@ pub fn vjp(
                     }
 
                     let axis_len = dims[axis];
+                    if axis_len == 0 {
+                        return Ok(vec![g.clone()]);
+                    }
                     let axis_stride = strides[axis];
                     let outer_count = total / axis_len;
 
@@ -2258,6 +2264,9 @@ pub fn vjp(
                         strides[i] = strides[i + 1] * dims[i + 1];
                     }
                     let axis_dim = dims[axis];
+                    if axis_dim == 0 {
+                        return Ok(vec![g.clone()]);
+                    }
                     let axis_stride = strides[axis];
                     let total = x_vals.len();
                     if g_vals.len() != total {
@@ -10087,6 +10096,26 @@ mod tests {
         assert!((result[0] - 6.0).abs() < 1e-10, "got {}", result[0]);
         assert!((result[1] - 5.0).abs() < 1e-10, "got {}", result[1]);
         assert!((result[2] - 3.0).abs() < 1e-10, "got {}", result[2]);
+    }
+
+    #[test]
+    fn cumsum_vjp_zero_axis_dim_no_panic() {
+        // A tensor with shape [2, 0, 3] has zero-sized axis 1.
+        // VJP should return the gradient unchanged without division by zero.
+        let x = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![2, 0, 3] }, vec![]).unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![2, 0, 3] }, vec![]).unwrap(),
+        );
+
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_string(), "1".to_string());
+
+        let grads = vjp_single(Primitive::Cumsum, &[x], &g, &params).unwrap();
+        let result = grads[0].as_tensor().unwrap();
+        assert_eq!(result.shape.dims, vec![2, 0, 3]);
+        assert!(result.elements.is_empty());
     }
 
     // ── Cumprod VJP tests ─────────────────────────────────────────
