@@ -168,6 +168,57 @@ fn oracle_select_accepts_scalar_float_condition() {
     assert_eq!(result_zero.as_i64_scalar().unwrap(), 0);
 }
 
+#[test]
+fn oracle_select_nan_condition_is_truthy() {
+    // NaN != 0 is true in IEEE 754, so NaN condition should select the true branch
+    let cond = Value::Scalar(Literal::from_f64(f64::NAN));
+    let on_true = Value::scalar_i64(42);
+    let on_false = Value::scalar_i64(0);
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    assert_eq!(
+        result.as_i64_scalar().unwrap(),
+        42,
+        "NaN condition should be truthy (NaN != 0 is true)"
+    );
+}
+
+#[test]
+fn oracle_select_negative_zero_is_falsy() {
+    // -0.0 == 0.0 in IEEE 754, so -0.0 condition should select the false branch
+    let cond = Value::Scalar(Literal::from_f64(-0.0));
+    let on_true = Value::scalar_i64(42);
+    let on_false = Value::scalar_i64(0);
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    assert_eq!(
+        result.as_i64_scalar().unwrap(),
+        0,
+        "-0.0 should be falsy (same as 0.0)"
+    );
+}
+
+#[test]
+fn oracle_select_infinity_is_truthy() {
+    // Infinity != 0 is true
+    let cond_pos = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let cond_neg = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let on_true = Value::scalar_i64(1);
+    let on_false = Value::scalar_i64(0);
+
+    let result_pos = eval_primitive(
+        Primitive::Select,
+        &[cond_pos, on_true.clone(), on_false.clone()],
+        &no_params(),
+    )
+    .unwrap();
+    assert_eq!(result_pos.as_i64_scalar().unwrap(), 1, "+Inf should be truthy");
+
+    let result_neg =
+        eval_primitive(Primitive::Select, &[cond_neg, on_true, on_false], &no_params()).unwrap();
+    assert_eq!(result_neg.as_i64_scalar().unwrap(), 1, "-Inf should be truthy");
+}
+
 // ======================== 1D Tensor Tests ========================
 
 #[test]
