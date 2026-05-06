@@ -1,0 +1,1 @@
+{"decision_id":"audit-seed-reprofile","record":{"mode":"Hardened","posterior_abandoned":0.5,"expected_loss_keep":5.0,"expected_loss_kill":5.0,"action":"Reprofile","timestamp_unix_ms":1},"signals":[{"signal_name":"strict_hardened_tie","log_likelihood_delta":0.0,"detail":"balanced loss matrix tie"}]}
