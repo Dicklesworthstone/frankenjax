@@ -17,6 +17,16 @@ path = "../crates/fj-core"
 [dependencies.fj-cache]
 path = "../crates/fj-cache"
 
+[dependencies.fj-lax]
+path = "../crates/fj-lax"
+
+[[bin]]
+name = "fuzz_primitive_eval"
+path = "fuzz_targets/fuzz_primitive_eval.rs"
+test = false
+doc = false
+bench = false
+
 [[bin]]
 name = "fuzz_cache_deserialize"
 path = "fuzz_targets/fuzz_cache_deserialize.rs"

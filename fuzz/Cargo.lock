@@ -109,12 +109,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "fj-lax"
+version = "0.1.0"
+dependencies = [
+ "fj-core",
+]
+
+[[package]]
 name = "frankenjax-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
  "fj-cache",
  "fj-core",
+ "fj-lax",
  "libfuzzer-sys",
 ]
 
