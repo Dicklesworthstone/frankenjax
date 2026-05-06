@@ -127,29 +127,45 @@ fn oracle_select_scalar_f64() {
 }
 
 #[test]
-fn oracle_select_rejects_scalar_integer_condition() {
+fn oracle_select_accepts_scalar_integer_condition() {
+    // Non-zero integer treated as true (for vmap(cond) compatibility)
     let cond = Value::scalar_i64(1);
     let on_true = Value::scalar_i64(100);
     let on_false = Value::scalar_i64(200);
-    let err = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params())
-        .expect_err("lax.select requires a boolean predicate");
-    assert!(
-        err.to_string().contains("select condition must be boolean"),
-        "unexpected error: {err}"
-    );
+    let result = eval_primitive(
+        Primitive::Select,
+        &[cond, on_true.clone(), on_false.clone()],
+        &no_params(),
+    )
+    .unwrap();
+    assert_eq!(result.as_i64_scalar().unwrap(), 100);
+
+    // Zero integer treated as false
+    let cond_zero = Value::scalar_i64(0);
+    let result_zero =
+        eval_primitive(Primitive::Select, &[cond_zero, on_true, on_false], &no_params()).unwrap();
+    assert_eq!(result_zero.as_i64_scalar().unwrap(), 200);
 }
 
 #[test]
-fn oracle_select_rejects_scalar_float_condition() {
+fn oracle_select_accepts_scalar_float_condition() {
+    // Non-zero float treated as true (for vmap(cond) compatibility)
     let cond = Value::Scalar(Literal::from_f64(1.0));
     let on_true = Value::scalar_i64(1);
     let on_false = Value::scalar_i64(0);
-    let err = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params())
-        .expect_err("lax.select requires a boolean predicate");
-    assert!(
-        err.to_string().contains("select condition must be boolean"),
-        "unexpected error: {err}"
-    );
+    let result = eval_primitive(
+        Primitive::Select,
+        &[cond, on_true.clone(), on_false.clone()],
+        &no_params(),
+    )
+    .unwrap();
+    assert_eq!(result.as_i64_scalar().unwrap(), 1);
+
+    // Zero float treated as false
+    let cond_zero = Value::Scalar(Literal::from_f64(0.0));
+    let result_zero =
+        eval_primitive(Primitive::Select, &[cond_zero, on_true, on_false], &no_params()).unwrap();
+    assert_eq!(result_zero.as_i64_scalar().unwrap(), 0);
 }
 
 // ======================== 1D Tensor Tests ========================
@@ -213,16 +229,16 @@ fn oracle_select_1d_f64() {
 }
 
 #[test]
-fn oracle_select_rejects_tensor_integer_condition() {
+fn oracle_select_accepts_tensor_integer_condition() {
+    // Integer tensor condition: 0 = false, non-zero = true (for vmap(cond) compatibility)
     let cond = make_i64_tensor(&[4], vec![0, 1, 0, -1]);
     let on_true = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
     let on_false = make_i64_tensor(&[4], vec![100, 200, 300, 400]);
-    let err = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params())
-        .expect_err("lax.select requires a boolean predicate");
-    assert!(
-        err.to_string().contains("select condition must be boolean"),
-        "unexpected error: {err}"
-    );
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    // cond[0]=0 -> false -> 100, cond[1]=1 -> true -> 20,
+    // cond[2]=0 -> false -> 300, cond[3]=-1 -> true -> 40
+    assert_eq!(extract_i64_vec(&result), vec![100, 20, 300, 40]);
 }
 
 // ======================== 2D Tensor Tests ========================
