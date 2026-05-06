@@ -13415,6 +13415,7 @@ mod tests {
 
     #[test]
     fn custom_derivative_registry_concurrent_write_no_deadlock() {
+        let _guard = custom_rule_test_guard();
         use std::thread;
 
         let mut handles = vec![];
@@ -13447,6 +13448,7 @@ mod tests {
 
     #[test]
     fn custom_derivative_registry_concurrent_read_write_no_deadlock() {
+        let _guard = custom_rule_test_guard();
         use std::thread;
 
         let mut handles = vec![];
@@ -13477,6 +13479,8 @@ mod tests {
         for handle in handles {
             handle.join().expect("thread should not deadlock");
         }
+
+        clear_custom_derivative_rules();
     }
 
     #[test]
@@ -13493,6 +13497,7 @@ mod tests {
 
     #[test]
     fn custom_derivative_registry_recovers_from_poisoned_lock() {
+        let _guard = custom_rule_test_guard();
         use std::thread;
 
         // Spawn a thread that will panic while holding the write lock
@@ -13519,5 +13524,7 @@ mod tests {
         })
         .is_ok();
         assert!(write_succeeded, "registry write should not panic after poison recovery");
+
+        clear_custom_derivative_rules();
     }
 }
