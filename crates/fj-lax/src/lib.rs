@@ -1243,6 +1243,16 @@ fn apply_bitwise_unary_literal(
     primitive: Primitive,
     literal: fj_core::Literal,
 ) -> Option<fj_core::Literal> {
+    apply_bitwise_unary_literal_with_dtype(primitive, literal, None)
+}
+
+/// Evaluate a unary bitwise operation with explicit dtype for proper I32 handling.
+/// When dtype is I32, PopulationCount/CountLeadingZeros operate on the lower 32 bits.
+fn apply_bitwise_unary_literal_with_dtype(
+    primitive: Primitive,
+    literal: fj_core::Literal,
+    dtype: Option<fj_core::DType>,
+) -> Option<fj_core::Literal> {
     match (primitive, literal) {
         (Primitive::BitwiseNot, fj_core::Literal::I64(value)) => {
             Some(fj_core::Literal::I64(!value))
@@ -1254,7 +1264,12 @@ fn apply_bitwise_unary_literal(
             Some(fj_core::Literal::U64(!value))
         }
         (Primitive::PopulationCount, fj_core::Literal::I64(value)) => {
-            Some(fj_core::Literal::I64(i64::from(value.count_ones())))
+            let count = if dtype == Some(fj_core::DType::I32) {
+                (value as i32).count_ones()
+            } else {
+                value.count_ones()
+            };
+            Some(fj_core::Literal::I64(i64::from(count)))
         }
         (Primitive::PopulationCount, fj_core::Literal::U32(value)) => {
             Some(fj_core::Literal::I64(i64::from(value.count_ones())))
@@ -1263,7 +1278,12 @@ fn apply_bitwise_unary_literal(
             Some(fj_core::Literal::I64(i64::from(value.count_ones())))
         }
         (Primitive::CountLeadingZeros, fj_core::Literal::I64(value)) => {
-            Some(fj_core::Literal::I64(i64::from(value.leading_zeros())))
+            let count = if dtype == Some(fj_core::DType::I32) {
+                (value as i32).leading_zeros()
+            } else {
+                value.leading_zeros()
+            };
+            Some(fj_core::Literal::I64(i64::from(count)))
         }
         (Primitive::CountLeadingZeros, fj_core::Literal::U32(value)) => {
             Some(fj_core::Literal::I64(i64::from(value.leading_zeros())))
@@ -1307,10 +1327,12 @@ fn eval_bitwise_unary(primitive: Primitive, inputs: &[Value]) -> Result<Value, E
                 .elements
                 .iter()
                 .map(|e| {
-                    apply_bitwise_unary_literal(primitive, *e).ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "bitwise ops require integer types",
-                    })
+                    apply_bitwise_unary_literal_with_dtype(primitive, *e, Some(t.dtype)).ok_or(
+                        EvalError::TypeMismatch {
+                            primitive,
+                            detail: "bitwise ops require integer types",
+                        },
+                    )
                 })
                 .collect();
             Ok(Value::Tensor(
@@ -7452,6 +7474,44 @@ mod tests {
         let a = Value::scalar_i64(-1); // all ones, no leading zeros
         let out = eval_primitive(Primitive::CountLeadingZeros, &[a], &no_params()).unwrap();
         assert_eq!(out.as_i64_scalar().unwrap(), 0);
+    }
+
+    #[test]
+    fn population_count_i32_tensor_negative() {
+        let tensor = TensorValue::new(
+            fj_core::DType::I32,
+            fj_core::Shape::vector(2),
+            vec![
+                fj_core::Literal::I64(-1), // all 32 bits set when viewed as i32
+                fj_core::Literal::I64(0b1010_1100),
+            ],
+        )
+        .unwrap();
+        let a = Value::Tensor(tensor);
+        let out = eval_primitive(Primitive::PopulationCount, &[a], &no_params()).unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.elements[0], fj_core::Literal::I64(32)); // -1 as i32 has 32 bits set, not 64
+        assert_eq!(t.elements[1], fj_core::Literal::I64(4));
+    }
+
+    #[test]
+    fn count_leading_zeros_i32_tensor() {
+        let tensor = TensorValue::new(
+            fj_core::DType::I32,
+            fj_core::Shape::vector(3),
+            vec![
+                fj_core::Literal::I64(1),  // 31 leading zeros in i32
+                fj_core::Literal::I64(0),  // 32 leading zeros in i32
+                fj_core::Literal::I64(-1), // 0 leading zeros (all ones)
+            ],
+        )
+        .unwrap();
+        let a = Value::Tensor(tensor);
+        let out = eval_primitive(Primitive::CountLeadingZeros, &[a], &no_params()).unwrap();
+        let t = out.as_tensor().unwrap();
+        assert_eq!(t.elements[0], fj_core::Literal::I64(31)); // not 63
+        assert_eq!(t.elements[1], fj_core::Literal::I64(32)); // not 64
+        assert_eq!(t.elements[2], fj_core::Literal::I64(0));
     }
 
     #[test]
