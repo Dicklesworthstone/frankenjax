@@ -13419,15 +13419,17 @@ mod tests {
 
         let mut handles = vec![];
 
+        // Use bitwise primitives that have no built-in VJP rules to avoid
+        // interfering with parallel tests that rely on built-in rules.
         for t in 0..4 {
             handles.push(thread::spawn(move || {
                 for i in 0..10 {
                     let primitive = match (t * 10 + i) % 5 {
-                        0 => Primitive::Add,
-                        1 => Primitive::Mul,
-                        2 => Primitive::Sub,
-                        3 => Primitive::Div,
-                        _ => Primitive::Pow,
+                        0 => Primitive::ShiftLeft,
+                        1 => Primitive::ShiftRightLogical,
+                        2 => Primitive::ShiftRightArithmetic,
+                        3 => Primitive::BitwiseNot,
+                        _ => Primitive::PopulationCount,
                     };
                     super::register_custom_vjp(primitive, |_primals, cotangent, _params| {
                         Ok(vec![cotangent.clone()])
@@ -13439,6 +13441,8 @@ mod tests {
         for handle in handles {
             handle.join().expect("thread should not deadlock");
         }
+
+        clear_custom_derivative_rules();
     }
 
     #[test]
