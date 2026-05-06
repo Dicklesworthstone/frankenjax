@@ -315,3 +315,103 @@ fn oracle_clz_consecutive_values() {
         );
     }
 }
+
+// ====================== I32 DTYPE TESTS ======================
+// I32 values are stored as Literal::I64 but should use 32-bit leading zeros
+
+fn make_i32_tensor(shape: &[u32], data: Vec<i32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(|v| Literal::I64(i64::from(v))).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn oracle_clz_i32_one() {
+    // clz(1_i32) = 31 (not 63)
+    let input = make_i32_tensor(&[], vec![1i32]);
+    let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
+    assert_eq!(
+        extract_i64_scalar(&result),
+        31,
+        "clz(1_i32) = 31 (not 63)"
+    );
+}
+
+#[test]
+fn oracle_clz_i32_zero() {
+    // clz(0_i32) = 32 (all 32 bits are zero)
+    let input = make_i32_tensor(&[], vec![0i32]);
+    let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
+    assert_eq!(
+        extract_i64_scalar(&result),
+        32,
+        "clz(0_i32) = 32 (not 64)"
+    );
+}
+
+#[test]
+fn oracle_clz_i32_negative_one() {
+    // clz(-1_i32) = 0 (all bits set, no leading zeros)
+    let input = make_i32_tensor(&[], vec![-1i32]);
+    let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
+    assert_eq!(
+        extract_i64_scalar(&result),
+        0,
+        "clz(-1_i32) = 0"
+    );
+}
+
+#[test]
+fn oracle_clz_i32_min() {
+    // clz(i32::MIN) = 0 (highest bit set)
+    let input = make_i32_tensor(&[], vec![i32::MIN]);
+    let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
+    assert_eq!(
+        extract_i64_scalar(&result),
+        0,
+        "clz(i32::MIN) = 0"
+    );
+}
+
+#[test]
+fn oracle_clz_i32_max() {
+    // clz(i32::MAX) = 1 (only sign bit is zero)
+    let input = make_i32_tensor(&[], vec![i32::MAX]);
+    let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
+    assert_eq!(
+        extract_i64_scalar(&result),
+        1,
+        "clz(i32::MAX) = 1"
+    );
+}
+
+#[test]
+fn oracle_clz_i32_tensor() {
+    // Test multiple I32 values in a tensor
+    let input = make_i32_tensor(&[5], vec![1, 0, -1, i32::MIN, i32::MAX]);
+    let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
+    let values = extract_i64_vec(&result);
+    assert_eq!(values, vec![31, 32, 0, 0, 1], "I32 tensor clz");
+}
+
+#[test]
+fn oracle_clz_i32_vs_i64_distinguishes() {
+    // Same small value gives different clz for I32 vs I64
+    let i32_input = make_i32_tensor(&[], vec![1i32]);
+    let i64_input = make_i64_tensor(&[], vec![1i64]);
+
+    let i32_result =
+        eval_primitive(Primitive::CountLeadingZeros, &[i32_input], &no_params()).unwrap();
+    let i64_result =
+        eval_primitive(Primitive::CountLeadingZeros, &[i64_input], &no_params()).unwrap();
+
+    assert_eq!(extract_i64_scalar(&i32_result), 31, "I32: 31 leading zeros");
+    assert_eq!(extract_i64_scalar(&i64_result), 63, "I64: 63 leading zeros");
+}
