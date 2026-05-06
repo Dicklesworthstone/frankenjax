@@ -11119,5 +11119,46 @@ mod prop_tests {
             let result = neg_neg_x.as_f64_scalar().unwrap();
             prop_assert!((result - x).abs() < 1e-15, "-(-x) != x: {} != {}", result, x);
         }
+
+        #[test]
+        fn metamorphic_reduce_sum_ones(len in 1usize..20) {
+            // sum of len ones should equal len
+            let ones: Vec<f64> = vec![1.0; len];
+            let tensor = Value::vector_f64(&ones).unwrap();
+            let result = eval_primitive(Primitive::ReduceSum, &[tensor], &BTreeMap::new()).unwrap();
+            let sum = result.as_f64_scalar().unwrap();
+            prop_assert!((sum - len as f64).abs() < 1e-12, "sum(ones) != len: {} != {}", sum, len);
+        }
+
+        #[test]
+        fn metamorphic_reduce_prod_ones(len in 1usize..20) {
+            // product of len ones should equal 1
+            let ones: Vec<f64> = vec![1.0; len];
+            let tensor = Value::vector_f64(&ones).unwrap();
+            let result = eval_primitive(Primitive::ReduceProd, &[tensor], &BTreeMap::new()).unwrap();
+            let prod = result.as_f64_scalar().unwrap();
+            prop_assert!((prod - 1.0).abs() < 1e-14, "prod(ones) != 1: {}", prod);
+        }
+
+        #[test]
+        fn metamorphic_reduce_max_min_ordering(a in -100.0f64..100.0, b in -100.0f64..100.0, c in -100.0f64..100.0) {
+            // min(vec) <= max(vec) always
+            let tensor = Value::vector_f64(&[a, b, c]).unwrap();
+            let max_result = eval_primitive(Primitive::ReduceMax, &[tensor.clone()], &BTreeMap::new()).unwrap();
+            let min_result = eval_primitive(Primitive::ReduceMin, &[tensor], &BTreeMap::new()).unwrap();
+            let max_val = max_result.as_f64_scalar().unwrap();
+            let min_val = min_result.as_f64_scalar().unwrap();
+            prop_assert!(min_val <= max_val, "min > max: {} > {}", min_val, max_val);
+        }
+
+        #[test]
+        fn metamorphic_reduce_sum_linearity(a in -10.0f64..10.0, b in -10.0f64..10.0, c in -10.0f64..10.0) {
+            // sum([a,b,c]) == a + b + c
+            let tensor = Value::vector_f64(&[a, b, c]).unwrap();
+            let sum_result = eval_primitive(Primitive::ReduceSum, &[tensor], &BTreeMap::new()).unwrap();
+            let sum_val = sum_result.as_f64_scalar().unwrap();
+            let expected = a + b + c;
+            prop_assert!((sum_val - expected).abs() < 1e-12, "sum([a,b,c]) != a+b+c: {} != {}", sum_val, expected);
+        }
     }
 }
