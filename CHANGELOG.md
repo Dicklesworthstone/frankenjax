@@ -10,7 +10,7 @@ FrankenJAX is a clean-room Rust reimplementation of JAX's transform semantics. T
 
 Latest audited commit before this update: [`4f87b84`](https://github.com/Dicklesworthstone/frankenjax/commit/4f87b84) (2026-05-01)
 
-Current state: 110 primitive operations, VJP + JVP coverage for the declared V1 primitive set, 848 JAX oracle fixture cases, 87 e-graph rewrite rules, 15 workspace crates, 162,733 Rust source lines under `crates/`, 4,416 static Rust test/proptest markers, 115 conformance test files, and a passing `cargo test --workspace` run via RCH on 2026-05-01.
+Current state: 115 primitive operations, VJP + JVP coverage for the declared V1 primitive set, 848 JAX oracle fixture cases, 87 e-graph rewrite rules, 15 workspace crates, 162,733 Rust source lines under `crates/`, 4,416 static Rust test/proptest markers, 115 conformance test files, and a passing `cargo test --workspace` run via RCH on 2026-05-01.
 
 ### 2026-05-01 Reality-Check Recalibration
 
@@ -24,7 +24,7 @@ Current state: 110 primitive operations, VJP + JVP coverage for the declared V1 
 
 ## Phase 7 — Oracle Conformance, Linalg/FFT Autodiff, and Documentation (2026-03-12 to 2026-03-17)
 
-Conformance coverage grew from 457 to 834 oracle fixture cases. Linear algebra decompositions (Cholesky, QR, SVD, Eigh, TriangularSolve) gained both eval kernels and full VJP/JVP rules. FFT primitives were implemented with autodiff. Two real Cholesky AD bugs were found and fixed by numerical verification. The README was rewritten to document all 110 primitives end-to-end.
+Conformance coverage grew from 457 to 834 oracle fixture cases. Linear algebra decompositions (Cholesky, QR, SVD, Eigh, TriangularSolve) gained both eval kernels and full VJP/JVP rules. FFT primitives were implemented with autodiff. Two real Cholesky AD bugs were found and fixed by numerical verification. The README was rewritten to document all 115 primitives end-to-end.
 
 ### Linear Algebra Primitives
 
@@ -416,9 +416,9 @@ Initial commit establishing the FrankenJAX workspace. Canonical Jaxpr IR with co
 
 | Capability | Phase Introduced | Current State |
 |-----------|-----------------|---------------|
-| Jaxpr IR (canonical intermediate representation) | 0 | 110 primitives, 11 dtypes |
-| Automatic Differentiation (VJP reverse-mode) | 0 | All 110 primitives |
-| Automatic Differentiation (JVP forward-mode) | 2 | All 110 primitives |
+| Jaxpr IR (canonical intermediate representation) | 0 | 115 primitives, 11 dtypes |
+| Automatic Differentiation (VJP reverse-mode) | 0 | All 115 primitives |
+| Automatic Differentiation (JVP forward-mode) | 2 | All 115 primitives |
 | E-graph optimizer (equality saturation) | 0 | 87 algebraic rewrite rules |
 | Partial evaluation and staging | 1 | Bitset-indexed with 27% DCE improvement |
 | API surface (`jit`, `grad`, `vmap`) | 2 | Broad composition support; advanced gaps tracked |

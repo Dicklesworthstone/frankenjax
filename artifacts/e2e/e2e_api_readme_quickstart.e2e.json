@@ -22,7 +22,7 @@
       "kind": "readme_quick_example",
       "path": "README.md",
       "required": true,
-      "sha256": "2d46b34a266ac53f5187f0cbb1d63fb93c51a896daf0421756e8d7cea912eedc"
+      "sha256": "ed1501bf9335998baf61da8d234d21be32f965b5421d5162180cb0b43405241e"
     },
     {
       "kind": "executable_readme_quickstart",

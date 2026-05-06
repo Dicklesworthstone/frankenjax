@@ -35,7 +35,7 @@ Tracker parent: `frankenjax-cstq`
 - [!] Agent Mail write-path bootstrap still fails with a database error; use `br`, JSONL, git status, and scoped file edits instead.
 
 ### RCB1. Reality-check answer
-- [x] Current implementation is substantial, not a skeleton: 15 workspace crates, 110 declared primitives, strict/hardened infrastructure, conformance harnesses, many E2E/durability artifacts, and recently green workspace validation evidence.
+- [x] Current implementation is substantial, not a skeleton: 15 workspace crates, 115 declared primitives, strict/hardened infrastructure, conformance harnesses, many E2E/durability artifacts, and recently green workspace validation evidence.
 - [x] Current implementation is not yet "100 percent V1 reality" because several spec-level promises still need stronger machine evidence or actual closure.
 - [x] The right next work is not another broad rewrite. It is a focused graph of oracle recapture, transform composition, semantic proof, memory/perf gating, durability inventory, cache-key parity, facade/API proof, and audit beads.
 - [x] GPU/TPU/XLA replacement remains excluded scope, not a failure, unless future docs claim it as V1.

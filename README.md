@@ -9,8 +9,8 @@
 
   ![Rust](https://img.shields.io/badge/rust-nightly_2024-orange)
   ![Tests](https://img.shields.io/badge/tests-workspace_passing-brightgreen)
-  ![Primitives](https://img.shields.io/badge/primitives-110_ops-blue)
-  ![AD Coverage](https://img.shields.io/badge/AD-110%2F110_VJP%2BJVP-brightgreen)
+  ![Primitives](https://img.shields.io/badge/primitives-115_ops-blue)
+  ![AD Coverage](https://img.shields.io/badge/AD-115%2F115_VJP%2BJVP-brightgreen)
   ![Oracle Fixtures](https://img.shields.io/badge/oracle_fixtures-861_cases-purple)
 </div>
 
@@ -26,8 +26,8 @@
 
 | Feature | Status |
 |---------|--------|
-| 110 primitive operations with full eval | All green |
-| Reverse-mode (VJP) + Forward-mode (JVP) AD for all 110 primitives | All green |
+| 115 primitive operations with full eval | All green |
+| Reverse-mode (VJP) + Forward-mode (JVP) AD for all 115 primitives | All green |
 | Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | V1 matrix gated; unsupported rows fail closed |
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
@@ -157,7 +157,7 @@ Numerical AD rules are validated against finite-difference gradients. The Choles
 User API (fj-api)
   |
   v
-Trace (fj-trace) --> Canonical IR (fj-core: Jaxpr + 110 Primitives)
+Trace (fj-trace) --> Canonical IR (fj-core: Jaxpr + 115 Primitives)
   |
   v
 Transform Stack (fj-dispatch)
@@ -165,7 +165,7 @@ Transform Stack (fj-dispatch)
   |    \      |      /
   v     v     v     v
   +-- E-graph optimizer (fj-egraph: 86 rewrite rules)
-  +-- AD engine (fj-ad: VJP + JVP for all 110 primitives)
+  +-- AD engine (fj-ad: VJP + JVP for all 115 primitives)
   +-- Batch trace (fj-dispatch/batching: per-primitive vmap rules)
   +-- Evidence ledger (fj-ledger: transform composition proofs)
   |
@@ -196,9 +196,9 @@ advanced transform/control-flow parity and public API example replay are green.
 
 | Crate | Purpose | Tests |
 |-------|---------|-------|
-| `fj-core` | Canonical IR (Jaxpr), 110 primitives, 11 dtypes, shapes, value model | Extensive |
+| `fj-core` | Canonical IR (Jaxpr), 115 primitives, 11 dtypes, shapes, value model | Extensive |
 | `fj-lax` | Primitive evaluation: arithmetic, linalg, FFT, reductions, tensor ops | 479 |
-| `fj-ad` | Automatic differentiation: VJP + JVP for all 110 primitives | 179 |
+| `fj-ad` | Automatic differentiation: VJP + JVP for all 115 primitives | 179 |
 | `fj-dispatch` | Transform dispatch, order-sensitive composition, batching | 55+ |
 | `fj-trace` | `make_jaxpr` tracing from Rust closures, nested trace contexts | 50 |
 | `fj-egraph` | E-graph equality saturation: 86 algebraic rewrite rules | 47 |
@@ -216,9 +216,9 @@ advanced transform/control-flow parity and public API example replay are green.
 
 **162,733 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
 
-- **110 primitive operations** covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions
+- **115 primitive operations** covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions
 - **11 DTypes** (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128) with JAX-verified type promotion rules
-- **Full AD coverage**: all 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT
+- **Full AD coverage**: all 115 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT
 - **Jacobian and Hessian** matrix computation via composable AD
 - **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes`, BatchTrace interpreter, and a 21-row transform/control-flow matrix gate
 - **E-graph optimizer**: 86 algebraic rewrite rules with equality saturation, verified to preserve program semantics
@@ -241,7 +241,7 @@ struct Jaxpr {
 }
 
 struct Equation {
-    primitive: Primitive,         // Which of the 110 operations
+    primitive: Primitive,         // Which of the 115 operations
     inputs: SmallVec<[Atom; 4]>, // Input references (variables or literals)
     outputs: SmallVec<[VarId; 2]>, // Output variable bindings
     params: BTreeMap<String, String>,  // Operation parameters (axes, dtypes, etc.)
@@ -404,7 +404,7 @@ Forward:  x --[mul]--> t1 --[add]--> y       (record tape)
 Backward: g_y --[add_vjp]--> g_t1 --[mul_vjp]--> g_x   (replay reverse)
 ```
 
-Each of the 110 primitives has hand-derived VJP and JVP rules. Here are a few concrete examples showing the mathematical formulas implemented:
+Each of the 115 primitives has hand-derived VJP and JVP rules. Here are a few concrete examples showing the mathematical formulas implemented:
 
 | Primitive | VJP Rule (given output cotangent ḡ) | JVP Rule (given input tangent ẋ) |
 |-----------|------|------|
@@ -583,7 +583,7 @@ Each `TracerRef` carries an abstract value (dtype + shape) and a reference to th
 
 **Nested scopes** are handled via a frame stack. Control flow primitives (`cond`, `scan`) push a sub-trace frame, trace the body closure in that scope, pop the frame to get a sub-Jaxpr, and record the control flow equation in the parent frame. This enables tracing through arbitrary nesting of `jit(grad(vmap(f)))` where each transform traces its body and wraps the result.
 
-**Shape inference** runs during tracing to validate tensor shapes at trace time rather than at eval time. The `infer_primitive_output_avals` function handles shape inference for all 110 primitives, including complex cases like broadcasting, gather indices, and convolution output shapes.
+**Shape inference** runs during tracing to validate tensor shapes at trace time rather than at eval time. The `infer_primitive_output_avals` function handles shape inference for all 115 primitives, including complex cases like broadcasting, gather indices, and convolution output shapes.
 
 ### Partial Evaluation & Constant Folding (fj-interpreters)
 
@@ -981,7 +981,7 @@ cargo fuzz run ir_deserializer corpus/seed/ir_deserializer
 
 ## Primitive Coverage
 
-The 110 operations in the `Primitive` enum span the full breadth of JAX's LAX API:
+The 115 operations in the `Primitive` enum span the full breadth of JAX's LAX API:
 
 | Category | Primitives | Count |
 |----------|-----------|-------|
@@ -1165,7 +1165,7 @@ A: JAX requires Python + XLA + CUDA/TPU. FrankenJAX gives you the mathematical t
 A: We capture oracle fixtures from real JAX 0.9.2 (861 cases), then run our Rust implementation against those fixtures in CI. Every primitive, every transform, every dtype combination.
 
 **Q: Is the AD (automatic differentiation) complete?**
-A: Yes. All 110 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Numerical verification tests confirm correctness via finite-difference comparison.
+A: Yes. All 115 primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Numerical verification tests confirm correctness via finite-difference comparison.
 
 **Q: What's the Trace Transform Ledger?**
 A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Verification binds evidence entries to their transforms, includes evidence content in the stack signature, and the TTL semantic gate replays representative stacks with canonical fingerprints, output shape/dtype metadata, fixture links, and deterministic rejection reasons for invalid proof chains.
