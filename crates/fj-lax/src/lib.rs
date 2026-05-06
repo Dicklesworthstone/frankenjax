@@ -10966,5 +10966,33 @@ mod prop_tests {
             let rel_err = if x.abs() > 1e-10 { (result - x).abs() / x.abs() } else { (result - x).abs() };
             prop_assert!(rel_err < 1e-12, "cbrt(x)^3 != x: {} != {}", result, x);
         }
+
+        #[test]
+        fn metamorphic_max_plus_min_equals_sum(a in -100.0f64..100.0, b in -100.0f64..100.0) {
+            // max(a,b) + min(a,b) == a + b
+            let va = Value::scalar_f64(a);
+            let vb = Value::scalar_f64(b);
+            let max_ab = eval_primitive(Primitive::Max, &[va.clone(), vb.clone()], &BTreeMap::new()).unwrap();
+            let min_ab = eval_primitive(Primitive::Min, &[va.clone(), vb.clone()], &BTreeMap::new()).unwrap();
+            let lhs = eval_primitive(Primitive::Add, &[max_ab, min_ab], &BTreeMap::new()).unwrap();
+            let rhs = eval_primitive(Primitive::Add, &[va, vb], &BTreeMap::new()).unwrap();
+
+            let lhs_val = lhs.as_f64_scalar().unwrap();
+            let rhs_val = rhs.as_f64_scalar().unwrap();
+            prop_assert!((lhs_val - rhs_val).abs() < 1e-12, "max(a,b)+min(a,b) != a+b: {} != {}", lhs_val, rhs_val);
+        }
+
+        #[test]
+        fn metamorphic_max_min_ordering(a in -100.0f64..100.0, b in -100.0f64..100.0) {
+            // min(a,b) <= max(a,b) always
+            let va = Value::scalar_f64(a);
+            let vb = Value::scalar_f64(b);
+            let max_ab = eval_primitive(Primitive::Max, &[va.clone(), vb.clone()], &BTreeMap::new()).unwrap();
+            let min_ab = eval_primitive(Primitive::Min, &[va, vb], &BTreeMap::new()).unwrap();
+
+            let max_val = max_ab.as_f64_scalar().unwrap();
+            let min_val = min_ab.as_f64_scalar().unwrap();
+            prop_assert!(min_val <= max_val, "min(a,b) > max(a,b): {} > {}", min_val, max_val);
+        }
     }
 }
