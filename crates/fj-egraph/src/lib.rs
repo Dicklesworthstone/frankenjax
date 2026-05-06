@@ -3199,7 +3199,8 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        // These identity rules require aggressive mode (not safe mode)
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         // After add-zero rule, should have no equations (just pass-through)
         assert!(
             optimized.equations.is_empty(),
@@ -3210,7 +3211,8 @@ mod tests {
 
     #[test]
     fn algebraic_rules_count() {
-        let rules = algebraic_rules();
+        // Count rules in aggressive mode (includes numerically unsafe rules)
+        let rules = algebraic_rules_with_config(&OptimizationConfig::aggressive());
         assert!(
             rules.len() >= 50,
             "expected at least 50 rewrite rules, got {}",
@@ -3235,7 +3237,8 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        // These identity rules require aggressive mode (not safe mode)
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.is_empty(),
             "x/1 should simplify to x: got {} eqns",
@@ -3435,7 +3438,8 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        // reciprocal-reciprocal is in numerically_unsafe_rules
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() < jaxpr.equations.len(),
             "reciprocal(reciprocal(x)) should simplify: got {} eqns (was {})",
@@ -4528,7 +4532,8 @@ mod tests {
             ],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        // add-zero identity requires aggressive mode
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.is_empty(),
             "rev pair plus add-zero should collapse to the input: {optimized:#?}"
@@ -4601,6 +4606,7 @@ mod tests {
     #[test]
     fn test_new_rules_dont_break_existing() {
         // Verify that existing rules still work after adding new V2-PRIM rules.
+        // These rules are in numerically_unsafe_rules so we test in aggressive mode.
         // Test: mul(x, 0) should still simplify to 0.
         let jaxpr = Jaxpr::new(
             vec![VarId(1)],
@@ -4616,7 +4622,7 @@ mod tests {
             }],
         );
 
-        let optimized = optimize_jaxpr(&jaxpr);
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             optimized.equations.len() <= jaxpr.equations.len(),
             "existing mul-zero rule should still work: got {} eqns (was {})",
@@ -4649,7 +4655,7 @@ mod tests {
             ],
         );
 
-        let optimized2 = optimize_jaxpr(&jaxpr2);
+        let optimized2 = optimize_jaxpr_with_config(&jaxpr2, &OptimizationConfig::aggressive());
         assert!(
             optimized2.equations.len() < jaxpr2.equations.len(),
             "existing neg-neg rule should still work: got {} eqns (was {})",
@@ -4931,13 +4937,13 @@ mod tests {
 
     #[test]
     fn rule_sub_zero() {
-        // x - 0 → x
+        // x - 0 → x (requires aggressive mode)
         let jaxpr = binary_jaxpr(
             Primitive::Sub,
             Atom::Var(VarId(1)),
             Atom::Lit(Literal::I64(0)),
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "x-0 should simplify to x: got {} eqns",
@@ -4947,13 +4953,13 @@ mod tests {
 
     #[test]
     fn rule_mul_one() {
-        // x * 1 → x
+        // x * 1 → x (requires aggressive mode)
         let jaxpr = binary_jaxpr(
             Primitive::Mul,
             Atom::Var(VarId(1)),
             Atom::Lit(Literal::I64(1)),
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "x*1 should simplify to x: got {} eqns",
@@ -5059,13 +5065,13 @@ mod tests {
 
     #[test]
     fn rule_pow_one() {
-        // x^1 → x
+        // x^1 → x (requires aggressive mode)
         let jaxpr = binary_jaxpr(
             Primitive::Pow,
             Atom::Var(VarId(1)),
             Atom::Lit(Literal::I64(1)),
         );
-        let opt = optimize_jaxpr(&jaxpr);
+        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
         assert!(
             opt.equations.is_empty(),
             "x^1 should simplify to x: got {} eqns",
@@ -5600,7 +5606,9 @@ mod tests {
 
     #[test]
     fn numerical_safety_mode_preserves_safe_rules() {
-        // Even in safety mode, neg-neg should still work
+        // neg-neg is now in numerically_unsafe_rules (moved for NaN boundary preservation)
+        // In safe mode, neg-neg should NOT be simplified (preserves NaN propagation)
+        // In aggressive mode, neg-neg SHOULD be simplified
         let jaxpr = Jaxpr::new(
             vec![VarId(1)],
             vec![],
@@ -5625,16 +5633,28 @@ mod tests {
             ],
         );
 
-        let opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
-        // neg(neg(a)) should become just a, so no Neg in result
-        let has_neg = opt
+        // Safe mode: neg-neg is preserved (not simplified)
+        let safe_opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::safe());
+        let safe_has_neg = safe_opt
             .equations
             .iter()
             .any(|eq| eq.primitive == Primitive::Neg);
         assert!(
-            !has_neg,
-            "safety mode should still apply neg-neg rule: {:?}",
-            opt.equations
+            safe_has_neg,
+            "safe mode should preserve neg-neg (for NaN boundary safety): {:?}",
+            safe_opt.equations
+        );
+
+        // Aggressive mode: neg-neg should be simplified
+        let aggr_opt = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
+        let aggr_has_neg = aggr_opt
+            .equations
+            .iter()
+            .any(|eq| eq.primitive == Primitive::Neg);
+        assert!(
+            !aggr_has_neg,
+            "aggressive mode should simplify neg-neg: {:?}",
+            aggr_opt.equations
         );
     }
 
