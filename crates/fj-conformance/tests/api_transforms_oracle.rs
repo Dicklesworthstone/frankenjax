@@ -250,6 +250,75 @@ fn metamorphic_vmap_distributes() {
     );
 }
 
+/// Metamorphic 4: vmap over binary op — vmap(add)(a, b)[i] == add(a[i], b[i]).
+#[test]
+fn metamorphic_vmap_binary_distributes() {
+    let jaxpr = build_program(ProgramSpec::Add2);
+    let a_elements = vec![1, 2, 3, 4, 5];
+    let b_elements = vec![10, 20, 30, 40, 50];
+
+    let a = Value::vector_i64(&a_elements).expect("vector a");
+    let b = Value::vector_i64(&b_elements).expect("vector b");
+
+    let vmap_result = vmap(jaxpr.clone())
+        .call(vec![a, b])
+        .expect("vmap(add)(a, b) should succeed");
+    let t = vmap_result[0].as_tensor().expect("tensor");
+    let vmap_vals: Vec<i64> = t
+        .elements
+        .iter()
+        .map(|l| l.as_i64().expect("i64"))
+        .collect();
+
+    assert_eq!(vmap_vals.len(), a_elements.len());
+    for i in 0..a_elements.len() {
+        let expected = a_elements[i] + b_elements[i];
+        assert_eq!(
+            vmap_vals[i], expected,
+            "vmap(add)(a, b)[{i}] != a[{i}] + b[{i}]"
+        );
+    }
+    log_oracle(
+        "metamorphic_vmap_binary_distributes",
+        &("metamorphic", "vmap_binary_distributes"),
+    );
+}
+
+/// Metamorphic 5: vmap(grad(f)) consistency — gradient computed batch-wise.
+#[test]
+fn metamorphic_vmap_grad_consistency() {
+    let jaxpr = build_program(ProgramSpec::Square);
+    let inputs = vec![1.0, 2.0, 3.0, -1.0, 0.5];
+    let batch_input = Value::vector_f64(&inputs).expect("vector");
+
+    // vmap(grad(square))(xs) should equal [2*x for x in xs]
+    // Transform order: [Vmap, Grad] means vmap(grad(f)) - Vmap is outer, Grad is inner
+    let composed = compose(jaxpr, vec![Transform::Vmap, Transform::Grad])
+        .call(vec![batch_input])
+        .expect("vmap(grad(square)) should succeed");
+
+    let t = composed[0].as_tensor().expect("tensor");
+    let grads: Vec<f64> = t
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("f64"))
+        .collect();
+
+    for (i, &x) in inputs.iter().enumerate() {
+        let expected = 2.0 * x;
+        assert!(
+            (grads[i] - expected).abs() < 1e-10,
+            "vmap(grad(square))[{i}] = {} != {}",
+            grads[i],
+            expected
+        );
+    }
+    log_oracle(
+        "metamorphic_vmap_grad_consistency",
+        &("metamorphic", "vmap_grad_consistency"),
+    );
+}
+
 // ============================================================================
 // 3. Adversarial Cases
 // ============================================================================
