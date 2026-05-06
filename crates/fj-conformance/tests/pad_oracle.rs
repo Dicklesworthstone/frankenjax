@@ -83,6 +83,39 @@ fn pad_params(low: &[i64], high: &[i64], interior: &[i64]) -> BTreeMap<String, S
     p
 }
 
+fn slice_params_with_strides(
+    starts: &[usize],
+    limits: &[usize],
+    strides: &[usize],
+) -> BTreeMap<String, String> {
+    let mut p = BTreeMap::new();
+    p.insert(
+        "start_indices".to_string(),
+        starts
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    p.insert(
+        "limit_indices".to_string(),
+        limits
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    p.insert(
+        "strides".to_string(),
+        strides
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    p
+}
+
 // ======================== 1D Padding Tests ========================
 
 #[test]
@@ -302,4 +335,48 @@ fn oracle_pad_3d() {
         extract_i64_vec(&result),
         vec![0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8]
     );
+}
+
+#[test]
+fn metamorphic_edge_pad_then_slice_recovers_operand() {
+    let operand = make_i64_tensor(&[2, 3], vec![1, 2, 3, 4, 5, 6]);
+    let expected_shape = extract_shape(&operand);
+    let expected_values = extract_i64_vec(&operand);
+    let padded = eval_primitive(
+        Primitive::Pad,
+        &[operand, Value::scalar_i64(-7)],
+        &pad_params(&[1, 2], &[2, 1], &[0, 0]),
+    )
+    .unwrap();
+    let recovered = eval_primitive(
+        Primitive::Slice,
+        &[padded],
+        &slice_params_with_strides(&[1, 2], &[3, 5], &[1, 1]),
+    )
+    .unwrap();
+
+    assert_eq!(extract_shape(&recovered), expected_shape);
+    assert_eq!(extract_i64_vec(&recovered), expected_values);
+}
+
+#[test]
+fn metamorphic_interior_pad_strided_slice_recovers_operand() {
+    let operand = make_i64_tensor(&[4], vec![3, 5, 8, 13]);
+    let expected_shape = extract_shape(&operand);
+    let expected_values = extract_i64_vec(&operand);
+    let padded = eval_primitive(
+        Primitive::Pad,
+        &[operand, Value::scalar_i64(-1)],
+        &pad_params(&[1], &[1], &[2]),
+    )
+    .unwrap();
+    let recovered = eval_primitive(
+        Primitive::Slice,
+        &[padded],
+        &slice_params_with_strides(&[1], &[11], &[3]),
+    )
+    .unwrap();
+
+    assert_eq!(extract_shape(&recovered), expected_shape);
+    assert_eq!(extract_i64_vec(&recovered), expected_values);
 }
