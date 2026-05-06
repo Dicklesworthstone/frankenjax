@@ -354,9 +354,16 @@ fn select_literal_as_dtype(
 fn select_bool_condition(primitive: Primitive, value: Literal) -> Result<bool, EvalError> {
     match value {
         Literal::Bool(flag) => Ok(flag),
-        _ => Err(EvalError::TypeMismatch {
+        Literal::I64(v) => Ok(v != 0),
+        Literal::U32(v) => Ok(v != 0),
+        Literal::U64(v) => Ok(v != 0),
+        Literal::BF16Bits(bits) => Ok(Literal::BF16Bits(bits).as_f64().is_some_and(|v| v != 0.0)),
+        Literal::F16Bits(bits) => Ok(Literal::F16Bits(bits).as_f64().is_some_and(|v| v != 0.0)),
+        Literal::F32Bits(bits) => Ok(f32::from_bits(bits) != 0.0),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits) != 0.0),
+        Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => Err(EvalError::TypeMismatch {
             primitive,
-            detail: "select condition must be boolean",
+            detail: "select condition must be boolean or numeric",
         }),
     }
 }
