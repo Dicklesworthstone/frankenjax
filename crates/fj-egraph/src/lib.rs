@@ -6627,4 +6627,135 @@ mod tests {
             _ => false,
         }
     }
+
+    #[test]
+    fn optimizer_idempotent_polynomial() {
+        // optimize(optimize(jaxpr)) should produce structurally identical result
+        // Tests idempotence: applying optimization twice gives same structure
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let config = OptimizationConfig::aggressive();
+        let once = optimize_jaxpr_with_config(&jaxpr, &config);
+        let twice = optimize_jaxpr_with_config(&once, &config);
+
+        assert_eq!(
+            once.equations.len(),
+            twice.equations.len(),
+            "optimizer should be idempotent: same equation count"
+        );
+
+        let once_primitives: Vec<_> = once.equations.iter().map(|e| e.primitive).collect();
+        let twice_primitives: Vec<_> = twice.equations.iter().map(|e| e.primitive).collect();
+        assert_eq!(
+            once_primitives, twice_primitives,
+            "optimizer should be idempotent: same primitive sequence"
+        );
+    }
+
+    #[test]
+    fn optimizer_idempotent_trig() {
+        // sin(x)^2 + cos(x)^2 pattern - should optimize to constant 1
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(5)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cos,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(4))],
+                    outputs: smallvec![VarId(5)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let config = OptimizationConfig::aggressive();
+        let once = optimize_jaxpr_with_config(&jaxpr, &config);
+        let twice = optimize_jaxpr_with_config(&once, &config);
+
+        assert_eq!(
+            once.equations.len(),
+            twice.equations.len(),
+            "optimizer should be idempotent on trig: same equation count"
+        );
+
+        let once_primitives: Vec<_> = once.equations.iter().map(|e| e.primitive).collect();
+        let twice_primitives: Vec<_> = twice.equations.iter().map(|e| e.primitive).collect();
+        assert_eq!(
+            once_primitives, twice_primitives,
+            "optimizer should be idempotent on trig: same primitive sequence"
+        );
+    }
 }
