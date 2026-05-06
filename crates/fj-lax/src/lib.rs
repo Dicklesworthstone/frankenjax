@@ -11074,5 +11074,50 @@ mod prop_tests {
             let result = tanh_atanh_x.as_f64_scalar().unwrap();
             prop_assert!((result - x).abs() < 1e-14, "tanh(atanh(x)) != x: {} != {}", result, x);
         }
+
+        #[test]
+        fn metamorphic_acosh_cosh_inverse(x in 1.01f64..100.0) {
+            // cosh(acosh(x)) == x for x >= 1
+            let acosh_x = eval_primitive(Primitive::Acosh, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let cosh_acosh_x = eval_primitive(Primitive::Cosh, &[acosh_x], &BTreeMap::new()).unwrap();
+
+            let result = cosh_acosh_x.as_f64_scalar().unwrap();
+            let rel_err = (result - x).abs() / x;
+            prop_assert!(rel_err < 1e-12, "cosh(acosh(x)) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_erf_erfinv_inverse(x in -0.99f64..0.99) {
+            // erfinv(erf(x)) should approximately equal x for x in (-1, 1)
+            // Note: due to numerical precision limits, we use looser tolerance
+            let erf_x = eval_primitive(Primitive::Erf, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let erfinv_erf_x = eval_primitive(Primitive::ErfInv, &[erf_x], &BTreeMap::new()).unwrap();
+
+            let result = erfinv_erf_x.as_f64_scalar().unwrap();
+            let abs_err = (result - x).abs();
+            prop_assert!(abs_err < 1e-10, "erfinv(erf(x)) != x: {} != {} (err={})", result, x, abs_err);
+        }
+
+        #[test]
+        fn metamorphic_reciprocal_involution(x in -100.0f64..100.0) {
+            // 1/(1/x) == x for non-zero x
+            prop_assume!(x.abs() > 1e-10);
+            let recip_x = eval_primitive(Primitive::Reciprocal, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let recip_recip_x = eval_primitive(Primitive::Reciprocal, &[recip_x], &BTreeMap::new()).unwrap();
+
+            let result = recip_recip_x.as_f64_scalar().unwrap();
+            let rel_err = (result - x).abs() / x.abs();
+            prop_assert!(rel_err < 1e-14, "1/(1/x) != x: {} != {}", result, x);
+        }
+
+        #[test]
+        fn metamorphic_neg_involution(x in -100.0f64..100.0) {
+            // -(-x) == x
+            let neg_x = eval_primitive(Primitive::Neg, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let neg_neg_x = eval_primitive(Primitive::Neg, &[neg_x], &BTreeMap::new()).unwrap();
+
+            let result = neg_neg_x.as_f64_scalar().unwrap();
+            prop_assert!((result - x).abs() < 1e-15, "-(-x) != x: {} != {}", result, x);
+        }
     }
 }
