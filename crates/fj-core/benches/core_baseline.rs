@@ -100,7 +100,7 @@ fn bench_tensor_value_new(c: &mut Criterion) {
 
 fn bench_value_scalar_f64(c: &mut Criterion) {
     c.bench_function("core/value_scalar_f64", |b| {
-        b.iter(|| Value::scalar_f64(3.14159))
+        b.iter(|| Value::scalar_f64(std::f64::consts::PI))
     });
 }
 
