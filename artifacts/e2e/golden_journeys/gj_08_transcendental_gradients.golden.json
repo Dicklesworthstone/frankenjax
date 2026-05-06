@@ -1,0 +1,78 @@
+{
+  "assertions": [
+    {
+      "detail": "expected 0.8944271909999159, got 0.8944271909999159",
+      "name": "grad_asinh_at_0.5",
+      "passed": true
+    },
+    {
+      "detail": "expected 0.7071067811865475, got 0.7071067811865475",
+      "name": "grad_asinh_at_1",
+      "passed": true
+    },
+    {
+      "detail": "expected 0.4472135954999579, got 0.4472135954999579",
+      "name": "grad_asinh_at_2",
+      "passed": true
+    },
+    {
+      "detail": "expected 0.5547001962252291, got 0.5547001962252291",
+      "name": "grad_asinh_at_-1.5",
+      "passed": true
+    },
+    {
+      "detail": "expected 0.8944271909999159, got 0.8944271909999159",
+      "name": "grad_acosh_at_1.5",
+      "passed": true
+    },
+    {
+      "detail": "expected 0.5773502691896258, got 0.5773502691896258",
+      "name": "grad_acosh_at_2",
+      "passed": true
+    },
+    {
+      "detail": "expected 0.35355339059327373, got 0.35355339059327373",
+      "name": "grad_acosh_at_3",
+      "passed": true
+    },
+    {
+      "detail": "expected 1.0989010989010988, got 1.0989010989010988",
+      "name": "grad_atanh_at_0.3",
+      "passed": true
+    },
+    {
+      "detail": "expected 1.3333333333333333, got 1.3333333333333333",
+      "name": "grad_atanh_at_0.5",
+      "passed": true
+    },
+    {
+      "detail": "expected 1.1904761904761905, got 1.1904761904761905",
+      "name": "grad_atanh_at_-0.4",
+      "passed": true
+    },
+    {
+      "detail": "expected 2.7777777777777786, got 2.7777777777777786",
+      "name": "grad_atanh_at_0.8",
+      "passed": true
+    }
+  ],
+  "duration_ms": "[DURATION_MS]",
+  "input_capture": {
+    "functions": [
+      "asinh",
+      "acosh",
+      "atanh"
+    ],
+    "transform": "Grad"
+  },
+  "output_capture": {
+    "all_passed": true,
+    "total_assertions": 11
+  },
+  "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_08_transcendental --exact --nocapture",
+  "result": "pass",
+  "scenario_category": "transcendental_gradients",
+  "scenario_id": "gj_08_transcendental_gradients",
+  "schema_version": "frankenjax.golden-journey.v1",
+  "ts_utc_unix_ms": "[TIMESTAMP_MS]"
+}

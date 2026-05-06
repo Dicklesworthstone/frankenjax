@@ -1,0 +1,69 @@
+{
+  "assertions": [
+    {
+      "detail": "qr_result=true",
+      "name": "qr_decomposition_succeeds",
+      "passed": true
+    },
+    {
+      "detail": "q_shape=[3, 3]",
+      "name": "qr_q_shape_correct",
+      "passed": true
+    },
+    {
+      "detail": "chol_result=true",
+      "name": "cholesky_decomposition_succeeds",
+      "passed": true
+    },
+    {
+      "detail": "L[0,1]=0",
+      "name": "cholesky_is_lower_triangular",
+      "passed": true
+    },
+    {
+      "detail": "svd_result=true",
+      "name": "svd_decomposition_succeeds",
+      "passed": true
+    },
+    {
+      "detail": "eigh_result=true",
+      "name": "eigh_decomposition_succeeds",
+      "passed": true
+    },
+    {
+      "detail": "eigenvalues=[1.0, 3.0], expected ~[1.0, 3.0]",
+      "name": "eigh_eigenvalues_correct",
+      "passed": true
+    },
+    {
+      "detail": "jit_ok=true, eager_ok=true",
+      "name": "jit_qr_matches_eager",
+      "passed": true
+    }
+  ],
+  "duration_ms": "[DURATION_MS]",
+  "input_capture": {
+    "matrices": {
+      "cholesky": "2x2 positive-definite",
+      "eigh": "2x2 symmetric",
+      "qr": "3x3 non-singular",
+      "svd": "2x3 rectangular"
+    },
+    "operations": [
+      "qr",
+      "cholesky",
+      "svd",
+      "eigh"
+    ]
+  },
+  "output_capture": {
+    "all_passed": true,
+    "total_assertions": 8
+  },
+  "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_10 --exact --nocapture",
+  "result": "pass",
+  "scenario_category": "linear_algebra",
+  "scenario_id": "gj_10_linear_algebra",
+  "schema_version": "frankenjax.golden-journey.v1",
+  "ts_utc_unix_ms": "[TIMESTAMP_MS]"
+}

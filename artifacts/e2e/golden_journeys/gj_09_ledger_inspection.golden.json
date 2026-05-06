@@ -1,0 +1,79 @@
+{
+  "assertions": [
+    {
+      "detail": "dispatch_0 ledger_len=1",
+      "name": "ledger_0_has_one_entry",
+      "passed": true
+    },
+    {
+      "detail": "dispatch_1 ledger_len=1",
+      "name": "ledger_1_has_one_entry",
+      "passed": true
+    },
+    {
+      "detail": "dispatch_2 ledger_len=1",
+      "name": "ledger_2_has_one_entry",
+      "passed": true
+    },
+    {
+      "detail": "dispatch_3 ledger_len=1",
+      "name": "ledger_3_has_one_entry",
+      "passed": true
+    },
+    {
+      "detail": "total=4, unique=4",
+      "name": "all_cache_keys_unique",
+      "passed": true
+    },
+    {
+      "detail": "decision_id=fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944, cache_key=fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
+      "name": "ledger_0_decision_id_matches_cache_key",
+      "passed": true
+    },
+    {
+      "detail": "decision_id=fjx-v2-6d7dce148ec28b9d0cf6c203be82ce7259924933ce1c0125dc9b0e71b93f2b88, cache_key=fjx-v2-6d7dce148ec28b9d0cf6c203be82ce7259924933ce1c0125dc9b0e71b93f2b88",
+      "name": "ledger_1_decision_id_matches_cache_key",
+      "passed": true
+    },
+    {
+      "detail": "decision_id=fjx-v2-564073ae55b51446cb893d77a51f6c4ddd6b3fa7928af81e3d6d6d823ea6041a, cache_key=fjx-v2-564073ae55b51446cb893d77a51f6c4ddd6b3fa7928af81e3d6d6d823ea6041a",
+      "name": "ledger_2_decision_id_matches_cache_key",
+      "passed": true
+    },
+    {
+      "detail": "decision_id=fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf, cache_key=fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf",
+      "name": "ledger_3_decision_id_matches_cache_key",
+      "passed": true
+    }
+  ],
+  "duration_ms": "[DURATION_MS]",
+  "input_capture": {
+    "dispatch_count": 4,
+    "programs": [
+      "Add2",
+      "Square",
+      "AddOne",
+      "Square"
+    ]
+  },
+  "output_capture": {
+    "cache_keys": [
+      "fjx-v2-becb8d4f7e8f67afc4a994a5d5f564481a1251f503fd088d5ed0b39a63f77944",
+      "fjx-v2-6d7dce148ec28b9d0cf6c203be82ce7259924933ce1c0125dc9b0e71b93f2b88",
+      "fjx-v2-564073ae55b51446cb893d77a51f6c4ddd6b3fa7928af81e3d6d6d823ea6041a",
+      "fjx-v2-997d70b621d5c7ea8d6b6065b8781b2c0972d2dcc0df8c4879760a702853a1bf"
+    ],
+    "ledger_lengths": [
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_09 --exact --nocapture",
+  "result": "pass",
+  "scenario_category": "ledger_inspection",
+  "scenario_id": "gj_09_ledger_inspection",
+  "schema_version": "frankenjax.golden-journey.v1",
+  "ts_utc_unix_ms": "[TIMESTAMP_MS]"
+}

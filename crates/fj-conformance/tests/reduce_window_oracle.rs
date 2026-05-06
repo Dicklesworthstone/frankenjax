@@ -666,3 +666,157 @@ fn oracle_reduce_window_min_no_nan_untouched() {
     assert!((vals[1] - 2.0).abs() < 1e-10);
     assert!((vals[2] - 2.0).abs() < 1e-10);
 }
+
+// ======================== Metamorphic Tests ========================
+
+#[test]
+fn metamorphic_reduce_window_sum_constant_array() {
+    // Sum over window of constant c = window_size * c
+    let c = 3.0;
+    let input = make_f64_tensor(&[6], vec![c; 6]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input],
+        &sum_window("3", "1", "valid"),
+    )
+    .unwrap();
+    let vals = extract_f64_vec(&result);
+    let expected = 3.0 * c; // window_size=3, constant=3.0
+    for v in vals {
+        assert!(
+            (v - expected).abs() < 1e-10,
+            "sum(window of constant) should equal window_size * constant"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_reduce_window_max_scaling() {
+    // max(scale * x) = scale * max(x) for positive scale
+    let scale = 2.5;
+    let original = vec![1.0, 4.0, 2.0, 5.0, 3.0];
+    let scaled: Vec<f64> = original.iter().map(|x| x * scale).collect();
+
+    let input_orig = make_f64_tensor(&[5], original);
+    let input_scaled = make_f64_tensor(&[5], scaled);
+
+    let max_orig = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_orig],
+        &max_window("2", "1", "valid"),
+    )
+    .unwrap();
+    let max_scaled = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_scaled],
+        &max_window("2", "1", "valid"),
+    )
+    .unwrap();
+
+    let vals_orig = extract_f64_vec(&max_orig);
+    let vals_scaled = extract_f64_vec(&max_scaled);
+
+    for (o, s) in vals_orig.iter().zip(vals_scaled.iter()) {
+        let expected = o * scale;
+        assert!(
+            (s - expected).abs() < 1e-10,
+            "max(scale*x) should equal scale*max(x): {} vs {}",
+            s,
+            expected
+        );
+    }
+}
+
+#[test]
+fn metamorphic_reduce_window_min_scaling() {
+    // min(scale * x) = scale * min(x) for positive scale
+    let scale = 2.0;
+    let original = vec![5.0, 2.0, 4.0, 1.0, 3.0];
+    let scaled: Vec<f64> = original.iter().map(|x| x * scale).collect();
+
+    let input_orig = make_f64_tensor(&[5], original);
+    let input_scaled = make_f64_tensor(&[5], scaled);
+
+    let min_orig = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_orig],
+        &min_window("2", "1", "valid"),
+    )
+    .unwrap();
+    let min_scaled = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_scaled],
+        &min_window("2", "1", "valid"),
+    )
+    .unwrap();
+
+    let vals_orig = extract_f64_vec(&min_orig);
+    let vals_scaled = extract_f64_vec(&min_scaled);
+
+    for (o, s) in vals_orig.iter().zip(vals_scaled.iter()) {
+        let expected = o * scale;
+        assert!(
+            (s - expected).abs() < 1e-10,
+            "min(scale*x) should equal scale*min(x)"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_reduce_window_unit_window_is_identity() {
+    // Window of size 1 should return original values
+    let input = make_f64_tensor(&[5], vec![7.0, 3.0, 9.0, 1.0, 5.0]);
+    let result = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input.clone()],
+        &sum_window("1", "1", "valid"),
+    )
+    .unwrap();
+
+    let orig = extract_f64_vec(&input);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(orig, vals, "window_size=1 should be identity");
+}
+
+#[test]
+fn metamorphic_reduce_window_sum_additivity() {
+    // sum_window(a + b) = sum_window(a) + sum_window(b)
+    let a = vec![1.0, 2.0, 3.0, 4.0];
+    let b = vec![5.0, 6.0, 7.0, 8.0];
+    let ab: Vec<f64> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
+
+    let input_a = make_f64_tensor(&[4], a);
+    let input_b = make_f64_tensor(&[4], b);
+    let input_ab = make_f64_tensor(&[4], ab);
+
+    let sum_a = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_a],
+        &sum_window("2", "1", "valid"),
+    )
+    .unwrap();
+    let sum_b = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_b],
+        &sum_window("2", "1", "valid"),
+    )
+    .unwrap();
+    let sum_ab = eval_primitive(
+        Primitive::ReduceWindow,
+        &[input_ab],
+        &sum_window("2", "1", "valid"),
+    )
+    .unwrap();
+
+    let vals_a = extract_f64_vec(&sum_a);
+    let vals_b = extract_f64_vec(&sum_b);
+    let vals_ab = extract_f64_vec(&sum_ab);
+
+    for i in 0..vals_ab.len() {
+        let expected = vals_a[i] + vals_b[i];
+        assert!(
+            (vals_ab[i] - expected).abs() < 1e-10,
+            "sum_window(a+b) should equal sum_window(a) + sum_window(b)"
+        );
+    }
+}
