@@ -11,3 +11,8 @@ smallvec = { workspace = true }
 [dev-dependencies]
 fj-interpreters = { path = "../fj-interpreters" }
 fj-test-utils = { path = "../fj-test-utils" }
+criterion = "0.5"
+
+[[bench]]
+name = "egraph_baseline"
+harness = false
