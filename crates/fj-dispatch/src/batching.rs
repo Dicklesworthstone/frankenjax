@@ -3025,7 +3025,9 @@ fn batch_passthrough_leading_multi(
         let outputs = eval_primitive_multi(primitive, &slices?, params)
             .map_err(|e| BatchError::EvalError(e.to_string()))?;
 
-        let buckets = per_output.get_or_insert_with(|| vec![Vec::new(); outputs.len()]);
+        let buckets = per_output.get_or_insert_with(|| {
+            (0..outputs.len()).map(|_| Vec::with_capacity(batch_size)).collect()
+        });
         if buckets.len() != outputs.len() {
             return Err(BatchError::InterpreterError(format!(
                 "primitive {} returned inconsistent output arity across batch slices",
@@ -4460,7 +4462,9 @@ fn batch_sub_jaxpr_by_slices(
         let slices = slices?;
         let outputs = eval_sub_jaxpr_equation_values(equation, &slices)?;
 
-        let buckets = per_output.get_or_insert_with(|| vec![Vec::new(); outputs.len()]);
+        let buckets = per_output.get_or_insert_with(|| {
+            (0..outputs.len()).map(|_| Vec::with_capacity(batch_size)).collect()
+        });
         if buckets.len() != outputs.len() {
             return Err(BatchError::InterpreterError(format!(
                 "{} returned inconsistent output arity across batch slices: expected {}, got {}",
@@ -4644,7 +4648,9 @@ fn batch_switch_sub_jaxprs_by_slices(
         let outputs = eval_jaxpr_with_consts(selected_branch, const_values, branch_args)
             .map_err(|e| BatchError::InterpreterError(e.to_string()))?;
 
-        let buckets = per_output.get_or_insert_with(|| vec![Vec::new(); outputs.len()]);
+        let buckets = per_output.get_or_insert_with(|| {
+            (0..outputs.len()).map(|_| Vec::with_capacity(batch_size)).collect()
+        });
         if buckets.len() != outputs.len() {
             return Err(BatchError::InterpreterError(format!(
                 "switch returned inconsistent output arity across batch slices: expected {}, got {}",
