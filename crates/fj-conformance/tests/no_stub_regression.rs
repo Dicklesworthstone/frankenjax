@@ -299,6 +299,45 @@ fn primitive_arity_matches_runtime_contract_for_reviewed_edges() {
     assert_eq!(primitive_arity(Primitive::Switch), 3);
 }
 
+#[test]
+fn collective_primitives_fail_closed_with_pmap_context_error() {
+    for primitive in [
+        Primitive::Psum,
+        Primitive::Pmean,
+        Primitive::AllGather,
+        Primitive::AllToAll,
+        Primitive::AxisIndex,
+    ] {
+        let inputs = representative_inputs(DType::I64, primitive);
+        let err = eval_primitive(primitive, &inputs, &BTreeMap::new())
+            .expect_err("pmap-only collective should fail closed in V1");
+        match err {
+            EvalError::Unsupported {
+                primitive: actual_primitive,
+                detail,
+            } => {
+                assert_eq!(
+                    actual_primitive, primitive,
+                    "collective error should retain the primitive identity"
+                );
+                assert!(
+                    detail.contains(
+                        "collective operation requires pmap context with multi-device backend"
+                    ),
+                    "collective error should explain pmap context requirement: {detail}"
+                );
+                assert_no_banned_substrings(primitive.as_str(), &detail);
+            }
+            other => {
+                assert!(
+                    matches!(other, EvalError::Unsupported { .. }),
+                    "collective {primitive:?} should use unsupported pmap-context error"
+                );
+            }
+        }
+    }
+}
+
 fn params_for(primitive: Primitive, dtype: DType) -> BTreeMap<String, String> {
     let mut params = BTreeMap::new();
     match primitive {
