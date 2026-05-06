@@ -3249,10 +3249,29 @@ fn eval_conv_1d(
     };
 
     let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
-    let total = batch * out_w * c_out;
+    let total = batch
+        .checked_mul(out_w)
+        .and_then(|v| v.checked_mul(c_out))
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv output size overflow".into(),
+        })?;
     let mut elements = Vec::with_capacity(total);
 
+    let width_c_in = width.checked_mul(c_in).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv lhs stride overflow".into(),
+    })?;
+    let c_in_c_out = c_in.checked_mul(c_out).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv rhs stride overflow".into(),
+    })?;
+
     for n in 0..batch {
+        let n_offset = n.checked_mul(width_c_in).ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv batch index overflow".into(),
+        })?;
         for w in 0..out_w {
             for co in 0..c_out {
                 let mut acc = 0.0_f64;
@@ -3260,8 +3279,8 @@ fn eval_conv_1d(
                     let in_pos = (w * stride + k) as isize - pad_left as isize;
                     if in_pos >= 0 && (in_pos as usize) < width {
                         for ci in 0..c_in {
-                            let lhs_idx = n * width * c_in + (in_pos as usize) * c_in + ci;
-                            let rhs_idx = k * c_in * c_out + ci * c_out + co;
+                            let lhs_idx = n_offset + (in_pos as usize) * c_in + ci;
+                            let rhs_idx = k * c_in_c_out + ci * c_out + co;
                             let lhs_val = lhs.elements[lhs_idx].as_f64().unwrap_or(0.0);
                             let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
                             acc += lhs_val * rhs_val;
@@ -3324,10 +3343,38 @@ fn eval_conv_2d(
     let (out_w, pad_left) = compute_output_and_pad(width, kernel_w, stride_w, padding);
 
     let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
-    let total = batch * out_h * out_w * c_out;
+    let total = batch
+        .checked_mul(out_h)
+        .and_then(|v| v.checked_mul(out_w))
+        .and_then(|v| v.checked_mul(c_out))
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv output size overflow".into(),
+        })?;
     let mut elements = Vec::with_capacity(total);
 
+    let width_c_in = width.checked_mul(c_in).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv lhs width*c_in overflow".into(),
+    })?;
+    let height_width_c_in = height.checked_mul(width_c_in).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv lhs stride overflow".into(),
+    })?;
+    let c_in_c_out = c_in.checked_mul(c_out).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv rhs c_in*c_out overflow".into(),
+    })?;
+    let kw_c_in_c_out = kernel_w.checked_mul(c_in_c_out).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv rhs stride overflow".into(),
+    })?;
+
     for n in 0..batch {
+        let n_offset = n.checked_mul(height_width_c_in).ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv batch index overflow".into(),
+        })?;
         for oh in 0..out_h {
             for ow in 0..out_w {
                 for co in 0..c_out {
@@ -3337,20 +3384,15 @@ fn eval_conv_2d(
                         if in_h < 0 || (in_h as usize) >= height {
                             continue;
                         }
+                        let h_offset = (in_h as usize) * width_c_in;
                         for kw in 0..kernel_w {
                             let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
                             if in_w < 0 || (in_w as usize) >= width {
                                 continue;
                             }
                             for ci in 0..c_in {
-                                let lhs_idx = n * height * width * c_in
-                                    + (in_h as usize) * width * c_in
-                                    + (in_w as usize) * c_in
-                                    + ci;
-                                let rhs_idx = kh * kernel_w * c_in * c_out
-                                    + kw * c_in * c_out
-                                    + ci * c_out
-                                    + co;
+                                let lhs_idx = n_offset + h_offset + (in_w as usize) * c_in + ci;
+                                let rhs_idx = kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
                                 let lhs_val = lhs.elements[lhs_idx].as_f64().unwrap_or(0.0);
                                 let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
                                 acc += lhs_val * rhs_val;
