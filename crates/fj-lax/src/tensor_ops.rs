@@ -3266,6 +3266,11 @@ fn eval_conv_1d(
         primitive,
         detail: "conv rhs stride overflow".into(),
     })?;
+    // Pre-check that kernel_w * c_in_c_out won't overflow (used in inner loop: k * c_in_c_out)
+    kernel_w.checked_mul(c_in_c_out).ok_or_else(|| EvalError::Unsupported {
+        primitive,
+        detail: "conv rhs kernel stride overflow".into(),
+    })?;
 
     for n in 0..batch {
         let n_offset = n.checked_mul(width_c_in).ok_or_else(|| EvalError::Unsupported {
