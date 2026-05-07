@@ -11202,5 +11202,110 @@ mod prop_tests {
             prop_assert!(val == -1.0 || val == 1.0, "sign(x) not in {{-1, 1}}: {}", val);
             prop_assert!((val > 0.0) == (x > 0.0), "sign(x) wrong sign: sign({}) = {}", x, val);
         }
+
+        #[test]
+        fn metamorphic_pow_zero_exponent(x in 0.1f64..100.0) {
+            // x^0 = 1 for x > 0
+            let result = eval_primitive(Primitive::Pow, &[Value::scalar_f64(x), Value::scalar_f64(0.0)], &BTreeMap::new()).unwrap();
+            let val = result.as_f64_scalar().unwrap();
+            prop_assert!((val - 1.0).abs() < 1e-14, "x^0 != 1: {}^0 = {}", x, val);
+        }
+
+        #[test]
+        fn metamorphic_pow_one_exponent(x in -100.0f64..100.0) {
+            // x^1 = x
+            let result = eval_primitive(Primitive::Pow, &[Value::scalar_f64(x), Value::scalar_f64(1.0)], &BTreeMap::new()).unwrap();
+            let val = result.as_f64_scalar().unwrap();
+            prop_assert!((val - x).abs() < 1e-14, "x^1 != x: {}^1 = {}", x, val);
+        }
+
+        #[test]
+        fn metamorphic_pow_two_equals_square(x in -10.0f64..10.0) {
+            // x^2 = square(x)
+            let pow_result = eval_primitive(Primitive::Pow, &[Value::scalar_f64(x), Value::scalar_f64(2.0)], &BTreeMap::new()).unwrap();
+            let square_result = eval_primitive(Primitive::Square, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let pow_val = pow_result.as_f64_scalar().unwrap();
+            let square_val = square_result.as_f64_scalar().unwrap();
+            prop_assert!((pow_val - square_val).abs() < 1e-12, "x^2 != square(x): {} vs {}", pow_val, square_val);
+        }
+
+        #[test]
+        fn metamorphic_expm1_equals_exp_minus_one(x in -2.0f64..2.0) {
+            // expm1(x) = exp(x) - 1
+            let expm1_result = eval_primitive(Primitive::Expm1, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let exp_result = eval_primitive(Primitive::Exp, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let expm1_val = expm1_result.as_f64_scalar().unwrap();
+            let exp_val = exp_result.as_f64_scalar().unwrap();
+            let diff = (expm1_val - (exp_val - 1.0)).abs();
+            prop_assert!(diff < 1e-14, "expm1(x) != exp(x)-1: {} vs {}", expm1_val, exp_val - 1.0);
+        }
+
+        #[test]
+        fn metamorphic_log1p_equals_log_one_plus(x in 0.01f64..10.0) {
+            // log1p(x) = log(1 + x) for x > 0
+            let log1p_result = eval_primitive(Primitive::Log1p, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let one_plus_x = 1.0 + x;
+            let log_result = eval_primitive(Primitive::Log, &[Value::scalar_f64(one_plus_x)], &BTreeMap::new()).unwrap();
+            let log1p_val = log1p_result.as_f64_scalar().unwrap();
+            let log_val = log_result.as_f64_scalar().unwrap();
+            let diff = (log1p_val - log_val).abs();
+            prop_assert!(diff < 1e-14, "log1p(x) != log(1+x): {} vs {}", log1p_val, log_val);
+        }
+
+        #[test]
+        fn metamorphic_erfc_equals_one_minus_erf(x in -3.0f64..3.0) {
+            // erfc(x) = 1 - erf(x)
+            let erfc_result = eval_primitive(Primitive::Erfc, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let erf_result = eval_primitive(Primitive::Erf, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let erfc_val = erfc_result.as_f64_scalar().unwrap();
+            let erf_val = erf_result.as_f64_scalar().unwrap();
+            let diff = (erfc_val - (1.0 - erf_val)).abs();
+            prop_assert!(diff < 1e-14, "erfc(x) != 1-erf(x): {} vs {}", erfc_val, 1.0 - erf_val);
+        }
+
+        #[test]
+        fn metamorphic_round_close_to_input(x in -100.0f64..100.0) {
+            // |round(x) - x| <= 0.5
+            let round_result = eval_primitive(Primitive::Round, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let round_val = round_result.as_f64_scalar().unwrap();
+            let diff = (round_val - x).abs();
+            prop_assert!(diff <= 0.5 + 1e-10, "|round(x) - x| > 0.5: |{} - {}| = {}", round_val, x, diff);
+        }
+
+        #[test]
+        fn metamorphic_round_is_integer(x in -100.0f64..100.0) {
+            // round(x) is an integer
+            let round_result = eval_primitive(Primitive::Round, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let round_val = round_result.as_f64_scalar().unwrap();
+            let frac = round_val - round_val.trunc();
+            prop_assert!(frac.abs() < 1e-10, "round(x) not an integer: round({}) = {}", x, round_val);
+        }
+
+        #[test]
+        fn metamorphic_div_mul_identity(a in 1.0f64..100.0, b in 1.0f64..100.0) {
+            // (a / b) * b ≈ a
+            let div_result = eval_primitive(Primitive::Div, &[Value::scalar_f64(a), Value::scalar_f64(b)], &BTreeMap::new()).unwrap();
+            let div_val = div_result.as_f64_scalar().unwrap();
+            let mul_result = eval_primitive(Primitive::Mul, &[Value::scalar_f64(div_val), Value::scalar_f64(b)], &BTreeMap::new()).unwrap();
+            let mul_val = mul_result.as_f64_scalar().unwrap();
+            let diff = (mul_val - a).abs();
+            prop_assert!(diff < 1e-12, "(a/b)*b != a: ({}/{})*{} = {} != {}", a, b, b, mul_val, a);
+        }
+
+        #[test]
+        fn metamorphic_lgamma_one_equals_zero(_dummy in 0..1i32) {
+            // lgamma(1) = 0
+            let result = eval_primitive(Primitive::Lgamma, &[Value::scalar_f64(1.0)], &BTreeMap::new()).unwrap();
+            let val = result.as_f64_scalar().unwrap();
+            prop_assert!(val.abs() < 1e-14, "lgamma(1) != 0: {}", val);
+        }
+
+        #[test]
+        fn metamorphic_lgamma_two_equals_zero(_dummy in 0..1i32) {
+            // lgamma(2) = 0 (since gamma(2) = 1! = 1)
+            let result = eval_primitive(Primitive::Lgamma, &[Value::scalar_f64(2.0)], &BTreeMap::new()).unwrap();
+            let val = result.as_f64_scalar().unwrap();
+            prop_assert!(val.abs() < 1e-14, "lgamma(2) != 0: {}", val);
+        }
     }
 }
