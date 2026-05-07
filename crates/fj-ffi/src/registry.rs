@@ -386,7 +386,7 @@ mod tests {
                 for _ in 0..1000 {
                     let target = reg.get("target_fn").expect("target should exist");
                     assert_eq!(target.name, "target_fn");
-                    assert_eq!(target.fn_ptr as usize, mock_success as usize);
+                    assert_eq!(target.fn_ptr as usize, (mock_success as FfiFnPtr) as usize);
                 }
             }));
         }

@@ -11144,7 +11144,7 @@ mod prop_tests {
         fn metamorphic_reduce_max_min_ordering(a in -100.0f64..100.0, b in -100.0f64..100.0, c in -100.0f64..100.0) {
             // min(vec) <= max(vec) always
             let tensor = Value::vector_f64(&[a, b, c]).unwrap();
-            let max_result = eval_primitive(Primitive::ReduceMax, &[tensor.clone()], &BTreeMap::new()).unwrap();
+            let max_result = eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&tensor), &BTreeMap::new()).unwrap();
             let min_result = eval_primitive(Primitive::ReduceMin, &[tensor], &BTreeMap::new()).unwrap();
             let max_val = max_result.as_f64_scalar().unwrap();
             let min_val = min_result.as_f64_scalar().unwrap();

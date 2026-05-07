@@ -4698,9 +4698,8 @@ mod tests {
 
     mod proptest_tests {
         use super::*;
-        use proptest::prelude::*;
 
-        proptest! {
+        proptest::proptest! {
             #![proptest_config(proptest::test_runner::Config::with_cases(
                 fj_test_utils::property_test_case_count()
             ))]
