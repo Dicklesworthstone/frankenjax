@@ -9473,6 +9473,75 @@ mod tests {
                     "x={x}: jvp={fwd}, vjp={rev}"
                 );
             }
+
+            #[test]
+            fn metamorphic_grad_sin_equals_cos(x in prop::num::f64::NORMAL.prop_filter(
+                "finite and moderate",
+                |x| x.is_finite() && x.abs() < 1e3
+            )) {
+                let jaxpr = build_program(ProgramSpec::SinX);
+                let grad_sin = grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("grad of sin");
+                let expected_cos = x.cos();
+                prop_assert!(
+                    (grad_sin - expected_cos).abs() < 1e-10,
+                    "grad(sin(x)) != cos(x): {} vs {} at x={}", grad_sin, expected_cos, x
+                );
+            }
+
+            #[test]
+            fn metamorphic_grad_cos_equals_neg_sin(x in prop::num::f64::NORMAL.prop_filter(
+                "finite and moderate",
+                |x| x.is_finite() && x.abs() < 1e3
+            )) {
+                let jaxpr = build_program(ProgramSpec::CosX);
+                let grad_cos = grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("grad of cos");
+                let expected_neg_sin = -x.sin();
+                prop_assert!(
+                    (grad_cos - expected_neg_sin).abs() < 1e-10,
+                    "grad(cos(x)) != -sin(x): {} vs {} at x={}", grad_cos, expected_neg_sin, x
+                );
+            }
+
+            #[test]
+            fn metamorphic_grad_exp_self_reproducing(x in prop::num::f64::NORMAL.prop_filter(
+                "finite and not too large",
+                |x| x.is_finite() && x.abs() < 50.0
+            )) {
+                let jaxpr = build_program(ProgramSpec::LaxExp);
+                let grad_exp = grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("grad of exp");
+                let expected_exp = x.exp();
+                prop_assert!(
+                    (grad_exp - expected_exp).abs() / expected_exp.max(1.0) < 1e-10,
+                    "grad(exp(x)) != exp(x): {} vs {} at x={}", grad_exp, expected_exp, x
+                );
+            }
+
+            #[test]
+            fn metamorphic_grad_log_reciprocal(x in 0.01f64..100.0) {
+                let jaxpr = build_program(ProgramSpec::LaxLog);
+                let grad_log = grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("grad of log");
+                let expected_recip = 1.0 / x;
+                prop_assert!(
+                    (grad_log - expected_recip).abs() < 1e-10,
+                    "grad(log(x)) != 1/x: {} vs {} at x={}", grad_log, expected_recip, x
+                );
+            }
+
+            #[test]
+            fn metamorphic_grad_sqrt_half_rsqrt(x in 0.01f64..100.0) {
+                let jaxpr = build_program(ProgramSpec::LaxSqrt);
+                let grad_sqrt = grad_first(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("grad of sqrt");
+                let expected = 0.5 / x.sqrt();
+                prop_assert!(
+                    (grad_sqrt - expected).abs() < 1e-10,
+                    "grad(sqrt(x)) != 0.5/sqrt(x): {} vs {} at x={}", grad_sqrt, expected, x
+                );
+            }
         }
     }
 
