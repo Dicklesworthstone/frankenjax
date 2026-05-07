@@ -913,6 +913,7 @@ dependencies = [
  "fj-test-utils",
  "ftui",
  "insta",
+ "proptest",
 ]
 
 [[package]]
