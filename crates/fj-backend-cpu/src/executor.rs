@@ -1539,5 +1539,44 @@ mod tests {
             let backend = CpuBackend::with_device_count(count);
             proptest::prop_assert_eq!(backend.devices().len(), count as usize);
         }
+
+        #[test]
+        fn metamorphic_eval_determinism(a in -100i64..100, b in -100i64..100) {
+            let jaxpr = build_program(ProgramSpec::Add2);
+            let args = vec![Value::scalar_i64(a), Value::scalar_i64(b)];
+            let result1 = evaluate_jaxpr_parallel(&jaxpr, &args).expect("eval1");
+            let result2 = evaluate_jaxpr_parallel(&jaxpr, &args).expect("eval2");
+            proptest::prop_assert_eq!(result1, result2, "evaluation must be deterministic");
+        }
+
+        #[test]
+        fn metamorphic_eval_commutativity_add(a in -100i64..100, b in -100i64..100) {
+            let jaxpr = build_program(ProgramSpec::Add2);
+            let result_ab = evaluate_jaxpr_parallel(&jaxpr, &[Value::scalar_i64(a), Value::scalar_i64(b)]).expect("ab");
+            let result_ba = evaluate_jaxpr_parallel(&jaxpr, &[Value::scalar_i64(b), Value::scalar_i64(a)]).expect("ba");
+            proptest::prop_assert_eq!(result_ab, result_ba, "add should be commutative");
+        }
+
+        #[test]
+        fn metamorphic_parallel_vs_interpreter_equivalence(x in -50i64..50) {
+            let jaxpr = build_program(ProgramSpec::Square);
+            let args = vec![Value::scalar_i64(x)];
+            let parallel_result = evaluate_jaxpr_parallel(&jaxpr, &args).expect("parallel");
+            let interp_result = fj_interpreters::eval_jaxpr(&jaxpr, &args).expect("interp");
+            proptest::prop_assert_eq!(parallel_result, interp_result, "parallel must match interpreter");
+        }
+
+        #[test]
+        fn metamorphic_wide_dag_determinism(
+            vals in proptest::collection::vec(-100i64..100, 4..8)
+        ) {
+            let jaxpr = make_parallel_independent_jaxpr();
+            if vals.len() >= 2 {
+                let args = vec![Value::scalar_i64(vals[0]), Value::scalar_i64(vals[1])];
+                let r1 = evaluate_jaxpr_parallel(&jaxpr, &args).expect("r1");
+                let r2 = evaluate_jaxpr_parallel(&jaxpr, &args).expect("r2");
+                proptest::prop_assert_eq!(r1, r2, "wide DAG must be deterministic");
+            }
+        }
     }
 }
