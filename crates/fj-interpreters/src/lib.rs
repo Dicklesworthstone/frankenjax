@@ -1644,6 +1644,36 @@ mod tests {
                 let out_val = out[0].as_f64_scalar().expect("should be scalar");
                 prop_assert!((out_val - x).abs() < 1e-10);
             }
+
+            #[test]
+            fn metamorphic_eval_deterministic(x in -1000.0f64..1000.0) {
+                prop_assume!(x.is_finite());
+                let jaxpr = build_program(ProgramSpec::Square);
+                let out1 = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x)]).expect("eval 1");
+                let out2 = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x)]).expect("eval 2");
+                prop_assert_eq!(out1, out2, "eval not deterministic at x={}", x);
+            }
+
+            #[test]
+            fn metamorphic_eval_square_equals_mul(x in -100.0f64..100.0) {
+                prop_assume!(x.is_finite());
+                let square_jaxpr = build_program(ProgramSpec::Square);
+                let square_out = eval_jaxpr(&square_jaxpr, &[Value::scalar_f64(x)])
+                    .expect("square eval");
+                let expected = x * x;
+                let actual = square_out[0].as_f64_scalar().unwrap();
+                prop_assert!((actual - expected).abs() < 1e-10, "square(x) != x*x: {} vs {}", actual, expected);
+            }
+
+            #[test]
+            fn metamorphic_eval_add_zero_identity(x in -1000.0f64..1000.0) {
+                prop_assume!(x.is_finite());
+                let jaxpr = build_program(ProgramSpec::Add2);
+                let out = eval_jaxpr(&jaxpr, &[Value::scalar_f64(x), Value::scalar_f64(0.0)])
+                    .expect("add zero");
+                let actual = out[0].as_f64_scalar().unwrap();
+                prop_assert!((actual - x).abs() < 1e-14, "x + 0 != x: {} + 0 = {}", x, actual);
+            }
         }
     }
 }
