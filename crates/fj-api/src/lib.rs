@@ -1124,4 +1124,54 @@ mod tests {
             assert!(!vals.is_empty(), "hessian tensor should have values");
         }
     }
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(
+                fj_test_utils::property_test_case_count()
+            ))]
+
+            #[test]
+            fn metamorphic_jit_transparent(x in -100.0f64..100.0) {
+                prop_assume!(x.is_finite());
+                let jaxpr = build_program(ProgramSpec::Square);
+                let jit_result = jit(jaxpr.clone())
+                    .call(vec![Value::scalar_f64(x)])
+                    .expect("jit");
+                let direct_result = fj_interpreters::eval_jaxpr(&jaxpr, &[Value::scalar_f64(x)])
+                    .expect("direct");
+                prop_assert_eq!(jit_result, direct_result, "jit not transparent at x={}", x);
+            }
+
+            #[test]
+            fn metamorphic_grad_square_is_2x(x in -100.0f64..100.0) {
+                prop_assume!(x.is_finite());
+                let jaxpr = build_program(ProgramSpec::Square);
+                let grad_result = grad(jaxpr)
+                    .call(vec![Value::scalar_f64(x)])
+                    .expect("grad");
+                let actual = grad_result[0].as_f64_scalar().unwrap();
+                let expected = 2.0 * x;
+                prop_assert!((actual - expected).abs() < 1e-8, "grad(x^2) != 2x: {} vs {} at x={}", actual, expected, x);
+            }
+
+            #[test]
+            fn metamorphic_value_and_grad_consistent(x in -100.0f64..100.0) {
+                prop_assume!(x.is_finite());
+                let jaxpr = build_program(ProgramSpec::Square);
+                let vg_result = value_and_grad(jaxpr.clone())
+                    .call(vec![Value::scalar_f64(x)])
+                    .expect("value_and_grad");
+                let grad_only = grad(jaxpr)
+                    .call(vec![Value::scalar_f64(x)])
+                    .expect("grad");
+                let vg_grad = vg_result.1[0].as_f64_scalar().unwrap();
+                let grad_val = grad_only[0].as_f64_scalar().unwrap();
+                prop_assert!((vg_grad - grad_val).abs() < 1e-14, "value_and_grad grad != grad: {} vs {}", vg_grad, grad_val);
+            }
+        }
+    }
 }
