@@ -348,7 +348,7 @@ fn metamorphic_atan_tan_identity() {
 #[test]
 fn metamorphic_atan_tensor_roundtrip() {
     let input = make_f64_tensor(&[5], vec![-1.0, -0.5, 0.0, 0.5, 1.0]);
-    let atan_result = eval_primitive(Primitive::Atan, &[input.clone()], &no_params()).unwrap();
+    let atan_result = eval_primitive(Primitive::Atan, std::slice::from_ref(&input), &no_params()).unwrap();
     let tan_atan = eval_primitive(Primitive::Tan, &[atan_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

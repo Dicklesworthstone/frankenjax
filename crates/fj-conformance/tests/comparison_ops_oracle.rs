@@ -550,8 +550,8 @@ fn metamorphic_lt_neg_equals_gt() {
         let b = make_f64_tensor(&[], vec![b_val]);
 
         // Lt(Neg(a), Neg(b))
-        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
-        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let neg_a = eval_primitive(Primitive::Neg, std::slice::from_ref(&a), &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, std::slice::from_ref(&b), &no_params()).unwrap();
         let lt_neg = eval_primitive(Primitive::Lt, &[neg_a, neg_b], &no_params()).unwrap();
 
         // Gt(a, b)
@@ -576,8 +576,8 @@ fn metamorphic_gt_neg_equals_lt() {
         let b = make_f64_tensor(&[], vec![b_val]);
 
         // Gt(Neg(a), Neg(b))
-        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
-        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let neg_a = eval_primitive(Primitive::Neg, std::slice::from_ref(&a), &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, std::slice::from_ref(&b), &no_params()).unwrap();
         let gt_neg = eval_primitive(Primitive::Gt, &[neg_a, neg_b], &no_params()).unwrap();
 
         // Lt(a, b)
@@ -602,8 +602,8 @@ fn metamorphic_le_neg_equals_ge() {
         let b = make_f64_tensor(&[], vec![b_val]);
 
         // Le(Neg(a), Neg(b))
-        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
-        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let neg_a = eval_primitive(Primitive::Neg, std::slice::from_ref(&a), &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, std::slice::from_ref(&b), &no_params()).unwrap();
         let le_neg = eval_primitive(Primitive::Le, &[neg_a, neg_b], &no_params()).unwrap();
 
         // Ge(a, b)
@@ -628,8 +628,8 @@ fn metamorphic_ge_neg_equals_le() {
         let b = make_f64_tensor(&[], vec![b_val]);
 
         // Ge(Neg(a), Neg(b))
-        let neg_a = eval_primitive(Primitive::Neg, &[a.clone()], &no_params()).unwrap();
-        let neg_b = eval_primitive(Primitive::Neg, &[b.clone()], &no_params()).unwrap();
+        let neg_a = eval_primitive(Primitive::Neg, std::slice::from_ref(&a), &no_params()).unwrap();
+        let neg_b = eval_primitive(Primitive::Neg, std::slice::from_ref(&b), &no_params()).unwrap();
         let ge_neg = eval_primitive(Primitive::Ge, &[neg_a, neg_b], &no_params()).unwrap();
 
         // Le(a, b)

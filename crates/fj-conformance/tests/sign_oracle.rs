@@ -390,7 +390,7 @@ fn metamorphic_sign_negation() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // sign(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let sign_neg_x = eval_primitive(Primitive::Sign, &[neg_x], &no_params()).unwrap();
 
         // Neg(sign(x))
@@ -415,7 +415,7 @@ fn metamorphic_sign_abs_reconstruction() {
     for x in [-5.5, -1.0, 1.0, 5.5, 100.0, -100.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let sign_x = eval_primitive(Primitive::Sign, &[input.clone()], &no_params()).unwrap();
+        let sign_x = eval_primitive(Primitive::Sign, std::slice::from_ref(&input), &no_params()).unwrap();
         let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
         let reconstructed = eval_primitive(Primitive::Mul, &[sign_x, abs_x], &no_params()).unwrap();
 
@@ -438,7 +438,7 @@ fn metamorphic_sign_abs_tensor_reconstruction() {
     let data = vec![-3.0, -1.0, 1.0, 3.0, -2.5, 2.5];
     let input = make_f64_tensor(&[6], data.clone());
 
-    let sign_x = eval_primitive(Primitive::Sign, &[input.clone()], &no_params()).unwrap();
+    let sign_x = eval_primitive(Primitive::Sign, std::slice::from_ref(&input), &no_params()).unwrap();
     let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
     let reconstructed = eval_primitive(Primitive::Mul, &[sign_x, abs_x], &no_params()).unwrap();
 

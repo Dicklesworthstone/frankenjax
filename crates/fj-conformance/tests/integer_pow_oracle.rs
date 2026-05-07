@@ -293,7 +293,7 @@ fn metamorphic_integer_pow_2_equals_square() {
     for x in [0.5, 1.0, 2.0, 3.0, -2.0, -3.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let pow2 = eval_primitive(Primitive::IntegerPow, &[input.clone()], &pow_params(2)).unwrap();
+        let pow2 = eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &pow_params(2)).unwrap();
         let squared = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
 
         assert_close(
@@ -331,8 +331,8 @@ fn metamorphic_integer_pow_3_equals_square_mul() {
     for x in [0.5, 1.0, 2.0, 3.0, -2.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let pow3 = eval_primitive(Primitive::IntegerPow, &[input.clone()], &pow_params(3)).unwrap();
-        let squared = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+        let pow3 = eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &pow_params(3)).unwrap();
+        let squared = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
         let cubed = eval_primitive(Primitive::Mul, &[squared, input], &no_params()).unwrap();
 
         assert_close(
@@ -352,7 +352,7 @@ fn metamorphic_integer_pow_tensor_square() {
     let data = vec![0.5, 1.0, 2.0, 3.0, -2.0];
     let input = make_f64_tensor(&[5], data);
 
-    let pow2 = eval_primitive(Primitive::IntegerPow, &[input.clone()], &pow_params(2)).unwrap();
+    let pow2 = eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &pow_params(2)).unwrap();
     let squared = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&pow2), vec![5]);

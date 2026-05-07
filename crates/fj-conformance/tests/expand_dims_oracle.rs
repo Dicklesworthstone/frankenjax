@@ -76,11 +76,11 @@ fn oracle_expand_dims_scalar() {
 
 #[test]
 fn oracle_expand_dims_scalar_f64() {
-    let input = Value::Scalar(Literal::from_f64(3.14));
+    let input = Value::Scalar(Literal::from_f64(3.17));
     let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
     assert_eq!(extract_shape(&result), vec![1]);
     let vals = extract_f64_vec(&result);
-    assert!((vals[0] - 3.14).abs() < 1e-10);
+    assert!((vals[0] - 3.17).abs() < 1e-10);
 }
 
 // ======================== 1D Tests ========================

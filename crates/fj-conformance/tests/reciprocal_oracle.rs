@@ -402,7 +402,7 @@ fn metamorphic_reciprocal_mul_identity() {
     // Mul(x, reciprocal(x)) = 1 using Mul primitive
     for x in [0.5, 1.0, 2.0, 3.0, 10.0, -1.0, -5.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let recip = eval_primitive(Primitive::Reciprocal, &[input.clone()], &no_params()).unwrap();
+        let recip = eval_primitive(Primitive::Reciprocal, std::slice::from_ref(&input), &no_params()).unwrap();
         let product = eval_primitive(Primitive::Mul, &[input, recip], &no_params()).unwrap();
 
         assert_close(
@@ -423,7 +423,7 @@ fn metamorphic_reciprocal_negation() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // reciprocal(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let recip_neg = eval_primitive(Primitive::Reciprocal, &[neg_x], &no_params()).unwrap();
 
         // Neg(reciprocal(x))

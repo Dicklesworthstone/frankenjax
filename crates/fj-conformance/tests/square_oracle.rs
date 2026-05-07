@@ -412,7 +412,7 @@ fn metamorphic_square_equals_mul() {
     // square(x) = Mul(x, x) using Mul primitive
     for x in [-2.5, -1.0, 0.0, 1.0, 2.5, 10.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let square_result = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+        let square_result = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
         let mul_result = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
 
         assert_close(
@@ -431,7 +431,7 @@ fn metamorphic_sqrt_square_abs() {
     // sqrt(square(x)) = abs(x) using Sqrt and Abs primitives
     for x in [-2.5, -1.0, 0.0, 1.0, 2.5, 10.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let squared = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+        let squared = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
         let sqrt_squared = eval_primitive(Primitive::Sqrt, &[squared], &no_params()).unwrap();
         let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
 
@@ -451,7 +451,7 @@ fn metamorphic_square_negation_invariant() {
     // square(Neg(x)) = square(x) (even function) using Neg primitive
     for x in [1.0, 2.0, 0.5, 10.0, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
 
         let square_x = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
         let square_neg_x = eval_primitive(Primitive::Square, &[neg_x], &no_params()).unwrap();
@@ -473,7 +473,7 @@ fn metamorphic_square_tensor_mul() {
     let data = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
     let input = make_f64_tensor(&[5], data);
 
-    let square_result = eval_primitive(Primitive::Square, &[input.clone()], &no_params()).unwrap();
+    let square_result = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
     let mul_result = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&square_result), vec![5]);

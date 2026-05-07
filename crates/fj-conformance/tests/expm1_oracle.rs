@@ -421,7 +421,7 @@ fn metamorphic_log1p_expm1_identity() {
 fn metamorphic_expm1_log1p_tensor_roundtrip() {
     // For a tensor: expm1(log1p(x)) = x for x > -1
     let input = make_f64_tensor(&[6], vec![0.0, 0.5, 1.0, 2.0, 5.0, 10.0]);
-    let log1p_result = eval_primitive(Primitive::Log1p, &[input.clone()], &no_params()).unwrap();
+    let log1p_result = eval_primitive(Primitive::Log1p, std::slice::from_ref(&input), &no_params()).unwrap();
     let roundtrip = eval_primitive(Primitive::Expm1, &[log1p_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

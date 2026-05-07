@@ -239,7 +239,7 @@ fn oracle_cumulative_rejects_invalid_reverse_param() {
 fn metamorphic_cumsum_last_equals_sum() {
     // last(cumsum(x)) = reduce_sum(x)
     let input = make_i64_tensor(&[5], vec![3, 1, 4, 1, 5]);
-    let cumsum_result = eval_primitive(Primitive::Cumsum, &[input.clone()], &no_params()).unwrap();
+    let cumsum_result = eval_primitive(Primitive::Cumsum, std::slice::from_ref(&input), &no_params()).unwrap();
     let cumsum_vals = extract_i64_vec(&cumsum_result);
 
     let sum_result = eval_primitive(Primitive::ReduceSum, &[input], &axis_params(0)).unwrap();
@@ -265,7 +265,7 @@ fn metamorphic_cumsum_first_element_identity() {
 fn metamorphic_cumprod_last_equals_product() {
     // last(cumprod(x)) = reduce_prod(x)
     let input = make_i64_tensor(&[4], vec![2, 3, 4, 5]);
-    let cumprod_result = eval_primitive(Primitive::Cumprod, &[input.clone()], &no_params()).unwrap();
+    let cumprod_result = eval_primitive(Primitive::Cumprod, std::slice::from_ref(&input), &no_params()).unwrap();
     let cumprod_vals = extract_i64_vec(&cumprod_result);
 
     let prod_result = eval_primitive(Primitive::ReduceProd, &[input], &axis_params(0)).unwrap();

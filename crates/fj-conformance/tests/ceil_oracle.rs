@@ -369,7 +369,7 @@ fn metamorphic_ceil_neg_floor() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // ceil(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let ceil_neg = eval_primitive(Primitive::Ceil, &[neg_x], &no_params()).unwrap();
 
         // Neg(floor(x))
@@ -394,7 +394,7 @@ fn metamorphic_ceil_idempotent() {
     for x in [-2.7, -1.5, 0.0, 1.5, 2.7, 100.9] {
         let input = make_f64_tensor(&[], vec![x]);
         let ceil1 = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
-        let ceil2 = eval_primitive(Primitive::Ceil, &[ceil1.clone()], &no_params()).unwrap();
+        let ceil2 = eval_primitive(Primitive::Ceil, std::slice::from_ref(&ceil1), &no_params()).unwrap();
 
         assert_eq!(
             extract_f64_scalar(&ceil1),
@@ -415,7 +415,7 @@ fn metamorphic_ceil_tensor_idempotent() {
     let input = make_f64_tensor(&[5], data);
 
     let ceil1 = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
-    let ceil2 = eval_primitive(Primitive::Ceil, &[ceil1.clone()], &no_params()).unwrap();
+    let ceil2 = eval_primitive(Primitive::Ceil, std::slice::from_ref(&ceil1), &no_params()).unwrap();
 
     assert_eq!(extract_shape(&ceil1), vec![5]);
     let vec1 = extract_f64_vec(&ceil1);

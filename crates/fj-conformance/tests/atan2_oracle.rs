@@ -415,7 +415,7 @@ fn metamorphic_atan2_sin_cos_div() {
         let x_t = make_f64_tensor(&[], vec![x]);
         let angle = eval_primitive(Primitive::Atan2, &[y_t, x_t], &no_params()).unwrap();
 
-        let sin_angle = eval_primitive(Primitive::Sin, &[angle.clone()], &no_params()).unwrap();
+        let sin_angle = eval_primitive(Primitive::Sin, std::slice::from_ref(&angle), &no_params()).unwrap();
         let cos_angle = eval_primitive(Primitive::Cos, &[angle], &no_params()).unwrap();
 
         let sin_div_cos =
@@ -463,8 +463,8 @@ fn metamorphic_atan2_tensor_scaling() {
 
     // Scale by 5
     let k = 5.0;
-    let ky = make_f64_tensor(&[4], vec![k * 1.0, k * -1.0, k * 2.0, k * -2.0]);
-    let kx = make_f64_tensor(&[4], vec![k * 2.0, k * 3.0, k * 1.0, k * 4.0]);
+    let ky = make_f64_tensor(&[4], vec![k, -k, 2.0 * k, -2.0 * k]);
+    let kx = make_f64_tensor(&[4], vec![2.0 * k, 3.0 * k, k, 4.0 * k]);
     let scaled = eval_primitive(Primitive::Atan2, &[ky, kx], &no_params()).unwrap();
 
     let base_vals = extract_f64_vec(&base);

@@ -183,7 +183,7 @@ fn oracle_bitcast_i64_to_f64_one_bits() {
 #[test]
 fn oracle_bitcast_f64_i64_roundtrip() {
     // f64 -> i64 -> f64 should preserve value
-    let original = 3.14159;
+    let original = 3.17;
     let input = Value::Scalar(Literal::from_f64(original));
     let as_i64 = eval_primitive(
         Primitive::BitcastConvertType,

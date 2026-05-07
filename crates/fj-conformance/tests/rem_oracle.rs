@@ -417,7 +417,7 @@ fn metamorphic_rem_neg_dividend_equals_neg_rem() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Rem(Neg(x), y)
-        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let rem_neg_x = eval_primitive(Primitive::Rem, &[neg_x, y_val.clone()], &no_params()).unwrap();
 
         // Neg(Rem(x, y))

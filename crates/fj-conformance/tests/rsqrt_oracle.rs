@@ -367,7 +367,7 @@ fn metamorphic_rsqrt_equals_reciprocal_sqrt() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // rsqrt(x)
-        let rsqrt_result = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+        let rsqrt_result = eval_primitive(Primitive::Rsqrt, std::slice::from_ref(&input), &no_params()).unwrap();
 
         // Reciprocal(Sqrt(x))
         let sqrt_x = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
@@ -391,7 +391,7 @@ fn metamorphic_rsqrt_squared_reciprocal() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // Square(rsqrt(x))
-        let rsqrt_x = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+        let rsqrt_x = eval_primitive(Primitive::Rsqrt, std::slice::from_ref(&input), &no_params()).unwrap();
         let squared = eval_primitive(Primitive::Square, &[rsqrt_x], &no_params()).unwrap();
 
         // Reciprocal(x)
@@ -414,7 +414,7 @@ fn metamorphic_rsqrt_mul_sqrt_one() {
     for x in [1.0, 2.0, 4.0, 9.0, 16.0, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let rsqrt_x = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+        let rsqrt_x = eval_primitive(Primitive::Rsqrt, std::slice::from_ref(&input), &no_params()).unwrap();
         let sqrt_x = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
         let product = eval_primitive(Primitive::Mul, &[rsqrt_x, sqrt_x], &no_params()).unwrap();
 
@@ -435,7 +435,7 @@ fn metamorphic_rsqrt_tensor_reciprocal_sqrt() {
     let data = vec![1.0, 4.0, 9.0, 16.0, 25.0];
     let input = make_f64_tensor(&[5], data);
 
-    let rsqrt_result = eval_primitive(Primitive::Rsqrt, &[input.clone()], &no_params()).unwrap();
+    let rsqrt_result = eval_primitive(Primitive::Rsqrt, std::slice::from_ref(&input), &no_params()).unwrap();
     let sqrt_x = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
     let recip_sqrt = eval_primitive(Primitive::Reciprocal, &[sqrt_x], &no_params()).unwrap();
 

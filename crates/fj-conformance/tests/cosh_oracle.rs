@@ -395,7 +395,7 @@ fn metamorphic_acosh_cosh_abs_identity() {
 fn metamorphic_cosh_tensor_roundtrip() {
     // For positive values, acosh(cosh(x)) = x
     let input = make_f64_tensor(&[5], vec![0.0, 0.5, 1.0, 2.0, 3.0]);
-    let cosh_result = eval_primitive(Primitive::Cosh, &[input.clone()], &no_params()).unwrap();
+    let cosh_result = eval_primitive(Primitive::Cosh, std::slice::from_ref(&input), &no_params()).unwrap();
     let acosh_cosh = eval_primitive(Primitive::Acosh, &[cosh_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

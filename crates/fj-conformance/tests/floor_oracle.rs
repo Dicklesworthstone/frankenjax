@@ -373,7 +373,7 @@ fn metamorphic_floor_neg_ceil() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // floor(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let floor_neg = eval_primitive(Primitive::Floor, &[neg_x], &no_params()).unwrap();
 
         // Neg(ceil(x))
@@ -398,7 +398,7 @@ fn metamorphic_floor_idempotent() {
     for x in [-2.7, -1.5, 0.0, 1.5, 2.7, 100.9] {
         let input = make_f64_tensor(&[], vec![x]);
         let floor1 = eval_primitive(Primitive::Floor, &[input], &no_params()).unwrap();
-        let floor2 = eval_primitive(Primitive::Floor, &[floor1.clone()], &no_params()).unwrap();
+        let floor2 = eval_primitive(Primitive::Floor, std::slice::from_ref(&floor1), &no_params()).unwrap();
 
         assert_eq!(
             extract_f64_scalar(&floor1),
@@ -419,7 +419,7 @@ fn metamorphic_floor_tensor_idempotent() {
     let input = make_f64_tensor(&[5], data);
 
     let floor1 = eval_primitive(Primitive::Floor, &[input], &no_params()).unwrap();
-    let floor2 = eval_primitive(Primitive::Floor, &[floor1.clone()], &no_params()).unwrap();
+    let floor2 = eval_primitive(Primitive::Floor, std::slice::from_ref(&floor1), &no_params()).unwrap();
 
     assert_eq!(extract_shape(&floor1), vec![5]);
     let vec1 = extract_f64_vec(&floor1);

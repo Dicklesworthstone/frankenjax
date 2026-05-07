@@ -385,7 +385,7 @@ fn metamorphic_asin_sin_identity() {
 fn metamorphic_asin_tensor_roundtrip() {
     // Test both directions on a tensor
     let input = make_f64_tensor(&[5], vec![-0.9, -0.5, 0.0, 0.5, 0.9]);
-    let asin_result = eval_primitive(Primitive::Asin, &[input.clone()], &no_params()).unwrap();
+    let asin_result = eval_primitive(Primitive::Asin, std::slice::from_ref(&input), &no_params()).unwrap();
     let sin_asin = eval_primitive(Primitive::Sin, &[asin_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

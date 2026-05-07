@@ -368,7 +368,7 @@ fn metamorphic_erf_erfinv_identity() {
 fn metamorphic_erf_erfinv_tensor_roundtrip() {
     // For a tensor with values in (-1, 1): erf(erfinv(y)) = y
     let input = make_f64_tensor(&[5], vec![-0.8, -0.4, 0.0, 0.4, 0.8]);
-    let erfinv_result = eval_primitive(Primitive::ErfInv, &[input.clone()], &no_params()).unwrap();
+    let erfinv_result = eval_primitive(Primitive::ErfInv, std::slice::from_ref(&input), &no_params()).unwrap();
     let roundtrip = eval_primitive(Primitive::Erf, &[erfinv_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

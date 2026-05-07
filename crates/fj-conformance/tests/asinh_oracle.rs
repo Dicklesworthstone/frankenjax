@@ -279,7 +279,7 @@ fn metamorphic_asinh_tensor_odd_function() {
 #[test]
 fn metamorphic_asinh_tensor_sinh_inverse() {
     let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
-    let asinh_result = eval_primitive(Primitive::Asinh, &[input.clone()], &no_params()).unwrap();
+    let asinh_result = eval_primitive(Primitive::Asinh, std::slice::from_ref(&input), &no_params()).unwrap();
     let sinh_asinh = eval_primitive(Primitive::Sinh, &[asinh_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

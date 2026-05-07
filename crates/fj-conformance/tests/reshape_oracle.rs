@@ -339,7 +339,7 @@ fn metamorphic_reshape_roundtrip_2d_to_1d_back() {
     let input = make_i64_tensor(&[3, 4], data.clone());
 
     let flattened =
-        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[12])).unwrap();
+        eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &reshape_params(&[12])).unwrap();
     let restored =
         eval_primitive(Primitive::Reshape, &[flattened], &reshape_params(&[3, 4])).unwrap();
 
@@ -354,7 +354,7 @@ fn metamorphic_reshape_roundtrip_3d_to_2d_back() {
     let input = make_i64_tensor(&[2, 3, 4], data.clone());
 
     let reshaped =
-        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[6, 4])).unwrap();
+        eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &reshape_params(&[6, 4])).unwrap();
     let restored =
         eval_primitive(Primitive::Reshape, &[reshaped], &reshape_params(&[2, 3, 4])).unwrap();
 
@@ -385,7 +385,7 @@ fn metamorphic_reshape_any_shape_same_elements() {
     for shape in shapes {
         let shape_i64: Vec<i64> = shape.iter().map(|&x| x as i64).collect();
         let result =
-            eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&shape_i64))
+            eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &reshape_params(&shape_i64))
                 .unwrap();
         assert_eq!(
             extract_i64_vec(&result),
@@ -403,7 +403,7 @@ fn metamorphic_reshape_flatten_and_restore_f64() {
     let input = make_f64_tensor(&[4, 5], data.clone());
 
     let flattened =
-        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[20])).unwrap();
+        eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &reshape_params(&[20])).unwrap();
     let restored =
         eval_primitive(Primitive::Reshape, &[flattened], &reshape_params(&[4, 5])).unwrap();
 
@@ -420,7 +420,7 @@ fn metamorphic_reshape_same_shape_is_identity() {
     let input = make_i64_tensor(&[3, 4], data.clone());
 
     let same =
-        eval_primitive(Primitive::Reshape, &[input.clone()], &reshape_params(&[3, 4])).unwrap();
+        eval_primitive(Primitive::Reshape, std::slice::from_ref(&input), &reshape_params(&[3, 4])).unwrap();
 
     assert_eq!(extract_shape(&same), vec![3, 4]);
     assert_eq!(extract_i64_vec(&same), data);

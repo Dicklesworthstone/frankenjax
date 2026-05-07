@@ -395,7 +395,7 @@ fn metamorphic_acos_cos_identity() {
 #[test]
 fn metamorphic_acos_tensor_roundtrip() {
     let input = make_f64_tensor(&[5], vec![-0.9, -0.5, 0.0, 0.5, 0.9]);
-    let acos_result = eval_primitive(Primitive::Acos, &[input.clone()], &no_params()).unwrap();
+    let acos_result = eval_primitive(Primitive::Acos, std::slice::from_ref(&input), &no_params()).unwrap();
     let cos_acos = eval_primitive(Primitive::Cos, &[acos_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

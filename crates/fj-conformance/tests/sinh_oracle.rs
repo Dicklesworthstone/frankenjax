@@ -398,7 +398,7 @@ fn metamorphic_sinh_asinh_identity() {
 #[test]
 fn metamorphic_sinh_tensor_roundtrip() {
     let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
-    let sinh_result = eval_primitive(Primitive::Sinh, &[input.clone()], &no_params()).unwrap();
+    let sinh_result = eval_primitive(Primitive::Sinh, std::slice::from_ref(&input), &no_params()).unwrap();
     let asinh_sinh = eval_primitive(Primitive::Asinh, &[sinh_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

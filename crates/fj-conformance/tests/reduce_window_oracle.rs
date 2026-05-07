@@ -768,7 +768,7 @@ fn metamorphic_reduce_window_unit_window_is_identity() {
     let input = make_f64_tensor(&[5], vec![7.0, 3.0, 9.0, 1.0, 5.0]);
     let result = eval_primitive(
         Primitive::ReduceWindow,
-        &[input.clone()],
+        std::slice::from_ref(&input),
         &sum_window("1", "1", "valid"),
     )
     .unwrap();

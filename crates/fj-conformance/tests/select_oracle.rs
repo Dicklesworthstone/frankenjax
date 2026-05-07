@@ -118,12 +118,12 @@ fn oracle_select_scalar_false() {
 #[test]
 fn oracle_select_scalar_f64() {
     let cond = Value::Scalar(Literal::Bool(true));
-    let on_true = Value::Scalar(Literal::from_f64(3.14));
+    let on_true = Value::Scalar(Literal::from_f64(3.17));
     let on_false = Value::Scalar(Literal::from_f64(2.71));
     let result =
         eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
-    assert!((vals[0] - 3.14).abs() < 1e-10);
+    assert!((vals[0] - 3.17).abs() < 1e-10);
 }
 
 #[test]
@@ -526,7 +526,7 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
 #[test]
 fn metamorphic_select_same_branches() {
     // Select(cond, a, a) = a regardless of condition
-    for x in [1.0, 2.0, 3.14, -5.0, 0.0] {
+    for x in [1.0, 2.0, 3.17, -5.0, 0.0] {
         for cond_val in [true, false] {
             let cond = Value::Scalar(Literal::Bool(cond_val));
             let a = make_f64_tensor(&[], vec![x]);

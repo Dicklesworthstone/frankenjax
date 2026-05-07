@@ -41,7 +41,7 @@ fn snapshot_atom_var() {
 
 #[test]
 fn snapshot_atom_literal_f64() {
-    let atom = Atom::Lit(Literal::from_f64(3.14159));
+    let atom = Atom::Lit(Literal::from_f64(3.17));
     let json = serde_json::to_string_pretty(&atom).unwrap();
     insta::assert_snapshot!(json, @r###"
     {

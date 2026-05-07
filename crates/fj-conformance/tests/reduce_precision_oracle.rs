@@ -83,7 +83,7 @@ fn no_params() -> BTreeMap<String, String> {
 #[test]
 fn oracle_reduce_precision_f64_no_change() {
     // Full f64 precision (11 exponent, 52 mantissa) should not change value
-    let input = Value::Scalar(Literal::from_f64(3.14159265358979));
+    let input = Value::Scalar(Literal::from_f64(3.17265358979));
     let result = eval_primitive(
         Primitive::ReducePrecision,
         &[input],
@@ -91,7 +91,7 @@ fn oracle_reduce_precision_f64_no_change() {
     )
     .unwrap();
     let vals = extract_f64_vec(&result);
-    assert!((vals[0] - 3.14159265358979).abs() < 1e-14);
+    assert!((vals[0] - 3.17265358979).abs() < 1e-14);
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn oracle_reduce_precision_f64_low_mantissa() {
 #[test]
 fn oracle_reduce_precision_f64_idempotent() {
     // Applying reduce_precision twice should give same result
-    let input = Value::Scalar(Literal::from_f64(3.14159));
+    let input = Value::Scalar(Literal::from_f64(3.17));
     let result1 = eval_primitive(
         Primitive::ReducePrecision,
         &[input],
@@ -183,7 +183,7 @@ fn oracle_reduce_precision_f64_idempotent() {
 #[test]
 fn oracle_reduce_precision_f32_no_change() {
     // Full f32 precision (8 exponent, 23 mantissa)
-    let input = make_f32_tensor(&[1], vec![3.14159_f32]);
+    let input = make_f32_tensor(&[1], vec![3.17_f32]);
     let result = eval_primitive(
         Primitive::ReducePrecision,
         &[input],
@@ -191,7 +191,7 @@ fn oracle_reduce_precision_f32_no_change() {
     )
     .unwrap();
     let vals = extract_f32_vec(&result);
-    assert!((vals[0] - 3.14159_f32).abs() < 1e-5);
+    assert!((vals[0] - 3.17_f32).abs() < 1e-5);
 }
 
 #[test]
@@ -253,10 +253,10 @@ fn oracle_reduce_precision_2d() {
 #[test]
 fn oracle_reduce_precision_default_params() {
     // Without params, should use dtype's default bits (no change)
-    let input = Value::Scalar(Literal::from_f64(3.14159));
+    let input = Value::Scalar(Literal::from_f64(3.17));
     let result = eval_primitive(Primitive::ReducePrecision, &[input], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
-    assert!((vals[0] - 3.14159).abs() < 1e-10);
+    assert!((vals[0] - 3.17).abs() < 1e-10);
 }
 
 // ======================== Edge Cases ========================

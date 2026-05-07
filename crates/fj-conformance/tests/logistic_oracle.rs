@@ -419,7 +419,7 @@ fn metamorphic_logistic_symmetry() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // logistic(x)
-        let logistic_x = eval_primitive(Primitive::Logistic, &[input.clone()], &no_params()).unwrap();
+        let logistic_x = eval_primitive(Primitive::Logistic, std::slice::from_ref(&input), &no_params()).unwrap();
 
         // logistic(Neg(x))
         let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
@@ -452,7 +452,7 @@ fn metamorphic_logistic_definition() {
         let one = make_f64_tensor(&[], vec![1.0]);
 
         // logistic(x) directly
-        let logistic_x = eval_primitive(Primitive::Logistic, &[input.clone()], &no_params()).unwrap();
+        let logistic_x = eval_primitive(Primitive::Logistic, std::slice::from_ref(&input), &no_params()).unwrap();
 
         // Reciprocal(Add(1, Exp(Neg(x))))
         let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
@@ -477,7 +477,7 @@ fn metamorphic_logistic_tensor_symmetry() {
     let data = vec![0.5, 1.0, 2.0, 3.0, 5.0];
     let input = make_f64_tensor(&[5], data);
 
-    let logistic_x = eval_primitive(Primitive::Logistic, &[input.clone()], &no_params()).unwrap();
+    let logistic_x = eval_primitive(Primitive::Logistic, std::slice::from_ref(&input), &no_params()).unwrap();
     let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
     let logistic_neg_x = eval_primitive(Primitive::Logistic, &[neg_x], &no_params()).unwrap();
     let sum = eval_primitive(Primitive::Add, &[logistic_x, logistic_neg_x], &no_params()).unwrap();

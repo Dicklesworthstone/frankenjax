@@ -111,7 +111,7 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
 #[test]
 fn oracle_mul_identity_f64() {
     // x * 1 = x
-    for x in [0.0, 1.0, -1.0, 3.14, -2.718, 100.0] {
+    for x in [0.0, 1.0, -1.0, 3.17, -2.718, 100.0] {
         let a = make_f64_tensor(&[], vec![x]);
         let b = make_f64_tensor(&[], vec![1.0]);
         let result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
@@ -134,7 +134,7 @@ fn oracle_mul_identity_i64() {
 #[test]
 fn oracle_mul_zero_f64() {
     // x * 0 = 0
-    for x in [1.0, -1.0, 3.14, 100.0] {
+    for x in [1.0, -1.0, 3.17, 100.0] {
         let a = make_f64_tensor(&[], vec![x]);
         let b = make_f64_tensor(&[], vec![0.0]);
         let result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
@@ -228,7 +228,7 @@ fn oracle_mul_nan() {
 #[test]
 fn oracle_div_identity_f64() {
     // x / 1 = x
-    for x in [0.0, 1.0, -1.0, 3.14, -2.718, 100.0] {
+    for x in [0.0, 1.0, -1.0, 3.17, -2.718, 100.0] {
         let a = make_f64_tensor(&[], vec![x]);
         let b = make_f64_tensor(&[], vec![1.0]);
         let result = eval_primitive(Primitive::Div, &[a, b], &no_params()).unwrap();
@@ -398,7 +398,7 @@ fn metamorphic_mul_reciprocal_identity() {
     // Mul(x, Reciprocal(x)) = 1 for x != 0
     for x in [0.5, 1.0, 2.0, 3.0, 0.1, 10.0, -2.0, -0.5] {
         let x_val = make_f64_tensor(&[], vec![x]);
-        let recip = eval_primitive(Primitive::Reciprocal, &[x_val.clone()], &no_params()).unwrap();
+        let recip = eval_primitive(Primitive::Reciprocal, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let result = eval_primitive(Primitive::Mul, &[x_val, recip], &no_params()).unwrap();
         assert_close(
             extract_f64_scalar(&result),
@@ -441,7 +441,7 @@ fn metamorphic_mul_neg_distributive() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Mul(Neg(x), y)
-        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let mul_neg = eval_primitive(Primitive::Mul, &[neg_x, y_val.clone()], &no_params()).unwrap();
 
         // Neg(Mul(x, y))
@@ -467,7 +467,7 @@ fn metamorphic_div_neg_distributive() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Div(Neg(x), y)
-        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let div_neg = eval_primitive(Primitive::Div, &[neg_x, y_val.clone()], &no_params()).unwrap();
 
         // Neg(Div(x, y))

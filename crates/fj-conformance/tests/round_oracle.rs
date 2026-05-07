@@ -412,7 +412,7 @@ fn metamorphic_round_neg_commutes() {
         let x_val = make_f64_tensor(&[], vec![x]);
 
         // Round(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, &[x_val.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let round_neg = eval_primitive(Primitive::Round, &[neg_x], &no_params()).unwrap();
 
         // Neg(Round(x))
@@ -460,7 +460,7 @@ fn metamorphic_round_integer_translation() {
 #[test]
 fn metamorphic_round_bounded_distance() {
     // |Round(x) - x| <= 0.5 (rounding moves to nearest, ties away from zero)
-    for x in [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, -0.5, -1.5, 2.5, -2.5, 3.14] {
+    for x in [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, -0.5, -1.5, 2.5, -2.5, 3.15] {
         let x_val = make_f64_tensor(&[], vec![x]);
         let round_x = eval_primitive(Primitive::Round, &[x_val], &no_params()).unwrap();
         let distance = (extract_f64_scalar(&round_x) - x).abs();
@@ -480,8 +480,8 @@ fn metamorphic_round_between_floor_ceil() {
     for x in [0.3, 0.5, 0.7, 1.4, 1.5, 1.6, -0.3, -0.5, -0.7, 2.5] {
         let x_val = make_f64_tensor(&[], vec![x]);
 
-        let floor_x = extract_f64_scalar(&eval_primitive(Primitive::Floor, &[x_val.clone()], &no_params()).unwrap());
-        let round_x = extract_f64_scalar(&eval_primitive(Primitive::Round, &[x_val.clone()], &no_params()).unwrap());
+        let floor_x = extract_f64_scalar(&eval_primitive(Primitive::Floor, std::slice::from_ref(&x_val), &no_params()).unwrap());
+        let round_x = extract_f64_scalar(&eval_primitive(Primitive::Round, std::slice::from_ref(&x_val), &no_params()).unwrap());
         let ceil_x = extract_f64_scalar(&eval_primitive(Primitive::Ceil, &[x_val], &no_params()).unwrap());
 
         assert!(

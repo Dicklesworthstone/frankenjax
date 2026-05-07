@@ -475,7 +475,7 @@ fn oracle_slice_stride_single_result() {
 fn metamorphic_slice_full_range_identity() {
     // Slicing the entire tensor is identity
     let input = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
-    let result = eval_primitive(Primitive::Slice, &[input.clone()], &slice_params(&[0], &[4])).unwrap();
+    let result = eval_primitive(Primitive::Slice, std::slice::from_ref(&input), &slice_params(&[0], &[4])).unwrap();
     assert_eq!(extract_i64_vec(&result), extract_i64_vec(&input));
 }
 
@@ -505,7 +505,7 @@ fn metamorphic_slice_composition() {
     let input = make_i64_tensor(&[10], (0..10).collect());
 
     // First slice: [2:8] -> [2, 3, 4, 5, 6, 7]
-    let slice1 = eval_primitive(Primitive::Slice, &[input.clone()], &slice_params(&[2], &[8])).unwrap();
+    let slice1 = eval_primitive(Primitive::Slice, std::slice::from_ref(&input), &slice_params(&[2], &[8])).unwrap();
 
     // Second slice of result: [1:4] -> [3, 4, 5]
     let slice2 = eval_primitive(Primitive::Slice, &[slice1], &slice_params(&[1], &[4])).unwrap();

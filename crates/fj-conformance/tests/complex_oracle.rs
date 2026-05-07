@@ -160,12 +160,12 @@ fn oracle_complex_2d() {
 
 #[test]
 fn oracle_complex_single_element() {
-    let re = make_f64_tensor(&[1], vec![3.14]);
+    let re = make_f64_tensor(&[1], vec![3.17]);
     let im = make_f64_tensor(&[1], vec![2.71]);
     let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![1]);
     let vals = extract_complex_vec(&result);
-    assert!((vals[0].0 - 3.14).abs() < 1e-10);
+    assert!((vals[0].0 - 3.17).abs() < 1e-10);
     assert!((vals[0].1 - 2.71).abs() < 1e-10);
 }
 

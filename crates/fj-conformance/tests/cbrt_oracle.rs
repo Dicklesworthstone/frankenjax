@@ -314,7 +314,7 @@ fn metamorphic_cube_cbrt_identity() {
 fn metamorphic_cbrt_tensor_roundtrip() {
     // For a tensor: cbrt(x)^3 = x
     let input = make_f64_tensor(&[6], vec![-27.0, -8.0, 0.0, 1.0, 8.0, 27.0]);
-    let cbrt_result = eval_primitive(Primitive::Cbrt, &[input.clone()], &no_params()).unwrap();
+    let cbrt_result = eval_primitive(Primitive::Cbrt, std::slice::from_ref(&input), &no_params()).unwrap();
     let squared = eval_primitive(
         Primitive::Mul,
         &[cbrt_result.clone(), cbrt_result.clone()],

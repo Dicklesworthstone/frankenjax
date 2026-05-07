@@ -100,10 +100,10 @@ fn oracle_copy_scalar_i64() {
 
 #[test]
 fn oracle_copy_scalar_f64() {
-    let input = Value::Scalar(Literal::from_f64(3.14159));
+    let input = Value::Scalar(Literal::from_f64(3.17));
     let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
-    assert!((vals[0] - 3.14159).abs() < 1e-10);
+    assert!((vals[0] - 3.17).abs() < 1e-10);
 }
 
 #[test]

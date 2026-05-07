@@ -191,9 +191,9 @@ fn oracle_neg_zero_f64() {
 
 #[test]
 fn oracle_neg_fractional() {
-    let input = make_f64_tensor(&[], vec![3.14159]);
+    let input = make_f64_tensor(&[], vec![3.17]);
     let result = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
-    assert_close(extract_f64_scalar(&result), -3.14159, 1e-14, "neg(pi)");
+    assert_close(extract_f64_scalar(&result), -3.17, 1e-14, "neg(pi)");
 }
 
 // ====================== INTEGER VALUES ======================
@@ -258,7 +258,7 @@ fn oracle_neg_involution() {
         1.0,
         -1.0,
         0.0,
-        3.14,
+        3.17,
         -2.718,
         f64::INFINITY,
         f64::NEG_INFINITY,
@@ -280,7 +280,7 @@ fn oracle_neg_involution() {
 #[test]
 fn oracle_neg_additive_inverse() {
     // x + neg(x) = 0
-    for x in [1.0, -1.0, 3.14, -2.718, 100.0] {
+    for x in [1.0, -1.0, 3.17, -2.718, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
         let neg_x =
             extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());
@@ -411,7 +411,7 @@ fn oracle_neg_2d_f64() {
 #[test]
 fn oracle_neg_vs_mul_minus_one() {
     // neg(x) = x * (-1)
-    for x in [1.0, -1.0, 0.0, 3.14, -2.718] {
+    for x in [1.0, -1.0, 0.0, 3.17, -2.718] {
         let input = make_f64_tensor(&[], vec![x]);
         let neg_result =
             extract_f64_scalar(&eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap());

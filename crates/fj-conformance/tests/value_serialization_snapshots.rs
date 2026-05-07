@@ -12,7 +12,7 @@ use fj_core::{DType, Literal, Shape, TensorValue, Value};
 
 #[test]
 fn snapshot_scalar_f64() {
-    let val = Value::scalar_f64(3.14159);
+    let val = Value::scalar_f64(3.17);
     let json = serde_json::to_string_pretty(&val).unwrap();
     insta::assert_snapshot!(json);
 }
