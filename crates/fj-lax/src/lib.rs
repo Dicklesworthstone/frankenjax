@@ -11307,5 +11307,59 @@ mod prop_tests {
             let val = result.as_f64_scalar().unwrap();
             prop_assert!(val.abs() < 1e-14, "lgamma(2) != 0: {}", val);
         }
+
+        #[test]
+        fn metamorphic_bitwise_and_idempotent(a in 0i64..1000) {
+            // a & a = a
+            let result = eval_primitive(Primitive::BitwiseAnd, &[Value::scalar_i64(a), Value::scalar_i64(a)], &BTreeMap::new()).unwrap();
+            let val = result.as_i64_scalar().unwrap();
+            prop_assert_eq!(val, a, "a & a != a: {} & {} = {}", a, a, val);
+        }
+
+        #[test]
+        fn metamorphic_bitwise_or_idempotent(a in 0i64..1000) {
+            // a | a = a
+            let result = eval_primitive(Primitive::BitwiseOr, &[Value::scalar_i64(a), Value::scalar_i64(a)], &BTreeMap::new()).unwrap();
+            let val = result.as_i64_scalar().unwrap();
+            prop_assert_eq!(val, a, "a | a != a: {} | {} = {}", a, a, val);
+        }
+
+        #[test]
+        fn metamorphic_bitwise_xor_self_is_zero(a in 0i64..1000) {
+            // a ^ a = 0
+            let result = eval_primitive(Primitive::BitwiseXor, &[Value::scalar_i64(a), Value::scalar_i64(a)], &BTreeMap::new()).unwrap();
+            let val = result.as_i64_scalar().unwrap();
+            prop_assert_eq!(val, 0, "a ^ a != 0: {} ^ {} = {}", a, a, val);
+        }
+
+        #[test]
+        fn metamorphic_bitwise_not_involution(a in 0i64..1000) {
+            // !!a = a (double negation)
+            let not_a = eval_primitive(Primitive::BitwiseNot, &[Value::scalar_i64(a)], &BTreeMap::new()).unwrap();
+            let not_not_a = eval_primitive(Primitive::BitwiseNot, &[not_a], &BTreeMap::new()).unwrap();
+            let val = not_not_a.as_i64_scalar().unwrap();
+            prop_assert_eq!(val, a, "!!a != a: !!{} = {}", a, val);
+        }
+
+        #[test]
+        fn metamorphic_atan2_vs_atan(y in 0.1f64..10.0, x in 0.1f64..10.0) {
+            // atan2(y, x) = atan(y/x) for x > 0, y > 0
+            let atan2_result = eval_primitive(Primitive::Atan2, &[Value::scalar_f64(y), Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let ratio = y / x;
+            let atan_result = eval_primitive(Primitive::Atan, &[Value::scalar_f64(ratio)], &BTreeMap::new()).unwrap();
+            let atan2_val = atan2_result.as_f64_scalar().unwrap();
+            let atan_val = atan_result.as_f64_scalar().unwrap();
+            let diff = (atan2_val - atan_val).abs();
+            prop_assert!(diff < 1e-14, "atan2(y,x) != atan(y/x): {} vs {}", atan2_val, atan_val);
+        }
+
+        #[test]
+        fn metamorphic_is_finite_on_regular_floats(x in -1e100f64..1e100) {
+            // is_finite should return true for regular (non-infinite, non-NaN) floats
+            let result = eval_primitive(Primitive::IsFinite, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let val = result.as_bool_scalar().unwrap();
+            prop_assert!(val, "is_finite({}) returned false", x);
+        }
+
     }
 }
