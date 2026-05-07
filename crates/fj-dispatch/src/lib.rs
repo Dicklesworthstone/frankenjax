@@ -3088,4 +3088,91 @@ mod tests {
             "hardened d²/dx²(x²) should be 2.0, got {d2}"
         );
     }
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(
+                fj_test_utils::property_test_case_count()
+            ))]
+
+            #[test]
+            fn metamorphic_dispatch_deterministic(
+                a in -1000i64..1000,
+                b in -1000i64..1000
+            ) {
+                let request = || DispatchRequest {
+                    mode: CompatibilityMode::Strict,
+                    ledger: ledger(ProgramSpec::Add2, &[Transform::Jit]),
+                    args: vec![Value::scalar_i64(a), Value::scalar_i64(b)],
+                    backend: "cpu".to_owned(),
+                    compile_options: BTreeMap::new(),
+                    custom_hook: None,
+                    unknown_incompatible_features: vec![],
+                };
+                let r1 = dispatch(request()).expect("dispatch 1");
+                let r2 = dispatch(request()).expect("dispatch 2");
+                prop_assert_eq!(r1.outputs, r2.outputs, "dispatch not deterministic for a={}, b={}", a, b);
+            }
+
+            #[test]
+            fn metamorphic_jit_transparent(x in -100.0f64..100.0) {
+                prop_assume!(x.is_finite());
+                let no_jit = dispatch(DispatchRequest {
+                    mode: CompatibilityMode::Strict,
+                    ledger: ledger(ProgramSpec::Square, &[]),
+                    args: vec![Value::scalar_f64(x)],
+                    backend: "cpu".to_owned(),
+                    compile_options: BTreeMap::new(),
+                    custom_hook: None,
+                    unknown_incompatible_features: vec![],
+                }).expect("no jit dispatch");
+                let with_jit = dispatch(DispatchRequest {
+                    mode: CompatibilityMode::Strict,
+                    ledger: ledger(ProgramSpec::Square, &[Transform::Jit]),
+                    args: vec![Value::scalar_f64(x)],
+                    backend: "cpu".to_owned(),
+                    compile_options: BTreeMap::new(),
+                    custom_hook: None,
+                    unknown_incompatible_features: vec![],
+                }).expect("jit dispatch");
+                let no_jit_val = no_jit.outputs[0].as_f64_scalar().unwrap();
+                let jit_val = with_jit.outputs[0].as_f64_scalar().unwrap();
+                prop_assert!((no_jit_val - jit_val).abs() < 1e-14, "jit not transparent: {} vs {} at x={}", no_jit_val, jit_val, x);
+            }
+
+            #[test]
+            fn metamorphic_grad_linearity_constant_factor(
+                x in 1.0f64..10.0,
+                c in 1.0f64..5.0
+            ) {
+                let grad_x = dispatch(DispatchRequest {
+                    mode: CompatibilityMode::Strict,
+                    ledger: ledger(ProgramSpec::Square, &[Transform::Grad]),
+                    args: vec![Value::scalar_f64(x)],
+                    backend: "cpu".to_owned(),
+                    compile_options: BTreeMap::new(),
+                    custom_hook: None,
+                    unknown_incompatible_features: vec![],
+                }).expect("grad at x");
+                let grad_cx = dispatch(DispatchRequest {
+                    mode: CompatibilityMode::Strict,
+                    ledger: ledger(ProgramSpec::Square, &[Transform::Grad]),
+                    args: vec![Value::scalar_f64(c * x)],
+                    backend: "cpu".to_owned(),
+                    compile_options: BTreeMap::new(),
+                    custom_hook: None,
+                    unknown_incompatible_features: vec![],
+                }).expect("grad at c*x");
+                let g_x = grad_x.outputs[0].as_f64_scalar().unwrap();
+                let g_cx = grad_cx.outputs[0].as_f64_scalar().unwrap();
+                let expected = 2.0 * x;
+                let expected_cx = 2.0 * c * x;
+                prop_assert!((g_x - expected).abs() < 1e-10, "grad(square) at x={}: {} vs {}", x, g_x, expected);
+                prop_assert!((g_cx - expected_cx).abs() < 1e-10, "grad(square) at c*x={}: {} vs {}", c*x, g_cx, expected_cx);
+            }
+        }
+    }
 }
