@@ -8232,4 +8232,67 @@ mod tests {
         let result = apply_batch_rule(Primitive::BitwiseAnd, &[a, b], &BTreeMap::new()).unwrap();
         assert_eq!(result.batch_dim, Some(0));
     }
+
+    // ── Proptest Metamorphic Tests ──────────────────────────────
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(
+            fj_test_utils::property_test_case_count()
+        ))]
+
+        #[test]
+        fn metamorphic_unbatched_tracer_preserves_content(
+            data in proptest::collection::vec(-1000.0f64..1000.0, 1..16)
+        ) {
+            let input = make_f64_vector(&data);
+            let tracer = BatchTracer::unbatched(input.clone());
+            proptest::prop_assert_eq!(tracer.batch_dim, None);
+            proptest::prop_assert_eq!(extract_f64_vec(&tracer.value), data);
+        }
+
+        #[test]
+        fn metamorphic_batched_neg_matches_elementwise(
+            data in proptest::collection::vec(-1000.0f64..1000.0, 1..16)
+        ) {
+            let filtered: Vec<f64> = data.iter().copied().filter(|x| x.is_finite()).collect();
+            proptest::prop_assume!(!filtered.is_empty());
+            let input = BatchTracer::batched(make_f64_vector(&filtered), 0);
+            let result = apply_batch_rule(Primitive::Neg, &[input], &BTreeMap::new());
+            proptest::prop_assert!(result.is_ok());
+            let out = result.unwrap();
+            proptest::prop_assert_eq!(out.batch_dim, Some(0));
+            let out_vals = extract_f64_vec(&out.value);
+            proptest::prop_assert_eq!(out_vals.len(), filtered.len());
+            for (i, (&orig, &negated)) in filtered.iter().zip(out_vals.iter()).enumerate() {
+                proptest::prop_assert!(
+                    (negated + orig).abs() < 1e-12,
+                    "neg mismatch at index {}: -{} != {}", i, orig, negated
+                );
+            }
+        }
+
+        #[test]
+        fn metamorphic_batched_abs_idempotent(
+            data in proptest::collection::vec(-1000.0f64..1000.0, 1..16)
+        ) {
+            let filtered: Vec<f64> = data.iter().copied().filter(|x| x.is_finite()).collect();
+            proptest::prop_assume!(!filtered.is_empty());
+            let input = BatchTracer::batched(make_f64_vector(&filtered), 0);
+            let abs1 = apply_batch_rule(Primitive::Abs, &[input], &BTreeMap::new()).unwrap();
+            let abs2 = apply_batch_rule(Primitive::Abs, &[abs1.clone()], &BTreeMap::new()).unwrap();
+            let vals1 = extract_f64_vec(&abs1.value);
+            let vals2 = extract_f64_vec(&abs2.value);
+            proptest::prop_assert_eq!(vals1, vals2, "abs(abs(x)) should equal abs(x)");
+        }
+
+        #[test]
+        fn metamorphic_unbatched_elementwise_vs_batched(x in -100.0f64..100.0) {
+            proptest::prop_assume!(x.is_finite());
+            let unbatched_input = BatchTracer::unbatched(Value::scalar_f64(x));
+            let unbatched_result = apply_batch_rule(Primitive::Neg, &[unbatched_input], &BTreeMap::new()).unwrap();
+            proptest::prop_assert_eq!(unbatched_result.batch_dim, None);
+            let unbatched_val = unbatched_result.value.as_f64_scalar().unwrap();
+            proptest::prop_assert!((unbatched_val + x).abs() < 1e-14);
+        }
+    }
 }
