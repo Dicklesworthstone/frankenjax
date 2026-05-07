@@ -11160,5 +11160,47 @@ mod prop_tests {
             let expected = a + b + c;
             prop_assert!((sum_val - expected).abs() < 1e-12, "sum([a,b,c]) != a+b+c: {} != {}", sum_val, expected);
         }
+
+        #[test]
+        fn metamorphic_square_equals_mul_self(x in -100.0f64..100.0) {
+            // square(x) == x * x
+            let square_x = eval_primitive(Primitive::Square, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let mul_xx = eval_primitive(Primitive::Mul, &[Value::scalar_f64(x), Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+
+            let sq_val = square_x.as_f64_scalar().unwrap();
+            let mul_val = mul_xx.as_f64_scalar().unwrap();
+            prop_assert!((sq_val - mul_val).abs() < 1e-14, "square(x) != x*x: {} != {}", sq_val, mul_val);
+        }
+
+        #[test]
+        fn metamorphic_floor_ceil_ordering(x in -100.0f64..100.0) {
+            // floor(x) <= x <= ceil(x) always
+            let floor_x = eval_primitive(Primitive::Floor, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let ceil_x = eval_primitive(Primitive::Ceil, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+
+            let floor_val = floor_x.as_f64_scalar().unwrap();
+            let ceil_val = ceil_x.as_f64_scalar().unwrap();
+            prop_assert!(floor_val <= x, "floor(x) > x: {} > {}", floor_val, x);
+            prop_assert!(x <= ceil_val, "x > ceil(x): {} > {}", x, ceil_val);
+            prop_assert!(floor_val <= ceil_val, "floor > ceil: {} > {}", floor_val, ceil_val);
+        }
+
+        #[test]
+        fn metamorphic_logistic_range(x in -20.0f64..20.0) {
+            // logistic(x) is always in (0, 1)
+            let logistic_x = eval_primitive(Primitive::Logistic, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let val = logistic_x.as_f64_scalar().unwrap();
+            prop_assert!(val > 0.0 && val < 1.0, "logistic(x) not in (0,1): {}", val);
+        }
+
+        #[test]
+        fn metamorphic_sign_values(x in -100.0f64..100.0) {
+            // sign(x) is in {-1, 0, 1}
+            prop_assume!(x != 0.0); // skip zero to avoid sign(0) ambiguity
+            let sign_x = eval_primitive(Primitive::Sign, &[Value::scalar_f64(x)], &BTreeMap::new()).unwrap();
+            let val = sign_x.as_f64_scalar().unwrap();
+            prop_assert!(val == -1.0 || val == 1.0, "sign(x) not in {{-1, 1}}: {}", val);
+            prop_assert!((val > 0.0) == (x > 0.0), "sign(x) wrong sign: sign({}) = {}", x, val);
+        }
     }
 }
