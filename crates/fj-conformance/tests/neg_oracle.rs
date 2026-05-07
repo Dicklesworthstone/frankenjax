@@ -471,7 +471,7 @@ fn metamorphic_neg_add_zero() {
     // Add(x, Neg(x)) = 0 using Add primitive
     for x in [-5.5, -1.0, 1.0, 5.5, 100.0, -100.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_x = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let sum = eval_primitive(Primitive::Add, &[input, neg_x], &no_params()).unwrap();
 
         assert_eq!(

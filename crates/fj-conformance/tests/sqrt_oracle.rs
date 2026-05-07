@@ -371,7 +371,7 @@ fn metamorphic_square_sqrt_abs() {
 fn metamorphic_sqrt_tensor_roundtrip() {
     // For a tensor of non-negative values: sqrt(x)^2 = x
     let input = make_f64_tensor(&[6], vec![0.0, 0.25, 1.0, 4.0, 9.0, 100.0]);
-    let sqrt_result = eval_primitive(Primitive::Sqrt, &[input.clone()], &no_params()).unwrap();
+    let sqrt_result = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&input), &no_params()).unwrap();
     let squared = eval_primitive(
         Primitive::Mul,
         &[sqrt_result.clone(), sqrt_result],

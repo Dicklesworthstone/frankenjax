@@ -489,7 +489,7 @@ fn metamorphic_exp_log_identity() {
 #[test]
 fn metamorphic_exp_tensor_roundtrip() {
     let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
-    let exp_result = eval_primitive(Primitive::Exp, &[input.clone()], &no_params()).unwrap();
+    let exp_result = eval_primitive(Primitive::Exp, std::slice::from_ref(&input), &no_params()).unwrap();
     let log_exp = eval_primitive(Primitive::Log, &[exp_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

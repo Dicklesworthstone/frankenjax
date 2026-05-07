@@ -477,7 +477,7 @@ fn metamorphic_abs_negation_invariant() {
     // abs(-x) = abs(x) using Neg primitive
     for x in [-5.5, -1.0, 0.0, 1.0, 5.5, f64::INFINITY] {
         let input = make_f64_tensor(&[], vec![x]);
-        let negated = eval_primitive(Primitive::Neg, &[input.clone()], &no_params()).unwrap();
+        let negated = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
 
         let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
         let abs_neg_x = eval_primitive(Primitive::Abs, &[negated], &no_params()).unwrap();
