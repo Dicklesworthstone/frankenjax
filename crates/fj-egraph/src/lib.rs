@@ -6778,4 +6778,69 @@ mod tests {
             "optimizer should be idempotent on trig: same primitive sequence"
         );
     }
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(
+                fj_test_utils::property_test_case_count()
+            ))]
+
+            #[test]
+            fn metamorphic_optimize_preserves_add2_semantics(
+                a in -1_000_000i64..1_000_000,
+                b in -1_000_000i64..1_000_000
+            ) {
+                let original = build_program(ProgramSpec::Add2);
+                let optimized = optimize_jaxpr(&original);
+                let inputs = [Value::scalar_i64(a), Value::scalar_i64(b)];
+                let orig_out = eval_jaxpr(&original, &inputs).expect("original eval");
+                let opt_out = eval_jaxpr(&optimized, &inputs).expect("optimized eval");
+                prop_assert_eq!(orig_out, opt_out, "optimization changed semantics for a={}, b={}", a, b);
+            }
+
+            #[test]
+            fn metamorphic_optimize_preserves_square_semantics(
+                x in prop::num::f64::NORMAL.prop_filter("finite", |x| x.is_finite() && x.abs() < 1e6)
+            ) {
+                let original = build_program(ProgramSpec::Square);
+                let optimized = optimize_jaxpr(&original);
+                let inputs = [Value::scalar_f64(x)];
+                let orig_out = eval_jaxpr(&original, &inputs).expect("original eval");
+                let opt_out = eval_jaxpr(&optimized, &inputs).expect("optimized eval");
+                let orig_val = orig_out[0].as_f64_scalar().unwrap();
+                let opt_val = opt_out[0].as_f64_scalar().unwrap();
+                prop_assert!((orig_val - opt_val).abs() < 1e-10, "optimization changed square semantics: {} vs {}", orig_val, opt_val);
+            }
+
+            #[test]
+            fn metamorphic_optimize_preserves_sin_semantics(
+                x in prop::num::f64::NORMAL.prop_filter("finite", |x| x.is_finite() && x.abs() < 1e3)
+            ) {
+                let original = build_program(ProgramSpec::SinX);
+                let optimized = optimize_jaxpr(&original);
+                let inputs = [Value::scalar_f64(x)];
+                let orig_out = eval_jaxpr(&original, &inputs).expect("original eval");
+                let opt_out = eval_jaxpr(&optimized, &inputs).expect("optimized eval");
+                let orig_val = orig_out[0].as_f64_scalar().unwrap();
+                let opt_val = opt_out[0].as_f64_scalar().unwrap();
+                prop_assert!((orig_val - opt_val).abs() < 1e-10, "optimization changed sin semantics: {} vs {}", orig_val, opt_val);
+            }
+
+            #[test]
+            fn metamorphic_optimizer_idempotent(
+                x in prop::num::f64::NORMAL.prop_filter("finite", |x| x.is_finite() && x.abs() < 1e3)
+            ) {
+                let original = build_program(ProgramSpec::SquarePlusLinear);
+                let once = optimize_jaxpr(&original);
+                let twice = optimize_jaxpr(&once);
+                let inputs = [Value::scalar_f64(x)];
+                let once_out = eval_jaxpr(&once, &inputs).expect("once eval");
+                let twice_out = eval_jaxpr(&twice, &inputs).expect("twice eval");
+                prop_assert_eq!(once_out, twice_out, "optimizer not idempotent at x={}", x);
+            }
+        }
+    }
 }

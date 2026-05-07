@@ -12,6 +12,7 @@ smallvec = { workspace = true }
 fj-interpreters = { path = "../fj-interpreters" }
 fj-test-utils = { path = "../fj-test-utils" }
 criterion = "0.5"
+proptest = { workspace = true }
 
 [[bench]]
 name = "egraph_baseline"
