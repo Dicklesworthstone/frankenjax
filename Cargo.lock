@@ -841,6 +841,7 @@ dependencies = [
  "fj-core",
  "fj-interpreters",
  "fj-test-utils",
+ "proptest",
  "smallvec",
 ]
 
@@ -886,6 +887,7 @@ version = "0.1.0"
 dependencies = [
  "fj-core",
  "fj-test-utils",
+ "proptest",
  "serde",
  "serde_json",
 ]

@@ -961,4 +961,84 @@ mod tests {
         );
         assert_eq!(log.schema_version, fj_test_utils::TEST_LOG_SCHEMA_VERSION);
     }
+
+    // ── Metamorphic tests (frankenjax-meta) ──────────────────
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn metamorphic_log_sum_exp_commutativity(a in -10.0_f64..10.0, b in -10.0_f64..10.0) {
+            let ab = super::log_sum_exp(a, b);
+            let ba = super::log_sum_exp(b, a);
+            prop_assert!((ab - ba).abs() < 1e-10, "log_sum_exp should be commutative");
+        }
+
+        #[test]
+        fn metamorphic_log_sum_exp_matches_naive(a in -5.0_f64..5.0, b in -5.0_f64..5.0) {
+            let stable = super::log_sum_exp(a, b);
+            let naive = (a.exp() + b.exp()).ln();
+            prop_assert!((stable - naive).abs() < 1e-9, "log_sum_exp should match naive: stable={}, naive={}", stable, naive);
+        }
+
+        #[test]
+        fn metamorphic_expected_loss_boundary_zero(
+            keep_if_useful in 0u32..100,
+            kill_if_useful in 0u32..100,
+            keep_if_abandoned in 0u32..100,
+            kill_if_abandoned in 0u32..100,
+        ) {
+            let matrix = LossMatrix { keep_if_useful, kill_if_useful, keep_if_abandoned, kill_if_abandoned };
+            let loss_keep = super::expected_loss_keep(0.0, &matrix);
+            let loss_kill = super::expected_loss_kill(0.0, &matrix);
+            prop_assert!((loss_keep - f64::from(keep_if_useful)).abs() < 1e-10);
+            prop_assert!((loss_kill - f64::from(kill_if_useful)).abs() < 1e-10);
+        }
+
+        #[test]
+        fn metamorphic_expected_loss_boundary_one(
+            keep_if_useful in 0u32..100,
+            kill_if_useful in 0u32..100,
+            keep_if_abandoned in 0u32..100,
+            kill_if_abandoned in 0u32..100,
+        ) {
+            let matrix = LossMatrix { keep_if_useful, kill_if_useful, keep_if_abandoned, kill_if_abandoned };
+            let loss_keep = super::expected_loss_keep(1.0, &matrix);
+            let loss_kill = super::expected_loss_kill(1.0, &matrix);
+            prop_assert!((loss_keep - f64::from(keep_if_abandoned)).abs() < 1e-10);
+            prop_assert!((loss_kill - f64::from(kill_if_abandoned)).abs() < 1e-10);
+        }
+
+        #[test]
+        fn metamorphic_e_process_product(ratios in prop::collection::vec(0.5_f64..3.0, 1..10)) {
+            let mut ep = super::EProcess::new(1e10);
+            let expected_product: f64 = ratios.iter().copied().product();
+            for lr in &ratios {
+                ep.update(*lr);
+            }
+            prop_assert!((ep.e_value() - expected_product).abs() < 1e-6, "e_value should equal product of LRs");
+        }
+
+        #[test]
+        fn metamorphic_conformal_bounds_containment(
+            point in 0.0_f64..1.0,
+            scores in prop::collection::vec(0.01_f64..0.5, 10..20),
+        ) {
+            let mut cp = super::ConformalPredictor::new(0.9, 5);
+            for s in scores {
+                cp.observe(s);
+            }
+            let est = cp.calibrated_posterior(point);
+            prop_assert!(est.lower <= est.point, "lower bound should not exceed point");
+            prop_assert!(est.upper >= est.point, "upper bound should not be below point");
+            prop_assert!(est.lower >= 0.0 && est.upper <= 1.0, "bounds should be in [0,1]");
+        }
+
+        #[test]
+        fn metamorphic_posterior_prior_recovery(prior in 0.01_f64..0.99) {
+            let ldp = super::LogDomainPosterior::new(prior);
+            let recovered = ldp.posterior_abandoned();
+            prop_assert!((recovered - prior).abs() < 0.01, "no evidence should recover prior: expected {}, got {}", prior, recovered);
+        }
+    }
 }
