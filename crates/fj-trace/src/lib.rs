@@ -8662,4 +8662,70 @@ mod tests {
         let aval = ctx.tracer_aval(out[0]).expect("aval present");
         assert_eq!(aval.shape.dims, vec![1, 0, 3, 1]);
     }
+
+    mod proptest_tests {
+        use super::*;
+        use crate::make_jaxpr;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(
+                fj_test_utils::property_test_case_count()
+            ))]
+
+            #[test]
+            fn metamorphic_make_jaxpr_deterministic(_seed in 0u64..1000) {
+                let in_avals = vec![ShapedArray {
+                    shape: Shape::scalar(),
+                    dtype: DType::F64,
+                }];
+                let jaxpr1 = make_jaxpr(
+                    |inputs| vec![&inputs[0] * &inputs[0]],
+                    in_avals.clone(),
+                ).expect("trace 1");
+                let jaxpr2 = make_jaxpr(
+                    |inputs| vec![&inputs[0] * &inputs[0]],
+                    in_avals,
+                ).expect("trace 2");
+                prop_assert_eq!(jaxpr1.jaxpr.equations.len(), jaxpr2.jaxpr.equations.len());
+                prop_assert_eq!(
+                    jaxpr1.jaxpr.equations.iter().map(|e| e.primitive).collect::<Vec<_>>(),
+                    jaxpr2.jaxpr.equations.iter().map(|e| e.primitive).collect::<Vec<_>>()
+                );
+            }
+
+            #[test]
+            fn metamorphic_trace_add_produces_single_equation(_seed in 0u64..1000) {
+                let in_avals = vec![
+                    ShapedArray { shape: Shape::scalar(), dtype: DType::F64 },
+                    ShapedArray { shape: Shape::scalar(), dtype: DType::F64 },
+                ];
+                let jaxpr = make_jaxpr(
+                    |inputs| vec![&inputs[0] + &inputs[1]],
+                    in_avals,
+                ).expect("trace add");
+                prop_assert_eq!(jaxpr.jaxpr.equations.len(), 1, "add should produce exactly 1 equation");
+                prop_assert_eq!(jaxpr.jaxpr.equations[0].primitive, Primitive::Add);
+            }
+
+            #[test]
+            fn metamorphic_trace_chain_produces_two_equations(_seed in 0u64..1000) {
+                let in_avals = vec![ShapedArray {
+                    shape: Shape::scalar(),
+                    dtype: DType::F64,
+                }];
+                let jaxpr = make_jaxpr(
+                    |inputs| {
+                        let sin_x = inputs[0].unary_op(Primitive::Sin).unwrap();
+                        let cos_sin_x = sin_x.unary_op(Primitive::Cos).unwrap();
+                        vec![cos_sin_x]
+                    },
+                    in_avals,
+                ).expect("trace chain");
+                prop_assert_eq!(jaxpr.jaxpr.equations.len(), 2, "sin then cos should produce 2 equations");
+                prop_assert_eq!(jaxpr.jaxpr.equations[0].primitive, Primitive::Sin);
+                prop_assert_eq!(jaxpr.jaxpr.equations[1].primitive, Primitive::Cos);
+            }
+        }
+    }
 }
