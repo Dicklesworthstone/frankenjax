@@ -12,6 +12,8 @@ __pycache__/
 *.pyo
 
 # Beads local state
+# br (beads_rust) recovery directory — DB-recovery snapshots; ephemeral
+.beads/.br_recovery/
 
 # BV local config and caches
 .bv/
