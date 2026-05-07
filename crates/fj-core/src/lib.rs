@@ -4695,4 +4695,50 @@ mod tests {
             }
         }
     }
+
+    mod proptest_tests {
+        use super::*;
+        use proptest::prelude::*;
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config::with_cases(
+                fj_test_utils::property_test_case_count()
+            ))]
+
+            #[test]
+            fn metamorphic_shape_element_count_matches_dims_product(
+                dims in proptest::collection::vec(1u32..10, 0..4)
+            ) {
+                let shape = Shape { dims: dims.clone() };
+                let expected: u64 = dims.iter().map(|&d| u64::from(d)).product();
+                let actual = shape.element_count();
+                prop_assert_eq!(actual, Some(expected), "element_count mismatch for dims {:?}", dims);
+            }
+
+            #[test]
+            fn metamorphic_shape_scalar_has_zero_rank(_seed in 0u64..1000) {
+                let scalar = Shape::scalar();
+                prop_assert_eq!(scalar.rank(), 0, "scalar should have rank 0");
+                prop_assert_eq!(scalar.element_count(), Some(1), "scalar should have 1 element");
+            }
+
+            #[test]
+            fn metamorphic_shape_vector_has_rank_one(len in 1u32..100) {
+                let vec_shape = Shape::vector(len);
+                prop_assert_eq!(vec_shape.rank(), 1, "vector should have rank 1");
+                prop_assert_eq!(vec_shape.element_count(), Some(u64::from(len)), "vector element count mismatch");
+            }
+
+            #[test]
+            fn metamorphic_value_scalar_f64_roundtrip(bits in proptest::num::u64::ANY) {
+                let original = Value::Scalar(Literal::F64Bits(bits));
+                if let Value::Scalar(Literal::F64Bits(recovered)) = original.clone() {
+                    prop_assert_eq!(recovered, bits, "f64 scalar bits should roundtrip");
+                } else {
+                    prop_assert!(false, "scalar should remain scalar");
+                }
+            }
+
+        }
+    }
 }
