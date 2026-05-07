@@ -262,4 +262,60 @@ mod tests {
         let nested = sub.slice(1, 2).expect("nested slice");
         assert_eq!(nested.as_bytes(), &[3, 4]);
     }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config::with_cases(
+            fj_test_utils::property_test_case_count()
+        ))]
+
+        #[test]
+        fn metamorphic_buffer_roundtrip(data in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..256)) {
+            let buf = Buffer::new(data.clone(), DeviceId(0));
+            proptest::prop_assert_eq!(buf.as_bytes(), &data[..]);
+            proptest::prop_assert_eq!(buf.into_bytes(), data);
+        }
+
+        #[test]
+        fn metamorphic_buffer_zeroed_all_zeros(size in 0_usize..512) {
+            let buf = Buffer::zeroed(size, DeviceId(0));
+            proptest::prop_assert_eq!(buf.size(), size);
+            proptest::prop_assert!(buf.as_bytes().iter().all(|&b| b == 0));
+        }
+
+        #[test]
+        fn metamorphic_slice_preserves_content(
+            data in proptest::collection::vec(proptest::prelude::any::<u8>(), 1..64),
+            offset in 0_usize..32,
+            len in 0_usize..32
+        ) {
+            let buf = Buffer::new(data.clone(), DeviceId(0));
+            let view = BufferView::from_buffer(&buf);
+            if let Some(end) = offset.checked_add(len) {
+                if end <= data.len() {
+                    let slice = view.slice(offset, len).expect("valid slice");
+                    proptest::prop_assert_eq!(slice.as_bytes(), &data[offset..end]);
+                } else {
+                    proptest::prop_assert!(view.slice(offset, len).is_none());
+                }
+            } else {
+                proptest::prop_assert!(view.slice(offset, len).is_none());
+            }
+        }
+
+        #[test]
+        fn metamorphic_slice_overflow_safety(offset in 0_usize..=usize::MAX, len in 0_usize..=usize::MAX) {
+            let buf = Buffer::new(vec![1, 2, 3, 4], DeviceId(0));
+            let view = BufferView::from_buffer(&buf);
+            let result = view.slice(offset, len);
+            if let Some(end) = offset.checked_add(len) {
+                if end <= 4 {
+                    proptest::prop_assert!(result.is_some());
+                } else {
+                    proptest::prop_assert!(result.is_none());
+                }
+            } else {
+                proptest::prop_assert!(result.is_none());
+            }
+        }
+    }
 }
