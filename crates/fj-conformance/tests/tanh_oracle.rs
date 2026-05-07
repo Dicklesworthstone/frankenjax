@@ -425,7 +425,7 @@ fn metamorphic_tanh_atanh_identity() {
 #[test]
 fn metamorphic_tanh_tensor_roundtrip() {
     let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
-    let tanh_result = eval_primitive(Primitive::Tanh, &[input.clone()], &no_params()).unwrap();
+    let tanh_result = eval_primitive(Primitive::Tanh, std::slice::from_ref(&input), &no_params()).unwrap();
     let atanh_tanh = eval_primitive(Primitive::Atanh, &[tanh_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);

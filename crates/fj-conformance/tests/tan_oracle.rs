@@ -329,8 +329,8 @@ fn metamorphic_tan_equals_sin_over_cos() {
     for x in [0.0, 0.25, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let tan_result = eval_primitive(Primitive::Tan, &[input.clone()], &no_params()).unwrap();
-        let sin_result = eval_primitive(Primitive::Sin, &[input.clone()], &no_params()).unwrap();
+        let tan_result = eval_primitive(Primitive::Tan, std::slice::from_ref(&input), &no_params()).unwrap();
+        let sin_result = eval_primitive(Primitive::Sin, std::slice::from_ref(&input), &no_params()).unwrap();
         let cos_result = eval_primitive(Primitive::Cos, &[input], &no_params()).unwrap();
 
         let tan_val = extract_f64_scalar(&tan_result);
@@ -399,8 +399,8 @@ fn metamorphic_tan_tensor_sin_over_cos() {
     // tan(x) = sin(x) / cos(x) for 1D tensor
     let x = make_f64_tensor(&[5], vec![0.1, 0.5, 1.0, 1.5, 2.0]);
 
-    let tan_result = eval_primitive(Primitive::Tan, &[x.clone()], &no_params()).unwrap();
-    let sin_result = eval_primitive(Primitive::Sin, &[x.clone()], &no_params()).unwrap();
+    let tan_result = eval_primitive(Primitive::Tan, std::slice::from_ref(&x), &no_params()).unwrap();
+    let sin_result = eval_primitive(Primitive::Sin, std::slice::from_ref(&x), &no_params()).unwrap();
     let cos_result = eval_primitive(Primitive::Cos, &[x], &no_params()).unwrap();
 
     let tan_vals = extract_f64_vec(&tan_result);
