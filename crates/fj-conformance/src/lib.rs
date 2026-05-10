@@ -1118,7 +1118,7 @@ pub fn run_transform_fixture_bundle(
     let mut reports = Vec::with_capacity(bundle.cases.len());
 
     for case in &bundle.cases {
-        reports.push(run_transform_fixture_case(case));
+        reports.push(run_transform_fixture_case_direct(case));
     }
 
     let matched_cases = reports.iter().filter(|report| report.matched).count();
@@ -1130,6 +1130,28 @@ pub fn run_transform_fixture_bundle(
         mismatched_cases: reports.len().saturating_sub(matched_cases),
         reports,
     }
+}
+
+fn run_transform_fixture_case_direct(case: &TransformFixtureCase) -> TransformCaseReport {
+    let expected_json = expected_fixture_json(case);
+    if case.simulated_delay_ms > 0 {
+        return TransformCaseReport {
+            case_id: case.case_id.clone(),
+            family: case.family,
+            mode: case.mode,
+            comparator: case.comparator,
+            drift_classification: DriftClassification::Timeout,
+            matched: false,
+            expected_json,
+            actual_json: None,
+            error: Some(format!(
+                "simulated_delay_ms={} is rejected for direct fixture execution",
+                case.simulated_delay_ms
+            )),
+        };
+    }
+
+    run_transform_fixture_case(case)
 }
 
 pub fn capture_transform_fixture_bundle_with_oracle(
@@ -1192,8 +1214,7 @@ pub fn run_transform_fixture_bundle_batched(
     let mut reports = Vec::with_capacity(bundle.cases.len());
 
     for case in &bundle.cases {
-        let expected_json = serde_json::to_string(&case.expected)
-            .unwrap_or_else(|err| format!("<expected serialization error: {err}>"));
+        let expected_json = expected_fixture_json(case);
         if simulated_delay_exceeds_timeout(case, batch.case_timeout) {
             reports.push(timeout_case_report(
                 case.clone(),
@@ -1488,6 +1509,11 @@ impl ParityReportV1 {
     }
 }
 
+fn expected_fixture_json(case: &TransformFixtureCase) -> String {
+    serde_json::to_string(&case.expected)
+        .unwrap_or_else(|err| format!("<expected serialization error: {err}>"))
+}
+
 fn default_python_for_repo() -> Option<PathBuf> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let venv_python = repo_root.join(".venv").join("bin").join("python");
@@ -1508,8 +1534,7 @@ fn run_transform_fixture_case(case: &TransformFixtureCase) -> TransformCaseRepor
         .map(FixtureValue::to_runtime_value)
         .collect::<Result<Vec<_>, _>>();
 
-    let expected_json = serde_json::to_string(&case.expected)
-        .unwrap_or_else(|err| format!("<expected serialization error: {err}>"));
+    let expected_json = expected_fixture_json(case);
 
     let runtime_args = match runtime_args {
         Ok(args) => args,
@@ -1971,6 +1996,41 @@ mod tests {
         assert_eq!(report.total_cases, 1);
         assert_eq!(report.matched_cases, 1);
         assert_eq!(report.mismatched_cases, 0);
+    }
+
+    #[test]
+    fn transform_bundle_direct_rejects_simulated_delay_without_sleeping() {
+        let cfg = HarnessConfig::default_paths();
+        let bundle = TransformFixtureBundle {
+            schema_version: "frankenjax.transform-fixtures.v1".to_owned(),
+            generated_by: "unit-test".to_owned(),
+            generated_at_unix_ms: 0,
+            cases: vec![add2_case("direct_delay".to_owned(), 60_000)],
+        };
+
+        let started = std::time::Instant::now();
+        let report = run_transform_fixture_bundle(&cfg, &bundle);
+        let elapsed = started.elapsed();
+
+        assert_eq!(report.total_cases, 1);
+        assert_eq!(report.matched_cases, 0);
+        assert_eq!(report.mismatched_cases, 1);
+        assert_eq!(
+            report.reports[0].drift_classification,
+            DriftClassification::Timeout
+        );
+        assert!(
+            report.reports[0]
+                .error
+                .as_deref()
+                .is_some_and(|err| err.contains("simulated_delay_ms")
+                    && err.contains("direct fixture execution")),
+            "direct simulated-delay rejection should explain the fail-closed reason"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(250),
+            "direct transform runner slept on simulated delay: {elapsed:?}"
+        );
     }
 
     #[test]
