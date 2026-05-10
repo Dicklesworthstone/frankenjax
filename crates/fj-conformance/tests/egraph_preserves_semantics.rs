@@ -1108,6 +1108,58 @@ fn make_reshape_chain_jaxpr(first: &str, second: &str) -> Jaxpr {
     )
 }
 
+fn make_shape_adjacent_dead_square_jaxpr() -> Jaxpr {
+    let mut rev_params = BTreeMap::new();
+    rev_params.insert("axes".to_owned(), "0".to_owned());
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(6)],
+        vec![
+            Equation {
+                primitive: Primitive::Rev,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: rev_params.clone(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Rev,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: rev_params,
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(VarId(3)), Atom::Lit(Literal::I64(0))],
+                outputs: smallvec![VarId(4)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Square,
+                inputs: smallvec![Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(5)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(4))],
+                outputs: smallvec![VarId(6)],
+                effects: vec![],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
 #[test]
 fn egraph_preserves_reshape_chain_2x3_then_3x2() {
     // Reshape∘Reshape fusion must produce the same final tensor as the
@@ -1141,6 +1193,31 @@ fn egraph_preserves_reshape_chain_2x3_then_3x2() {
     assert_eq!(
         reshape_count, 1,
         "two consecutive Reshapes should fuse: {optimized:#?}"
+    );
+}
+
+#[test]
+fn egraph_preserves_shape_adjacent_dead_square_pruning() {
+    let jaxpr = make_shape_adjacent_dead_square_jaxpr();
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![4] },
+            (1..=4).map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    );
+
+    let original_result = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+    let optimized = optimize_jaxpr(&jaxpr);
+    let optimized_result = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+    assert_eq!(original_result, optimized_result);
+    assert!(
+        optimized
+            .equations
+            .iter()
+            .all(|equation| equation.primitive != Primitive::Square),
+        "dead Square from shape-adjacent hotspot should be pruned before saturation: {optimized:#?}"
     );
 }
 

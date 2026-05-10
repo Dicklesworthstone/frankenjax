@@ -2202,6 +2202,7 @@ pub fn optimize_jaxpr(jaxpr: &Jaxpr) -> Jaxpr {
 #[must_use]
 pub fn optimize_jaxpr_with_config(jaxpr: &Jaxpr, config: &OptimizationConfig) -> Jaxpr {
     let jaxpr = optimize_shape_parametric_chains(jaxpr);
+    let jaxpr = prune_dead_single_output_equations(&jaxpr);
     let mut equations = Vec::new();
     let mut index = 0;
     let mut next_var = max_var_id(&jaxpr).saturating_add(1);
@@ -2236,6 +2237,46 @@ pub fn optimize_jaxpr_with_config(jaxpr: &Jaxpr, config: &OptimizationConfig) ->
             .map(|outvar| *outvar_remap.get(outvar).unwrap_or(outvar))
             .collect(),
         equations,
+    );
+    optimized.effects = jaxpr.effects.clone();
+    optimized
+}
+
+fn prune_dead_single_output_equations(jaxpr: &Jaxpr) -> Jaxpr {
+    let mut needed: BTreeSet<VarId> = jaxpr.outvars.iter().copied().collect();
+    let mut kept = Vec::with_capacity(jaxpr.equations.len());
+
+    for equation in jaxpr.equations.iter().rev() {
+        let output_needed = equation
+            .outputs
+            .iter()
+            .any(|outvar| needed.contains(outvar));
+        let can_drop = equation.outputs.len() == 1
+            && equation.effects.is_empty()
+            && equation.sub_jaxprs.is_empty()
+            && !output_needed;
+
+        if can_drop {
+            continue;
+        }
+
+        for outvar in &equation.outputs {
+            needed.remove(outvar);
+        }
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom {
+                needed.insert(*var);
+            }
+        }
+        kept.push(equation.clone());
+    }
+
+    kept.reverse();
+    let mut optimized = Jaxpr::new(
+        jaxpr.invars.clone(),
+        jaxpr.constvars.clone(),
+        jaxpr.outvars.clone(),
+        kept,
     );
     optimized.effects = jaxpr.effects.clone();
     optimized
@@ -5086,6 +5127,47 @@ mod tests {
             reshape_count, 2,
             "intermediate Reshape with extra consumers must be preserved: {optimized:#?}"
         );
+    }
+
+    #[test]
+    fn dead_single_output_equation_is_pruned_before_egraph_saturation() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Square,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(0))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert!(
+            optimized
+                .equations
+                .iter()
+                .all(|equation| equation.primitive != Primitive::Square),
+            "unused Square should be pruned before egraph saturation: {optimized:#?}"
+        );
+
+        let input = Value::scalar_i64(7);
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
     }
 
     #[test]
