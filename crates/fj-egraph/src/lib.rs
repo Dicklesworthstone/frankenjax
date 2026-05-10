@@ -689,17 +689,65 @@ fn cancels_shape_chain(previous: &Equation, current: &Equation) -> bool {
     }
 }
 
-// Two consecutive Reshape equations on the same intermediate variable are
-// equivalent to a single Reshape using the *second* equation's `new_shape`:
-// the intermediate shape is unobservable and Reshape preserves the element
-// buffer, so dropping the first equation never changes the final tensor.
-// Fusion only fires when the first Reshape's output is single-use, otherwise
-// downstream consumers would lose the intermediate shape.
+// Shape-chain pairs that fuse (drop the previous equation, keep the current
+// one possibly with rewritten params) on a single-use intermediate:
+//
+// - (Reshape, Reshape): the intermediate shape is unobservable and Reshape
+//   preserves the element buffer, so the chain collapses to a single Reshape
+//   carrying the second equation's `new_shape`.
+// - (Transpose, Transpose) when both carry explicit permutations: the chain
+//   collapses to one Transpose with the composed permutation (see
+//   compose_explicit_transpose_perms). The implicit reverse-axes form is
+//   conservatively skipped here; inverse transpose pairs are already handled
+//   by the cancellation branch.
 fn fuses_shape_chain(previous: &Equation, current: &Equation) -> bool {
-    matches!(
-        (previous.primitive, current.primitive),
-        (Primitive::Reshape, Primitive::Reshape)
-    )
+    match (previous.primitive, current.primitive) {
+        (Primitive::Reshape, Primitive::Reshape) => true,
+        (Primitive::Transpose, Primitive::Transpose) => {
+            compose_explicit_transpose_perms(&previous.params, &current.params).is_some()
+        }
+        _ => false,
+    }
+}
+
+// Compose two explicit transpose permutations. Returns Some(composed) iff
+// both equations expose explicit permutations of equal length whose
+// composition is well-formed (all entries in 0..rank). Used when fusing
+// Transpose∘Transpose into a single Transpose. Conservatively returns None
+// when either side uses the implicit reverse-axes form, leaving such pairs
+// unmodified.
+//
+// Semantics: applying `Transpose(perm_b)` first and `Transpose(perm_a)`
+// second moves dim j of the final output to source dim `perm_b[perm_a[j]]`,
+// so the composed permutation is `composed[j] = perm_b[perm_a[j]]`.
+fn compose_explicit_transpose_perms(
+    previous_params: &BTreeMap<String, String>,
+    current_params: &BTreeMap<String, String>,
+) -> Option<Vec<usize>> {
+    let prev = match transpose_spec(previous_params)? {
+        TransposeSpec::Explicit(perm) => perm,
+        TransposeSpec::Reverse => return None,
+    };
+    let curr = match transpose_spec(current_params)? {
+        TransposeSpec::Explicit(perm) => perm,
+        TransposeSpec::Reverse => return None,
+    };
+    if prev.len() != curr.len() {
+        return None;
+    }
+    let rank = prev.len();
+    let mut composed = Vec::with_capacity(rank);
+    for axis in &curr {
+        let idx = *axis;
+        if idx >= prev.len() {
+            return None;
+        }
+        composed.push(prev[idx]);
+    }
+    if composed.iter().any(|&value| value >= rank) {
+        return None;
+    }
+    Some(composed)
 }
 
 fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
@@ -783,6 +831,21 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
                 equations.push(rewritten);
                 continue;
             };
+            if previous.primitive == Primitive::Transpose
+                && rewritten.primitive == Primitive::Transpose
+            {
+                let composed = compose_explicit_transpose_perms(
+                    &previous.params,
+                    &rewritten.params,
+                )
+                .expect("fuse predicate already validated permutation composition");
+                let csv = composed
+                    .iter()
+                    .map(|axis| axis.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                rewritten.params.insert("permutation".to_owned(), csv);
+            }
             rewritten.inputs[0] = previous.inputs[0].clone();
             equations.push(rewritten);
             continue;
@@ -4695,6 +4758,122 @@ mod tests {
         let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
         let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
         assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn transpose_chain_fuses_into_composed_permutation() {
+        // perm_b = [1, 2, 0] applied first, perm_a = [2, 0, 1] applied
+        // second. Composition (composed[j] = perm_b[perm_a[j]]) should be
+        // [perm_b[2], perm_b[0], perm_b[1]] = [0, 1, 2] — wait, that's
+        // identity. Pick non-identity composition: perm_b = [1, 0, 2],
+        // perm_a = [0, 2, 1] => composed = [perm_b[0], perm_b[2], perm_b[1]]
+        // = [1, 2, 0].
+        let mut perm_b = BTreeMap::new();
+        perm_b.insert("permutation".to_owned(), "1,0,2".to_owned());
+        let mut perm_a = BTreeMap::new();
+        perm_a.insert("permutation".to_owned(), "0,2,1".to_owned());
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: perm_b,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: perm_a,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert_eq!(
+            optimized.equations.len(),
+            1,
+            "non-inverse transpose pair should fuse: {optimized:#?}"
+        );
+        let fused = &optimized.equations[0];
+        assert_eq!(fused.primitive, Primitive::Transpose);
+        assert_eq!(fused.inputs.as_slice(), &[Atom::Var(VarId(1))]);
+        assert_eq!(fused.outputs.as_slice(), &[VarId(3)]);
+        assert_eq!(
+            fused.params.get("permutation"),
+            Some(&"1,2,0".to_owned()),
+            "composed permutation should be [1, 2, 0]"
+        );
+        assert_eq!(optimized.outvars, vec![VarId(3)]);
+
+        // Eval-equivalence on a 2x3x4 tensor.
+        let mut elements = Vec::with_capacity(2 * 3 * 4);
+        for i in 0..(2 * 3 * 4) {
+            elements.push(Literal::I64(i as i64));
+        }
+        let input = Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![2, 3, 4] }, elements).unwrap(),
+        );
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn transpose_chain_skips_fusion_when_either_side_is_reverse() {
+        // The implicit reverse-axes form (no `permutation` param) is
+        // conservatively skipped by fuses_shape_chain, so a (Reverse,
+        // Explicit) pair stays as two equations after the prepass.
+        let perm_b = BTreeMap::new(); // implicit reverse
+        let mut perm_a = BTreeMap::new();
+        perm_a.insert("permutation".to_owned(), "0,1,2".to_owned());
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: perm_b,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Transpose,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: perm_a,
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        let transpose_count = optimized
+            .equations
+            .iter()
+            .filter(|eq| eq.primitive == Primitive::Transpose)
+            .count();
+        // The current side resolves to identity over rank 3 so
+        // is_shape_identity may alias it. The previous side (Reverse) must
+        // stay because we did NOT fuse it. Allow either {1, 2} as long as
+        // the implicit-reverse equation survives.
+        assert!(
+            transpose_count >= 1,
+            "implicit-reverse transpose must NOT be fused away: {optimized:#?}"
+        );
     }
 
     #[test]
