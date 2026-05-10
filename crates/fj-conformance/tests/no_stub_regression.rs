@@ -4,12 +4,12 @@ use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
 use fj_dispatch::{
+    batching::{batch_eval_jaxpr, BatchTracer},
     TransformExecutionError,
-    batching::{BatchTracer, batch_eval_jaxpr},
 };
-use fj_egraph::{EGraphLoweringError, ExclusionReason, jaxpr_to_egraph};
+use fj_egraph::{jaxpr_to_egraph, EGraphLoweringError, ExclusionReason};
 use fj_interpreters::eval_jaxpr;
-use fj_lax::{EvalError, eval_primitive};
+use fj_lax::{eval_primitive, EvalError};
 use smallvec::smallvec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -983,6 +983,24 @@ fn no_stub_suspicious_default_returns() {
         matches.is_empty(),
         "Found suspicious default returns outside cfg(test) modules:\n{}\n\
          These patterns often indicate stub implementations.",
+        matches.join("\n")
+    );
+}
+
+#[test]
+fn no_stub_ffi_callback_empty_outputs_use_named_helpers() {
+    let path = workspace_root().join("crates/fj-ffi/src/callback.rs");
+    let source = std::fs::read_to_string(&path).expect("FFI callback source should be readable");
+    let matches = source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains("Ok(vec![])"))
+        .map(|(line_no, line)| format!("{}:{}: {line}", path.display(), line_no + 1))
+        .collect::<Vec<_>>();
+
+    assert!(
+        matches.is_empty(),
+        "FFI callback tests should route intentional empty outputs through a named helper:\n{}",
         matches.join("\n")
     );
 }

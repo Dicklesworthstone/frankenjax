@@ -218,6 +218,10 @@ mod tests {
     use super::*;
     use fj_core::Literal;
 
+    fn empty_callback_outputs() -> Vec<Value> {
+        Vec::new()
+    }
+
     #[test]
     fn pure_callback_invocation() {
         let cb = FfiCallback::pure_callback("identity", |args| Ok(args.to_vec()));
@@ -231,15 +235,15 @@ mod tests {
 
     #[test]
     fn io_callback_invocation() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Arc;
 
         let counter = Arc::new(AtomicU64::new(0));
         let counter_clone = counter.clone();
 
         let cb = FfiCallback::io_callback("log_counter", move |_args| {
             counter_clone.fetch_add(1, Ordering::SeqCst);
-            Ok(vec![])
+            Ok(empty_callback_outputs())
         });
 
         assert_eq!(cb.flavor(), CallbackFlavor::Io);
@@ -255,8 +259,10 @@ mod tests {
 
         reg.register(FfiCallback::pure_callback("cb1", |args| Ok(args.to_vec())))
             .unwrap();
-        reg.register(FfiCallback::io_callback("cb2", |_| Ok(vec![])))
-            .unwrap();
+        reg.register(FfiCallback::io_callback("cb2", |_| {
+            Ok(empty_callback_outputs())
+        }))
+        .unwrap();
         assert_eq!(reg.len(), 2);
 
         let cb = reg.get("cb1").unwrap();
@@ -334,8 +340,8 @@ mod tests {
 
     #[test]
     fn impure_callback_fails_idempotency_check() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
 
         let counter = Arc::new(AtomicI64::new(0));
         let counter_clone = counter.clone();
@@ -352,8 +358,8 @@ mod tests {
 
     #[test]
     fn io_callback_skips_idempotency_check() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
 
         let counter = Arc::new(AtomicI64::new(0));
         let counter_clone = counter.clone();
@@ -371,8 +377,8 @@ mod tests {
 
     #[test]
     fn permissive_config_skips_all_checks() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicI64, Ordering};
+        use std::sync::Arc;
 
         let counter = Arc::new(AtomicI64::new(0));
         let counter_clone = counter.clone();
