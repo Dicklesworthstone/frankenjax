@@ -689,6 +689,19 @@ fn cancels_shape_chain(previous: &Equation, current: &Equation) -> bool {
     }
 }
 
+// Two consecutive Reshape equations on the same intermediate variable are
+// equivalent to a single Reshape using the *second* equation's `new_shape`:
+// the intermediate shape is unobservable and Reshape preserves the element
+// buffer, so dropping the first equation never changes the final tensor.
+// Fusion only fires when the first Reshape's output is single-use, otherwise
+// downstream consumers would lose the intermediate shape.
+fn fuses_shape_chain(previous: &Equation, current: &Equation) -> bool {
+    matches!(
+        (previous.primitive, current.primitive),
+        (Primitive::Reshape, Primitive::Reshape)
+    )
+}
+
 fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
     let counts = use_counts(jaxpr);
     let mut aliases = BTreeMap::new();
@@ -747,6 +760,31 @@ fn optimize_shape_parametric_chains(jaxpr: &Jaxpr) -> Jaxpr {
                 }
             };
             aliases.insert(rewritten.outputs[0], source);
+            continue;
+        }
+
+        let previous = equations.last();
+        let can_fuse = if rewritten.outputs.len() == 1 && rewritten.inputs.len() == 1 {
+            if let (Some(previous), Atom::Var(input_var)) = (previous, &rewritten.inputs[0]) {
+                previous.inputs.len() == 1
+                    && previous.outputs.len() == 1
+                    && previous.outputs[0] == *input_var
+                    && counts.get(&previous.outputs[0]).copied().unwrap_or(0) == 1
+                    && fuses_shape_chain(previous, &rewritten)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if can_fuse {
+            let Some(previous) = equations.pop() else {
+                equations.push(rewritten);
+                continue;
+            };
+            rewritten.inputs[0] = previous.inputs[0].clone();
+            equations.push(rewritten);
             continue;
         }
 
@@ -4601,6 +4639,116 @@ mod tests {
         let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
         let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
         assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn reshape_chain_fuses_into_final_shape() {
+        let mut to_2x3 = BTreeMap::new();
+        to_2x3.insert("new_shape".to_owned(), "2,3".to_owned());
+        let mut to_3x2 = BTreeMap::new();
+        to_3x2.insert("new_shape".to_owned(), "3,2".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: to_2x3,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: to_3x2.clone(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert_eq!(
+            optimized.equations.len(),
+            1,
+            "consecutive Reshape pair should fuse into a single Reshape: {optimized:#?}"
+        );
+        let fused = &optimized.equations[0];
+        assert_eq!(fused.primitive, Primitive::Reshape);
+        assert_eq!(fused.inputs.as_slice(), &[Atom::Var(VarId(1))]);
+        assert_eq!(fused.outputs.as_slice(), &[VarId(3)]);
+        assert_eq!(fused.params, to_3x2);
+        assert_eq!(optimized.outvars, vec![VarId(3)]);
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![6] },
+                (1..=6).map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+    }
+
+    #[test]
+    fn reshape_chain_does_not_fuse_when_intermediate_has_extra_consumer() {
+        // If the intermediate Reshape's output feeds another consumer in
+        // addition to the second Reshape, fusing would discard a value the
+        // graph still needs. The chain must remain intact.
+        let mut to_2x3 = BTreeMap::new();
+        to_2x3.insert("new_shape".to_owned(), "2,3".to_owned());
+        let mut to_3x2 = BTreeMap::new();
+        to_3x2.insert("new_shape".to_owned(), "3,2".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(3), VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(2)],
+                    effects: vec![],
+                    params: to_2x3,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    effects: vec![],
+                    params: to_3x2,
+                    sub_jaxprs: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Lit(Literal::I64(0))],
+                    outputs: smallvec![VarId(4)],
+                    effects: vec![],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                },
+            ],
+        );
+
+        let optimized = optimize_jaxpr(&jaxpr);
+        // The Reshape pair must NOT fuse because v2 still feeds the Add.
+        let reshape_count = optimized
+            .equations
+            .iter()
+            .filter(|eq| eq.primitive == Primitive::Reshape)
+            .count();
+        assert_eq!(
+            reshape_count, 2,
+            "intermediate Reshape with extra consumers must be preserved: {optimized:#?}"
+        );
     }
 
     #[test]

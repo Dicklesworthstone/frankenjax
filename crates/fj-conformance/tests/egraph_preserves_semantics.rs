@@ -1077,3 +1077,93 @@ fn egraph_preserves_sin2_cos2_sum() {
         "sin^2+cos^2 should equal 1.0, got {val}"
     );
 }
+
+fn make_reshape_chain_jaxpr(first: &str, second: &str) -> Jaxpr {
+    let mut to_first = BTreeMap::new();
+    to_first.insert("new_shape".to_owned(), first.to_owned());
+    let mut to_second = BTreeMap::new();
+    to_second.insert("new_shape".to_owned(), second.to_owned());
+    Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(3)],
+        vec![
+            Equation {
+                primitive: Primitive::Reshape,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: to_first,
+                sub_jaxprs: vec![],
+            },
+            Equation {
+                primitive: Primitive::Reshape,
+                inputs: smallvec![Atom::Var(VarId(2))],
+                outputs: smallvec![VarId(3)],
+                effects: vec![],
+                params: to_second,
+                sub_jaxprs: vec![],
+            },
+        ],
+    )
+}
+
+#[test]
+fn egraph_preserves_reshape_chain_2x3_then_3x2() {
+    // Reshape∘Reshape fusion must produce the same final tensor as the
+    // unoptimized chain. This guards the prepass-level fusion in
+    // optimize_shape_parametric_chains.
+    let jaxpr = make_reshape_chain_jaxpr("2,3", "3,2");
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![6] },
+            (1..=6).map(|n| Literal::from_f64(n as f64)).collect(),
+        )
+        .unwrap(),
+    );
+
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        std::slice::from_ref(&input),
+        &[],
+        1e-12,
+        "reshape chain 6 -> 2x3 -> 3x2",
+    );
+
+    // Also assert the optimizer actually fused the chain into a single Reshape.
+    let optimized = optimize_jaxpr(&jaxpr);
+    let reshape_count = optimized
+        .equations
+        .iter()
+        .filter(|eq| eq.primitive == Primitive::Reshape)
+        .count();
+    assert_eq!(
+        reshape_count, 1,
+        "two consecutive Reshapes should fuse: {optimized:#?}"
+    );
+}
+
+#[test]
+fn egraph_preserves_reshape_chain_with_inferred_dim() {
+    // The first Reshape uses an inferred (-1) dim. Fusion drops the
+    // intermediate equation entirely, but the second Reshape's `-1` still
+    // resolves against the original input's element count, which is identical.
+    let jaxpr = make_reshape_chain_jaxpr("2,-1", "-1,2");
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![8] },
+            (1..=8).map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    );
+
+    verify_optimization_preserves_semantics(
+        &jaxpr,
+        std::slice::from_ref(&input),
+        &[],
+        1e-12,
+        "reshape chain with inferred dims",
+    );
+}
