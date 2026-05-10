@@ -6989,6 +6989,119 @@ mod tests {
                 let twice_out = eval_jaxpr(&twice, &inputs).expect("twice eval");
                 prop_assert_eq!(once_out, twice_out, "optimizer not idempotent at x={}", x);
             }
+
+            // Stress the shape-chain prepass with random Reshape chains of
+            // length 2..=5 on small tensors and verify optimized eval
+            // matches unoptimized eval. Reshape preserves element count by
+            // construction, so every randomly generated chain is a valid
+            // program. This is the proptest companion to the unit tests
+            // for the (Reshape, Reshape) fusion branch.
+            #[test]
+            fn metamorphic_reshape_chain_prepass_preserves_semantics(
+                spec in reshape_chain_strategy()
+            ) {
+                let (input_shape, target_shapes) = spec;
+                let element_count: u32 = input_shape.iter().product();
+                let elements: Vec<Literal> = (0..element_count)
+                    .map(|i| Literal::I64(i as i64 + 1))
+                    .collect();
+                let input = Value::Tensor(
+                    TensorValue::new(
+                        DType::I64,
+                        Shape { dims: input_shape.clone() },
+                        elements,
+                    )
+                    .expect("input tensor"),
+                );
+
+                let jaxpr = build_reshape_chain_jaxpr(&target_shapes);
+                let optimized = optimize_jaxpr(&jaxpr);
+
+                let orig_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input))
+                    .expect("original eval");
+                let opt_out = eval_jaxpr(&optimized, std::slice::from_ref(&input))
+                    .expect("optimized eval");
+
+                prop_assert_eq!(
+                    orig_out,
+                    opt_out,
+                    "reshape-chain prepass changed semantics for chain={:?}",
+                    target_shapes
+                );
+
+                // Sanity: a chain of N>=2 single-use Reshapes must collapse
+                // to a single Reshape after the prepass.
+                let reshape_count = optimized
+                    .equations
+                    .iter()
+                    .filter(|eq| eq.primitive == Primitive::Reshape)
+                    .count();
+                prop_assert_eq!(
+                    reshape_count,
+                    1,
+                    "chain of {} reshapes should fuse to 1, got {}",
+                    target_shapes.len(),
+                    reshape_count
+                );
+            }
+        }
+
+        // Shapes whose total element count factors a few ways. Bounded so
+        // the proptest input space stays small and shrinking is fast.
+        fn factorizations_of(n: u32) -> Vec<Vec<u32>> {
+            match n {
+                1 => vec![vec![1], vec![1, 1], vec![1, 1, 1]],
+                2 => vec![vec![2], vec![1, 2], vec![2, 1]],
+                4 => vec![vec![4], vec![2, 2], vec![1, 4], vec![4, 1]],
+                6 => vec![vec![6], vec![2, 3], vec![3, 2], vec![1, 6], vec![6, 1]],
+                8 => vec![vec![8], vec![2, 4], vec![4, 2], vec![2, 2, 2]],
+                12 => vec![vec![12], vec![3, 4], vec![4, 3], vec![2, 6], vec![6, 2], vec![2, 2, 3]],
+                _ => vec![vec![n]],
+            }
+        }
+
+        fn reshape_chain_strategy()
+            -> impl Strategy<Value = (Vec<u32>, Vec<Vec<u32>>)>
+        {
+            // Element counts kept small to keep eval cheap.
+            let element_count_choices: Vec<u32> = vec![1, 2, 4, 6, 8, 12];
+            proptest::sample::select(element_count_choices)
+                .prop_flat_map(|n| {
+                    let candidates = factorizations_of(n);
+                    let init = proptest::sample::select(candidates.clone());
+                    let chain = prop::collection::vec(
+                        proptest::sample::select(candidates),
+                        2_usize..=5,
+                    );
+                    (init, chain)
+                })
+        }
+
+        fn build_reshape_chain_jaxpr(target_shapes: &[Vec<u32>]) -> Jaxpr {
+            let mut equations = Vec::with_capacity(target_shapes.len());
+            let mut current = VarId(1);
+
+            for (next_var, target) in (2u32..).zip(target_shapes.iter()) {
+                let out_var = VarId(next_var);
+                let csv = target
+                    .iter()
+                    .map(|d| d.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let mut params = BTreeMap::new();
+                params.insert("new_shape".to_owned(), csv);
+                equations.push(Equation {
+                    primitive: Primitive::Reshape,
+                    inputs: smallvec![Atom::Var(current)],
+                    outputs: smallvec![out_var],
+                    effects: vec![],
+                    params,
+                    sub_jaxprs: vec![],
+                });
+                current = out_var;
+            }
+
+            Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
         }
     }
 }
