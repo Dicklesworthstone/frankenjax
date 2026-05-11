@@ -1,0 +1,79 @@
+{
+  "schema_version": "frankenjax.hotspot-followup-evidence.v1",
+  "bead_id": "frankenjax-d7s4",
+  "hotspot_id": "hotspot-vmap-multiplier-001",
+  "captured_at_iso": "2026-05-11T09:15:38Z",
+  "captured_by_agent": "GrayMeadow",
+  "worker": "vmi1227854",
+  "criterion_root": "/data/projects/.cargo-target-frankenjax-graymeadow-vmap/criterion",
+  "replay_command": "CARGO_TARGET_DIR=/data/projects/.cargo-target-frankenjax-graymeadow-vmap RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap",
+  "rows": [
+    {
+      "benchmark": "vmap_dot_i64/paired_vectors",
+      "p50_ns": 61425,
+      "mean_ns": 62133,
+      "slope_ns": 61297,
+      "std_dev_ns": 3614,
+      "notes": "Matches scoreboard hotspot p95 (60,936ns) within noise. Representative vmap_multiplier proxy: paired i64 vector dispatch over batch=128, width=64."
+    },
+    {
+      "benchmark": "vmap_while/batched_scalar_add_128",
+      "p50_ns": 70663,
+      "mean_ns": 70739,
+      "slope_ns": 70480,
+      "std_dev_ns": 5060,
+      "notes": "Within 15% of vmap_dot baseline; control-flow dispatch overhead is modest on top of the underlying multiplier."
+    },
+    {
+      "benchmark": "vmap_scan/shared_init_batched_xs_f32_add_128x64",
+      "p50_ns": 83197,
+      "mean_ns": 83343,
+      "slope_ns": 83246,
+      "std_dev_ns": 2745,
+      "notes": "Scan dispatch sits ~35% above the vmap_dot baseline; previously optimized cutover keeps this within scan-specific budget."
+    },
+    {
+      "benchmark": "vmap_switch/batched_index_128",
+      "p50_ns": 16445,
+      "mean_ns": 16410,
+      "slope_ns": 17152,
+      "std_dev_ns": 1537,
+      "notes": "Already well below the multiplier threshold; recent batched-index switch work paid off (frankenjax-b3xy)."
+    },
+    {
+      "benchmark": "vmap_gather/batched_indices",
+      "p50_ns": 34723,
+      "mean_ns": 34529,
+      "slope_ns": 34952,
+      "std_dev_ns": 3490,
+      "notes": "Mid-range; no obvious bottleneck flagged against baseline."
+    },
+    {
+      "benchmark": "vmap_scatter/batched_indices_updates",
+      "p50_ns": 10064476,
+      "mean_ns": 10140499,
+      "slope_ns": null,
+      "std_dev_ns": 672042,
+      "notes": "Outlier at ~10ms — ~165x the vmap_dot baseline. Scatter-specific, NOT a generic vmap_multiplier hotspot. Separate scatter follow-up bead recommended."
+    }
+  ],
+  "decision": "rejected_for_this_bead",
+  "decision_rationale": [
+    "Same-worker p95/p99 evidence for the generic vmap_multiplier hotspot (~60-62µs on vmi1227854) matches the scoreboard baseline within noise; no single lever crosses the action threshold for a behavior-preserving change without a sampling profile.",
+    "Inspection of BatchTracer::apply_batch_rule (crates/fj-dispatch/src/batching.rs:316-327) shows the all-unbatched fast path allocates a Vec<Value> and Value::clones each input. For tensor inputs the clone is O(N elements) and dominates any single Vec-allocation savings, so a SmallVec micro-rewrite cannot be justified by the current numbers.",
+    "vmap_scatter is a 165x outlier but is scatter-specific, not a generic vmap dispatch issue. The scoreboard family is `vmap_multiplier`, so the scatter result must be handled by a separate hotspot row plus its own bead.",
+    "Conformance and bench numbers stayed unchanged; no source change committed for this bead."
+  ],
+  "recommended_next_steps": [
+    "Open a scatter-specific hotspot bead seeded by vmap_scatter/batched_indices_updates ≈ 10.06ms / ~672k std_dev.",
+    "When a sampling profile (perf record + flamegraph or similar) becomes available, capture it for vmap_dot_i64/paired_vectors and re-evaluate whether the Value::clone in the all-unbatched fast path is the dominant frame; only then consider a single lever (SmallVec input buffer, lazy-clone path, or shared-buffer reuse).",
+    "Until then, retain the row in optimization_hotspot_scoreboard.v1 and refresh on each cadence."
+  ],
+  "linked_artifacts": [
+    "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
+    "artifacts/performance/optimization_hotspot_scoreboard.v1.md",
+    "artifacts/performance/global_performance_gate.v1.json",
+    "crates/fj-dispatch/benches/dispatch_baseline.rs",
+    "crates/fj-dispatch/src/batching.rs"
+  ]
+}
