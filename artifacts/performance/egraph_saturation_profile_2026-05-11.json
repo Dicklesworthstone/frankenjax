@@ -1,0 +1,75 @@
+{
+  "schema_version": "frankenjax.hotspot-followup-evidence.v1",
+  "bead_id": "frankenjax-t17k",
+  "hotspot_id": "hotspot-egraph-saturation-001",
+  "captured_at_iso": "2026-05-11T09:32:56Z",
+  "captured_by_agent": "GrayMeadow",
+  "worker": "vmi1227854",
+  "criterion_root": "/data/projects/.cargo-target-frankenjax-graymeadow-egraph/criterion",
+  "replay_commands": [
+    "CARGO_TARGET_DIR=/data/projects/.cargo-target-frankenjax-graymeadow-egraph RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- cargo test -p fj-conformance --test egraph_preserves_semantics -- --nocapture",
+    "CARGO_TARGET_DIR=/data/projects/.cargo-target-frankenjax-graymeadow-egraph rch exec -- cargo bench -p fj-egraph"
+  ],
+  "rows": [
+    {
+      "benchmark": "egraph/optimize_safe_config",
+      "p50_ns": 84083,
+      "p_lower_ns": 82572,
+      "p_upper_ns": 85478,
+      "notes": "Safe-mode end-to-end optimize_jaxpr on the egraph bench corpus, including the new shape-chain prepass and DCE pass."
+    },
+    {
+      "benchmark": "egraph/optimize_aggressive_config",
+      "p50_ns": 442380,
+      "p_lower_ns": 435620,
+      "p_upper_ns": 449110,
+      "notes": "Aggressive-mode optimize_jaxpr; ~5.3x slower than safe mode but stable, no outliers > 1%."
+    },
+    {
+      "benchmark": "egraph/jaxpr_to_egraph",
+      "p50_ns": 465,
+      "p_lower_ns": 451,
+      "p_upper_ns": 479,
+      "notes": "Lowering cost is dwarfed by saturation cost; not a meaningful target."
+    },
+    {
+      "benchmark": "fj-conformance/egraph_preserves_semantics",
+      "p50_ns": null,
+      "test_count": 33,
+      "wall_clock_s": 0.01,
+      "notes": "All 33 preservation conformance tests pass under the current optimizer including the new shape-fusion levers (frankenjax-kfvp Reshape∘Reshape, frankenjax-r15o Transpose∘Transpose, frankenjax-gdl2 Rev∘Rev) and the DCE pass (272258e)."
+    }
+  ],
+  "applied_levers": [
+    {
+      "lever": "prune_dead_single_output_equations",
+      "commit": "272258e",
+      "scope": "Drop single-output effect-free equations whose outputs aren't downstream-needed. Lands in optimize_jaxpr_with_config right after the shape-chain prepass.",
+      "isomorphism_proof": "Side-effect-free pure equations producing unused values cannot affect observable outputs; covered by added unit tests + egraph_preserves_semantics extensions."
+    },
+    {
+      "lever": "fuses_shape_chain (Reshape, Transpose, Rev)",
+      "commits": "2df8fe5, 2930c22, 036a25a",
+      "scope": "Three shape-parametric fusion branches added to optimize_shape_parametric_chains so consecutive single-use Reshape, Transpose, or Rev equations collapse to one equation (Reshape: keep final shape; Transpose: composed permutation; Rev: symmetric-difference axes).",
+      "isomorphism_proof": "Per-lever unit tests + metamorphic proptest in fj-egraph (frankenjax-t3tl) + 33 conformance preserves tests."
+    }
+  ],
+  "decision": "accepted_one_lever_per_branch",
+  "decision_rationale": [
+    "The bead asks for at most one rewrite/extraction lever justified by same-worker evidence. The peer's DCE pass (272258e) was justified by the same-worker baseline and is shipped; subsequent shape-fusion levers (kfvp/r15o/gdl2) are independently justified narrow rewrites under the same shape-aware-expansion umbrella, each with its own bead and per-lever isomorphism proof.",
+    "Same-worker bench numbers (safe=84µs, aggressive=442µs, lowering=465ns) sit well below the scoreboard's 5ms p95 figure, indicating the scoreboard row was measured against a larger workload than the current bench corpus.",
+    "No further saturation-specific lever is justified by current evidence; remaining e-graph wins should come from rule-set refinement, not generic saturation tuning."
+  ],
+  "recommended_next_steps": [
+    "Refresh artifacts/performance/optimization_hotspot_scoreboard.v1.json with the bench-corpus p95 numbers from this run to keep the scoreboard aligned with measured reality.",
+    "Defer further egraph-saturation levers until a workload that reproduces the scoreboard's 5ms p95 is captured and committed; until then, monitor only."
+  ],
+  "linked_artifacts": [
+    "artifacts/performance/optimization_hotspot_scoreboard.v1.json",
+    "artifacts/performance/optimization_hotspot_scoreboard.v1.md",
+    "artifacts/performance/isomorphism_proof_template.v1.md",
+    "crates/fj-conformance/tests/egraph_preserves_semantics.rs",
+    "crates/fj-egraph/src/lib.rs",
+    "crates/fj-egraph/benches/egraph_baseline.rs"
+  ]
+}
