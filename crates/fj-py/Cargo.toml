@@ -7,10 +7,14 @@ description = "Python bindings for FrankenJAX transforms"
 
 [lib]
 name = "frankenjax"
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.23" }
 fj-core = { path = "../fj-core" }
 fj-api = { path = "../fj-api" }
 fj-trace = { path = "../fj-trace" }

@@ -8285,7 +8285,9 @@ mod tests {
             proptest::prop_assume!(!filtered.is_empty());
             let input = BatchTracer::batched(make_f64_vector(&filtered), 0);
             let abs1 = apply_batch_rule(Primitive::Abs, &[input], &BTreeMap::new()).unwrap();
-            let abs2 = apply_batch_rule(Primitive::Abs, &[abs1.clone()], &BTreeMap::new()).unwrap();
+            let abs2 =
+                apply_batch_rule(Primitive::Abs, std::slice::from_ref(&abs1), &BTreeMap::new())
+                    .unwrap();
             let vals1 = extract_f64_vec(&abs1.value);
             let vals2 = extract_f64_vec(&abs2.value);
             proptest::prop_assert_eq!(vals1, vals2, "abs(abs(x)) should equal abs(x)");

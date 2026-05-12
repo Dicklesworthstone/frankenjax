@@ -16,6 +16,12 @@ struct PyValue {
     inner: Value,
 }
 
+#[pyclass]
+#[derive(Clone)]
+struct PyCheckpoint {
+    inner: fj_api::CheckpointWrapped,
+}
+
 #[pymethods]
 impl PyValue {
     #[staticmethod]
@@ -52,6 +58,58 @@ impl PyValue {
     }
 }
 
+#[pymethods]
+impl PyCheckpoint {
+    fn call(&self, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+        let rust_args = py_values_to_rust(args);
+        self.inner
+            .call(rust_args)
+            .map(py_values_from_rust)
+            .map_err(runtime_error)
+    }
+
+    fn grad(&self, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+        let rust_args = py_values_to_rust(args);
+        self.inner
+            .grad()
+            .call(rust_args)
+            .map(py_values_from_rust)
+            .map_err(runtime_error)
+    }
+
+    fn value_and_grad(&self, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
+        let rust_args = py_values_to_rust(args);
+        self.inner
+            .value_and_grad()
+            .call(rust_args)
+            .map(|(values, grads)| (py_values_from_rust(values), py_values_from_rust(grads)))
+            .map_err(runtime_error)
+    }
+
+    fn memory_savings_entries(&self) -> usize {
+        self.inner.memory_savings_entries()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PyCheckpoint(memory_savings_entries={})",
+            self.inner.memory_savings_entries()
+        )
+    }
+}
+
+fn py_values_to_rust(args: Vec<PyValue>) -> Vec<Value> {
+    args.into_iter().map(|pv| pv.inner).collect()
+}
+
+fn py_values_from_rust(values: Vec<Value>) -> Vec<PyValue> {
+    values.into_iter().map(|inner| PyValue { inner }).collect()
+}
+
+fn runtime_error(error: impl ToString) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())
+}
+
 #[pyfunction]
 fn make_jaxpr_square() -> PyJaxpr {
     PyJaxpr {
@@ -75,50 +133,44 @@ fn make_jaxpr_add_one() -> PyJaxpr {
 
 #[pyfunction]
 fn jit(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
-    let rust_args: Vec<Value> = args.iter().map(|pv| pv.inner.clone()).collect();
+    let rust_args = py_values_to_rust(args);
     fj_api::jit(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|outputs| outputs.into_iter().map(|v| PyValue { inner: v }).collect())
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        .map(py_values_from_rust)
+        .map_err(runtime_error)
 }
 
 #[pyfunction]
 fn grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
-    let rust_args: Vec<Value> = args.iter().map(|pv| pv.inner.clone()).collect();
+    let rust_args = py_values_to_rust(args);
     fj_api::grad(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|outputs| outputs.into_iter().map(|v| PyValue { inner: v }).collect())
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        .map(py_values_from_rust)
+        .map_err(runtime_error)
 }
 
 #[pyfunction]
 fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
-    let rust_args: Vec<Value> = args.iter().map(|pv| pv.inner.clone()).collect();
+    let rust_args = py_values_to_rust(args);
     fj_api::vmap(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|outputs| outputs.into_iter().map(|v| PyValue { inner: v }).collect())
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        .map(py_values_from_rust)
+        .map_err(runtime_error)
 }
 
 #[pyfunction]
 fn value_and_grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
-    let rust_args: Vec<Value> = args.iter().map(|pv| pv.inner.clone()).collect();
+    let rust_args = py_values_to_rust(args);
     fj_api::value_and_grad(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|(values, grads)| {
-            (
-                values.into_iter().map(|v| PyValue { inner: v }).collect(),
-                grads.into_iter().map(|v| PyValue { inner: v }).collect(),
-            )
-        })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))
+        .map(|(values, grads)| (py_values_from_rust(values), py_values_from_rust(grads)))
+        .map_err(runtime_error)
 }
 
 #[pyfunction]
-fn checkpoint(jaxpr: &PyJaxpr) -> PyJaxpr {
-    let _wrapped = fj_api::checkpoint(jaxpr.inner.clone());
-    PyJaxpr {
-        inner: jaxpr.inner.clone(),
+fn checkpoint(jaxpr: &PyJaxpr) -> PyCheckpoint {
+    PyCheckpoint {
+        inner: fj_api::checkpoint(jaxpr.inner.clone()),
     }
 }
 
@@ -126,6 +178,7 @@ fn checkpoint(jaxpr: &PyJaxpr) -> PyJaxpr {
 fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyValue>()?;
     m.add_class::<PyJaxpr>()?;
+    m.add_class::<PyCheckpoint>()?;
     m.add_function(wrap_pyfunction!(make_jaxpr_square, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add2, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add_one, m)?)?;
@@ -151,5 +204,28 @@ mod tests {
     fn jaxpr_square_builds() {
         let jaxpr = make_jaxpr_square();
         assert!(!jaxpr.inner.equations.is_empty());
+    }
+
+    #[test]
+    fn checkpoint_wrapper_exposes_forward_grad_and_savings() {
+        let jaxpr = make_jaxpr_square();
+        let wrapped = checkpoint(&jaxpr);
+
+        assert_eq!(
+            wrapped.memory_savings_entries(),
+            jaxpr.inner.equations.len()
+        );
+
+        let values = wrapped.call(vec![PyValue::scalar_f64(3.0)]).unwrap();
+        assert!((values[0].as_f64().unwrap() - 9.0).abs() < 1e-12);
+
+        let grads = wrapped.grad(vec![PyValue::scalar_f64(3.0)]).unwrap();
+        assert!((grads[0].as_f64().unwrap() - 6.0).abs() < 1e-9);
+
+        let (values, grads) = wrapped
+            .value_and_grad(vec![PyValue::scalar_f64(4.0)])
+            .unwrap();
+        assert!((values[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
+        assert!((grads[0].as_f64().unwrap() - 8.0).abs() < 1e-9);
     }
 }

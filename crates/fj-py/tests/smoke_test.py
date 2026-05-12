@@ -61,8 +61,18 @@ def test_checkpoint():
     """Test checkpoint wrapper."""
     jaxpr = fj.make_jaxpr_square()
     checkpointed = fj.checkpoint(jaxpr)
-    # checkpoint returns a PyJaxpr that can be used with grad
-    print("✓ checkpoint(square) created")
+    assert checkpointed.memory_savings_entries() > 0
+
+    values = checkpointed.call([fj.PyValue.scalar_f64(3.0)])
+    assert abs(values[0].as_f64() - 9.0) < 1e-12
+
+    grads = checkpointed.grad([fj.PyValue.scalar_f64(3.0)])
+    assert abs(grads[0].as_f64() - 6.0) < 1e-6
+
+    values_again, grads_again = checkpointed.value_and_grad([fj.PyValue.scalar_f64(4.0)])
+    assert abs(values_again[0].as_f64() - 16.0) < 1e-12
+    assert abs(grads_again[0].as_f64() - 8.0) < 1e-6
+    print("✓ checkpoint(square) exposes call/grad/value_and_grad")
 
 
 if __name__ == "__main__":
