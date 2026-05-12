@@ -6,7 +6,7 @@ use fj_conformance::architecture_decision::{
     build_architecture_boundary_report, capture_workspace_snapshot,
     validate_architecture_boundary_report, write_architecture_boundary_outputs,
 };
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -19,6 +19,46 @@ fn current_report() -> fj_conformance::architecture_decision::ArchitectureBounda
 
 fn issue_codes(issues: &[ArchitectureBoundaryIssue]) -> Vec<&str> {
     issues.iter().map(|issue| issue.code.as_str()).collect()
+}
+
+#[test]
+fn fj_py_smoke_script_covers_public_transform_facade() {
+    let smoke_path = repo_root().join("crates/fj-py/tests/smoke_test.py");
+    let smoke = fs::read_to_string(&smoke_path).expect("fj-py smoke test should be readable");
+
+    for required in [
+        "test_value_scalar",
+        "test_jit_add",
+        "test_grad_square",
+        "test_value_and_grad",
+        "test_vmap",
+        "test_checkpoint",
+        "fj.PyValue.scalar_f64",
+        "fj.PyValue.scalar_i64",
+        "fj.PyValue.vector_f64",
+        "fj.make_jaxpr_square",
+        "fj.make_jaxpr_add2",
+        "fj.make_jaxpr_add_one",
+        "fj.jit",
+        "fj.grad",
+        "fj.value_and_grad",
+        "fj.vmap",
+        "fj.checkpoint",
+        "checkpointed.memory_savings_entries",
+        "checkpointed.call",
+        "checkpointed.grad",
+        "checkpointed.value_and_grad",
+    ] {
+        assert!(
+            smoke.contains(required),
+            "fj-py smoke script must cover {required}"
+        );
+    }
+
+    assert!(
+        smoke.contains("if __name__ == \"__main__\":"),
+        "fj-py smoke script should remain directly runnable after maturin develop"
+    );
 }
 
 #[test]
