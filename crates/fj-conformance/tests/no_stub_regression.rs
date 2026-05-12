@@ -4,12 +4,12 @@ use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
 use fj_dispatch::{
-    batching::{batch_eval_jaxpr, BatchTracer},
     TransformExecutionError,
+    batching::{BatchTracer, batch_eval_jaxpr},
 };
-use fj_egraph::{jaxpr_to_egraph, EGraphLoweringError, ExclusionReason};
+use fj_egraph::{EGraphLoweringError, ExclusionReason, jaxpr_to_egraph};
 use fj_interpreters::eval_jaxpr;
-use fj_lax::{eval_primitive, EvalError};
+use fj_lax::{EvalError, eval_primitive};
 use smallvec::smallvec;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -78,126 +78,7 @@ const STALE_STATUS_MARKERS: &[&str] = &[
 ];
 
 fn all_primitives() -> &'static [Primitive] {
-    &[
-        Primitive::Add,
-        Primitive::Sub,
-        Primitive::Mul,
-        Primitive::Neg,
-        Primitive::Abs,
-        Primitive::Max,
-        Primitive::Min,
-        Primitive::Pow,
-        Primitive::Exp,
-        Primitive::Log,
-        Primitive::Sqrt,
-        Primitive::Rsqrt,
-        Primitive::Floor,
-        Primitive::Ceil,
-        Primitive::Round,
-        Primitive::Sin,
-        Primitive::Cos,
-        Primitive::Tan,
-        Primitive::Asin,
-        Primitive::Acos,
-        Primitive::Atan,
-        Primitive::Sinh,
-        Primitive::Cosh,
-        Primitive::Tanh,
-        Primitive::Asinh,
-        Primitive::Acosh,
-        Primitive::Atanh,
-        Primitive::Expm1,
-        Primitive::Log1p,
-        Primitive::Sign,
-        Primitive::Square,
-        Primitive::Reciprocal,
-        Primitive::Logistic,
-        Primitive::Erf,
-        Primitive::Erfc,
-        Primitive::Div,
-        Primitive::Rem,
-        Primitive::Atan2,
-        Primitive::Complex,
-        Primitive::Conj,
-        Primitive::Real,
-        Primitive::Imag,
-        Primitive::Select,
-        Primitive::Dot,
-        Primitive::Eq,
-        Primitive::Ne,
-        Primitive::Lt,
-        Primitive::Le,
-        Primitive::Gt,
-        Primitive::Ge,
-        Primitive::ReduceSum,
-        Primitive::ReduceMax,
-        Primitive::ReduceMin,
-        Primitive::ReduceProd,
-        Primitive::ReduceAnd,
-        Primitive::ReduceOr,
-        Primitive::ReduceXor,
-        Primitive::Reshape,
-        Primitive::Slice,
-        Primitive::DynamicSlice,
-        Primitive::DynamicUpdateSlice,
-        Primitive::Gather,
-        Primitive::Scatter,
-        Primitive::Transpose,
-        Primitive::BroadcastInDim,
-        Primitive::Concatenate,
-        Primitive::Pad,
-        Primitive::Rev,
-        Primitive::Squeeze,
-        Primitive::Split,
-        Primitive::ExpandDims,
-        Primitive::Cbrt,
-        Primitive::Lgamma,
-        Primitive::Digamma,
-        Primitive::ErfInv,
-        Primitive::IsFinite,
-        Primitive::IntegerPow,
-        Primitive::Nextafter,
-        Primitive::Clamp,
-        Primitive::Iota,
-        Primitive::BroadcastedIota,
-        Primitive::Copy,
-        Primitive::BitcastConvertType,
-        Primitive::ReducePrecision,
-        Primitive::Cholesky,
-        Primitive::Qr,
-        Primitive::Svd,
-        Primitive::TriangularSolve,
-        Primitive::Eigh,
-        Primitive::Fft,
-        Primitive::Ifft,
-        Primitive::Rfft,
-        Primitive::Irfft,
-        Primitive::OneHot,
-        Primitive::Cumsum,
-        Primitive::Cumprod,
-        Primitive::Sort,
-        Primitive::Argsort,
-        Primitive::Conv,
-        Primitive::Cond,
-        Primitive::Scan,
-        Primitive::While,
-        Primitive::Switch,
-        Primitive::Psum,
-        Primitive::Pmean,
-        Primitive::AllGather,
-        Primitive::AllToAll,
-        Primitive::AxisIndex,
-        Primitive::BitwiseAnd,
-        Primitive::BitwiseOr,
-        Primitive::BitwiseXor,
-        Primitive::BitwiseNot,
-        Primitive::ShiftLeft,
-        Primitive::ShiftRightArithmetic,
-        Primitive::ShiftRightLogical,
-        Primitive::ReduceWindow,
-        Primitive::PopulationCount,
-        Primitive::CountLeadingZeros,
-    ]
+    Primitive::ALL
 }
 
 fn primitive_arity(primitive: Primitive) -> usize {
@@ -342,6 +223,27 @@ fn primitive_arity_matches_runtime_contract_for_reviewed_edges() {
     assert_eq!(primitive_arity(Primitive::AxisIndex), 0);
     assert_eq!(primitive_arity(Primitive::While), 3);
     assert_eq!(primitive_arity(Primitive::Switch), 3);
+}
+
+#[test]
+fn primitive_inventory_comes_from_core_source_of_truth() {
+    assert_eq!(
+        all_primitives().len(),
+        118,
+        "update Primitive::ALL and this audit count when the core enum changes"
+    );
+    assert_eq!(
+        Primitive::PMAP_COLLECTIVES.len(),
+        5,
+        "pmap collective inventory should stay explicit while V1 fails closed"
+    );
+
+    for primitive in Primitive::PMAP_COLLECTIVES {
+        assert!(
+            all_primitives().contains(primitive),
+            "{primitive:?} should remain part of the canonical primitive inventory"
+        );
+    }
 }
 
 #[test]
