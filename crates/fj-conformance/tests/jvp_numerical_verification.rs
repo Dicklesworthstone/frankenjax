@@ -21,6 +21,34 @@ fn make_f64_matrix(rows: u32, cols: u32, data: &[f64]) -> Value {
     )
 }
 
+fn make_f64_vector(data: &[f64]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape {
+                dims: vec![data.len() as u32],
+            },
+            data.iter().map(|&v| Literal::from_f64(v)).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_vector(data: &[(f64, f64)]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![data.len() as u32],
+            },
+            data.iter()
+                .map(|&(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(val: &Value) -> Vec<f64> {
     val.as_tensor()
         .unwrap()
@@ -32,6 +60,15 @@ fn extract_f64_vec(val: &Value) -> Vec<f64> {
 
 fn extract_f64_scalar(val: &Value) -> f64 {
     val.as_f64_scalar().unwrap()
+}
+
+fn extract_complex_vec(val: &Value) -> Vec<(f64, f64)> {
+    val.as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| l.as_complex128().unwrap())
+        .collect()
 }
 
 fn make_single_op_jaxpr(prim: Primitive) -> Jaxpr {
@@ -90,6 +127,18 @@ fn assert_close(actual: &[f64], expected: &[f64], tol: f64, context: &str) {
             (a - e).abs() < tol,
             "{context}[{i}]: got {a}, expected {e}, diff={} (tol={tol})",
             (a - e).abs()
+        );
+    }
+}
+
+fn assert_complex_close(actual: &[(f64, f64)], expected: &[(f64, f64)], tol: f64, context: &str) {
+    assert_eq!(actual.len(), expected.len(), "{context}: length mismatch");
+    for (i, ((ar, ai), (er, ei))) in actual.iter().zip(expected.iter()).enumerate() {
+        let re_diff = (ar - er).abs();
+        let im_diff = (ai - ei).abs();
+        assert!(
+            re_diff < tol && im_diff < tol,
+            "{context}[{i}]: got ({ar},{ai}), expected ({er},{ei}), diff=({re_diff},{im_diff}) (tol={tol})"
         );
     }
 }
@@ -764,6 +813,76 @@ fn verify_binary_scalar_jvp(
     let numerical = (f_plus - f_minus) / (2.0 * eps);
 
     assert_scalar_close(analytical, numerical, tol, 1e-4, label);
+}
+
+// ── Complex primitive JVP tests ──
+
+#[test]
+fn complex_projection_jvp_vector_projects_complex_tangents() {
+    let primals = make_complex128_vector(&[(2.0, -3.0), (-5.0, 7.0)]);
+    let tangents = make_complex128_vector(&[(1.5, -2.5), (3.25, -4.75)]);
+
+    let real_jaxpr = make_single_op_jaxpr(Primitive::Real);
+    let real_jvp = fj_ad::jvp(
+        &real_jaxpr,
+        std::slice::from_ref(&primals),
+        std::slice::from_ref(&tangents),
+    )
+    .unwrap();
+    assert_close(
+        &extract_f64_vec(&real_jvp.tangents[0]),
+        &[1.5, 3.25],
+        1e-10,
+        "Real vector JVP",
+    );
+
+    let imag_jaxpr = make_single_op_jaxpr(Primitive::Imag);
+    let imag_jvp = fj_ad::jvp(
+        &imag_jaxpr,
+        std::slice::from_ref(&primals),
+        std::slice::from_ref(&tangents),
+    )
+    .unwrap();
+    assert_close(
+        &extract_f64_vec(&imag_jvp.tangents[0]),
+        &[-2.5, -4.75],
+        1e-10,
+        "Imag vector JVP",
+    );
+}
+
+#[test]
+fn complex_conj_jvp_vector_conjugates_complex_tangent() {
+    let primals = make_complex128_vector(&[(1.0, -2.0), (-3.0, 4.0)]);
+    let tangents = make_complex128_vector(&[(5.0, -6.0), (-7.0, 8.0)]);
+
+    let jaxpr = make_single_op_jaxpr(Primitive::Conj);
+    let jvp_result = fj_ad::jvp(&jaxpr, &[primals], &[tangents]).unwrap();
+
+    assert_complex_close(
+        &extract_complex_vec(&jvp_result.tangents[0]),
+        &[(5.0, 6.0), (-7.0, -8.0)],
+        1e-10,
+        "Conj vector JVP",
+    );
+}
+
+#[test]
+fn complex_constructor_jvp_vector_builds_complex_tangent() {
+    let real = make_f64_vector(&[1.0, -2.0]);
+    let imag = make_f64_vector(&[3.0, -4.0]);
+    let real_tangent = make_f64_vector(&[7.0, -11.0]);
+    let imag_tangent = make_f64_vector(&[-13.0, 17.0]);
+
+    let jaxpr = make_two_input_jaxpr(Primitive::Complex, BTreeMap::new());
+    let jvp_result = fj_ad::jvp(&jaxpr, &[real, imag], &[real_tangent, imag_tangent]).unwrap();
+
+    assert_complex_close(
+        &extract_complex_vec(&jvp_result.tangents[0]),
+        &[(7.0, -13.0), (-11.0, 17.0)],
+        1e-10,
+        "Complex constructor vector JVP",
+    );
 }
 
 // ── Unary JVP tests ──

@@ -34,6 +34,21 @@ fn make_f64_vector(data: &[f64]) -> Value {
     )
 }
 
+fn make_complex128_vector(data: &[(f64, f64)]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![data.len() as u32],
+            },
+            data.iter()
+                .map(|&(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
 fn extract_f64_vec(val: &Value) -> Vec<f64> {
     val.as_tensor()
         .unwrap()
@@ -45,6 +60,15 @@ fn extract_f64_vec(val: &Value) -> Vec<f64> {
 
 fn extract_f64_scalar(val: &Value) -> f64 {
     val.as_f64_scalar().unwrap()
+}
+
+fn extract_complex_vec(val: &Value) -> Vec<(f64, f64)> {
+    val.as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| l.as_complex128().unwrap())
+        .collect()
 }
 
 fn loss_multi(prim: Primitive, a: &Value, gs: &[Value], params: &BTreeMap<String, String>) -> f64 {
@@ -73,6 +97,27 @@ fn assert_gradients_close(analytical: &[f64], numerical: &[f64], tol: f64, conte
             (a - n).abs() < tol,
             "{context}[{i}]: analytical={a}, numerical={n}, diff={} (tol={tol})",
             (a - n).abs()
+        );
+    }
+}
+
+fn assert_complex_gradients_close(
+    analytical: &[(f64, f64)],
+    expected: &[(f64, f64)],
+    tol: f64,
+    context: &str,
+) {
+    assert_eq!(
+        analytical.len(),
+        expected.len(),
+        "{context}: gradient length mismatch"
+    );
+    for (i, ((ar, ai), (er, ei))) in analytical.iter().zip(expected.iter()).enumerate() {
+        let re_diff = (ar - er).abs();
+        let im_diff = (ai - ei).abs();
+        assert!(
+            re_diff < tol && im_diff < tol,
+            "{context}[{i}]: analytical=({ar},{ai}), expected=({er},{ei}), diff=({re_diff},{im_diff}) (tol={tol})"
         );
     }
 }
@@ -309,6 +354,92 @@ fn fft_vjp_numerical() {
             "FFT VJP[{i}]: got ({vr},{vi}), expected ({expected_re},{expected_im})"
         );
     }
+}
+
+// ======================== Complex primitive VJP ========================
+
+#[test]
+fn complex_conj_vjp_vector_conjugates_cotangent() {
+    let input = make_complex128_vector(&[(1.0, -2.0), (-3.0, 4.0)]);
+    let cotangent = make_complex128_vector(&[(5.0, -6.0), (-7.0, 8.0)]);
+
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Conj,
+        std::slice::from_ref(&input),
+        &cotangent,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert_complex_gradients_close(
+        &extract_complex_vec(&vjp_result[0]),
+        &[(5.0, 6.0), (-7.0, -8.0)],
+        1e-10,
+        "Conj vector VJP",
+    );
+}
+
+#[test]
+fn complex_projection_vjp_vector_lifts_real_cotangents() {
+    let input = make_complex128_vector(&[(2.0, -3.0), (-5.0, 7.0)]);
+
+    let real_cotangent = make_f64_vector(&[1.5, -2.5]);
+    let real_vjp = fj_ad::vjp_single(
+        Primitive::Real,
+        std::slice::from_ref(&input),
+        &real_cotangent,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_complex_gradients_close(
+        &extract_complex_vec(&real_vjp[0]),
+        &[(1.5, 0.0), (-2.5, 0.0)],
+        1e-10,
+        "Real vector VJP",
+    );
+
+    let imag_cotangent = make_f64_vector(&[3.0, -4.5]);
+    let imag_vjp = fj_ad::vjp_single(
+        Primitive::Imag,
+        std::slice::from_ref(&input),
+        &imag_cotangent,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_complex_gradients_close(
+        &extract_complex_vec(&imag_vjp[0]),
+        &[(0.0, 3.0), (0.0, -4.5)],
+        1e-10,
+        "Imag vector VJP",
+    );
+}
+
+#[test]
+fn complex_constructor_vjp_vector_splits_cotangent_components() {
+    let real = make_f64_vector(&[1.0, -2.0]);
+    let imag = make_f64_vector(&[3.0, -4.0]);
+    let cotangent = make_complex128_vector(&[(7.0, -11.0), (-13.0, 17.0)]);
+
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Complex,
+        &[real, imag],
+        &cotangent,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    assert_gradients_close(
+        &extract_f64_vec(&vjp_result[0]),
+        &[7.0, -13.0],
+        1e-10,
+        "Complex constructor vector VJP real component",
+    );
+    assert_gradients_close(
+        &extract_f64_vec(&vjp_result[1]),
+        &[-11.0, 17.0],
+        1e-10,
+        "Complex constructor vector VJP imaginary component",
+    );
 }
 
 // ======================== RFFT VJP ========================
