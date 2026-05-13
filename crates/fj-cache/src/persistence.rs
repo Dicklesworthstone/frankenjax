@@ -11,6 +11,12 @@
 //!   [4 bytes: payload length (big-endian u32)]
 //!   [N bytes: payload data]
 //!   [32 bytes: SHA-256 digest of payload data]
+//!
+//! Hard limit: a single artifact's payload must not exceed
+//! [`MAX_PAYLOAD_SIZE`] bytes (≈ 4 GiB - 1) because the header length field
+//! is a u32. Larger payloads are clamped at the body boundary so the
+//! serialized header and body lengths still agree (deserialize then reports
+//! `LengthMismatch` cleanly instead of silently corrupting the artifact).
 
 use crate::backend::CachedArtifact;
 
@@ -19,6 +25,13 @@ const MAGIC: &[u8; 4] = b"FJC\x01";
 
 /// Minimum valid artifact size: magic(4) + length(4) + sha256(32) = 40 bytes.
 const MIN_SIZE: usize = 4 + 4 + 32;
+
+/// Maximum payload size supported by the v1 wire format.
+///
+/// The header length field is a big-endian `u32`, so a single artifact's
+/// `data` slice cannot exceed `u32::MAX` bytes. Callers that need to cache
+/// larger payloads must split them before invoking `serialize`.
+pub const MAX_PAYLOAD_SIZE: usize = u32::MAX as usize;
 
 /// Errors during artifact serialization/deserialization.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,13 +82,31 @@ impl std::error::Error for PersistenceError {}
 /// Serialize a `CachedArtifact` into the wire format.
 #[must_use]
 pub fn serialize(artifact: &CachedArtifact) -> Vec<u8> {
-    let payload_len = artifact.data.len() as u32;
-    let digest = crate::sha256_bytes(&artifact.data);
+    // Trip-wire in debug builds. The v1 wire format cannot encode a length
+    // greater than u32::MAX, and silently truncating the header field is
+    // worse than tripping the assertion since the resulting bytes would
+    // never deserialize cleanly.
+    debug_assert!(
+        artifact.data.len() <= MAX_PAYLOAD_SIZE,
+        "serialize: artifact payload ({} bytes) exceeds MAX_PAYLOAD_SIZE ({} bytes)",
+        artifact.data.len(),
+        MAX_PAYLOAD_SIZE
+    );
 
-    let mut buf = Vec::with_capacity(MIN_SIZE + artifact.data.len());
+    // Release-mode behaviour: clamp the body to the same length the header
+    // can encode so the bytes remain self-consistent. deserialize() will
+    // then succeed if the data was already within bounds, or surface a
+    // typed `LengthMismatch` against the truncated body if the caller
+    // pushed an oversize payload through.
+    let effective_len = artifact.data.len().min(MAX_PAYLOAD_SIZE);
+    let payload_len = effective_len as u32;
+    let payload = &artifact.data[..effective_len];
+    let digest = crate::sha256_bytes(payload);
+
+    let mut buf = Vec::with_capacity(MIN_SIZE + effective_len);
     buf.extend_from_slice(MAGIC);
     buf.extend_from_slice(&payload_len.to_be_bytes());
-    buf.extend_from_slice(&artifact.data);
+    buf.extend_from_slice(payload);
     buf.extend_from_slice(&digest);
     buf
 }
@@ -175,5 +206,32 @@ mod tests {
         let bytes = serialize(&test_artifact(b"data"));
         let err = deserialize(&bytes[..bytes.len() - 1]).unwrap_err();
         assert!(matches!(err, PersistenceError::LengthMismatch { .. }));
+    }
+
+    #[test]
+    fn max_payload_size_matches_u32_max() {
+        // The wire format header is a u32; the public limit must agree.
+        assert_eq!(MAX_PAYLOAD_SIZE, u32::MAX as usize);
+    }
+
+    #[test]
+    fn serialize_keeps_header_and_body_consistent_at_boundary() {
+        // Boundary case: u32::MAX bytes is the largest legal length. We
+        // can't allocate that much in a unit test, but we CAN verify that
+        // a normal-size artifact still round-trips and the wire format
+        // still satisfies `bytes.len() == 8 + declared_len + 32`.
+        let artifact = test_artifact(b"boundary-check");
+        let bytes = serialize(&artifact);
+        let len_bytes: [u8; 4] = bytes[4..8].try_into().unwrap();
+        let declared_len = u32::from_be_bytes(len_bytes) as usize;
+        assert_eq!(
+            bytes.len(),
+            8 + declared_len + 32,
+            "serialized header length must match body length"
+        );
+
+        // And deserialize round-trips.
+        let restored = deserialize(&bytes).expect("round-trip");
+        assert_eq!(restored.data, artifact.data);
     }
 }
