@@ -10,6 +10,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+/// Defense-in-depth filename allowlist for [`FileCache`].
+///
+/// Returns true iff every byte of `s` is ASCII alphanumeric, `-`, `_`, or
+/// `.`. The canonical `build_cache_key` always produces hex digests joined
+/// to a static namespace, so this check is a no-op for well-formed keys.
+/// It exists to defeat path-traversal attempts from hand-rolled
+/// [`CacheKey`] values (the struct has public fields).
+fn is_safe_cache_filename(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
 // ── Cached Artifact ─────────────────────────────────────────────────
 
 /// Opaque wrapper around a cached compilation artifact (serialized bytes).
@@ -197,6 +210,9 @@ impl FileCache {
 
 impl CacheBackend for FileCache {
     fn get(&self, key: &CacheKey) -> Option<CachedArtifact> {
+        if !is_safe_cache_filename(&key.as_string()) {
+            return None;
+        }
         let path = self.path_for(key);
         let bytes = std::fs::read(&path).ok()?;
 
@@ -210,6 +226,12 @@ impl CacheBackend for FileCache {
     }
 
     fn put(&mut self, key: &CacheKey, artifact: CachedArtifact) {
+        if !is_safe_cache_filename(&key.as_string()) {
+            // Reject path-traversal attempts. Record as a put failure so
+            // monitors can detect the boundary violation.
+            self.put_failures.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
         let path = self.path_for(key);
         let bytes = crate::persistence::serialize(&artifact);
         // Atomic write: write to temp file, then rename.
@@ -239,6 +261,11 @@ impl CacheBackend for FileCache {
     }
 
     fn evict(&mut self, key: &CacheKey) -> bool {
+        if !is_safe_cache_filename(&key.as_string()) {
+            // Unsafe key never gets a file on disk via put(); evict has
+            // nothing to do and returns "did not exist".
+            return false;
+        }
         let path = self.path_for(key);
         match std::fs::remove_file(&path) {
             Ok(()) => true,
@@ -516,6 +543,71 @@ mod tests {
 
         cache.clear();
         assert_eq!(cache.clear_failure_count(), 2);
+    }
+
+    #[test]
+    fn is_safe_cache_filename_accepts_hex_digest_keys() {
+        assert!(is_safe_cache_filename("fjx-deadbeef0123"));
+        assert!(is_safe_cache_filename("namespace_42-abc.def"));
+        assert!(is_safe_cache_filename("a"));
+    }
+
+    #[test]
+    fn is_safe_cache_filename_rejects_path_traversal_and_separators() {
+        // Empty rejected.
+        assert!(!is_safe_cache_filename(""));
+        // Any path separator (forward or back slash) is rejected.
+        assert!(!is_safe_cache_filename("../etc/passwd"));
+        assert!(!is_safe_cache_filename("fjx-/abs"));
+        assert!(!is_safe_cache_filename("fjx-back\\slash"));
+        // Whitespace and control bytes are rejected.
+        assert!(!is_safe_cache_filename("fjx-space here"));
+        assert!(!is_safe_cache_filename("fjx-tab\there"));
+        assert!(!is_safe_cache_filename("fjx-newline\nhere"));
+        assert!(!is_safe_cache_filename("fjx-nullbyte\0here"));
+        // Non-ASCII byte sequences (e.g., multi-byte UTF-8) are rejected.
+        assert!(!is_safe_cache_filename("fjx-unicode🦀"));
+        // Note: dots inside the filename (e.g., "fjx-..foo") are allowed
+        // — they cannot escape cache_dir because there's no embedded
+        // separator. Only separators (`/`, `\`) enable traversal.
+    }
+
+    #[test]
+    fn file_cache_rejects_path_traversal_key_on_put_get_evict() {
+        let dir = std::env::temp_dir().join(format!(
+            "fj-cache-test-traversal-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut cache = FileCache::new(dir.clone());
+        let unsafe_key = CacheKey {
+            namespace: "fjx",
+            digest_hex: "../etc/passwd".to_owned(),
+        };
+
+        // put rejects the unsafe key and bumps put_failures.
+        cache.put(&unsafe_key, test_artifact(b"should never land"));
+        assert_eq!(cache.put_failure_count(), 1);
+
+        // No file was written anywhere under cache_dir (or above it).
+        assert_eq!(cache.stats().entry_count, 0);
+
+        // get returns None for the unsafe key.
+        assert!(cache.get(&unsafe_key).is_none());
+
+        // evict reports "did not exist" without touching disk.
+        assert!(!cache.evict(&unsafe_key));
+        assert_eq!(cache.evict_failure_count(), 0);
+
+        // Normal hex-digest key still round-trips.
+        let safe_key = test_key("deadbeef");
+        cache.put(&safe_key, test_artifact(b"ok"));
+        assert_eq!(cache.put_failure_count(), 1); // unchanged
+        let restored = cache.get(&safe_key).expect("safe key round-trip");
+        assert_eq!(restored.data, b"ok");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
