@@ -125,6 +125,24 @@ pub struct FileCache {
     /// removed mid-flight, cross-device link). Read via
     /// [`FileCache::put_failure_count`].
     put_failures: AtomicU64,
+    /// Count of `evict` operations whose underlying `remove_file` returned an
+    /// error other than `NotFound`.
+    ///
+    /// The trait's `evict` contract is "Returns `true` if the entry existed",
+    /// so `NotFound` is normal (file did not exist → return `false`) and is
+    /// NOT counted. Any other IO error (permission denied, parent dir
+    /// removed, etc.) means the file may have existed but could not be
+    /// removed, and is recorded here so callers can detect silent eviction
+    /// failure. Read via [`FileCache::evict_failure_count`].
+    evict_failures: AtomicU64,
+    /// Count of `clear` operations or per-entry removals that failed at the
+    /// filesystem layer.
+    ///
+    /// Incremented when `read_dir` over the cache directory fails (entire
+    /// clear() is silently skipped) or when any individual per-entry
+    /// `remove_file` fails during the loop. Each per-entry failure bumps the
+    /// counter by 1. Read via [`FileCache::clear_failure_count`].
+    clear_failures: AtomicU64,
 }
 
 impl FileCache {
@@ -136,6 +154,8 @@ impl FileCache {
         Self {
             cache_dir,
             put_failures: AtomicU64::new(0),
+            evict_failures: AtomicU64::new(0),
+            clear_failures: AtomicU64::new(0),
         }
     }
 
@@ -154,6 +174,24 @@ impl FileCache {
     #[must_use]
     pub fn put_failure_count(&self) -> u64 {
         self.put_failures.load(Ordering::Relaxed)
+    }
+
+    /// Return the cumulative count of `evict` operations whose underlying
+    /// `remove_file` returned an error other than `NotFound`.
+    ///
+    /// `NotFound` is not counted because it matches the trait's "did not
+    /// exist" semantics. Any other IO error means the entry may have
+    /// existed and could not be removed.
+    #[must_use]
+    pub fn evict_failure_count(&self) -> u64 {
+        self.evict_failures.load(Ordering::Relaxed)
+    }
+
+    /// Return the cumulative count of `clear` per-entry remove failures plus
+    /// whole-directory `read_dir` failures.
+    #[must_use]
+    pub fn clear_failure_count(&self) -> u64 {
+        self.clear_failures.load(Ordering::Relaxed)
     }
 }
 
@@ -202,7 +240,19 @@ impl CacheBackend for FileCache {
 
     fn evict(&mut self, key: &CacheKey) -> bool {
         let path = self.path_for(key);
-        std::fs::remove_file(&path).is_ok()
+        match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(err) => {
+                if err.kind() != std::io::ErrorKind::NotFound {
+                    // The trait contract treats NotFound as "did not exist",
+                    // which is a normal `false` return. Any other error
+                    // means the file may have existed and we could not
+                    // remove it — record the silent failure.
+                    self.evict_failures.fetch_add(1, Ordering::Relaxed);
+                }
+                false
+            }
+        }
     }
 
     fn stats(&self) -> CacheStats {
@@ -224,11 +274,25 @@ impl CacheBackend for FileCache {
     }
 
     fn clear(&mut self) {
-        if let Ok(entries) = std::fs::read_dir(&self.cache_dir) {
-            for entry in entries.flatten() {
-                if entry.path().extension().is_some_and(|e| e == "bin") {
-                    let _ = std::fs::remove_file(entry.path());
+        match std::fs::read_dir(&self.cache_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|e| e == "bin")
+                        && std::fs::remove_file(&path).is_err()
+                    {
+                        // Per-entry remove failed (e.g., permission, file
+                        // disappeared between read_dir and remove). Record
+                        // so callers can detect partial clears.
+                        self.clear_failures.fetch_add(1, Ordering::Relaxed);
+                    }
                 }
+            }
+            Err(_) => {
+                // Cannot enumerate the cache dir; the whole clear was a
+                // no-op rather than an error per current trait semantics.
+                // Record so callers can detect this.
+                self.clear_failures.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
@@ -389,6 +453,87 @@ mod tests {
 
         assert_eq!(cache.put_failure_count(), 0);
         assert_eq!(cache.stats().entry_count, 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_cache_evict_missing_does_not_bump_failure_counter() {
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-test-evict-missing-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut cache = FileCache::new(dir.clone());
+        let key = test_key("absent");
+
+        // Evicting a key that was never stored returns false and must NOT
+        // bump evict_failures — NotFound is part of the trait's normal
+        // "did not exist → false" contract.
+        let removed = cache.evict(&key);
+        assert!(!removed);
+        assert_eq!(cache.evict_failure_count(), 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_cache_evict_success_does_not_bump_failure_counter() {
+        let dir =
+            std::env::temp_dir().join(format!("fj-cache-test-evict-success-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut cache = FileCache::new(dir.clone());
+        let key = test_key("present");
+        cache.put(&key, test_artifact(b"data"));
+        assert_eq!(cache.stats().entry_count, 1);
+
+        let removed = cache.evict(&key);
+        assert!(removed);
+        assert_eq!(cache.evict_failure_count(), 0);
+        assert_eq!(cache.stats().entry_count, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_cache_clear_bumps_counter_when_dir_missing() {
+        // Point clear() at a directory that does not exist: read_dir fails,
+        // bumping clear_failures by 1.
+        let dir = std::env::temp_dir().join(format!(
+            "fj-cache-test-clear-missing-{}/never_created",
+            std::process::id()
+        ));
+
+        let mut cache = FileCache::new(dir.clone());
+        assert_eq!(cache.clear_failure_count(), 0);
+
+        cache.clear();
+        assert_eq!(
+            cache.clear_failure_count(),
+            1,
+            "clear() against a missing dir should record a single failure"
+        );
+
+        cache.clear();
+        assert_eq!(cache.clear_failure_count(), 2);
+    }
+
+    #[test]
+    fn file_cache_clear_success_does_not_bump_counter() {
+        let dir = std::env::temp_dir().join(format!(
+            "fj-cache-test-clear-success-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+
+        let mut cache = FileCache::new(dir.clone());
+        cache.put(&test_key("a"), test_artifact(b"a"));
+        cache.put(&test_key("b"), test_artifact(b"b"));
+        assert_eq!(cache.stats().entry_count, 2);
+
+        cache.clear();
+        assert_eq!(cache.clear_failure_count(), 0);
+        assert_eq!(cache.stats().entry_count, 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
