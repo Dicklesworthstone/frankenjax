@@ -724,7 +724,10 @@ fn reciprocal_scalar_matching_cotangent_dtype(g: &Value, fft_length: usize) -> V
     let g_dtype = float_dtype_of_cotangent(g);
     let inv = 1.0 / fft_length as f64;
     match g_dtype {
-        Some(DType::F32) | Some(DType::BF16) | Some(DType::F16) => {
+        // Half-precision real cotangent OR Complex64 cotangent: emit F32
+        // scalar so a Complex64 product stays Complex64 (value_mul's
+        // promotion rules use the wider of the two component-floats).
+        Some(DType::F32) | Some(DType::BF16) | Some(DType::F16) | Some(DType::Complex64) => {
             Value::Scalar(Literal::from_f32(inv as f32))
         }
         _ => Value::Scalar(Literal::from_f64(inv)),
@@ -739,7 +742,7 @@ fn scale_by_n_matching_cotangent_dtype(g: &Value, fft_length: usize) -> Value {
     let g_dtype = float_dtype_of_cotangent(g);
     let n = fft_length as f64;
     match g_dtype {
-        Some(DType::F32) | Some(DType::BF16) | Some(DType::F16) => {
+        Some(DType::F32) | Some(DType::BF16) | Some(DType::F16) | Some(DType::Complex64) => {
             Value::Scalar(Literal::from_f32(n as f32))
         }
         _ => Value::Scalar(Literal::from_f64(n)),
@@ -753,6 +756,8 @@ fn float_dtype_of_cotangent(g: &Value) -> Option<DType> {
             Literal::F64Bits(_) => Some(DType::F64),
             Literal::BF16Bits(_) => Some(DType::BF16),
             Literal::F16Bits(_) => Some(DType::F16),
+            Literal::Complex64Bits(..) => Some(DType::Complex64),
+            Literal::Complex128Bits(..) => Some(DType::Complex128),
             _ => None,
         },
         Value::Tensor(t) => Some(t.dtype),
@@ -2615,10 +2620,12 @@ pub fn vjp(
             let ifft_g = eval_primitive(Primitive::Ifft, std::slice::from_ref(g), params)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let n = match &inputs[0] {
-                Value::Tensor(t) => *t.shape.dims.last().unwrap_or(&1) as f64,
-                Value::Scalar(_) => 1.0,
+                Value::Tensor(t) => *t.shape.dims.last().unwrap_or(&1) as usize,
+                Value::Scalar(_) => 1,
             };
-            let scale = Value::Scalar(Literal::from_f64(n));
+            // Match the cotangent's dtype so a Complex64 IFFT(g) result
+            // doesn't widen to Complex128 when multiplied by the scale.
+            let scale = scale_by_n_matching_cotangent_dtype(g, n);
             Ok(vec![value_mul(&ifft_g, &scale)?])
         }
         // ── IFFT VJP ──
@@ -2628,10 +2635,11 @@ pub fn vjp(
             let fft_g = eval_primitive(Primitive::Fft, std::slice::from_ref(g), params)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let n = match &inputs[0] {
-                Value::Tensor(t) => *t.shape.dims.last().unwrap_or(&1) as f64,
-                Value::Scalar(_) => 1.0,
+                Value::Tensor(t) => *t.shape.dims.last().unwrap_or(&1) as usize,
+                Value::Scalar(_) => 1,
             };
-            let inv_n = Value::Scalar(Literal::from_f64(1.0 / n));
+            // Same dtype-preservation as FFT VJP, on the reciprocal side.
+            let inv_n = reciprocal_scalar_matching_cotangent_dtype(g, n);
             Ok(vec![value_mul(&fft_g, &inv_n)?])
         }
         // ── RFFT VJP ──

@@ -1213,6 +1213,101 @@ fn ifft_vjp_numerical() {
     }
 }
 
+/// FFT VJP regression for Complex64 input (frankenjax-gvkt).
+///
+/// FFT VJP previously hard-coded the scale literal to F64, so a
+/// Complex64 cotangent + Complex64 input produced a Complex128 gradient
+/// — same widening pattern as 4y5q / 35ur. This test pins dtype
+/// preservation by asserting the VJP output stays Complex64.
+#[test]
+fn fft_vjp_complex64_preserves_dtype() {
+    use fj_core::Literal::Complex64Bits;
+
+    let x_re: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+    let x_im: [f32; 4] = [0.5, -0.5, 1.5, -1.5];
+    let x = Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![4] },
+            x_re.iter()
+                .zip(x_im.iter())
+                .map(|(&r, &i)| Literal::from_complex64(r, i))
+                .collect(),
+        )
+        .unwrap(),
+    );
+
+    let g = Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![4] },
+            (0..4).map(|_| Literal::from_complex64(1.0, 0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result =
+        fj_ad::vjp_single(Primitive::Fft, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
+    let vjp_tensor = vjp_result[0].as_tensor().unwrap();
+
+    assert_eq!(
+        vjp_tensor.dtype,
+        DType::Complex64,
+        "FFT VJP must keep Complex64 dtype for Complex64 input + Complex64 cotangent"
+    );
+    for elem in &vjp_tensor.elements {
+        assert!(
+            matches!(elem, Complex64Bits(..)),
+            "FFT VJP element must store Complex64Bits; got {elem:?}"
+        );
+    }
+}
+
+/// IFFT VJP regression for Complex64 input (frankenjax-gvkt).
+#[test]
+fn ifft_vjp_complex64_preserves_dtype() {
+    use fj_core::Literal::Complex64Bits;
+
+    let x = Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![4] },
+            vec![
+                Literal::from_complex64(10.0, 0.0),
+                Literal::from_complex64(-2.0, 2.0),
+                Literal::from_complex64(-2.0, 0.0),
+                Literal::from_complex64(-2.0, -2.0),
+            ],
+        )
+        .unwrap(),
+    );
+
+    let g = Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![4] },
+            (0..4).map(|_| Literal::from_complex64(1.0, 0.0)).collect(),
+        )
+        .unwrap(),
+    );
+
+    let vjp_result =
+        fj_ad::vjp_single(Primitive::Ifft, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
+    let vjp_tensor = vjp_result[0].as_tensor().unwrap();
+
+    assert_eq!(
+        vjp_tensor.dtype,
+        DType::Complex64,
+        "IFFT VJP must keep Complex64 dtype for Complex64 input + Complex64 cotangent"
+    );
+    for elem in &vjp_tensor.elements {
+        assert!(
+            matches!(elem, Complex64Bits(..)),
+            "IFFT VJP element must store Complex64Bits; got {elem:?}"
+        );
+    }
+}
+
 // ======================== IRFFT VJP ========================
 
 #[test]
