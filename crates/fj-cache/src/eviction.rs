@@ -146,6 +146,18 @@ impl<B: CacheBackend> CacheBackend for LruCache<B> {
         }
         self.inner.clear();
     }
+
+    fn put_failure_count(&self) -> u64 {
+        self.inner.put_failure_count()
+    }
+
+    fn evict_failure_count(&self) -> u64 {
+        self.inner.evict_failure_count()
+    }
+
+    fn clear_failure_count(&self) -> u64 {
+        self.inner.clear_failure_count()
+    }
 }
 
 /// Configuration for TTL + LRU eviction.
@@ -269,6 +281,18 @@ impl<B: CacheBackend> CacheBackend for TtlLruCache<B> {
     fn clear(&mut self) {
         self.insert_times.clear();
         self.inner.clear();
+    }
+
+    fn put_failure_count(&self) -> u64 {
+        self.inner.put_failure_count()
+    }
+
+    fn evict_failure_count(&self) -> u64 {
+        self.inner.evict_failure_count()
+    }
+
+    fn clear_failure_count(&self) -> u64 {
+        self.inner.clear_failure_count()
     }
 }
 
@@ -726,5 +750,44 @@ mod tests {
     fn lru_cache_is_sync() {
         fn assert_sync<T: Sync>() {}
         assert_sync::<LruCache<InMemoryCache>>();
+    }
+
+    #[test]
+    fn lru_cache_delegates_failure_counts_to_inner_file_cache() {
+        use crate::backend::FileCache;
+
+        // Point at a parent dir that does NOT exist so put() fails at the
+        // temp-write step and bumps the inner FileCache's put_failures.
+        let dir = std::env::temp_dir().join(format!(
+            "fj-cache-lru-delegation-{}/never_created",
+            std::process::id()
+        ));
+        let inner = FileCache::new(dir);
+        let mut cache = LruCache::new(inner, LruConfig::default());
+
+        assert_eq!(cache.put_failure_count(), 0);
+        cache.put(
+            &CacheKey {
+                namespace: "fjx",
+                digest_hex: "deadbeef".to_owned(),
+            },
+            CachedArtifact {
+                data: vec![1, 2, 3],
+                integrity_sha256_hex: crate::sha256_hex(&[1, 2, 3]),
+            },
+        );
+        assert_eq!(
+            cache.put_failure_count(),
+            1,
+            "LruCache::put_failure_count must forward to inner FileCache"
+        );
+    }
+
+    #[test]
+    fn in_memory_cache_default_failure_counts_are_zero() {
+        let cache = InMemoryCache::default();
+        assert_eq!(cache.put_failure_count(), 0);
+        assert_eq!(cache.evict_failure_count(), 0);
+        assert_eq!(cache.clear_failure_count(), 0);
     }
 }

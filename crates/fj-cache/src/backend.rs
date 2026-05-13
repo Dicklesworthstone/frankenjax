@@ -64,6 +64,32 @@ pub trait CacheBackend: Send + Sync {
 
     /// Remove all entries from the cache.
     fn clear(&mut self);
+
+    /// Cumulative count of `put` operations that silently failed at the
+    /// storage layer (e.g., temp-file write failure or atomic-rename
+    /// failure in a disk-backed implementation).
+    ///
+    /// Default implementation returns 0 for backends that cannot fail (e.g.,
+    /// `InMemoryCache`). Disk-backed and wrapper backends override this so
+    /// monitors can detect persistence problems the `put(...) -> ()` signature
+    /// otherwise hides.
+    fn put_failure_count(&self) -> u64 {
+        0
+    }
+
+    /// Cumulative count of `evict` operations whose underlying storage call
+    /// returned an error other than "did not exist". The "did not exist"
+    /// case is part of the normal trait contract (`evict` returns `false`)
+    /// and is NOT counted.
+    fn evict_failure_count(&self) -> u64 {
+        0
+    }
+
+    /// Cumulative count of `clear` per-entry remove failures plus
+    /// whole-directory enumeration failures.
+    fn clear_failure_count(&self) -> u64 {
+        0
+    }
 }
 
 /// Cache utilization metrics returned by `CacheBackend::stats()`.
@@ -322,6 +348,18 @@ impl CacheBackend for FileCache {
                 self.clear_failures.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    fn put_failure_count(&self) -> u64 {
+        self.put_failures.load(Ordering::Relaxed)
+    }
+
+    fn evict_failure_count(&self) -> u64 {
+        self.evict_failures.load(Ordering::Relaxed)
+    }
+
+    fn clear_failure_count(&self) -> u64 {
+        self.clear_failures.load(Ordering::Relaxed)
     }
 }
 
