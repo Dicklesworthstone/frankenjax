@@ -414,6 +414,88 @@ fn mul_vjp_numerical_complex64() {
     );
 }
 
+/// Complex64 scalar Add VJP (frankenjax-6s96).
+///
+/// Add is linear: `dc/da = 1`, `dc/db = 1`. With cotangent `g`,
+/// `g_a = g_b = g`. Pins both dtype preservation and exact pass-through
+/// of the cotangent.
+#[test]
+fn add_vjp_numerical_complex64() {
+    use fj_core::Literal::Complex64Bits;
+
+    let a = Value::Scalar(Literal::from_complex64(1.5, -2.5));
+    let b = Value::Scalar(Literal::from_complex64(-3.0, 4.0));
+    let g = Value::Scalar(Literal::from_complex64(0.25, 0.75));
+
+    let grads = fj_ad::vjp_single(Primitive::Add, &[a, b], &g, &BTreeMap::new())
+        .expect("add VJP should accept complex64 scalars");
+    assert_eq!(grads.len(), 2);
+    for grad in &grads {
+        assert!(matches!(
+            grad,
+            Value::Scalar(Complex64Bits(re, im))
+                if f32::from_bits(*re) == 0.25 && f32::from_bits(*im) == 0.75
+        ), "Add VJP: every g_input must equal g; got {grad:?}");
+    }
+}
+
+/// Complex64 scalar Sub VJP (frankenjax-6s96).
+///
+/// Sub: `c = a - b`, so `dc/da = 1`, `dc/db = -1`. With cotangent `g`,
+/// `g_a = g`, `g_b = -g`.
+#[test]
+fn sub_vjp_numerical_complex64() {
+    use fj_core::Literal::Complex64Bits;
+
+    let a = Value::Scalar(Literal::from_complex64(1.5, -2.5));
+    let b = Value::Scalar(Literal::from_complex64(-3.0, 4.0));
+    let g = Value::Scalar(Literal::from_complex64(0.25, 0.75));
+
+    let grads = fj_ad::vjp_single(Primitive::Sub, &[a, b], &g, &BTreeMap::new())
+        .expect("sub VJP should accept complex64 scalars");
+    assert_eq!(grads.len(), 2);
+
+    // g_a = g
+    assert!(matches!(
+        grads[0],
+        Value::Scalar(Complex64Bits(re, im))
+            if f32::from_bits(re) == 0.25 && f32::from_bits(im) == 0.75
+    ), "Sub VJP g_a must equal g; got {:?}", grads[0]);
+
+    // g_b = -g (both real and imaginary negated)
+    assert!(matches!(
+        grads[1],
+        Value::Scalar(Complex64Bits(re, im))
+            if f32::from_bits(re) == -0.25 && f32::from_bits(im) == -0.75
+    ), "Sub VJP g_b must equal -g; got {:?}", grads[1]);
+}
+
+/// Complex64 scalar Neg VJP (frankenjax-6s96).
+///
+/// Neg: `c = -a`, so `dc/da = -1`. With cotangent `g`, `g_a = -g`.
+#[test]
+fn neg_vjp_numerical_complex64() {
+    use fj_core::Literal::Complex64Bits;
+
+    let a = Value::Scalar(Literal::from_complex64(1.5, -2.5));
+    let g = Value::Scalar(Literal::from_complex64(0.25, 0.75));
+
+    let grads = fj_ad::vjp_single(
+        Primitive::Neg,
+        std::slice::from_ref(&a),
+        &g,
+        &BTreeMap::new(),
+    )
+    .expect("neg VJP should accept complex64 scalar");
+    assert_eq!(grads.len(), 1);
+
+    assert!(matches!(
+        grads[0],
+        Value::Scalar(Complex64Bits(re, im))
+            if f32::from_bits(re) == -0.25 && f32::from_bits(im) == -0.75
+    ), "Neg VJP g_a must equal -g; got {:?}", grads[0]);
+}
+
 #[test]
 fn complex_conj_vjp_vector_conjugates_cotangent() {
     let input = make_complex128_vector(&[(1.0, -2.0), (-3.0, 4.0)]);
