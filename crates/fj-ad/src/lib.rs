@@ -2382,7 +2382,10 @@ pub fn vjp(
         Primitive::Cumprod => {
             // VJP of cumprod: grad_x[i] = sum_{j>=i} g[j] * cumprod[j] / x[i]
             // For scalar: pass through (cumprod of scalar = scalar).
-            // For tensor: use the formula with forward cumprod values.
+            // For tensor: two regimes — complex (re,im pair) and real
+            // (f64 accumulation re-encoded at input dtype). The previous
+            // f64 round-trip silently zeroed complex gradients and widened
+            // every real type.
             match g {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(gt) => {
@@ -2397,72 +2400,167 @@ pub fn vjp(
                         .unwrap_or(0);
                     let dims: Vec<usize> = gt.shape.dims.iter().map(|&d| d as usize).collect();
                     let rank = dims.len();
-                    let g_vals: Vec<f64> = gt
-                        .elements
-                        .iter()
-                        .map(|l| l.as_f64().unwrap_or(0.0))
-                        .collect();
-                    let x_vals: Vec<f64> = x_tensor
-                        .elements
-                        .iter()
-                        .map(|l| l.as_f64().unwrap_or(0.0))
-                        .collect();
-                    let total = g_vals.len();
-                    let mut result = vec![0.0_f64; total];
+                    let total = gt.elements.len();
 
                     let mut strides = vec![1usize; rank];
-                    for i in (0..rank - 1).rev() {
-                        strides[i] = strides[i + 1] * dims[i + 1];
+                    if rank > 0 {
+                        for i in (0..rank - 1).rev() {
+                            strides[i] = strides[i + 1] * dims[i + 1];
+                        }
                     }
-
                     let axis_len = dims[axis];
                     if axis_len == 0 {
                         return Ok(vec![g.clone()]);
                     }
                     let axis_stride = strides[axis];
                     let outer_count = total / axis_len;
+                    let g_dtype = gt.dtype;
 
-                    for outer in 0..outer_count {
-                        let mut base = 0;
-                        let mut rem = outer;
-                        for d in (0..rank).rev() {
-                            if d == axis {
-                                continue;
+                    let result_elements: Vec<Literal> = match g_dtype {
+                        DType::Complex64 | DType::Complex128 => {
+                            // (re, im) pair arithmetic. Complex *: (a+bi)*(c+di) =
+                            // (ac - bd, ad + bc). Complex /: (a+bi)/(c+di) =
+                            // (a+bi)*(c-di) / (c^2 + d^2).
+                            let to_pair = |lit: &Literal| -> (f64, f64) {
+                                match lit {
+                                    Literal::Complex64Bits(re, im) => (
+                                        f64::from(f32::from_bits(*re)),
+                                        f64::from(f32::from_bits(*im)),
+                                    ),
+                                    Literal::Complex128Bits(re, im) => {
+                                        (f64::from_bits(*re), f64::from_bits(*im))
+                                    }
+                                    _ => (0.0, 0.0),
+                                }
+                            };
+                            let g_pairs: Vec<(f64, f64)> =
+                                gt.elements.iter().map(to_pair).collect();
+                            let x_pairs: Vec<(f64, f64)> =
+                                x_tensor.elements.iter().map(to_pair).collect();
+                            let mut result = vec![(0.0_f64, 0.0_f64); total];
+
+                            for outer in 0..outer_count {
+                                let mut base = 0;
+                                let mut rem = outer;
+                                for d in (0..rank).rev() {
+                                    if d == axis {
+                                        continue;
+                                    }
+                                    base += (rem % dims[d]) * strides[d];
+                                    rem /= dims[d];
+                                }
+
+                                // Forward cumprod via complex multiplication.
+                                let mut cumprod = vec![(0.0_f64, 0.0_f64); axis_len];
+                                let mut run = (1.0_f64, 0.0_f64);
+                                for i in 0..axis_len {
+                                    let (xr, xi) = x_pairs[base + i * axis_stride];
+                                    run = (run.0 * xr - run.1 * xi, run.0 * xi + run.1 * xr);
+                                    cumprod[i] = run;
+                                }
+
+                                // Reverse suffix sum of g * cumprod (complex),
+                                // then divide by x (complex division).
+                                let mut suffix = (0.0_f64, 0.0_f64);
+                                for i in (0..axis_len).rev() {
+                                    let idx = base + i * axis_stride;
+                                    let (gr, gi) = g_pairs[idx];
+                                    let (cr, ci) = cumprod[i];
+                                    // g * cumprod
+                                    let prod = (gr * cr - gi * ci, gr * ci + gi * cr);
+                                    suffix.0 += prod.0;
+                                    suffix.1 += prod.1;
+                                    // suffix / x[i]
+                                    let (xr, xi) = x_pairs[idx];
+                                    let denom = xr * xr + xi * xi;
+                                    if denom > f64::EPSILON {
+                                        // (suffix * conj(x)) / |x|^2
+                                        let num = (
+                                            suffix.0 * xr + suffix.1 * xi,
+                                            suffix.1 * xr - suffix.0 * xi,
+                                        );
+                                        result[idx] = (num.0 / denom, num.1 / denom);
+                                    }
+                                    // If |x[i]| ≈ 0, gradient stays 0 (skip division).
+                                }
                             }
-                            base += (rem % dims[d]) * strides[d];
-                            rem /= dims[d];
+                            result
+                                .into_iter()
+                                .map(|(re, im)| match g_dtype {
+                                    DType::Complex64 => {
+                                        Literal::from_complex64(re as f32, im as f32)
+                                    }
+                                    _ => Literal::from_complex128(re, im),
+                                })
+                                .collect()
                         }
+                        _ => {
+                            let g_vals: Vec<f64> = gt
+                                .elements
+                                .iter()
+                                .map(|l| l.as_f64().unwrap_or(0.0))
+                                .collect();
+                            let x_vals: Vec<f64> = x_tensor
+                                .elements
+                                .iter()
+                                .map(|l| l.as_f64().unwrap_or(0.0))
+                                .collect();
+                            let mut result = vec![0.0_f64; total];
 
-                        // Forward cumprod for this slice
-                        let mut cumprod = vec![0.0_f64; axis_len];
-                        let mut running = 1.0;
-                        for i in 0..axis_len {
-                            running *= x_vals[base + i * axis_stride];
-                            cumprod[i] = running;
-                        }
+                            for outer in 0..outer_count {
+                                let mut base = 0;
+                                let mut rem = outer;
+                                for d in (0..rank).rev() {
+                                    if d == axis {
+                                        continue;
+                                    }
+                                    base += (rem % dims[d]) * strides[d];
+                                    rem /= dims[d];
+                                }
 
-                        // grad_x[i] = sum_{j>=i} g[j] * cumprod[j] / x[i]
-                        // = (1/x[i]) * sum_{j>=i} g[j] * cumprod[j]
-                        // Use reverse cumsum of (g * cumprod), then divide by x
-                        let mut suffix_sum = 0.0;
-                        for i in (0..axis_len).rev() {
-                            let idx = base + i * axis_stride;
-                            suffix_sum += g_vals[idx] * cumprod[i];
-                            let xi = x_vals[idx];
-                            if xi.abs() > f64::EPSILON {
-                                result[idx] = suffix_sum / xi;
+                                let mut cumprod = vec![0.0_f64; axis_len];
+                                let mut running = 1.0;
+                                for i in 0..axis_len {
+                                    running *= x_vals[base + i * axis_stride];
+                                    cumprod[i] = running;
+                                }
+
+                                let mut suffix_sum = 0.0;
+                                for i in (0..axis_len).rev() {
+                                    let idx = base + i * axis_stride;
+                                    suffix_sum += g_vals[idx] * cumprod[i];
+                                    let xi = x_vals[idx];
+                                    if xi.abs() > f64::EPSILON {
+                                        result[idx] = suffix_sum / xi;
+                                    }
+                                }
                             }
-                            // If x[i] == 0, gradient is 0 (avoid division by zero)
+                            // Re-encode at the input's real dtype so we
+                            // don't widen e.g. F32 to F64 in the AD chain.
+                            result
+                                .into_iter()
+                                .map(|v| match g_dtype {
+                                    DType::F32 => Literal::from_f32(v as f32),
+                                    DType::BF16 => Literal::from_bf16_f32(v as f32),
+                                    DType::F16 => Literal::from_f16_f32(v as f32),
+                                    DType::F64 => Literal::from_f64(v),
+                                    DType::I64 | DType::I32 => Literal::I64(v as i64),
+                                    DType::U32 => Literal::U32(v as u32),
+                                    DType::U64 => Literal::U64(v as u64),
+                                    _ => Literal::from_f64(v),
+                                })
+                                .collect()
                         }
-                    }
+                    };
+
+                    let out_dtype = match g_dtype {
+                        DType::Bool => DType::F64,
+                        other => other,
+                    };
 
                     Ok(vec![Value::Tensor(
-                        TensorValue::new(
-                            DType::F64,
-                            gt.shape.clone(),
-                            result.into_iter().map(Literal::from_f64).collect(),
-                        )
-                        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+                        TensorValue::new(out_dtype, gt.shape.clone(), result_elements)
+                            .map_err(|e| AdError::EvalFailed(e.to_string()))?,
                     )])
                 }
             }
@@ -14339,6 +14437,57 @@ mod tests {
             Value::Scalar(fj_core::Literal::Complex64Bits(re, im))
                 if f32::from_bits(re) == 16.0 && f32::from_bits(im) == 17.0
         ));
+    }
+
+    #[test]
+    fn cumprod_vjp_preserves_complex64_dtype_and_does_not_zero_gradient() {
+        use fj_core::Primitive;
+        // Primal x = [(2, 0), (3, 0)] (real-valued complex). Cumprod is
+        // [(2, 0), (6, 0)]. With g = [(1, 0), (1, 0)]:
+        //   grad_x[0] = (g[0]*cp[0] + g[1]*cp[1]) / x[0] = (2 + 6) / 2 = 4
+        //   grad_x[1] = g[1]*cp[1] / x[1] = 6 / 3 = 2
+        // Verifies dtype preservation AND correct complex arithmetic.
+        let x = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::Complex64,
+                fj_core::Shape { dims: vec![2] },
+                vec![
+                    fj_core::Literal::from_complex64(2.0, 0.0),
+                    fj_core::Literal::from_complex64(3.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::Complex64,
+                fj_core::Shape { dims: vec![2] },
+                vec![
+                    fj_core::Literal::from_complex64(1.0, 0.0),
+                    fj_core::Literal::from_complex64(1.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("axis".to_owned(), "0".to_owned());
+
+        let grads = super::vjp_single(Primitive::Cumprod, std::slice::from_ref(&x), &g, &params)
+            .expect("cumprod VJP should accept complex64");
+
+        let gt = grads[0].as_tensor().unwrap();
+        assert_eq!(gt.dtype, fj_core::DType::Complex64);
+        let actual: Vec<(f32, f32)> = gt
+            .elements
+            .iter()
+            .map(|l| match l {
+                fj_core::Literal::Complex64Bits(re, im) => {
+                    (f32::from_bits(*re), f32::from_bits(*im))
+                }
+                _ => (0.0, 0.0),
+            })
+            .collect();
+        assert_eq!(actual, vec![(4.0, 0.0), (2.0, 0.0)]);
     }
 
     #[test]
