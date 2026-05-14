@@ -1422,9 +1422,11 @@ pub fn vjp(
             Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::Square => {
-            // d/dx x² = 2x
+            // d/dx x² = 2x. Match "2" to the input/gradient dtype so
+            // Complex64 doesn't widen to Complex128 via F64×Complex64.
             let x = &inputs[0];
-            let two_x = value_mul(&scalar_value(2.0), x)?;
+            let two = scalar_constant_matching_dtype(2.0, x);
+            let two_x = value_mul(&two, x)?;
             Ok(vec![value_mul(g, &two_x)?])
         }
         Primitive::Reciprocal => {

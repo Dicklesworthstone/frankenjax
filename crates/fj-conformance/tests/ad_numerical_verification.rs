@@ -414,6 +414,40 @@ fn mul_vjp_numerical_complex64() {
     );
 }
 
+/// Complex64 scalar Square VJP (frankenjax-t8rl).
+///
+/// `d/dz z² = 2z` → `g_z = 2 * g * z`. Pick `z = 2 + 3i`, `g = 1 + 0i`:
+///   2z = 4 + 6i
+///   g_z = (1 + 0i)(4 + 6i) = 4 + 6i
+#[test]
+fn square_vjp_numerical_complex64() {
+    use fj_core::Literal::Complex64Bits;
+
+    let z = Value::Scalar(Literal::from_complex64(2.0, 3.0));
+    let g = Value::Scalar(Literal::from_complex64(1.0, 0.0));
+
+    let grads = fj_ad::vjp_single(
+        Primitive::Square,
+        std::slice::from_ref(&z),
+        &g,
+        &BTreeMap::new(),
+    )
+    .expect("square VJP should accept complex64 scalar");
+    assert_eq!(grads.len(), 1);
+
+    match grads[0] {
+        Value::Scalar(Complex64Bits(re, im)) => {
+            let re = f32::from_bits(re);
+            let im = f32::from_bits(im);
+            assert!(
+                (re - 4.0).abs() < 1e-5 && (im - 6.0).abs() < 1e-5,
+                "g_z should be (4.0, 6.0); got ({re}, {im})"
+            );
+        }
+        ref other => panic!("expected Complex64 scalar, got {other:?}"),
+    }
+}
+
 /// Complex64 scalar Rsqrt VJP (frankenjax-zvth).
 ///
 /// `d/dz rsqrt(z) = d/dz z^(-1/2) = -0.5 * z^(-3/2)` → `g_z = g * -0.5 * z^(-1.5)`.
