@@ -1816,29 +1816,31 @@ pub fn vjp(
             Ok(vec![current])
         }
         Primitive::Slice => {
-            // VJP of slice: embed g into a zero tensor at the slice offsets
+            // VJP of slice: embed g into a zero tensor at the slice offsets.
+            // Preserve gradient dtype — the previous implementation funneled
+            // every element through f64 and emitted DType::F64, silently
+            // zeroing complex gradients and widening real types.
             let input = &inputs[0];
             match input {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(t) => {
-                    // Parse start indices from params
                     let starts: Vec<usize> = params
                         .get("start_indices")
                         .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
                         .unwrap_or_default();
 
-                    // Create zero tensor of original shape
-                    let total = t.elements.len();
-                    let mut result_elements = vec![Literal::from_f64(0.0); total];
+                    let g_dtype = match g {
+                        Value::Tensor(gt) => gt.dtype,
+                        Value::Scalar(lit) => dtype_for_literal(lit),
+                    };
+                    let zero_lit = zero_literal_for_dtype(g_dtype);
 
-                    // Get the gradient tensor elements
-                    let g_elements: Vec<f64> = match g {
-                        Value::Scalar(lit) => vec![lit.as_f64().unwrap_or(0.0)],
-                        Value::Tensor(gt) => gt
-                            .elements
-                            .iter()
-                            .map(|l| l.as_f64().unwrap_or(0.0))
-                            .collect(),
+                    let total = t.elements.len();
+                    let mut result_elements: Vec<Literal> = vec![zero_lit; total];
+
+                    let g_literals: Vec<Literal> = match g {
+                        Value::Scalar(lit) => vec![*lit],
+                        Value::Tensor(gt) => gt.elements.clone(),
                     };
 
                     let rank = t.shape.rank();
@@ -1854,14 +1856,14 @@ pub fn vjp(
                     let g_dims = &g_shape.dims;
                     let mut out_coords = vec![0_usize; rank];
 
-                    for &gval in g_elements.iter() {
+                    for &glit in g_literals.iter() {
                         let mut in_flat = 0_usize;
                         for ax in 0..rank {
                             let start = *starts.get(ax).unwrap_or(&0);
                             in_flat += (out_coords[ax] + start) * in_strides[ax];
                         }
                         if in_flat < total {
-                            result_elements[in_flat] = Literal::from_f64(gval);
+                            result_elements[in_flat] = glit;
                         }
 
                         if rank > 0 {
@@ -1876,7 +1878,7 @@ pub fn vjp(
                     }
 
                     Ok(vec![Value::Tensor(
-                        TensorValue::new(DType::F64, t.shape.clone(), result_elements)
+                        TensorValue::new(g_dtype, t.shape.clone(), result_elements)
                             .map_err(|e| AdError::EvalFailed(e.to_string()))?,
                     )])
                 }
@@ -14164,6 +14166,69 @@ mod tests {
                     if f32::from_bits(*re) == 0.0 && f32::from_bits(*im) == 0.0
             ));
         }
+    }
+
+    #[test]
+    fn slice_vjp_preserves_complex64_dtype_and_does_not_zero_gradient() {
+        use fj_core::Primitive;
+        // Original tensor: length 4, sliced to length 2 starting at index 1.
+        // VJP embeds g into a zero tensor of original shape at start=1.
+        let original = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::Complex64,
+                fj_core::Shape { dims: vec![4] },
+                vec![
+                    fj_core::Literal::from_complex64(0.0, 0.0),
+                    fj_core::Literal::from_complex64(0.0, 0.0),
+                    fj_core::Literal::from_complex64(0.0, 0.0),
+                    fj_core::Literal::from_complex64(0.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::Complex64,
+                fj_core::Shape { dims: vec![2] },
+                vec![
+                    fj_core::Literal::from_complex64(5.0, -1.0),
+                    fj_core::Literal::from_complex64(6.0, -2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("start_indices".to_owned(), "1".to_owned());
+
+        let grads = super::vjp_single(
+            Primitive::Slice,
+            std::slice::from_ref(&original),
+            &g,
+            &params,
+        )
+        .expect("slice VJP should accept complex64");
+
+        let gt = grads[0].as_tensor().unwrap();
+        assert_eq!(gt.dtype, fj_core::DType::Complex64);
+        assert_eq!(gt.shape.dims, vec![4]);
+
+        // Positions 0 and 3 stay zero; positions 1 and 2 get g[0] and g[1].
+        let zero = (0.0_f32, 0.0_f32);
+        let actual: Vec<(f32, f32)> = gt
+            .elements
+            .iter()
+            .map(|l| match l {
+                fj_core::Literal::Complex64Bits(re, im) => {
+                    (f32::from_bits(*re), f32::from_bits(*im))
+                }
+                _ => zero,
+            })
+            .collect();
+        assert_eq!(
+            actual,
+            vec![zero, (5.0, -1.0), (6.0, -2.0), zero],
+            "Slice VJP must embed g at start=1, preserving Complex64 dtype"
+        );
     }
 
     #[test]
