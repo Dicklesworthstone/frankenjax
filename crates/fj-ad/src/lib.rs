@@ -1529,14 +1529,16 @@ pub fn vjp(
             Ok(vec![zeros_like(cond), g_true, g_false])
         }
         Primitive::ReduceSum => {
-            // VJP of reduce_sum: broadcast g back to input shape
+            // VJP of reduce_sum: broadcast g back to input shape.
+            // Preserve g's dtype so an F32/BF16/F16 cotangent doesn't get
+            // silently widened to F64.
             let input = &inputs[0];
             match input {
                 Value::Scalar(_) => Ok(vec![g.clone()]),
                 Value::Tensor(t) => {
-                    let g_scalar = match g.as_f64_scalar() {
-                        Some(v) => v,
-                        None => {
+                    let (g_lit, g_dtype) = match g {
+                        Value::Scalar(lit) => (*lit, dtype_for_literal(lit)),
+                        Value::Tensor(_) => {
                             let kept_axes = if let Some(axes_str) = params.get("axes") {
                                 let reduced_axes: Vec<usize> = axes_str
                                     .split(',')
@@ -1554,9 +1556,9 @@ pub fn vjp(
                             )?]);
                         }
                     };
-                    let elements = vec![Literal::from_f64(g_scalar); t.elements.len()];
+                    let elements = vec![g_lit; t.elements.len()];
                     Ok(vec![Value::Tensor(
-                        TensorValue::new(DType::F64, t.shape.clone(), elements)
+                        TensorValue::new(g_dtype, t.shape.clone(), elements)
                             .map_err(|e| AdError::EvalFailed(e.to_string()))?,
                     )])
                 }
@@ -4730,12 +4732,15 @@ fn broadcast_g_to_shape_with_axes(
     target_shape: &Shape,
     broadcast_dimensions: &[usize],
 ) -> Result<Value, AdError> {
-    let g_scalar = g.as_f64_scalar();
-    if let Some(v) = g_scalar {
+    // Scalar shortcut — replicate the literal across target_shape with
+    // its natural dtype. Previous implementation always materialized F64,
+    // silently widening F32/BF16/F16 gradients in the AD chain.
+    if let Value::Scalar(lit) = g {
         let count = target_shape.element_count().unwrap_or(1) as usize;
-        let elements = vec![Literal::from_f64(v); count];
+        let g_dtype = dtype_for_literal(lit);
+        let elements = vec![*lit; count];
         return Ok(Value::Tensor(
-            TensorValue::new(DType::F64, target_shape.clone(), elements)
+            TensorValue::new(g_dtype, target_shape.clone(), elements)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?,
         ));
     }
@@ -14437,6 +14442,65 @@ mod tests {
             Value::Scalar(fj_core::Literal::Complex64Bits(re, im))
                 if f32::from_bits(re) == 16.0 && f32::from_bits(im) == 17.0
         ));
+    }
+
+    #[test]
+    fn reduce_sum_vjp_preserves_f32_dtype_with_scalar_cotangent() {
+        use fj_core::Primitive;
+        // ReduceSum VJP broadcasts a scalar g back to the input shape.
+        // Previously the broadcast tensor was hard-coded F64; this test
+        // pins that an F32 input + F32 scalar cotangent yields an F32-
+        // typed gradient with every element matching g.
+        let x = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::F32,
+                fj_core::Shape { dims: vec![3] },
+                vec![
+                    fj_core::Literal::from_f32(1.0),
+                    fj_core::Literal::from_f32(2.0),
+                    fj_core::Literal::from_f32(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::Scalar(fj_core::Literal::from_f32(7.0));
+
+        let grads = super::vjp_single(
+            Primitive::ReduceSum,
+            std::slice::from_ref(&x),
+            &g,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("ReduceSum VJP should accept f32 scalar cotangent");
+
+        let gt = grads[0].as_tensor().unwrap();
+        assert_eq!(gt.dtype, fj_core::DType::F32);
+        assert_eq!(gt.shape.dims, vec![3]);
+        for elem in &gt.elements {
+            assert!(
+                matches!(elem, fj_core::Literal::F32Bits(bits) if f32::from_bits(*bits) == 7.0),
+                "every gradient element must be F32Bits(7.0); got {elem:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn broadcast_g_to_shape_preserves_dtype_for_scalar_cotangent() {
+        use fj_core::Shape;
+        // Direct guard on broadcast_g_to_shape_with_axes: F32 scalar g
+        // broadcasts to an F32 tensor (was previously always F64).
+        let g = Value::Scalar(fj_core::Literal::from_f32(3.5));
+        let target = Shape { dims: vec![2, 2] };
+        let result = super::broadcast_g_to_shape_with_axes(&g, &target, &[]).unwrap();
+        let t = result.as_tensor().unwrap();
+        assert_eq!(t.dtype, fj_core::DType::F32);
+        assert_eq!(t.shape.dims, vec![2, 2]);
+        for elem in &t.elements {
+            assert!(
+                matches!(elem, fj_core::Literal::F32Bits(bits) if f32::from_bits(*bits) == 3.5),
+                "every element must be F32Bits(3.5); got {elem:?}"
+            );
+        }
     }
 
     #[test]
