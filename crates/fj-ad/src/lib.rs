@@ -8184,6 +8184,8 @@ mod tests {
         let input_tensor = indices.as_tensor().expect("input is tensor");
         assert_eq!(grad.shape.dims, input_tensor.shape.dims);
         assert_eq!(grad.dtype, input_tensor.dtype);
+        grad.validate_dtype_consistency()
+            .expect("OneHot VJP cotangent dtype/element invariant");
     }
 
     #[test]
@@ -8197,6 +8199,8 @@ mod tests {
         let grad = grads[0].as_tensor().expect("grad must be a tensor, not scalar");
         let input_tensor = input.as_tensor().expect("input is tensor");
         assert_eq!(grad.shape.dims, input_tensor.shape.dims);
+        grad.validate_dtype_consistency()
+            .expect("Argsort VJP cotangent dtype/element invariant");
     }
 
     #[test]
