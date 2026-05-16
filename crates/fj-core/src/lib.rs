@@ -840,6 +840,26 @@ impl TensorValue {
         })
     }
 
+    /// Verify that every element's literal kind agrees with the declared
+    /// tensor dtype. Returns the first mismatch as
+    /// `ValueError::ElementDTypeMismatch`.
+    ///
+    /// This is an opt-in invariant check — `TensorValue::new` only validates
+    /// element-count, so callers (or tests) can call this to enforce the
+    /// stricter dtype/element invariant on demand.
+    pub fn validate_dtype_consistency(&self) -> Result<(), ValueError> {
+        for (index, literal) in self.elements.iter().enumerate() {
+            if !literal.matches_dtype(self.dtype) {
+                return Err(ValueError::ElementDTypeMismatch {
+                    index,
+                    declared: self.dtype,
+                    literal: *literal,
+                });
+            }
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub fn len(&self) -> usize {
         self.elements.len()
@@ -1018,6 +1038,13 @@ pub enum ValueError {
         expected: DType,
         actual: DType,
     },
+    /// `TensorValue::validate_dtype_consistency` found an element whose
+    /// literal kind disagrees with the declared tensor dtype.
+    ElementDTypeMismatch {
+        index: usize,
+        declared: DType,
+        literal: Literal,
+    },
 }
 
 impl std::fmt::Display for ValueError {
@@ -1065,6 +1092,16 @@ impl std::fmt::Display for ValueError {
                     f,
                     "stack dtype mismatch: expected {:?}, got {:?}",
                     expected, actual
+                )
+            }
+            Self::ElementDTypeMismatch {
+                index,
+                declared,
+                literal,
+            } => {
+                write!(
+                    f,
+                    "tensor element {index} literal {literal:?} disagrees with declared dtype {declared:?}"
                 )
             }
         }
@@ -3668,6 +3705,45 @@ mod tests {
         let empty_repeat = TensorValue::repeat_axis0(&Value::scalar_i64(0), 0)
             .expect_err("empty repeat should preserve stack's empty-axis error");
         assert!(matches!(empty_repeat, ValueError::EmptyAxisStack));
+    }
+
+    #[test]
+    fn validate_dtype_consistency_accepts_matching_tensor() {
+        let tensor = TensorValue::new(
+            DType::Complex64,
+            Shape::vector(2),
+            vec![
+                Literal::from_complex64(1.0, 0.0),
+                Literal::from_complex64(2.0, 0.0),
+            ],
+        )
+        .expect("complex64 tensor builds");
+        assert!(tensor.validate_dtype_consistency().is_ok());
+    }
+
+    #[test]
+    fn validate_dtype_consistency_rejects_mismatched_tensor() {
+        // Construct a tensor declaring DType::F32 but containing F64Bits.
+        // This is exactly the invariant-violation shape that bugs like
+        // eldm/2chb/1x85/e8g4 surfaced.
+        let tensor = TensorValue::new(
+            DType::F32,
+            Shape::vector(2),
+            vec![Literal::from_f64(1.0), Literal::from_f64(2.0)],
+        )
+        .expect("element count matches, count check passes");
+        match tensor.validate_dtype_consistency() {
+            Err(ValueError::ElementDTypeMismatch {
+                index,
+                declared,
+                literal,
+            }) => {
+                assert_eq!(index, 0);
+                assert_eq!(declared, DType::F32);
+                assert!(matches!(literal, Literal::F64Bits(_)));
+            }
+            other => panic!("expected ElementDTypeMismatch, got {other:?}"),
+        }
     }
 
     #[test]
