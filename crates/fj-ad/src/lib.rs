@@ -5985,7 +5985,7 @@ fn jvp_rule(
             // (1 - tanh(x)^2) * dx
             let th = ep(Primitive::Tanh, &[primals[0].clone()])?;
             let th_sq = ep(Primitive::Mul, &[th.clone(), th])?;
-            let one = Value::scalar_f64(1.0);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let coeff = ep(Primitive::Sub, &[one, th_sq])?;
             ep(Primitive::Mul, &[coeff, tangents[0].clone()])
         }
@@ -5993,7 +5993,7 @@ fn jvp_rule(
         Primitive::Asinh => {
             // d/dx asinh(x) = 1 / sqrt(x² + 1)
             let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
-            let one = Value::scalar_f64(1.0);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let sum = ep(Primitive::Add, &[x_sq, one])?;
             let denom = ep(Primitive::Sqrt, &[sum])?;
             let coeff = ep(Primitive::Reciprocal, &[denom])?;
@@ -6003,7 +6003,7 @@ fn jvp_rule(
         Primitive::Acosh => {
             // d/dx acosh(x) = 1 / sqrt(x² - 1)
             let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
-            let one = Value::scalar_f64(1.0);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let diff = ep(Primitive::Sub, &[x_sq, one])?;
             let denom = ep(Primitive::Sqrt, &[diff])?;
             let coeff = ep(Primitive::Reciprocal, &[denom])?;
@@ -6013,7 +6013,7 @@ fn jvp_rule(
         Primitive::Atanh => {
             // d/dx atanh(x) = 1 / (1 - x²)
             let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
-            let one = Value::scalar_f64(1.0);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let denom = ep(Primitive::Sub, &[one, x_sq])?;
             let coeff = ep(Primitive::Reciprocal, &[denom])?;
             ep(Primitive::Mul, &[coeff, tangents[0].clone()])
@@ -6027,7 +6027,7 @@ fn jvp_rule(
 
         Primitive::Log1p => {
             // dx / (1 + x)
-            let one = Value::scalar_f64(1.0);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let denom = ep(Primitive::Add, &[one, primals[0].clone()])?;
             ep(Primitive::Div, &[tangents[0].clone(), denom])
         }
