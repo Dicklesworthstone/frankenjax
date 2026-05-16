@@ -1104,9 +1104,9 @@ fn infer_dtype_from_repeated_literal(literal: Literal) -> DType {
         Literal::BF16Bits(_) => DType::BF16,
         Literal::F16Bits(_) => DType::F16,
         Literal::F32Bits(_) => DType::F32,
-        Literal::F64Bits(_) | Literal::Complex64Bits(..) | Literal::Complex128Bits(..) => {
-            DType::F64
-        }
+        Literal::F64Bits(_) => DType::F64,
+        Literal::Complex64Bits(..) => DType::Complex64,
+        Literal::Complex128Bits(..) => DType::Complex128,
     }
 }
 
@@ -3636,6 +3636,27 @@ mod tests {
         let empty_repeat = TensorValue::repeat_axis0(&Value::scalar_i64(0), 0)
             .expect_err("empty repeat should preserve stack's empty-axis error");
         assert!(matches!(empty_repeat, ValueError::EmptyAxisStack));
+    }
+
+    #[test]
+    fn repeat_axis0_preserves_complex_scalar_dtype() {
+        // Regression test for frankenjax-e8g4: infer_dtype_from_repeated_literal
+        // previously mapped Complex64Bits / Complex128Bits to DType::F64, so
+        // repeat_axis0 on a complex scalar produced a tensor declaring F64
+        // while containing Complex literals (invariant violation).
+        let c64 = Value::Scalar(Literal::from_complex64(1.0, 2.0));
+        let rep = TensorValue::repeat_axis0(&c64, 3).expect("complex64 repeat");
+        assert_eq!(rep.dtype, DType::Complex64);
+        for elem in &rep.elements {
+            assert!(matches!(elem, Literal::Complex64Bits(..)));
+        }
+
+        let c128 = Value::Scalar(Literal::from_complex128(1.0, 2.0));
+        let rep128 = TensorValue::repeat_axis0(&c128, 2).expect("complex128 repeat");
+        assert_eq!(rep128.dtype, DType::Complex128);
+        for elem in &rep128.elements {
+            assert!(matches!(elem, Literal::Complex128Bits(..)));
+        }
     }
 
     #[test]
