@@ -1397,20 +1397,22 @@ pub(crate) fn eval_unary_int_or_float(
                     Literal::U32(v) => Literal::U32(u32_op(v)),
                     Literal::U64(v) => Literal::U64(u64_op(v)),
                     Literal::BF16Bits(bits) => {
-                        Literal::from_f64(float_op(Literal::BF16Bits(bits).as_f64().ok_or(
+                        let val = Literal::BF16Bits(bits).as_f64().ok_or(
                             EvalError::TypeMismatch {
                                 primitive,
                                 detail: "expected numeric tensor elements, got bf16",
                             },
-                        )?))
+                        )?;
+                        Literal::from_bf16_f32(float_op(val) as f32)
                     }
                     Literal::F16Bits(bits) => {
-                        Literal::from_f64(float_op(Literal::F16Bits(bits).as_f64().ok_or(
+                        let val = Literal::F16Bits(bits).as_f64().ok_or(
                             EvalError::TypeMismatch {
                                 primitive,
                                 detail: "expected numeric tensor elements, got f16",
                             },
-                        )?))
+                        )?;
+                        Literal::from_f16_f32(float_op(val) as f32)
                     }
                     Literal::F32Bits(bits) => {
                         Literal::from_f32(float_op(f64::from(f32::from_bits(bits))) as f32)
