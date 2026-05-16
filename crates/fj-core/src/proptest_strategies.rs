@@ -196,6 +196,12 @@ pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
         // Integer intrinsics
         Just(Primitive::PopulationCount),
         Just(Primitive::CountLeadingZeros),
+        // Collective primitives (pmap-only)
+        Just(Primitive::Psum),
+        Just(Primitive::Pmean),
+        Just(Primitive::AllGather),
+        Just(Primitive::AllToAll),
+        Just(Primitive::AxisIndex),
     ]
 }
 
