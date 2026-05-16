@@ -1602,7 +1602,12 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
         }
     }
 
-    fn clamp_literal(lo: Literal, x: Literal, hi: Literal) -> Result<Literal, &'static str> {
+    fn clamp_literal(
+        lo: Literal,
+        x: Literal,
+        hi: Literal,
+        target_dtype: Option<DType>,
+    ) -> Result<Literal, &'static str> {
         match (lo, x, hi) {
             (Literal::I64(lov), Literal::I64(xv), Literal::I64(hiv)) => {
                 Ok(Literal::I64(lov.max(xv).min(hiv)))
@@ -1660,14 +1665,18 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                         return Err("clamp is not supported for complex dtypes");
                     }
                 };
-                Ok(Literal::from_f64(clamp_f64(lof, xf, hif)))
+                let clamped = clamp_f64(lof, xf, hif);
+                match target_dtype {
+                    Some(dt) => Ok(real_literal_from_f64(dt, clamped)),
+                    None => Ok(Literal::from_f64(clamped)),
+                }
             }
         }
     }
 
     match (&inputs[0], &inputs[1], &inputs[2]) {
         (Value::Scalar(lo), Value::Scalar(x), Value::Scalar(hi)) => {
-            let result = clamp_literal(*lo, *x, *hi)
+            let result = clamp_literal(*lo, *x, *hi, None)
                 .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?;
             Ok(Value::Scalar(result))
         }
@@ -1675,7 +1684,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             let mut elements = Vec::with_capacity(x.elements.len());
             for elem in x.elements.iter().copied() {
                 elements.push(
-                    clamp_literal(*lo, elem, *hi)
+                    clamp_literal(*lo, elem, *hi, Some(x.dtype))
                         .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
                 );
             }
@@ -1701,7 +1710,7 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 .zip(hi.elements.iter().copied())
             {
                 elements.push(
-                    clamp_literal(lov, xv, hiv)
+                    clamp_literal(lov, xv, hiv, Some(lo.dtype))
                         .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
                 );
             }
