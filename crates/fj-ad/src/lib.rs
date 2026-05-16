@@ -8137,6 +8137,42 @@ mod tests {
     }
 
     #[test]
+    fn test_one_hot_vjp_returns_zeros_like_input() {
+        // Regression test for frankenjax-k7no: VJP for OneHot used to return
+        // vec![Value::scalar_f64(0.0)], dropping the index-tensor shape.
+        let indices = Value::vector_i64(&[0, 2, 1]).expect("vector");
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3, 3] },
+                vec![Literal::from_f64(1.0); 9],
+            )
+            .expect("g tensor"),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("num_classes".into(), "3".into());
+
+        let grads = vjp_single(Primitive::OneHot, &[indices.clone()], &g, &params).expect("vjp");
+        let grad = grads[0].as_tensor().expect("grad must be a tensor, not scalar");
+        let input_tensor = indices.as_tensor().expect("input is tensor");
+        assert_eq!(grad.shape.dims, input_tensor.shape.dims);
+        assert_eq!(grad.dtype, input_tensor.dtype);
+    }
+
+    #[test]
+    fn test_argsort_vjp_returns_zeros_like_input() {
+        // Regression test for frankenjax-k7no (Argsort half).
+        let input = Value::vector_f64(&[3.0, 1.0, 2.0]).expect("vector");
+        let g = Value::vector_i64(&[1, 0, 2]).expect("vector");
+        let params = BTreeMap::new();
+
+        let grads = vjp_single(Primitive::Argsort, &[input.clone()], &g, &params).expect("vjp");
+        let grad = grads[0].as_tensor().expect("grad must be a tensor, not scalar");
+        let input_tensor = input.as_tensor().expect("input is tensor");
+        assert_eq!(grad.shape.dims, input_tensor.shape.dims);
+    }
+
+    #[test]
     fn test_integer_pow_vjp_f32_preserves_dtype() {
         // Regression test for frankenjax-lybh: the VJP for IntegerPow used
         // Value::scalar_f64(f64::from(n)) for the exponent constant,
