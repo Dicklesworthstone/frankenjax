@@ -100,13 +100,8 @@ fn oracle_conv_1d_f32_preserves_literal_dtype() {
     if let Value::Tensor(t) = &result {
         assert_eq!(t.dtype, DType::F32);
         assert_eq!(extract_shape(&result), vec![1, 2, 1]);
-        assert!(
-            t.elements
-                .iter()
-                .all(|literal| matches!(literal, Literal::F32Bits(_))),
-            "conv F32 output should store F32 literals: {:?}",
-            t.elements
-        );
+        t.validate_dtype_consistency()
+            .expect("conv F32 output dtype/element invariant");
     } else {
         assert!(matches!(result, Value::Tensor(_)), "expected tensor");
     }
