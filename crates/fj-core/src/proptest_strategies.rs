@@ -204,6 +204,7 @@ pub fn arb_transform() -> impl Strategy<Value = Transform> {
         Just(Transform::Jit),
         Just(Transform::Grad),
         Just(Transform::Vmap),
+        Just(Transform::Pmap),
     ]
 }
 
