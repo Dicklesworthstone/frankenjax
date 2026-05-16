@@ -8137,6 +8137,24 @@ mod tests {
     }
 
     #[test]
+    fn test_integer_pow_vjp_f32_preserves_dtype() {
+        // Regression test for frankenjax-lybh: the VJP for IntegerPow used
+        // Value::scalar_f64(f64::from(n)) for the exponent constant,
+        // widening F32 cotangents to F64. The fix anchors on the cotangent
+        // via scalar_constant_matching_dtype.
+        let input = Value::scalar_f32(3.0);
+        let g = Value::scalar_f32(1.0);
+        let mut params = BTreeMap::new();
+        params.insert("exponent".into(), "4".into());
+
+        let grads = vjp_single(Primitive::IntegerPow, &[input], &g, &params).expect("vjp");
+        match &grads[0] {
+            Value::Scalar(Literal::F32Bits(_)) => {}
+            other => panic!("expected F32Bits scalar gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn test_shift_right_arithmetic_no_grad() {
         let grads = vjp_single(
             Primitive::ShiftRightArithmetic,
