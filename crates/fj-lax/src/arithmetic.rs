@@ -1338,7 +1338,8 @@ pub(crate) fn eval_unary_int_or_float(
                         primitive,
                         detail: "expected numeric scalar, got bf16",
                     })?;
-                Ok(Value::scalar_f64(float_op(val)))
+                // Preserve BF16 dtype — F32/F64 arms already preserve.
+                Ok(Value::Scalar(Literal::from_bf16_f32(float_op(val) as f32)))
             }
             Literal::F16Bits(bits) => {
                 let val = Literal::F16Bits(bits)
@@ -1347,7 +1348,8 @@ pub(crate) fn eval_unary_int_or_float(
                         primitive,
                         detail: "expected numeric scalar, got f16",
                     })?;
-                Ok(Value::scalar_f64(float_op(val)))
+                // Preserve F16 dtype — F32/F64 arms already preserve.
+                Ok(Value::Scalar(Literal::from_f16_f32(float_op(val) as f32)))
             }
             Literal::F32Bits(bits) => Ok(Value::scalar_f32(
                 float_op(f64::from(f32::from_bits(bits))) as f32,
