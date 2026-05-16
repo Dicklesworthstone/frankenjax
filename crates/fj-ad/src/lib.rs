@@ -5838,10 +5838,15 @@ fn jvp_inner(
         .outvars
         .iter()
         .map(|var| {
-            tangent_env
-                .get(var)
-                .cloned()
-                .unwrap_or(Value::scalar_f64(0.0))
+            // Fall back to a shape/dtype-matching zero anchored on the
+            // primal so a missing tangent doesn't collapse a tensor output
+            // to a stray scalar.
+            tangent_env.get(var).cloned().unwrap_or_else(|| {
+                primal_env
+                    .get(var)
+                    .map(zeros_like)
+                    .unwrap_or_else(|| Value::scalar_f64(0.0))
+            })
         })
         .collect();
 
