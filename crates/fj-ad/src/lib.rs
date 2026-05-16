@@ -6362,7 +6362,7 @@ fn jvp_rule(
         Primitive::Cbrt => {
             let cbrt_x = ep(Primitive::Cbrt, &[primals[0].clone()])?;
             let cbrt_sq = ep(Primitive::Mul, &[cbrt_x.clone(), cbrt_x])?;
-            let three = Value::scalar_f64(3.0);
+            let three = scalar_constant_matching_dtype(3.0, &tangents[0]);
             let denom = ep(Primitive::Mul, &[three, cbrt_sq])?;
             let recip = ep(Primitive::Reciprocal, &[denom])?;
             ep(Primitive::Mul, &[tangents[0].clone(), recip])
@@ -6373,7 +6373,7 @@ fn jvp_rule(
                 .get("exponent")
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(1);
-            let n_val = Value::scalar_f64(f64::from(n));
+            let n_val = scalar_constant_matching_dtype(f64::from(n), &tangents[0]);
             let mut nm1_params = params.clone();
             nm1_params.insert("exponent".into(), (n - 1).to_string());
             let x_nm1 = ep_p(Primitive::IntegerPow, &[primals[0].clone()], &nm1_params)?;
