@@ -2277,8 +2277,10 @@ pub fn vjp(
         }
         Primitive::OneHot => {
             // OneHot is not differentiable w.r.t. its indices (discrete).
-            // Return zero gradient for the single input.
-            Ok(vec![Value::scalar_f64(0.0)])
+            // Return a shape/dtype-matching zero so downstream autodiff
+            // composition doesn't see a stray scalar where the index
+            // tensor was.
+            Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::Copy => Ok(vec![g.clone()]),
         Primitive::BitcastConvertType => Ok(vec![zeros_like(&inputs[0])]),
@@ -2751,7 +2753,8 @@ pub fn vjp(
         }
         Primitive::Argsort => {
             // Argsort is not differentiable (returns integer indices).
-            Ok(vec![Value::scalar_f64(0.0)])
+            // Use zeros_like so the cotangent shape matches the input.
+            Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::Conv => {
             // Conv 1D VJP for layout lhs=[N, W, C_in], rhs=[K, C_in, C_out], out=[N, W_out, C_out]
