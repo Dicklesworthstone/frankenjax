@@ -2276,24 +2276,29 @@ pub(crate) fn eval_integer_pow(
 
     match &inputs[0] {
         Value::Scalar(literal) => {
+            let in_dtype = literal_dtype(*literal);
             let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
                 primitive,
                 detail: "expected numeric scalar",
             })?;
-            Ok(Value::scalar_f64(value.powi(exponent)))
+            Ok(Value::Scalar(real_literal_from_f64(
+                in_dtype,
+                value.powi(exponent),
+            )))
         }
         Value::Tensor(tensor) => {
+            let out_dtype = tensor.dtype;
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
                 let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
                     primitive,
                     detail: "expected numeric tensor elements",
                 })?;
-                elements.push(Literal::from_f64(value.powi(exponent)));
+                elements.push(real_literal_from_f64(out_dtype, value.powi(exponent)));
             }
 
             Ok(Value::Tensor(TensorValue::new(
-                DType::F64,
+                out_dtype,
                 tensor.shape.clone(),
                 elements,
             )?))
