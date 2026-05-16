@@ -1272,6 +1272,7 @@ pub(crate) fn eval_unary_elementwise(
                 let out = match out_dtype {
                     DType::BF16 => Literal::from_bf16_f32(mapped as f32),
                     DType::F16 => Literal::from_f16_f32(mapped as f32),
+                    DType::F32 => Literal::from_f32(mapped as f32),
                     _ => Literal::from_f64(mapped),
                 };
                 elements.push(out);
