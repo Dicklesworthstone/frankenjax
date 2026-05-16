@@ -6074,7 +6074,10 @@ fn jvp_rule(
 
         Primitive::Erfc => {
             // (-2/sqrt(pi)) * exp(-x^2) * dx
-            let coeff = Value::scalar_f64(-2.0 / std::f64::consts::PI.sqrt());
+            let coeff = scalar_constant_matching_dtype(
+                -2.0 / std::f64::consts::PI.sqrt(),
+                &tangents[0],
+            );
             let neg_x_sq = {
                 let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
                 ep(Primitive::Neg, &[x_sq])?
@@ -6098,7 +6101,10 @@ fn jvp_rule(
             let erf_inv_x = ep(Primitive::ErfInv, &[primals[0].clone()])?;
             let erf_inv_sq = ep(Primitive::Mul, &[erf_inv_x.clone(), erf_inv_x])?;
             let exp_term = ep(Primitive::Exp, &[erf_inv_sq])?;
-            let coeff = Value::scalar_f64(std::f64::consts::PI.sqrt() / 2.0);
+            let coeff = scalar_constant_matching_dtype(
+                std::f64::consts::PI.sqrt() / 2.0,
+                &tangents[0],
+            );
             let factor = ep(Primitive::Mul, &[coeff, exp_term])?;
             ep(Primitive::Mul, &[factor, tangents[0].clone()])
         }
@@ -6123,7 +6129,7 @@ fn jvp_rule(
 
         Primitive::Pow => {
             // b * a^(b-1) * da + a^b * ln(a) * db
-            let one = Value::scalar_f64(1.0);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let b_m1 = ep(Primitive::Sub, &[primals[1].clone(), one])?;
             let a_pow_bm1 = ep(Primitive::Pow, &[primals[0].clone(), b_m1])?;
             let da_part = ep(Primitive::Mul, &[primals[1].clone(), a_pow_bm1])?;
