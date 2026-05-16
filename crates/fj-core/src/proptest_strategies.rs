@@ -48,7 +48,12 @@ pub fn arb_value() -> impl Strategy<Value = Value> {
 }
 
 pub fn arb_shape() -> impl Strategy<Value = Shape> {
-    prop_oneof![Just(Shape::scalar()), (1..=16u32).prop_map(Shape::vector),]
+    prop_oneof![
+        Just(Shape::scalar()),
+        (1..=16u32).prop_map(Shape::vector),
+        (1..=8u32, 1..=8u32).prop_map(|(r, c)| Shape { dims: vec![r, c] }),
+        (1..=4u32, 1..=4u32, 1..=4u32).prop_map(|(a, b, c)| Shape { dims: vec![a, b, c] }),
+    ]
 }
 
 pub fn arb_primitive() -> impl Strategy<Value = Primitive> {
