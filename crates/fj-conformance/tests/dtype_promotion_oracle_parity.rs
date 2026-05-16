@@ -115,10 +115,6 @@ fn first_literal(val: &Value) -> Option<Literal> {
     }
 }
 
-fn literal_matches_dtype(literal: Literal, dtype: DType) -> bool {
-    literal.matches_dtype(dtype)
-}
-
 fn dtype_value_tolerance(dtype: DType) -> f64 {
     match dtype {
         DType::BF16 => 0.02,
@@ -134,7 +130,7 @@ fn oracle_value_mismatch(case: &DtypeCase, result: &Value, result_dtype: DType) 
     let expected = case.result_value.as_ref()?;
     let literal = first_literal(result)?;
 
-    if !literal_matches_dtype(literal, result_dtype) {
+    if !literal.matches_dtype(result_dtype) {
         return Some(format!(
             "{}: result dtype {result_dtype:?} carried incompatible literal {literal:?}",
             case.case_id
