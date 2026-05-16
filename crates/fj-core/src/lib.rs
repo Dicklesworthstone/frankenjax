@@ -3756,11 +3756,17 @@ mod tests {
         let c2 = Value::Scalar(Literal::from_complex64(2.0, 0.0));
         let stacked = TensorValue::stack_axis0(&[c1, c2]).expect("complex64 stack");
         assert_eq!(stacked.dtype, DType::Complex64);
+        stacked
+            .validate_dtype_consistency()
+            .expect("complex64 stack dtype invariant");
 
         let d1 = Value::Scalar(Literal::from_complex128(1.0, 0.0));
         let d2 = Value::Scalar(Literal::from_complex128(2.0, 0.0));
         let stacked128 = TensorValue::stack_axis0(&[d1, d2]).expect("complex128 stack");
         assert_eq!(stacked128.dtype, DType::Complex128);
+        stacked128
+            .validate_dtype_consistency()
+            .expect("complex128 stack dtype invariant");
     }
 
     #[test]
@@ -3772,16 +3778,15 @@ mod tests {
         let c64 = Value::Scalar(Literal::from_complex64(1.0, 2.0));
         let rep = TensorValue::repeat_axis0(&c64, 3).expect("complex64 repeat");
         assert_eq!(rep.dtype, DType::Complex64);
-        for elem in &rep.elements {
-            assert!(matches!(elem, Literal::Complex64Bits(..)));
-        }
+        rep.validate_dtype_consistency()
+            .expect("complex64 repeat dtype invariant");
 
         let c128 = Value::Scalar(Literal::from_complex128(1.0, 2.0));
         let rep128 = TensorValue::repeat_axis0(&c128, 2).expect("complex128 repeat");
         assert_eq!(rep128.dtype, DType::Complex128);
-        for elem in &rep128.elements {
-            assert!(matches!(elem, Literal::Complex128Bits(..)));
-        }
+        rep128
+            .validate_dtype_consistency()
+            .expect("complex128 repeat dtype invariant");
     }
 
     #[test]
