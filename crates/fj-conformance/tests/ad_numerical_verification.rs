@@ -417,12 +417,12 @@ fn mul_vjp_numerical_complex64() {
 /// F64 scalar Erf VJP value sanity (frankenjax-elpz).
 ///
 /// fj-ad's Erf VJP constants now route through `scalar_constant_matching_dtype`
-/// instead of unconditionally F64 `scalar_value()`. This is a defensive
-/// dtype-preservation pass — fj-lax's scalar `eval_unary_elementwise`
-/// path still widens non-complex scalar elements to F64 internally
-/// (latent issue outside this bead's scope), so end-to-end F32 dtype
-/// preservation isn't yet observable. Pin the f64 value correctness
-/// here as a smoke test for the constant rewrite.
+/// instead of unconditionally F64 `scalar_value()`. The end-to-end F32
+/// dtype-preservation path is now also clean — fj-lax's
+/// `eval_unary_elementwise` scalar/tensor arms were fixed in
+/// frankenjax-e2l3 (scalar) and frankenjax-eldm (tensor) so non-complex
+/// F32/BF16/F16 inputs no longer widen to F64 internally. This test pins
+/// the F64 value correctness as a smoke check for the constant rewrite.
 #[test]
 fn erf_vjp_numerical_f64_value_sanity() {
     let x = Value::Scalar(Literal::from_f64(0.5));
