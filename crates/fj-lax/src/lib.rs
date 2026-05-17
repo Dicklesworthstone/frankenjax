@@ -5842,13 +5842,8 @@ mod tests {
         if let Value::Tensor(t) = &out {
             assert_eq!(t.dtype, DType::F32);
             assert_eq!(t.shape.dims, vec![1, 2, 1]);
-            assert!(
-                t.elements
-                    .iter()
-                    .all(|literal| matches!(literal, Literal::F32Bits(_))),
-                "conv F32 output should store F32 literals: {:?}",
-                t.elements
-            );
+            t.validate_dtype_consistency()
+                .expect("conv F32 output dtype/element invariant");
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
@@ -7585,13 +7580,8 @@ mod tests {
         if let Value::Tensor(t) = &out {
             assert_eq!(t.dtype, DType::F32);
             assert_eq!(t.shape.dims, vec![3]);
-            assert!(
-                t.elements
-                    .iter()
-                    .all(|literal| matches!(literal, Literal::F32Bits(_))),
-                "reduce_window F32 output should store F32 literals: {:?}",
-                t.elements
-            );
+            t.validate_dtype_consistency()
+                .expect("reduce_window F32 output dtype/element invariant");
             let vals: Vec<f64> = t.elements.iter().map(|l| l.as_f64().unwrap()).collect();
             assert_eq!(vals, vec![3.0, 5.0, 7.0]);
         } else {
