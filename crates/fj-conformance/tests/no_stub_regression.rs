@@ -25,10 +25,15 @@ const BANNED_SUBSTRINGS: &[&str] = &[
 ];
 
 const REPRESENTATIVE_DTYPES: &[DType] = &[
+    DType::I32,
     DType::I64,
     DType::U32,
     DType::U64,
+    DType::BF16,
+    DType::F16,
+    DType::F32,
     DType::F64,
+    DType::Complex64,
     DType::Complex128,
     DType::Bool,
 ];
@@ -426,18 +431,31 @@ fn dtype_name(dtype: DType) -> &'static str {
 fn representative_input(dtype: DType, slot: usize, primitive: Primitive) -> Value {
     if primitive == Primitive::While {
         return match (dtype, slot) {
-            (DType::I64, 0) => Value::scalar_i64(3),
-            (DType::I64, 1) => Value::scalar_i64(1),
-            (DType::I64, 2) => Value::scalar_i64(0),
+            // I32 has no distinct Literal variant — it shares Literal::I64.
+            (DType::I32 | DType::I64, 0) => Value::scalar_i64(3),
+            (DType::I32 | DType::I64, 1) => Value::scalar_i64(1),
+            (DType::I32 | DType::I64, 2) => Value::scalar_i64(0),
             (DType::U32, 0) => Value::scalar_u32(3),
             (DType::U32, 1) => Value::scalar_u32(1),
             (DType::U32, 2) => Value::scalar_u32(0),
             (DType::U64, 0) => Value::scalar_u64(3),
             (DType::U64, 1) => Value::scalar_u64(1),
             (DType::U64, 2) => Value::scalar_u64(0),
+            (DType::BF16, 0) => Value::scalar_bf16(3.0),
+            (DType::BF16, 1) => Value::scalar_bf16(1.0),
+            (DType::BF16, 2) => Value::scalar_bf16(0.0),
+            (DType::F16, 0) => Value::scalar_f16(3.0),
+            (DType::F16, 1) => Value::scalar_f16(1.0),
+            (DType::F16, 2) => Value::scalar_f16(0.0),
+            (DType::F32, 0) => Value::scalar_f32(3.0),
+            (DType::F32, 1) => Value::scalar_f32(1.0),
+            (DType::F32, 2) => Value::scalar_f32(0.0),
             (DType::F64, 0) => Value::scalar_f64(3.0),
             (DType::F64, 1) => Value::scalar_f64(1.0),
             (DType::F64, 2) => Value::scalar_f64(0.0),
+            (DType::Complex64, 0) => Value::scalar_complex64(3.0, 0.0),
+            (DType::Complex64, 1) => Value::scalar_complex64(1.0, 0.0),
+            (DType::Complex64, 2) => Value::scalar_complex64(0.0, 0.0),
             (DType::Complex128, 0) => Value::scalar_complex128(3.0, 0.0),
             (DType::Complex128, 1) => Value::scalar_complex128(1.0, 0.0),
             (DType::Complex128, 2) => Value::scalar_complex128(0.0, 0.0),
@@ -449,13 +467,16 @@ fn representative_input(dtype: DType, slot: usize, primitive: Primitive) -> Valu
     }
 
     match dtype {
-        DType::I64 => Value::scalar_i64(2 + slot as i64),
+        DType::I32 | DType::I64 => Value::scalar_i64(2 + slot as i64),
         DType::U32 => Value::scalar_u32(2 + slot as u32),
         DType::U64 => Value::scalar_u64(2 + slot as u64),
+        DType::BF16 => Value::scalar_bf16(1.5 + slot as f32),
+        DType::F16 => Value::scalar_f16(1.5 + slot as f32),
+        DType::F32 => Value::scalar_f32(1.5 + slot as f32),
         DType::F64 => Value::scalar_f64(1.5 + slot as f64),
+        DType::Complex64 => Value::scalar_complex64(1.0 + slot as f32, 0.25 + slot as f32),
         DType::Complex128 => Value::scalar_complex128(1.0 + slot as f64, 0.25 + slot as f64),
         DType::Bool => Value::scalar_bool(slot.is_multiple_of(2)),
-        _ => unreachable!(),
     }
 }
 
