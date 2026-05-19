@@ -578,3 +578,52 @@ fn metamorphic_dot_with_zero_vector() {
         );
     }
 }
+
+// ======================== DType preservation (frankenjax-* fix wave) ========================
+
+fn make_f32_tensor(shape: &[u32], data: Vec<f32>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::from_f32).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+/// `eval_tensor_dot` previously emitted DType::F64 + Literal::from_f64
+/// regardless of input dtype, silently widening F32×F32 to F64. Pin the
+/// JAX-faithful behaviour: F32×F32 stays F32.
+#[test]
+fn oracle_dot_f32_vector_preserves_dtype() {
+    let a = make_f32_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let b = make_f32_tensor(&[3], vec![4.0, 5.0, 6.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    match result {
+        Value::Scalar(Literal::F32Bits(bits)) => {
+            let value = f32::from_bits(bits);
+            assert!(
+                (value - 32.0).abs() < 1e-5,
+                "expected 32.0 (1*4 + 2*5 + 3*6), got {value}"
+            );
+        }
+        other => panic!("expected F32Bits scalar from F32 dot, got {other:?}"),
+    }
+}
+
+#[test]
+fn oracle_dot_f32_matvec_preserves_dtype() {
+    let a = make_f32_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let b = make_f32_tensor(&[3], vec![1.0, 0.0, 2.0]);
+    let result = eval_primitive(Primitive::Dot, &[a, b], &no_params()).unwrap();
+    let Value::Tensor(t) = result else {
+        panic!("expected tensor");
+    };
+    assert_eq!(t.dtype, DType::F32);
+    assert_eq!(t.shape.dims, vec![2]);
+    t.validate_dtype_consistency()
+        .expect("F32 dot output dtype/element invariant");
+}
