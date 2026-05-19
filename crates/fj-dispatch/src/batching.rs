@@ -766,15 +766,27 @@ fn batch_dot(
 #[derive(Clone, Copy)]
 enum BatchDotOutputKind {
     Integral,
-    Real,
+    /// Real dot product; payload is the JAX-promoted real dtype to emit
+    /// (BF16, F16, F32, or F64) so F32 inputs don't silently produce F64
+    /// outputs (parity with `lax.dot_general` real-input promotion).
+    Real(DType),
 }
 
 impl BatchDotOutputKind {
     fn dtype(self) -> DType {
         match self {
             Self::Integral => DType::I64,
-            Self::Real => DType::F64,
+            Self::Real(dt) => dt,
         }
+    }
+}
+
+fn real_literal_from_f64_dtype(dtype: DType, value: f64) -> Literal {
+    match dtype {
+        DType::BF16 => Literal::from_bf16_f32(value as f32),
+        DType::F16 => Literal::from_f16_f32(value as f32),
+        DType::F32 => Literal::from_f32(value as f32),
+        _ => Literal::from_f64(value),
     }
 }
 
@@ -905,7 +917,14 @@ fn batch_dot_output_kind(lhs: &TensorValue, rhs: &TensorValue) -> Option<BatchDo
     {
         Some(BatchDotOutputKind::Integral)
     } else {
-        Some(BatchDotOutputKind::Real)
+        // Match JAX promotion semantics so an F32 batched dot stays F32,
+        // BF16/F16 stay narrow, mixed half + F32 promotes to F32, etc.
+        let promoted = promote_dtype_public(lhs.dtype, rhs.dtype);
+        let real_dtype = match promoted {
+            DType::BF16 | DType::F16 | DType::F32 | DType::F64 => promoted,
+            _ => DType::F64,
+        };
+        Some(BatchDotOutputKind::Real(real_dtype))
     }
 }
 
@@ -929,7 +948,7 @@ fn batch_dot_accumulate(
             }
             Ok(Literal::I64(sum))
         }
-        BatchDotOutputKind::Real => {
+        BatchDotOutputKind::Real(dtype) => {
             let mut sum = 0.0_f64;
             for index in 0..len {
                 let (left, right) = pair_at(index);
@@ -941,7 +960,7 @@ fn batch_dot_accumulate(
                 })?;
                 sum += left * right;
             }
-            Ok(Literal::from_f64(sum))
+            Ok(real_literal_from_f64_dtype(dtype, sum))
         }
     }
 }
@@ -5608,6 +5627,25 @@ mod tests {
         assert_eq!(result.value.as_tensor().unwrap().dtype, DType::I64);
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2]);
         assert_eq!(extract_i64_vec(&result.value), vec![50, 16]);
+    }
+
+    #[test]
+    fn test_batch_trace_dot_paired_batched_f32_vectors_preserves_dtype() {
+        // Batched F32×F32 dot product must stay F32 (parity with JAX
+        // `lax.dot_general` real-input promotion). The pre-fix code emitted
+        // F64-declared tensors with F64Bits elements; that's a dtype/element
+        // invariant violation in the same family as frankenjax-2chb/eldm/e8g4.
+        let lhs = BatchTracer::batched(make_f32_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let rhs = BatchTracer::batched(make_f32_matrix(2, 3, &[7.0, 8.0, 9.0, 1.0, 0.0, 2.0]), 0);
+
+        let result = apply_batch_rule(Primitive::Dot, &[lhs, rhs], &BTreeMap::new()).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        let out = result.value.as_tensor().unwrap();
+        assert_eq!(out.dtype, DType::F32);
+        out.validate_dtype_consistency()
+            .expect("F32 batched dot output dtype/element invariant");
+        assert_eq!(out.shape.dims, vec![2]);
     }
 
     #[test]
