@@ -271,3 +271,24 @@ fn oracle_concat_2d_single_col() {
     assert_eq!(extract_shape(&result), vec![5, 1]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3, 4, 5]);
 }
+
+// JAX `lax.concatenate` rejects mixed-dtype operands (no implicit
+// promotion). Before the guard, fj-lax silently built an output tensor
+// whose declared dtype was `operands[0].dtype` but whose elements were
+// a mix of literal kinds, which violated the dtype/element invariant.
+#[test]
+fn oracle_concat_rejects_dtype_mismatch() {
+    let i64_input = make_i64_tensor(&[2], vec![1, 2]);
+    let f64_input = make_f64_tensor(&[2], vec![3.0, 4.0]);
+    let err = eval_primitive(
+        Primitive::Concatenate,
+        &[i64_input, f64_input],
+        &concat_params(0),
+    )
+    .expect_err("mixed dtype concatenate should error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("dtype") && msg.contains("does not match"),
+        "expected dtype mismatch error, got: {msg}"
+    );
+}

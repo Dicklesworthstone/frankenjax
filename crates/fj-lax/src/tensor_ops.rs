@@ -884,6 +884,23 @@ pub(crate) fn eval_concatenate(
         });
     }
 
+    // JAX `lax.concatenate` requires uniform dtype across all operands;
+    // it does not promote. Reject mismatches up front so we never end up
+    // building an output tensor whose declared dtype disagrees with its
+    // element literals.
+    let expected_dtype = tensors[0].dtype;
+    for (i, t) in tensors.iter().enumerate().skip(1) {
+        if t.dtype != expected_dtype {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!(
+                    "concatenate operand {i} dtype {:?} does not match operand 0 dtype {:?}",
+                    t.dtype, expected_dtype
+                ),
+            });
+        }
+    }
+
     // Validate: all tensors must have the same rank and matching dims on non-concat axes.
     for (i, t) in tensors.iter().enumerate().skip(1) {
         if t.shape.rank() != rank {
@@ -3329,25 +3346,33 @@ fn eval_conv_1d(
         })?;
     let mut elements = Vec::with_capacity(total);
 
-    let width_c_in = width.checked_mul(c_in).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv lhs stride overflow".into(),
-    })?;
-    let c_in_c_out = c_in.checked_mul(c_out).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv rhs stride overflow".into(),
-    })?;
+    let width_c_in = width
+        .checked_mul(c_in)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv lhs stride overflow".into(),
+        })?;
+    let c_in_c_out = c_in
+        .checked_mul(c_out)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv rhs stride overflow".into(),
+        })?;
     // Pre-check that kernel_w * c_in_c_out won't overflow (used in inner loop: k * c_in_c_out)
-    kernel_w.checked_mul(c_in_c_out).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv rhs kernel stride overflow".into(),
-    })?;
+    kernel_w
+        .checked_mul(c_in_c_out)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv rhs kernel stride overflow".into(),
+        })?;
 
     for n in 0..batch {
-        let n_offset = n.checked_mul(width_c_in).ok_or_else(|| EvalError::Unsupported {
-            primitive,
-            detail: "conv batch index overflow".into(),
-        })?;
+        let n_offset = n
+            .checked_mul(width_c_in)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "conv batch index overflow".into(),
+            })?;
         for w in 0..out_w {
             for co in 0..c_out {
                 let mut acc = 0.0_f64;
@@ -3429,28 +3454,39 @@ fn eval_conv_2d(
         })?;
     let mut elements = Vec::with_capacity(total);
 
-    let width_c_in = width.checked_mul(c_in).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv lhs width*c_in overflow".into(),
-    })?;
-    let height_width_c_in = height.checked_mul(width_c_in).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv lhs stride overflow".into(),
-    })?;
-    let c_in_c_out = c_in.checked_mul(c_out).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv rhs c_in*c_out overflow".into(),
-    })?;
-    let kw_c_in_c_out = kernel_w.checked_mul(c_in_c_out).ok_or_else(|| EvalError::Unsupported {
-        primitive,
-        detail: "conv rhs stride overflow".into(),
-    })?;
+    let width_c_in = width
+        .checked_mul(c_in)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv lhs width*c_in overflow".into(),
+        })?;
+    let height_width_c_in =
+        height
+            .checked_mul(width_c_in)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "conv lhs stride overflow".into(),
+            })?;
+    let c_in_c_out = c_in
+        .checked_mul(c_out)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv rhs c_in*c_out overflow".into(),
+        })?;
+    let kw_c_in_c_out = kernel_w
+        .checked_mul(c_in_c_out)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "conv rhs stride overflow".into(),
+        })?;
 
     for n in 0..batch {
-        let n_offset = n.checked_mul(height_width_c_in).ok_or_else(|| EvalError::Unsupported {
-            primitive,
-            detail: "conv batch index overflow".into(),
-        })?;
+        let n_offset = n
+            .checked_mul(height_width_c_in)
+            .ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "conv batch index overflow".into(),
+            })?;
         for oh in 0..out_h {
             for ow in 0..out_w {
                 for co in 0..c_out {
@@ -3468,7 +3504,8 @@ fn eval_conv_2d(
                             }
                             for ci in 0..c_in {
                                 let lhs_idx = n_offset + h_offset + (in_w as usize) * c_in + ci;
-                                let rhs_idx = kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
+                                let rhs_idx =
+                                    kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
                                 let lhs_val = lhs.elements[lhs_idx].as_f64().unwrap_or(0.0);
                                 let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
                                 acc += lhs_val * rhs_val;
@@ -3862,11 +3899,12 @@ pub(crate) fn eval_split(
                             detail: "split axis span overflows usize".to_owned(),
                         })?;
 
-                let total_elements = outer_size
-                    .checked_mul(elements_per_slice)
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: "split total element count overflows usize".to_owned(),
+                let total_elements =
+                    outer_size.checked_mul(elements_per_slice).ok_or_else(|| {
+                        EvalError::Unsupported {
+                            primitive,
+                            detail: "split total element count overflows usize".to_owned(),
+                        }
                     })?;
                 let mut result = Vec::with_capacity(total_elements);
                 for outer in 0..outer_size {
