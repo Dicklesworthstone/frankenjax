@@ -2782,7 +2782,35 @@ pub(crate) fn eval_one_hot(
     let total = indices.len() * nc;
     let mut elements = Vec::with_capacity(total);
 
-    let use_int = matches!(dtype_str, "I64" | "i64" | "I32" | "i32");
+    let dtype = match dtype_str {
+        "I64" | "i64" => DType::I64,
+        "I32" | "i32" => DType::I32,
+        "U32" | "u32" => DType::U32,
+        "U64" | "u64" => DType::U64,
+        "BF16" | "bf16" => DType::BF16,
+        "F16" | "f16" => DType::F16,
+        "F32" | "f32" => DType::F32,
+        "F64" | "f64" => DType::F64,
+        "Bool" | "bool" => DType::Bool,
+        "Complex64" | "complex64" => DType::Complex64,
+        "Complex128" | "complex128" => DType::Complex128,
+        _ => DType::F64,
+    };
+
+    let literal_for = |val: f64| -> Literal {
+        match dtype {
+            DType::I64 | DType::I32 => Literal::I64(val as i64),
+            DType::U32 => Literal::U32(val as u32),
+            DType::U64 => Literal::U64(val as u64),
+            DType::BF16 => Literal::from_bf16_f32(val as f32),
+            DType::F16 => Literal::from_f16_f32(val as f32),
+            DType::F32 => Literal::from_f32(val as f32),
+            DType::F64 => Literal::from_f64(val),
+            DType::Bool => Literal::Bool(val != 0.0),
+            DType::Complex64 => Literal::from_complex64(val as f32, 0.0),
+            DType::Complex128 => Literal::from_complex128(val, 0.0),
+        }
+    };
 
     for &idx in &indices {
         for c in 0..nc {
@@ -2791,20 +2819,9 @@ pub(crate) fn eval_one_hot(
             } else {
                 off_value
             };
-            if use_int {
-                elements.push(Literal::I64(val as i64));
-            } else {
-                elements.push(Literal::from_f64(val));
-            }
+            elements.push(literal_for(val));
         }
     }
-
-    let dtype = match dtype_str {
-        "I64" | "i64" => DType::I64,
-        "I32" | "i32" => DType::I32,
-        "F32" | "f32" => DType::F32,
-        _ => DType::F64,
-    };
 
     Ok(Value::Tensor(TensorValue::new(
         dtype,

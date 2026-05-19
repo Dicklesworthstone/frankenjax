@@ -274,3 +274,41 @@ fn oracle_one_hot_all_same_index() {
         assert_eq!(vals[i * 5 + 2], 1.0);
     }
 }
+
+fn one_hot_params_with_dtype(num_classes: u32, dtype: &str) -> BTreeMap<String, String> {
+    let mut p = one_hot_params(num_classes);
+    p.insert("dtype".to_string(), dtype.to_string());
+    p
+}
+
+// `eval_one_hot` previously declared `DType::F32` but emitted `Literal::F64Bits`
+// elements, violating the dtype/element invariant. It also silently downgraded
+// BF16/F16/Complex64/Complex128/Bool/U32/U64 dtype requests to F64.
+#[test]
+fn oracle_one_hot_dtype_param_preserves_element_kinds() {
+    let cases: &[(&str, DType)] = &[
+        ("F32", DType::F32),
+        ("f32", DType::F32),
+        ("BF16", DType::BF16),
+        ("F16", DType::F16),
+        ("U32", DType::U32),
+        ("U64", DType::U64),
+        ("Bool", DType::Bool),
+        ("Complex64", DType::Complex64),
+        ("Complex128", DType::Complex128),
+    ];
+    for (param, expected_dtype) in cases {
+        let input = Value::scalar_i64(1);
+        let params = one_hot_params_with_dtype(3, param);
+        let result = eval_primitive(Primitive::OneHot, &[input], &params)
+            .unwrap_or_else(|e| panic!("OneHot dtype={param} failed: {e}"));
+        let Value::Tensor(t) = result else {
+            panic!("OneHot dtype={param} did not produce a tensor");
+        };
+        assert_eq!(t.dtype, *expected_dtype, "dtype={param}: declared dtype");
+        t.validate_dtype_consistency().unwrap_or_else(|e| {
+            panic!("OneHot dtype={param} dtype/element invariant violation: {e}")
+        });
+        assert_eq!(t.shape.dims, vec![3]);
+    }
+}
