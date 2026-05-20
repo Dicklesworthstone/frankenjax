@@ -512,3 +512,51 @@ fn oracle_sincos_2d() {
     assert_close(cos_vals[2], -1.0, 1e-14, "cos(π)");
     assert_close(cos_vals[3], 0.0, 1e-14, "cos(3π/2)");
 }
+
+// Property sweep across all float dtypes for Sin and Cos. The unary
+// transcendental path goes through `eval_unary_elementwise`, whose
+// tensor arm was fixed in eldm to preserve input dtype across
+// BF16/F16/F32/F64. Pin the dispatch helper against per-arm regressions.
+#[test]
+fn property_sin_cos_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            _ => unreachable!(),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    let values = [0.0_f64, 0.5, 1.0, 1.5];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        for primitive in [Primitive::Sin, Primitive::Cos] {
+            let input = make_vec(dtype, &values);
+            let result = eval_primitive(primitive, &[input], &BTreeMap::new())
+                .unwrap_or_else(|e| panic!("{primitive:?} {dtype:?} failed: {e}"));
+            let Value::Tensor(t) = result else {
+                panic!("{primitive:?} {dtype:?}: expected tensor");
+            };
+            assert_eq!(
+                t.dtype, dtype,
+                "{primitive:?} {dtype:?}: tensor dtype mismatch"
+            );
+            t.validate_dtype_consistency().unwrap_or_else(|e| {
+                panic!(
+                    "{primitive:?} {dtype:?}: validate_dtype_consistency failed: {e}"
+                )
+            });
+        }
+    }
+}
