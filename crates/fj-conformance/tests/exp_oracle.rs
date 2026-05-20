@@ -499,3 +499,56 @@ fn metamorphic_exp_tensor_roundtrip() {
         assert_close(*rt, *orig, 1e-12, &format!("log(exp({})) = {}", orig, orig));
     }
 }
+
+// Property sweep across all float dtypes for Exp and Log. Both go
+// through `eval_unary_elementwise`. Pins the tensor arm (fixed in eldm)
+// against per-dtype regressions.
+#[test]
+fn property_exp_log_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            _ => unreachable!(),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    // Exp inputs: small to avoid BF16/F16 overflow.
+    // Log inputs: strictly positive.
+    let exp_values = [0.0_f64, 0.5, 1.0];
+    let log_values = [0.5_f64, 1.0, 2.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        for (primitive, values) in [
+            (Primitive::Exp, exp_values.as_slice()),
+            (Primitive::Log, log_values.as_slice()),
+        ] {
+            let input = make_vec(dtype, values);
+            let result = eval_primitive(primitive, &[input], &no_params())
+                .unwrap_or_else(|e| panic!("{primitive:?} {dtype:?} failed: {e}"));
+            let Value::Tensor(t) = result else {
+                panic!("{primitive:?} {dtype:?}: expected tensor");
+            };
+            assert_eq!(
+                t.dtype, dtype,
+                "{primitive:?} {dtype:?}: tensor dtype mismatch"
+            );
+            t.validate_dtype_consistency().unwrap_or_else(|e| {
+                panic!(
+                    "{primitive:?} {dtype:?}: validate_dtype_consistency failed: {e}"
+                )
+            });
+        }
+    }
+}
