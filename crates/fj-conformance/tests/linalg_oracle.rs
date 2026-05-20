@@ -786,3 +786,43 @@ fn oracle_eigh_f32_preserves_dtype() {
             .unwrap_or_else(|e| panic!("{label} dtype/element invariant: {e}"));
     }
 }
+
+// Property sweep across BF16/F16/F32/F64. The fix in f8871c7 routes all
+// linalg outputs through `linalg_literal_from_f64` which dispatches per
+// dtype. Run Cholesky on a 2×2 identity (exactly representable in every
+// float dtype) and assert dtype preservation across the full family.
+#[test]
+fn property_cholesky_preserves_all_float_dtypes() {
+    fn make_matrix(dtype: DType, data: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            _ => unreachable!(),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape { dims: vec![2, 2] },
+                data.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    // Identity matrix is exactly representable in BF16/F16/F32/F64.
+    let identity = [1.0_f64, 0.0, 0.0, 1.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let a = make_matrix(dtype, &identity);
+        let result = eval_primitive_multi(Primitive::Cholesky, std::slice::from_ref(&a), &no_params())
+            .unwrap_or_else(|e| panic!("Cholesky {dtype:?} failed: {e}"));
+        let Value::Tensor(t) = &result[0] else {
+            panic!("Cholesky {dtype:?}: expected tensor output");
+        };
+        assert_eq!(t.dtype, dtype, "Cholesky {dtype:?}: declared dtype");
+        t.validate_dtype_consistency().unwrap_or_else(|e| {
+            panic!("Cholesky {dtype:?}: validate_dtype_consistency failed: {e}")
+        });
+    }
+}
