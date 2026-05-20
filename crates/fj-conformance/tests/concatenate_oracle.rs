@@ -292,3 +292,64 @@ fn oracle_concat_rejects_dtype_mismatch() {
         "expected dtype mismatch error, got: {msg}"
     );
 }
+
+// Property sweep: for every primary dtype, asserting same-dtype concat
+// returns a tensor whose declared dtype matches AND
+// `validate_dtype_consistency` passes. Pins 98c2df7 (the uniform-dtype
+// guard) doesn't accidentally widen any single-dtype variant.
+#[test]
+fn property_concat_same_dtype_preserves_dtype() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::I64 | DType::I32 => Literal::I64(v as i64),
+            DType::U32 => Literal::U32(v as u32),
+            DType::U64 => Literal::U64(v as u64),
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            DType::Bool => Literal::Bool(v != 0.0),
+            DType::Complex64 => Literal::from_complex64(v as f32, 0.0),
+            DType::Complex128 => Literal::from_complex128(v, 0.0),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    let a_data = [1.0_f64, 2.0];
+    let b_data = [3.0_f64, 4.0];
+    for dtype in [
+        DType::I32,
+        DType::I64,
+        DType::U32,
+        DType::U64,
+        DType::BF16,
+        DType::F16,
+        DType::F32,
+        DType::F64,
+        DType::Bool,
+        DType::Complex64,
+        DType::Complex128,
+    ] {
+        let a = make_vec(dtype, &a_data);
+        let b = make_vec(dtype, &b_data);
+        let result = eval_primitive(Primitive::Concatenate, &[a, b], &concat_params(0))
+            .unwrap_or_else(|e| panic!("concat {dtype:?} failed: {e}"));
+        let Value::Tensor(t) = result else {
+            panic!("concat {dtype:?}: expected tensor");
+        };
+        assert_eq!(t.dtype, dtype, "concat {dtype:?}: declared dtype");
+        assert_eq!(t.shape.dims, vec![4]);
+        t.validate_dtype_consistency().unwrap_or_else(|e| {
+            panic!("concat {dtype:?}: validate_dtype_consistency failed: {e}")
+        });
+    }
+}
