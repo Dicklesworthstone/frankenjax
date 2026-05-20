@@ -386,3 +386,43 @@ fn metamorphic_sqrt_tensor_roundtrip() {
         assert_close(*rt, *orig, 1e-12, &format!("sqrt({})^2 = {}", orig, orig));
     }
 }
+
+// Property sweep across all float dtypes for Sqrt. Pins the
+// `eval_unary_elementwise` tensor arm (fixed in eldm) against per-arm
+// regressions for sqrt specifically — the existing
+// `unary_sqrt_f32_tensor_preserves_dtype` only covers F32.
+#[test]
+fn property_sqrt_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            _ => unreachable!(),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    let values = [0.0_f64, 1.0, 4.0, 9.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let input = make_vec(dtype, &values);
+        let result = eval_primitive(Primitive::Sqrt, &[input], &no_params())
+            .unwrap_or_else(|e| panic!("sqrt {dtype:?} failed: {e}"));
+        let Value::Tensor(t) = result else {
+            panic!("sqrt {dtype:?}: expected tensor");
+        };
+        assert_eq!(t.dtype, dtype, "sqrt {dtype:?}: tensor dtype mismatch");
+        t.validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("sqrt {dtype:?}: validate_dtype_consistency failed: {e}"));
+    }
+}
