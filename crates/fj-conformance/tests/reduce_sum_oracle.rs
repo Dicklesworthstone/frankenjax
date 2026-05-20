@@ -580,3 +580,77 @@ fn oracle_reduce_sum_f32_axes_preserves_dtype() {
     t.validate_dtype_consistency()
         .expect("F32 reduce_sum axes output dtype/element invariant");
 }
+
+// Property sweep across BF16/F16/F32/F64. The reduction dtype-preservation
+// fix in 9f9c800 affects all float dtypes, but the regression test above
+// only covered F32. This sweep guards against future regressions specific
+// to BF16, F16, or F64.
+#[test]
+fn property_reduce_sum_preserves_all_float_dtypes() {
+    fn make_vec<F>(dtype: DType, values: &[f64], lit_for: F) -> Value
+    where
+        F: Fn(f64) -> Literal,
+    {
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    let values = [1.0_f64, 2.0, 3.0, 4.0];
+    let cases: Vec<(DType, Value)> = vec![
+        (
+            DType::BF16,
+            make_vec(DType::BF16, &values, |v| Literal::from_bf16_f32(v as f32)),
+        ),
+        (
+            DType::F16,
+            make_vec(DType::F16, &values, |v| Literal::from_f16_f32(v as f32)),
+        ),
+        (
+            DType::F32,
+            make_vec(DType::F32, &values, |v| Literal::from_f32(v as f32)),
+        ),
+        (DType::F64, make_vec(DType::F64, &values, Literal::from_f64)),
+    ];
+
+    for (dtype, input) in cases {
+        // Full reduction → scalar
+        let result = eval_primitive(Primitive::ReduceSum, &[input.clone()], &BTreeMap::new())
+            .unwrap_or_else(|e| panic!("reduce_sum {dtype:?} failed: {e}"));
+        match result {
+            Value::Scalar(lit) => {
+                assert!(
+                    lit.matches_dtype(dtype),
+                    "dtype={dtype:?}: scalar reduce_sum literal {lit:?} does not match",
+                );
+            }
+            other => panic!("dtype={dtype:?}: expected scalar, got {other:?}"),
+        }
+
+        // Axis reduction → tensor
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_string(), "0".to_string());
+        let axis_result = eval_primitive(Primitive::ReduceSum, &[input], &params)
+            .unwrap_or_else(|e| panic!("reduce_sum {dtype:?} axes failed: {e}"));
+        // For a rank-1 input reducing axis 0, the result might be a scalar.
+        match axis_result {
+            Value::Scalar(lit) => assert!(
+                lit.matches_dtype(dtype),
+                "dtype={dtype:?}: axis-reduced scalar dtype mismatch"
+            ),
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, dtype, "dtype={dtype:?}: axis tensor dtype");
+                t.validate_dtype_consistency().unwrap_or_else(|e| {
+                    panic!("dtype={dtype:?}: validate_dtype_consistency failed: {e}")
+                });
+            }
+        }
+    }
+}
