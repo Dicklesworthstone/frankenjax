@@ -509,6 +509,20 @@ fn named_scope(name: String) -> PyNamedScope {
     PyNamedScope { name }
 }
 
+#[pyfunction(signature = (disable=true))]
+fn disable_jit(disable: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("disable_jit({disable})"),
+    }
+}
+
+#[pyfunction]
+fn ensure_compile_time_eval() -> PyNamedScope {
+    PyNamedScope {
+        name: "ensure_compile_time_eval".to_owned(),
+    }
+}
+
 #[pyfunction]
 fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
@@ -613,6 +627,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_indices, m)?)?;
     m.add_function(wrap_pyfunction!(named_call, m)?)?;
     m.add_function(wrap_pyfunction!(named_scope, m)?)?;
+    m.add_function(wrap_pyfunction!(disable_jit, m)?)?;
+    m.add_function(wrap_pyfunction!(ensure_compile_time_eval, m)?)?;
     m.add_function(wrap_pyfunction!(vmap, m)?)?;
     m.add_function(wrap_pyfunction!(pmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
@@ -817,6 +833,16 @@ mod tests {
         assert_eq!(scope.name(), "layer");
         let empty_scope = named_scope(String::new());
         assert_eq!(empty_scope.name(), "");
+    }
+
+    #[test]
+    fn local_context_helpers_track_names() {
+        assert_eq!(disable_jit(true).name(), "disable_jit(true)");
+        assert_eq!(disable_jit(false).name(), "disable_jit(false)");
+        assert_eq!(
+            ensure_compile_time_eval().name(),
+            "ensure_compile_time_eval"
+        );
     }
 
     #[test]

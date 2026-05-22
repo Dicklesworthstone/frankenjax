@@ -215,6 +215,29 @@ def test_named_helpers():
     print("✓ named_call/named_scope preserve Python callables")
 
 
+def test_local_context_helpers():
+    """Test local no-op context helpers."""
+
+    def add_one(x):
+        return x + 1
+
+    with fj.disable_jit():
+        assert add_one(2) == 3
+
+    with fj.disable_jit(False):
+        assert add_one(3) == 4
+
+    with fj.ensure_compile_time_eval():
+        assert add_one(4) == 5
+
+    assert fj.disable_jit().name == "disable_jit(true)"
+    assert fj.disable_jit(False).name == "disable_jit(false)"
+    assert fj.ensure_compile_time_eval().name == "ensure_compile_time_eval"
+    assert fj.disable_jit()(add_one) is add_one
+    assert fj.ensure_compile_time_eval()(add_one) is add_one
+    print("✓ disable_jit/ensure_compile_time_eval expose local no-op contexts")
+
+
 def test_vmap():
     """Test vmap of add_one."""
     jaxpr = fj.make_jaxpr_add_one()
@@ -308,6 +331,7 @@ if __name__ == "__main__":
     test_device_helpers()
     test_backend_topology_helpers()
     test_named_helpers()
+    test_local_context_helpers()
     test_vmap()
     test_pmap_fails_closed()
     test_jacobian_and_hessian()
