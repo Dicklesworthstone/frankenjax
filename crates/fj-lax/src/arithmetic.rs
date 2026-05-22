@@ -1714,6 +1714,7 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
 }
 
 /// FMA: fused multiply-add: fma(a, b, c) = a * b + c with single rounding.
+/// Supports NumPy-style broadcasting for all three operands.
 pub(crate) fn eval_fma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 3 {
         return Err(EvalError::ArityMismatch {
@@ -1749,46 +1750,84 @@ pub(crate) fn eval_fma(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
         }
     }
 
-    match (&inputs[0], &inputs[1], &inputs[2]) {
-        (Value::Scalar(a), Value::Scalar(b), Value::Scalar(c)) => fma_literal(*a, *b, *c)
+    fn shape_of(v: &Value) -> Shape {
+        match v {
+            Value::Scalar(_) => Shape { dims: vec![] },
+            Value::Tensor(t) => t.shape.clone(),
+        }
+    }
+
+    fn get_literal(v: &Value, idx: usize) -> Literal {
+        match v {
+            Value::Scalar(l) => *l,
+            Value::Tensor(t) => t.elements[idx],
+        }
+    }
+
+    fn get_dtype(v: &Value) -> DType {
+        match v {
+            Value::Scalar(l) => literal_dtype(*l),
+            Value::Tensor(t) => t.dtype,
+        }
+    }
+
+    let shape_a = shape_of(&inputs[0]);
+    let shape_b = shape_of(&inputs[1]);
+    let shape_c = shape_of(&inputs[2]);
+
+    let out_shape_ab = broadcast_shape(&shape_a, &shape_b).ok_or(EvalError::ShapeMismatch {
+        primitive,
+        left: shape_a.clone(),
+        right: shape_b.clone(),
+    })?;
+
+    let out_shape = broadcast_shape(&out_shape_ab, &shape_c).ok_or(EvalError::ShapeMismatch {
+        primitive,
+        left: out_shape_ab,
+        right: shape_c.clone(),
+    })?;
+
+    if out_shape.rank() == 0 {
+        let a = get_literal(&inputs[0], 0);
+        let b = get_literal(&inputs[1], 0);
+        let c = get_literal(&inputs[2], 0);
+        return fma_literal(a, b, c)
             .map(Value::Scalar)
             .map_err(|e| EvalError::TypeMismatch {
                 primitive,
                 detail: e,
-            }),
-        (Value::Tensor(ta), Value::Tensor(tb), Value::Tensor(tc)) => {
-            if ta.shape != tb.shape || ta.shape != tc.shape {
-                return Err(EvalError::Unsupported {
-                    primitive,
-                    detail: "fma requires all tensor inputs to have the same shape".to_owned(),
-                });
-            }
-            let mut elements = Vec::with_capacity(ta.elements.len());
-            for ((av, bv), cv) in ta
-                .elements
-                .iter()
-                .copied()
-                .zip(tb.elements.iter().copied())
-                .zip(tc.elements.iter().copied())
-            {
-                elements.push(
-                    fma_literal(av, bv, cv).map_err(|e| EvalError::TypeMismatch {
-                        primitive,
-                        detail: e,
-                    })?,
-                );
-            }
-            Ok(Value::Tensor(TensorValue::new(
-                ta.dtype,
-                ta.shape.clone(),
-                elements,
-            )?))
-        }
-        _ => Err(EvalError::Unsupported {
-            primitive,
-            detail: "fma requires (scalar, scalar, scalar) or (tensor, tensor, tensor)".to_owned(),
-        }),
+            });
     }
+
+    let out_count = out_shape.element_count().unwrap_or(0) as usize;
+    let out_strides = compute_strides(&out_shape.dims);
+    let a_strides = broadcast_strides(&shape_a, &out_shape);
+    let b_strides = broadcast_strides(&shape_b, &out_shape);
+    let c_strides = broadcast_strides(&shape_c, &out_shape);
+
+    let out_dtype = promote_dtype(promote_dtype(get_dtype(&inputs[0]), get_dtype(&inputs[1])), get_dtype(&inputs[2]));
+
+    let mut multi = Vec::with_capacity(out_strides.len());
+    let mut elements = Vec::with_capacity(out_count);
+    for flat_idx in 0..out_count {
+        flat_to_multi_into(flat_idx, &out_strides, &mut multi);
+        let a_idx = broadcast_flat_index(&multi, &a_strides);
+        let b_idx = broadcast_flat_index(&multi, &b_strides);
+        let c_idx = broadcast_flat_index(&multi, &c_strides);
+
+        let a = get_literal(&inputs[0], a_idx);
+        let b = get_literal(&inputs[1], b_idx);
+        let c = get_literal(&inputs[2], c_idx);
+
+        elements.push(
+            fma_literal(a, b, c).map_err(|e| EvalError::TypeMismatch {
+                primitive,
+                detail: e,
+            })?,
+        );
+    }
+
+    Ok(Value::Tensor(TensorValue::new(out_dtype, out_shape, elements)?))
 }
 
 /// Clamp: clamp(lo, x, hi) = min(max(lo, x), hi).

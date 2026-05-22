@@ -223,3 +223,105 @@ fn oracle_fma_equals_mul_add() {
         "fma should equal separate mul+add"
     );
 }
+
+// ======================== Broadcast Tests ========================
+
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_fma_scalar_tensor_tensor_broadcast() {
+    // scalar * tensor + tensor
+    let a = scalar_f64(2.0);
+    let b = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let c = make_f64_tensor(&[3], vec![10.0, 20.0, 30.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![12.0, 24.0, 36.0]);
+}
+
+#[test]
+fn oracle_fma_tensor_scalar_tensor_broadcast() {
+    // tensor * scalar + tensor
+    let a = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let b = scalar_f64(2.0);
+    let c = make_f64_tensor(&[3], vec![10.0, 20.0, 30.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![12.0, 24.0, 36.0]);
+}
+
+#[test]
+fn oracle_fma_tensor_tensor_scalar_broadcast() {
+    // tensor * tensor + scalar
+    let a = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let b = make_f64_tensor(&[3], vec![2.0, 2.0, 2.0]);
+    let c = scalar_f64(10.0);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![12.0, 14.0, 16.0]);
+}
+
+#[test]
+fn oracle_fma_scalar_scalar_tensor_broadcast() {
+    // scalar * scalar + tensor
+    let a = scalar_f64(2.0);
+    let b = scalar_f64(3.0);
+    let c = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![7.0, 8.0, 9.0]);
+}
+
+#[test]
+fn oracle_fma_row_matrix_broadcast() {
+    // [1, 3] * [2, 3] + [2, 3] -> [2, 3]
+    let a = make_f64_tensor(&[1, 3], vec![1.0, 2.0, 3.0]);
+    let b = make_f64_tensor(&[2, 3], vec![2.0, 2.0, 2.0, 3.0, 3.0, 3.0]);
+    let c = make_f64_tensor(&[2, 3], vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 7.0, 4.0, 7.0, 10.0]);
+}
+
+#[test]
+fn oracle_fma_column_matrix_broadcast() {
+    // [2, 1] * [2, 3] + [2, 3] -> [2, 3]
+    let a = make_f64_tensor(&[2, 1], vec![2.0, 3.0]);
+    let b = make_f64_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
+    let c = make_f64_tensor(&[2, 3], vec![10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_f64_vec(&result), vec![12.0, 14.0, 16.0, 23.0, 26.0, 29.0]);
+}
+
+#[test]
+fn oracle_fma_different_ranks_broadcast() {
+    // [3] * [2, 3] + [1] -> [2, 3]
+    let a = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let b = make_f64_tensor(&[2, 3], vec![2.0, 2.0, 2.0, 3.0, 3.0, 3.0]);
+    let c = make_f64_tensor(&[], vec![1.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 7.0, 4.0, 7.0, 10.0]);
+}
+
+#[test]
+fn oracle_fma_all_scalars() {
+    let a = scalar_f64(2.0);
+    let b = scalar_f64(3.0);
+    let c = scalar_f64(1.0);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 7.0);
+}
+
+#[test]
+fn oracle_fma_incompatible_shapes_error() {
+    // [2] * [3] + [1] should error
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let b = make_f64_tensor(&[3], vec![1.0, 1.0, 1.0]);
+    let c = make_f64_tensor(&[], vec![1.0]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
