@@ -13,6 +13,7 @@
 //! - Uniform case
 //! - Symmetry property
 //! - Tensor shapes
+//! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -93,7 +94,9 @@ fn oracle_betainc_uniform() {
         assert!(
             (actual - x_val).abs() < 1e-14,
             "betainc(1, 1, {}) = {}, got {}",
-            x_val, x_val, actual
+            x_val,
+            x_val,
+            actual
         );
     }
 }
@@ -129,10 +132,7 @@ fn oracle_betainc_half() {
     let x = make_f64_tensor(&[], vec![0.5]);
     let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        (actual - 0.5).abs() < 1e-14,
-        "betainc(a, a, 0.5) = 0.5"
-    );
+    assert!((actual - 0.5).abs() < 1e-14, "betainc(a, a, 0.5) = 0.5");
 }
 
 // ======================== Tensor Shapes ========================
@@ -148,4 +148,24 @@ fn oracle_betainc_vector() {
     assert!((vals[0] - 0.0).abs() < 1e-14);
     assert!((vals[1] - 0.5).abs() < 1e-14);
     assert!((vals[2] - 1.0).abs() < 1e-14);
+}
+
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_betainc_scalar_params_vector_x_broadcast() {
+    let a = Value::scalar_f64(1.0);
+    let b = Value::scalar_f64(1.0);
+    let x_values = [0.0_f64, 0.25, 0.5, 0.75, 1.0];
+    let x = make_f64_tensor(&[5], x_values.to_vec());
+    let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![5]);
+    let actual = extract_f64_vec(&result);
+    for (i, (&actual, &expected)) in actual.iter().zip(x_values.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "betainc scalar-parameter broadcast element {i}: expected {expected}, got {actual}"
+        );
+    }
 }
