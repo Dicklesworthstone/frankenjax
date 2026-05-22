@@ -225,3 +225,53 @@ fn oracle_iota_values_are_contiguous() {
         assert_eq!(vals[i], i as i64, "iota value at index {i}");
     }
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_iota_i64_large() {
+    let result = eval_primitive(Primitive::Iota, &[], &iota_params(1000, "I64")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1000]);
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals[0], 0);
+    assert_eq!(vals[999], 999);
+}
+
+#[test]
+fn oracle_iota_bf16() {
+    let result = eval_primitive(Primitive::Iota, &[], &iota_params(5, "BF16")).unwrap();
+    assert_eq!(extract_dtype(&result), DType::BF16);
+    assert_eq!(extract_shape(&result), vec![5]);
+}
+
+#[test]
+fn oracle_iota_f16() {
+    let result = eval_primitive(Primitive::Iota, &[], &iota_params(5, "F16")).unwrap();
+    assert_eq!(extract_dtype(&result), DType::F16);
+    assert_eq!(extract_shape(&result), vec![5]);
+}
+
+#[test]
+fn oracle_iota_u64() {
+    let result = eval_primitive(Primitive::Iota, &[], &iota_params(5, "U64")).unwrap();
+    assert_eq!(extract_dtype(&result), DType::U64);
+    let vals: Vec<u64> = result
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| l.as_u64().unwrap())
+        .collect();
+    assert_eq!(vals, vec![0, 1, 2, 3, 4]);
+}
+
+#[test]
+fn oracle_iota_output_shape_is_1d() {
+    // Verify iota always produces 1D output
+    for len in [1, 5, 10, 100] {
+        let result = eval_primitive(Primitive::Iota, &[], &iota_params(len, "I64")).unwrap();
+        let shape = extract_shape(&result);
+        assert_eq!(shape.len(), 1, "iota should produce 1D tensor");
+        assert_eq!(shape[0], len);
+    }
+}

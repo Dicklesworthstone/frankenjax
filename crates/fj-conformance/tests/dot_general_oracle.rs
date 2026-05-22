@@ -308,3 +308,61 @@ fn dot_general_single_element_tensors() {
     assert_eq!(extract_shape(&result), vec![1, 1]);
     assert_close(&extract_f64_vec(&result), &[12.0], 1e-12);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn dot_general_vector_matrix_product() {
+    // Vector [1, 3] @ Matrix [3, 2] => [1, 2]
+    let a = vector_f64(&[1.0, 2.0, 3.0]);
+    let b = matrix_f64(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2]);
+    // [1,2,3] . col0 = 1*1 + 2*3 + 3*5 = 22
+    // [1,2,3] . col1 = 1*2 + 2*4 + 3*6 = 28
+    assert_close(&extract_f64_vec(&result), &[22.0, 28.0], 1e-12);
+}
+
+#[test]
+fn dot_general_matrix_vector_product() {
+    // Matrix [2, 3] @ Vector [3] => [2]
+    let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let b = vector_f64(&[1.0, 0.0, 1.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2]);
+    // Row 0: 1*1 + 2*0 + 3*1 = 4
+    // Row 1: 4*1 + 5*0 + 6*1 = 10
+    assert_close(&extract_f64_vec(&result), &[4.0, 10.0], 1e-12);
+}
+
+#[test]
+fn dot_general_empty_contracting_dim() {
+    // Contract over empty dimension - should give zeros
+    let a = tensor_f64(vec![2, 0], &[]);
+    let b = tensor_f64(vec![0, 3], &[]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    // All zeros since sum over empty dim is 0
+    assert_close(&extract_f64_vec(&result), &[0.0; 6], 1e-12);
+}
+
+#[test]
+fn dot_general_negative_values() {
+    let a = matrix_f64(2, 2, &[-1.0, 2.0, -3.0, 4.0]);
+    let b = matrix_f64(2, 2, &[1.0, -1.0, -2.0, 2.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    // C[0,0] = -1*1 + 2*(-2) = -5
+    // C[0,1] = -1*(-1) + 2*2 = 5
+    // C[1,0] = -3*1 + 4*(-2) = -11
+    // C[1,1] = -3*(-1) + 4*2 = 11
+    assert_close(&extract_f64_vec(&result), &[-5.0, 5.0, -11.0, 11.0], 1e-12);
+}
