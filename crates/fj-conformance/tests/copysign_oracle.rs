@@ -4,7 +4,7 @@
 //!
 //! Tests:
 //! - Basic: copysign(1, -1) = -1, copysign(-1, 1) = 1
-//! - Zero: copysign with +0/-0
+//! - Zero: copysign with exact +0/-0 bit patterns
 //! - Same signs: no change
 //! - Special values: infinity, NaN
 //! - Broadcast-compatible sign inputs
@@ -97,10 +97,7 @@ fn oracle_copysign_zero_positive() {
     let y = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        actual == 0.0 && actual.is_sign_positive(),
-        "copysign(0, 1) = +0"
-    );
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "copysign(0, 1) = +0");
 }
 
 #[test]
@@ -109,8 +106,9 @@ fn oracle_copysign_zero_negative() {
     let y = make_f64_tensor(&[], vec![-1.0]);
     let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        actual == 0.0 && actual.is_sign_negative(),
+    assert_eq!(
+        actual.to_bits(),
+        (-0.0_f64).to_bits(),
         "copysign(0, -1) = -0"
     );
 }
