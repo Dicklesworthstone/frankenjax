@@ -167,6 +167,7 @@ def test_value_scalar():
         ("device_get", lambda: fj.device_get(deleted)),
         ("module block_until_ready", lambda: fj.block_until_ready(deleted)),
         ("module copy_to_host_async", lambda: fj.copy_to_host_async(deleted)),
+        ("item", deleted.item),
         ("indexing", lambda: deleted[0]),
         ("array protocol", lambda: np.asarray(deleted)),
         ("DLPack device protocol", deleted.__dlpack_device__),
@@ -182,6 +183,7 @@ def test_value_scalar():
         else:
             raise AssertionError(f"{name} should reject deleted arrays")
     assert v.is_deleted() is False
+    assert v.item() == 42.0
     assert v.tolist() == 42.0
     assert v.tobytes() == struct.pack("@d", 42.0)
     assert v.tobytes(order="F") == struct.pack("@d", 42.0)
@@ -251,6 +253,20 @@ def test_value_scalar():
     assert vec.is_fully_addressable is True
     assert vec.is_fully_replicated is True
     assert len(vec) == 3
+    assert vec.item(0) == 1
+    assert vec.item(-1) == 3
+    try:
+        vec.item()
+    except ValueError as exc:
+        assert "size 1" in str(exc)
+    else:
+        raise AssertionError("vector item() should require size 1")
+    try:
+        vec.item(3)
+    except IndexError as exc:
+        assert "out of bounds" in str(exc)
+    else:
+        raise AssertionError("vector item(index) should reject out-of-bounds indexes")
     iterated = list(vec)
     assert [item.as_i64() for item in iterated] == [1, 2, 3]
     assert [item.shape for item in iterated] == [(), (), ()]

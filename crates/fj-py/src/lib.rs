@@ -578,6 +578,65 @@ impl PyValue {
         }
     }
 
+    #[pyo3(signature = (*args))]
+    fn item(&self, py: Python<'_>, args: &Bound<'_, PyTuple>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
+        let size = usize::try_from(self.size()).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyOverflowError, _>("array size does not fit usize")
+        })?;
+
+        let index = match args.len() {
+            0 => {
+                if size != 1 {
+                    return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                        "can only convert an array of size 1 to a Python scalar",
+                    ));
+                }
+                0
+            }
+            1 => {
+                let raw_index: isize = args.get_item(0)?.extract()?;
+                let size_isize = isize::try_from(size).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                        "array size does not fit isize",
+                    )
+                })?;
+                let normalized_index = if raw_index < 0 {
+                    raw_index.checked_add(size_isize).ok_or_else(|| {
+                        PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                            "item index is out of bounds",
+                        )
+                    })?
+                } else {
+                    raw_index
+                };
+                if !(0..size_isize).contains(&normalized_index) {
+                    return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                        "item index is out of bounds",
+                    ));
+                }
+                usize::try_from(normalized_index).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                        "item index does not fit usize",
+                    )
+                })?
+            }
+            arg_count => {
+                return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+                    "item() takes at most 1 argument ({arg_count} given)"
+                )));
+            }
+        };
+
+        let literal = match &self.inner {
+            Value::Scalar(literal) => *literal,
+            Value::Tensor(tensor) => tensor.elements.get(index).copied().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyIndexError, _>("item index is out of bounds")
+            })?,
+        };
+        literal_to_py_object(py, literal)
+    }
+
     #[pyo3(signature = (order = "C"))]
     fn tobytes(&self, py: Python<'_>, order: &str) -> PyResult<Py<PyAny>> {
         self.ensure_not_deleted()?;
