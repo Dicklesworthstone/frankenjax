@@ -181,3 +181,107 @@ fn oracle_complex_large() {
     assert!((vals[9].0 - 10.0).abs() < 1e-10);
     assert!((vals[9].1 - 20.0).abs() < 1e-10);
 }
+
+// ======================== Broadcast Tests ========================
+
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_complex_broadcast_scalar_real_tensor_imag() {
+    let re = scalar_f64(1.0);
+    let im = make_f64_tensor(&[3], vec![2.0, 3.0, 4.0]);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_complex_vec(&result);
+    assert!((vals[0].0 - 1.0).abs() < 1e-10);
+    assert!((vals[0].1 - 2.0).abs() < 1e-10);
+    assert!((vals[1].1 - 3.0).abs() < 1e-10);
+    assert!((vals[2].1 - 4.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_complex_broadcast_tensor_real_scalar_imag() {
+    let re = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let im = scalar_f64(5.0);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_complex_vec(&result);
+    assert!((vals[0].0 - 1.0).abs() < 1e-10);
+    assert!((vals[0].1 - 5.0).abs() < 1e-10);
+    assert!((vals[1].0 - 2.0).abs() < 1e-10);
+    assert!((vals[2].0 - 3.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_complex_broadcast_singleton_to_vector() {
+    let re = make_f64_tensor(&[1], vec![7.0]);
+    let im = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_complex_vec(&result);
+    assert!((vals[0].0 - 7.0).abs() < 1e-10);
+    assert!((vals[1].0 - 7.0).abs() < 1e-10);
+    assert!((vals[2].0 - 7.0).abs() < 1e-10);
+    assert!((vals[0].1 - 1.0).abs() < 1e-10);
+    assert!((vals[2].1 - 3.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_complex_broadcast_vector_to_singleton() {
+    let re = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let im = make_f64_tensor(&[1], vec![9.0]);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_complex_vec(&result);
+    assert!((vals[0].0 - 1.0).abs() < 1e-10);
+    assert!((vals[1].0 - 2.0).abs() < 1e-10);
+    assert!((vals[2].0 - 3.0).abs() < 1e-10);
+    for v in &vals {
+        assert!((v.1 - 9.0).abs() < 1e-10);
+    }
+}
+
+#[test]
+fn oracle_complex_broadcast_column_to_row() {
+    // [2,1] x [1,3] → [2,3]
+    let re = make_f64_tensor(&[2, 1], vec![1.0, 2.0]);
+    let im = make_f64_tensor(&[1, 3], vec![10.0, 20.0, 30.0]);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_complex_vec(&result);
+    // Row 0: re=1, im=[10,20,30]
+    assert!((vals[0].0 - 1.0).abs() < 1e-10);
+    assert!((vals[0].1 - 10.0).abs() < 1e-10);
+    assert!((vals[1].1 - 20.0).abs() < 1e-10);
+    assert!((vals[2].1 - 30.0).abs() < 1e-10);
+    // Row 1: re=2, im=[10,20,30]
+    assert!((vals[3].0 - 2.0).abs() < 1e-10);
+    assert!((vals[4].0 - 2.0).abs() < 1e-10);
+    assert!((vals[5].0 - 2.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_complex_broadcast_different_ranks() {
+    // [3] x [2,3] → [2,3]
+    let re = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let im = make_f64_tensor(&[2, 3], vec![10.0, 20.0, 30.0, 40.0, 50.0, 60.0]);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_complex_vec(&result);
+    // Row 0: re=[1,2,3] broadcast, im=[10,20,30]
+    assert!((vals[0].0 - 1.0).abs() < 1e-10);
+    assert!((vals[0].1 - 10.0).abs() < 1e-10);
+    // Row 1: re=[1,2,3] broadcast, im=[40,50,60]
+    assert!((vals[3].0 - 1.0).abs() < 1e-10);
+    assert!((vals[3].1 - 40.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_complex_broadcast_incompatible_shapes_error() {
+    let re = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let im = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Complex, &[re, im], &no_params());
+    assert!(result.is_err(), "incompatible shapes [2] vs [3] should error");
+}
