@@ -280,6 +280,14 @@ fn cpu_device() -> PyDevice {
     }
 }
 
+fn version_info() -> (u64, u64, u64) {
+    (
+        env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0),
+        env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0),
+        env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0),
+    )
+}
+
 #[pyfunction]
 fn make_jaxpr_square() -> PyJaxpr {
     PyJaxpr {
@@ -527,6 +535,8 @@ fn remat(jaxpr: &PyJaxpr) -> PyCheckpoint {
 
 #[pymodule]
 fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("__version_info__", version_info())?;
     m.add_class::<PyValue>()?;
     m.add_class::<PyJaxpr>()?;
     m.add_class::<PyCheckpoint>()?;
@@ -747,6 +757,12 @@ mod tests {
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].id(), 0);
         assert!(local_devices(Some(1), None::<String>).is_err());
+    }
+
+    #[test]
+    fn version_metadata_matches_crate_package_version() {
+        assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0");
+        assert_eq!(version_info(), (0, 1, 0));
     }
 
     #[test]

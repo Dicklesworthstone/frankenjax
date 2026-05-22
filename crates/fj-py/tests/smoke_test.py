@@ -9,6 +9,13 @@ Run after building with:
 import frankenjax as fj
 
 
+def test_version_metadata():
+    """Test package version metadata exports."""
+    assert fj.__version__ == "0.1.0"
+    assert fj.__version_info__ == (0, 1, 0)
+    print("✓ __version__/__version_info__ metadata")
+
+
 def test_value_scalar():
     """Test scalar value creation and retrieval."""
     v = fj.PyValue.scalar_f64(42.0)
@@ -264,6 +271,7 @@ def test_remat_alias():
 
 
 if __name__ == "__main__":
+    test_version_metadata()
     test_value_scalar()
     test_jit_add()
     test_grad_square()
