@@ -252,9 +252,10 @@ fn oracle_round_to_nearest_even_half_values() {
     .unwrap();
     let vals = extract_f64_vec(&result);
     assert_eq!(vals, vec![-2.0, -1.0, -0.0, 0.0, 0.0, 1.0, 2.0]);
-    assert!(
-        vals[2].is_sign_negative(),
-        "round(-0.5) should preserve -0.0"
+    assert_eq!(
+        vals[2].to_bits(),
+        (-0.0_f64).to_bits(),
+        "round(-0.5) should produce exact -0.0 bits"
     );
 }
 
