@@ -20,7 +20,7 @@ use arithmetic::{
     eval_betainc, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos, eval_fma,
     eval_cosh, eval_digamma, eval_dot, eval_dot_general, eval_erf_inv, eval_exp, eval_igamma,
     eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf, eval_is_nan,
-    eval_lgamma, eval_log, eval_neg,
+    eval_lgamma, eval_log, eval_neg, eval_signbit,
     eval_nextafter, eval_polygamma, eval_real, eval_round, eval_select, eval_select_n, eval_sin,
     eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float, eval_zeta,
 };
@@ -407,6 +407,7 @@ pub fn eval_primitive(
         Primitive::IsFinite => eval_is_finite(primitive, inputs),
         Primitive::IsNan => eval_is_nan(primitive, inputs),
         Primitive::IsInf => eval_is_inf(primitive, inputs),
+        Primitive::Signbit => eval_signbit(primitive, inputs),
         Primitive::CopySign => {
             eval_binary_elementwise(primitive, inputs, |a, b| f64::copysign(a as f64, b as f64) as i64, f64::copysign)
         }

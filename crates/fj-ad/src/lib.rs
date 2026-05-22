@@ -3307,8 +3307,8 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &recip)?])
         }
-        // IsFinite/IsNan/IsInf: non-differentiable — gradient is zero.
-        Primitive::IsFinite | Primitive::IsNan | Primitive::IsInf => {
+        // IsFinite/IsNan/IsInf/Signbit: non-differentiable — gradient is zero.
+        Primitive::IsFinite | Primitive::IsNan | Primitive::IsInf | Primitive::Signbit => {
             Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::CopySign => {
@@ -7213,6 +7213,7 @@ fn jvp_rule(
         | Primitive::IsFinite
         | Primitive::IsNan
         | Primitive::IsInf
+        | Primitive::Signbit
         | Primitive::Nextafter => Ok(zeros_like(&primals[0])),
 
         Primitive::ReduceWindow => ep_p(Primitive::ReduceWindow, &[tangents[0].clone()], params),

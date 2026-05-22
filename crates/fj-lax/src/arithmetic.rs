@@ -3461,6 +3461,59 @@ pub(crate) fn eval_is_inf(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     }
 }
 
+/// Signbit: returns Bool indicating whether the sign bit is set (true for negative, including -0.0).
+pub(crate) fn eval_signbit(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    match &inputs[0] {
+        Value::Scalar(literal) => {
+            let signbit = match *literal {
+                Literal::I64(v) => v < 0,
+                Literal::F64Bits(b) => f64::from_bits(b).is_sign_negative(),
+                Literal::F32Bits(b) => f32::from_bits(b).is_sign_negative(),
+                _ => {
+                    let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric scalar",
+                    })?;
+                    value.is_sign_negative()
+                }
+            };
+            Ok(Value::Scalar(Literal::Bool(signbit)))
+        }
+        Value::Tensor(tensor) => {
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                let signbit = match *literal {
+                    Literal::I64(v) => Literal::Bool(v < 0),
+                    Literal::F64Bits(b) => Literal::Bool(f64::from_bits(b).is_sign_negative()),
+                    Literal::F32Bits(b) => Literal::Bool(f32::from_bits(b).is_sign_negative()),
+                    _ => literal
+                        .as_f64()
+                        .map(|v| Literal::Bool(v.is_sign_negative()))
+                        .ok_or(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "expected numeric tensor elements",
+                        })?,
+                };
+                elements.push(signbit);
+            }
+
+            Ok(Value::Tensor(TensorValue::new(
+                DType::Bool,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
 /// IntegerPow: x.powi(n) where n is an integer exponent from params.
 pub(crate) fn eval_integer_pow(
     primitive: Primitive,
