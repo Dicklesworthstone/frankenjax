@@ -3268,6 +3268,65 @@ pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<V
     }
 }
 
+/// IsNan: returns Bool indicating whether each element is NaN.
+pub(crate) fn eval_is_nan(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    match &inputs[0] {
+        Value::Scalar(literal) => {
+            let is_nan = match *literal {
+                Literal::Complex64Bits(re, im) => {
+                    f32::from_bits(re).is_nan() || f32::from_bits(im).is_nan()
+                }
+                Literal::Complex128Bits(re, im) => {
+                    f64::from_bits(re).is_nan() || f64::from_bits(im).is_nan()
+                }
+                _ => {
+                    let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric scalar",
+                    })?;
+                    value.is_nan()
+                }
+            };
+            Ok(Value::Scalar(Literal::Bool(is_nan)))
+        }
+        Value::Tensor(tensor) => {
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                let is_nan = match *literal {
+                    Literal::Complex64Bits(re, im) => Ok(Literal::Bool(
+                        f32::from_bits(re).is_nan() || f32::from_bits(im).is_nan(),
+                    )),
+                    Literal::Complex128Bits(re, im) => Ok(Literal::Bool(
+                        f64::from_bits(re).is_nan() || f64::from_bits(im).is_nan(),
+                    )),
+                    _ => literal
+                        .as_f64()
+                        .map(|v| Literal::Bool(v.is_nan()))
+                        .ok_or(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "expected numeric tensor elements",
+                        }),
+                }?;
+                elements.push(is_nan);
+            }
+
+            Ok(Value::Tensor(TensorValue::new(
+                DType::Bool,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
 /// IntegerPow: x.powi(n) where n is an integer exponent from params.
 pub(crate) fn eval_integer_pow(
     primitive: Primitive,

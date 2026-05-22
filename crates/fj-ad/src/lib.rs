@@ -3280,8 +3280,8 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![value_mul(g, &recip)?])
         }
-        // IsFinite: non-differentiable — gradient is zero.
-        Primitive::IsFinite => Ok(vec![zeros_like(&inputs[0])]),
+        // IsFinite/IsNan: non-differentiable — gradient is zero.
+        Primitive::IsFinite | Primitive::IsNan => Ok(vec![zeros_like(&inputs[0])]),
         // IntegerPow: d/dx x^n = n * x^(n-1)
         Primitive::IntegerPow => {
             let n: i32 = params
@@ -7054,6 +7054,7 @@ fn jvp_rule(
         | Primitive::PopulationCount
         | Primitive::CountLeadingZeros
         | Primitive::IsFinite
+        | Primitive::IsNan
         | Primitive::Nextafter => Ok(zeros_like(&primals[0])),
 
         Primitive::ReduceWindow => ep_p(Primitive::ReduceWindow, &[tangents[0].clone()], params),
