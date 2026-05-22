@@ -191,10 +191,7 @@ fn oracle_hypot_nan_propagation() {
     let x = make_f64_tensor(&[], vec![f64::NAN]);
     let y = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "hypot(NaN, 1) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "hypot(NaN, 1) = NaN");
 }
 
 // ======================== Overflow Prevention ========================
@@ -241,8 +238,5 @@ fn oracle_hypot_unit_circle() {
     let y = make_f64_tensor(&[], vec![0.8]);
     let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        (actual - 1.0).abs() < 1e-15,
-        "hypot(0.6, 0.8) = 1.0"
-    );
+    assert!((actual - 1.0).abs() < 1e-15, "hypot(0.6, 0.8) = 1.0");
 }

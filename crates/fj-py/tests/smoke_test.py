@@ -58,6 +58,29 @@ def test_jit_add():
     print("✓ jit(add2)(3, 4) = 7")
 
 
+def test_make_jaxpr_generic():
+    """Test generic ProgramSpec-backed make_jaxpr entrypoint."""
+    square = fj.make_jaxpr("square")
+    result = fj.jit(square, [fj.PyValue.scalar_f64(3.0)])
+    assert len(result) == 1
+    assert abs(result[0].as_f64() - 9.0) < 1e-12
+
+    add2 = fj.make_jaxpr("add2")
+    result = fj.jit(add2, [fj.PyValue.scalar_i64(3), fj.PyValue.scalar_i64(4)])
+    assert len(result) == 1
+    assert result[0].as_i64() == 7
+
+    try:
+        fj.make_jaxpr("missing_program")
+    except ValueError as exc:
+        assert "unknown ProgramSpec" in str(exc)
+        assert "square" in str(exc)
+    else:
+        raise AssertionError("make_jaxpr should reject unknown ProgramSpec names")
+
+    print("✓ make_jaxpr dispatches built-in ProgramSpec names")
+
+
 def test_grad_square():
     """Test gradient of x^2."""
     jaxpr = fj.make_jaxpr_square()
@@ -768,6 +791,7 @@ if __name__ == "__main__":
     test_environment_info()
     test_value_scalar()
     test_jit_add()
+    test_make_jaxpr_generic()
     test_grad_square()
     test_jvp_square()
     test_vjp_square()

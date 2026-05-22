@@ -489,6 +489,173 @@ fn environment_info() -> String {
     info
 }
 
+const PROGRAM_SPECS: &[(&str, ProgramSpec)] = &[
+    ("add2", ProgramSpec::Add2),
+    ("square", ProgramSpec::Square),
+    ("square_plus_linear", ProgramSpec::SquarePlusLinear),
+    ("add_one", ProgramSpec::AddOne),
+    ("sin_x", ProgramSpec::SinX),
+    ("cos_x", ProgramSpec::CosX),
+    ("dot3", ProgramSpec::Dot3),
+    ("reduce_sum_vec", ProgramSpec::ReduceSumVec),
+    ("lax_neg", ProgramSpec::LaxNeg),
+    ("lax_abs", ProgramSpec::LaxAbs),
+    ("lax_exp", ProgramSpec::LaxExp),
+    ("lax_log", ProgramSpec::LaxLog),
+    ("lax_sqrt", ProgramSpec::LaxSqrt),
+    ("lax_rsqrt", ProgramSpec::LaxRsqrt),
+    ("lax_floor", ProgramSpec::LaxFloor),
+    ("lax_ceil", ProgramSpec::LaxCeil),
+    ("lax_round", ProgramSpec::LaxRound),
+    ("lax_tan", ProgramSpec::LaxTan),
+    ("lax_asin", ProgramSpec::LaxAsin),
+    ("lax_acos", ProgramSpec::LaxAcos),
+    ("lax_atan", ProgramSpec::LaxAtan),
+    ("lax_sinh", ProgramSpec::LaxSinh),
+    ("lax_cosh", ProgramSpec::LaxCosh),
+    ("lax_tanh", ProgramSpec::LaxTanh),
+    ("lax_asinh", ProgramSpec::LaxAsinh),
+    ("lax_acosh", ProgramSpec::LaxAcosh),
+    ("lax_atanh", ProgramSpec::LaxAtanh),
+    ("lax_expm1", ProgramSpec::LaxExpm1),
+    ("lax_log1p", ProgramSpec::LaxLog1p),
+    ("lax_sign", ProgramSpec::LaxSign),
+    ("lax_square", ProgramSpec::LaxSquare),
+    ("lax_reciprocal", ProgramSpec::LaxReciprocal),
+    ("lax_logistic", ProgramSpec::LaxLogistic),
+    ("lax_erf", ProgramSpec::LaxErf),
+    ("lax_erfc", ProgramSpec::LaxErfc),
+    ("lax_sub", ProgramSpec::LaxSub),
+    ("lax_mul", ProgramSpec::LaxMul),
+    ("lax_div", ProgramSpec::LaxDiv),
+    ("lax_rem", ProgramSpec::LaxRem),
+    ("lax_pow", ProgramSpec::LaxPow),
+    ("lax_atan2", ProgramSpec::LaxAtan2),
+    ("lax_max", ProgramSpec::LaxMax),
+    ("lax_min", ProgramSpec::LaxMin),
+    ("lax_eq", ProgramSpec::LaxEq),
+    ("lax_ne", ProgramSpec::LaxNe),
+    ("lax_lt", ProgramSpec::LaxLt),
+    ("lax_le", ProgramSpec::LaxLe),
+    ("lax_gt", ProgramSpec::LaxGt),
+    ("lax_ge", ProgramSpec::LaxGe),
+    ("lax_select", ProgramSpec::LaxSelect),
+    ("lax_clamp", ProgramSpec::LaxClamp),
+    ("lax_reduce_max", ProgramSpec::LaxReduceMax),
+    ("lax_reduce_min", ProgramSpec::LaxReduceMin),
+    ("lax_reduce_prod", ProgramSpec::LaxReduceProd),
+    ("lax_cbrt", ProgramSpec::LaxCbrt),
+    ("lax_lgamma", ProgramSpec::LaxLgamma),
+    ("lax_digamma", ProgramSpec::LaxDigamma),
+    ("lax_erf_inv", ProgramSpec::LaxErfInv),
+    ("lax_is_finite", ProgramSpec::LaxIsFinite),
+    ("lax_nextafter", ProgramSpec::LaxNextafter),
+    ("lax_cumsum", ProgramSpec::LaxCumsum),
+    ("lax_cumprod", ProgramSpec::LaxCumprod),
+    ("lax_reduce_and", ProgramSpec::LaxReduceAnd),
+    ("lax_reduce_or", ProgramSpec::LaxReduceOr),
+    ("lax_bitwise_and", ProgramSpec::LaxBitwiseAnd),
+    ("lax_bitwise_or", ProgramSpec::LaxBitwiseOr),
+    ("lax_bitwise_xor", ProgramSpec::LaxBitwiseXor),
+    ("lax_bitwise_not", ProgramSpec::LaxBitwiseNot),
+    ("lax_population_count", ProgramSpec::LaxPopulationCount),
+    ("lax_count_leading_zeros", ProgramSpec::LaxCountLeadingZeros),
+    ("lax_reduce_xor", ProgramSpec::LaxReduceXor),
+    ("lax_sort", ProgramSpec::LaxSort),
+    ("lax_integer_pow2", ProgramSpec::LaxIntegerPow2),
+    ("lax_integer_pow3", ProgramSpec::LaxIntegerPow3),
+    ("lax_integer_pow_neg1", ProgramSpec::LaxIntegerPowNeg1),
+    ("lax_reshape_6_to_2x3", ProgramSpec::LaxReshape6To2x3),
+    ("lax_reshape_6_to_3x2", ProgramSpec::LaxReshape6To3x2),
+    ("lax_slice_1_to_4", ProgramSpec::LaxSlice1To4),
+    ("lax_transpose_2x3", ProgramSpec::LaxTranspose2x3),
+    ("lax_rev", ProgramSpec::LaxRev),
+    ("lax_squeeze", ProgramSpec::LaxSqueeze),
+    ("lax_concatenate", ProgramSpec::LaxConcatenate),
+    ("lax_iota5", ProgramSpec::LaxIota5),
+    ("lax_copy", ProgramSpec::LaxCopy),
+    ("lax_expand_dims_axis0", ProgramSpec::LaxExpandDimsAxis0),
+    ("lax_pad_low1_high2", ProgramSpec::LaxPadLow1High2),
+    (
+        "lax_broadcast_in_dim_scalar3",
+        ProgramSpec::LaxBroadcastInDimScalar3,
+    ),
+    ("lax_shift_left", ProgramSpec::LaxShiftLeft),
+    (
+        "lax_shift_right_arithmetic",
+        ProgramSpec::LaxShiftRightArithmetic,
+    ),
+    ("lax_shift_right_logical", ProgramSpec::LaxShiftRightLogical),
+    ("lax_dynamic_slice", ProgramSpec::LaxDynamicSlice),
+    (
+        "lax_dynamic_update_slice",
+        ProgramSpec::LaxDynamicUpdateSlice,
+    ),
+    ("lax_split2", ProgramSpec::LaxSplit2),
+    (
+        "lax_broadcasted_iota_2x3",
+        ProgramSpec::LaxBroadcastedIota2x3,
+    ),
+    ("lax_while_add_lt", ProgramSpec::LaxWhileAddLt),
+    ("lax_switch3", ProgramSpec::LaxSwitch3),
+    ("lax_argsort", ProgramSpec::LaxArgsort),
+    ("lax_one_hot4", ProgramSpec::LaxOneHot4),
+    ("lax_reduce_window_sum", ProgramSpec::LaxReduceWindowSum),
+    ("lax_bitcast_f64_to_i64", ProgramSpec::LaxBitcastF64ToI64),
+    (
+        "lax_reduce_precision_f64",
+        ProgramSpec::LaxReducePrecisionF64,
+    ),
+    ("lax_gather_1d", ProgramSpec::LaxGather1d),
+    ("lax_conv_1d_valid", ProgramSpec::LaxConv1dValid),
+    ("lax_scatter_overwrite", ProgramSpec::LaxScatterOverwrite),
+    ("lax_complex", ProgramSpec::LaxComplex),
+    ("lax_conj", ProgramSpec::LaxConj),
+    ("lax_real", ProgramSpec::LaxReal),
+    ("lax_imag", ProgramSpec::LaxImag),
+    ("lax_cholesky", ProgramSpec::LaxCholesky),
+    ("lax_triangular_solve", ProgramSpec::LaxTriangularSolve),
+    ("lax_qr", ProgramSpec::LaxQr),
+    ("lax_svd", ProgramSpec::LaxSvd),
+    ("lax_eigh", ProgramSpec::LaxEigh),
+    ("lax_fft", ProgramSpec::LaxFft),
+    ("lax_ifft", ProgramSpec::LaxIfft),
+    ("lax_rfft", ProgramSpec::LaxRfft),
+    ("lax_irfft", ProgramSpec::LaxIrfft),
+    ("identity", ProgramSpec::Identity),
+    ("add_one_mul_two", ProgramSpec::AddOneMulTwo),
+    ("cond_select", ProgramSpec::CondSelect),
+    ("scan_add", ProgramSpec::ScanAdd),
+];
+
+fn program_spec_from_name(name: &str) -> Option<ProgramSpec> {
+    PROGRAM_SPECS
+        .iter()
+        .find_map(|(spec_name, spec)| (*spec_name == name).then_some(*spec))
+}
+
+fn program_spec_names() -> String {
+    PROGRAM_SPECS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[pyfunction]
+fn make_jaxpr(name: &str) -> PyResult<PyJaxpr> {
+    let Some(spec) = program_spec_from_name(name) else {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "unknown ProgramSpec {name:?}; expected one of {}",
+            program_spec_names()
+        )));
+    };
+
+    Ok(PyJaxpr {
+        inner: build_program(spec),
+    })
+}
+
 #[pyfunction]
 fn make_jaxpr_square() -> PyJaxpr {
     PyJaxpr {
@@ -1149,6 +1316,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDevice>()?;
     m.add_class::<PyNamedScope>()?;
     m.add_class::<PyUserContext>()?;
+    m.add_function(wrap_pyfunction!(make_jaxpr, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_square, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add2, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add_one, m)?)?;
@@ -1260,6 +1428,30 @@ mod tests {
     fn jaxpr_square_builds() {
         let jaxpr = make_jaxpr_square();
         assert!(!jaxpr.inner.equations.is_empty());
+    }
+
+    #[test]
+    fn make_jaxpr_dispatches_program_specs_by_name() {
+        let jaxpr = make_jaxpr("square").unwrap();
+        let values = jit(&jaxpr, vec![PyValue::scalar_f64(3.0)]).unwrap();
+        assert_eq!(values.len(), 1);
+        assert!((values[0].as_f64().unwrap() - 9.0).abs() < 1e-12);
+
+        let add_jaxpr = make_jaxpr("add2").unwrap();
+        let values = jit(
+            &add_jaxpr,
+            vec![PyValue::scalar_i64(3), PyValue::scalar_i64(4)],
+        )
+        .unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].as_i64().unwrap(), 7);
+
+        let err = match make_jaxpr("missing_program") {
+            Ok(_) => panic!("unknown ProgramSpec should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("unknown ProgramSpec"));
+        assert!(err.to_string().contains("square"));
     }
 
     #[test]
