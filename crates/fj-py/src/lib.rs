@@ -26,6 +26,12 @@ impl PyValue {
             deleted: false,
         }
     }
+
+    fn shape_dims(&self) -> Vec<u32> {
+        self.inner
+            .as_tensor()
+            .map_or_else(Vec::new, |tensor| tensor.shape.dims.clone())
+    }
 }
 
 #[pyclass]
@@ -231,10 +237,8 @@ impl PyValue {
     }
 
     #[getter]
-    fn shape(&self) -> Vec<u32> {
-        self.inner
-            .as_tensor()
-            .map_or_else(Vec::new, |tensor| tensor.shape.dims.clone())
+    fn shape(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        shape_to_py_tuple(py, &self.shape_dims())
     }
 
     #[getter]
@@ -244,12 +248,12 @@ impl PyValue {
 
     #[getter]
     fn ndim(&self) -> usize {
-        self.shape().len()
+        self.shape_dims().len()
     }
 
     #[getter]
     fn size(&self) -> u64 {
-        self.shape()
+        self.shape_dims()
             .iter()
             .fold(1_u64, |size, dim| size.saturating_mul(u64::from(*dim)))
     }
@@ -2051,7 +2055,7 @@ mod tests {
     #[test]
     fn value_scalar_roundtrip() {
         let v = PyValue::scalar_f64(42.0);
-        assert_eq!(v.shape(), Vec::<u32>::new());
+        assert_eq!(v.shape_dims(), Vec::<u32>::new());
         assert_eq!(v.dtype(), "F64");
         assert_eq!(v.ndim(), 0);
         assert_eq!(v.size(), 1);
@@ -2125,7 +2129,7 @@ mod tests {
     #[test]
     fn value_vector_roundtrip() {
         let floats = PyValue::vector_f64(vec![1.0, 2.5, 4.0]).unwrap();
-        assert_eq!(floats.shape(), vec![3]);
+        assert_eq!(floats.shape_dims(), vec![3]);
         assert_eq!(floats.dtype(), "F64");
         assert_eq!(floats.ndim(), 1);
         assert_eq!(floats.size(), 3);
@@ -2167,7 +2171,7 @@ mod tests {
         assert_eq!(floats.as_i64_list(), None);
 
         let ints = PyValue::vector_i64(vec![1, 2, 3]).unwrap();
-        assert_eq!(ints.shape(), vec![3]);
+        assert_eq!(ints.shape_dims(), vec![3]);
         assert_eq!(ints.dtype(), "I64");
         assert_eq!(ints.ndim(), 1);
         assert_eq!(ints.size(), 3);
@@ -2538,12 +2542,12 @@ mod tests {
         assert!(device_put_sharded(vec![vector.clone()], Vec::new()).is_err());
         assert!(device_put_sharded(Vec::new(), vec![cpu_device()]).is_err());
         let host_vector = device_get(block_until_ready(device_put(vector)));
-        assert_eq!(host_vector.shape(), vec![3]);
+        assert_eq!(host_vector.shape_dims(), vec![3]);
         assert_eq!(host_vector.dtype(), "I64");
         assert_eq!(host_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
 
         let copied_vector = copy_to_host_async(host_vector);
-        assert_eq!(copied_vector.shape(), vec![3]);
+        assert_eq!(copied_vector.shape_dims(), vec![3]);
         assert_eq!(copied_vector.dtype(), "I64");
         assert_eq!(copied_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
 
@@ -2666,19 +2670,19 @@ mod tests {
         let args = vec![PyValue::scalar_f64(3.0)];
 
         let jac = jacobian(&jaxpr, args.clone()).unwrap();
-        assert_eq!(jac.shape(), vec![1, 1]);
+        assert_eq!(jac.shape_dims(), vec![1, 1]);
         assert!((jac.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
 
         let jac_rev = jacrev(&jaxpr, args.clone()).unwrap();
-        assert_eq!(jac_rev.shape(), vec![1, 1]);
+        assert_eq!(jac_rev.shape_dims(), vec![1, 1]);
         assert!((jac_rev.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
 
         let jac_fwd = jacfwd(&jaxpr, args.clone()).unwrap();
-        assert_eq!(jac_fwd.shape(), vec![1, 1]);
+        assert_eq!(jac_fwd.shape_dims(), vec![1, 1]);
         assert!((jac_fwd.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
 
         let hess = hessian(&jaxpr, args).unwrap();
-        assert_eq!(hess.shape(), vec![1, 1]);
+        assert_eq!(hess.shape_dims(), vec![1, 1]);
         assert!((hess.as_f64_list().unwrap()[0] - 2.0).abs() < 1e-6);
     }
 

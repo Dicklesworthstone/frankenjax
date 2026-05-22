@@ -42,7 +42,7 @@ def test_value_scalar():
 
     v = fj.PyValue.scalar_f64(42.0)
     assert isinstance(v, fj.Array)
-    assert v.shape == []
+    assert v.shape == ()
     assert v.dtype == "F64"
     assert v.ndim == 0
     assert v.size == 1
@@ -109,7 +109,7 @@ def test_value_scalar():
 
     v2 = fj.PyValue.scalar_i64(123)
     assert isinstance(v2, fj.Array)
-    assert v2.shape == []
+    assert v2.shape == ()
     assert v2.dtype == "I64"
     assert v2.ndim == 0
     assert v2.size == 1
@@ -132,7 +132,7 @@ def test_value_scalar():
 
     vec = fj.PyValue.vector_i64([1, 2, 3])
     assert isinstance(vec, fj.Array)
-    assert vec.shape == [3]
+    assert vec.shape == (3,)
     assert vec.dtype == "I64"
     assert vec.ndim == 1
     assert vec.size == 3
@@ -467,12 +467,12 @@ def test_device_helpers():
     sharded_vector = fj.device_put_sharded([vector], fj.local_devices())
     assert sharded_vector.as_i64_list() == [1, 2, 3]
     host_vector = fj.device_get(fj.block_until_ready(fj.device_put(vector)))
-    assert host_vector.shape() == [3]
+    assert host_vector.shape == (3,)
     assert host_vector.dtype() == "I64"
     assert host_vector.as_i64_list() == [1, 2, 3]
 
     copied_vector = fj.copy_to_host_async(host_vector)
-    assert copied_vector.shape() == [3]
+    assert copied_vector.shape == (3,)
     assert copied_vector.dtype() == "I64"
     assert copied_vector.as_i64_list() == [1, 2, 3]
     assert fj.effects_barrier() is None
@@ -957,7 +957,7 @@ def test_vmap():
     batch = fj.PyValue.vector_f64([1.0, 2.0, 3.0])
     result = fj.vmap(jaxpr, [batch])
     assert len(result) == 1
-    assert result[0].shape() == [3]
+    assert result[0].shape == (3,)
     assert result[0].as_f64_list() == [2.0, 3.0, 4.0]
     print("✓ vmap(add_one)([1,2,3]) = [2,3,4]")
 
@@ -982,19 +982,19 @@ def test_jacobian_and_hessian():
     jaxpr = fj.make_jaxpr_square()
 
     jac = fj.jacobian(jaxpr, [fj.PyValue.scalar_f64(3.0)])
-    assert jac.shape() == [1, 1]
+    assert jac.shape == (1, 1)
     assert abs(jac.as_f64_list()[0] - 6.0) < 1e-6
 
     jac_rev = fj.jacrev(jaxpr, [fj.PyValue.scalar_f64(3.0)])
-    assert jac_rev.shape() == [1, 1]
+    assert jac_rev.shape == (1, 1)
     assert abs(jac_rev.as_f64_list()[0] - 6.0) < 1e-6
 
     jac_fwd = fj.jacfwd(jaxpr, [fj.PyValue.scalar_f64(3.0)])
-    assert jac_fwd.shape() == [1, 1]
+    assert jac_fwd.shape == (1, 1)
     assert abs(jac_fwd.as_f64_list()[0] - 6.0) < 1e-6
 
     hess = fj.hessian(jaxpr, [fj.PyValue.scalar_f64(3.0)])
-    assert hess.shape() == [1, 1]
+    assert hess.shape == (1, 1)
     assert abs(hess.as_f64_list()[0] - 2.0) < 1e-6
     print("✓ jacobian/jacrev/jacfwd/hessian(square)(3.0) = (6.0, 6.0, 6.0, 2.0)")
 
