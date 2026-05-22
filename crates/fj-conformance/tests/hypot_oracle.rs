@@ -8,6 +8,7 @@
 //! - Symmetry: hypot(x, y) = hypot(y, x)
 //! - Infinity handling
 //! - NaN propagation
+//! - Broadcast-compatible operands
 //! - Tensor shapes
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
@@ -228,6 +229,31 @@ fn oracle_hypot_matrix() {
     let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_eq!(extract_f64_vec(&result), vec![5.0, 13.0, 17.0, 25.0]);
+}
+
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_hypot_vector_scalar_y_broadcast() {
+    let x = make_f64_tensor(&[3], vec![3.0, 0.0, -3.0]);
+    let y = make_f64_tensor(&[], vec![4.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![5.0, 4.0, 5.0]);
+}
+
+#[test]
+fn oracle_hypot_matrix_row_y_broadcast() {
+    let x = make_f64_tensor(&[2, 3], vec![3.0, 5.0, 8.0, 3.0, 5.0, 8.0]);
+    let y = make_f64_tensor(&[3], vec![4.0, 12.0, 15.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![5.0, 13.0, 17.0, 5.0, 13.0, 17.0]
+    );
 }
 
 // ======================== Unit Circle ========================
