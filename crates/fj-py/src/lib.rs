@@ -267,10 +267,12 @@ impl PyShapeDtypeStruct {
         Self { shape, dtype }
     }
 
+    #[getter]
     fn shape(&self) -> Vec<u32> {
         self.shape.clone()
     }
 
+    #[getter]
     fn dtype(&self) -> String {
         self.dtype.clone()
     }

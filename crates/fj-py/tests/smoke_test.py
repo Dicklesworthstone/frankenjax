@@ -177,8 +177,8 @@ def test_eval_shape():
     scalar_meta = fj.eval_shape(fj.make_jaxpr_square(), [fj.PyValue.scalar_f64(3.0)])
     assert len(scalar_meta) == 1
     assert isinstance(scalar_meta[0], fj.ShapeDtypeStruct)
-    assert scalar_meta[0].shape() == []
-    assert scalar_meta[0].dtype() == "F64"
+    assert scalar_meta[0].shape == []
+    assert scalar_meta[0].dtype == "F64"
 
     vector_meta = fj.eval_shape(
         fj.make_jaxpr_add_one(),
@@ -186,16 +186,16 @@ def test_eval_shape():
     )
     assert len(vector_meta) == 1
     assert isinstance(vector_meta[0], fj.ShapeDtypeStruct)
-    assert vector_meta[0].shape() == [3]
-    assert vector_meta[0].dtype() == "F64"
+    assert vector_meta[0].shape == [3]
+    assert vector_meta[0].dtype == "F64"
     print("✓ eval_shape returns shape/dtype metadata for scalar and vector outputs")
 
 
 def test_shape_dtype_struct_constructor():
     """Test public ShapeDtypeStruct constructor metadata."""
     meta = fj.ShapeDtypeStruct([2, 3], "F64")
-    assert meta.shape() == [2, 3]
-    assert meta.dtype() == "F64"
+    assert meta.shape == [2, 3]
+    assert meta.dtype == "F64"
     assert repr(meta) == "ShapeDtypeStruct(shape=[2, 3], dtype=F64)"
     print("✓ ShapeDtypeStruct constructor preserves metadata")
 
@@ -204,13 +204,13 @@ def test_typeof():
     """Test typeof metadata for scalar and vector values."""
     scalar_meta = fj.typeof(fj.PyValue.scalar_i64(7))
     assert isinstance(scalar_meta, fj.ShapeDtypeStruct)
-    assert scalar_meta.shape() == []
-    assert scalar_meta.dtype() == "I64"
+    assert scalar_meta.shape == []
+    assert scalar_meta.dtype == "I64"
 
     vector_meta = fj.typeof(fj.PyValue.vector_f64([1.0, 2.0, 3.0]))
     assert isinstance(vector_meta, fj.ShapeDtypeStruct)
-    assert vector_meta.shape() == [3]
-    assert vector_meta.dtype() == "F64"
+    assert vector_meta.shape == [3]
+    assert vector_meta.dtype == "F64"
     print("✓ typeof returns ShapeDtypeStruct metadata for scalar and vector values")
 
 
