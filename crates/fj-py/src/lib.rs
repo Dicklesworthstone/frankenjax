@@ -333,6 +333,21 @@ fn eval_shape(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyShapeDtypeS
 }
 
 #[pyfunction]
+fn device_put(value: PyValue) -> PyValue {
+    value
+}
+
+#[pyfunction]
+fn device_get(value: PyValue) -> PyValue {
+    value
+}
+
+#[pyfunction]
+fn block_until_ready(value: PyValue) -> PyValue {
+    value
+}
+
+#[pyfunction]
 fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
     fj_api::vmap(jaxpr.inner.clone())
@@ -416,6 +431,9 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vjp, m)?)?;
     m.add_function(wrap_pyfunction!(linearize, m)?)?;
     m.add_function(wrap_pyfunction!(eval_shape, m)?)?;
+    m.add_function(wrap_pyfunction!(device_put, m)?)?;
+    m.add_function(wrap_pyfunction!(device_get, m)?)?;
+    m.add_function(wrap_pyfunction!(block_until_ready, m)?)?;
     m.add_function(wrap_pyfunction!(vmap, m)?)?;
     m.add_function(wrap_pyfunction!(pmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
@@ -558,6 +576,23 @@ mod tests {
         assert_eq!(vector_meta.len(), 1);
         assert_eq!(vector_meta[0].shape(), vec![3]);
         assert_eq!(vector_meta[0].dtype(), "F64");
+    }
+
+    #[test]
+    fn cpu_local_device_helpers_preserve_values() {
+        let scalar = PyValue::scalar_f64(3.5);
+        let put_scalar = device_put(scalar.clone());
+        assert!((put_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
+        let ready_scalar = block_until_ready(put_scalar);
+        assert!((ready_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
+        let host_scalar = device_get(ready_scalar);
+        assert!((host_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
+
+        let vector = PyValue::vector_i64(vec![1, 2, 3]).unwrap();
+        let host_vector = device_get(block_until_ready(device_put(vector)));
+        assert_eq!(host_vector.shape(), vec![3]);
+        assert_eq!(host_vector.dtype(), "I64");
+        assert_eq!(host_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
     }
 
     #[test]

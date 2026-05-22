@@ -117,6 +117,24 @@ def test_value_and_grad():
     print("✓ value_and_grad(square)(4.0) = (16.0, 8.0)")
 
 
+def test_device_helpers():
+    """Test CPU-local host/device helper behavior."""
+    scalar = fj.PyValue.scalar_f64(3.5)
+    put_scalar = fj.device_put(scalar)
+    assert abs(put_scalar.as_f64() - 3.5) < 1e-12
+    ready_scalar = fj.block_until_ready(put_scalar)
+    assert abs(ready_scalar.as_f64() - 3.5) < 1e-12
+    host_scalar = fj.device_get(ready_scalar)
+    assert abs(host_scalar.as_f64() - 3.5) < 1e-12
+
+    vector = fj.PyValue.vector_i64([1, 2, 3])
+    host_vector = fj.device_get(fj.block_until_ready(fj.device_put(vector)))
+    assert host_vector.shape() == [3]
+    assert host_vector.dtype() == "I64"
+    assert host_vector.as_i64_list() == [1, 2, 3]
+    print("✓ device_put/device_get/block_until_ready preserve CPU-local values")
+
+
 def test_vmap():
     """Test vmap of add_one."""
     jaxpr = fj.make_jaxpr_add_one()
@@ -206,6 +224,7 @@ if __name__ == "__main__":
     test_linearize_square()
     test_eval_shape()
     test_value_and_grad()
+    test_device_helpers()
     test_vmap()
     test_pmap_fails_closed()
     test_jacobian_and_hessian()
