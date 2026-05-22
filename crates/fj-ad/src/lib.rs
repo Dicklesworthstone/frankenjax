@@ -1397,6 +1397,19 @@ pub fn vjp(
             let deriv = value_mul(&exp2_x, &ln2)?;
             Ok(vec![value_mul(g, &deriv)?])
         }
+        Primitive::Sinc => {
+            // d/dx sinc(x) = (cos(πx) - sinc(x))/x for x≠0, 0 for x=0
+            let x = &inputs[0];
+            let pi = scalar_constant_matching_dtype(std::f64::consts::PI, x);
+            let pi_x = value_mul(&pi, x)?;
+            let cos_pi_x = eval_primitive(Primitive::Cos, &[pi_x], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let sinc_x = eval_primitive(Primitive::Sinc, std::slice::from_ref(x), params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let numer = value_sub(&cos_pi_x, &sinc_x)?;
+            let deriv = value_div(&numer, x)?;
+            Ok(vec![value_mul(g, &deriv)?])
+        }
         Primitive::Sqrt => {
             let x = &inputs[0];
             let sqrt_x = eval_primitive(Primitive::Sqrt, std::slice::from_ref(x), &BTreeMap::new())
@@ -6363,6 +6376,19 @@ fn jvp_rule(
             let ln2 = scalar_constant_matching_dtype(std::f64::consts::LN_2, &tangents[0]);
             let deriv = ep(Primitive::Mul, &[exp2_x, ln2])?;
             ep(Primitive::Mul, &[deriv, tangents[0].clone()])
+        }
+
+        Primitive::Sinc => {
+            // (cos(πx) - sinc(x))/x * dx
+            let x = &primals[0];
+            let dx = &tangents[0];
+            let pi = scalar_constant_matching_dtype(std::f64::consts::PI, x);
+            let pi_x = ep(Primitive::Mul, &[pi, x.clone()])?;
+            let cos_pi_x = ep(Primitive::Cos, &[pi_x])?;
+            let sinc_x = ep(Primitive::Sinc, &[x.clone()])?;
+            let numer = ep(Primitive::Sub, &[cos_pi_x, sinc_x])?;
+            let deriv = ep(Primitive::Div, &[numer, x.clone()])?;
+            ep(Primitive::Mul, &[deriv, dx.clone()])
         }
 
         Primitive::Sqrt => {
