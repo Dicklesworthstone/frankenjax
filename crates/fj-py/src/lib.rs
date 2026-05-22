@@ -884,8 +884,17 @@ impl PyValue {
         Ok(())
     }
 
-    fn copy(&self) -> Self {
-        self.clone()
+    fn copy(&self) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
+        Ok(self.clone())
+    }
+
+    fn __copy__(&self) -> PyResult<Self> {
+        self.copy()
+    }
+
+    fn __deepcopy__(&self, _memo: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.copy()
     }
 
     fn delete(&mut self) {
@@ -3810,14 +3819,17 @@ mod tests {
         assert!((v.block_until_ready().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!(v.is_ready().unwrap());
         assert!(v.copy_to_host_async().is_ok());
-        assert!((v.copy().as_f64().unwrap() - 42.0).abs() < 1e-12);
-        let mut deleted = v.copy();
+        assert!((v.copy().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        assert!((v.__copy__().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        let mut deleted = v.copy().unwrap();
         assert!(!deleted.is_deleted());
         deleted.delete();
         assert!(deleted.is_deleted());
         assert!(deleted.block_until_ready().is_err());
         assert!(deleted.is_ready().is_err());
         assert!(deleted.copy_to_host_async().is_err());
+        assert!(deleted.copy().is_err());
+        assert!(deleted.__copy__().is_err());
         assert!(deleted.transpose_all_axes().is_err());
         assert!(deleted.matrix_transpose().is_err());
         assert!(deleted.real_part().is_err());
@@ -3841,6 +3853,12 @@ mod tests {
         assert!((global_shard.data().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
+            let memo = PyDict::new(py);
+            assert!(
+                (v.__deepcopy__(memo.as_any()).unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12
+            );
+            let memo = PyDict::new(py);
+            assert!(deleted.__deepcopy__(memo.as_any()).is_err());
             assert!(deleted.devices(py).is_err());
             assert!(deleted.tolist(py).is_err());
             assert!(deleted.tobytes(py, "C").is_err());
@@ -4053,7 +4071,10 @@ mod tests {
             vec![1.0, 2.5, 4.0]
         );
         assert!(floats.copy_to_host_async().is_ok());
-        assert_eq!(floats.copy().as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
+        assert_eq!(
+            floats.copy().unwrap().as_f64_list().unwrap(),
+            vec![1.0, 2.5, 4.0]
+        );
         let rounded_ties = PyValue::vector_f64(vec![10.5, 21.5, 12.5, 31.5])
             .unwrap()
             .round(0, None)

@@ -7,6 +7,7 @@ Run after building with:
 """
 
 import frankenjax as fj
+import copy
 import numpy as np
 import operator
 import struct
@@ -178,6 +179,12 @@ def test_value_scalar():
     copied = v.copy()
     assert isinstance(copied, fj.Array)
     assert abs(copied.as_f64() - 42.0) < 1e-12
+    copied = copy.copy(v)
+    assert isinstance(copied, fj.Array)
+    assert abs(copied.as_f64() - 42.0) < 1e-12
+    copied = copy.deepcopy(v)
+    assert isinstance(copied, fj.Array)
+    assert abs(copied.as_f64() - 42.0) < 1e-12
     deleted = v.copy()
     assert deleted.is_deleted() is False
     assert deleted.delete() is None
@@ -201,6 +208,9 @@ def test_value_scalar():
     deleted_accessors = [
         ("block_until_ready", deleted.block_until_ready),
         ("copy_to_host_async", deleted.copy_to_host_async),
+        ("copy", deleted.copy),
+        ("copy.copy", lambda: copy.copy(deleted)),
+        ("copy.deepcopy", lambda: copy.deepcopy(deleted)),
         ("devices", deleted.devices),
         ("tolist", deleted.tolist),
         ("tobytes", deleted.tobytes),
