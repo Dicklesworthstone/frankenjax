@@ -683,6 +683,18 @@ impl PyValue {
             .unbind())
     }
 
+    fn __reversed__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
+        let values = self.leading_axis_values()?;
+        let mut py_values = Vec::with_capacity(values.len());
+        for value in values.into_iter().rev() {
+            py_values.push(Py::new(py, value)?);
+        }
+        Ok(PyList::new(py, py_values)?
+            .call_method0("__iter__")?
+            .unbind())
+    }
+
     fn __getitem__(&self, index: &Bound<'_, PyAny>) -> PyResult<Self> {
         self.ensure_not_deleted()?;
         if let Ok(index) = index.extract::<isize>() {

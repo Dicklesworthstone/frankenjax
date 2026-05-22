@@ -181,6 +181,7 @@ def test_value_scalar():
         ("transpose", deleted.transpose),
         ("real", lambda: deleted.real),
         ("imag", lambda: deleted.imag),
+        ("reversed", lambda: list(reversed(deleted))),
         ("array protocol", lambda: np.asarray(deleted)),
         ("DLPack device protocol", deleted.__dlpack_device__),
         ("addressable_shards", lambda: deleted.addressable_shards),
@@ -217,6 +218,12 @@ def test_value_scalar():
         assert "integer scalar arrays" in str(exc)
     else:
         raise AssertionError("operator.index(float scalar) should raise TypeError")
+    try:
+        list(reversed(v))
+    except TypeError as exc:
+        assert "iteration over a 0-d array" in str(exc)
+    else:
+        raise AssertionError("reversed(scalar) should raise TypeError")
     try:
         v.__hex__()
     except TypeError as exc:
@@ -309,6 +316,10 @@ def test_value_scalar():
     assert [item.as_i64() for item in iterated] == [1, 2, 3]
     assert [item.shape for item in iterated] == [(), (), ()]
     assert all(isinstance(item, fj.Array) for item in iterated)
+    reversed_items = list(reversed(vec))
+    assert [item.as_i64() for item in reversed_items] == [3, 2, 1]
+    assert [item.shape for item in reversed_items] == [(), (), ()]
+    assert all(isinstance(item, fj.Array) for item in reversed_items)
     vec_shard = vec.addressable_shards[0]
     assert vec_shard.index == (slice(None),)
     assert vec_shard.replica_id == 0
