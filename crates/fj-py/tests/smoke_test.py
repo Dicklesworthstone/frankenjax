@@ -288,6 +288,8 @@ def test_shape_dtype_struct_constructor():
     meta = fj.ShapeDtypeStruct([2, 3], "F64")
     assert meta.shape == [2, 3]
     assert meta.dtype == "F64"
+    assert meta.ndim == 2
+    assert meta.size == 6
     assert repr(meta) == "ShapeDtypeStruct(shape=[2, 3], dtype=F64)"
     print("✓ ShapeDtypeStruct constructor preserves metadata")
 
@@ -298,11 +300,15 @@ def test_typeof():
     assert isinstance(scalar_meta, fj.ShapeDtypeStruct)
     assert scalar_meta.shape == []
     assert scalar_meta.dtype == "I64"
+    assert scalar_meta.ndim == 0
+    assert scalar_meta.size == 1
 
     vector_meta = fj.typeof(fj.PyValue.vector_f64([1.0, 2.0, 3.0]))
     assert isinstance(vector_meta, fj.ShapeDtypeStruct)
     assert vector_meta.shape == [3]
     assert vector_meta.dtype == "F64"
+    assert vector_meta.ndim == 1
+    assert vector_meta.size == 3
     print("✓ typeof returns ShapeDtypeStruct metadata for scalar and vector values")
 
 

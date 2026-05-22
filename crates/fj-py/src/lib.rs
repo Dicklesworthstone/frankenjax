@@ -430,6 +430,18 @@ impl PyShapeDtypeStruct {
         self.dtype.clone()
     }
 
+    #[getter]
+    fn ndim(&self) -> usize {
+        self.shape.len()
+    }
+
+    #[getter]
+    fn size(&self) -> u64 {
+        self.shape
+            .iter()
+            .fold(1_u64, |size, dim| size.saturating_mul(u64::from(*dim)))
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "ShapeDtypeStruct(shape={:?}, dtype={})",
@@ -1926,6 +1938,8 @@ mod tests {
         let meta = PyShapeDtypeStruct::new(vec![2, 3], "F64".to_owned());
         assert_eq!(meta.shape(), vec![2, 3]);
         assert_eq!(meta.dtype(), "F64");
+        assert_eq!(meta.ndim(), 2);
+        assert_eq!(meta.size(), 6);
         assert_eq!(meta.__repr__(), "ShapeDtypeStruct(shape=[2, 3], dtype=F64)");
     }
 
