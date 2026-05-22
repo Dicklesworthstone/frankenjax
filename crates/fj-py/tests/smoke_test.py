@@ -310,6 +310,21 @@ def test_shape_dtype_struct_constructor():
     assert repr(weak_meta) == (
         "ShapeDtypeStruct(shape=[], dtype=F64, weak_type=True, is_ref=True)"
     )
+    updated = meta.update(shape=[4], dtype="I64", weak_type=True, is_ref=True)
+    assert updated.shape == [4]
+    assert updated.dtype == "I64"
+    assert updated.ndim == 1
+    assert updated.size == 4
+    assert len(updated) == 4
+    assert updated.weak_type is True
+    assert updated.is_ref is True
+    assert repr(updated) == (
+        "ShapeDtypeStruct(shape=[4], dtype=I64, weak_type=True, is_ref=True)"
+    )
+    assert meta.shape == [2, 3]
+    assert meta.dtype == "F64"
+    assert meta.weak_type is False
+    assert meta.is_ref is False
     print("✓ ShapeDtypeStruct constructor preserves metadata")
 
 

@@ -472,6 +472,22 @@ impl PyShapeDtypeStruct {
         self.is_ref
     }
 
+    #[pyo3(signature = (*, shape=None, dtype=None, weak_type=None, is_ref=None))]
+    fn update(
+        &self,
+        shape: Option<Vec<u32>>,
+        dtype: Option<String>,
+        weak_type: Option<bool>,
+        is_ref: Option<bool>,
+    ) -> Self {
+        Self {
+            shape: shape.unwrap_or_else(|| self.shape.clone()),
+            dtype: dtype.unwrap_or_else(|| self.dtype.clone()),
+            weak_type: weak_type.unwrap_or(self.weak_type),
+            is_ref: is_ref.unwrap_or(self.is_ref),
+        }
+    }
+
     fn __repr__(&self) -> String {
         let weak_type = if self.weak_type {
             ", weak_type=True"
@@ -1991,6 +2007,25 @@ mod tests {
             weak_meta.__repr__(),
             "ShapeDtypeStruct(shape=[], dtype=F64, weak_type=True, is_ref=True)"
         );
+
+        let updated = meta.update(
+            Some(vec![4]),
+            Some("I64".to_owned()),
+            Some(true),
+            Some(true),
+        );
+        assert_eq!(updated.shape(), vec![4]);
+        assert_eq!(updated.dtype(), "I64");
+        assert_eq!(updated.__len__().unwrap(), 4);
+        assert!(updated.weak_type());
+        assert!(updated.is_ref());
+        assert_eq!(
+            updated.__repr__(),
+            "ShapeDtypeStruct(shape=[4], dtype=I64, weak_type=True, is_ref=True)"
+        );
+        assert_eq!(meta.shape(), vec![2, 3]);
+        assert!(!meta.weak_type());
+        assert!(!meta.is_ref());
     }
 
     #[test]
