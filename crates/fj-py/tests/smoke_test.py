@@ -65,6 +65,12 @@ def test_value_scalar():
         assert str(exc) == "len() of unsized object"
     else:
         raise AssertionError("len(scalar) should raise TypeError")
+    try:
+        iter(v)
+    except TypeError as exc:
+        assert str(exc) == "iteration over a 0-d array"
+    else:
+        raise AssertionError("iter(scalar) should raise TypeError")
     ready = v.block_until_ready()
     assert isinstance(ready, fj.Array)
     assert abs(ready.as_f64() - 42.0) < 1e-12
@@ -144,6 +150,10 @@ def test_value_scalar():
     assert vec.is_fully_addressable is True
     assert vec.is_fully_replicated is True
     assert len(vec) == 3
+    iterated = list(vec)
+    assert [item.as_i64() for item in iterated] == [1, 2, 3]
+    assert [item.shape for item in iterated] == [(), (), ()]
+    assert all(isinstance(item, fj.Array) for item in iterated)
     assert vec.block_until_ready().as_i64_list() == [1, 2, 3]
     assert vec.copy_to_host_async().as_i64_list() == [1, 2, 3]
     assert vec.copy().as_i64_list() == [1, 2, 3]

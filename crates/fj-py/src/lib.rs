@@ -32,6 +32,28 @@ impl PyValue {
             .as_tensor()
             .map_or_else(Vec::new, |tensor| tensor.shape.dims.clone())
     }
+
+    fn leading_axis_values(&self) -> PyResult<Vec<Self>> {
+        let Value::Tensor(tensor) = &self.inner else {
+            return Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "iteration over a 0-d array",
+            ));
+        };
+
+        let first_dim = tensor.leading_dim().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>("iteration over a 0-d array")
+        })?;
+        let capacity = usize::try_from(first_dim).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyOverflowError, _>("array length does not fit usize")
+        })?;
+
+        let mut values = Vec::with_capacity(capacity);
+        for index in 0..capacity {
+            let value = tensor.slice_axis0(index).map_err(value_error)?;
+            values.push(Self::from_value(value));
+        }
+        Ok(values)
+    }
 }
 
 #[pyclass]
@@ -315,6 +337,17 @@ impl PyValue {
         usize::try_from(first_dim).map_err(|_| {
             PyErr::new::<pyo3::exceptions::PyOverflowError, _>("array length does not fit usize")
         })
+    }
+
+    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let values = self.leading_axis_values()?;
+        let mut py_values = Vec::with_capacity(values.len());
+        for value in values {
+            py_values.push(Py::new(py, value)?);
+        }
+        Ok(PyList::new(py, py_values)?
+            .call_method0("__iter__")?
+            .unbind())
     }
 
     fn block_until_ready(&self) -> Self {
@@ -938,6 +971,10 @@ fn vjp_outputs_and_pullback(
 
 fn runtime_error(error: impl ToString) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())
+}
+
+fn value_error(error: impl ToString) -> PyErr {
+    PyErr::new::<pyo3::exceptions::PyValueError, _>(error.to_string())
 }
 
 fn py_object_repr(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<String> {
@@ -2061,6 +2098,7 @@ mod tests {
         assert_eq!(v.size(), 1);
         assert_eq!(v.itemsize(), 8);
         assert_eq!(v.nbytes(), 8);
+        assert!(v.leading_axis_values().is_err());
         assert!(!v.weak_type());
         assert!(!v.committed());
         let device = v.device();
@@ -2184,6 +2222,15 @@ mod tests {
         assert_eq!(ints.__len__().unwrap(), 3);
         assert!(ints.__float__().is_err());
         assert!(ints.__bool__().is_err());
+        let iterated = ints.leading_axis_values().unwrap();
+        assert_eq!(iterated.len(), 3);
+        assert_eq!(
+            iterated
+                .iter()
+                .map(|value| value.as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
         Python::with_gil(|py| {
             assert!(ints.__int__(py).is_err());
             assert!(ints.__complex__(py).is_err());
