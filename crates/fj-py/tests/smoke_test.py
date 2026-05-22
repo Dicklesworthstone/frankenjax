@@ -345,6 +345,12 @@ def test_local_context_helpers():
     with fj.enable_checks(False):
         assert add_one(5) == 6
 
+    with fj.enable_x64():
+        assert add_one(5) == 6
+
+    with fj.enable_x64(False):
+        assert add_one(6) == 7
+
     with fj.check_tracer_leaks():
         assert add_one(6) == 7
 
@@ -378,11 +384,52 @@ def test_local_context_helpers():
     with fj.explain_cache_misses(False):
         assert add_one(16) == 17
 
+    with fj.no_tracing():
+        assert add_one(16) == 17
+
+    with fj.no_tracing(False):
+        assert add_one(17) == 18
+
+    with fj.no_execution():
+        assert add_one(17) == 18
+
+    with fj.no_execution(False):
+        assert add_one(18) == 19
+
+    with fj.default_matmul_precision():
+        assert add_one(18) == 19
+
+    with fj.default_matmul_precision("high"):
+        assert add_one(19) == 20
+
+    with fj.default_prng_impl("threefry2x32"):
+        assert add_one(20) == 21
+
+    with fj.numpy_dtype_promotion("strict"):
+        assert add_one(21) == 22
+
+    with fj.numpy_rank_promotion("warn"):
+        assert add_one(22) == 23
+
+    with fj.transfer_guard("allow"):
+        assert add_one(23) == 24
+
+    with fj.transfer_guard_host_to_device("log"):
+        assert add_one(24) == 25
+
+    with fj.transfer_guard_device_to_device("disallow"):
+        assert add_one(25) == 26
+
+    with fj.transfer_guard_device_to_host("log_explicit"):
+        assert add_one(26) == 27
+
     with fj.ensure_compile_time_eval():
         assert add_one(17) == 18
 
     assert fj.enable_checks().name == "enable_checks(true)"
     assert fj.enable_checks(False).name == "enable_checks(false)"
+    assert fj.enable_x64().name == "enable_x64(true)"
+    assert fj.enable_x64(False).name == "enable_x64(false)"
     assert fj.check_tracer_leaks().name == "check_tracer_leaks(true)"
     assert fj.check_tracer_leaks(False).name == "check_tracer_leaks(false)"
     assert fj.checking_leaks().name == "checking_leaks"
@@ -394,18 +441,79 @@ def test_local_context_helpers():
     assert fj.log_compiles(False).name == "log_compiles(false)"
     assert fj.explain_cache_misses().name == "explain_cache_misses(true)"
     assert fj.explain_cache_misses(False).name == "explain_cache_misses(false)"
+    assert fj.no_tracing().name == "no_tracing(true)"
+    assert fj.no_tracing(False).name == "no_tracing(false)"
+    assert fj.no_execution().name == "no_execution(true)"
+    assert fj.no_execution(False).name == "no_execution(false)"
+    assert fj.default_matmul_precision().name == "default_matmul_precision(None)"
+    assert (
+        fj.default_matmul_precision("TF32_TF32_F32").name
+        == 'default_matmul_precision("TF32_TF32_F32")'
+    )
+    assert fj.default_prng_impl("rbg").name == 'default_prng_impl("rbg")'
+    assert (
+        fj.numpy_dtype_promotion("standard").name
+        == 'numpy_dtype_promotion("standard")'
+    )
+    assert (
+        fj.numpy_rank_promotion("raise").name
+        == 'numpy_rank_promotion("raise")'
+    )
+    assert fj.transfer_guard("allow").name == 'transfer_guard("allow")'
+    assert (
+        fj.transfer_guard_host_to_device("log").name
+        == 'transfer_guard_host_to_device("log")'
+    )
+    assert (
+        fj.transfer_guard_device_to_device("disallow").name
+        == 'transfer_guard_device_to_device("disallow")'
+    )
+    assert (
+        fj.transfer_guard_device_to_host("disallow_explicit").name
+        == 'transfer_guard_device_to_host("disallow_explicit")'
+    )
     assert fj.disable_jit().name == "disable_jit(true)"
     assert fj.disable_jit(False).name == "disable_jit(false)"
     assert fj.ensure_compile_time_eval().name == "ensure_compile_time_eval"
     assert fj.enable_checks()(add_one) is add_one
+    assert fj.enable_x64()(add_one) is add_one
     assert fj.check_tracer_leaks()(add_one) is add_one
     assert fj.checking_leaks()(add_one) is add_one
     assert fj.debug_nans()(add_one) is add_one
     assert fj.debug_infs()(add_one) is add_one
     assert fj.log_compiles()(add_one) is add_one
     assert fj.explain_cache_misses()(add_one) is add_one
+    assert fj.no_tracing()(add_one) is add_one
+    assert fj.no_execution()(add_one) is add_one
+    assert fj.default_matmul_precision("highest")(add_one) is add_one
+    assert fj.default_prng_impl("unsafe_rbg")(add_one) is add_one
+    assert fj.numpy_dtype_promotion("strict")(add_one) is add_one
+    assert fj.numpy_rank_promotion("allow")(add_one) is add_one
+    assert fj.transfer_guard("log_explicit")(add_one) is add_one
+    assert fj.transfer_guard_host_to_device("allow")(add_one) is add_one
+    assert fj.transfer_guard_device_to_device("allow")(add_one) is add_one
+    assert fj.transfer_guard_device_to_host("allow")(add_one) is add_one
     assert fj.disable_jit()(add_one) is add_one
     assert fj.ensure_compile_time_eval()(add_one) is add_one
+
+    invalid_enum_calls = [
+        (fj.default_matmul_precision, "ultra"),
+        (fj.default_prng_impl, "mt19937"),
+        (fj.numpy_dtype_promotion, "loose"),
+        (fj.numpy_rank_promotion, "error"),
+        (fj.transfer_guard, "block"),
+        (fj.transfer_guard_host_to_device, "block"),
+        (fj.transfer_guard_device_to_device, "block"),
+        (fj.transfer_guard_device_to_host, "block"),
+    ]
+    for function, value in invalid_enum_calls:
+        try:
+            function(value)
+        except ValueError as exc:
+            assert "unsupported" in str(exc)
+        else:
+            raise AssertionError(f"{function.__name__} should reject {value!r}")
+
     print("✓ config-style local context helpers preserve Python callables")
 
 

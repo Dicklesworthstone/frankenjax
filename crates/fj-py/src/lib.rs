@@ -321,6 +321,17 @@ fn validate_cpu_device(device: &PyDevice) -> PyResult<()> {
     }
 }
 
+fn validate_enum_value(value: &str, allowed: &[&str], option_name: &str) -> PyResult<()> {
+    if allowed.contains(&value) {
+        Ok(())
+    } else {
+        Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "unsupported {option_name} value {value:?}; expected one of {}",
+            allowed.join(", ")
+        )))
+    }
+}
+
 fn cpu_device() -> PyDevice {
     PyDevice {
         id: 0,
@@ -661,6 +672,13 @@ fn enable_checks(checks: bool) -> PyNamedScope {
 }
 
 #[pyfunction(signature = (enabled=true))]
+fn enable_x64(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("enable_x64({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
 fn check_tracer_leaks(enabled: bool) -> PyNamedScope {
     PyNamedScope {
         name: format!("check_tracer_leaks({enabled})"),
@@ -700,6 +718,120 @@ fn explain_cache_misses(enabled: bool) -> PyNamedScope {
     PyNamedScope {
         name: format!("explain_cache_misses({enabled})"),
     }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn no_tracing(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("no_tracing({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn no_execution(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("no_execution({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (precision=None))]
+fn default_matmul_precision(precision: Option<String>) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &[
+        "default",
+        "high",
+        "highest",
+        "bfloat16",
+        "tensorfloat32",
+        "float32",
+        "ANY_F8_ANY_F8_F32",
+        "ANY_F8_ANY_F8_F32_FAST_ACCUM",
+        "ANY_F8_ANY_F8_ANY",
+        "ANY_F8_ANY_F8_ANY_FAST_ACCUM",
+        "F16_F16_F16",
+        "F16_F16_F32",
+        "BF16_BF16_BF16",
+        "BF16_BF16_F32",
+        "BF16_BF16_F32_X3",
+        "BF16_BF16_F32_X6",
+        "BF16_BF16_F32_X9",
+        "TF32_TF32_F32",
+        "TF32_TF32_F32_X3",
+        "F32_F32_F32",
+        "F64_F64_F64",
+    ];
+
+    match precision {
+        Some(precision) => {
+            validate_enum_value(&precision, ALLOWED, "default_matmul_precision")?;
+            Ok(PyNamedScope {
+                name: format!("default_matmul_precision({precision:?})"),
+            })
+        }
+        None => Ok(PyNamedScope {
+            name: "default_matmul_precision(None)".to_owned(),
+        }),
+    }
+}
+
+#[pyfunction(signature = (impl_name))]
+fn default_prng_impl(impl_name: String) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &["threefry2x32", "rbg", "unsafe_rbg"];
+    validate_enum_value(&impl_name, ALLOWED, "default_prng_impl")?;
+    Ok(PyNamedScope {
+        name: format!("default_prng_impl({impl_name:?})"),
+    })
+}
+
+#[pyfunction(signature = (promotion))]
+fn numpy_dtype_promotion(promotion: String) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &["standard", "strict"];
+    validate_enum_value(&promotion, ALLOWED, "numpy_dtype_promotion")?;
+    Ok(PyNamedScope {
+        name: format!("numpy_dtype_promotion({promotion:?})"),
+    })
+}
+
+#[pyfunction(signature = (promotion))]
+fn numpy_rank_promotion(promotion: String) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &["allow", "warn", "raise"];
+    validate_enum_value(&promotion, ALLOWED, "numpy_rank_promotion")?;
+    Ok(PyNamedScope {
+        name: format!("numpy_rank_promotion({promotion:?})"),
+    })
+}
+
+fn transfer_guard_scope(name: &str, value: String) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &[
+        "allow",
+        "log",
+        "disallow",
+        "log_explicit",
+        "disallow_explicit",
+    ];
+    validate_enum_value(&value, ALLOWED, name)?;
+    Ok(PyNamedScope {
+        name: format!("{name}({value:?})"),
+    })
+}
+
+#[pyfunction(signature = (new_val))]
+fn transfer_guard(new_val: String) -> PyResult<PyNamedScope> {
+    transfer_guard_scope("transfer_guard", new_val)
+}
+
+#[pyfunction(signature = (new_val))]
+fn transfer_guard_host_to_device(new_val: String) -> PyResult<PyNamedScope> {
+    transfer_guard_scope("transfer_guard_host_to_device", new_val)
+}
+
+#[pyfunction(signature = (new_val))]
+fn transfer_guard_device_to_device(new_val: String) -> PyResult<PyNamedScope> {
+    transfer_guard_scope("transfer_guard_device_to_device", new_val)
+}
+
+#[pyfunction(signature = (new_val))]
+fn transfer_guard_device_to_host(new_val: String) -> PyResult<PyNamedScope> {
+    transfer_guard_scope("transfer_guard_device_to_host", new_val)
 }
 
 #[pyfunction(signature = (disable=true))]
@@ -845,12 +977,23 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(named_call, m)?)?;
     m.add_function(wrap_pyfunction!(named_scope, m)?)?;
     m.add_function(wrap_pyfunction!(enable_checks, m)?)?;
+    m.add_function(wrap_pyfunction!(enable_x64, m)?)?;
     m.add_function(wrap_pyfunction!(check_tracer_leaks, m)?)?;
     m.add_function(wrap_pyfunction!(checking_leaks, m)?)?;
     m.add_function(wrap_pyfunction!(debug_nans, m)?)?;
     m.add_function(wrap_pyfunction!(debug_infs, m)?)?;
     m.add_function(wrap_pyfunction!(log_compiles, m)?)?;
     m.add_function(wrap_pyfunction!(explain_cache_misses, m)?)?;
+    m.add_function(wrap_pyfunction!(no_tracing, m)?)?;
+    m.add_function(wrap_pyfunction!(no_execution, m)?)?;
+    m.add_function(wrap_pyfunction!(default_matmul_precision, m)?)?;
+    m.add_function(wrap_pyfunction!(default_prng_impl, m)?)?;
+    m.add_function(wrap_pyfunction!(numpy_dtype_promotion, m)?)?;
+    m.add_function(wrap_pyfunction!(numpy_rank_promotion, m)?)?;
+    m.add_function(wrap_pyfunction!(transfer_guard, m)?)?;
+    m.add_function(wrap_pyfunction!(transfer_guard_host_to_device, m)?)?;
+    m.add_function(wrap_pyfunction!(transfer_guard_device_to_device, m)?)?;
+    m.add_function(wrap_pyfunction!(transfer_guard_device_to_host, m)?)?;
     m.add_function(wrap_pyfunction!(disable_jit, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_compile_time_eval, m)?)?;
     m.add_function(wrap_pyfunction!(print_environment_info, m)?)?;
