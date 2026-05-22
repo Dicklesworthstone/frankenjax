@@ -3739,10 +3739,36 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
                 elements,
             )?))
         }
-        _ => Err(EvalError::Unsupported {
-            primitive,
-            detail: "nextafter requires matching scalar/tensor kinds".to_owned(),
-        }),
+        (Value::Scalar(lhs), Value::Tensor(rhs)) => {
+            let mut elements = Vec::with_capacity(rhs.elements.len());
+            for r in rhs.elements.iter() {
+                elements.push(next_after_literal(primitive, *lhs, *r)?);
+            }
+            let dtype = match rhs.dtype {
+                DType::F32 => DType::F32,
+                _ => DType::F64,
+            };
+            Ok(Value::Tensor(TensorValue::new(
+                dtype,
+                rhs.shape.clone(),
+                elements,
+            )?))
+        }
+        (Value::Tensor(lhs), Value::Scalar(rhs)) => {
+            let mut elements = Vec::with_capacity(lhs.elements.len());
+            for l in lhs.elements.iter() {
+                elements.push(next_after_literal(primitive, *l, *rhs)?);
+            }
+            let dtype = match lhs.dtype {
+                DType::F32 => DType::F32,
+                _ => DType::F64,
+            };
+            Ok(Value::Tensor(TensorValue::new(
+                dtype,
+                lhs.shape.clone(),
+                elements,
+            )?))
+        }
     }
 }
 
