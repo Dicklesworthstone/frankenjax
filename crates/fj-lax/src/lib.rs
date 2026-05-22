@@ -389,6 +389,9 @@ pub fn eval_primitive(
         Primitive::IsFinite => eval_is_finite(primitive, inputs),
         Primitive::IsNan => eval_is_nan(primitive, inputs),
         Primitive::IsInf => eval_is_inf(primitive, inputs),
+        Primitive::CopySign => {
+            eval_binary_elementwise(primitive, inputs, |a, b| f64::copysign(a as f64, b as f64) as i64, f64::copysign)
+        }
         Primitive::IntegerPow => eval_integer_pow(primitive, inputs, params),
         Primitive::Nextafter => eval_nextafter(primitive, inputs),
         Primitive::Slice => eval_slice(inputs, params),

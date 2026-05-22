@@ -3284,6 +3284,20 @@ pub fn vjp(
         Primitive::IsFinite | Primitive::IsNan | Primitive::IsInf => {
             Ok(vec![zeros_like(&inputs[0])])
         }
+        Primitive::CopySign => {
+            // copysign(x, y) = |x| * sign(y)
+            // dx = g * sign(x) * sign(y), dy = 0
+            let x = &inputs[0];
+            let y = &inputs[1];
+            let sign_x = eval_primitive(Primitive::Sign, std::slice::from_ref(x), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let sign_y = eval_primitive(Primitive::Sign, std::slice::from_ref(y), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let sign_prod = value_mul(&sign_x, &sign_y)?;
+            let gx = value_mul(g, &sign_prod)?;
+            let gy = zeros_like(y);
+            Ok(vec![gx, gy])
+        }
         // IntegerPow: d/dx x^n = n * x^(n-1)
         Primitive::IntegerPow => {
             let n: i32 = params
@@ -6775,6 +6789,15 @@ fn jvp_rule(
             let dx_term = ep(Primitive::Mul, &[sig_xy, tangents[0].clone()])?;
             let dy_term = ep(Primitive::Mul, &[sig_yx, tangents[1].clone()])?;
             ep(Primitive::Add, &[dx_term, dy_term])
+        }
+
+        Primitive::CopySign => {
+            // copysign(x, y) = |x| * sign(y)
+            // d(copysign) = sign(x) * sign(y) * dx
+            let sign_x = ep(Primitive::Sign, &[primals[0].clone()])?;
+            let sign_y = ep(Primitive::Sign, &[primals[1].clone()])?;
+            let sign_prod = ep(Primitive::Mul, &[sign_x, sign_y])?;
+            ep(Primitive::Mul, &[sign_prod, tangents[0].clone()])
         }
 
         Primitive::Atan2 => {

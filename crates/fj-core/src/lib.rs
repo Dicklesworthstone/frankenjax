@@ -177,6 +177,7 @@ pub enum Primitive {
     IsFinite,
     IsNan,
     IsInf,
+    CopySign,
     IntegerPow,
     Nextafter,
     // Clamping
@@ -341,6 +342,7 @@ impl Primitive {
         Self::IsFinite,
         Self::IsNan,
         Self::IsInf,
+        Self::CopySign,
         Self::IntegerPow,
         Self::Nextafter,
         Self::Clamp,
@@ -499,6 +501,7 @@ impl Primitive {
             Self::IsFinite => "is_finite",
             Self::IsNan => "is_nan",
             Self::IsInf => "is_inf",
+            Self::CopySign => "copysign",
             Self::IntegerPow => "integer_pow",
             Self::Nextafter => "nextafter",
             Self::Clamp => "clamp",
