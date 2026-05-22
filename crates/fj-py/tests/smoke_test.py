@@ -62,6 +62,11 @@ def test_value_scalar():
     assert v.device.process_index == 0
     assert v.device.platform == "cpu"
     assert v.device.device_kind == "cpu"
+    moved = v.to_device(v.device)
+    assert isinstance(moved, fj.Array)
+    assert abs(moved.as_f64() - 42.0) < 1e-12
+    streamed = v.to_device(fj.local_devices()[0], stream=None)
+    assert abs(streamed.as_f64() - 42.0) < 1e-12
     assert v.platform() == "cpu"
     assert {device.platform for device in v.devices()} == {"cpu"}
     assert str(v) == "42.0"
@@ -162,6 +167,7 @@ def test_value_scalar():
         ("DLPack device protocol", deleted.__dlpack_device__),
         ("addressable_shards", lambda: deleted.addressable_shards),
         ("global_shards", lambda: deleted.global_shards),
+        ("to_device", lambda: deleted.to_device(v.device)),
     ]
     for name, accessor in deleted_accessors:
         try:

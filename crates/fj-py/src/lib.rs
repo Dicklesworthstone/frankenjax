@@ -435,6 +435,14 @@ impl PyValue {
         Ok(devices.into_any().unbind())
     }
 
+    #[pyo3(signature = (device, *, stream=None))]
+    fn to_device(&self, device: PyRef<'_, PyDevice>, stream: Option<Py<PyAny>>) -> PyResult<Self> {
+        let _ = stream;
+        self.ensure_not_deleted()?;
+        validate_cpu_device(&device)?;
+        Ok(self.clone())
+    }
+
     #[getter]
     fn device_buffer(&self) -> PyResult<()> {
         Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
