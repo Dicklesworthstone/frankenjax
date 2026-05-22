@@ -447,3 +447,70 @@ fn metamorphic_fft_parseval_energy() {
         energy_y / n
     );
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_fft_preserves_dtype() {
+    let x = make_complex_tensor(&[(1.0, 0.0), (2.0, 0.0)]);
+    let result =
+        eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_ifft_preserves_dtype() {
+    let x = make_complex_tensor(&[(2.0, 0.0), (0.0, 0.0)]);
+    let result =
+        eval_primitive(Primitive::Ifft, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_rfft_output_dtype_is_complex128() {
+    let x = make_real_tensor(&[1.0, 2.0, 3.0, 4.0]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let result = eval_primitive(Primitive::Rfft, std::slice::from_ref(&x), &params).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_irfft_output_dtype_is_f64() {
+    let x = make_complex_tensor(&[(4.0, 0.0), (0.0, 0.0), (0.0, 0.0)]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let result = eval_primitive(Primitive::Irfft, std::slice::from_ref(&x), &params).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_fft_single_element() {
+    // FFT of a single element is the element itself
+    let x = make_complex_tensor(&[(5.0, 3.0)]);
+    let result =
+        eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    let y = extract_complex_vec(&result);
+    assert_complex_close(&y, &[(5.0, 3.0)], 1e-10, "FFT of single element");
+}
+
+#[test]
+fn oracle_fft_power_of_two_length_8() {
+    // FFT of length 8 input
+    let x = make_complex_tensor(&[
+        (1.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+        (0.0, 0.0),
+    ]);
+    let result =
+        eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    let y = extract_complex_vec(&result);
+    assert_eq!(y.len(), 8);
+    // DC component should be 4 (sum of input)
+    assert!((y[0].0 - 4.0).abs() < 1e-10 && y[0].1.abs() < 1e-10);
+}

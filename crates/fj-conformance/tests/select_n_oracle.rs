@@ -308,3 +308,105 @@ fn select_n_accepts_matching_dtypes() {
 
     assert_eq!(extract_scalar(&result), 20.0);
 }
+
+// ======================== Additional Coverage ========================
+
+fn matrix_f64(rows: u32, cols: u32, values: &[f64]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![rows, cols] },
+            values.iter().copied().map(Literal::from_f64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn matrix_i64(rows: u32, cols: u32, values: &[i64]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: vec![rows, cols] },
+            values.iter().copied().map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn select_n_2d_elementwise() {
+    // 2D tensor index selects elementwise from 2D cases
+    let result = select_n(vec![
+        matrix_i64(2, 2, &[0, 1, 1, 0]),
+        matrix_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]),
+        matrix_f64(2, 2, &[10.0, 20.0, 30.0, 40.0]),
+    ])
+    .expect("2D select_n should succeed");
+
+    let tensor = result.as_tensor().expect("expected tensor");
+    assert_eq!(tensor.shape.dims, vec![2, 2]);
+    let vals: Vec<f64> = tensor.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert_eq!(vals, vec![1.0, 20.0, 30.0, 4.0]);
+}
+
+#[test]
+fn select_n_empty_tensors() {
+    let result = select_n(vec![
+        Value::Tensor(
+            TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap(),
+        ),
+        Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
+        ),
+        Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
+        ),
+    ])
+    .expect("empty tensor select_n should succeed");
+
+    let tensor = result.as_tensor().expect("expected tensor");
+    assert_eq!(tensor.shape.dims, vec![0]);
+    assert!(tensor.elements.is_empty());
+}
+
+#[test]
+fn select_n_preserves_output_dtype() {
+    let result = select_n(vec![
+        Value::scalar_i64(0),
+        Value::scalar_f64(10.0),
+        Value::scalar_f64(20.0),
+    ])
+    .expect("select_n should succeed");
+
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn select_n_negative_index_rejected() {
+    let err = select_n(vec![
+        Value::scalar_i64(-1),
+        Value::scalar_f64(10.0),
+        Value::scalar_f64(20.0),
+    ])
+    .expect_err("negative index should fail");
+
+    assert!(
+        err.to_string().contains("out of bounds") || err.to_string().contains("negative"),
+        "unexpected negative-index error: {err}"
+    );
+}
+
+#[test]
+fn select_n_tensor_negative_index_rejected() {
+    let err = select_n(vec![
+        vector_i64(&[0, -1, 1]),
+        vector_f64(&[1.0, 2.0, 3.0]),
+        vector_f64(&[10.0, 20.0, 30.0]),
+    ])
+    .expect_err("tensor with negative index should fail");
+
+    assert!(
+        err.to_string().contains("out of bounds") || err.to_string().contains("negative"),
+        "unexpected tensor-negative-index error: {err}"
+    );
+}
