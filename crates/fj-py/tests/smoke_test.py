@@ -122,9 +122,7 @@ def test_value_scalar():
     assert isinstance(ready, fj.Array)
     assert abs(ready.as_f64() - 42.0) < 1e-12
     assert v.is_ready()
-    host_copy = v.copy_to_host_async()
-    assert isinstance(host_copy, fj.Array)
-    assert abs(host_copy.as_f64() - 42.0) < 1e-12
+    assert v.copy_to_host_async() is None
     copied = v.copy()
     assert isinstance(copied, fj.Array)
     assert abs(copied.as_f64() - 42.0) < 1e-12
@@ -255,7 +253,7 @@ def test_value_scalar():
     else:
         raise AssertionError("out-of-bounds vector indexing should raise IndexError")
     assert vec.block_until_ready().as_i64_list() == [1, 2, 3]
-    assert vec.copy_to_host_async().as_i64_list() == [1, 2, 3]
+    assert vec.copy_to_host_async() is None
     assert vec.copy().as_i64_list() == [1, 2, 3]
     assert vec.tolist() == [1, 2, 3]
     assert vec.tobytes(order="A") == struct.pack("@qqq", 1, 2, 3)

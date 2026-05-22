@@ -535,9 +535,9 @@ impl PyValue {
         Ok(true)
     }
 
-    fn copy_to_host_async(&self) -> PyResult<Self> {
+    fn copy_to_host_async(&self) -> PyResult<()> {
         self.ensure_not_deleted()?;
-        Ok(self.clone())
+        Ok(())
     }
 
     fn copy(&self) -> Self {
@@ -1764,7 +1764,8 @@ fn block_until_ready(value: PyValue) -> PyResult<PyValue> {
 
 #[pyfunction]
 fn copy_to_host_async(value: PyValue) -> PyResult<PyValue> {
-    value.copy_to_host_async()
+    value.copy_to_host_async()?;
+    Ok(value)
 }
 
 #[pyfunction]
@@ -2389,7 +2390,7 @@ mod tests {
         assert!(v.__len__().is_err());
         assert!((v.block_until_ready().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!(v.is_ready().unwrap());
-        assert!((v.copy_to_host_async().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        assert!(v.copy_to_host_async().is_ok());
         assert!((v.copy().as_f64().unwrap() - 42.0).abs() < 1e-12);
         let mut deleted = v.copy();
         assert!(!deleted.is_deleted());
@@ -2534,10 +2535,7 @@ mod tests {
             floats.block_until_ready().unwrap().as_f64_list().unwrap(),
             vec![1.0, 2.5, 4.0]
         );
-        assert_eq!(
-            floats.copy_to_host_async().unwrap().as_f64_list().unwrap(),
-            vec![1.0, 2.5, 4.0]
-        );
+        assert!(floats.copy_to_host_async().is_ok());
         assert_eq!(floats.copy().as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
