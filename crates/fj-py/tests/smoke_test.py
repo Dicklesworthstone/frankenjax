@@ -345,11 +345,35 @@ def test_local_context_helpers():
     with fj.enable_checks(False):
         assert add_one(5) == 6
 
+    with fj.debug_key_reuse():
+        assert add_one(5) == 6
+
+    with fj.debug_key_reuse(False):
+        assert add_one(6) == 7
+
     with fj.enable_x64():
         assert add_one(5) == 6
 
     with fj.enable_x64(False):
         assert add_one(6) == 7
+
+    with fj.enable_custom_prng():
+        assert add_one(6) == 7
+
+    with fj.enable_custom_prng(False):
+        assert add_one(7) == 8
+
+    with fj.softmax_custom_jvp():
+        assert add_one(7) == 8
+
+    with fj.softmax_custom_jvp(False):
+        assert add_one(8) == 9
+
+    with fj.enable_custom_vjp_by_custom_transpose():
+        assert add_one(8) == 9
+
+    with fj.enable_custom_vjp_by_custom_transpose(False):
+        assert add_one(9) == 10
 
     with fj.check_tracer_leaks():
         assert add_one(6) == 7
@@ -411,6 +435,56 @@ def test_local_context_helpers():
     with fj.numpy_rank_promotion("warn"):
         assert add_one(22) == 23
 
+    with fj.allow_f16_reductions():
+        assert add_one(22) == 23
+
+    with fj.allow_f16_reductions(False):
+        assert add_one(23) == 24
+
+    with fj.jax2tf_associative_scan_reductions():
+        assert add_one(23) == 24
+
+    with fj.jax2tf_associative_scan_reductions(False):
+        assert add_one(24) == 25
+
+    with fj.legacy_prng_key("warn"):
+        assert add_one(24) == 25
+
+    with fj.threefry_partitionable():
+        assert add_one(25) == 26
+
+    with fj.threefry_partitionable(False):
+        assert add_one(26) == 27
+
+    with fj.array_garbage_collection_guard():
+        assert add_one(26) == 27
+
+    with fj.array_garbage_collection_guard("fatal"):
+        assert add_one(27) == 28
+
+    with fj.remove_size_one_mesh_axis_from_type():
+        assert add_one(27) == 28
+
+    with fj.remove_size_one_mesh_axis_from_type(False):
+        assert add_one(28) == 29
+
+    with fj.thread_guard():
+        assert add_one(28) == 29
+
+    with fj.thread_guard(False):
+        assert add_one(29) == 30
+
+    user_context = fj.make_user_context()
+    assert isinstance(user_context, fj.PyUserContext)
+    assert user_context.value == "None"
+    with user_context(7):
+        assert add_one(30) == 31
+
+    named_user_context = fj.make_user_context("seed")
+    assert named_user_context.value == "'seed'"
+    with named_user_context("active"):
+        assert add_one(31) == 32
+
     with fj.transfer_guard("allow"):
         assert add_one(23) == 24
 
@@ -428,8 +502,22 @@ def test_local_context_helpers():
 
     assert fj.enable_checks().name == "enable_checks(true)"
     assert fj.enable_checks(False).name == "enable_checks(false)"
+    assert fj.debug_key_reuse().name == "debug_key_reuse(true)"
+    assert fj.debug_key_reuse(False).name == "debug_key_reuse(false)"
     assert fj.enable_x64().name == "enable_x64(true)"
     assert fj.enable_x64(False).name == "enable_x64(false)"
+    assert fj.enable_custom_prng().name == "enable_custom_prng(true)"
+    assert fj.enable_custom_prng(False).name == "enable_custom_prng(false)"
+    assert fj.softmax_custom_jvp().name == "softmax_custom_jvp(true)"
+    assert fj.softmax_custom_jvp(False).name == "softmax_custom_jvp(false)"
+    assert (
+        fj.enable_custom_vjp_by_custom_transpose().name
+        == "enable_custom_vjp_by_custom_transpose(true)"
+    )
+    assert (
+        fj.enable_custom_vjp_by_custom_transpose(False).name
+        == "enable_custom_vjp_by_custom_transpose(false)"
+    )
     assert fj.check_tracer_leaks().name == "check_tracer_leaks(true)"
     assert fj.check_tracer_leaks(False).name == "check_tracer_leaks(false)"
     assert fj.checking_leaks().name == "checking_leaks"
@@ -459,6 +547,41 @@ def test_local_context_helpers():
         fj.numpy_rank_promotion("raise").name
         == 'numpy_rank_promotion("raise")'
     )
+    assert fj.allow_f16_reductions().name == "allow_f16_reductions(true)"
+    assert fj.allow_f16_reductions(False).name == "allow_f16_reductions(false)"
+    if (
+        fj.jax2tf_associative_scan_reductions().name
+        != "jax2tf_associative_scan_reductions(true)"
+    ):
+        raise AssertionError("jax2tf_associative_scan_reductions default name")
+    if (
+        fj.jax2tf_associative_scan_reductions(False).name
+        != "jax2tf_associative_scan_reductions(false)"
+    ):
+        raise AssertionError("jax2tf_associative_scan_reductions false name")
+    assert fj.legacy_prng_key("allow").name == 'legacy_prng_key("allow")'
+    assert fj.threefry_partitionable().name == "threefry_partitionable(true)"
+    assert fj.threefry_partitionable(False).name == "threefry_partitionable(false)"
+    assert (
+        fj.array_garbage_collection_guard().name
+        == "array_garbage_collection_guard(None)"
+    )
+    assert (
+        fj.array_garbage_collection_guard("log").name
+        == 'array_garbage_collection_guard("log")'
+    )
+    assert (
+        fj.remove_size_one_mesh_axis_from_type().name
+        == "remove_size_one_mesh_axis_from_type(true)"
+    )
+    assert (
+        fj.remove_size_one_mesh_axis_from_type(False).name
+        == "remove_size_one_mesh_axis_from_type(false)"
+    )
+    assert fj.thread_guard().name == "thread_guard(true)"
+    assert fj.thread_guard(False).name == "thread_guard(false)"
+    assert user_context(5).name == "user_context(5)"
+    assert named_user_context(None).name == "user_context(None)"
     assert fj.transfer_guard("allow").name == 'transfer_guard("allow")'
     assert (
         fj.transfer_guard_host_to_device("log").name
@@ -476,7 +599,11 @@ def test_local_context_helpers():
     assert fj.disable_jit(False).name == "disable_jit(false)"
     assert fj.ensure_compile_time_eval().name == "ensure_compile_time_eval"
     assert fj.enable_checks()(add_one) is add_one
+    assert fj.debug_key_reuse()(add_one) is add_one
     assert fj.enable_x64()(add_one) is add_one
+    assert fj.enable_custom_prng()(add_one) is add_one
+    assert fj.softmax_custom_jvp()(add_one) is add_one
+    assert fj.enable_custom_vjp_by_custom_transpose()(add_one) is add_one
     assert fj.check_tracer_leaks()(add_one) is add_one
     assert fj.checking_leaks()(add_one) is add_one
     assert fj.debug_nans()(add_one) is add_one
@@ -489,6 +616,15 @@ def test_local_context_helpers():
     assert fj.default_prng_impl("unsafe_rbg")(add_one) is add_one
     assert fj.numpy_dtype_promotion("strict")(add_one) is add_one
     assert fj.numpy_rank_promotion("allow")(add_one) is add_one
+    assert fj.allow_f16_reductions()(add_one) is add_one
+    if fj.jax2tf_associative_scan_reductions()(add_one) is not add_one:
+        raise AssertionError("jax2tf_associative_scan_reductions decorator")
+    assert fj.legacy_prng_key("error")(add_one) is add_one
+    assert fj.threefry_partitionable()(add_one) is add_one
+    assert fj.array_garbage_collection_guard("allow")(add_one) is add_one
+    assert fj.remove_size_one_mesh_axis_from_type()(add_one) is add_one
+    assert fj.thread_guard()(add_one) is add_one
+    assert user_context(1)(add_one) is add_one
     assert fj.transfer_guard("log_explicit")(add_one) is add_one
     assert fj.transfer_guard_host_to_device("allow")(add_one) is add_one
     assert fj.transfer_guard_device_to_device("allow")(add_one) is add_one
@@ -501,6 +637,8 @@ def test_local_context_helpers():
         (fj.default_prng_impl, "mt19937"),
         (fj.numpy_dtype_promotion, "loose"),
         (fj.numpy_rank_promotion, "error"),
+        (fj.legacy_prng_key, "panic"),
+        (fj.array_garbage_collection_guard, "warn"),
         (fj.transfer_guard, "block"),
         (fj.transfer_guard_host_to_device, "block"),
         (fj.transfer_guard_device_to_device, "block"),

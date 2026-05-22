@@ -56,6 +56,12 @@ struct PyNamedScope {
     name: String,
 }
 
+#[pyclass]
+#[derive(Clone)]
+struct PyUserContext {
+    default_repr: String,
+}
+
 #[pymethods]
 impl PyValue {
     #[staticmethod]
@@ -281,6 +287,25 @@ impl PyNamedScope {
     }
 }
 
+#[pymethods]
+impl PyUserContext {
+    #[getter]
+    fn value(&self) -> &str {
+        &self.default_repr
+    }
+
+    fn __call__(&self, py: Python<'_>, value: Py<PyAny>) -> PyResult<PyNamedScope> {
+        let value_repr = py_object_repr(py, Some(value))?;
+        Ok(PyNamedScope {
+            name: format!("user_context({value_repr})"),
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyUserContext(default_value={})", self.default_repr)
+    }
+}
+
 fn py_values_to_rust(args: Vec<PyValue>) -> Vec<Value> {
     args.into_iter().map(|pv| pv.inner).collect()
 }
@@ -300,6 +325,20 @@ fn py_shape_dtype_from_rust(value: &Value) -> PyShapeDtypeStruct {
 
 fn runtime_error(error: impl ToString) -> PyErr {
     PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(error.to_string())
+}
+
+fn py_object_repr(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<String> {
+    match value {
+        Some(value) => {
+            let value = value.bind(py);
+            if value.is_none() {
+                Ok("None".to_owned())
+            } else {
+                value.repr()?.extract()
+            }
+        }
+        None => Ok("None".to_owned()),
+    }
 }
 
 fn validate_cpu_backend(backend: Option<&str>) -> PyResult<()> {
@@ -672,9 +711,37 @@ fn enable_checks(checks: bool) -> PyNamedScope {
 }
 
 #[pyfunction(signature = (enabled=true))]
+fn debug_key_reuse(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("debug_key_reuse({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
 fn enable_x64(enabled: bool) -> PyNamedScope {
     PyNamedScope {
         name: format!("enable_x64({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn enable_custom_prng(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("enable_custom_prng({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn softmax_custom_jvp(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("softmax_custom_jvp({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn enable_custom_vjp_by_custom_transpose(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("enable_custom_vjp_by_custom_transpose({enabled})"),
     }
 }
 
@@ -797,6 +864,74 @@ fn numpy_rank_promotion(promotion: String) -> PyResult<PyNamedScope> {
     validate_enum_value(&promotion, ALLOWED, "numpy_rank_promotion")?;
     Ok(PyNamedScope {
         name: format!("numpy_rank_promotion({promotion:?})"),
+    })
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn allow_f16_reductions(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("allow_f16_reductions({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn jax2tf_associative_scan_reductions(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("jax2tf_associative_scan_reductions({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (mode))]
+fn legacy_prng_key(mode: String) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &["allow", "warn", "error"];
+    validate_enum_value(&mode, ALLOWED, "legacy_prng_key")?;
+    Ok(PyNamedScope {
+        name: format!("legacy_prng_key({mode:?})"),
+    })
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn threefry_partitionable(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("threefry_partitionable({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (level=None))]
+fn array_garbage_collection_guard(level: Option<String>) -> PyResult<PyNamedScope> {
+    const ALLOWED: &[&str] = &["allow", "log", "fatal"];
+
+    match level {
+        Some(level) => {
+            validate_enum_value(&level, ALLOWED, "array_garbage_collection_guard")?;
+            Ok(PyNamedScope {
+                name: format!("array_garbage_collection_guard({level:?})"),
+            })
+        }
+        None => Ok(PyNamedScope {
+            name: "array_garbage_collection_guard(None)".to_owned(),
+        }),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn remove_size_one_mesh_axis_from_type(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("remove_size_one_mesh_axis_from_type({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn thread_guard(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("thread_guard({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (default_value=None))]
+fn make_user_context(py: Python<'_>, default_value: Option<Py<PyAny>>) -> PyResult<PyUserContext> {
+    Ok(PyUserContext {
+        default_repr: py_object_repr(py, default_value)?,
     })
 }
 
@@ -941,6 +1076,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyShapeDtypeStruct>()?;
     m.add_class::<PyDevice>()?;
     m.add_class::<PyNamedScope>()?;
+    m.add_class::<PyUserContext>()?;
     m.add_function(wrap_pyfunction!(make_jaxpr_square, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add2, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add_one, m)?)?;
@@ -977,7 +1113,11 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(named_call, m)?)?;
     m.add_function(wrap_pyfunction!(named_scope, m)?)?;
     m.add_function(wrap_pyfunction!(enable_checks, m)?)?;
+    m.add_function(wrap_pyfunction!(debug_key_reuse, m)?)?;
     m.add_function(wrap_pyfunction!(enable_x64, m)?)?;
+    m.add_function(wrap_pyfunction!(enable_custom_prng, m)?)?;
+    m.add_function(wrap_pyfunction!(softmax_custom_jvp, m)?)?;
+    m.add_function(wrap_pyfunction!(enable_custom_vjp_by_custom_transpose, m)?)?;
     m.add_function(wrap_pyfunction!(check_tracer_leaks, m)?)?;
     m.add_function(wrap_pyfunction!(checking_leaks, m)?)?;
     m.add_function(wrap_pyfunction!(debug_nans, m)?)?;
@@ -990,6 +1130,14 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(default_prng_impl, m)?)?;
     m.add_function(wrap_pyfunction!(numpy_dtype_promotion, m)?)?;
     m.add_function(wrap_pyfunction!(numpy_rank_promotion, m)?)?;
+    m.add_function(wrap_pyfunction!(allow_f16_reductions, m)?)?;
+    m.add_function(wrap_pyfunction!(jax2tf_associative_scan_reductions, m)?)?;
+    m.add_function(wrap_pyfunction!(legacy_prng_key, m)?)?;
+    m.add_function(wrap_pyfunction!(threefry_partitionable, m)?)?;
+    m.add_function(wrap_pyfunction!(array_garbage_collection_guard, m)?)?;
+    m.add_function(wrap_pyfunction!(remove_size_one_mesh_axis_from_type, m)?)?;
+    m.add_function(wrap_pyfunction!(thread_guard, m)?)?;
+    m.add_function(wrap_pyfunction!(make_user_context, m)?)?;
     m.add_function(wrap_pyfunction!(transfer_guard, m)?)?;
     m.add_function(wrap_pyfunction!(transfer_guard_host_to_device, m)?)?;
     m.add_function(wrap_pyfunction!(transfer_guard_device_to_device, m)?)?;
