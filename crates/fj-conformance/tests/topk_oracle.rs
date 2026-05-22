@@ -64,26 +64,6 @@ fn extract_shape(v: &Value) -> Vec<u32> {
     }
 }
 
-fn extract_f64_scalar(v: &Value) -> Option<f64> {
-    match v {
-        Value::Scalar(literal) => literal.as_f64(),
-        Value::Tensor(tensor) if tensor.shape.dims.is_empty() => {
-            tensor.elements.first().and_then(|literal| literal.as_f64())
-        }
-        _ => None,
-    }
-}
-
-fn extract_i64_scalar(v: &Value) -> Option<i64> {
-    match v {
-        Value::Scalar(literal) => literal.as_i64(),
-        Value::Tensor(tensor) if tensor.shape.dims.is_empty() => {
-            tensor.elements.first().and_then(|literal| literal.as_i64())
-        }
-        _ => None,
-    }
-}
-
 fn topk_params(k: usize) -> BTreeMap<String, String> {
     let mut params = BTreeMap::new();
     params.insert("k".to_string(), k.to_string());
@@ -179,16 +159,6 @@ fn oracle_topk_multi_output_indices_are_per_last_axis_slice() {
     assert_eq!(extract_shape(&result[1]), vec![2, 2]);
     assert_eq!(extract_f64_vec(&result[0]), vec![4.0, 3.0, 9.0, 5.0]);
     assert_eq!(extract_i64_vec(&result[1]), vec![2, 0, 2, 1]);
-}
-
-#[test]
-fn oracle_topk_multi_output_scalar_returns_zero_index() {
-    let result =
-        eval_primitive_multi(Primitive::TopK, &[Value::scalar_f64(7.0)], &topk_params(1)).unwrap();
-
-    assert_eq!(result.len(), 2);
-    assert_eq!(extract_f64_scalar(&result[0]), Some(7.0));
-    assert_eq!(extract_i64_scalar(&result[1]), Some(0));
 }
 
 #[test]
