@@ -57,7 +57,16 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
 fn oracle_atanh_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Atanh, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "atanh(0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "atanh(0) = +0");
+}
+
+#[test]
+fn oracle_atanh_neg_zero() {
+    let input = make_f64_tensor(&[], vec![-0.0]);
+    let result = eval_primitive(Primitive::Atanh, &[input], &no_params()).unwrap();
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), (-0.0_f64).to_bits(), "atanh(-0.0) = -0");
 }
 
 // ======================== Basic Values (|x| < 1) ========================
