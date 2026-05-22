@@ -1904,6 +1904,22 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
                 .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?;
             Ok(Value::Scalar(result))
         }
+        // JAX order: clamp(min, x, max) with scalar bounds
+        (Value::Scalar(lo), Value::Tensor(x), Value::Scalar(hi)) => {
+            let mut elements = Vec::with_capacity(x.elements.len());
+            for elem in x.elements.iter().copied() {
+                elements.push(
+                    clamp_literal(*lo, elem, *hi, Some(x.dtype))
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
+                );
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                x.dtype,
+                x.shape.clone(),
+                elements,
+            )?))
+        }
+        // Legacy (x, lo, hi) order kept for compatibility
         (Value::Tensor(x), Value::Scalar(lo), Value::Scalar(hi)) => {
             let mut elements = Vec::with_capacity(x.elements.len());
             for elem in x.elements.iter().copied() {
@@ -1919,35 +1935,120 @@ pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value
             )?))
         }
         (Value::Tensor(lo), Value::Tensor(x), Value::Tensor(hi)) => {
-            if x.shape != lo.shape || x.shape != hi.shape {
-                return Err(EvalError::Unsupported {
+            // Support broadcasting for tensor bounds
+            let out_shape = broadcast_shape(&x.shape, &lo.shape)
+                .and_then(|s| broadcast_shape(&s, &hi.shape))
+                .ok_or(EvalError::Unsupported {
                     primitive,
-                    detail: "clamp requires all tensor inputs to have the same shape".to_owned(),
-                });
-            }
-            let mut elements = Vec::with_capacity(x.elements.len());
-            for ((lov, xv), hiv) in lo
-                .elements
-                .iter()
-                .copied()
-                .zip(x.elements.iter().copied())
-                .zip(hi.elements.iter().copied())
-            {
+                    detail: format!(
+                        "clamp shapes not broadcast-compatible: min={:?}, x={:?}, max={:?}",
+                        lo.shape, x.shape, hi.shape
+                    ),
+                })?;
+
+            let out_count = out_shape.element_count().unwrap_or(0) as usize;
+            let out_strides = compute_strides(&out_shape.dims);
+            let lo_strides = broadcast_strides(&lo.shape, &out_shape);
+            let x_strides = broadcast_strides(&x.shape, &out_shape);
+            let hi_strides = broadcast_strides(&hi.shape, &out_shape);
+
+            let mut elements = Vec::with_capacity(out_count);
+            let mut multi = Vec::with_capacity(out_strides.len());
+            for flat_idx in 0..out_count {
+                flat_to_multi_into(flat_idx, &out_strides, &mut multi);
+                let lo_idx = broadcast_flat_index(&multi, &lo_strides);
+                let x_idx = broadcast_flat_index(&multi, &x_strides);
+                let hi_idx = broadcast_flat_index(&multi, &hi_strides);
+
+                let lov = lo.elements[lo_idx];
+                let xv = x.elements[x_idx];
+                let hiv = hi.elements[hi_idx];
                 elements.push(
-                    clamp_literal(lov, xv, hiv, Some(lo.dtype))
+                    clamp_literal(lov, xv, hiv, Some(x.dtype))
                         .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
                 );
             }
             Ok(Value::Tensor(TensorValue::new(
-                lo.dtype,
-                lo.shape.clone(),
+                x.dtype,
+                out_shape,
+                elements,
+            )?))
+        }
+        // Scalar lo with tensor x and tensor hi (broadcasts lo)
+        (Value::Scalar(lo), Value::Tensor(x), Value::Tensor(hi)) => {
+            let out_shape =
+                broadcast_shape(&x.shape, &hi.shape).ok_or(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "clamp shapes not broadcast-compatible: x={:?}, max={:?}",
+                        x.shape, hi.shape
+                    ),
+                })?;
+
+            let out_count = out_shape.element_count().unwrap_or(0) as usize;
+            let out_strides = compute_strides(&out_shape.dims);
+            let x_strides = broadcast_strides(&x.shape, &out_shape);
+            let hi_strides = broadcast_strides(&hi.shape, &out_shape);
+
+            let mut elements = Vec::with_capacity(out_count);
+            let mut multi = Vec::with_capacity(out_strides.len());
+            for flat_idx in 0..out_count {
+                flat_to_multi_into(flat_idx, &out_strides, &mut multi);
+                let x_idx = broadcast_flat_index(&multi, &x_strides);
+                let hi_idx = broadcast_flat_index(&multi, &hi_strides);
+
+                let xv = x.elements[x_idx];
+                let hiv = hi.elements[hi_idx];
+                elements.push(
+                    clamp_literal(*lo, xv, hiv, Some(x.dtype))
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
+                );
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                x.dtype,
+                out_shape,
+                elements,
+            )?))
+        }
+        // Tensor lo with tensor x and scalar hi (broadcasts hi)
+        (Value::Tensor(lo), Value::Tensor(x), Value::Scalar(hi)) => {
+            let out_shape =
+                broadcast_shape(&x.shape, &lo.shape).ok_or(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "clamp shapes not broadcast-compatible: min={:?}, x={:?}",
+                        lo.shape, x.shape
+                    ),
+                })?;
+
+            let out_count = out_shape.element_count().unwrap_or(0) as usize;
+            let out_strides = compute_strides(&out_shape.dims);
+            let lo_strides = broadcast_strides(&lo.shape, &out_shape);
+            let x_strides = broadcast_strides(&x.shape, &out_shape);
+
+            let mut elements = Vec::with_capacity(out_count);
+            let mut multi = Vec::with_capacity(out_strides.len());
+            for flat_idx in 0..out_count {
+                flat_to_multi_into(flat_idx, &out_strides, &mut multi);
+                let lo_idx = broadcast_flat_index(&multi, &lo_strides);
+                let x_idx = broadcast_flat_index(&multi, &x_strides);
+
+                let lov = lo.elements[lo_idx];
+                let xv = x.elements[x_idx];
+                elements.push(
+                    clamp_literal(lov, xv, *hi, Some(x.dtype))
+                        .map_err(|detail| EvalError::TypeMismatch { primitive, detail })?,
+                );
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                x.dtype,
+                out_shape,
                 elements,
             )?))
         }
         _ => Err(EvalError::Unsupported {
             primitive,
-            detail: "clamp requires (tensor, scalar, scalar) or (tensor, tensor, tensor)"
-                .to_owned(),
+            detail: "clamp requires broadcast-compatible inputs".to_owned(),
         }),
     }
 }

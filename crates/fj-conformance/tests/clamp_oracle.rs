@@ -445,3 +445,71 @@ fn property_clamp_preserves_all_float_dtypes() {
         });
     }
 }
+
+// ======================== JAX-order broadcast tests ========================
+
+fn extract_shape(v: &Value) -> Vec<u32> {
+    v.as_tensor().expect("expected tensor").shape.dims.clone()
+}
+
+#[test]
+fn oracle_clamp_jax_order_scalar_bounds() {
+    // JAX order: clamp(min, x, max) with scalar bounds
+    let lo = Value::scalar_f64(0.0);
+    let x = make_f64_tensor(&[4], vec![-5.0, 2.0, 7.0, 12.0]);
+    let hi = Value::scalar_f64(10.0);
+
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 2.0, 7.0, 10.0]);
+}
+
+#[test]
+fn oracle_clamp_jax_order_2d_scalar_bounds() {
+    // JAX order with 2D tensor and scalar bounds
+    let lo = Value::scalar_f64(1.0);
+    let x = make_f64_tensor(&[2, 3], vec![0.0, 1.5, 5.0, -1.0, 3.0, 10.0]);
+    let hi = Value::scalar_f64(4.0);
+
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 1.5, 4.0, 1.0, 3.0, 4.0]);
+}
+
+#[test]
+fn oracle_clamp_tensor_bounds_broadcast_row_vector() {
+    // Tensor bounds with row vector broadcast: [2,3] vs [3]
+    let lo = make_f64_tensor(&[3], vec![0.0, 1.0, 2.0]);
+    let x = make_f64_tensor(&[2, 3], vec![-1.0, 0.0, 1.0, 5.0, 6.0, 7.0]);
+    let hi = make_f64_tensor(&[3], vec![3.0, 4.0, 5.0]);
+
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    // Row 0: clamp([-1,0,1], [0,1,2], [3,4,5]) = [0,1,2]
+    // Row 1: clamp([5,6,7], [0,1,2], [3,4,5]) = [3,4,5]
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+}
+
+#[test]
+fn oracle_clamp_scalar_lo_tensor_x_tensor_hi() {
+    let lo = Value::scalar_f64(0.0);
+    let x = make_f64_tensor(&[3], vec![-1.0, 5.0, 15.0]);
+    let hi = make_f64_tensor(&[3], vec![2.0, 10.0, 8.0]);
+
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    // clamp([-1,5,15], 0, [2,10,8]) = [0,5,8]
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 5.0, 8.0]);
+}
+
+#[test]
+fn oracle_clamp_tensor_lo_tensor_x_scalar_hi() {
+    let lo = make_f64_tensor(&[3], vec![-2.0, 0.0, 3.0]);
+    let x = make_f64_tensor(&[3], vec![-5.0, 5.0, 1.0]);
+    let hi = Value::scalar_f64(10.0);
+
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    // clamp([-5,5,1], [-2,0,3], 10) = [-2,5,3]
+    assert_eq!(extract_f64_vec(&result), vec![-2.0, 5.0, 3.0]);
+}
