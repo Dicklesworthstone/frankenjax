@@ -20,8 +20,10 @@ def test_value_scalar():
     print("✓ scalar_i64 roundtrip")
 
     vec = fj.PyValue.vector_i64([1, 2, 3])
+    assert vec.shape() == [3]
+    assert vec.dtype() == "I64"
     assert vec.as_i64_list() == [1, 2, 3]
-    assert vec.as_f64_list() is None
+    assert vec.as_f64_list() == [1.0, 2.0, 3.0]
     print("✓ vector_i64 roundtrip")
 
 
@@ -58,9 +60,24 @@ def test_vmap():
     jaxpr = fj.make_jaxpr_add_one()
     batch = fj.PyValue.vector_f64([1.0, 2.0, 3.0])
     result = fj.vmap(jaxpr, [batch])
-    # add_one adds 1 to each element
+    assert len(result) == 1
+    assert result[0].shape() == [3]
     assert result[0].as_f64_list() == [2.0, 3.0, 4.0]
     print("✓ vmap(add_one)([1,2,3]) = [2,3,4]")
+
+
+def test_jacobian_and_hessian():
+    """Test Jacobian and Hessian transform wrappers."""
+    jaxpr = fj.make_jaxpr_square()
+
+    jac = fj.jacobian(jaxpr, [fj.PyValue.scalar_f64(3.0)])
+    assert jac.shape() == [1, 1]
+    assert abs(jac.as_f64_list()[0] - 6.0) < 1e-6
+
+    hess = fj.hessian(jaxpr, [fj.PyValue.scalar_f64(3.0)])
+    assert hess.shape() == [1, 1]
+    assert abs(hess.as_f64_list()[0] - 2.0) < 1e-6
+    print("✓ jacobian/hessian(square)(3.0) = (6.0, 2.0)")
 
 
 def test_checkpoint():
@@ -87,5 +104,6 @@ if __name__ == "__main__":
     test_grad_square()
     test_value_and_grad()
     test_vmap()
+    test_jacobian_and_hessian()
     test_checkpoint()
     print("\n✅ All smoke tests passed!")

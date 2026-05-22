@@ -60,12 +60,28 @@ impl PyValue {
         self.inner.as_i64_scalar()
     }
 
+    fn shape(&self) -> Vec<u32> {
+        self.inner
+            .as_tensor()
+            .map_or_else(Vec::new, |tensor| tensor.shape.dims.clone())
+    }
+
+    fn dtype(&self) -> String {
+        format!("{:?}", self.inner.dtype())
+    }
+
     fn as_f64_list(&self) -> Option<Vec<f64>> {
-        self.inner.as_tensor().and_then(|tensor| tensor.to_f64_vec())
+        match &self.inner {
+            Value::Scalar(_) => self.inner.as_f64_scalar().map(|value| vec![value]),
+            Value::Tensor(tensor) => tensor.to_f64_vec(),
+        }
     }
 
     fn as_i64_list(&self) -> Option<Vec<i64>> {
-        self.inner.as_tensor().and_then(|tensor| tensor.to_i64_vec())
+        match &self.inner {
+            Value::Scalar(_) => self.inner.as_i64_scalar().map(|value| vec![value]),
+            Value::Tensor(tensor) => tensor.to_i64_vec(),
+        }
     }
 
     fn __repr__(&self) -> String {
@@ -183,6 +199,24 @@ fn value_and_grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>
 }
 
 #[pyfunction]
+fn jacobian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let rust_args = py_values_to_rust(args);
+    fj_api::jacobian(jaxpr.inner.clone())
+        .call(rust_args)
+        .map(|inner| PyValue { inner })
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
+fn hessian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
+    let rust_args = py_values_to_rust(args);
+    fj_api::hessian(jaxpr.inner.clone())
+        .call(rust_args)
+        .map(|inner| PyValue { inner })
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
 fn checkpoint(jaxpr: &PyJaxpr) -> PyCheckpoint {
     PyCheckpoint {
         inner: fj_api::checkpoint(jaxpr.inner.clone()),
@@ -201,6 +235,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(grad, m)?)?;
     m.add_function(wrap_pyfunction!(vmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
+    m.add_function(wrap_pyfunction!(jacobian, m)?)?;
+    m.add_function(wrap_pyfunction!(hessian, m)?)?;
     m.add_function(wrap_pyfunction!(checkpoint, m)?)?;
     Ok(())
 }
@@ -218,12 +254,16 @@ mod tests {
     #[test]
     fn value_vector_roundtrip() {
         let floats = PyValue::vector_f64(vec![1.0, 2.5, 4.0]).unwrap();
+        assert_eq!(floats.shape(), vec![3]);
+        assert_eq!(floats.dtype(), "F64");
         assert_eq!(floats.as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
         assert_eq!(floats.as_i64_list(), None);
 
         let ints = PyValue::vector_i64(vec![1, 2, 3]).unwrap();
+        assert_eq!(ints.shape(), vec![3]);
+        assert_eq!(ints.dtype(), "I64");
         assert_eq!(ints.as_i64_list().unwrap(), vec![1, 2, 3]);
-        assert_eq!(ints.as_f64_list(), None);
+        assert_eq!(ints.as_f64_list().unwrap(), vec![1.0, 2.0, 3.0]);
     }
 
     #[test]
@@ -253,5 +293,19 @@ mod tests {
             .unwrap();
         assert!((values[0].as_f64().unwrap() - 16.0).abs() < 1e-12);
         assert!((grads[0].as_f64().unwrap() - 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn jacobian_and_hessian_wrappers_return_python_values() {
+        let jaxpr = make_jaxpr_square();
+        let args = vec![PyValue::scalar_f64(3.0)];
+
+        let jac = jacobian(&jaxpr, args.clone()).unwrap();
+        assert_eq!(jac.shape(), vec![1, 1]);
+        assert!((jac.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
+
+        let hess = hessian(&jaxpr, args).unwrap();
+        assert_eq!(hess.shape(), vec![1, 1]);
+        assert!((hess.as_f64_list().unwrap()[0] - 2.0).abs() < 1e-6);
     }
 }
