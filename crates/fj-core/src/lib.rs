@@ -121,6 +121,7 @@ pub enum Primitive {
     Imag,
     // Selection
     Select,
+    SelectN,
     // Dot product
     Dot,
     // Comparison
@@ -268,6 +269,7 @@ impl Primitive {
         Self::Real,
         Self::Imag,
         Self::Select,
+        Self::SelectN,
         Self::Dot,
         Self::Eq,
         Self::Ne,
@@ -404,6 +406,7 @@ impl Primitive {
             Self::Real => "real",
             Self::Imag => "imag",
             Self::Select => "select",
+            Self::SelectN => "select_n",
             Self::Dot => "dot",
             Self::Eq => "eq",
             Self::Ne => "ne",

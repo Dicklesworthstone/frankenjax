@@ -1595,6 +1595,30 @@ pub fn vjp(
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![zeros_like(cond), g_true, g_false])
         }
+        Primitive::SelectN => {
+            // select_n(index, op0, op1, ...): grad flows to the selected operand
+            // Index has no gradient (discrete). For each operand i, its gradient
+            // is g where index == i, else zero.
+            let index = &inputs[0];
+            let n_operands = inputs.len() - 1;
+            let mut grads = vec![zeros_like(index)];
+            for i in 0..n_operands {
+                let mask = eval_primitive(
+                    Primitive::Eq,
+                    &[index.clone(), Value::scalar_i64(i as i64)],
+                    &BTreeMap::new(),
+                )
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                let g_i = eval_primitive(
+                    Primitive::Select,
+                    &[mask, g.clone(), zeros_like(g)],
+                    &BTreeMap::new(),
+                )
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                grads.push(g_i);
+            }
+            Ok(grads)
+        }
         Primitive::ReduceSum => {
             // VJP of reduce_sum: broadcast g back to input shape.
             // Preserve g's dtype so an F32/BF16/F16 cotangent doesn't get
@@ -6349,6 +6373,13 @@ fn jvp_rule(
             Primitive::Select,
             &[primals[0].clone(), tangents[1].clone(), tangents[2].clone()],
         ),
+
+        // ── SelectN: tangent follows primal index ──
+        Primitive::SelectN => {
+            let mut select_args = vec![primals[0].clone()];
+            select_args.extend(tangents[1..].iter().cloned());
+            ep_p(Primitive::SelectN, &select_args, params)
+        }
 
         // ── Comparison: discrete, zero tangent ──
         Primitive::Eq

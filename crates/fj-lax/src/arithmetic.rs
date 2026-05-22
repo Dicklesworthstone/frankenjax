@@ -1569,6 +1569,111 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     }
 }
 
+/// SelectN: select from N operands based on integer index.
+///
+/// inputs[0] is the index (integer values 0..N-1), inputs[1..] are the N operands.
+/// For each element position i, output[i] = operands[index[i]][i].
+pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() < 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+
+    let n_operands = inputs.len() - 1;
+    let index = &inputs[0];
+    let operands = &inputs[1..];
+
+    match index {
+        Value::Scalar(idx_lit) => {
+            let idx = idx_lit.as_i64().ok_or_else(|| EvalError::TypeMismatch {
+                primitive,
+                detail: "select_n index must be an integer",
+            })? as usize;
+            if idx >= n_operands {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "select_n index {idx} out of bounds for {n_operands} operands"
+                    ),
+                });
+            }
+            Ok(operands[idx].clone())
+        }
+        Value::Tensor(idx_tensor) => {
+            let first_operand = match &operands[0] {
+                Value::Tensor(t) => t,
+                Value::Scalar(_) => {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "select_n with tensor index requires tensor operands".into(),
+                    })
+                }
+            };
+
+            for op in &operands[1..] {
+                match op {
+                    Value::Tensor(t) => {
+                        if t.shape != first_operand.shape {
+                            return Err(EvalError::Unsupported {
+                                primitive,
+                                detail: "select_n operands must have matching shapes".into(),
+                            });
+                        }
+                    }
+                    Value::Scalar(_) => {
+                        return Err(EvalError::Unsupported {
+                            primitive,
+                            detail: "select_n operands must all be tensors when index is tensor"
+                                .into(),
+                        })
+                    }
+                }
+            }
+
+            if idx_tensor.shape != first_operand.shape {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "select_n index shape must match operand shapes".into(),
+                });
+            }
+
+            let dtype = first_operand.dtype;
+            let mut elements = Vec::with_capacity(idx_tensor.elements.len());
+
+            for (i, idx_lit) in idx_tensor.elements.iter().enumerate() {
+                let idx = idx_lit.as_i64().ok_or_else(|| EvalError::TypeMismatch {
+                    primitive,
+                    detail: "select_n index elements must be integers",
+                })? as usize;
+
+                if idx >= n_operands {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "select_n index value {idx} out of bounds for {n_operands} operands"
+                        ),
+                    });
+                }
+
+                let operand = match &operands[idx] {
+                    Value::Tensor(t) => t,
+                    _ => unreachable!(),
+                };
+                elements.push(operand.elements[i]);
+            }
+
+            Ok(Value::Tensor(TensorValue::new(
+                dtype,
+                idx_tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
 /// Clamp: clamp(lo, x, hi) = min(max(lo, x), hi).
 /// Supports scalar and tensor inputs with broadcasting.
 pub(crate) fn eval_clamp(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
@@ -3280,5 +3385,76 @@ mod tests {
         assert!(vals[0] > 1.0);
         assert!(vals[1] < 2.0);
         assert!(vals[2] < 0.0);
+    }
+
+    // ── SelectN ──
+
+    #[test]
+    fn select_n_scalar_index_picks_first() {
+        let result = eval_select_n(
+            Primitive::SelectN,
+            &[s_i64(0), s_f64(10.0), s_f64(20.0), s_f64(30.0)],
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn select_n_scalar_index_picks_second() {
+        let result = eval_select_n(
+            Primitive::SelectN,
+            &[s_i64(1), s_f64(10.0), s_f64(20.0), s_f64(30.0)],
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn select_n_scalar_index_picks_last() {
+        let result = eval_select_n(
+            Primitive::SelectN,
+            &[s_i64(2), s_f64(10.0), s_f64(20.0), s_f64(30.0)],
+        )
+        .unwrap();
+        assert!((extract_f64(&result) - 30.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn select_n_scalar_index_tensor_operands() {
+        let a = v_f64(&[1.0, 2.0, 3.0]);
+        let b = v_f64(&[4.0, 5.0, 6.0]);
+        let result = eval_select_n(Primitive::SelectN, &[s_i64(1), a, b]).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn select_n_tensor_index_elementwise() {
+        let idx = tensor_i64(vec![3], &[0, 1, 0]);
+        let a = v_f64(&[1.0, 2.0, 3.0]);
+        let b = v_f64(&[10.0, 20.0, 30.0]);
+        let result = eval_select_n(Primitive::SelectN, &[idx, a, b]).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![1.0, 20.0, 3.0]);
+    }
+
+    #[test]
+    fn select_n_tensor_index_three_operands() {
+        let idx = tensor_i64(vec![4], &[0, 1, 2, 1]);
+        let a = v_f64(&[1.0, 2.0, 3.0, 4.0]);
+        let b = v_f64(&[10.0, 20.0, 30.0, 40.0]);
+        let c = v_f64(&[100.0, 200.0, 300.0, 400.0]);
+        let result = eval_select_n(Primitive::SelectN, &[idx, a, b, c]).unwrap();
+        let vals = extract_f64_vec(&result);
+        assert_eq!(vals, vec![1.0, 20.0, 300.0, 40.0]);
+    }
+
+    #[test]
+    fn select_n_out_of_bounds() {
+        let result = eval_select_n(
+            Primitive::SelectN,
+            &[s_i64(3), s_f64(10.0), s_f64(20.0), s_f64(30.0)],
+        );
+        assert!(result.is_err());
     }
 }

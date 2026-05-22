@@ -19,7 +19,7 @@ use arithmetic::{
     erf_approx, eval_abs, eval_acosh, eval_asinh, eval_atanh, eval_binary_elementwise, eval_clamp,
     eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_erf_inv, eval_exp,
     eval_imag, eval_integer_pow, eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter,
-    eval_real, eval_round, eval_select, eval_sin, eval_sinh, eval_tan, eval_tanh,
+    eval_real, eval_round, eval_select, eval_select_n, eval_sin, eval_sinh, eval_tan, eval_tanh,
     eval_unary_elementwise, eval_unary_int_or_float,
 };
 
@@ -262,6 +262,7 @@ pub fn eval_primitive(
         Primitive::Complex => eval_complex(primitive, inputs),
         // Selection
         Primitive::Select => eval_select(primitive, inputs),
+        Primitive::SelectN => eval_select_n(primitive, inputs),
         // Dot product
         Primitive::Dot => eval_dot(inputs),
         // Comparison
