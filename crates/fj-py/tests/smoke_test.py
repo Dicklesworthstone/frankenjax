@@ -130,6 +130,25 @@ def test_value_scalar():
         assert "Array has been deleted" in str(exc)
     else:
         raise AssertionError("addressable_data should reject deleted arrays")
+    deleted_accessors = [
+        ("block_until_ready", deleted.block_until_ready),
+        ("copy_to_host_async", deleted.copy_to_host_async),
+        ("devices", deleted.devices),
+        ("tolist", deleted.tolist),
+        ("tobytes", deleted.tobytes),
+        ("device_get", lambda: fj.device_get(deleted)),
+        ("module block_until_ready", lambda: fj.block_until_ready(deleted)),
+        ("module copy_to_host_async", lambda: fj.copy_to_host_async(deleted)),
+        ("indexing", lambda: deleted[0]),
+        ("array protocol", lambda: np.asarray(deleted)),
+    ]
+    for name, accessor in deleted_accessors:
+        try:
+            accessor()
+        except RuntimeError as exc:
+            assert "Array has been deleted" in str(exc)
+        else:
+            raise AssertionError(f"{name} should reject deleted arrays")
     assert v.is_deleted() is False
     assert v.tolist() == 42.0
     assert v.tobytes() == struct.pack("@d", 42.0)

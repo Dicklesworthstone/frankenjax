@@ -29,6 +29,14 @@ impl PyValue {
         }
     }
 
+    fn ensure_not_deleted(&self) -> PyResult<()> {
+        if self.deleted {
+            Err(runtime_error("Array has been deleted."))
+        } else {
+            Ok(())
+        }
+    }
+
     fn shape_dims(&self) -> Vec<u32> {
         self.inner
             .as_tensor()
@@ -403,6 +411,7 @@ impl PyValue {
     }
 
     fn devices(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         let devices = PySet::empty(py)?;
         devices.add(cpu_device())?;
         Ok(devices.into_any().unbind())
@@ -423,9 +432,7 @@ impl PyValue {
     }
 
     fn addressable_data(&self, index: isize) -> PyResult<Self> {
-        if self.deleted {
-            return Err(runtime_error("Array has been deleted."));
-        }
+        self.ensure_not_deleted()?;
         if index != 0 {
             return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!(
                 "addressable_data index {index} is out of bounds for 1 local shard"
@@ -463,6 +470,7 @@ impl PyValue {
     }
 
     fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         let values = self.leading_axis_values()?;
         let mut py_values = Vec::with_capacity(values.len());
         for value in values {
@@ -474,6 +482,7 @@ impl PyValue {
     }
 
     fn __getitem__(&self, index: &Bound<'_, PyAny>) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
         if let Ok(index) = index.extract::<isize>() {
             return self.axis0_value_at(index);
         }
@@ -487,20 +496,19 @@ impl PyValue {
         )))
     }
 
-    fn block_until_ready(&self) -> Self {
-        self.clone()
+    fn block_until_ready(&self) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
+        Ok(self.clone())
     }
 
     fn is_ready(&self) -> PyResult<bool> {
-        if self.deleted {
-            Err(runtime_error("Array has been deleted."))
-        } else {
-            Ok(true)
-        }
+        self.ensure_not_deleted()?;
+        Ok(true)
     }
 
-    fn copy_to_host_async(&self) -> Self {
-        self.clone()
+    fn copy_to_host_async(&self) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
+        Ok(self.clone())
     }
 
     fn copy(&self) -> Self {
@@ -516,6 +524,7 @@ impl PyValue {
     }
 
     fn tolist(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         match &self.inner {
             Value::Scalar(literal) => literal_to_py_object(py, *literal),
             Value::Tensor(tensor) => literals_to_py_list(py, &tensor.elements),
@@ -524,6 +533,7 @@ impl PyValue {
 
     #[pyo3(signature = (order = "C"))]
     fn tobytes(&self, py: Python<'_>, order: &str) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         validate_tobytes_order(order)?;
 
         let capacity = usize::try_from(self.nbytes()).map_err(|_| {
@@ -545,6 +555,7 @@ impl PyValue {
     }
 
     fn __bool__(&self) -> PyResult<bool> {
+        self.ensure_not_deleted()?;
         match self.size() {
             0 => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
                 "The truth value of an empty array is ambiguous. Use `array.size > 0` to check that an array is not empty.",
@@ -567,6 +578,7 @@ impl PyValue {
     }
 
     fn __float__(&self) -> PyResult<f64> {
+        self.ensure_not_deleted()?;
         let literal = self.inner.as_scalar_literal().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "only scalar arrays can be converted to Python scalars",
@@ -587,6 +599,7 @@ impl PyValue {
     }
 
     fn __int__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         let literal = self.inner.as_scalar_literal().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "only scalar arrays can be converted to Python scalars",
@@ -599,6 +612,7 @@ impl PyValue {
     }
 
     fn __complex__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         let literal = self.inner.as_scalar_literal().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "only scalar arrays can be converted to Python scalars",
@@ -614,6 +628,7 @@ impl PyValue {
     }
 
     fn __index__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
         let literal = self.inner.as_scalar_literal().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyTypeError, _>(
                 "Only integer scalar arrays can be converted to a scalar index.",
@@ -1666,18 +1681,19 @@ fn device_put_sharded(shards: Vec<PyValue>, devices: Vec<PyDevice>) -> PyResult<
 }
 
 #[pyfunction]
-fn device_get(value: PyValue) -> PyValue {
-    value
+fn device_get(value: PyValue) -> PyResult<PyValue> {
+    value.ensure_not_deleted()?;
+    Ok(value)
 }
 
 #[pyfunction]
-fn block_until_ready(value: PyValue) -> PyValue {
-    value
+fn block_until_ready(value: PyValue) -> PyResult<PyValue> {
+    value.block_until_ready()
 }
 
 #[pyfunction]
-fn copy_to_host_async(value: PyValue) -> PyValue {
-    value
+fn copy_to_host_async(value: PyValue) -> PyResult<PyValue> {
+    value.copy_to_host_async()
 }
 
 #[pyfunction]
@@ -2299,19 +2315,25 @@ mod tests {
         assert!(v.is_fully_addressable());
         assert!(v.is_fully_replicated());
         assert!(v.__len__().is_err());
-        assert!((v.block_until_ready().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        assert!((v.block_until_ready().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!(v.is_ready().unwrap());
-        assert!((v.copy_to_host_async().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        assert!((v.copy_to_host_async().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!((v.copy().as_f64().unwrap() - 42.0).abs() < 1e-12);
         let mut deleted = v.copy();
         assert!(!deleted.is_deleted());
         deleted.delete();
         assert!(deleted.is_deleted());
+        assert!(deleted.block_until_ready().is_err());
         assert!(deleted.is_ready().is_err());
+        assert!(deleted.copy_to_host_async().is_err());
         assert!(deleted.addressable_data(0).is_err());
         assert!(!v.is_deleted());
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
+            assert!(deleted.devices(py).is_err());
+            assert!(deleted.tolist(py).is_err());
+            assert!(deleted.tobytes(py, "C").is_err());
+            assert!(deleted.__array__(py, None, None, None).is_err());
             let devices = v.devices(py).unwrap();
             assert_eq!(devices.bind(py).len().unwrap(), 1);
             assert_eq!(v.__str__(py).unwrap(), "42.0");
@@ -2411,11 +2433,11 @@ mod tests {
         assert!(floats.is_fully_replicated());
         assert_eq!(floats.__len__().unwrap(), 3);
         assert_eq!(
-            floats.block_until_ready().as_f64_list().unwrap(),
+            floats.block_until_ready().unwrap().as_f64_list().unwrap(),
             vec![1.0, 2.5, 4.0]
         );
         assert_eq!(
-            floats.copy_to_host_async().as_f64_list().unwrap(),
+            floats.copy_to_host_async().unwrap().as_f64_list().unwrap(),
             vec![1.0, 2.5, 4.0]
         );
         assert_eq!(floats.copy().as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
@@ -2821,9 +2843,9 @@ mod tests {
         let replicated_scalar = device_put_replicated(scalar.clone(), vec![cpu_device()]).unwrap();
         assert!((replicated_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
         assert!(device_put_replicated(scalar.clone(), Vec::new()).is_err());
-        let ready_scalar = block_until_ready(put_scalar);
+        let ready_scalar = block_until_ready(put_scalar).unwrap();
         assert!((ready_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
-        let host_scalar = device_get(ready_scalar);
+        let host_scalar = device_get(ready_scalar).unwrap();
         assert!((host_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
 
         let vector = PyValue::vector_i64(vec![1, 2, 3]).unwrap();
@@ -2831,12 +2853,12 @@ mod tests {
         assert_eq!(sharded_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
         assert!(device_put_sharded(vec![vector.clone()], Vec::new()).is_err());
         assert!(device_put_sharded(Vec::new(), vec![cpu_device()]).is_err());
-        let host_vector = device_get(block_until_ready(device_put(vector)));
+        let host_vector = device_get(block_until_ready(device_put(vector)).unwrap()).unwrap();
         assert_eq!(host_vector.shape_dims(), vec![3]);
         assert_eq!(host_vector.dtype(), "I64");
         assert_eq!(host_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
 
-        let copied_vector = copy_to_host_async(host_vector);
+        let copied_vector = copy_to_host_async(host_vector).unwrap();
         assert_eq!(copied_vector.shape_dims(), vec![3]);
         assert_eq!(copied_vector.dtype(), "I64");
         assert_eq!(copied_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
