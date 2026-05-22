@@ -190,6 +190,31 @@ def test_backend_topology_helpers():
     print("✓ backend topology helpers expose one local CPU device")
 
 
+def test_named_helpers():
+    """Test no-op named_call and named_scope helper behavior."""
+
+    def add_one(x):
+        return x + 1
+
+    wrapped = fj.named_call(add_one, name="add_one")
+    assert wrapped is add_one
+    assert wrapped(2) == 3
+
+    with fj.named_scope("outer"):
+        assert add_one(3) == 4
+
+    decorated = fj.named_scope("decorated")(add_one)
+    assert decorated is add_one
+    assert decorated(4) == 5
+
+    if fj.named_scope("").name != "":
+        raise AssertionError("named_scope should preserve an empty name")
+    if fj.named_call(add_one, name="") is not add_one:
+        raise AssertionError("named_call should preserve callable for an empty name")
+
+    print("✓ named_call/named_scope preserve Python callables")
+
+
 def test_vmap():
     """Test vmap of add_one."""
     jaxpr = fj.make_jaxpr_add_one()
@@ -282,6 +307,7 @@ if __name__ == "__main__":
     test_value_and_grad()
     test_device_helpers()
     test_backend_topology_helpers()
+    test_named_helpers()
     test_vmap()
     test_pmap_fails_closed()
     test_jacobian_and_hessian()

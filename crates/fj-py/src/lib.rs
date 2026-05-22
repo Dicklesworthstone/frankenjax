@@ -50,6 +50,12 @@ struct PyDevice {
     process_index: usize,
 }
 
+#[pyclass]
+#[derive(Clone)]
+struct PyNamedScope {
+    name: String,
+}
+
 #[pymethods]
 impl PyValue {
     #[staticmethod]
@@ -240,6 +246,33 @@ impl PyDevice {
             "Device(id={}, process_index={}, platform='cpu')",
             self.id, self.process_index
         )
+    }
+}
+
+#[pymethods]
+impl PyNamedScope {
+    #[getter]
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn __enter__(&self) {}
+
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
+    }
+
+    fn __call__(&self, function: Py<PyAny>) -> Py<PyAny> {
+        function
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PyNamedScope(name={:?})", self.name)
     }
 }
 
@@ -466,6 +499,16 @@ fn process_indices(backend: Option<String>) -> PyResult<Vec<usize>> {
     Ok(vec![0])
 }
 
+#[pyfunction(signature = (function, name=None))]
+fn named_call(function: Py<PyAny>, _name: Option<String>) -> Py<PyAny> {
+    function
+}
+
+#[pyfunction]
+fn named_scope(name: String) -> PyNamedScope {
+    PyNamedScope { name }
+}
+
 #[pyfunction]
 fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
@@ -544,6 +587,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyLinearizedJvp>()?;
     m.add_class::<PyShapeDtypeStruct>()?;
     m.add_class::<PyDevice>()?;
+    m.add_class::<PyNamedScope>()?;
     m.add_function(wrap_pyfunction!(make_jaxpr_square, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add2, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add_one, m)?)?;
@@ -567,6 +611,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_index, m)?)?;
     m.add_function(wrap_pyfunction!(process_count, m)?)?;
     m.add_function(wrap_pyfunction!(process_indices, m)?)?;
+    m.add_function(wrap_pyfunction!(named_call, m)?)?;
+    m.add_function(wrap_pyfunction!(named_scope, m)?)?;
     m.add_function(wrap_pyfunction!(vmap, m)?)?;
     m.add_function(wrap_pyfunction!(pmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
@@ -763,6 +809,14 @@ mod tests {
     fn version_metadata_matches_crate_package_version() {
         assert_eq!(env!("CARGO_PKG_VERSION"), "0.1.0");
         assert_eq!(version_info(), (0, 1, 0));
+    }
+
+    #[test]
+    fn named_scope_tracks_name() {
+        let scope = named_scope("layer".to_owned());
+        assert_eq!(scope.name(), "layer");
+        let empty_scope = named_scope(String::new());
+        assert_eq!(empty_scope.name(), "");
     }
 
     #[test]
