@@ -55,6 +55,7 @@ def test_value_scalar():
     assert v.device.process_index == 0
     assert v.device.platform == "cpu"
     assert v.device.device_kind == "cpu"
+    assert v.platform() == "cpu"
     assert {device.platform for device in v.devices()} == {"cpu"}
     assert v.on_device_size_in_bytes() == v.nbytes
     assert v.is_fully_addressable is True

@@ -396,6 +396,10 @@ impl PyValue {
         cpu_device()
     }
 
+    fn platform(&self) -> &'static str {
+        "cpu"
+    }
+
     fn devices(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let devices = PySet::empty(py)?;
         devices.add(cpu_device())?;
@@ -2219,6 +2223,7 @@ mod tests {
         assert_eq!(device.id(), 0);
         assert_eq!(device.process_index(), 0);
         assert_eq!(device.platform(), "cpu");
+        assert_eq!(v.platform(), "cpu");
         assert_eq!(v.on_device_size_in_bytes(), v.nbytes());
         assert!(v.is_fully_addressable());
         assert!(v.is_fully_replicated());
