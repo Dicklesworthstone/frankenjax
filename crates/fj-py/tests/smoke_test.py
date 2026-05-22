@@ -16,6 +16,7 @@ def test_version_metadata():
     """Test package version metadata exports."""
     assert fj.__version__ == "0.1.0"
     assert fj.__version_info__ == (0, 1, 0)
+    assert fj.__array_api_version__ == "2024.12"
     print("✓ __version__/__version_info__ metadata")
 
 
@@ -46,6 +47,15 @@ def test_value_scalar():
     assert v.shape == ()
     assert v.T.shape == ()
     assert abs(v.T.item() - 42.0) < 1e-12
+    assert v.__array_namespace__() is fj
+    assert v.__array_namespace__(api_version="2024.12") is fj
+    try:
+        v.__array_namespace__(api_version="2023.12")
+    except ValueError as exc:
+        assert "available versions" in str(exc)
+        assert "2024.12" in str(exc)
+    else:
+        raise AssertionError("__array_namespace__ should reject unsupported versions")
     assert v.dtype == "F64"
     assert isinstance(v.aval, fj.ShapeDtypeStruct)
     assert v.aval.shape == ()
@@ -182,6 +192,7 @@ def test_value_scalar():
         ("real", lambda: deleted.real),
         ("imag", lambda: deleted.imag),
         ("reversed", lambda: list(reversed(deleted))),
+        ("array namespace", deleted.__array_namespace__),
         ("array protocol", lambda: np.asarray(deleted)),
         ("DLPack device protocol", deleted.__dlpack_device__),
         ("addressable_shards", lambda: deleted.addressable_shards),

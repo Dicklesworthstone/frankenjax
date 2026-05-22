@@ -8,6 +8,8 @@ use pyo3::types::{
 
 use fj_core::{DType, Jaxpr, Literal, ProgramSpec, Shape, TensorValue, Value, build_program};
 
+const ARRAY_API_VERSION: &str = "2024.12";
+
 #[pyclass]
 #[derive(Clone)]
 struct PyJaxpr {
@@ -693,6 +695,16 @@ impl PyValue {
         Ok(PyList::new(py, py_values)?
             .call_method0("__iter__")?
             .unbind())
+    }
+
+    #[pyo3(signature = (*, api_version=None))]
+    fn __array_namespace__(
+        &self,
+        py: Python<'_>,
+        api_version: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
+        array_namespace(py, api_version)
     }
 
     fn __getitem__(&self, index: &Bound<'_, PyAny>) -> PyResult<Self> {
@@ -1721,6 +1733,17 @@ fn zero_literal_for_dtype(dtype: DType) -> Literal {
     }
 }
 
+fn array_namespace(py: Python<'_>, api_version: Option<&str>) -> PyResult<Py<PyAny>> {
+    if let Some(api_version) = api_version
+        && api_version != ARRAY_API_VERSION
+    {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "api_version={api_version:?} is not available; available versions are: [{ARRAY_API_VERSION:?}]"
+        )));
+    }
+    Ok(py.import("frankenjax")?.into_any().unbind())
+}
+
 fn py_object_repr(py: Python<'_>, value: Option<Py<PyAny>>) -> PyResult<String> {
     match value {
         Some(value) => {
@@ -2733,6 +2756,7 @@ fn remat(jaxpr: &PyJaxpr) -> PyCheckpoint {
 #[pymodule]
 fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    m.add("__array_api_version__", ARRAY_API_VERSION)?;
     m.add("__version_info__", version_info())?;
     m.add_class::<PyValue>()?;
     m.add("Array", m.getattr("PyValue")?)?;
