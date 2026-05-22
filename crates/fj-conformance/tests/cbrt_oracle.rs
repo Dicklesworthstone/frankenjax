@@ -331,3 +331,61 @@ fn metamorphic_cbrt_tensor_roundtrip() {
         assert_close(*rt, *orig, 1e-10, &format!("cbrt({})^3 = {}", orig, orig));
     }
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_cbrt_3d_shape() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 8.0, 27.0, 64.0, 125.0, 216.0, 343.0, 512.0]);
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 1.0).abs() < 1e-10);
+    assert!((vals[1] - 2.0).abs() < 1e-10);
+    assert!((vals[7] - 8.0).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_cbrt_empty_tensor() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert!(extract_f64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_cbrt_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_cbrt_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![1.0, 8.0, 27.0]);
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_cbrt_subnormal() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = Value::Scalar(Literal::from_f64(subnormal));
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    let val = extract_f64_vec(&result)[0];
+    // cbrt of subnormal should be a small positive value
+    assert!(val > 0.0 && val.is_finite(), "cbrt(subnormal) should be small positive finite");
+}
+
+#[test]
+fn oracle_cbrt_4d_shape() {
+    let data: Vec<f64> = (1..=16).map(|x| (x as f64).powi(3)).collect();
+    let input = make_f64_tensor(&[2, 2, 2, 2], data);
+    let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 1.0).abs() < 1e-10);
+    assert!((vals[15] - 16.0).abs() < 1e-10);
+}

@@ -414,3 +414,117 @@ fn oracle_real_imag_conjugate_property() {
     assert_close_f64(real_z, real_conj, 1e-6, "Real(z) = Real(conj(z))");
     assert_close_f64(imag_z, -imag_conj, 1e-6, "Imag(z) = -Imag(conj(z))");
 }
+
+// ====================== 3D TENSOR ======================
+
+#[test]
+fn oracle_real_3d_c128() {
+    let input = make_complex128_tensor(
+        &[2, 2, 2],
+        vec![
+            (1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0),
+            (9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0),
+        ],
+    );
+    let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert_close_f64(vals[0], 1.0, 1e-14, "");
+    assert_close_f64(vals[7], 15.0, 1e-14, "");
+}
+
+#[test]
+fn oracle_imag_3d_c128() {
+    let input = make_complex128_tensor(
+        &[2, 2, 2],
+        vec![
+            (1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0),
+            (9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0),
+        ],
+    );
+    let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert_close_f64(vals[0], 2.0, 1e-14, "");
+    assert_close_f64(vals[7], 16.0, 1e-14, "");
+}
+
+// ====================== EMPTY TENSOR ======================
+
+#[test]
+fn oracle_real_empty_tensor() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Complex128, Shape { dims: vec![0] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_imag_empty_tensor() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Complex64, Shape { dims: vec![0] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(result.dtype(), DType::F32);
+}
+
+#[test]
+fn oracle_real_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Complex128, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_imag_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Complex64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+// ====================== SPECIAL VALUES ======================
+
+#[test]
+fn oracle_real_special_values() {
+    let input = make_complex128_tensor(
+        &[4],
+        vec![
+            (f64::INFINITY, 0.0),
+            (f64::NEG_INFINITY, 0.0),
+            (f64::NAN, 0.0),
+            (-0.0, 0.0),
+        ],
+    );
+    let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_infinite() && vals[0] > 0.0);
+    assert!(vals[1].is_infinite() && vals[1] < 0.0);
+    assert!(vals[2].is_nan());
+    assert_eq!(vals[3].to_bits(), (-0.0_f64).to_bits());
+}
+
+#[test]
+fn oracle_imag_special_values() {
+    let input = make_complex128_tensor(
+        &[4],
+        vec![
+            (0.0, f64::INFINITY),
+            (0.0, f64::NEG_INFINITY),
+            (0.0, f64::NAN),
+            (0.0, -0.0),
+        ],
+    );
+    let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_infinite() && vals[0] > 0.0);
+    assert!(vals[1].is_infinite() && vals[1] < 0.0);
+    assert!(vals[2].is_nan());
+    assert_eq!(vals[3].to_bits(), (-0.0_f64).to_bits());
+}
