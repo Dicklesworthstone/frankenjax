@@ -363,6 +363,7 @@ pub fn eval_primitive(
         Primitive::Iota => eval_iota(inputs, params),
         Primitive::BroadcastedIota => eval_broadcasted_iota(inputs, params),
         Primitive::Copy => eval_copy(inputs),
+        Primitive::StopGradient => eval_copy(inputs),
         Primitive::ConvertElementType => eval_convert_element_type(inputs, params),
         Primitive::BitcastConvertType => eval_bitcast_convert_type(inputs, params),
         Primitive::ReducePrecision => eval_reduce_precision(inputs, params),

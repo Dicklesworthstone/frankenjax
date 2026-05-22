@@ -2418,6 +2418,7 @@ pub fn vjp(
             Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::Copy => Ok(vec![g.clone()]),
+        Primitive::StopGradient => Ok(vec![zeros_like(&inputs[0])]),
         Primitive::ConvertElementType => {
             // VJP: convert gradient back to input dtype
             require_input_arity(inputs, 1)?;
@@ -6571,6 +6572,7 @@ fn jvp_rule(
             Ok(zeros_like(&primal_out))
         }
         Primitive::Copy => Ok(tangents[0].clone()),
+        Primitive::StopGradient => Ok(zeros_like(&primals[0])),
         Primitive::ConvertElementType => {
             // JVP: convert tangent to target dtype (same as primal conversion)
             ep_p(Primitive::ConvertElementType, tangents, params)
@@ -15260,6 +15262,49 @@ mod tests {
                 fj_core::Literal::Complex128Bits(re, im)
                     if f64::from_bits(*re) == 1.0 && f64::from_bits(*im) == 0.0
             ));
+        }
+    }
+
+    #[test]
+    fn stop_gradient_vjp_returns_zeros() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::F64,
+                fj_core::Shape { dims: vec![3] },
+                vec![
+                    fj_core::Literal::from_f64(1.0),
+                    fj_core::Literal::from_f64(2.0),
+                    fj_core::Literal::from_f64(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                fj_core::DType::F64,
+                fj_core::Shape { dims: vec![3] },
+                vec![
+                    fj_core::Literal::from_f64(5.0),
+                    fj_core::Literal::from_f64(6.0),
+                    fj_core::Literal::from_f64(7.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let grads = super::vjp_single(
+            Primitive::StopGradient,
+            &[input],
+            &g,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("vjp");
+        assert_eq!(grads.len(), 1);
+        let grad_tensor = grads[0].as_tensor().unwrap();
+        for elem in &grad_tensor.elements {
+            assert!(
+                elem.as_f64().unwrap().abs() < 1e-12,
+                "stop_gradient VJP must return zeros"
+            );
         }
     }
 }

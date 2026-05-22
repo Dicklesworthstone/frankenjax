@@ -171,6 +171,7 @@ pub enum Primitive {
     BroadcastedIota,
     // Utility operations
     Copy,
+    StopGradient,
     ConvertElementType,
     BitcastConvertType,
     ReducePrecision,
@@ -312,6 +313,7 @@ impl Primitive {
         Self::Iota,
         Self::BroadcastedIota,
         Self::Copy,
+        Self::StopGradient,
         Self::ConvertElementType,
         Self::BitcastConvertType,
         Self::ReducePrecision,
@@ -450,6 +452,7 @@ impl Primitive {
             Self::Iota => "iota",
             Self::BroadcastedIota => "broadcasted_iota",
             Self::Copy => "copy",
+            Self::StopGradient => "stop_gradient",
             Self::ConvertElementType => "convert_element_type",
             Self::BitcastConvertType => "bitcast_convert_type",
             Self::ReducePrecision => "reduce_precision",
