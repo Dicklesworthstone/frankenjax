@@ -233,6 +233,123 @@ fn oracle_hypot_matrix() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_hypot_scalar_x_tensor_y_broadcast() {
+    // scalar x with tensor y
+    let x = scalar_f64(3.0);
+    let y = make_f64_tensor(&[4], vec![4.0, 0.0, 4.0, 12.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![5.0, 3.0, 5.0, (3.0_f64.powi(2) + 12.0_f64.powi(2)).sqrt()]);
+}
+
+#[test]
+fn oracle_hypot_tensor_x_scalar_y_broadcast() {
+    // tensor x with scalar y
+    let x = make_f64_tensor(&[4], vec![3.0, 0.0, 3.0, 5.0]);
+    let y = scalar_f64(4.0);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![5.0, 4.0, 5.0, (25.0_f64 + 16.0).sqrt()]);
+}
+
+#[test]
+fn oracle_hypot_singleton_x_vector_y_broadcast() {
+    // [1] x with [3] y -> [3]
+    let x = make_f64_tensor(&[1], vec![3.0]);
+    let y = make_f64_tensor(&[3], vec![4.0, 0.0, 12.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![5.0, 3.0, (9.0_f64 + 144.0).sqrt()]);
+}
+
+#[test]
+fn oracle_hypot_vector_x_singleton_y_broadcast() {
+    // [3] x with [1] y -> [3]
+    let x = make_f64_tensor(&[3], vec![3.0, 5.0, 8.0]);
+    let y = make_f64_tensor(&[1], vec![4.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 5.0).abs() < 1e-14, "hypot(3, 4) = 5");
+    assert!((vals[1] - (25.0_f64 + 16.0).sqrt()).abs() < 1e-14, "hypot(5, 4)");
+    assert!((vals[2] - (64.0_f64 + 16.0).sqrt()).abs() < 1e-14, "hypot(8, 4)");
+}
+
+#[test]
+fn oracle_hypot_column_x_matrix_y_broadcast() {
+    // [2, 1] x with [2, 3] y -> [2, 3]
+    let x = make_f64_tensor(&[2, 1], vec![3.0, 5.0]);
+    let y = make_f64_tensor(&[2, 3], vec![4.0, 0.0, 4.0, 12.0, 0.0, 12.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: hypot(3, 4)=5, hypot(3, 0)=3, hypot(3, 4)=5
+    assert_eq!(vals[0], 5.0);
+    assert_eq!(vals[1], 3.0);
+    assert_eq!(vals[2], 5.0);
+    // Row 1: hypot(5, 12)=13, hypot(5, 0)=5, hypot(5, 12)=13
+    assert_eq!(vals[3], 13.0);
+    assert_eq!(vals[4], 5.0);
+    assert_eq!(vals[5], 13.0);
+}
+
+#[test]
+fn oracle_hypot_row_y_matrix_x_broadcast() {
+    // [2, 3] x with [1, 3] y -> [2, 3]
+    let x = make_f64_tensor(&[2, 3], vec![3.0, 5.0, 8.0, 3.0, 5.0, 8.0]);
+    let y = make_f64_tensor(&[1, 3], vec![4.0, 12.0, 15.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals[0], 5.0);
+    assert_eq!(vals[1], 13.0);
+    assert_eq!(vals[2], 17.0);
+    assert_eq!(vals[3], 5.0);
+    assert_eq!(vals[4], 13.0);
+    assert_eq!(vals[5], 17.0);
+}
+
+#[test]
+fn oracle_hypot_different_ranks_broadcast() {
+    // [3] x with [2, 3] y -> [2, 3]
+    let x = make_f64_tensor(&[3], vec![3.0, 5.0, 8.0]);
+    let y = make_f64_tensor(&[2, 3], vec![4.0, 12.0, 15.0, 4.0, 12.0, 15.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![5.0, 13.0, 17.0, 5.0, 13.0, 17.0]);
+}
+
+#[test]
+fn oracle_hypot_all_scalars_broadcast() {
+    // scalar hypot scalar -> scalar
+    let x = scalar_f64(3.0);
+    let y = scalar_f64(4.0);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 5.0);
+}
+
+#[test]
+fn oracle_hypot_incompatible_shapes_error() {
+    // [2] hypot [3] should error
+    let x = make_f64_tensor(&[2], vec![3.0, 5.0]);
+    let y = make_f64_tensor(&[3], vec![4.0, 12.0, 15.0]);
+    let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_hypot_vector_scalar_y_broadcast() {
     let x = make_f64_tensor(&[3], vec![3.0, 0.0, -3.0]);
