@@ -291,3 +291,40 @@ fn oracle_atanh_empty_tensor() {
         _ => panic!("expected tensor"),
     }
 }
+
+// ======================== Additional Coverage ========================
+
+fn extract_shape(v: &Value) -> Vec<u32> {
+    match v {
+        Value::Tensor(t) => t.shape.dims.clone(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_atanh_3d() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, 0.5, -0.5, 0.9, -0.9, 0.1, -0.1, 0.0]);
+    let result = eval_primitive(Primitive::Atanh, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+}
+
+#[test]
+fn oracle_atanh_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Atanh, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_atanh_very_small() {
+    let input = make_f64_tensor(&[], vec![1e-15]);
+    let result = eval_primitive(Primitive::Atanh, &[input], &no_params()).unwrap();
+    assert_close(
+        extract_f64_scalar(&result),
+        1e-15,
+        1e-20,
+        "atanh(tiny) ≈ tiny for |x| << 1",
+    );
+}

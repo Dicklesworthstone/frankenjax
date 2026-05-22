@@ -222,3 +222,44 @@ fn oracle_signbit_subnormal() {
     let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
     assert_eq!(extract_bool_vec(&result), vec![false, true]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_signbit_f32_dtype() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape { dims: vec![3] },
+            vec![
+                Literal::F32Bits(1.0_f32.to_bits()),
+                Literal::F32Bits((-1.0_f32).to_bits()),
+                Literal::F32Bits(0.0_f32.to_bits()),
+            ],
+        )
+        .unwrap(),
+    );
+    let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
+    assert_eq!(extract_bool_vec(&result), vec![false, true, false]);
+}
+
+#[test]
+fn oracle_signbit_large_tensor() {
+    let data: Vec<f64> = (0..100).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+    let input = make_f64_tensor(&[100], data);
+    let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
+    let vals = extract_bool_vec(&result);
+    assert_eq!(vals.len(), 100);
+    for (i, &v) in vals.iter().enumerate() {
+        assert_eq!(v, i % 2 != 0, "signbit at index {i}");
+    }
+}
+
+#[test]
+fn oracle_signbit_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}

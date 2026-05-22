@@ -232,3 +232,65 @@ fn oracle_rev_large_tensor() {
     assert_eq!(vals[0], 99);
     assert_eq!(vals[99], 0);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_rev_4d_axis0() {
+    let input = make_i64_tensor(&[2, 2, 2, 2], (1..=16).collect::<Vec<_>>());
+    let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
+    let vals = extract_i64_vec(&result);
+    assert_eq!(&vals[0..8], &[9, 10, 11, 12, 13, 14, 15, 16]);
+    assert_eq!(&vals[8..16], &[1, 2, 3, 4, 5, 6, 7, 8]);
+}
+
+#[test]
+fn oracle_rev_bool_dtype() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape { dims: vec![4] },
+            vec![
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::Bool(true),
+                Literal::Bool(false),
+            ],
+        )
+        .unwrap(),
+    );
+    let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
+    assert_eq!(result.dtype(), DType::Bool);
+    let vals: Vec<bool> = result
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| match l {
+            Literal::Bool(b) => *b,
+            _ => panic!("expected bool"),
+        })
+        .collect();
+    assert_eq!(vals, vec![false, true, false, true]);
+}
+
+#[test]
+fn oracle_rev_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_rev_special_values() {
+    let input = make_f64_tensor(&[4], vec![f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0]);
+    let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals[0], 0.0);
+    assert!(vals[1].is_nan());
+    assert!(vals[2].is_infinite() && vals[2] < 0.0);
+    assert!(vals[3].is_infinite() && vals[3] > 0.0);
+}

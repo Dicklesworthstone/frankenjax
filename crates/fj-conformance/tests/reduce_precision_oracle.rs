@@ -326,3 +326,68 @@ fn oracle_reduce_precision_empty_tensor() {
     assert_eq!(extract_shape(&result), vec![0]);
     assert_eq!(extract_f64_vec(&result), vec![] as Vec<f64>);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_reduce_precision_3d() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    let result = eval_primitive(
+        Primitive::ReducePrecision,
+        &[input],
+        &precision_params(8, 10),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+}
+
+#[test]
+fn oracle_reduce_precision_neg_inf() {
+    let input = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let result = eval_primitive(
+        Primitive::ReducePrecision,
+        &[input],
+        &precision_params(8, 10),
+    )
+    .unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_infinite() && vals[0] < 0.0, "-Inf should remain -Inf");
+}
+
+#[test]
+fn oracle_reduce_precision_preserves_dtype_f64() {
+    let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(
+        Primitive::ReducePrecision,
+        &[input],
+        &precision_params(8, 10),
+    )
+    .unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_reduce_precision_preserves_dtype_f32() {
+    let input = make_f32_tensor(&[3], vec![1.0_f32, 2.0_f32, 3.0_f32]);
+    let result = eval_primitive(
+        Primitive::ReducePrecision,
+        &[input],
+        &precision_params(8, 10),
+    )
+    .unwrap();
+    assert_eq!(result.dtype(), DType::F32);
+}
+
+#[test]
+fn oracle_reduce_precision_subnormal() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = Value::Scalar(Literal::from_f64(subnormal));
+    let result = eval_primitive(
+        Primitive::ReducePrecision,
+        &[input],
+        &precision_params(11, 52),
+    )
+    .unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_finite(), "subnormal should remain finite");
+}
