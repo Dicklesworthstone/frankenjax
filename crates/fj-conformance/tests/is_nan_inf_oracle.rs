@@ -27,16 +27,19 @@ fn make_f64_tensor(shape: &[u32], data: Vec<f64>) -> Value {
     )
 }
 
+fn extract_bool_literal(literal: &Literal) -> bool {
+    match literal {
+        Literal::Bool(value) => *value,
+        other => {
+            assert!(matches!(other, Literal::Bool(_)), "expected Bool literal");
+            false
+        }
+    }
+}
+
 fn extract_bool_vec(v: &Value) -> Vec<bool> {
     match v {
-        Value::Tensor(t) => t
-            .elements
-            .iter()
-            .map(|l| match l {
-                Literal::Bool(b) => *b,
-                _ => panic!("expected Bool literal"),
-            })
-            .collect(),
+        Value::Tensor(t) => t.elements.iter().map(extract_bool_literal).collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -45,13 +48,9 @@ fn extract_bool_scalar(v: &Value) -> bool {
     match v {
         Value::Tensor(t) => {
             assert_eq!(t.shape.dims.len(), 0, "expected scalar");
-            match &t.elements[0] {
-                Literal::Bool(b) => *b,
-                _ => panic!("expected Bool literal"),
-            }
+            extract_bool_literal(&t.elements[0])
         }
-        Value::Scalar(Literal::Bool(b)) => *b,
-        _ => panic!("expected Bool scalar"),
+        Value::Scalar(literal) => extract_bool_literal(literal),
     }
 }
 

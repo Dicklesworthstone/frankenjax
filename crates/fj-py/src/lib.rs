@@ -1446,12 +1446,12 @@ mod tests {
         assert_eq!(values.len(), 1);
         assert_eq!(values[0].as_i64().unwrap(), 7);
 
-        let err = match make_jaxpr("missing_program") {
-            Ok(_) => panic!("unknown ProgramSpec should fail"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("unknown ProgramSpec"));
-        assert!(err.to_string().contains("square"));
+        let result = make_jaxpr("missing_program");
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(err.to_string().contains("unknown ProgramSpec"));
+            assert!(err.to_string().contains("square"));
+        }
     }
 
     #[test]
