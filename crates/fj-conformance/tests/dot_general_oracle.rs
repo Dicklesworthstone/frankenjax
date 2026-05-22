@@ -366,3 +366,55 @@ fn dot_general_negative_values() {
     // C[1,1] = -3*(-1) + 4*2 = 11
     assert_close(&extract_f64_vec(&result), &[-5.0, 5.0, -11.0, 11.0], 1e-12);
 }
+
+#[test]
+fn dot_general_4d_batched() {
+    // 4D batched matmul: [2, 2, 2, 3] @ [2, 2, 3, 1] => [2, 2, 2, 1]
+    let a = tensor_f64(vec![2, 2, 2, 3], &(0..24).map(|x| x as f64).collect::<Vec<_>>());
+    let b = tensor_f64(vec![2, 2, 3, 1], &(0..12).map(|x| x as f64).collect::<Vec<_>>());
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("3", "2", "0,1", "0,1")).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2, 1]);
+}
+
+#[test]
+fn dot_general_large_matrices() {
+    let a = tensor_f64(vec![10, 20], &(0..200).map(|x| x as f64).collect::<Vec<_>>());
+    let b = tensor_f64(vec![20, 15], &(0..300).map(|x| x as f64).collect::<Vec<_>>());
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    assert_eq!(extract_shape(&result), vec![10, 15]);
+}
+
+fn tensor_i64(shape: Vec<u32>, values: &[i64]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape { dims: shape },
+            values.iter().copied().map(Literal::I64).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn dot_general_i64_dtype() {
+    let a = tensor_i64(vec![2, 3], &[1, 2, 3, 4, 5, 6]);
+    let b = tensor_i64(vec![3, 2], &[1, 2, 3, 4, 5, 6]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+}
+
+#[test]
+fn dot_general_row_vector_col_vector() {
+    // [1, 3] @ [3, 1] => [1, 1] scalar in matrix form
+    let a = tensor_f64(vec![1, 3], &[1.0, 2.0, 3.0]);
+    let b = tensor_f64(vec![3, 1], &[4.0, 5.0, 6.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 1]);
+    // 1*4 + 2*5 + 3*6 = 32
+    assert_close(&extract_f64_vec(&result), &[32.0], 1e-12);
+}

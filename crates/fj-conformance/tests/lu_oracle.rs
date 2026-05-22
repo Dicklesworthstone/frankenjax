@@ -301,3 +301,59 @@ fn lu_scale_invariant() {
     assert_eq!(result.len(), 3);
     assert_eq!(shape(&result[0]), Some(Shape { dims: vec![2, 2] }));
 }
+
+fn f32_matrix(rows: u32, cols: u32, values: &[f32]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape {
+                dims: vec![rows, cols],
+            },
+            values.iter().copied().map(Literal::from_f32).collect(),
+        )
+        .expect("valid f32 matrix"),
+    )
+}
+
+#[test]
+fn lu_f32_dtype() {
+    let input = f32_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("F32 LU should succeed");
+
+    assert_eq!(result.len(), 3);
+    let lu_dtype = result[0].as_tensor().expect("LU should be tensor").dtype;
+    assert_eq!(lu_dtype, DType::F32, "LU output should preserve F32 dtype");
+}
+
+#[test]
+fn lu_returns_three_outputs() {
+    // Verify the exact tuple structure
+    let input = f64_matrix(3, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("LU should succeed");
+
+    assert_eq!(result.len(), 3, "LU should return exactly 3 outputs");
+}
+
+#[test]
+fn lu_small_values() {
+    // Test with small values to check numerical stability
+    let input = f64_matrix(2, 2, &[1e-10, 2e-10, 3e-10, 4e-10]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("small value LU should succeed");
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(shape(&result[0]), Some(Shape { dims: vec![2, 2] }));
+}
+
+#[test]
+fn lu_large_values() {
+    // Test with large values
+    let input = f64_matrix(2, 2, &[1e10, 2e10, 3e10, 4e10]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("large value LU should succeed");
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(shape(&result[0]), Some(Shape { dims: vec![2, 2] }));
+}
