@@ -19,8 +19,8 @@ use arithmetic::{
     erf_approx, eval_abs, eval_acosh, eval_asinh, eval_atanh, eval_bessel_i0e, eval_bessel_i1e,
     eval_betainc, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
     eval_cosh, eval_digamma, eval_dot, eval_dot_general, eval_erf_inv, eval_exp, eval_igamma,
-    eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_nan, eval_lgamma, eval_log,
-    eval_neg,
+    eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf, eval_is_nan,
+    eval_lgamma, eval_log, eval_neg,
     eval_nextafter, eval_polygamma, eval_real, eval_round, eval_select, eval_select_n, eval_sin,
     eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float, eval_zeta,
 };
@@ -388,6 +388,7 @@ pub fn eval_primitive(
         Primitive::Cbrt => eval_unary_elementwise(primitive, inputs, f64::cbrt),
         Primitive::IsFinite => eval_is_finite(primitive, inputs),
         Primitive::IsNan => eval_is_nan(primitive, inputs),
+        Primitive::IsInf => eval_is_inf(primitive, inputs),
         Primitive::IntegerPow => eval_integer_pow(primitive, inputs, params),
         Primitive::Nextafter => eval_nextafter(primitive, inputs),
         Primitive::Slice => eval_slice(inputs, params),

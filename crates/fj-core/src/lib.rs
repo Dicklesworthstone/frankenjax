@@ -176,6 +176,7 @@ pub enum Primitive {
     BesselI1e,
     IsFinite,
     IsNan,
+    IsInf,
     IntegerPow,
     Nextafter,
     // Clamping
@@ -339,6 +340,7 @@ impl Primitive {
         Self::BesselI1e,
         Self::IsFinite,
         Self::IsNan,
+        Self::IsInf,
         Self::IntegerPow,
         Self::Nextafter,
         Self::Clamp,
@@ -496,6 +498,7 @@ impl Primitive {
             Self::BesselI1e => "bessel_i1e",
             Self::IsFinite => "is_finite",
             Self::IsNan => "is_nan",
+            Self::IsInf => "is_inf",
             Self::IntegerPow => "integer_pow",
             Self::Nextafter => "nextafter",
             Self::Clamp => "clamp",

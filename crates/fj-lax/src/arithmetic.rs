@@ -3327,6 +3327,65 @@ pub(crate) fn eval_is_nan(primitive: Primitive, inputs: &[Value]) -> Result<Valu
     }
 }
 
+/// IsInf: returns Bool indicating whether each element is infinite.
+pub(crate) fn eval_is_inf(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    match &inputs[0] {
+        Value::Scalar(literal) => {
+            let is_inf = match *literal {
+                Literal::Complex64Bits(re, im) => {
+                    f32::from_bits(re).is_infinite() || f32::from_bits(im).is_infinite()
+                }
+                Literal::Complex128Bits(re, im) => {
+                    f64::from_bits(re).is_infinite() || f64::from_bits(im).is_infinite()
+                }
+                _ => {
+                    let value = literal.as_f64().ok_or(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "expected numeric scalar",
+                    })?;
+                    value.is_infinite()
+                }
+            };
+            Ok(Value::Scalar(Literal::Bool(is_inf)))
+        }
+        Value::Tensor(tensor) => {
+            let mut elements = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                let is_inf = match *literal {
+                    Literal::Complex64Bits(re, im) => Ok(Literal::Bool(
+                        f32::from_bits(re).is_infinite() || f32::from_bits(im).is_infinite(),
+                    )),
+                    Literal::Complex128Bits(re, im) => Ok(Literal::Bool(
+                        f64::from_bits(re).is_infinite() || f64::from_bits(im).is_infinite(),
+                    )),
+                    _ => literal
+                        .as_f64()
+                        .map(|v| Literal::Bool(v.is_infinite()))
+                        .ok_or(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "expected numeric tensor elements",
+                        }),
+                }?;
+                elements.push(is_inf);
+            }
+
+            Ok(Value::Tensor(TensorValue::new(
+                DType::Bool,
+                tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
 /// IntegerPow: x.powi(n) where n is an integer exponent from params.
 pub(crate) fn eval_integer_pow(
     primitive: Primitive,
