@@ -548,6 +548,10 @@ impl PyShapeDtypeStruct {
             self.shape, self.dtype, weak_type, is_ref
         )
     }
+
+    fn __str__(&self) -> String {
+        self.__repr__()
+    }
 }
 
 #[pymethods]
@@ -2046,6 +2050,7 @@ mod tests {
         assert!(!meta.weak_type());
         assert!(!meta.is_ref());
         assert_eq!(meta.__repr__(), "ShapeDtypeStruct(shape=[2, 3], dtype=F64)");
+        assert_eq!(meta.__str__(), meta.__repr__());
 
         let weak_meta = PyShapeDtypeStruct::new(vec![], "F64".to_owned(), true, true);
         assert!(weak_meta.__len__().is_err());
@@ -2055,6 +2060,7 @@ mod tests {
             weak_meta.__repr__(),
             "ShapeDtypeStruct(shape=[], dtype=F64, weak_type=True, is_ref=True)"
         );
+        assert_eq!(weak_meta.__str__(), weak_meta.__repr__());
 
         let updated = meta.update(
             Some(vec![4]),

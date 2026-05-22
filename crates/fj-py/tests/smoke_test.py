@@ -294,6 +294,7 @@ def test_shape_dtype_struct_constructor():
     assert meta.weak_type is False
     assert meta.is_ref is False
     assert repr(meta) == "ShapeDtypeStruct(shape=[2, 3], dtype=F64)"
+    assert str(meta) == repr(meta)
     weak_meta = fj.ShapeDtypeStruct([], "F64", weak_type=True, is_ref=True)
     assert weak_meta.shape == []
     assert weak_meta.dtype == "F64"
@@ -310,6 +311,7 @@ def test_shape_dtype_struct_constructor():
     assert repr(weak_meta) == (
         "ShapeDtypeStruct(shape=[], dtype=F64, weak_type=True, is_ref=True)"
     )
+    assert str(weak_meta) == repr(weak_meta)
     updated = meta.update(shape=[4], dtype="I64", weak_type=True, is_ref=True)
     assert updated.shape == [4]
     assert updated.dtype == "I64"
@@ -321,6 +323,7 @@ def test_shape_dtype_struct_constructor():
     assert repr(updated) == (
         "ShapeDtypeStruct(shape=[4], dtype=I64, weak_type=True, is_ref=True)"
     )
+    assert str(updated) == repr(updated)
     assert meta.shape == [2, 3]
     assert meta.dtype == "F64"
     assert meta.weak_type is False
