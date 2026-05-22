@@ -2302,6 +2302,16 @@ pub fn vjp(
             Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::Copy => Ok(vec![g.clone()]),
+        Primitive::ConvertElementType => {
+            // VJP: convert gradient back to input dtype
+            require_input_arity(inputs, 1)?;
+            let input_dtype = inputs[0].dtype();
+            let mut back_params = BTreeMap::new();
+            back_params.insert("new_dtype".to_owned(), format!("{input_dtype:?}"));
+            eval_primitive(Primitive::ConvertElementType, std::slice::from_ref(g), &back_params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))
+                .map(|v| vec![v])
+        }
         Primitive::BitcastConvertType => Ok(vec![zeros_like(&inputs[0])]),
         Primitive::ReducePrecision => Ok(vec![g.clone()]),
         Primitive::DynamicUpdateSlice => {
@@ -6323,6 +6333,10 @@ fn jvp_rule(
             Ok(zeros_like(&primal_out))
         }
         Primitive::Copy => Ok(tangents[0].clone()),
+        Primitive::ConvertElementType => {
+            // JVP: convert tangent to target dtype (same as primal conversion)
+            ep_p(Primitive::ConvertElementType, tangents, params)
+        }
         Primitive::BitcastConvertType => {
             let primal_out = ep_p(Primitive::BitcastConvertType, primals, params)?;
             Ok(zeros_like(&primal_out))

@@ -2309,6 +2309,125 @@ pub(crate) fn eval_copy(inputs: &[Value]) -> Result<Value, EvalError> {
 ///
 /// Constraint:
 /// - Source and destination element widths must match.
+pub(crate) fn eval_convert_element_type(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::ConvertElementType;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let target_dtype = parse_dtype_param(primitive, "new_dtype", params)?;
+
+    match &inputs[0] {
+        Value::Scalar(literal) => {
+            let converted = convert_literal(*literal, target_dtype)?;
+            Ok(Value::Scalar(converted))
+        }
+        Value::Tensor(tensor) => {
+            let mut out = Vec::with_capacity(tensor.elements.len());
+            for literal in &tensor.elements {
+                out.push(convert_literal(*literal, target_dtype)?);
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                target_dtype,
+                tensor.shape.clone(),
+                out,
+            )?))
+        }
+    }
+}
+
+fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
+    let f64_val = || -> Option<f64> {
+        match lit {
+            Literal::F64Bits(bits) => Some(f64::from_bits(bits)),
+            Literal::F32Bits(bits) => Some(f64::from(f32::from_bits(bits))),
+            Literal::F16Bits(_) => lit.as_f16_f32().map(f64::from),
+            Literal::BF16Bits(_) => lit.as_bf16_f32().map(f64::from),
+            Literal::I64(v) => Some(v as f64),
+            Literal::U32(v) => Some(v as f64),
+            Literal::U64(v) => Some(v as f64),
+            Literal::Bool(b) => Some(if b { 1.0 } else { 0.0 }),
+            Literal::Complex64Bits(re, _) => Some(f64::from(f32::from_bits(re))),
+            Literal::Complex128Bits(re, _) => Some(f64::from_bits(re)),
+        }
+    };
+
+    let i64_val = || -> Option<i64> {
+        match lit {
+            Literal::I64(v) => Some(v),
+            Literal::U32(v) => Some(i64::from(v)),
+            Literal::U64(v) => i64::try_from(v).ok(),
+            Literal::Bool(b) => Some(if b { 1 } else { 0 }),
+            Literal::F64Bits(bits) => Some(f64::from_bits(bits) as i64),
+            Literal::F32Bits(bits) => Some(f32::from_bits(bits) as i64),
+            Literal::F16Bits(_) => lit.as_f16_f32().map(|v| v as i64),
+            Literal::BF16Bits(_) => lit.as_bf16_f32().map(|v| v as i64),
+            Literal::Complex64Bits(re, _) => Some(f32::from_bits(re) as i64),
+            Literal::Complex128Bits(re, _) => Some(f64::from_bits(re) as i64),
+        }
+    };
+
+    let u64_val = || -> Option<u64> {
+        match lit {
+            Literal::U64(v) => Some(v),
+            Literal::U32(v) => Some(u64::from(v)),
+            Literal::I64(v) => u64::try_from(v).ok(),
+            Literal::Bool(b) => Some(if b { 1 } else { 0 }),
+            Literal::F64Bits(bits) => Some(f64::from_bits(bits) as u64),
+            Literal::F32Bits(bits) => Some(f32::from_bits(bits) as u64),
+            Literal::F16Bits(_) => lit.as_f16_f32().map(|v| v as u64),
+            Literal::BF16Bits(_) => lit.as_bf16_f32().map(|v| v as u64),
+            Literal::Complex64Bits(re, _) => Some(f32::from_bits(re) as u64),
+            Literal::Complex128Bits(re, _) => Some(f64::from_bits(re) as u64),
+        }
+    };
+
+    let bool_val = || -> bool {
+        match lit {
+            Literal::Bool(b) => b,
+            Literal::I64(v) => v != 0,
+            Literal::U32(v) => v != 0,
+            Literal::U64(v) => v != 0,
+            Literal::F64Bits(bits) => f64::from_bits(bits) != 0.0,
+            Literal::F32Bits(bits) => f32::from_bits(bits) != 0.0,
+            Literal::F16Bits(_) => lit.as_f16_f32().map(|v| v != 0.0).unwrap_or(false),
+            Literal::BF16Bits(_) => lit.as_bf16_f32().map(|v| v != 0.0).unwrap_or(false),
+            Literal::Complex64Bits(re, im) => {
+                f32::from_bits(re) != 0.0 || f32::from_bits(im) != 0.0
+            }
+            Literal::Complex128Bits(re, im) => {
+                f64::from_bits(re) != 0.0 || f64::from_bits(im) != 0.0
+            }
+        }
+    };
+
+    Ok(match target {
+        DType::F64 => Literal::from_f64(f64_val().unwrap_or(0.0)),
+        DType::F32 => Literal::from_f32(f64_val().unwrap_or(0.0) as f32),
+        DType::F16 => Literal::from_f16_f32(f64_val().unwrap_or(0.0) as f32),
+        DType::BF16 => Literal::from_bf16_f32(f64_val().unwrap_or(0.0) as f32),
+        DType::I64 | DType::I32 => Literal::I64(i64_val().unwrap_or(0)),
+        DType::U64 => Literal::U64(u64_val().unwrap_or(0)),
+        DType::U32 => Literal::U32(u64_val().unwrap_or(0) as u32),
+        DType::Bool => Literal::Bool(bool_val()),
+        DType::Complex64 => {
+            let re = f64_val().unwrap_or(0.0) as f32;
+            Literal::from_complex64(re, 0.0)
+        }
+        DType::Complex128 => {
+            let re = f64_val().unwrap_or(0.0);
+            Literal::from_complex128(re, 0.0)
+        }
+    })
+}
+
 pub(crate) fn eval_bitcast_convert_type(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -4615,6 +4734,69 @@ mod tests {
         let x = v_f64(&[1.0, 2.0, 3.0]);
         let result = eval_copy(std::slice::from_ref(&x)).unwrap();
         assert_eq!(extract_f64_vec(&result), extract_f64_vec(&x));
+    }
+
+    // ── ConvertElementType ──
+
+    #[test]
+    fn convert_element_type_f64_to_f32() {
+        let x = v_f64(&[1.5, 2.5, 3.5]);
+        let p = params(&[("new_dtype", "f32")]);
+        let result = eval_convert_element_type(&[x], &p).unwrap();
+        assert_eq!(result.dtype(), DType::F32);
+        match result {
+            Value::Tensor(t) => {
+                let vals: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(bits) => f32::from_bits(*bits),
+                        _ => panic!("expected F32Bits"),
+                    })
+                    .collect();
+                assert_eq!(vals, vec![1.5_f32, 2.5_f32, 3.5_f32]);
+            }
+            _ => panic!("expected tensor"),
+        }
+    }
+
+    #[test]
+    fn convert_element_type_f64_to_i64() {
+        let x = v_f64(&[1.9, 2.1, -3.7]);
+        let p = params(&[("new_dtype", "i64")]);
+        let result = eval_convert_element_type(&[x], &p).unwrap();
+        assert_eq!(result.dtype(), DType::I64);
+        match result {
+            Value::Tensor(t) => {
+                let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+                assert_eq!(vals, vec![1, 2, -3]);
+            }
+            _ => panic!("expected tensor"),
+        }
+    }
+
+    #[test]
+    fn convert_element_type_i64_to_f64() {
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape::vector(3),
+                vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)],
+            )
+            .unwrap(),
+        );
+        let p = params(&[("new_dtype", "f64")]);
+        let result = eval_convert_element_type(&[x], &p).unwrap();
+        assert_eq!(result.dtype(), DType::F64);
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn convert_element_type_scalar() {
+        let x = Value::Scalar(Literal::from_f64(3.14));
+        let p = params(&[("new_dtype", "i64")]);
+        let result = eval_convert_element_type(&[x], &p).unwrap();
+        assert_eq!(result.as_i64_scalar(), Some(3));
     }
 
     // ── Squeeze ──

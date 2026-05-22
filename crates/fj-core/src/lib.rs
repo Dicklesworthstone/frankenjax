@@ -168,6 +168,7 @@ pub enum Primitive {
     BroadcastedIota,
     // Utility operations
     Copy,
+    ConvertElementType,
     BitcastConvertType,
     ReducePrecision,
     // Linear algebra
@@ -305,6 +306,7 @@ impl Primitive {
         Self::Iota,
         Self::BroadcastedIota,
         Self::Copy,
+        Self::ConvertElementType,
         Self::BitcastConvertType,
         Self::ReducePrecision,
         Self::Cholesky,
@@ -439,6 +441,7 @@ impl Primitive {
             Self::Iota => "iota",
             Self::BroadcastedIota => "broadcasted_iota",
             Self::Copy => "copy",
+            Self::ConvertElementType => "convert_element_type",
             Self::BitcastConvertType => "bitcast_convert_type",
             Self::ReducePrecision => "reduce_precision",
             Self::Cholesky => "cholesky",
