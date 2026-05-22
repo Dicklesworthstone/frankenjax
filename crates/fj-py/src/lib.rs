@@ -688,6 +688,20 @@ fn debug_infs(enabled: bool) -> PyNamedScope {
     }
 }
 
+#[pyfunction(signature = (enabled=true))]
+fn log_compiles(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("log_compiles({enabled})"),
+    }
+}
+
+#[pyfunction(signature = (enabled=true))]
+fn explain_cache_misses(enabled: bool) -> PyNamedScope {
+    PyNamedScope {
+        name: format!("explain_cache_misses({enabled})"),
+    }
+}
+
 #[pyfunction(signature = (disable=true))]
 fn disable_jit(disable: bool) -> PyNamedScope {
     PyNamedScope {
@@ -835,6 +849,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(checking_leaks, m)?)?;
     m.add_function(wrap_pyfunction!(debug_nans, m)?)?;
     m.add_function(wrap_pyfunction!(debug_infs, m)?)?;
+    m.add_function(wrap_pyfunction!(log_compiles, m)?)?;
+    m.add_function(wrap_pyfunction!(explain_cache_misses, m)?)?;
     m.add_function(wrap_pyfunction!(disable_jit, m)?)?;
     m.add_function(wrap_pyfunction!(ensure_compile_time_eval, m)?)?;
     m.add_function(wrap_pyfunction!(print_environment_info, m)?)?;
@@ -1106,6 +1122,16 @@ mod tests {
         assert_eq!(debug_nans(false).name(), "debug_nans(false)");
         assert_eq!(debug_infs(true).name(), "debug_infs(true)");
         assert_eq!(debug_infs(false).name(), "debug_infs(false)");
+        assert_eq!(log_compiles(true).name(), "log_compiles(true)");
+        assert_eq!(log_compiles(false).name(), "log_compiles(false)");
+        assert_eq!(
+            explain_cache_misses(true).name(),
+            "explain_cache_misses(true)"
+        );
+        assert_eq!(
+            explain_cache_misses(false).name(),
+            "explain_cache_misses(false)"
+        );
         assert_eq!(disable_jit(true).name(), "disable_jit(true)");
         assert_eq!(disable_jit(false).name(), "disable_jit(false)");
         assert_eq!(

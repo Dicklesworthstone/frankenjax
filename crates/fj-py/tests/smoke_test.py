@@ -366,8 +366,20 @@ def test_local_context_helpers():
     with fj.debug_infs(False):
         assert add_one(12) == 13
 
-    with fj.ensure_compile_time_eval():
+    with fj.log_compiles():
         assert add_one(13) == 14
+
+    with fj.log_compiles(False):
+        assert add_one(14) == 15
+
+    with fj.explain_cache_misses():
+        assert add_one(15) == 16
+
+    with fj.explain_cache_misses(False):
+        assert add_one(16) == 17
+
+    with fj.ensure_compile_time_eval():
+        assert add_one(17) == 18
 
     assert fj.enable_checks().name == "enable_checks(true)"
     assert fj.enable_checks(False).name == "enable_checks(false)"
@@ -378,6 +390,10 @@ def test_local_context_helpers():
     assert fj.debug_nans(False).name == "debug_nans(false)"
     assert fj.debug_infs().name == "debug_infs(true)"
     assert fj.debug_infs(False).name == "debug_infs(false)"
+    assert fj.log_compiles().name == "log_compiles(true)"
+    assert fj.log_compiles(False).name == "log_compiles(false)"
+    assert fj.explain_cache_misses().name == "explain_cache_misses(true)"
+    assert fj.explain_cache_misses(False).name == "explain_cache_misses(false)"
     assert fj.disable_jit().name == "disable_jit(true)"
     assert fj.disable_jit(False).name == "disable_jit(false)"
     assert fj.ensure_compile_time_eval().name == "ensure_compile_time_eval"
@@ -386,6 +402,8 @@ def test_local_context_helpers():
     assert fj.checking_leaks()(add_one) is add_one
     assert fj.debug_nans()(add_one) is add_one
     assert fj.debug_infs()(add_one) is add_one
+    assert fj.log_compiles()(add_one) is add_one
+    assert fj.explain_cache_misses()(add_one) is add_one
     assert fj.disable_jit()(add_one) is add_one
     assert fj.ensure_compile_time_eval()(add_one) is add_one
     print("✓ config-style local context helpers preserve Python callables")
