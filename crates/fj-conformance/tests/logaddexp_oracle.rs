@@ -9,6 +9,7 @@
 //! - Dominance: logaddexp(large, small) ~ large
 //! - Symmetry: logaddexp(x, y) = logaddexp(y, x)
 //! - Special values
+//! - Broadcast-compatible operands
 //! - Tensor shapes
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
@@ -54,6 +55,11 @@ fn extract_shape(v: &Value) -> Vec<u32> {
 
 fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
+}
+
+fn expected_logaddexp(x: f64, y: f64) -> f64 {
+    let max = x.max(y);
+    max + (-((x - y).abs())).exp().ln_1p()
 }
 
 // ======================== Basic Cases ========================
@@ -248,6 +254,50 @@ fn oracle_logaddexp_matrix() {
             i,
             v,
             expected
+        );
+    }
+}
+
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_logaddexp_vector_scalar_y_broadcast() {
+    let x_values = [0.0, 1.0, 2.0];
+    let x = make_f64_tensor(&[3], x_values.to_vec());
+    let y = make_f64_tensor(&[], vec![0.0]);
+    let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    for (i, (&actual, &x_value)) in vals.iter().zip(x_values.iter()).enumerate() {
+        let expected = expected_logaddexp(x_value, 0.0);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast scalar y element {i}: {actual} vs {expected}"
+        );
+    }
+}
+
+#[test]
+fn oracle_logaddexp_matrix_row_y_broadcast() {
+    let x_values = [0.0, 0.0, 10.0, 10.0];
+    let y_values = [0.0, 10.0];
+    let x = make_f64_tensor(&[2, 2], x_values.to_vec());
+    let y = make_f64_tensor(&[2], y_values.to_vec());
+    let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_f64_vec(&result);
+    for (i, ((&actual, &x_value), &y_value)) in vals
+        .iter()
+        .zip(x_values.iter())
+        .zip(y_values.iter().cycle())
+        .enumerate()
+    {
+        let expected = expected_logaddexp(x_value, y_value);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast row y element {i}: {actual} vs {expected}"
         );
     }
 }
