@@ -75,6 +75,7 @@ def test_value_scalar():
     assert float(v) == 42.0
     assert int(v) == 42
     assert complex(v) == complex(42.0, 0.0)
+    assert bool(v) is True
     try:
         operator.index(v)
     except TypeError as exc:
@@ -99,6 +100,8 @@ def test_value_scalar():
     assert int(v2) == 123
     assert complex(v2) == complex(123.0, 0.0)
     assert operator.index(v2) == 123
+    assert bool(v2) is True
+    assert bool(fj.PyValue.scalar_i64(0)) is False
     assert v2.as_i64() == 123
     print("✓ scalar_i64 roundtrip")
 
@@ -144,6 +147,19 @@ def test_value_scalar():
         assert "integer scalar arrays" in str(exc)
     else:
         raise AssertionError("operator.index(vector) should raise TypeError")
+    try:
+        bool(vec)
+    except ValueError as exc:
+        assert "more than one element" in str(exc)
+    else:
+        raise AssertionError("bool(vector) should raise ValueError")
+    assert bool(fj.PyValue.vector_i64([0])) is False
+    try:
+        bool(fj.PyValue.vector_i64([]))
+    except ValueError as exc:
+        assert "empty array is ambiguous" in str(exc)
+    else:
+        raise AssertionError("bool(empty vector) should raise ValueError")
     assert vec.as_i64_list() == [1, 2, 3]
     assert vec.as_f64_list() == [1.0, 2.0, 3.0]
     print("✓ vector_i64 roundtrip")

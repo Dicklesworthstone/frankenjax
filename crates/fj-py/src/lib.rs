@@ -256,6 +256,28 @@ impl PyValue {
         }
     }
 
+    fn __bool__(&self) -> PyResult<bool> {
+        match self.size() {
+            0 => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "The truth value of an empty array is ambiguous. Use `array.size > 0` to check that an array is not empty.",
+            )),
+            1 => {
+                let literal = match &self.inner {
+                    Value::Scalar(literal) => *literal,
+                    Value::Tensor(tensor) => tensor.elements.first().copied().ok_or_else(|| {
+                        PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                            "The truth value of an empty array is ambiguous. Use `array.size > 0` to check that an array is not empty.",
+                        )
+                    })?,
+                };
+                Ok(literal_truth_value(literal))
+            }
+            _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "The truth value of an array with more than one element is ambiguous. Use a.any() or a.all()",
+            )),
+        }
+    }
+
     fn __float__(&self) -> PyResult<f64> {
         let literal = self.inner.as_scalar_literal().ok_or_else(|| {
             PyErr::new::<pyo3::exceptions::PyTypeError, _>(
@@ -704,6 +726,20 @@ fn dtype_itemsize(dtype: DType) -> u64 {
         DType::F32 | DType::I32 | DType::U32 => 4,
         DType::F64 | DType::I64 | DType::U64 | DType::Complex64 => 8,
         DType::Complex128 => 16,
+    }
+}
+
+fn literal_truth_value(literal: Literal) -> bool {
+    match literal {
+        Literal::Bool(value) => value,
+        Literal::I64(value) => value != 0,
+        Literal::U32(value) => value != 0,
+        Literal::U64(value) => value != 0,
+        Literal::BF16Bits(_) | Literal::F16Bits(_) | Literal::F32Bits(_) | Literal::F64Bits(_) => {
+            literal.as_f64().is_some_and(|value| value != 0.0)
+        }
+        Literal::Complex64Bits(re, im) => f32::from_bits(re) != 0.0 || f32::from_bits(im) != 0.0,
+        Literal::Complex128Bits(re, im) => f64::from_bits(re) != 0.0 || f64::from_bits(im) != 0.0,
     }
 }
 
@@ -1840,9 +1876,12 @@ mod tests {
             assert!(v.__index__(py).is_err());
         });
         assert!((v.__float__().unwrap() - 42.0).abs() < 1e-12);
+        assert!(v.__bool__().unwrap());
         assert!((v.as_f64().unwrap() - 42.0).abs() < 1e-12);
 
         let i = PyValue::scalar_i64(123);
+        assert!(i.__bool__().unwrap());
+        assert!(!PyValue::scalar_i64(0).__bool__().unwrap());
         Python::with_gil(|py| {
             let value = i.__index__(py).unwrap();
             assert_eq!(value.bind(py).extract::<i64>().unwrap(), 123);
@@ -1897,6 +1936,7 @@ mod tests {
         assert!(ints.is_fully_replicated());
         assert_eq!(ints.__len__().unwrap(), 3);
         assert!(ints.__float__().is_err());
+        assert!(ints.__bool__().is_err());
         Python::with_gil(|py| {
             assert!(ints.__int__(py).is_err());
             assert!(ints.__complex__(py).is_err());
@@ -1909,6 +1949,11 @@ mod tests {
         });
         assert_eq!(ints.as_i64_list().unwrap(), vec![1, 2, 3]);
         assert_eq!(ints.as_f64_list().unwrap(), vec![1.0, 2.0, 3.0]);
+
+        let one = PyValue::vector_i64(vec![0]).unwrap();
+        assert!(!one.__bool__().unwrap());
+        let empty = PyValue::vector_i64(Vec::new()).unwrap();
+        assert!(empty.__bool__().is_err());
     }
 
     #[test]
