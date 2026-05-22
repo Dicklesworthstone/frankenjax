@@ -208,6 +208,23 @@ fn select_n_boolean_scalar_true_picks_case_1() {
 }
 
 #[test]
+fn select_n_boolean_scalar_picks_whole_tensor_case() {
+    for (which, expected) in [(false, vec![1.0, 2.0, 3.0]), (true, vec![10.0, 20.0, 30.0])] {
+        let result = select_n(vec![
+            Value::scalar_bool(which),
+            vector_f64(&[1.0, 2.0, 3.0]),
+            vector_f64(&[10.0, 20.0, 30.0]),
+        ])
+        .expect("scalar boolean select_n should pick whole tensor cases");
+
+        let tensor = result.as_tensor().expect("expected tensor output");
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape, Shape::vector(3));
+        assert_eq!(extract_vector(&result), expected);
+    }
+}
+
+#[test]
 fn select_n_boolean_tensor_index_selects_elementwise() {
     let result = select_n(vec![
         vector_bool(&[false, true, false, true]),
@@ -238,8 +255,7 @@ fn select_n_boolean_with_three_cases_rejected() {
     .expect_err("boolean with 3 cases should fail");
 
     assert!(
-        err.to_string().contains("at most 2 operands")
-            || err.to_string().contains("boolean"),
+        err.to_string().contains("at most 2 operands") || err.to_string().contains("boolean"),
         "unexpected boolean-3-cases error: {err}"
     );
 }
