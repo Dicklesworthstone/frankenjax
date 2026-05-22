@@ -265,3 +265,33 @@ fn oracle_broadcasted_iota_4d() {
         assert_eq!(chunk, &[0, 1]);
     }
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_broadcasted_iota_default_dtype_is_i64() {
+    let result = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[3, 2], 0)).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}
+
+#[test]
+fn oracle_broadcasted_iota_empty_dim() {
+    let result = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[0, 3], 0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+    assert!(extract_i64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_broadcasted_iota_empty_other_dim() {
+    let result = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[3, 0], 0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![3, 0]);
+    assert!(extract_i64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_broadcasted_iota_single_element_shape() {
+    let result =
+        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[1, 1, 1], 0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 1, 1]);
+    assert_eq!(extract_i64_vec(&result), vec![0]);
+}

@@ -240,3 +240,52 @@ fn oracle_sinc_empty_tensor() {
     assert_eq!(extract_shape(&result), vec![0]);
     assert_eq!(extract_f64_vec(&result), vec![] as Vec<f64>);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_sinc_3d_shape() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, 0.5, 1.0, 2.0, -0.5, -1.0, 0.25, 0.0]);
+    let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals.len(), 8);
+    assert!((vals[0] - 1.0).abs() < 1e-15);
+    assert!((vals[7] - 1.0).abs() < 1e-15);
+}
+
+#[test]
+fn oracle_sinc_subnormal() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = make_f64_tensor(&[], vec![subnormal]);
+    let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+    let actual = extract_f64_scalar(&result);
+    assert!((actual - 1.0).abs() < 1e-10, "sinc(subnormal) ~ 1");
+}
+
+#[test]
+fn oracle_sinc_large_integer() {
+    let input = make_f64_tensor(&[], vec![100.0]);
+    let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+    let actual = extract_f64_scalar(&result);
+    assert!(actual.abs() < 1e-13, "sinc(100) ~ 0");
+}
+
+#[test]
+fn oracle_sinc_f32_dtype() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape { dims: vec![3] },
+            vec![
+                Literal::F32Bits(0.0_f32.to_bits()),
+                Literal::F32Bits(0.5_f32.to_bits()),
+                Literal::F32Bits(1.0_f32.to_bits()),
+            ],
+        )
+        .unwrap(),
+    );
+    let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F32);
+    assert_eq!(extract_shape(&result), vec![3]);
+}

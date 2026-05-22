@@ -359,3 +359,85 @@ fn oracle_bitcast_empty_tensor() {
     assert_eq!(extract_shape(&result), vec![0]);
     assert_eq!(extract_i64_vec(&result), vec![] as Vec<i64>);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_bitcast_3d_shape_preserved() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    assert_eq!(result.dtype(), DType::I64);
+}
+
+#[test]
+fn oracle_bitcast_neg_inf_preserved() {
+    let input = Value::Scalar(Literal::from_f64(f64::NEG_INFINITY));
+    let as_i64 = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    let back = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[as_i64],
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let val = extract_f64_vec(&back)[0];
+    assert!(val.is_infinite() && val < 0.0, "-Inf should round-trip");
+}
+
+#[test]
+fn oracle_bitcast_subnormal_preserved() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = Value::Scalar(Literal::from_f64(subnormal));
+    let as_i64 = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    let back = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[as_i64],
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let val = extract_f64_vec(&back)[0];
+    assert_eq!(val, subnormal, "subnormal should round-trip");
+}
+
+#[test]
+fn oracle_bitcast_large_tensor() {
+    let data: Vec<f64> = (0..100).map(|x| x as f64).collect();
+    let input = make_f64_tensor(&[10, 10], data);
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![10, 10]);
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals.len(), 100);
+    assert_eq!(vals[0], 0.0_f64.to_bits() as i64);
+}
+
+#[test]
+fn oracle_bitcast_preserves_dtype() {
+    let input = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}

@@ -302,3 +302,68 @@ fn convert_element_type_rank2_shape_preserved() {
     assert_eq!(result.dtype(), DType::F32);
     assert_eq!(shape(&result).dims, vec![2, 3]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn convert_element_type_rank3_shape_preserved() {
+    let input = i64_tensor(&[2, 2, 2], &[1, 2, 3, 4, 5, 6, 7, 8]);
+    let result = convert(input, "f64").expect("rank-3 conversion should succeed");
+
+    assert_eq!(result.dtype(), DType::F64);
+    assert_eq!(shape(&result).dims, vec![2, 2, 2]);
+}
+
+#[test]
+fn convert_element_type_f64_to_complex128() {
+    let input = f64_tensor(&[3], &[1.0, 2.0, 3.0]);
+    let result = convert(input, "complex128").expect("f64 to complex128 should succeed");
+
+    assert_eq!(result.dtype(), DType::Complex128);
+    assert_eq!(shape(&result).dims, vec![3]);
+}
+
+#[test]
+fn convert_element_type_special_values() {
+    let input = f64_tensor(&[4], &[f64::INFINITY, f64::NEG_INFINITY, f64::NAN, 0.0]);
+    let result = convert(input, "f32").expect("special values conversion should succeed");
+
+    assert_eq!(result.dtype(), DType::F32);
+    let vals = f32_values(&result);
+    assert!(vals[0].unwrap().is_infinite() && vals[0].unwrap().is_sign_positive());
+    assert!(vals[1].unwrap().is_infinite() && vals[1].unwrap().is_sign_negative());
+    assert!(vals[2].unwrap().is_nan());
+    assert_eq!(vals[3], Some(0.0));
+}
+
+#[test]
+fn convert_element_type_u64_to_i64() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::U64,
+            Shape { dims: vec![3] },
+            vec![Literal::U64(0), Literal::U64(100), Literal::U64(1000)],
+        )
+        .expect("valid u64 tensor"),
+    );
+    let result = convert(input, "i64").expect("u64 to i64 conversion should succeed");
+
+    assert_eq!(result.dtype(), DType::I64);
+    assert_eq!(i64_values(&result), vec![0, 100, 1000]);
+}
+
+#[test]
+fn convert_element_type_bool_to_f64() {
+    let input = bool_tensor(&[3], &[true, false, true]);
+    let result = convert(input, "f64").expect("bool to f64 conversion should succeed");
+
+    assert_eq!(result.dtype(), DType::F64);
+    let vals: Vec<f64> = result
+        .as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_f64().expect("expected f64"))
+        .collect();
+    assert_eq!(vals, vec![1.0, 0.0, 1.0]);
+}

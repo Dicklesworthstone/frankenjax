@@ -221,3 +221,67 @@ fn oracle_copy_preserves_dtype() {
     let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
     assert_eq!(result.dtype(), DType::I64);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_copy_4d() {
+    let input = make_i64_tensor(&[2, 2, 2, 2], (1..=16).collect());
+    let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
+    assert_eq!(extract_i64_vec(&result), (1..=16).collect::<Vec<_>>());
+}
+
+#[test]
+fn oracle_copy_complex_dtype() {
+    let input = Value::scalar_complex128(3.0, 4.0);
+    let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+    assert_eq!(result.as_complex128_scalar(), Some((3.0, 4.0)));
+}
+
+#[test]
+fn oracle_copy_u32_dtype() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::U32,
+            Shape { dims: vec![3] },
+            vec![Literal::U32(0), Literal::U32(100), Literal::U32(u32::MAX)],
+        )
+        .unwrap(),
+    );
+    let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::U32);
+    let vals: Vec<u32> = result
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| match l {
+            Literal::U32(v) => *v,
+            _ => panic!("expected u32"),
+        })
+        .collect();
+    assert_eq!(vals, vec![0, 100, u32::MAX]);
+}
+
+#[test]
+fn oracle_copy_subnormal_values() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = make_f64_tensor(&[3], vec![subnormal, -subnormal, 0.0]);
+    let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals[0], subnormal);
+    assert_eq!(vals[1], -subnormal);
+    assert_eq!(vals[2], 0.0);
+}
+
+#[test]
+fn oracle_copy_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+    assert!(result.as_tensor().unwrap().elements.is_empty());
+}
