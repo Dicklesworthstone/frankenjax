@@ -296,3 +296,60 @@ fn dynamic_slice_empty_output() {
     assert_eq!(shape, vec![0]);
     assert!(vals.is_empty());
 }
+
+#[test]
+fn dynamic_slice_full_slice() {
+    let operand = tensor_i64(&[4], &[10, 20, 30, 40]).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "4".to_owned());
+
+    let result =
+        eval_primitive(Primitive::DynamicSlice, &[operand, Value::scalar_i64(0)], &params).unwrap();
+    let (shape, vals) = tensor_i64_parts(&result).unwrap();
+    assert_eq!(shape, vec![4]);
+    assert_eq!(vals, vec![10, 20, 30, 40]);
+}
+
+#[test]
+fn dynamic_slice_preserves_dtype() {
+    let operand = tensor_i64(&[3], &[1, 2, 3]).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "2".to_owned());
+
+    let result =
+        eval_primitive(Primitive::DynamicSlice, &[operand, Value::scalar_i64(0)], &params).unwrap();
+    match result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::I64),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn dynamic_slice_single_element() {
+    let operand = tensor_i64(&[5], &[100, 200, 300, 400, 500]).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "1".to_owned());
+
+    let result =
+        eval_primitive(Primitive::DynamicSlice, &[operand, Value::scalar_i64(2)], &params).unwrap();
+    let (shape, vals) = tensor_i64_parts(&result).unwrap();
+    assert_eq!(shape, vec![1]);
+    assert_eq!(vals, vec![300]);
+}
+
+#[test]
+fn dynamic_slice_rank3() {
+    let operand = tensor_i64(&[2, 3, 4], &(0..24).collect::<Vec<_>>()).unwrap();
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "1,2,2".to_owned());
+
+    let result = eval_primitive(
+        Primitive::DynamicSlice,
+        &[operand, Value::scalar_i64(1), Value::scalar_i64(0), Value::scalar_i64(1)],
+        &params,
+    )
+    .unwrap();
+    let (shape, vals) = tensor_i64_parts(&result).unwrap();
+    assert_eq!(shape, vec![1, 2, 2]);
+    assert_eq!(vals, vec![13, 14, 17, 18]);
+}

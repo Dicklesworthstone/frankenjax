@@ -210,3 +210,24 @@ fn lu_1x1_trivial_case() {
     assert_eq!(i64_values(&result[1]), Some(vec![0]));
     assert_eq!(i64_values(&result[2]), Some(vec![0]));
 }
+
+#[test]
+fn lu_diagonal_matrix() {
+    let input = f64_matrix(3, 3, &[2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("diagonal LU should succeed");
+
+    assert_eq!(result.len(), 3);
+    let lu = f64_values(&result[0]).expect("expected f64 LU");
+    assert_close(&lu, &[2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0], 1e-12);
+}
+
+#[test]
+fn lu_negative_values() {
+    let input = f64_matrix(2, 2, &[-1.0, 2.0, 3.0, -4.0]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("negative value LU should succeed");
+
+    assert_eq!(result.len(), 3);
+    assert_eq!(shape(&result[0]), Some(Shape { dims: vec![2, 2] }));
+}
