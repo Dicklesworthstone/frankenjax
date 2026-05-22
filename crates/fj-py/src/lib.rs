@@ -262,6 +262,11 @@ impl PyBackwardPass {
 
 #[pymethods]
 impl PyShapeDtypeStruct {
+    #[new]
+    fn new(shape: Vec<u32>, dtype: String) -> Self {
+        Self { shape, dtype }
+    }
+
     fn shape(&self) -> Vec<u32> {
         self.shape.clone()
     }
@@ -1615,6 +1620,14 @@ mod tests {
         assert_eq!(vector_meta.len(), 1);
         assert_eq!(vector_meta[0].shape(), vec![3]);
         assert_eq!(vector_meta[0].dtype(), "F64");
+    }
+
+    #[test]
+    fn shape_dtype_struct_constructor_roundtrips_metadata() {
+        let meta = PyShapeDtypeStruct::new(vec![2, 3], "F64".to_owned());
+        assert_eq!(meta.shape(), vec![2, 3]);
+        assert_eq!(meta.dtype(), "F64");
+        assert_eq!(meta.__repr__(), "ShapeDtypeStruct(shape=[2, 3], dtype=F64)");
     }
 
     #[test]

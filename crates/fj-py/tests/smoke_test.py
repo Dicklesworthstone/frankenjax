@@ -191,6 +191,15 @@ def test_eval_shape():
     print("✓ eval_shape returns shape/dtype metadata for scalar and vector outputs")
 
 
+def test_shape_dtype_struct_constructor():
+    """Test public ShapeDtypeStruct constructor metadata."""
+    meta = fj.ShapeDtypeStruct([2, 3], "F64")
+    assert meta.shape() == [2, 3]
+    assert meta.dtype() == "F64"
+    assert repr(meta) == "ShapeDtypeStruct(shape=[2, 3], dtype=F64)"
+    print("✓ ShapeDtypeStruct constructor preserves metadata")
+
+
 def test_typeof():
     """Test typeof metadata for scalar and vector values."""
     scalar_meta = fj.typeof(fj.PyValue.scalar_i64(7))
@@ -808,6 +817,7 @@ if __name__ == "__main__":
     test_linearize_square()
     test_fwd_and_bwd_square()
     test_eval_shape()
+    test_shape_dtype_struct_constructor()
     test_typeof()
     test_value_and_grad()
     test_device_helpers()
