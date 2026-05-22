@@ -236,6 +236,110 @@ fn oracle_min_1d_nan_propagates() {
 
 // ======================== Min: Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_min_scalar_lhs_tensor_rhs_broadcast() {
+    // scalar min tensor
+    let a = scalar_f64(3.0);
+    let b = make_f64_tensor(&[4], vec![1.0, 5.0, -3.0, 7.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 3.0, -3.0, 3.0]);
+}
+
+#[test]
+fn oracle_min_tensor_lhs_scalar_rhs_broadcast() {
+    // tensor min scalar
+    let a = make_f64_tensor(&[4], vec![1.0, 5.0, -3.0, 7.0]);
+    let b = scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 3.0, -3.0, 3.0]);
+}
+
+#[test]
+fn oracle_min_singleton_lhs_vector_rhs_broadcast() {
+    // [1] min [3] -> [3]
+    let a = make_f64_tensor(&[1], vec![3.0]);
+    let b = make_f64_tensor(&[3], vec![1.0, 5.0, -2.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 3.0, -2.0]);
+}
+
+#[test]
+fn oracle_min_vector_lhs_singleton_rhs_broadcast() {
+    // [3] min [1] -> [3]
+    let a = make_f64_tensor(&[3], vec![1.0, 5.0, -2.0]);
+    let b = make_f64_tensor(&[1], vec![3.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 3.0, -2.0]);
+}
+
+#[test]
+fn oracle_min_column_lhs_matrix_rhs_broadcast() {
+    // [2, 1] min [2, 3] -> [2, 3]
+    let a = make_f64_tensor(&[2, 1], vec![2.0, 5.0]);
+    let b = make_f64_tensor(&[2, 3], vec![1.0, 3.0, 4.0, 6.0, 4.0, 3.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: min(2, 1)=1, min(2, 3)=2, min(2, 4)=2
+    assert_eq!(vals[0], 1.0);
+    assert_eq!(vals[1], 2.0);
+    assert_eq!(vals[2], 2.0);
+    // Row 1: min(5, 6)=5, min(5, 4)=4, min(5, 3)=3
+    assert_eq!(vals[3], 5.0);
+    assert_eq!(vals[4], 4.0);
+    assert_eq!(vals[5], 3.0);
+}
+
+#[test]
+fn oracle_min_different_ranks_broadcast() {
+    // [3] min [2, 3] -> [2, 3]
+    let a = make_f64_tensor(&[3], vec![2.0, 4.0, 6.0]);
+    let b = make_f64_tensor(&[2, 3], vec![1.0, 5.0, 7.0, 3.0, 3.0, 5.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: min(2,1)=1, min(4,5)=4, min(6,7)=6
+    assert_eq!(vals[0], 1.0);
+    assert_eq!(vals[1], 4.0);
+    assert_eq!(vals[2], 6.0);
+    // Row 1: min(2,3)=2, min(4,3)=3, min(6,5)=5
+    assert_eq!(vals[3], 2.0);
+    assert_eq!(vals[4], 3.0);
+    assert_eq!(vals[5], 5.0);
+}
+
+#[test]
+fn oracle_min_all_scalars_broadcast() {
+    // scalar min scalar -> scalar
+    let a = scalar_f64(3.0);
+    let b = scalar_f64(5.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 3.0);
+}
+
+#[test]
+fn oracle_min_incompatible_shapes_error() {
+    // [2] min [3] should error
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let b = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_min_vector_scalar_rhs_broadcast() {
     let a = make_f64_tensor(&[4], vec![1.0, 5.0, -3.0, 7.0]);
@@ -411,6 +515,106 @@ fn oracle_max_1d_nan_propagates() {
 }
 
 // ======================== Max: Broadcasting ========================
+
+#[test]
+fn oracle_max_scalar_lhs_tensor_rhs_broadcast() {
+    // scalar max tensor
+    let a = scalar_f64(3.0);
+    let b = make_f64_tensor(&[4], vec![1.0, 5.0, -3.0, 7.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 3.0, 7.0]);
+}
+
+#[test]
+fn oracle_max_tensor_lhs_scalar_rhs_broadcast() {
+    // tensor max scalar
+    let a = make_f64_tensor(&[4], vec![1.0, 5.0, -3.0, 7.0]);
+    let b = scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 3.0, 7.0]);
+}
+
+#[test]
+fn oracle_max_singleton_lhs_vector_rhs_broadcast() {
+    // [1] max [3] -> [3]
+    let a = make_f64_tensor(&[1], vec![3.0]);
+    let b = make_f64_tensor(&[3], vec![1.0, 5.0, -2.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 3.0]);
+}
+
+#[test]
+fn oracle_max_vector_lhs_singleton_rhs_broadcast() {
+    // [3] max [1] -> [3]
+    let a = make_f64_tensor(&[3], vec![1.0, 5.0, -2.0]);
+    let b = make_f64_tensor(&[1], vec![3.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 3.0]);
+}
+
+#[test]
+fn oracle_max_column_lhs_matrix_rhs_broadcast() {
+    // [2, 1] max [2, 3] -> [2, 3]
+    let a = make_f64_tensor(&[2, 1], vec![2.0, 5.0]);
+    let b = make_f64_tensor(&[2, 3], vec![1.0, 3.0, 4.0, 6.0, 4.0, 3.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: max(2, 1)=2, max(2, 3)=3, max(2, 4)=4
+    assert_eq!(vals[0], 2.0);
+    assert_eq!(vals[1], 3.0);
+    assert_eq!(vals[2], 4.0);
+    // Row 1: max(5, 6)=6, max(5, 4)=5, max(5, 3)=5
+    assert_eq!(vals[3], 6.0);
+    assert_eq!(vals[4], 5.0);
+    assert_eq!(vals[5], 5.0);
+}
+
+#[test]
+fn oracle_max_different_ranks_broadcast() {
+    // [3] max [2, 3] -> [2, 3]
+    let a = make_f64_tensor(&[3], vec![2.0, 4.0, 6.0]);
+    let b = make_f64_tensor(&[2, 3], vec![1.0, 5.0, 7.0, 3.0, 3.0, 5.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: max(2,1)=2, max(4,5)=5, max(6,7)=7
+    assert_eq!(vals[0], 2.0);
+    assert_eq!(vals[1], 5.0);
+    assert_eq!(vals[2], 7.0);
+    // Row 1: max(2,3)=3, max(4,3)=4, max(6,5)=6
+    assert_eq!(vals[3], 3.0);
+    assert_eq!(vals[4], 4.0);
+    assert_eq!(vals[5], 6.0);
+}
+
+#[test]
+fn oracle_max_all_scalars_broadcast() {
+    // scalar max scalar -> scalar
+    let a = scalar_f64(3.0);
+    let b = scalar_f64(5.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 5.0);
+}
+
+#[test]
+fn oracle_max_incompatible_shapes_error() {
+    // [2] max [3] should error
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let b = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
 
 #[test]
 fn oracle_max_vector_scalar_rhs_broadcast() {
