@@ -62,15 +62,16 @@ fn no_params() -> BTreeMap<String, String> {
 fn oracle_ceil_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "ceil(0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "ceil(0) = +0");
 }
 
 #[test]
 fn oracle_ceil_neg_zero() {
     let input = make_f64_tensor(&[], vec![-0.0]);
     let result = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
-    let val = extract_f64_scalar(&result);
-    assert_eq!(val, 0.0, "ceil(-0.0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), (-0.0_f64).to_bits(), "ceil(-0.0) = -0");
 }
 
 #[test]
@@ -369,7 +370,8 @@ fn metamorphic_ceil_neg_floor() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // ceil(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let ceil_neg = eval_primitive(Primitive::Ceil, &[neg_x], &no_params()).unwrap();
 
         // Neg(floor(x))
@@ -394,7 +396,8 @@ fn metamorphic_ceil_idempotent() {
     for x in [-2.7, -1.5, 0.0, 1.5, 2.7, 100.9] {
         let input = make_f64_tensor(&[], vec![x]);
         let ceil1 = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
-        let ceil2 = eval_primitive(Primitive::Ceil, std::slice::from_ref(&ceil1), &no_params()).unwrap();
+        let ceil2 =
+            eval_primitive(Primitive::Ceil, std::slice::from_ref(&ceil1), &no_params()).unwrap();
 
         assert_eq!(
             extract_f64_scalar(&ceil1),
@@ -415,7 +418,8 @@ fn metamorphic_ceil_tensor_idempotent() {
     let input = make_f64_tensor(&[5], data);
 
     let ceil1 = eval_primitive(Primitive::Ceil, &[input], &no_params()).unwrap();
-    let ceil2 = eval_primitive(Primitive::Ceil, std::slice::from_ref(&ceil1), &no_params()).unwrap();
+    let ceil2 =
+        eval_primitive(Primitive::Ceil, std::slice::from_ref(&ceil1), &no_params()).unwrap();
 
     assert_eq!(extract_shape(&ceil1), vec![5]);
     let vec1 = extract_f64_vec(&ceil1);
