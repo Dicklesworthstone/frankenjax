@@ -313,6 +313,18 @@ fn cpu_device() -> PyDevice {
     }
 }
 
+fn validate_single_cpu_device(devices: &[PyDevice]) -> PyResult<()> {
+    match devices {
+        [device] if device.id == 0 && device.process_index == 0 => Ok(()),
+        [] => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "devices must be a non-empty sequence",
+        )),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "fj-py currently supports exactly one local CPU device",
+        )),
+    }
+}
+
 fn version_info() -> (u64, u64, u64) {
     (
         env!("CARGO_PKG_VERSION_MAJOR").parse().unwrap_or(0),
@@ -424,6 +436,31 @@ fn eval_shape(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyShapeDtypeS
 #[pyfunction]
 fn device_put(value: PyValue) -> PyValue {
     value
+}
+
+#[pyfunction]
+fn device_put_replicated(value: PyValue, devices: Vec<PyDevice>) -> PyResult<PyValue> {
+    validate_single_cpu_device(&devices)?;
+    Ok(value)
+}
+
+#[pyfunction]
+fn device_put_sharded(shards: Vec<PyValue>, devices: Vec<PyDevice>) -> PyResult<PyValue> {
+    if shards.len() != devices.len() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "len(shards) = {} must equal len(devices) = {}",
+            shards.len(),
+            devices.len()
+        )));
+    }
+    validate_single_cpu_device(&devices)?;
+
+    match shards.into_iter().next() {
+        Some(shard) => Ok(shard),
+        None => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "shards must be a non-empty sequence",
+        )),
+    }
 }
 
 #[pyfunction]
@@ -643,6 +680,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(linearize, m)?)?;
     m.add_function(wrap_pyfunction!(eval_shape, m)?)?;
     m.add_function(wrap_pyfunction!(device_put, m)?)?;
+    m.add_function(wrap_pyfunction!(device_put_replicated, m)?)?;
+    m.add_function(wrap_pyfunction!(device_put_sharded, m)?)?;
     m.add_function(wrap_pyfunction!(device_get, m)?)?;
     m.add_function(wrap_pyfunction!(block_until_ready, m)?)?;
     m.add_function(wrap_pyfunction!(copy_to_host_async, m)?)?;
@@ -815,12 +854,19 @@ mod tests {
         let scalar = PyValue::scalar_f64(3.5);
         let put_scalar = device_put(scalar.clone());
         assert!((put_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
+        let replicated_scalar = device_put_replicated(scalar.clone(), vec![cpu_device()]).unwrap();
+        assert!((replicated_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
+        assert!(device_put_replicated(scalar.clone(), Vec::new()).is_err());
         let ready_scalar = block_until_ready(put_scalar);
         assert!((ready_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
         let host_scalar = device_get(ready_scalar);
         assert!((host_scalar.as_f64().unwrap() - 3.5).abs() < 1e-12);
 
         let vector = PyValue::vector_i64(vec![1, 2, 3]).unwrap();
+        let sharded_vector = device_put_sharded(vec![vector.clone()], vec![cpu_device()]).unwrap();
+        assert_eq!(sharded_vector.as_i64_list().unwrap(), vec![1, 2, 3]);
+        assert!(device_put_sharded(vec![vector.clone()], Vec::new()).is_err());
+        assert!(device_put_sharded(Vec::new(), vec![cpu_device()]).is_err());
         let host_vector = device_get(block_until_ready(device_put(vector)));
         assert_eq!(host_vector.shape(), vec![3]);
         assert_eq!(host_vector.dtype(), "I64");

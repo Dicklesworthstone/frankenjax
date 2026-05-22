@@ -129,12 +129,16 @@ def test_device_helpers():
     scalar = fj.PyValue.scalar_f64(3.5)
     put_scalar = fj.device_put(scalar)
     assert abs(put_scalar.as_f64() - 3.5) < 1e-12
+    replicated_scalar = fj.device_put_replicated(scalar, fj.local_devices())
+    assert abs(replicated_scalar.as_f64() - 3.5) < 1e-12
     ready_scalar = fj.block_until_ready(put_scalar)
     assert abs(ready_scalar.as_f64() - 3.5) < 1e-12
     host_scalar = fj.device_get(ready_scalar)
     assert abs(host_scalar.as_f64() - 3.5) < 1e-12
 
     vector = fj.PyValue.vector_i64([1, 2, 3])
+    sharded_vector = fj.device_put_sharded([vector], fj.local_devices())
+    assert sharded_vector.as_i64_list() == [1, 2, 3]
     host_vector = fj.device_get(fj.block_until_ready(fj.device_put(vector)))
     assert host_vector.shape() == [3]
     assert host_vector.dtype() == "I64"
@@ -146,6 +150,20 @@ def test_device_helpers():
     assert copied_vector.as_i64_list() == [1, 2, 3]
     assert fj.effects_barrier() is None
     assert fj.clear_caches() is None
+    try:
+        fj.device_put_replicated(scalar, [])
+    except ValueError as exc:
+        assert "non-empty" in str(exc)
+    else:
+        raise AssertionError("device_put_replicated should reject empty devices")
+
+    try:
+        fj.device_put_sharded([vector], [])
+    except ValueError as exc:
+        assert "len(shards)" in str(exc)
+    else:
+        raise AssertionError("device_put_sharded should reject length mismatch")
+
     print(
         "✓ device_put/device_get/block_until_ready/copy_to_host_async preserve CPU-local values"
     )
