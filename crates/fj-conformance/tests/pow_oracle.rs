@@ -342,6 +342,141 @@ fn oracle_pow_2d() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_pow_scalar_base_tensor_exp_broadcast() {
+    // scalar base ^ tensor exponent
+    let base = scalar_f64(2.0);
+    let exp = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[0], 2.0, 1e-14, "2^1");
+    assert_close(vals[1], 4.0, 1e-14, "2^2");
+    assert_close(vals[2], 8.0, 1e-14, "2^3");
+    assert_close(vals[3], 16.0, 1e-14, "2^4");
+}
+
+#[test]
+fn oracle_pow_tensor_base_scalar_exp_broadcast() {
+    // tensor base ^ scalar exponent
+    let base = make_f64_tensor(&[4], vec![2.0, 3.0, 4.0, 5.0]);
+    let exp = scalar_f64(2.0);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[0], 4.0, 1e-14, "2^2");
+    assert_close(vals[1], 9.0, 1e-14, "3^2");
+    assert_close(vals[2], 16.0, 1e-14, "4^2");
+    assert_close(vals[3], 25.0, 1e-14, "5^2");
+}
+
+#[test]
+fn oracle_pow_singleton_base_vector_exp_broadcast() {
+    // [1] base ^ [3] exp -> [3]
+    let base = make_f64_tensor(&[1], vec![2.0]);
+    let exp = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[0], 2.0, 1e-14, "2^1");
+    assert_close(vals[1], 4.0, 1e-14, "2^2");
+    assert_close(vals[2], 8.0, 1e-14, "2^3");
+}
+
+#[test]
+fn oracle_pow_vector_base_singleton_exp_broadcast() {
+    // [3] base ^ [1] exp -> [3]
+    let base = make_f64_tensor(&[3], vec![2.0, 3.0, 4.0]);
+    let exp = make_f64_tensor(&[1], vec![2.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[0], 4.0, 1e-14, "2^2");
+    assert_close(vals[1], 9.0, 1e-14, "3^2");
+    assert_close(vals[2], 16.0, 1e-14, "4^2");
+}
+
+#[test]
+fn oracle_pow_column_vector_base_broadcast() {
+    // [2, 1] base ^ [2, 3] exp -> [2, 3]
+    let base = make_f64_tensor(&[2, 1], vec![2.0, 3.0]);
+    let exp = make_f64_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 2.0, 3.0, 4.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: 2^1, 2^2, 2^3 = 2, 4, 8
+    assert_close(vals[0], 2.0, 1e-14, "2^1");
+    assert_close(vals[1], 4.0, 1e-14, "2^2");
+    assert_close(vals[2], 8.0, 1e-14, "2^3");
+    // Row 1: 3^2, 3^3, 3^4 = 9, 27, 81
+    assert_close(vals[3], 9.0, 1e-14, "3^2");
+    assert_close(vals[4], 27.0, 1e-14, "3^3");
+    assert_close(vals[5], 81.0, 1e-14, "3^4");
+}
+
+#[test]
+fn oracle_pow_row_vector_exp_broadcast() {
+    // [2, 3] base ^ [1, 3] exp -> [2, 3]
+    let base = make_f64_tensor(&[2, 3], vec![2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+    let exp = make_f64_tensor(&[1, 3], vec![2.0, 2.0, 2.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[0], 4.0, 1e-14, "2^2");
+    assert_close(vals[1], 9.0, 1e-14, "3^2");
+    assert_close(vals[2], 16.0, 1e-14, "4^2");
+    assert_close(vals[3], 25.0, 1e-14, "5^2");
+    assert_close(vals[4], 36.0, 1e-14, "6^2");
+    assert_close(vals[5], 49.0, 1e-14, "7^2");
+}
+
+#[test]
+fn oracle_pow_different_ranks_broadcast() {
+    // [3] base ^ [2, 3] exp -> [2, 3]
+    let base = make_f64_tensor(&[3], vec![2.0, 3.0, 4.0]);
+    let exp = make_f64_tensor(&[2, 3], vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: 2^1, 3^1, 4^1 = 2, 3, 4
+    assert_close(vals[0], 2.0, 1e-14, "2^1");
+    assert_close(vals[1], 3.0, 1e-14, "3^1");
+    assert_close(vals[2], 4.0, 1e-14, "4^1");
+    // Row 1: 2^2, 3^2, 4^2 = 4, 9, 16
+    assert_close(vals[3], 4.0, 1e-14, "2^2");
+    assert_close(vals[4], 9.0, 1e-14, "3^2");
+    assert_close(vals[5], 16.0, 1e-14, "4^2");
+}
+
+#[test]
+fn oracle_pow_all_scalars_broadcast() {
+    // scalar ^ scalar -> scalar
+    let base = scalar_f64(2.0);
+    let exp = scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+    assert_close(extract_f64_scalar(&result), 8.0, 1e-14, "2^3 = 8");
+}
+
+#[test]
+fn oracle_pow_incompatible_shapes_error() {
+    // [2] ^ [3] should error
+    let base = make_f64_tensor(&[2], vec![2.0, 3.0]);
+    let exp = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_pow_vector_scalar_exp_broadcast() {
     let base_values = [2.0, 3.0, 4.0, 5.0];
