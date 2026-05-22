@@ -163,3 +163,50 @@ fn oracle_tile_i64() {
     assert_eq!(extract_shape(&result), vec![6]);
     assert_eq!(extract_i64_vec(&result), vec![10, 20, 10, 20, 10, 20]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_tile_single_element() {
+    let input = make_f64_tensor(&[1], vec![42.0]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[5])).unwrap();
+    assert_eq!(extract_shape(&result), vec![5]);
+    assert_eq!(extract_f64_vec(&result), vec![42.0, 42.0, 42.0, 42.0, 42.0]);
+}
+
+#[test]
+fn oracle_tile_rejects_reps_rank_mismatch() {
+    // Current impl requires reps length to match tensor rank
+    let input = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[3, 2]));
+    assert!(result.is_err(), "reps length > rank should error");
+}
+
+#[test]
+fn oracle_tile_preserves_dtype() {
+    let input = make_i64_tensor(&[2], vec![1, 2]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2])).unwrap();
+    match &result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::I64),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_tile_large_reps() {
+    let input = make_f64_tensor(&[1], vec![7.0]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[100])).unwrap();
+    assert_eq!(extract_shape(&result), vec![100]);
+    let vals = extract_f64_vec(&result);
+    assert!(vals.iter().all(|&v| (v - 7.0).abs() < 1e-10));
+}
+
+#[test]
+fn oracle_tile_3d() {
+    let input = make_f64_tensor(&[1, 1, 2], vec![1.0, 2.0]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2, 2, 1])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    // All 4 2-element blocks should be [1, 2]
+    assert_eq!(vals, vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
+}
