@@ -1383,6 +1383,12 @@ pub fn vjp(
             let x = &inputs[0];
             Ok(vec![value_div(g, x)?])
         }
+        Primitive::Log2 => {
+            let x = &inputs[0];
+            let ln2 = scalar_constant_matching_dtype(std::f64::consts::LN_2, g);
+            let x_ln2 = value_mul(x, &ln2)?;
+            Ok(vec![value_div(g, &x_ln2)?])
+        }
         Primitive::Sqrt => {
             let x = &inputs[0];
             let sqrt_x = eval_primitive(Primitive::Sqrt, std::slice::from_ref(x), &BTreeMap::new())
@@ -6330,6 +6336,13 @@ fn jvp_rule(
         Primitive::Log => {
             // dx / x
             ep(Primitive::Div, &[tangents[0].clone(), primals[0].clone()])
+        }
+
+        Primitive::Log2 => {
+            // dx / (x * ln(2))
+            let ln2 = scalar_constant_matching_dtype(std::f64::consts::LN_2, &tangents[0]);
+            let x_ln2 = ep(Primitive::Mul, &[primals[0].clone(), ln2])?;
+            ep(Primitive::Div, &[tangents[0].clone(), x_ln2])
         }
 
         Primitive::Sqrt => {

@@ -104,6 +104,7 @@ pub enum Primitive {
     // Additional math
     Expm1,
     Log1p,
+    Log2,
     Sign,
     Square,
     Reciprocal,
@@ -267,6 +268,7 @@ impl Primitive {
         Self::Atanh,
         Self::Expm1,
         Self::Log1p,
+        Self::Log2,
         Self::Sign,
         Self::Square,
         Self::Reciprocal,
@@ -416,6 +418,7 @@ impl Primitive {
             Self::Atanh => "atanh",
             Self::Expm1 => "expm1",
             Self::Log1p => "log1p",
+            Self::Log2 => "log2",
             Self::Sign => "sign",
             Self::Square => "square",
             Self::Reciprocal => "reciprocal",
