@@ -4,6 +4,7 @@
 //! - Integer: truncated remainder (sign follows dividend)
 //! - Float: IEEE 754 remainder (sign follows dividend)
 //! - Division by zero: integers return 0, floats return NaN
+//! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -291,6 +292,35 @@ fn oracle_rem_3d_i64() {
     assert_eq!(extract_i64_vec(&result), vec![1, 6, 8, 1, 16, 3, 1, 22]);
 }
 
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_rem_i64_vector_scalar_divisor_broadcast() {
+    let a = make_i64_tensor(&[4], vec![7, 8, -7, -8]);
+    let b = make_i64_tensor(&[], vec![3]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![1, 2, -1, -2]);
+}
+
+#[test]
+fn oracle_rem_f64_matrix_row_divisor_broadcast() {
+    let a = make_f64_tensor(&[2, 2], vec![7.5, 8.5, 9.5, 10.5]);
+    let b = make_f64_tensor(&[2], vec![2.0, 3.0]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let actual = extract_f64_vec(&result);
+    let expected = [1.5, 2.5, 1.5, 1.5];
+    for (i, (&actual, &expected)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "rem row divisor broadcast element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
 // ======================== Edge Cases ========================
 
 #[test]
@@ -417,8 +447,10 @@ fn metamorphic_rem_neg_dividend_equals_neg_rem() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Rem(Neg(x), y)
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
-        let rem_neg_x = eval_primitive(Primitive::Rem, &[neg_x, y_val.clone()], &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let rem_neg_x =
+            eval_primitive(Primitive::Rem, &[neg_x, y_val.clone()], &no_params()).unwrap();
 
         // Neg(Rem(x, y))
         let rem_x = eval_primitive(Primitive::Rem, &[x_val, y_val], &no_params()).unwrap();
@@ -442,7 +474,12 @@ fn metamorphic_rem_complementary_sum_zero() {
         let x_val = make_f64_tensor(&[], vec![x]);
         let y_val = make_f64_tensor(&[], vec![y]);
 
-        let rem_pos = eval_primitive(Primitive::Rem, &[x_val.clone(), y_val.clone()], &no_params()).unwrap();
+        let rem_pos = eval_primitive(
+            Primitive::Rem,
+            &[x_val.clone(), y_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let neg_x = eval_primitive(Primitive::Neg, &[x_val], &no_params()).unwrap();
         let rem_neg = eval_primitive(Primitive::Rem, &[neg_x, y_val], &no_params()).unwrap();
         let sum = eval_primitive(Primitive::Add, &[rem_pos, rem_neg], &no_params()).unwrap();
@@ -465,9 +502,15 @@ fn metamorphic_rem_neg_divisor_invariant() {
         let x_val = make_f64_tensor(&[], vec![x]);
         let y_val = make_f64_tensor(&[], vec![y]);
 
-        let rem_pos_divisor = eval_primitive(Primitive::Rem, &[x_val.clone(), y_val.clone()], &no_params()).unwrap();
+        let rem_pos_divisor = eval_primitive(
+            Primitive::Rem,
+            &[x_val.clone(), y_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let neg_y = eval_primitive(Primitive::Neg, &[y_val], &no_params()).unwrap();
-        let rem_neg_divisor = eval_primitive(Primitive::Rem, &[x_val, neg_y], &no_params()).unwrap();
+        let rem_neg_divisor =
+            eval_primitive(Primitive::Rem, &[x_val, neg_y], &no_params()).unwrap();
 
         assert_close(
             extract_f64_scalar(&rem_pos_divisor),
@@ -489,10 +532,20 @@ fn metamorphic_rem_division_identity_primitives() {
         let b_val = make_f64_tensor(&[], vec![b]);
 
         // Direct Rem
-        let rem_direct = eval_primitive(Primitive::Rem, &[a_val.clone(), b_val.clone()], &no_params()).unwrap();
+        let rem_direct = eval_primitive(
+            Primitive::Rem,
+            &[a_val.clone(), b_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
 
         // a - Floor(a/b) * b
-        let quotient = eval_primitive(Primitive::Div, &[a_val.clone(), b_val.clone()], &no_params()).unwrap();
+        let quotient = eval_primitive(
+            Primitive::Div,
+            &[a_val.clone(), b_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let floored = eval_primitive(Primitive::Floor, &[quotient], &no_params()).unwrap();
         let product = eval_primitive(Primitive::Mul, &[floored, b_val], &no_params()).unwrap();
         let rem_computed = eval_primitive(Primitive::Sub, &[a_val, product], &no_params()).unwrap();
