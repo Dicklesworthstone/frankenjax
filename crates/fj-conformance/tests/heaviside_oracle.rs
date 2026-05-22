@@ -179,6 +179,110 @@ fn oracle_heaviside_matrix() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_heaviside_scalar_x_tensor_h0_broadcast() {
+    // scalar x with tensor h0 (zero x, so h0 values are used)
+    let x = scalar_f64(0.0);
+    let h0 = make_f64_tensor(&[4], vec![0.1, 0.5, 0.9, 1.0]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![0.1, 0.5, 0.9, 1.0]);
+}
+
+#[test]
+fn oracle_heaviside_tensor_x_scalar_h0_broadcast() {
+    // tensor x with scalar h0
+    let x = make_f64_tensor(&[4], vec![-1.0, 0.0, 0.0, 1.0]);
+    let h0 = scalar_f64(0.5);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 0.5, 0.5, 1.0]);
+}
+
+#[test]
+fn oracle_heaviside_singleton_x_vector_h0_broadcast() {
+    // [1] x with [3] h0 -> [3] (x=0, so h0 values are used)
+    let x = make_f64_tensor(&[1], vec![0.0]);
+    let h0 = make_f64_tensor(&[3], vec![0.25, 0.5, 0.75]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![0.25, 0.5, 0.75]);
+}
+
+#[test]
+fn oracle_heaviside_vector_x_singleton_h0_broadcast() {
+    // [3] x with [1] h0 -> [3]
+    let x = make_f64_tensor(&[3], vec![-1.0, 0.0, 1.0]);
+    let h0 = make_f64_tensor(&[1], vec![0.5]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 0.5, 1.0]);
+}
+
+#[test]
+fn oracle_heaviside_column_x_matrix_h0_broadcast() {
+    // [2, 1] x with [2, 3] h0 -> [2, 3]
+    let x = make_f64_tensor(&[2, 1], vec![0.0, 1.0]);
+    let h0 = make_f64_tensor(&[2, 3], vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: x=0, so use h0 values: 0.1, 0.2, 0.3
+    assert_eq!(vals[0], 0.1);
+    assert_eq!(vals[1], 0.2);
+    assert_eq!(vals[2], 0.3);
+    // Row 1: x=1 (positive), so result is 1.0 for all
+    assert_eq!(vals[3], 1.0);
+    assert_eq!(vals[4], 1.0);
+    assert_eq!(vals[5], 1.0);
+}
+
+#[test]
+fn oracle_heaviside_different_ranks_broadcast() {
+    // [3] x with [2, 3] h0 -> [2, 3]
+    let x = make_f64_tensor(&[3], vec![-1.0, 0.0, 1.0]);
+    let h0 = make_f64_tensor(&[2, 3], vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: heaviside(-1, 0.1)=0, heaviside(0, 0.2)=0.2, heaviside(1, 0.3)=1
+    assert_eq!(vals[0], 0.0);
+    assert_eq!(vals[1], 0.2);
+    assert_eq!(vals[2], 1.0);
+    // Row 1: heaviside(-1, 0.4)=0, heaviside(0, 0.5)=0.5, heaviside(1, 0.6)=1
+    assert_eq!(vals[3], 0.0);
+    assert_eq!(vals[4], 0.5);
+    assert_eq!(vals[5], 1.0);
+}
+
+#[test]
+fn oracle_heaviside_all_scalars_broadcast() {
+    // scalar heaviside scalar -> scalar
+    let x = scalar_f64(0.0);
+    let h0 = scalar_f64(0.5);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 0.5);
+}
+
+#[test]
+fn oracle_heaviside_incompatible_shapes_error() {
+    // [2] heaviside [3] should error
+    let x = make_f64_tensor(&[2], vec![0.0, 1.0]);
+    let h0 = make_f64_tensor(&[3], vec![0.5, 0.5, 0.5]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_heaviside_matrix_scalar_h0_broadcast() {
     let x = make_f64_tensor(
