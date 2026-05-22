@@ -361,3 +361,128 @@ fn oracle_shift_left_u32_33_wraps_to_1() {
     let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_u32_vec(&result), vec![14]); // 7 << 1 = 14
 }
+
+// ======================== Broadcast Tests ========================
+
+#[test]
+fn oracle_shift_left_scalar_tensor_broadcast() {
+    // scalar << tensor (broadcast scalar to tensor shape)
+    let a = Value::scalar_i64(1);
+    let b = make_i64_tensor(&[4], vec![0, 1, 2, 3]);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![1, 2, 4, 8]);
+}
+
+#[test]
+fn oracle_shift_left_tensor_scalar_broadcast() {
+    // tensor << scalar (broadcast scalar to tensor shape)
+    let a = make_i64_tensor(&[4], vec![1, 2, 4, 8]);
+    let b = Value::scalar_i64(2);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![4, 8, 16, 32]);
+}
+
+#[test]
+fn oracle_shift_left_row_vector_broadcast() {
+    // [1, 3] << [2, 3] -> [2, 3]
+    let a = make_i64_tensor(&[1, 3], vec![1, 2, 4]);
+    let b = make_i64_tensor(&[2, 3], vec![1, 1, 1, 2, 2, 2]);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_i64_vec(&result), vec![2, 4, 8, 4, 8, 16]);
+}
+
+#[test]
+fn oracle_shift_left_column_vector_broadcast() {
+    // [2, 1] << [2, 3] -> [2, 3]
+    let a = make_i64_tensor(&[2, 1], vec![1, 2]);
+    let b = make_i64_tensor(&[2, 3], vec![1, 2, 3, 1, 2, 3]);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_i64_vec(&result), vec![2, 4, 8, 4, 8, 16]);
+}
+
+#[test]
+fn oracle_shift_right_arithmetic_scalar_tensor_broadcast() {
+    let a = Value::scalar_i64(-128);
+    let b = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
+    let result =
+        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![-64, -32, -16, -8]);
+}
+
+#[test]
+fn oracle_shift_right_arithmetic_tensor_scalar_broadcast() {
+    let a = make_i64_tensor(&[4], vec![64, -64, 128, -128]);
+    let b = Value::scalar_i64(2);
+    let result =
+        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![16, -16, 32, -32]);
+}
+
+#[test]
+fn oracle_shift_right_arithmetic_row_vector_broadcast() {
+    // [1, 3] >> [2, 3] -> [2, 3]
+    let a = make_i64_tensor(&[1, 3], vec![64, 128, 256]);
+    let b = make_i64_tensor(&[2, 3], vec![1, 2, 3, 2, 3, 4]);
+    let result =
+        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_i64_vec(&result), vec![32, 32, 32, 16, 16, 16]);
+}
+
+#[test]
+fn oracle_shift_right_logical_scalar_tensor_broadcast() {
+    let a = Value::scalar_i64(-1);
+    let b = make_i64_tensor(&[3], vec![1, 32, 63]);
+    let result = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_i64_vec(&result);
+    assert!(vals[0] > 0); // logical shift makes positive
+    assert!(vals[1] > 0);
+    assert_eq!(vals[2], 1); // -1 >>> 63 = 1
+}
+
+#[test]
+fn oracle_shift_right_logical_tensor_scalar_broadcast() {
+    let a = make_i64_tensor(&[4], vec![256, 128, 64, 32]);
+    let b = Value::scalar_i64(3);
+    let result = eval_primitive(Primitive::ShiftRightLogical, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![32, 16, 8, 4]);
+}
+
+#[test]
+fn oracle_shift_left_different_ranks_broadcast() {
+    // [3] << [2, 3] -> [2, 3] (1D broadcast against 2D)
+    let a = make_i64_tensor(&[3], vec![1, 2, 4]);
+    let b = make_i64_tensor(&[2, 3], vec![0, 0, 0, 1, 1, 1]);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_i64_vec(&result), vec![1, 2, 4, 2, 4, 8]);
+}
+
+#[test]
+fn oracle_shift_left_u32_scalar_tensor_broadcast() {
+    let a = Value::Scalar(Literal::U32(1));
+    let b = make_u32_tensor(&[4], vec![0, 8, 16, 24]);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(
+        extract_u32_vec(&result),
+        vec![0x0000_0001, 0x0000_0100, 0x0001_0000, 0x0100_0000]
+    );
+}
+
+#[test]
+fn oracle_shift_incompatible_shapes_error() {
+    // [2] << [3] should error
+    let a = make_i64_tensor(&[2], vec![1, 2]);
+    let b = make_i64_tensor(&[3], vec![1, 1, 1]);
+    let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
