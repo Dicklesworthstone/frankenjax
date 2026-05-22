@@ -2713,37 +2713,43 @@ fn eval_ternary_elementwise(
     }
 }
 
-pub(crate) fn zeta_approx(s: f64) -> f64 {
-    if s.is_nan() {
+pub(crate) fn hurwitz_zeta_approx(x: f64, q: f64) -> f64 {
+    if x.is_nan() || q.is_nan() {
         return f64::NAN;
     }
-    if s == 1.0 {
+    if q <= 0.0 {
+        return f64::NAN;
+    }
+    if x == 1.0 {
         return f64::INFINITY;
     }
-    if s < 0.0 && (s.floor() == s) && (s as i64) % 2 == 0 {
-        return 0.0;
+    if x <= 0.0 {
+        return f64::NAN;
     }
 
-    if s > 1.0 {
-        let mut sum = 0.0;
-        for n in 1..=10000 {
-            let term = 1.0 / (n as f64).powf(s);
-            sum += term;
-            if term < sum * 1e-15 {
-                break;
-            }
+    let mut sum = 0.0;
+    for n in 0..10000 {
+        let term = 1.0 / (n as f64 + q).powf(x);
+        if term.is_nan() || term.is_infinite() {
+            break;
         }
-        sum
-    } else {
-        let pi = std::f64::consts::PI;
-        let factor = (2.0_f64).powf(s) * pi.powf(s - 1.0) * (pi * s / 2.0).sin();
-        let gamma_1_minus_s = lgamma_approx(1.0 - s).exp();
-        factor * gamma_1_minus_s * zeta_approx(1.0 - s)
+        sum += term;
+        if term < sum.abs() * 1e-15 {
+            break;
+        }
     }
+    sum
 }
 
 pub(crate) fn eval_zeta(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
-    eval_unary_elementwise(primitive, inputs, zeta_approx)
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+    eval_binary_elementwise(primitive, inputs, |_, _| 0, hurwitz_zeta_approx)
 }
 
 pub(crate) fn bessel_i0e_approx(x: f64) -> f64 {
