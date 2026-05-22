@@ -114,12 +114,14 @@ impl PyValue {
         self.inner.as_i64_scalar()
     }
 
+    #[getter]
     fn shape(&self) -> Vec<u32> {
         self.inner
             .as_tensor()
             .map_or_else(Vec::new, |tensor| tensor.shape.dims.clone())
     }
 
+    #[getter]
     fn dtype(&self) -> String {
         format!("{:?}", self.inner.dtype())
     }
