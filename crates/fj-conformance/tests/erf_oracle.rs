@@ -378,3 +378,48 @@ fn metamorphic_erf_erfinv_tensor_roundtrip() {
         assert_close(*rec, *orig, 1e-10, &format!("erf(erfinv({})) = {}", orig, orig));
     }
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_erf_3d() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, -2.0]);
+    let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[2], 0.0, 1e-10, "erf(0) = 0");
+}
+
+#[test]
+fn oracle_erf_empty() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+}
+
+#[test]
+fn oracle_erf_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_erf_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![0.0, 0.5, 1.0]);
+    let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_erf_subnormal() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = make_f64_tensor(&[2], vec![subnormal, -subnormal]);
+    let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    // For very small x, erf(x) should be very small and have correct sign
+    assert!(vals[0] >= 0.0 && vals[0] < 1e-6, "erf(subnormal) should be small positive");
+    assert!(vals[1] <= 0.0 && vals[1] > -1e-6, "erf(-subnormal) should be small negative");
+}
