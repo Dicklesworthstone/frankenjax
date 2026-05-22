@@ -191,6 +191,17 @@ fn oracle_digamma_half() {
 }
 
 #[test]
+fn oracle_digamma_negative_half() {
+    // digamma(-0.5) = 2 - gamma - 2*ln(2) by reflection.
+    let input = Value::Scalar(Literal::from_f64(-0.5));
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    let euler_mascheroni = 0.5772156649;
+    let expected = 2.0 - euler_mascheroni - 2.0 * 2.0_f64.ln();
+    assert!((vals[0] - expected).abs() < 0.05);
+}
+
+#[test]
 fn oracle_digamma_1d() {
     let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let result = eval_primitive(Primitive::Digamma, &[input], &no_params()).unwrap();
