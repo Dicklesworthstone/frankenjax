@@ -401,6 +401,19 @@ pub fn eval_primitive(
                 |a, b| a * 2f64.powi(b as i32),
             )
         }
+        Primitive::XLogY => {
+            // xlogy(x, y) = x * log(y), with 0 * log(anything) = 0
+            eval_binary_elementwise(
+                primitive,
+                inputs,
+                |a, b| {
+                    let x = a as f64;
+                    let y = b as f64;
+                    if x == 0.0 { 0 } else { (x * y.ln()) as i64 }
+                },
+                |x, y| if x == 0.0 { 0.0 } else { x * y.ln() },
+            )
+        }
         Primitive::IntegerPow => eval_integer_pow(primitive, inputs, params),
         Primitive::Nextafter => eval_nextafter(primitive, inputs),
         Primitive::Slice => eval_slice(inputs, params),

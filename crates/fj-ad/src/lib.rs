@@ -3310,6 +3310,23 @@ pub fn vjp(
             let gn = zeros_like(n);
             Ok(vec![gx, gn])
         }
+        Primitive::XLogY => {
+            // xlogy(x, y) = x * log(y), with 0 * log(anything) = 0
+            // gx = where(x == 0, 0, g * log(y))
+            // gy = g * x / y (naturally 0 when x=0)
+            let x = &inputs[0];
+            let y = &inputs[1];
+            let zero = zeros_like(x);
+            let x_is_zero = eval_primitive(Primitive::Eq, &[x.clone(), zero.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let log_y = eval_primitive(Primitive::Log, std::slice::from_ref(y), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let g_log_y = value_mul(g, &log_y)?;
+            let gx = eval_primitive(Primitive::Select, &[x_is_zero, zero.clone(), g_log_y], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gy = value_mul(g, &value_div(x, y)?)?;
+            Ok(vec![gx, gy])
+        }
         // IntegerPow: d/dx x^n = n * x^(n-1)
         Primitive::IntegerPow => {
             let n: i32 = params
@@ -6818,6 +6835,19 @@ fn jvp_rule(
             let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
             let scale = ep(Primitive::Ldexp, &[one, primals[1].clone()])?;
             ep(Primitive::Mul, &[scale, tangents[0].clone()])
+        }
+
+        Primitive::XLogY => {
+            // xlogy(x, y) = x * log(y), with 0 * log(anything) = 0
+            // d(xlogy) = dx * log(y) + x/y * dy, with special handling for x=0
+            let zeros = zeros_like(&primals[0]);
+            let x_is_zero = ep(Primitive::Eq, &[primals[0].clone(), zeros.clone()])?;
+            let log_y = ep(Primitive::Log, &[primals[1].clone()])?;
+            let dx_log_y = ep(Primitive::Mul, &[tangents[0].clone(), log_y])?;
+            let dx_term = ep(Primitive::Select, &[x_is_zero.clone(), zeros.clone(), dx_log_y])?;
+            let x_over_y = ep(Primitive::Div, &[primals[0].clone(), primals[1].clone()])?;
+            let dy_term = ep(Primitive::Mul, &[x_over_y, tangents[1].clone()])?;
+            ep(Primitive::Add, &[dx_term, dy_term])
         }
 
         Primitive::Atan2 => {
