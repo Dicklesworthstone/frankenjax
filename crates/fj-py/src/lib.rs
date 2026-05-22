@@ -369,6 +369,16 @@ fn jacobian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
 }
 
 #[pyfunction]
+fn jacrev(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
+    jacobian(jaxpr, args)
+}
+
+#[pyfunction]
+fn jacfwd(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
+    jacobian(jaxpr, args)
+}
+
+#[pyfunction]
 fn hessian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     let rust_args = py_values_to_rust(args);
     fj_api::hessian(jaxpr.inner.clone())
@@ -410,6 +420,8 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
     m.add_function(wrap_pyfunction!(jacobian, m)?)?;
+    m.add_function(wrap_pyfunction!(jacrev, m)?)?;
+    m.add_function(wrap_pyfunction!(jacfwd, m)?)?;
     m.add_function(wrap_pyfunction!(hessian, m)?)?;
     m.add_function(wrap_pyfunction!(checkpoint, m)?)?;
     m.add_function(wrap_pyfunction!(remat, m)?)?;
@@ -556,6 +568,14 @@ mod tests {
         let jac = jacobian(&jaxpr, args.clone()).unwrap();
         assert_eq!(jac.shape(), vec![1, 1]);
         assert!((jac.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
+
+        let jac_rev = jacrev(&jaxpr, args.clone()).unwrap();
+        assert_eq!(jac_rev.shape(), vec![1, 1]);
+        assert!((jac_rev.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
+
+        let jac_fwd = jacfwd(&jaxpr, args.clone()).unwrap();
+        assert_eq!(jac_fwd.shape(), vec![1, 1]);
+        assert!((jac_fwd.as_f64_list().unwrap()[0] - 6.0).abs() < 1e-9);
 
         let hess = hessian(&jaxpr, args).unwrap();
         assert_eq!(hess.shape(), vec![1, 1]);

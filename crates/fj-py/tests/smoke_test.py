@@ -151,10 +151,18 @@ def test_jacobian_and_hessian():
     assert jac.shape() == [1, 1]
     assert abs(jac.as_f64_list()[0] - 6.0) < 1e-6
 
+    jac_rev = fj.jacrev(jaxpr, [fj.PyValue.scalar_f64(3.0)])
+    assert jac_rev.shape() == [1, 1]
+    assert abs(jac_rev.as_f64_list()[0] - 6.0) < 1e-6
+
+    jac_fwd = fj.jacfwd(jaxpr, [fj.PyValue.scalar_f64(3.0)])
+    assert jac_fwd.shape() == [1, 1]
+    assert abs(jac_fwd.as_f64_list()[0] - 6.0) < 1e-6
+
     hess = fj.hessian(jaxpr, [fj.PyValue.scalar_f64(3.0)])
     assert hess.shape() == [1, 1]
     assert abs(hess.as_f64_list()[0] - 2.0) < 1e-6
-    print("✓ jacobian/hessian(square)(3.0) = (6.0, 2.0)")
+    print("✓ jacobian/jacrev/jacfwd/hessian(square)(3.0) = (6.0, 6.0, 6.0, 2.0)")
 
 
 def test_checkpoint():
