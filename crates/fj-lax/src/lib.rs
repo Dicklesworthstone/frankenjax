@@ -17,12 +17,12 @@ use std::collections::BTreeMap;
 
 use arithmetic::{
     erf_approx, eval_abs, eval_acosh, eval_asinh, eval_atanh, eval_bessel_i0e, eval_bessel_i1e,
-    eval_betainc, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos, eval_fma,
-    eval_cosh, eval_digamma, eval_dot, eval_dot_general, eval_erf_inv, eval_exp, eval_igamma,
-    eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf, eval_is_nan,
-    eval_lgamma, eval_log, eval_neg, eval_signbit,
-    eval_nextafter, eval_polygamma, eval_real, eval_round, eval_select, eval_select_n, eval_sin,
-    eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float, eval_zeta,
+    eval_betainc, eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos,
+    eval_cosh, eval_digamma, eval_dot, eval_dot_general, eval_erf_inv, eval_exp, eval_fma,
+    eval_igamma, eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf,
+    eval_is_nan, eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_polygamma, eval_real,
+    eval_round, eval_select, eval_select_n, eval_signbit, eval_sin, eval_sinh, eval_tan, eval_tanh,
+    eval_unary_elementwise, eval_unary_int_or_float, eval_zeta,
 };
 
 use comparison::eval_comparison;
@@ -179,9 +179,12 @@ pub fn eval_primitive(
             |a, b| (a as f64).powf(b as f64) as i64,
             f64::powf,
         ),
-        Primitive::Hypot => {
-            eval_binary_elementwise(primitive, inputs, |a, b| f64::hypot(a as f64, b as f64) as i64, f64::hypot)
-        }
+        Primitive::Hypot => eval_binary_elementwise(
+            primitive,
+            inputs,
+            |a, b| f64::hypot(a as f64, b as f64) as i64,
+            f64::hypot,
+        ),
         Primitive::LogAddExp => {
             // log(exp(x) + exp(y)) = max(x,y) + log1p(exp(min(x,y) - max(x,y)))
             eval_binary_elementwise(
@@ -332,7 +335,9 @@ pub fn eval_primitive(
             primitive,
             inputs,
             |a, b| {
-                if a == 0 || b == 0 { return 0; }
+                if a == 0 || b == 0 {
+                    return 0;
+                }
                 let (mut ga, mut gb) = (a.abs(), b.abs());
                 let prod = ga * gb;
                 while gb != 0 {
@@ -343,7 +348,9 @@ pub fn eval_primitive(
                 prod / ga
             },
             |a, b| {
-                if a == 0.0 || b == 0.0 { return 0.0; }
+                if a == 0.0 || b == 0.0 {
+                    return 0.0;
+                }
                 let (mut ga, mut gb) = (a.abs() as i64, b.abs() as i64);
                 let prod = ga * gb;
                 while gb != 0 {
@@ -1522,7 +1529,9 @@ fn apply_bitwise_unary_literal_with_dtype(
 
 fn unary_bitwise_output_dtype(primitive: Primitive, input_dtype: fj_core::DType) -> fj_core::DType {
     match primitive {
-        Primitive::PopulationCount | Primitive::CountLeadingZeros | Primitive::CountTrailingZeros => fj_core::DType::I64,
+        Primitive::PopulationCount
+        | Primitive::CountLeadingZeros
+        | Primitive::CountTrailingZeros => fj_core::DType::I64,
         Primitive::BitwiseNot => input_dtype,
         _ => input_dtype,
     }
@@ -9873,25 +9882,31 @@ mod prop_tests {
 
     #[test]
     fn test_asinh_real() {
-        let out = eval_primitive(Primitive::Asinh, &[Value::scalar_f64(0.0)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Asinh, &[Value::scalar_f64(0.0)], &no_params()).unwrap();
         assert!((out.as_f64_scalar().unwrap() - 0.0).abs() < 1e-12);
-        let out = eval_primitive(Primitive::Asinh, &[Value::scalar_f64(1.0)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Asinh, &[Value::scalar_f64(1.0)], &no_params()).unwrap();
         assert!((out.as_f64_scalar().unwrap() - 1.0_f64.asinh()).abs() < 1e-12);
     }
 
     #[test]
     fn test_acosh_real() {
-        let out = eval_primitive(Primitive::Acosh, &[Value::scalar_f64(1.0)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Acosh, &[Value::scalar_f64(1.0)], &no_params()).unwrap();
         assert!((out.as_f64_scalar().unwrap() - 0.0).abs() < 1e-12);
-        let out = eval_primitive(Primitive::Acosh, &[Value::scalar_f64(2.0)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Acosh, &[Value::scalar_f64(2.0)], &no_params()).unwrap();
         assert!((out.as_f64_scalar().unwrap() - 2.0_f64.acosh()).abs() < 1e-12);
     }
 
     #[test]
     fn test_atanh_real() {
-        let out = eval_primitive(Primitive::Atanh, &[Value::scalar_f64(0.0)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Atanh, &[Value::scalar_f64(0.0)], &no_params()).unwrap();
         assert!((out.as_f64_scalar().unwrap() - 0.0).abs() < 1e-12);
-        let out = eval_primitive(Primitive::Atanh, &[Value::scalar_f64(0.5)], &no_params()).unwrap();
+        let out =
+            eval_primitive(Primitive::Atanh, &[Value::scalar_f64(0.5)], &no_params()).unwrap();
         assert!((out.as_f64_scalar().unwrap() - 0.5_f64.atanh()).abs() < 1e-12);
     }
 
