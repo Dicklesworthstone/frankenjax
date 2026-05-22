@@ -1595,9 +1595,7 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
             if idx >= n_operands {
                 return Err(EvalError::Unsupported {
                     primitive,
-                    detail: format!(
-                        "select_n index {idx} out of bounds for {n_operands} operands"
-                    ),
+                    detail: format!("select_n index {idx} out of bounds for {n_operands} operands"),
                 });
             }
             Ok(operands[idx].clone())
@@ -1609,7 +1607,7 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
                     return Err(EvalError::Unsupported {
                         primitive,
                         detail: "select_n with tensor index requires tensor operands".into(),
-                    })
+                    });
                 }
             };
 
@@ -1628,7 +1626,7 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
                             primitive,
                             detail: "select_n operands must all be tensors when index is tensor"
                                 .into(),
-                        })
+                        });
                     }
                 }
             }
@@ -1711,11 +1709,12 @@ pub(crate) fn eval_fma(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
     }
 
     match (&inputs[0], &inputs[1], &inputs[2]) {
-        (Value::Scalar(a), Value::Scalar(b), Value::Scalar(c)) => {
-            fma_literal(*a, *b, *c)
-                .map(Value::Scalar)
-                .map_err(|e| EvalError::TypeMismatch { primitive, detail: e })
-        }
+        (Value::Scalar(a), Value::Scalar(b), Value::Scalar(c)) => fma_literal(*a, *b, *c)
+            .map(Value::Scalar)
+            .map_err(|e| EvalError::TypeMismatch {
+                primitive,
+                detail: e,
+            }),
         (Value::Tensor(ta), Value::Tensor(tb), Value::Tensor(tc)) => {
             if ta.shape != tb.shape || ta.shape != tc.shape {
                 return Err(EvalError::Unsupported {
@@ -1732,8 +1731,10 @@ pub(crate) fn eval_fma(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
                 .zip(tc.elements.iter().copied())
             {
                 elements.push(
-                    fma_literal(av, bv, cv)
-                        .map_err(|e| EvalError::TypeMismatch { primitive, detail: e })?,
+                    fma_literal(av, bv, cv).map_err(|e| EvalError::TypeMismatch {
+                        primitive,
+                        detail: e,
+                    })?,
                 );
             }
             Ok(Value::Tensor(TensorValue::new(
@@ -2046,7 +2047,8 @@ pub(crate) fn polygamma_approx(n: i64, x: f64) -> f64 {
     let mut result = 0.0;
     let sign = if n % 2 == 0 { -1.0 } else { 1.0 };
     let n_fact = factorial(n as u32) as f64;
-    while shifted < 8.0 {
+    // Shift to larger x for better asymptotic convergence
+    while shifted < 100.0 {
         result += sign * n_fact / shifted.powi(n as i32 + 1);
         shifted += 1.0;
     }
@@ -2077,7 +2079,9 @@ fn polygamma_asymptotic(n: i64, x: f64) -> f64 {
     let n_fact = factorial(n as u32) as f64;
     let inv = 1.0 / x;
 
-    let bernoulli = [
+    // Bernoulli numbers B_2k for k=0..6 (indices 0,2,4,6,8,10,12)
+    // B_0=1, B_2=1/6, B_4=-1/30, B_6=1/42, B_8=-1/30, B_10=5/66, B_12=-691/2730
+    let bernoulli: [f64; 13] = [
         1.0,
         -0.5,
         1.0 / 6.0,
@@ -2087,6 +2091,10 @@ fn polygamma_asymptotic(n: i64, x: f64) -> f64 {
         1.0 / 42.0,
         0.0,
         -1.0 / 30.0,
+        0.0,
+        5.0 / 66.0,
+        0.0,
+        -691.0 / 2730.0,
     ];
 
     let mut sum = 0.0;
@@ -2096,7 +2104,8 @@ fn polygamma_asymptotic(n: i64, x: f64) -> f64 {
     pow *= inv;
     sum += sign * n_fact * 0.5 * pow;
 
-    for k in 1..=4 {
+    // Use more terms (k=1..6) for better accuracy
+    for k in 1..=6 {
         let rising = rising_factorial(n as u32 + 1, 2 * k as u32 - 1);
         pow *= inv * inv;
         sum += sign * bernoulli[2 * k] * rising as f64 * pow;
@@ -2532,9 +2541,11 @@ fn eval_ternary_elementwise(
                     Literal::from_f64(op(a_f, b_f, x_f))
                 })
                 .collect();
-            Ok(Value::Tensor(
-                TensorValue::new(DType::F64, t_a.shape.clone(), elements)?,
-            ))
+            Ok(Value::Tensor(TensorValue::new(
+                DType::F64,
+                t_a.shape.clone(),
+                elements,
+            )?))
         }
         (Value::Scalar(a), Value::Scalar(b), Value::Tensor(t_x)) => {
             let a_f = a.as_f64().unwrap_or(0.0);
@@ -2547,9 +2558,11 @@ fn eval_ternary_elementwise(
                     Literal::from_f64(op(a_f, b_f, x_f))
                 })
                 .collect();
-            Ok(Value::Tensor(
-                TensorValue::new(DType::F64, t_x.shape.clone(), elements)?,
-            ))
+            Ok(Value::Tensor(TensorValue::new(
+                DType::F64,
+                t_x.shape.clone(),
+                elements,
+            )?))
         }
         _ => Err(EvalError::Unsupported {
             primitive,
@@ -2598,8 +2611,7 @@ pub(crate) fn bessel_i0e_approx(x: f64) -> f64 {
         let i0 = 1.0
             + t * (3.5156229
                 + t * (3.0899424
-                    + t * (1.2067492
-                        + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))));
+                    + t * (1.2067492 + t * (0.2659732 + t * (0.0360768 + t * 0.0045813)))));
         i0 * (-ax).exp()
     } else {
         let t = 3.75 / ax;
@@ -3051,7 +3063,7 @@ pub(crate) fn eval_dot_general(
             return Err(EvalError::Unsupported {
                 primitive,
                 detail: "dot_general requires tensor inputs".into(),
-            })
+            });
         }
     };
 
@@ -3091,7 +3103,11 @@ pub(crate) fn eval_dot_general(
         }
     }
 
-    for (i, (&ld, &rd)) in lhs_contracting.iter().zip(rhs_contracting.iter()).enumerate() {
+    for (i, (&ld, &rd)) in lhs_contracting
+        .iter()
+        .zip(rhs_contracting.iter())
+        .enumerate()
+    {
         if lhs.shape.dims[ld] != rhs.shape.dims[rd] {
             return Err(EvalError::Unsupported {
                 primitive,
@@ -3195,24 +3211,30 @@ pub(crate) fn eval_dot_general(
 
                     let mut lhs_index = 0usize;
                     for (i, &d) in lhs_batch.iter().enumerate() {
-                        lhs_index += batch_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                        lhs_index +=
+                            batch_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
                     }
                     for (i, &d) in lhs_free_dims.iter().enumerate() {
-                        lhs_index += lhs_free_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                        lhs_index +=
+                            lhs_free_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
                     }
                     for (i, &d) in lhs_contracting.iter().enumerate() {
-                        lhs_index += contract_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                        lhs_index +=
+                            contract_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
                     }
 
                     let mut rhs_index = 0usize;
                     for (i, &d) in rhs_batch.iter().enumerate() {
-                        rhs_index += batch_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                        rhs_index +=
+                            batch_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
                     }
                     for (i, &d) in rhs_free_dims.iter().enumerate() {
-                        rhs_index += rhs_free_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                        rhs_index +=
+                            rhs_free_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
                     }
                     for (i, &d) in rhs_contracting.iter().enumerate() {
-                        rhs_index += contract_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                        rhs_index +=
+                            contract_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
                     }
 
                     (lhs.elements[lhs_index], rhs.elements[rhs_index])
@@ -3382,13 +3404,12 @@ pub(crate) fn eval_is_nan(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                     Literal::Complex128Bits(re, im) => Ok(Literal::Bool(
                         f64::from_bits(re).is_nan() || f64::from_bits(im).is_nan(),
                     )),
-                    _ => literal
-                        .as_f64()
-                        .map(|v| Literal::Bool(v.is_nan()))
-                        .ok_or(EvalError::TypeMismatch {
+                    _ => literal.as_f64().map(|v| Literal::Bool(v.is_nan())).ok_or(
+                        EvalError::TypeMismatch {
                             primitive,
                             detail: "expected numeric tensor elements",
-                        }),
+                        },
+                    ),
                 }?;
                 elements.push(is_nan);
             }
@@ -4088,7 +4109,10 @@ mod tests {
         let x = 2.0;
         let pg0 = polygamma_approx(0, x);
         let dg = digamma_approx(x);
-        assert!((pg0 - dg).abs() < 1e-10, "polygamma(0,x) should equal digamma(x)");
+        assert!(
+            (pg0 - dg).abs() < 1e-10,
+            "polygamma(0,x) should equal digamma(x)"
+        );
     }
 
     #[test]
@@ -4096,7 +4120,12 @@ mod tests {
         let x = 2.0;
         let pg1 = polygamma_approx(1, x);
         let tg = trigamma_approx(x);
-        assert!((pg1 - tg).abs() < 1e-2, "polygamma(1,x) should equal trigamma(x): got {} vs {}", pg1, tg);
+        assert!(
+            (pg1 - tg).abs() < 1e-2,
+            "polygamma(1,x) should equal trigamma(x): got {} vs {}",
+            pg1,
+            tg
+        );
     }
 
     #[test]
@@ -4109,15 +4138,24 @@ mod tests {
         let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
         let n_fact = (1..=n as u64).product::<u64>() as f64;
         let expected = pg_x + sign * n_fact / x.powi(n as i32 + 1);
-        assert!((pg_x1 - expected).abs() < 1e-6, "recurrence failed: {} vs {}", pg_x1, expected);
+        assert!(
+            (pg_x1 - expected).abs() < 1e-6,
+            "recurrence failed: {} vs {}",
+            pg_x1,
+            expected
+        );
     }
 
     #[test]
     fn eval_polygamma_scalar() {
         let result = eval_polygamma(
             Primitive::Polygamma,
-            &[Value::Scalar(Literal::I64(0)), Value::Scalar(Literal::from_f64(1.0))],
-        ).unwrap();
+            &[
+                Value::Scalar(Literal::I64(0)),
+                Value::Scalar(Literal::from_f64(1.0)),
+            ],
+        )
+        .unwrap();
         let expected = digamma_approx(1.0);
         let got = match result {
             Value::Scalar(Literal::F64Bits(bits)) => f64::from_bits(bits),
@@ -4602,7 +4640,9 @@ mod tests {
         params.insert("lhs_batch_dims".to_string(), "".to_string());
         params.insert("rhs_batch_dims".to_string(), "".to_string());
         let result = eval_dot_general(&[a, b], &params).unwrap();
-        let Value::Tensor(t) = result else { panic!("expected tensor"); };
+        let Value::Tensor(t) = result else {
+            panic!("expected tensor");
+        };
         assert_eq!(t.shape.dims, vec![2, 2]);
         let vals = extract_f64_vec(&Value::Tensor(t));
         assert_eq!(vals, vec![22.0, 28.0, 49.0, 64.0]);
@@ -4618,7 +4658,9 @@ mod tests {
         params.insert("lhs_batch_dims".to_string(), "".to_string());
         params.insert("rhs_batch_dims".to_string(), "".to_string());
         let result = eval_dot_general(&[a, b], &params).unwrap();
-        let Value::Tensor(t) = result else { panic!("expected tensor"); };
+        let Value::Tensor(t) = result else {
+            panic!("expected tensor");
+        };
         assert_eq!(t.shape.dims, vec![2, 3]);
         let vals = extract_f64_vec(&Value::Tensor(t));
         assert_eq!(vals, vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0]);
@@ -4626,23 +4668,22 @@ mod tests {
 
     #[test]
     fn dot_general_batched_matmul() {
-        let a = tensor_f64(vec![2, 2, 3], &[
-            1.0, 2.0, 3.0,
-            4.0, 5.0, 6.0,
-            7.0, 8.0, 9.0,
-            10.0, 11.0, 12.0,
-        ]);
-        let b = tensor_f64(vec![2, 3, 1], &[
-            1.0, 0.0, 0.0,
-            0.0, 1.0, 0.0,
-        ]);
+        let a = tensor_f64(
+            vec![2, 2, 3],
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+        );
+        let b = tensor_f64(vec![2, 3, 1], &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
         let mut params = BTreeMap::new();
         params.insert("lhs_contracting_dims".to_string(), "2".to_string());
         params.insert("rhs_contracting_dims".to_string(), "1".to_string());
         params.insert("lhs_batch_dims".to_string(), "0".to_string());
         params.insert("rhs_batch_dims".to_string(), "0".to_string());
         let result = eval_dot_general(&[a, b], &params).unwrap();
-        let Value::Tensor(t) = result else { panic!("expected tensor"); };
+        let Value::Tensor(t) = result else {
+            panic!("expected tensor");
+        };
         assert_eq!(t.shape.dims, vec![2, 2, 1]);
         let vals = extract_f64_vec(&Value::Tensor(t));
         assert_eq!(vals, vec![1.0, 4.0, 8.0, 11.0]);
@@ -4655,7 +4696,10 @@ mod tests {
         let result = eval_igamma(Primitive::Igamma, &[s_f64(1.0), s_f64(1.0)]).unwrap();
         let val = extract_f64(&result);
         let expected = 1.0 - (-1.0_f64).exp();
-        assert!((val - expected).abs() < 1e-10, "igamma(1,1) should be 1-e^-1");
+        assert!(
+            (val - expected).abs() < 1e-10,
+            "igamma(1,1) should be 1-e^-1"
+        );
     }
 
     #[test]
@@ -4670,14 +4714,18 @@ mod tests {
         let result = eval_igammac(Primitive::Igammac, &[s_f64(1.0), s_f64(1.0)]).unwrap();
         let val = extract_f64(&result);
         let expected = (-1.0_f64).exp();
-        assert!((val - expected).abs() < 1e-10, "igammac(1,1) should be e^-1");
+        assert!(
+            (val - expected).abs() < 1e-10,
+            "igammac(1,1) should be e^-1"
+        );
     }
 
     #[test]
     fn igamma_igammac_sum_to_one() {
         let a = s_f64(2.5);
         let x = s_f64(1.5);
-        let igamma_val = extract_f64(&eval_igamma(Primitive::Igamma, &[a.clone(), x.clone()]).unwrap());
+        let igamma_val =
+            extract_f64(&eval_igamma(Primitive::Igamma, &[a.clone(), x.clone()]).unwrap());
         let igammac_val = extract_f64(&eval_igammac(Primitive::Igammac, &[a, x]).unwrap());
         assert!((igamma_val + igammac_val - 1.0).abs() < 1e-10, "P + Q = 1");
     }
@@ -4686,28 +4734,32 @@ mod tests {
 
     #[test]
     fn betainc_boundary_zero() {
-        let result = eval_betainc(Primitive::Betainc, &[s_f64(1.0), s_f64(1.0), s_f64(0.0)]).unwrap();
+        let result =
+            eval_betainc(Primitive::Betainc, &[s_f64(1.0), s_f64(1.0), s_f64(0.0)]).unwrap();
         let val = extract_f64(&result);
         assert!((val - 0.0).abs() < 1e-10, "I_0(a,b) = 0");
     }
 
     #[test]
     fn betainc_boundary_one() {
-        let result = eval_betainc(Primitive::Betainc, &[s_f64(1.0), s_f64(1.0), s_f64(1.0)]).unwrap();
+        let result =
+            eval_betainc(Primitive::Betainc, &[s_f64(1.0), s_f64(1.0), s_f64(1.0)]).unwrap();
         let val = extract_f64(&result);
         assert!((val - 1.0).abs() < 1e-10, "I_1(a,b) = 1");
     }
 
     #[test]
     fn betainc_uniform() {
-        let result = eval_betainc(Primitive::Betainc, &[s_f64(1.0), s_f64(1.0), s_f64(0.5)]).unwrap();
+        let result =
+            eval_betainc(Primitive::Betainc, &[s_f64(1.0), s_f64(1.0), s_f64(0.5)]).unwrap();
         let val = extract_f64(&result);
         assert!((val - 0.5).abs() < 1e-10, "I_0.5(1,1) = 0.5 (uniform)");
     }
 
     #[test]
     fn betainc_half_half() {
-        let result = eval_betainc(Primitive::Betainc, &[s_f64(0.5), s_f64(0.5), s_f64(0.5)]).unwrap();
+        let result =
+            eval_betainc(Primitive::Betainc, &[s_f64(0.5), s_f64(0.5), s_f64(0.5)]).unwrap();
         let val = extract_f64(&result);
         assert!((val - 0.5).abs() < 1e-10, "I_0.5(0.5,0.5) = 0.5 (arcsine)");
     }
@@ -4748,6 +4800,9 @@ mod tests {
     fn bessel_i1e_negative() {
         let pos = eval_bessel_i1e(Primitive::BesselI1e, &[s_f64(2.0)]).unwrap();
         let neg = eval_bessel_i1e(Primitive::BesselI1e, &[s_f64(-2.0)]).unwrap();
-        assert!((extract_f64(&pos) + extract_f64(&neg)).abs() < 1e-10, "I1e(-x) = -I1e(x)");
+        assert!(
+            (extract_f64(&pos) + extract_f64(&neg)).abs() < 1e-10,
+            "I1e(-x) = -I1e(x)"
+        );
     }
 }

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 const EULER_MASCHERONI: f64 = 0.577_215_664_901_532_9;
 const APERY: f64 = 1.202_056_903_159_594_2;
-const POLYGAMMA_APPROX_TOL: f64 = 5e-4;
+const POLYGAMMA_APPROX_TOL: f64 = 1e-6;
 
 fn scalar(value: f64) -> Value {
     Value::scalar_f64(value)
