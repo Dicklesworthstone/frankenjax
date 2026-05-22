@@ -81,7 +81,16 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
 fn oracle_sqrt_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "sqrt(0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "sqrt(0) = +0");
+}
+
+#[test]
+fn oracle_sqrt_neg_zero() {
+    let input = make_f64_tensor(&[], vec![-0.0]);
+    let result = eval_primitive(Primitive::Sqrt, &[input], &no_params()).unwrap();
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), (-0.0_f64).to_bits(), "sqrt(-0.0) = -0");
 }
 
 #[test]
@@ -353,7 +362,8 @@ fn metamorphic_square_sqrt_abs() {
     // sqrt(x^2) = |x| for all real x
     for x in [-100.0, -10.0, -1.0, -0.5, 0.0, 0.5, 1.0, 10.0, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let squared = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
+        let squared =
+            eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
         let sqrt_squared = eval_primitive(Primitive::Sqrt, &[squared], &no_params()).unwrap();
 
         assert_close(
@@ -371,7 +381,8 @@ fn metamorphic_square_sqrt_abs() {
 fn metamorphic_sqrt_tensor_roundtrip() {
     // For a tensor of non-negative values: sqrt(x)^2 = x
     let input = make_f64_tensor(&[6], vec![0.0, 0.25, 1.0, 4.0, 9.0, 100.0]);
-    let sqrt_result = eval_primitive(Primitive::Sqrt, std::slice::from_ref(&input), &no_params()).unwrap();
+    let sqrt_result =
+        eval_primitive(Primitive::Sqrt, std::slice::from_ref(&input), &no_params()).unwrap();
     let squared = eval_primitive(
         Primitive::Mul,
         &[sqrt_result.clone(), sqrt_result],
@@ -416,13 +427,23 @@ fn property_sqrt_preserves_all_float_dtypes() {
     let values = [0.0_f64, 1.0, 4.0, 9.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
-        let result = eval_primitive(Primitive::Sqrt, &[input], &no_params())
-            .unwrap_or_else(|e| panic!("sqrt {dtype:?} failed: {e}"));
+        let result = match eval_primitive(Primitive::Sqrt, &[input], &no_params()) {
+            Ok(value) => value,
+            Err(e) => {
+                assert!(false, "sqrt {dtype:?} failed: {e}");
+                return;
+            }
+        };
         let Value::Tensor(t) = result else {
-            panic!("sqrt {dtype:?}: expected tensor");
+            assert!(false, "sqrt {dtype:?}: expected tensor");
+            return;
         };
         assert_eq!(t.dtype, dtype, "sqrt {dtype:?}: tensor dtype mismatch");
-        t.validate_dtype_consistency()
-            .unwrap_or_else(|e| panic!("sqrt {dtype:?}: validate_dtype_consistency failed: {e}"));
+        if let Err(e) = t.validate_dtype_consistency() {
+            assert!(
+                false,
+                "sqrt {dtype:?}: validate_dtype_consistency failed: {e}"
+            );
+        }
     }
 }
