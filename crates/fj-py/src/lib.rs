@@ -821,6 +821,13 @@ impl PyValue {
         self.flatten(py, order, out_sharding)
     }
 
+    #[pyo3(signature = (axis = None))]
+    fn squeeze(&self, py: Python<'_>, axis: Option<Py<PyAny>>) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
+        let axes = squeeze_axes_from_py_arg(py, axis, self.shape_dims().len())?;
+        squeeze_value(&self.inner, axes.as_deref()).map(Self::from_value)
+    }
+
     #[pyo3(signature = (decimals = 0, out = None))]
     fn round(&self, decimals: i32, out: Option<Py<PyAny>>) -> PyResult<Self> {
         self.ensure_not_deleted()?;
@@ -1876,6 +1883,102 @@ fn flatten_value(value: &Value, order: &str) -> PyResult<Value> {
         PyErr::new::<pyo3::exceptions::PyOverflowError, _>("array element count does not fit i64")
     })?;
     reshape_value(value, &[flattened_dim], order)
+}
+
+fn squeeze_axes_from_py_arg(
+    py: Python<'_>,
+    axis: Option<Py<PyAny>>,
+    rank: usize,
+) -> PyResult<Option<Vec<usize>>> {
+    let Some(axis) = axis else {
+        return Ok(None);
+    };
+    let axis = axis.bind(py);
+    if axis.is_none() {
+        return Ok(None);
+    }
+    let raw_axes = if let Ok(axis) = axis.extract::<isize>() {
+        vec![axis]
+    } else {
+        axis.extract::<Vec<isize>>().map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+                "squeeze axis must be None, an integer, or a sequence of integers",
+            )
+        })?
+    };
+
+    let mut axes = Vec::with_capacity(raw_axes.len());
+    let mut seen = vec![false; rank];
+    for axis in raw_axes {
+        let axis = normalize_axis(axis, rank)?;
+        let slot = seen.get_mut(axis).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>("squeeze axis is out of bounds")
+        })?;
+        if *slot {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "duplicate value in 'axis'",
+            ));
+        }
+        *slot = true;
+        axes.push(axis);
+    }
+    Ok(Some(axes))
+}
+
+fn squeeze_value(value: &Value, axes: Option<&[usize]>) -> PyResult<Value> {
+    match value {
+        Value::Scalar(_) => Ok(value.clone()),
+        Value::Tensor(tensor) => {
+            let dims = squeeze_dims(&tensor.shape.dims, axes)?;
+            value_with_shape(tensor.dtype, &tensor.elements, dims)
+        }
+    }
+}
+
+fn squeeze_dims(dims: &[u32], axes: Option<&[usize]>) -> PyResult<Vec<u32>> {
+    let Some(axes) = axes else {
+        return Ok(dims.iter().copied().filter(|dim| *dim != 1).collect());
+    };
+    let mut remove = vec![false; dims.len()];
+    for axis in axes {
+        let dim = dims.get(*axis).copied().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>("squeeze axis is out of bounds")
+        })?;
+        if dim != 1 {
+            return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "cannot select an axis to squeeze out which has size not equal to one",
+            ));
+        }
+        let slot = remove.get_mut(*axis).ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>("squeeze axis is out of bounds")
+        })?;
+        *slot = true;
+    }
+
+    Ok(dims
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(axis, dim)| {
+            let should_remove = remove.get(axis).copied().unwrap_or(false);
+            (!should_remove).then_some(dim)
+        })
+        .collect())
+}
+
+fn value_with_shape(dtype: DType, elements: &[Literal], dims: Vec<u32>) -> PyResult<Value> {
+    if dims.is_empty() {
+        let literal = elements.first().copied().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyValueError, _>(
+                "cannot reshape empty array into scalar shape",
+            )
+        })?;
+        return Ok(Value::Scalar(literal));
+    }
+
+    TensorValue::new(dtype, Shape { dims }, elements.to_vec())
+        .map(Value::Tensor)
+        .map_err(value_error)
 }
 
 #[derive(Clone, Copy)]
@@ -3746,6 +3849,7 @@ mod tests {
             assert!(deleted.reshape(py, &PyTuple::empty(py), "C", None).is_err());
             assert!(deleted.flatten(py, "C", None).is_err());
             assert!(deleted.ravel(py, "C", None).is_err());
+            assert!(deleted.squeeze(py, None).is_err());
             assert!(deleted.__array__(py, None, None, None).is_err());
             assert!(deleted.__dlpack_device__(py).is_err());
             assert_eq!(
@@ -3805,6 +3909,7 @@ mod tests {
                 v.ravel(py, "C", None).unwrap().as_f64_list().unwrap(),
                 vec![42.0]
             );
+            assert!((v.squeeze(py, None).unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
             let bad_device = pyo3::types::PyString::new(py, "gpu")
                 .to_owned()
                 .into_any()
@@ -4060,6 +4165,27 @@ mod tests {
             let inferred = ints.reshape(py, &inferred_args, "C", None).unwrap();
             assert_eq!(inferred.shape_dims(), vec![3]);
             assert_eq!(inferred.as_i64_list().unwrap(), vec![1, 2, 3]);
+            let expanded_args = PyTuple::new(py, [1_i64, 3_i64, 1_i64]).unwrap();
+            let expanded = ints.reshape(py, &expanded_args, "C", None).unwrap();
+            let squeezed = expanded.squeeze(py, None).unwrap();
+            assert_eq!(squeezed.shape_dims(), vec![3]);
+            assert_eq!(squeezed.as_i64_list().unwrap(), vec![1, 2, 3]);
+            let axis0 = 0_isize.into_pyobject(py).unwrap().into_any().unbind();
+            let squeezed_axis0 = expanded.squeeze(py, Some(axis0)).unwrap();
+            assert_eq!(squeezed_axis0.shape_dims(), vec![3, 1]);
+            let axes = PyTuple::new(py, [0_isize, 2_isize])
+                .unwrap()
+                .into_any()
+                .unbind();
+            let squeezed_axes = expanded.squeeze(py, Some(axes)).unwrap();
+            assert_eq!(squeezed_axes.shape_dims(), vec![3]);
+            let bad_axis = 1_isize.into_pyobject(py).unwrap().into_any().unbind();
+            assert!(expanded.squeeze(py, Some(bad_axis)).is_err());
+            let duplicate_axes = PyTuple::new(py, [0_isize, 0_isize])
+                .unwrap()
+                .into_any()
+                .unbind();
+            assert!(expanded.squeeze(py, Some(duplicate_axes)).is_err());
             assert_eq!(
                 ints.flatten(py, "C", None).unwrap().as_i64_list().unwrap(),
                 vec![1, 2, 3]

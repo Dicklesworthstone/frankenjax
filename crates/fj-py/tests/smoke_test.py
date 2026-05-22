@@ -211,6 +211,7 @@ def test_value_scalar():
         ("reshape", lambda: deleted.reshape(1)),
         ("flatten", deleted.flatten),
         ("ravel", deleted.ravel),
+        ("squeeze", deleted.squeeze),
         ("item", deleted.item),
         ("indexing", lambda: deleted[0]),
         ("item assignment", lambda: assign_first(deleted)),
@@ -399,6 +400,18 @@ def test_value_scalar():
     assert vec.reshape(3, 1).shape == (3, 1)
     assert vec.reshape(3, 1).as_i64_list() == [1, 2, 3]
     assert vec.reshape((-1,)).shape == (3,)
+    expanded = vec.reshape(1, 3, 1)
+    assert expanded.squeeze().shape == (3,)
+    assert expanded.squeeze().as_i64_list() == [1, 2, 3]
+    assert expanded.squeeze(axis=0).shape == (3, 1)
+    assert expanded.squeeze(axis=-1).shape == (1, 3)
+    assert expanded.squeeze(axis=(0, 2)).shape == (3,)
+    try:
+        expanded.squeeze(axis=1)
+    except ValueError as exc:
+        assert "size not equal to one" in str(exc)
+    else:
+        raise AssertionError("Array.squeeze should reject non-size-one axes")
     assert vec.flatten().as_i64_list() == [1, 2, 3]
     assert vec.ravel().as_i64_list() == [1, 2, 3]
     assert vec.round().as_i64_list() == [1, 2, 3]
