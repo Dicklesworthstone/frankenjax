@@ -91,6 +91,23 @@ def test_linearize_square():
     print("✓ linearize(square)(3.0) reuses pushforward for tangents 1.0 and 2.0")
 
 
+def test_eval_shape():
+    """Test eval_shape metadata for scalar and vector outputs."""
+    scalar_meta = fj.eval_shape(fj.make_jaxpr_square(), [fj.PyValue.scalar_f64(3.0)])
+    assert len(scalar_meta) == 1
+    assert scalar_meta[0].shape() == []
+    assert scalar_meta[0].dtype() == "F64"
+
+    vector_meta = fj.eval_shape(
+        fj.make_jaxpr_add_one(),
+        [fj.PyValue.vector_f64([1.0, 2.0, 3.0])],
+    )
+    assert len(vector_meta) == 1
+    assert vector_meta[0].shape() == [3]
+    assert vector_meta[0].dtype() == "F64"
+    print("✓ eval_shape returns shape/dtype metadata for scalar and vector outputs")
+
+
 def test_value_and_grad():
     """Test value_and_grad of x^2."""
     jaxpr = fj.make_jaxpr_square()
@@ -165,6 +182,7 @@ if __name__ == "__main__":
     test_jvp_square()
     test_vjp_square()
     test_linearize_square()
+    test_eval_shape()
     test_value_and_grad()
     test_vmap()
     test_pmap_fails_closed()

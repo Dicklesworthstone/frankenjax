@@ -36,6 +36,13 @@ struct PyLinearizedJvp {
     primals: Vec<Value>,
 }
 
+#[pyclass]
+#[derive(Clone)]
+struct PyShapeDtypeStruct {
+    shape: Vec<u32>,
+    dtype: String,
+}
+
 #[pymethods]
 impl PyValue {
     #[staticmethod]
@@ -186,12 +193,39 @@ impl PyLinearizedJvp {
     }
 }
 
+#[pymethods]
+impl PyShapeDtypeStruct {
+    fn shape(&self) -> Vec<u32> {
+        self.shape.clone()
+    }
+
+    fn dtype(&self) -> String {
+        self.dtype.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PyShapeDtypeStruct(shape={:?}, dtype={})",
+            self.shape, self.dtype
+        )
+    }
+}
+
 fn py_values_to_rust(args: Vec<PyValue>) -> Vec<Value> {
     args.into_iter().map(|pv| pv.inner).collect()
 }
 
 fn py_values_from_rust(values: Vec<Value>) -> Vec<PyValue> {
     values.into_iter().map(|inner| PyValue { inner }).collect()
+}
+
+fn py_shape_dtype_from_rust(value: &Value) -> PyShapeDtypeStruct {
+    PyShapeDtypeStruct {
+        shape: value
+            .as_tensor()
+            .map_or_else(Vec::new, |tensor| tensor.shape.dims.clone()),
+        dtype: format!("{:?}", value.dtype()),
+    }
 }
 
 fn runtime_error(error: impl ToString) -> PyErr {
@@ -290,6 +324,15 @@ fn linearize(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, PyL
 }
 
 #[pyfunction]
+fn eval_shape(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyShapeDtypeStruct>> {
+    let rust_args = py_values_to_rust(args);
+    fj_api::jit(jaxpr.inner.clone())
+        .call(rust_args)
+        .map(|outputs| outputs.iter().map(py_shape_dtype_from_rust).collect())
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
 fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
     let rust_args = py_values_to_rust(args);
     fj_api::vmap(jaxpr.inner.clone())
@@ -348,6 +391,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCheckpoint>()?;
     m.add_class::<PyVjpPullback>()?;
     m.add_class::<PyLinearizedJvp>()?;
+    m.add_class::<PyShapeDtypeStruct>()?;
     m.add_function(wrap_pyfunction!(make_jaxpr_square, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add2, m)?)?;
     m.add_function(wrap_pyfunction!(make_jaxpr_add_one, m)?)?;
@@ -356,6 +400,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jvp, m)?)?;
     m.add_function(wrap_pyfunction!(vjp, m)?)?;
     m.add_function(wrap_pyfunction!(linearize, m)?)?;
+    m.add_function(wrap_pyfunction!(eval_shape, m)?)?;
     m.add_function(wrap_pyfunction!(vmap, m)?)?;
     m.add_function(wrap_pyfunction!(pmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
@@ -461,6 +506,23 @@ mod tests {
         let scaled_tangents = linearized.call(vec![PyValue::scalar_f64(2.0)]).unwrap();
         assert_eq!(scaled_tangents.len(), 1);
         assert!((scaled_tangents[0].as_f64().unwrap() - 12.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn eval_shape_returns_output_shape_dtype_metadata() {
+        let scalar_meta = eval_shape(&make_jaxpr_square(), vec![PyValue::scalar_f64(3.0)]).unwrap();
+        assert_eq!(scalar_meta.len(), 1);
+        assert_eq!(scalar_meta[0].shape(), Vec::<u32>::new());
+        assert_eq!(scalar_meta[0].dtype(), "F64");
+
+        let vector_meta = eval_shape(
+            &make_jaxpr_add_one(),
+            vec![PyValue::vector_f64(vec![1.0, 2.0, 3.0]).unwrap()],
+        )
+        .unwrap();
+        assert_eq!(vector_meta.len(), 1);
+        assert_eq!(vector_meta[0].shape(), vec![3]);
+        assert_eq!(vector_meta[0].dtype(), "F64");
     }
 
     #[test]
