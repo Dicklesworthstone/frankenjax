@@ -7,6 +7,7 @@ Run after building with:
 """
 
 import frankenjax as fj
+import numpy as np
 import operator
 import struct
 
@@ -59,6 +60,10 @@ def test_value_scalar():
     assert {device.platform for device in v.devices()} == {"cpu"}
     assert str(v) == "42.0"
     assert format(v, ".1f") == "42.0"
+    array = np.asarray(v)
+    assert array.shape == ()
+    assert abs(array.item() - 42.0) < 1e-12
+    assert np.asarray(v, dtype=np.float32).dtype == np.dtype("float32")
     try:
         v.device_buffer
     except AttributeError as exc:

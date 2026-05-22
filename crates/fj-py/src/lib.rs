@@ -2,7 +2,9 @@
 
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyFrozenSet, PyList, PySet, PySlice, PySliceMethods, PyTuple};
+use pyo3::types::{
+    PyBool, PyBytes, PyDict, PyFrozenSet, PyList, PySet, PySlice, PySliceMethods, PyTuple,
+};
 
 use fj_core::{DType, Jaxpr, Literal, ProgramSpec, Shape, TensorValue, Value, build_program};
 
@@ -674,6 +676,33 @@ impl PyValue {
             .getattr("format")?
             .call1((value.bind(py), format_spec))?
             .extract()
+    }
+
+    #[pyo3(signature = (dtype=None, context=None, copy=None))]
+    fn __array__(
+        &self,
+        py: Python<'_>,
+        dtype: Option<Py<PyAny>>,
+        context: Option<Py<PyAny>>,
+        copy: Option<bool>,
+    ) -> PyResult<Py<PyAny>> {
+        let _ = context;
+        let value = self.tolist(py)?;
+        let kwargs = PyDict::new(py);
+        if let Some(dtype) = dtype {
+            let dtype = dtype.bind(py);
+            if !dtype.is_none() {
+                kwargs.set_item("dtype", dtype)?;
+            }
+        }
+        if let Some(copy) = copy {
+            kwargs.set_item("copy", copy)?;
+        }
+        Ok(py
+            .import("numpy")?
+            .getattr("asarray")?
+            .call((value.bind(py),), Some(&kwargs))?
+            .unbind())
     }
 
     fn __repr__(&self) -> String {
@@ -2287,6 +2316,42 @@ mod tests {
             assert_eq!(devices.bind(py).len().unwrap(), 1);
             assert_eq!(v.__str__(py).unwrap(), "42.0");
             assert_eq!(v.__format__(py, ".1f").unwrap(), "42.0");
+            if py.import("numpy").is_ok() {
+                let array = v.__array__(py, None, None, None).unwrap();
+                let array = array.bind(py);
+                assert_eq!(
+                    array
+                        .getattr("shape")
+                        .unwrap()
+                        .extract::<Vec<usize>>()
+                        .unwrap(),
+                    Vec::<usize>::new()
+                );
+                assert!(
+                    (array
+                        .call_method0("item")
+                        .unwrap()
+                        .extract::<f64>()
+                        .unwrap()
+                        - 42.0)
+                        .abs()
+                        < 1e-12
+                );
+
+                let dtype = "float32".into_pyobject(py).unwrap().into_any().unbind();
+                let array = v.__array__(py, Some(dtype), None, Some(true)).unwrap();
+                assert_eq!(
+                    array
+                        .bind(py)
+                        .getattr("dtype")
+                        .unwrap()
+                        .str()
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                    "float32"
+                );
+            }
             let value = v.tolist(py).unwrap();
             assert!((value.bind(py).extract::<f64>().unwrap() - 42.0).abs() < 1e-12);
             let value = v.__int__(py).unwrap();
