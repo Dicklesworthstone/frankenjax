@@ -11,6 +11,7 @@
 //! - Negative x: xlogy(-2, e) = -2
 //! - Special values: infinity, NaN
 //! - Tensor shapes
+//! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -245,4 +246,74 @@ fn oracle_xlogy_matrix() {
     assert!((vals[1] - 2.0_f64.ln()).abs() < 1e-14);
     assert!((vals[2] - 2.0 * 2.0_f64.ln()).abs() < 1e-14);
     assert_eq!(vals[3], 0.0);
+}
+
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_xlogy_vector_scalar_y_broadcast() {
+    let x_values = [0.0, 1.0, 2.0, 3.0];
+    let x = make_f64_tensor(&[4], x_values.to_vec());
+    let y = make_f64_tensor(&[], vec![std::f64::consts::E]);
+    let result = eval_primitive(Primitive::XLogY, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let actual = extract_f64_vec(&result);
+    for (i, (&actual, &expected)) in actual.iter().zip(x_values.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "xlogy scalar y broadcast element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn oracle_xlogy_matrix_row_y_broadcast() {
+    let x = make_f64_tensor(&[2, 2], vec![0.0, 1.0, 2.0, 3.0]);
+    let y = make_f64_tensor(&[2], vec![1.0, std::f64::consts::E]);
+    let result = eval_primitive(Primitive::XLogY, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let actual = extract_f64_vec(&result);
+    let expected = [0.0, 1.0, 0.0, 3.0];
+    for (i, (&actual, &expected)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "xlogy row y broadcast element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn oracle_xlog1py_vector_scalar_y_broadcast() {
+    let x_values = [0.0, 1.0, 2.0, 3.0];
+    let x = make_f64_tensor(&[4], x_values.to_vec());
+    let y = make_f64_tensor(&[], vec![std::f64::consts::E - 1.0]);
+    let result = eval_primitive(Primitive::XLog1PY, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let actual = extract_f64_vec(&result);
+    for (i, (&actual, &expected)) in actual.iter().zip(x_values.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "xlog1py scalar y broadcast element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn oracle_xlog1py_matrix_row_y_broadcast() {
+    let x = make_f64_tensor(&[2, 2], vec![0.0, 1.0, 2.0, 3.0]);
+    let y = make_f64_tensor(&[2], vec![0.0, std::f64::consts::E - 1.0]);
+    let result = eval_primitive(Primitive::XLog1PY, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let actual = extract_f64_vec(&result);
+    let expected = [0.0, 1.0, 0.0, 3.0];
+    for (i, (&actual, &expected)) in actual.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "xlog1py row y broadcast element {i}: expected {expected}, got {actual}"
+        );
+    }
 }
