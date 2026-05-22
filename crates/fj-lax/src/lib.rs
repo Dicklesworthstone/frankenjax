@@ -307,6 +307,53 @@ pub fn eval_primitive(
             |a, b| a.checked_rem(b).unwrap_or(0),
             |a, b| a % b,
         ),
+        Primitive::Gcd => eval_binary_elementwise(
+            primitive,
+            inputs,
+            |mut a, mut b| {
+                while b != 0 {
+                    let t = b;
+                    b = a % b;
+                    a = t;
+                }
+                a.abs()
+            },
+            |a, b| {
+                let (mut a, mut b) = (a.abs() as i64, b.abs() as i64);
+                while b != 0 {
+                    let t = b;
+                    b = a % b;
+                    a = t;
+                }
+                a as f64
+            },
+        ),
+        Primitive::Lcm => eval_binary_elementwise(
+            primitive,
+            inputs,
+            |a, b| {
+                if a == 0 || b == 0 { return 0; }
+                let (mut ga, mut gb) = (a.abs(), b.abs());
+                let prod = ga * gb;
+                while gb != 0 {
+                    let t = gb;
+                    gb = ga % gb;
+                    ga = t;
+                }
+                prod / ga
+            },
+            |a, b| {
+                if a == 0.0 || b == 0.0 { return 0.0; }
+                let (mut ga, mut gb) = (a.abs() as i64, b.abs() as i64);
+                let prod = ga * gb;
+                while gb != 0 {
+                    let t = gb;
+                    gb = ga % gb;
+                    ga = t;
+                }
+                (prod / ga) as f64
+            },
+        ),
         Primitive::Atan2 => eval_binary_elementwise(
             primitive,
             inputs,

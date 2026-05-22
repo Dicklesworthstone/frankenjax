@@ -1835,6 +1835,10 @@ pub fn vjp(
             let db = value_neg(&value_mul(g, &floor_ratio)?)?;
             Ok(vec![g.clone(), db])
         }
+        // Gcd/Lcm: integer operations, non-differentiable
+        Primitive::Gcd | Primitive::Lcm => {
+            Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])])
+        }
         Primitive::Atan2 => {
             // d/da atan2(a,b) = b/(a²+b²), d/db = -a/(a²+b²)
             let a = &inputs[0];
@@ -6868,6 +6872,9 @@ fn jvp_rule(
             let f_db = ep(Primitive::Mul, &[floored, tangents[1].clone()])?;
             ep(Primitive::Sub, &[tangents[0].clone(), f_db])
         }
+
+        // Gcd/Lcm: integer operations, non-differentiable — tangent is zero
+        Primitive::Gcd | Primitive::Lcm => Ok(zeros_like(&primals[0])),
 
         Primitive::Pow => {
             // b * a^(b-1) * da + a^b * ln(a) * db

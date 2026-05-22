@@ -123,6 +123,8 @@ pub enum Primitive {
     // Binary math
     Div,
     Rem,
+    Gcd,
+    Lcm,
     Atan2,
     // Complex number primitives
     Complex,
@@ -304,6 +306,8 @@ impl Primitive {
         Self::Erfc,
         Self::Div,
         Self::Rem,
+        Self::Gcd,
+        Self::Lcm,
         Self::Atan2,
         Self::Complex,
         Self::Conj,
@@ -472,6 +476,8 @@ impl Primitive {
             Self::Erfc => "erfc",
             Self::Div => "div",
             Self::Rem => "rem",
+            Self::Gcd => "gcd",
+            Self::Lcm => "lcm",
             Self::Atan2 => "atan2",
             Self::Complex => "complex",
             Self::Conj => "conj",
