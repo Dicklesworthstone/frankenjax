@@ -158,6 +158,11 @@ impl PyValue {
         false
     }
 
+    #[getter]
+    fn is_fully_addressable(&self) -> bool {
+        true
+    }
+
     fn __len__(&self) -> PyResult<usize> {
         let first_dim = self
             .inner
@@ -1501,6 +1506,7 @@ mod tests {
         assert_eq!(v.nbytes(), 8);
         assert!(!v.weak_type());
         assert!(!v.committed());
+        assert!(v.is_fully_addressable());
         assert!(v.__len__().is_err());
         assert!((v.as_f64().unwrap() - 42.0).abs() < 1e-12);
     }
@@ -1516,6 +1522,7 @@ mod tests {
         assert_eq!(floats.nbytes(), 24);
         assert!(!floats.weak_type());
         assert!(!floats.committed());
+        assert!(floats.is_fully_addressable());
         assert_eq!(floats.__len__().unwrap(), 3);
         assert_eq!(floats.as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
         assert_eq!(floats.as_i64_list(), None);
@@ -1529,6 +1536,7 @@ mod tests {
         assert_eq!(ints.nbytes(), 24);
         assert!(!ints.weak_type());
         assert!(!ints.committed());
+        assert!(ints.is_fully_addressable());
         assert_eq!(ints.__len__().unwrap(), 3);
         assert_eq!(ints.as_i64_list().unwrap(), vec![1, 2, 3]);
         assert_eq!(ints.as_f64_list().unwrap(), vec![1.0, 2.0, 3.0]);
