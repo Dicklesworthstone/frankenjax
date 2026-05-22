@@ -243,6 +243,114 @@ fn oracle_ldexp_matrix() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+fn scalar_i64(v: i64) -> Value {
+    Value::Scalar(Literal::I64(v))
+}
+
+#[test]
+fn oracle_ldexp_scalar_x_tensor_n_broadcast() {
+    // scalar mantissa with tensor exponent
+    let x = scalar_f64(1.0);
+    let n = make_i64_tensor(&[4], vec![0, 1, 2, 3]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 4.0, 8.0]);
+}
+
+#[test]
+fn oracle_ldexp_tensor_x_scalar_n_broadcast() {
+    // tensor mantissa with scalar exponent
+    let x = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
+    let n = scalar_i64(2);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![4.0, 8.0, 12.0, 16.0]);
+}
+
+#[test]
+fn oracle_ldexp_singleton_x_vector_n_broadcast() {
+    // [1] x with [3] n -> [3]
+    let x = make_f64_tensor(&[1], vec![1.0]);
+    let n = make_i64_tensor(&[3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![2.0, 4.0, 8.0]);
+}
+
+#[test]
+fn oracle_ldexp_vector_x_singleton_n_broadcast() {
+    // [3] x with [1] n -> [3]
+    let x = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let n = make_i64_tensor(&[1], vec![2]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![4.0, 8.0, 12.0]);
+}
+
+#[test]
+fn oracle_ldexp_column_x_matrix_n_broadcast() {
+    // [2, 1] x with [2, 3] n -> [2, 3]
+    let x = make_f64_tensor(&[2, 1], vec![1.0, 2.0]);
+    let n = make_i64_tensor(&[2, 3], vec![1, 2, 3, 0, 1, 2]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: 1.0 * 2^1, 1.0 * 2^2, 1.0 * 2^3 = 2, 4, 8
+    assert_eq!(vals[0], 2.0);
+    assert_eq!(vals[1], 4.0);
+    assert_eq!(vals[2], 8.0);
+    // Row 1: 2.0 * 2^0, 2.0 * 2^1, 2.0 * 2^2 = 2, 4, 8
+    assert_eq!(vals[3], 2.0);
+    assert_eq!(vals[4], 4.0);
+    assert_eq!(vals[5], 8.0);
+}
+
+#[test]
+fn oracle_ldexp_different_ranks_broadcast() {
+    // [3] x with [2, 3] n -> [2, 3]
+    let x = make_f64_tensor(&[3], vec![1.0, 2.0, 4.0]);
+    let n = make_i64_tensor(&[2, 3], vec![1, 1, 1, 2, 2, 2]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: x * 2^1 = 2, 4, 8
+    assert_eq!(vals[0], 2.0);
+    assert_eq!(vals[1], 4.0);
+    assert_eq!(vals[2], 8.0);
+    // Row 1: x * 2^2 = 4, 8, 16
+    assert_eq!(vals[3], 4.0);
+    assert_eq!(vals[4], 8.0);
+    assert_eq!(vals[5], 16.0);
+}
+
+#[test]
+fn oracle_ldexp_all_scalars_broadcast() {
+    // scalar ldexp scalar -> scalar
+    let x = scalar_f64(3.0);
+    let n = scalar_i64(2);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 12.0);
+}
+
+#[test]
+fn oracle_ldexp_incompatible_shapes_error() {
+    // [2] ldexp [3] should error
+    let x = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let n = make_i64_tensor(&[3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_ldexp_vector_scalar_exp_broadcast() {
     let x_values = [1.0, 2.0, 0.5, 4.0];
