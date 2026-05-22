@@ -969,6 +969,113 @@ fn cosh_vjp_numerical_complex64() {
     }
 }
 
+/// Complex64 scalar Tan VJP.
+///
+/// d/dz[tan(z)] = sec²(z) = 1/cos²(z). For z = 0.3 + 0.2i:
+/// Verify gradient is Complex64 and numerically reasonable.
+#[test]
+fn tan_vjp_numerical_complex64() {
+    use fj_core::Literal::Complex64Bits;
+
+    let z = Value::Scalar(Literal::from_complex64(0.3, 0.2));
+    let g = Value::Scalar(Literal::from_complex64(1.0, 0.0));
+
+    let grads = fj_ad::vjp_single(
+        Primitive::Tan,
+        std::slice::from_ref(&z),
+        &g,
+        &BTreeMap::new(),
+    )
+    .expect("tan VJP should accept complex64 scalar");
+    assert_eq!(grads.len(), 1);
+
+    // Expected: sec²(z) = 1/cos²(z)
+    // cos(0.3+0.2i) = cos(0.3)*cosh(0.2) - i*sin(0.3)*sinh(0.2)
+    let cos_re = 0.3_f64.cos() * 0.2_f64.cosh();
+    let cos_im = -(0.3_f64.sin() * 0.2_f64.sinh());
+    // 1/cos²(z) = 1/(cos_re + i*cos_im)² = conj(cos²)/|cos²|²
+    let cos2_re = cos_re * cos_re - cos_im * cos_im;
+    let cos2_im = 2.0 * cos_re * cos_im;
+    let mag2 = cos2_re * cos2_re + cos2_im * cos2_im;
+    let expected_re = cos2_re / mag2;
+    let expected_im = -cos2_im / mag2;
+
+    match grads[0] {
+        Value::Scalar(Complex64Bits(re, im)) => {
+            let re = f32::from_bits(re);
+            let im = f32::from_bits(im);
+            assert!(
+                (re - expected_re as f32).abs() < 1e-4,
+                "tan VJP real: expected {expected_re}, got {re}"
+            );
+            assert!(
+                (im - expected_im as f32).abs() < 1e-4,
+                "tan VJP imag: expected {expected_im}, got {im}"
+            );
+        }
+        ref other => panic!("expected Complex64 scalar, got {other:?}"),
+    }
+}
+
+/// Complex64 scalar Tanh VJP.
+///
+/// d/dz[tanh(z)] = sech²(z) = 1 - tanh²(z). For z = 0.5 + 0.3i:
+/// Verify gradient is Complex64 and equals 1 - tanh²(z).
+#[test]
+fn tanh_vjp_numerical_complex64() {
+    use fj_core::Literal::Complex64Bits;
+
+    let z = Value::Scalar(Literal::from_complex64(0.5, 0.3));
+    let g = Value::Scalar(Literal::from_complex64(1.0, 0.0));
+
+    // Compute tanh(z) first
+    let tanh_result = eval_primitive(
+        Primitive::Tanh,
+        std::slice::from_ref(&z),
+        &BTreeMap::new(),
+    )
+    .expect("tanh should accept complex64");
+
+    let (tanh_re, tanh_im) = match tanh_result {
+        Value::Scalar(Complex64Bits(re, im)) => {
+            (f32::from_bits(re) as f64, f32::from_bits(im) as f64)
+        }
+        _ => panic!("expected Complex64 scalar"),
+    };
+
+    // Expected: 1 - tanh²(z)
+    // tanh²(z) = (tanh_re + i*tanh_im)² = tanh_re² - tanh_im² + 2i*tanh_re*tanh_im
+    let tanh2_re = tanh_re * tanh_re - tanh_im * tanh_im;
+    let tanh2_im = 2.0 * tanh_re * tanh_im;
+    let expected_re = 1.0 - tanh2_re;
+    let expected_im = -tanh2_im;
+
+    let grads = fj_ad::vjp_single(
+        Primitive::Tanh,
+        std::slice::from_ref(&z),
+        &g,
+        &BTreeMap::new(),
+    )
+    .expect("tanh VJP should accept complex64 scalar");
+    assert_eq!(grads.len(), 1);
+
+    match grads[0] {
+        Value::Scalar(Complex64Bits(re, im)) => {
+            let re = f32::from_bits(re);
+            let im = f32::from_bits(im);
+            assert!(
+                (re - expected_re as f32).abs() < 1e-4,
+                "tanh VJP real: expected {expected_re}, got {re}"
+            );
+            assert!(
+                (im - expected_im as f32).abs() < 1e-4,
+                "tanh VJP imag: expected {expected_im}, got {im}"
+            );
+        }
+        ref other => panic!("expected Complex64 scalar, got {other:?}"),
+    }
+}
+
 #[test]
 fn complex_conj_vjp_vector_conjugates_cotangent() {
     let input = make_complex128_vector(&[(1.0, -2.0), (-3.0, 4.0)]);
