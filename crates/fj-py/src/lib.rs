@@ -459,6 +459,14 @@ impl PyValue {
         self.clone()
     }
 
+    fn is_ready(&self) -> PyResult<bool> {
+        if self.deleted {
+            Err(runtime_error("Array has been deleted."))
+        } else {
+            Ok(true)
+        }
+    }
+
     fn copy_to_host_async(&self) -> Self {
         self.clone()
     }
@@ -2216,12 +2224,14 @@ mod tests {
         assert!(v.is_fully_replicated());
         assert!(v.__len__().is_err());
         assert!((v.block_until_ready().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        assert!(v.is_ready().unwrap());
         assert!((v.copy_to_host_async().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!((v.copy().as_f64().unwrap() - 42.0).abs() < 1e-12);
         let mut deleted = v.copy();
         assert!(!deleted.is_deleted());
         deleted.delete();
         assert!(deleted.is_deleted());
+        assert!(deleted.is_ready().is_err());
         assert!(!v.is_deleted());
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {

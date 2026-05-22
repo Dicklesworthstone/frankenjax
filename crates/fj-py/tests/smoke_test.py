@@ -80,6 +80,7 @@ def test_value_scalar():
     ready = v.block_until_ready()
     assert isinstance(ready, fj.Array)
     assert abs(ready.as_f64() - 42.0) < 1e-12
+    assert v.is_ready()
     host_copy = v.copy_to_host_async()
     assert isinstance(host_copy, fj.Array)
     assert abs(host_copy.as_f64() - 42.0) < 1e-12
@@ -90,6 +91,12 @@ def test_value_scalar():
     assert deleted.is_deleted() is False
     assert deleted.delete() is None
     assert deleted.is_deleted() is True
+    try:
+        deleted.is_ready()
+    except RuntimeError as exc:
+        assert "Array has been deleted" in str(exc)
+    else:
+        raise AssertionError("is_ready should reject deleted arrays")
     assert v.is_deleted() is False
     assert v.tolist() == 42.0
     assert v.tobytes() == struct.pack("@d", 42.0)
