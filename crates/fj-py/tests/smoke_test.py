@@ -166,6 +166,12 @@ def test_value_scalar():
     else:
         raise AssertionError("iter(scalar) should raise TypeError")
     try:
+        v.swapaxes(0, 0)
+    except ValueError as exc:
+        assert "out of bounds" in str(exc)
+    else:
+        raise AssertionError("swapaxes(scalar) should reject axis arguments")
+    try:
         v[0]
     except IndexError as exc:
         assert "Too many indices" in str(exc)
@@ -228,6 +234,7 @@ def test_value_scalar():
         ("T", lambda: deleted.T),
         ("mT", lambda: deleted.mT),
         ("transpose", deleted.transpose),
+        ("swapaxes", lambda: deleted.swapaxes(0, 0)),
         ("real", lambda: deleted.real),
         ("imag", lambda: deleted.imag),
         ("conj", deleted.conj),
@@ -425,6 +432,7 @@ def test_value_scalar():
     assert vec.flatten().as_i64_list() == [1, 2, 3]
     assert vec.ravel().as_i64_list() == [1, 2, 3]
     assert vec.round().as_i64_list() == [1, 2, 3]
+    assert vec.swapaxes(0, 0).as_i64_list() == [1, 2, 3]
     rounded = fj.PyValue.vector_f64([10.5, 21.5, 12.5, 31.5])
     assert rounded.round().as_f64_list() == [10.0, 22.0, 12.0, 32.0]
     assert round(rounded).as_i64_list() == [10, 22, 12, 32]
@@ -507,6 +515,10 @@ def test_make_jaxpr_generic():
     assert matrix.transpose((1, 0)).tolist() == [1, 4, 2, 5, 3, 6]
     assert matrix.transpose([1, 0]).tolist() == [1, 4, 2, 5, 3, 6]
     assert matrix.transpose(-1, -2).tolist() == [1, 4, 2, 5, 3, 6]
+    assert matrix.swapaxes(0, 1).shape == (3, 2)
+    assert matrix.swapaxes(0, 1).tolist() == [1, 4, 2, 5, 3, 6]
+    assert matrix.swapaxes(-1, -2).tolist() == [1, 4, 2, 5, 3, 6]
+    assert matrix.swapaxes(0, 0).tolist() == [1, 2, 3, 4, 5, 6]
     assert matrix.reshape(6).shape == (6,)
     assert matrix.reshape(6).tolist() == [1, 2, 3, 4, 5, 6]
     assert matrix.reshape((3, 2), order="F").shape == (3, 2)
@@ -550,6 +562,12 @@ def test_make_jaxpr_generic():
         assert "out of bounds" in str(exc)
     else:
         raise AssertionError("Array.transpose should reject out-of-bounds axes")
+    try:
+        matrix.swapaxes(0, 2)
+    except ValueError as exc:
+        assert "out of bounds" in str(exc)
+    else:
+        raise AssertionError("Array.swapaxes should reject out-of-bounds axes")
     matrix_mt = matrix.mT
     assert matrix_mt.shape == (3, 2)
     assert matrix_mt.tolist() == [1, 4, 2, 5, 3, 6]

@@ -583,6 +583,16 @@ impl PyValue {
         self.transpose_with_permutation(&permutation)
     }
 
+    fn swapaxes(&self, axis1: isize, axis2: isize) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
+        let rank = self.inner.as_tensor().map_or(0, |tensor| tensor.rank());
+        let axis1 = normalize_axis(axis1, rank)?;
+        let axis2 = normalize_axis(axis2, rank)?;
+        let mut permutation = (0..rank).collect::<Vec<_>>();
+        permutation.swap(axis1, axis2);
+        self.transpose_with_permutation(&permutation)
+    }
+
     #[getter]
     fn real(&self) -> PyResult<Self> {
         self.real_part()
@@ -3816,6 +3826,7 @@ mod tests {
         assert!(v.is_fully_addressable());
         assert!(v.is_fully_replicated());
         assert!(v.__len__().is_err());
+        assert!(v.swapaxes(0, 0).is_err());
         assert!((v.block_until_ready().unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!(v.is_ready().unwrap());
         assert!(v.copy_to_host_async().is_ok());
@@ -3832,6 +3843,7 @@ mod tests {
         assert!(deleted.__copy__().is_err());
         assert!(deleted.transpose_all_axes().is_err());
         assert!(deleted.matrix_transpose().is_err());
+        assert!(deleted.swapaxes(0, 0).is_err());
         assert!(deleted.real_part().is_err());
         assert!(deleted.imag_part().is_err());
         assert!(deleted.conjugate().is_err());
@@ -4130,6 +4142,9 @@ mod tests {
         let ints_t = ints.transpose_all_axes().unwrap();
         assert_eq!(ints_t.shape_dims(), vec![3]);
         assert_eq!(ints_t.as_i64_list().unwrap(), vec![1, 2, 3]);
+        let ints_swapped = ints.swapaxes(0, 0).unwrap();
+        assert_eq!(ints_swapped.shape_dims(), vec![3]);
+        assert_eq!(ints_swapped.as_i64_list().unwrap(), vec![1, 2, 3]);
         assert!(ints.matrix_transpose().is_err());
         assert_eq!(
             ints.real_part().unwrap().as_i64_list().unwrap(),
@@ -4276,6 +4291,25 @@ mod tests {
         let matrix_mt = matrix.matrix_transpose().unwrap();
         assert_eq!(matrix_mt.shape_dims(), vec![3, 2]);
         assert_eq!(matrix_mt.as_i64_list().unwrap(), vec![1, 4, 2, 5, 3, 6]);
+        let matrix_swapped = matrix.swapaxes(0, 1).unwrap();
+        assert_eq!(matrix_swapped.shape_dims(), vec![3, 2]);
+        assert_eq!(
+            matrix_swapped.as_i64_list().unwrap(),
+            vec![1, 4, 2, 5, 3, 6]
+        );
+        let matrix_swapped_negative = matrix.swapaxes(-1, -2).unwrap();
+        assert_eq!(matrix_swapped_negative.shape_dims(), vec![3, 2]);
+        assert_eq!(
+            matrix_swapped_negative.as_i64_list().unwrap(),
+            vec![1, 4, 2, 5, 3, 6]
+        );
+        let matrix_swap_noop = matrix.swapaxes(0, 0).unwrap();
+        assert_eq!(matrix_swap_noop.shape_dims(), vec![2, 3]);
+        assert_eq!(
+            matrix_swap_noop.as_i64_list().unwrap(),
+            vec![1, 2, 3, 4, 5, 6]
+        );
+        assert!(matrix.swapaxes(0, 2).is_err());
         assert_eq!(
             matrix.real_part().unwrap().as_i64_list().unwrap(),
             vec![1, 2, 3, 4, 5, 6]
