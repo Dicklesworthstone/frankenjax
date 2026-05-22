@@ -380,3 +380,35 @@ fn metamorphic_interior_pad_strided_slice_recovers_operand() {
     assert_eq!(extract_shape(&recovered), expected_shape);
     assert_eq!(extract_i64_vec(&recovered), expected_values);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_pad_preserves_dtype() {
+    let operand = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let pad_value = Value::Scalar(Literal::from_f64(0.0));
+    let params = pad_params(&[1], &[1], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_pad_4d() {
+    let operand = make_i64_tensor(&[2, 2, 2, 2], (1..=16).collect());
+    let pad_value = Value::scalar_i64(0);
+    let params = pad_params(&[1, 0, 0, 0], &[0, 0, 0, 0], &[0, 0, 0, 0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![3, 2, 2, 2]);
+}
+
+#[test]
+fn oracle_pad_large_padding() {
+    let operand = make_i64_tensor(&[2], vec![1, 2]);
+    let pad_value = Value::scalar_i64(0);
+    let params = pad_params(&[50], &[50], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![102]);
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals[50], 1);
+    assert_eq!(vals[51], 2);
+}

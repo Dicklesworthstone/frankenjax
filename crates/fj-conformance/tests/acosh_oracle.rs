@@ -260,3 +260,52 @@ fn oracle_acosh_vector() {
         _ => panic!("expected tensor"),
     }
 }
+
+// ======================== Additional Coverage ========================
+
+fn extract_f64_vec(v: &Value) -> Vec<f64> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_f64().unwrap()).collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+fn extract_shape(v: &Value) -> Vec<u32> {
+    match v {
+        Value::Tensor(t) => t.shape.dims.clone(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_acosh_3d() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert_close(vals[0], 0.0, 1e-14, "acosh(1)");
+}
+
+#[test]
+fn oracle_acosh_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_acosh_neg_infinity() {
+    let input = make_f64_tensor(&[], vec![f64::NEG_INFINITY]);
+    let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
+    assert!(extract_f64_scalar(&result).is_nan(), "acosh(-inf) = NaN");
+}
+
+#[test]
+fn oracle_acosh_near_one() {
+    let input = make_f64_tensor(&[], vec![1.0 + 1e-10]);
+    let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert!(val > 0.0 && val < 1e-4, "acosh(1+tiny) should be small positive");
+}

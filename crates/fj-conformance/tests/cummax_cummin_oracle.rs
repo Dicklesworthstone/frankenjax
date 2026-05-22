@@ -267,3 +267,40 @@ fn metamorphic_cummin_first_element_identity() {
     let vals = extract_i64_vec(&result);
     assert_eq!(vals[0], 7, "cummin(x)[0] should equal x[0]");
 }
+
+// ======================== Additional Coverage ========================
+
+fn extract_shape(v: &Value) -> Vec<u32> {
+    match v {
+        Value::Tensor(t) => t.shape.dims.clone(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_cummax_3d() {
+    let input = make_i64_tensor(&[2, 2, 2], vec![1, 3, 2, 4, 5, 2, 3, 6]);
+    let result = eval_primitive(Primitive::Cummax, &[input], &axis_params(-1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+}
+
+#[test]
+fn oracle_cummin_3d() {
+    let input = make_i64_tensor(&[2, 2, 2], vec![5, 3, 4, 2, 3, 6, 5, 1]);
+    let result = eval_primitive(Primitive::Cummin, &[input], &axis_params(-1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+}
+
+#[test]
+fn oracle_cummax_preserves_dtype() {
+    let input = make_i64_tensor(&[3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::Cummax, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}
+
+#[test]
+fn oracle_cummin_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![3.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Cummin, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}

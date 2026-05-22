@@ -253,3 +253,35 @@ fn oracle_argmin_inf_values() {
     let result = eval_primitive(Primitive::Argmin, &[input], &axis_params(0)).unwrap();
     assert_eq!(extract_i64_scalar(&result), 1); // -inf at index 1
 }
+
+#[test]
+fn oracle_argmax_inf_values() {
+    let input = make_f64_tensor(&[4], vec![1.0, f64::NEG_INFINITY, 2.0, f64::INFINITY]);
+    let result = eval_primitive(Primitive::Argmax, &[input], &axis_params(0)).unwrap();
+    assert_eq!(extract_i64_scalar(&result), 3); // +inf at index 3
+}
+
+#[test]
+fn oracle_argmin_empty_error() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let err = eval_primitive(Primitive::Argmin, &[input], &axis_params(0));
+    assert!(err.is_err(), "argmin on empty tensor should error");
+}
+
+#[test]
+fn oracle_argmax_large_tensor() {
+    let data: Vec<f64> = (0..100).map(|x| x as f64).collect();
+    let input = make_f64_tensor(&[100], data);
+    let result = eval_primitive(Primitive::Argmax, &[input], &axis_params(0)).unwrap();
+    assert_eq!(extract_i64_scalar(&result), 99);
+}
+
+#[test]
+fn oracle_argmin_output_dtype_is_i64() {
+    let input = make_f64_tensor(&[3], vec![3.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Argmin, &[input], &axis_params(0)).unwrap();
+    assert!(
+        matches!(result.dtype(), DType::I32 | DType::I64),
+        "argmin should return integer type"
+    );
+}
