@@ -9,6 +9,7 @@
 //! - Basic: negative, zero, positive
 //! - Different h0 values
 //! - Special values: infinity, NaN
+//! - Broadcast-compatible h0 inputs
 //! - Tensor shapes
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
@@ -174,4 +175,38 @@ fn oracle_heaviside_matrix() {
     let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_eq!(extract_f64_vec(&result), vec![0.0, 0.5, 1.0, 1.0]);
+}
+
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_heaviside_matrix_scalar_h0_broadcast() {
+    let x = make_f64_tensor(
+        &[3, 3],
+        vec![-2.0, 0.0, 3.0, 5.0, -1.0, 0.0, 0.0, 7.0, -3.0],
+    );
+    let h0 = make_f64_tensor(&[], vec![0.5]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3, 3]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![0.0, 0.5, 1.0, 1.0, 0.0, 0.5, 0.5, 1.0, 0.0]
+    );
+}
+
+#[test]
+fn oracle_heaviside_matrix_row_h0_broadcast() {
+    let x = make_f64_tensor(
+        &[3, 3],
+        vec![-2.0, 0.0, 3.0, 5.0, -1.0, 0.0, 0.0, 7.0, -3.0],
+    );
+    let h0 = make_f64_tensor(&[3], vec![2.0, 0.5, 1.0]);
+    let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3, 3]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![0.0, 0.5, 1.0, 1.0, 0.0, 1.0, 2.0, 1.0, 0.0]
+    );
 }
