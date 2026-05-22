@@ -62,15 +62,16 @@ fn no_params() -> BTreeMap<String, String> {
 fn oracle_trunc_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Trunc, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "trunc(0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "trunc(0) = +0");
 }
 
 #[test]
 fn oracle_trunc_neg_zero() {
     let input = make_f64_tensor(&[], vec![-0.0]);
     let result = eval_primitive(Primitive::Trunc, &[input], &no_params()).unwrap();
-    let val = extract_f64_scalar(&result);
-    assert_eq!(val, 0.0, "trunc(-0.0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), (-0.0_f64).to_bits(), "trunc(-0.0) = -0");
 }
 
 #[test]
