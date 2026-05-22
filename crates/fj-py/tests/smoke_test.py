@@ -93,6 +93,9 @@ def test_value_scalar():
     assert abs(v.reshape(()).as_f64() - 42.0) < 1e-12
     assert v.reshape(1).shape == (1,)
     assert v.reshape(1).as_f64_list() == [42.0]
+    assert v.flatten().shape == (1,)
+    assert v.flatten().as_f64_list() == [42.0]
+    assert v.ravel().as_f64_list() == [42.0]
     try:
         v.astype("float64", device="gpu")
     except ValueError as exc:
@@ -206,6 +209,8 @@ def test_value_scalar():
         ("module copy_to_host_async", lambda: fj.copy_to_host_async(deleted)),
         ("astype", lambda: deleted.astype("float64")),
         ("reshape", lambda: deleted.reshape(1)),
+        ("flatten", deleted.flatten),
+        ("ravel", deleted.ravel),
         ("item", deleted.item),
         ("indexing", lambda: deleted[0]),
         ("item assignment", lambda: assign_first(deleted)),
@@ -390,6 +395,8 @@ def test_value_scalar():
     assert vec.reshape(3, 1).shape == (3, 1)
     assert vec.reshape(3, 1).as_i64_list() == [1, 2, 3]
     assert vec.reshape((-1,)).shape == (3,)
+    assert vec.flatten().as_i64_list() == [1, 2, 3]
+    assert vec.ravel().as_i64_list() == [1, 2, 3]
     assert vec.round().as_i64_list() == [1, 2, 3]
     rounded = fj.PyValue.vector_f64([10.5, 21.5, 12.5, 31.5])
     assert rounded.round().as_f64_list() == [10.0, 22.0, 12.0, 32.0]
@@ -477,6 +484,9 @@ def test_make_jaxpr_generic():
     assert matrix.reshape(6).tolist() == [1, 2, 3, 4, 5, 6]
     assert matrix.reshape((3, 2), order="F").shape == (3, 2)
     assert matrix.reshape((3, 2), order="F").tolist() == [1, 5, 4, 3, 2, 6]
+    assert matrix.flatten().tolist() == [1, 2, 3, 4, 5, 6]
+    assert matrix.flatten(order="F").tolist() == [1, 4, 2, 5, 3, 6]
+    assert matrix.ravel(order="F").tolist() == [1, 4, 2, 5, 3, 6]
     try:
         matrix.reshape(4)
     except ValueError as exc:

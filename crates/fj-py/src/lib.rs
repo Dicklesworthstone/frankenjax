@@ -790,6 +790,28 @@ impl PyValue {
         reshape_value(&self.inner, &raw_shape, order).map(Self::from_value)
     }
 
+    #[pyo3(signature = (order = "C", *, out_sharding = None))]
+    fn flatten(
+        &self,
+        py: Python<'_>,
+        order: &str,
+        out_sharding: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        self.ensure_not_deleted()?;
+        validate_reshape_out_sharding(py, out_sharding)?;
+        flatten_value(&self.inner, order).map(Self::from_value)
+    }
+
+    #[pyo3(signature = (order = "C", *, out_sharding = None))]
+    fn ravel(
+        &self,
+        py: Python<'_>,
+        order: &str,
+        out_sharding: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        self.flatten(py, order, out_sharding)
+    }
+
     #[pyo3(signature = (decimals = 0, out = None))]
     fn round(&self, decimals: i32, out: Option<Py<PyAny>>) -> PyResult<Self> {
         self.ensure_not_deleted()?;
@@ -1837,6 +1859,14 @@ fn reshape_value(value: &Value, raw_shape: &[i64], order: &str) -> PyResult<Valu
             "Unexpected value for 'order' argument: {order}."
         ))),
     }
+}
+
+fn flatten_value(value: &Value, order: &str) -> PyResult<Value> {
+    let element_count = value_element_count(value)?;
+    let flattened_dim = i64::try_from(element_count).map_err(|_| {
+        PyErr::new::<pyo3::exceptions::PyOverflowError, _>("array element count does not fit i64")
+    })?;
+    reshape_value(value, &[flattened_dim], order)
 }
 
 #[derive(Clone, Copy)]
@@ -3674,6 +3704,8 @@ mod tests {
             assert!(deleted.transpose(&PyTuple::empty(py)).is_err());
             assert!(deleted.astype(py, None, false, None).is_err());
             assert!(deleted.reshape(py, &PyTuple::empty(py), "C", None).is_err());
+            assert!(deleted.flatten(py, "C", None).is_err());
+            assert!(deleted.ravel(py, "C", None).is_err());
             assert!(deleted.__array__(py, None, None, None).is_err());
             assert!(deleted.__dlpack_device__(py).is_err());
             assert_eq!(
@@ -3726,6 +3758,13 @@ mod tests {
             let vector = v.reshape(py, &vector_args, "C", None).unwrap();
             assert_eq!(vector.shape_dims(), vec![1]);
             assert_eq!(vector.as_f64_list().unwrap(), vec![42.0]);
+            let flattened = v.flatten(py, "C", None).unwrap();
+            assert_eq!(flattened.shape_dims(), vec![1]);
+            assert_eq!(flattened.as_f64_list().unwrap(), vec![42.0]);
+            assert_eq!(
+                v.ravel(py, "C", None).unwrap().as_f64_list().unwrap(),
+                vec![42.0]
+            );
             let bad_device = pyo3::types::PyString::new(py, "gpu")
                 .to_owned()
                 .into_any()
@@ -3736,6 +3775,8 @@ mod tests {
                 v.reshape(py, &vector_args, "C", Some(out_sharding))
                     .is_err()
             );
+            let out_sharding = PyBool::new(py, true).to_owned().into_any().unbind();
+            assert!(v.flatten(py, "C", Some(out_sharding)).is_err());
             if py.import("numpy").is_ok() {
                 let array = v.__array__(py, None, None, None).unwrap();
                 let array = array.bind(py);
@@ -3972,6 +4013,14 @@ mod tests {
             let inferred = ints.reshape(py, &inferred_args, "C", None).unwrap();
             assert_eq!(inferred.shape_dims(), vec![3]);
             assert_eq!(inferred.as_i64_list().unwrap(), vec![1, 2, 3]);
+            assert_eq!(
+                ints.flatten(py, "C", None).unwrap().as_i64_list().unwrap(),
+                vec![1, 2, 3]
+            );
+            assert_eq!(
+                ints.ravel(py, "C", None).unwrap().as_i64_list().unwrap(),
+                vec![1, 2, 3]
+            );
             let shards = ints.addressable_shards().unwrap();
             assert_eq!(shards.len(), 1);
             let shard = shards.first().unwrap();
@@ -4092,6 +4141,28 @@ mod tests {
             let fortran = matrix.reshape(py, &f_args, "F", None).unwrap();
             assert_eq!(fortran.shape_dims(), vec![3, 2]);
             assert_eq!(fortran.as_i64_list().unwrap(), vec![1, 5, 4, 3, 2, 6]);
+            assert_eq!(
+                matrix
+                    .flatten(py, "C", None)
+                    .unwrap()
+                    .as_i64_list()
+                    .unwrap(),
+                vec![1, 2, 3, 4, 5, 6]
+            );
+            assert_eq!(
+                matrix
+                    .flatten(py, "F", None)
+                    .unwrap()
+                    .as_i64_list()
+                    .unwrap(),
+                vec![1, 4, 2, 5, 3, 6]
+            );
+            assert_eq!(
+                matrix.ravel(py, "F", None).unwrap().as_i64_list().unwrap(),
+                vec![1, 4, 2, 5, 3, 6]
+            );
+            assert!(matrix.flatten(py, "A", None).is_err());
+            assert!(matrix.ravel(py, "K", None).is_err());
             assert!(matrix.reshape(py, &f_args, "A", None).is_err());
             assert!(matrix.reshape(py, &f_args, "K", None).is_err());
             let incompatible = PyTuple::new(py, [4_i64]).unwrap();
