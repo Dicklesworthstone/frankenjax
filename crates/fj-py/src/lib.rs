@@ -757,6 +757,12 @@ impl PyValue {
     fn __repr__(&self) -> String {
         format!("{:?}", self.inner)
     }
+
+    fn __hash__(&self) -> PyResult<isize> {
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "unhashable type: 'Array'",
+        ))
+    }
 }
 
 #[pymethods]
@@ -2367,6 +2373,7 @@ mod tests {
         let v = PyValue::scalar_f64(42.0);
         assert_eq!(v.shape_dims(), Vec::<u32>::new());
         assert_eq!(v.dtype(), "F64");
+        assert!(v.__hash__().is_err());
         assert_eq!(v.ndim(), 0);
         assert_eq!(v.size(), 1);
         assert_eq!(v.itemsize(), 8);

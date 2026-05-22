@@ -45,6 +45,12 @@ def test_value_scalar():
     assert isinstance(v, fj.Array)
     assert v.shape == ()
     assert v.dtype == "F64"
+    try:
+        hash(v)
+    except TypeError as exc:
+        assert "unhashable type" in str(exc)
+    else:
+        raise AssertionError("Array should be unhashable")
     assert v.ndim == 0
     assert v.size == 1
     assert v.itemsize == 8
