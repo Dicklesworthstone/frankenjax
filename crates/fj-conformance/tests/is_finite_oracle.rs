@@ -235,3 +235,30 @@ fn oracle_is_finite_negative_zero() {
     let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
     assert_eq!(extract_bool_vec(&result), vec![true]);
 }
+
+#[test]
+fn oracle_is_finite_empty_tensor() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(extract_bool_vec(&result), vec![] as Vec<bool>);
+}
+
+#[test]
+fn oracle_is_finite_output_dtype() {
+    let input = make_f64_tensor(&[2], vec![1.0, f64::NAN]);
+    let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
+    match &result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::Bool),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_is_finite_subnormal() {
+    // Subnormal values are finite
+    let tiny = f64::MIN_POSITIVE / 2.0;
+    let input = make_f64_tensor(&[2], vec![tiny, -tiny]);
+    let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
+    assert_eq!(extract_bool_vec(&result), vec![true, true]);
+}

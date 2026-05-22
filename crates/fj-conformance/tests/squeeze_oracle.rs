@@ -252,3 +252,29 @@ fn oracle_squeeze_preserves_data() {
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_eq!(extract_i64_vec(&result), vec![1, 2, 3, 4]);
 }
+
+#[test]
+fn oracle_squeeze_empty_tensor() {
+    let input = make_i64_tensor(&[1, 0], vec![]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(extract_i64_vec(&result), vec![] as Vec<i64>);
+}
+
+#[test]
+fn oracle_squeeze_preserves_dtype() {
+    let input = make_i64_tensor(&[1, 3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    match &result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::I64),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_squeeze_5d() {
+    // High-dimensional squeeze
+    let input = make_i64_tensor(&[1, 1, 2, 1, 3], (1..=6).collect());
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+}
