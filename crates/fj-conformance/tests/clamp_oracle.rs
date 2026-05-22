@@ -513,3 +513,79 @@ fn oracle_clamp_tensor_lo_tensor_x_scalar_hi() {
     // clamp([-5,5,1], [-2,0,3], 10) = [-2,5,3]
     assert_eq!(extract_f64_vec(&result), vec![-2.0, 5.0, 3.0]);
 }
+
+// ======================== Comprehensive Broadcast Tests ========================
+
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_clamp_all_scalars_broadcast() {
+    let lo = scalar_f64(0.0);
+    let x = scalar_f64(5.0);
+    let hi = scalar_f64(10.0);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert!((extract_f64_scalar(&result) - 5.0).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_clamp_scalar_lo_scalar_hi_tensor_x_broadcast() {
+    let lo = scalar_f64(0.0);
+    let x = make_f64_tensor(&[4], vec![-5.0, 2.0, 7.0, 12.0]);
+    let hi = scalar_f64(10.0);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 2.0, 7.0, 10.0]);
+}
+
+#[test]
+fn oracle_clamp_singleton_lo_vector_x_singleton_hi_broadcast() {
+    let lo = make_f64_tensor(&[1], vec![0.0]);
+    let x = make_f64_tensor(&[4], vec![-5.0, 2.0, 7.0, 12.0]);
+    let hi = make_f64_tensor(&[1], vec![10.0]);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 2.0, 7.0, 10.0]);
+}
+
+#[test]
+fn oracle_clamp_column_lo_matrix_x_scalar_hi_broadcast() {
+    // [2,1] lo, [2,3] x, scalar hi -> [2,3]
+    let lo = make_f64_tensor(&[2, 1], vec![0.0, 5.0]);
+    let x = make_f64_tensor(&[2, 3], vec![-1.0, 2.0, 8.0, 3.0, 6.0, 12.0]);
+    let hi = scalar_f64(10.0);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    // Row 0: clamp([-1,2,8], 0, 10) = [0,2,8]
+    // Row 1: clamp([3,6,12], 5, 10) = [5,6,10]
+    assert_eq!(extract_f64_vec(&result), vec![0.0, 2.0, 8.0, 5.0, 6.0, 10.0]);
+}
+
+#[test]
+fn oracle_clamp_different_ranks_broadcast() {
+    // [3] lo, [2,3] x, [] hi -> [2,3]
+    let lo = make_f64_tensor(&[3], vec![0.0, 1.0, 2.0]);
+    let x = make_f64_tensor(&[2, 3], vec![-1.0, 0.5, 1.5, 5.0, 6.0, 7.0]);
+    let hi = make_f64_tensor(&[], vec![10.0]);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    // Row 0: clamp([-1,0.5,1.5], [0,1,2], 10) = [0,1,2]
+    // Row 1: clamp([5,6,7], [0,1,2], 10) = [5,6,7]
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 0.0).abs() < 1e-14);
+    assert!((vals[1] - 1.0).abs() < 1e-14);
+    assert!((vals[2] - 2.0).abs() < 1e-14);
+    assert!((vals[3] - 5.0).abs() < 1e-14);
+    assert!((vals[4] - 6.0).abs() < 1e-14);
+    assert!((vals[5] - 7.0).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_clamp_incompatible_shapes_error() {
+    let lo = make_f64_tensor(&[2], vec![0.0, 1.0]);
+    let x = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let hi = scalar_f64(10.0);
+    let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
