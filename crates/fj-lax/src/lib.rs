@@ -27,7 +27,7 @@ use arithmetic::{
 
 use comparison::eval_comparison;
 use fft::{eval_fft, eval_ifft, eval_irfft, eval_rfft};
-use linalg::{eval_cholesky, eval_eigh, eval_qr, eval_svd, eval_triangular_solve};
+use linalg::{eval_cholesky, eval_eigh, eval_lu, eval_qr, eval_svd, eval_triangular_solve};
 use reduction::{eval_cumulative, eval_reduce_axes, eval_reduce_bitwise_axes};
 use tensor_ops::{
     eval_argmax, eval_argmin, eval_argsort, eval_bitcast_convert_type, eval_broadcast_in_dim,
@@ -381,6 +381,12 @@ pub fn eval_primitive(
             let mut outputs = eval_qr(inputs, params)?;
             Ok(outputs.remove(0))
         }
+        Primitive::Lu => {
+            // LU is multi-output; return first output (lu) for single-value API.
+            // Use eval_primitive_multi for lu, pivots, and permutation.
+            let mut outputs = eval_lu(inputs, params)?;
+            Ok(outputs.remove(0))
+        }
         Primitive::Svd => {
             // SVD is multi-output; return first output (U) for single-value API.
             let mut outputs = eval_svd(inputs, params)?;
@@ -472,6 +478,7 @@ pub fn eval_primitive_multi(
 ) -> Result<Vec<Value>, EvalError> {
     match primitive {
         Primitive::Qr => eval_qr(inputs, params),
+        Primitive::Lu => eval_lu(inputs, params),
         Primitive::Svd => eval_svd(inputs, params),
         Primitive::Eigh => eval_eigh(inputs, params),
         Primitive::TopK => eval_top_k(inputs, params),

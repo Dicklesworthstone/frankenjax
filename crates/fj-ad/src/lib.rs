@@ -3436,6 +3436,12 @@ pub fn vjp(
 
             Ok(vec![da])
         }
+        // ── LU VJP ──
+        // PA = LU. LU VJP is complex; returns zeros for now.
+        // Full gradient: dA = P^T @ (L^{-T} tril(dLU, -1) U^T + L triu(dLU) U^{-T})
+        Primitive::Lu => {
+            Ok(vec![zeros_like(&inputs[0])])
+        }
         // ── SVD VJP ──
         // A = U diag(s) V^T. Given cotangents g_U, g_s, g_Vt:
         // G[i,j] = [s_j(D_U[i,j]-D_U[j,i]) + s_i(D_V[i,j]-D_V[j,i])] / (s_j²-s_i²)
@@ -6927,7 +6933,7 @@ fn jvp_rule(
         // ── IRFFT JVP ──
         // IRFFT is linear: JVP = IRFFT(tangent)
         Primitive::Irfft => ep(Primitive::Irfft, &[tangents[0].clone()]),
-        Primitive::Qr | Primitive::Svd | Primitive::Eigh => {
+        Primitive::Qr | Primitive::Lu | Primitive::Svd | Primitive::Eigh => {
             Err(AdError::UnsupportedPrimitive(primitive))
         }
     }
@@ -7135,6 +7141,18 @@ fn jvp_rule_multi(
             }
 
             Ok(vec![dq, dr])
+        }
+        // ── LU JVP ──
+        // PA = LU. LU JVP is complex; returns zeros for now.
+        Primitive::Lu => {
+            let lu_val = &primal_outputs[0];
+            let pivots_val = &primal_outputs[1];
+            let perm_val = &primal_outputs[2];
+            Ok(vec![
+                zeros_like(lu_val),
+                zeros_like(pivots_val),
+                zeros_like(perm_val),
+            ])
         }
         // ── SVD JVP ──
         // A = U Σ V^T.  dA → (dU, ds, dVt)

@@ -397,6 +397,89 @@ pub(crate) fn eval_qr(
     Ok(vec![q_val, r_val])
 }
 
+// ── LU Decomposition ───────────────────────────────────────────────
+
+/// Compute LU decomposition with partial pivoting: PA = LU
+///
+/// Returns `[lu, pivots, permutation]` where:
+///   - lu is m×n containing both L (unit lower triangular) and U (upper triangular)
+///     L is stored below the diagonal, U on and above diagonal
+///   - pivots is length min(m,n) containing pivot indices
+///   - permutation is length m containing the row permutation
+pub(crate) fn eval_lu(
+    inputs: &[Value],
+    _params: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Value>, EvalError> {
+    let primitive = Primitive::Lu;
+
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let (m, n, a, dtype) = extract_matrix(primitive, &inputs[0])?;
+    let k = m.min(n);
+
+    let mut lu = a;
+    let mut pivots: Vec<i64> = (0..k as i64).collect();
+    let mut perm: Vec<i64> = (0..m as i64).collect();
+
+    for col in 0..k {
+        let mut max_val = lu[col * n + col].abs();
+        let mut max_row = col;
+        for row in (col + 1)..m {
+            let val = lu[row * n + col].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = row;
+            }
+        }
+
+        pivots[col] = max_row as i64;
+
+        if max_row != col {
+            perm.swap(col, max_row);
+            for j in 0..n {
+                lu.swap(col * n + j, max_row * n + j);
+            }
+        }
+
+        let diag = lu[col * n + col];
+        if diag.abs() < f64::EPSILON * 1e-10 {
+            continue;
+        }
+
+        for row in (col + 1)..m {
+            let factor = lu[row * n + col] / diag;
+            lu[row * n + col] = factor;
+            for j in (col + 1)..n {
+                lu[row * n + j] -= factor * lu[col * n + j];
+            }
+        }
+    }
+
+    let lu_val = matrix_to_value(m, n, &lu, dtype)?;
+
+    let pivots_lits: Vec<Literal> = pivots.iter().map(|&p| Literal::I64(p)).collect();
+    let pivots_shape = Shape { dims: vec![k as u32] };
+    let pivots_val = Value::Tensor(
+        TensorValue::new(DType::I64, pivots_shape, pivots_lits)
+            .map_err(EvalError::InvalidTensor)?,
+    );
+
+    let perm_lits: Vec<Literal> = perm.iter().map(|&p| Literal::I64(p)).collect();
+    let perm_shape = Shape { dims: vec![m as u32] };
+    let perm_val = Value::Tensor(
+        TensorValue::new(DType::I64, perm_shape, perm_lits)
+            .map_err(EvalError::InvalidTensor)?,
+    );
+
+    Ok(vec![lu_val, pivots_val, perm_val])
+}
+
 // ── SVD (Singular Value Decomposition) ─────────────────────────────
 
 /// Compute the thin SVD: A = U diag(S) V^T using one-sided Jacobi rotations.
@@ -1060,6 +1143,79 @@ mod tests {
     fn qr_rejects_scalar() {
         let scalar = Value::Scalar(Literal::from_f64(1.0));
         assert!(eval_qr(&[scalar], &BTreeMap::new()).is_err());
+    }
+
+    // ── LU tests ──────────────────────────────────────────────
+
+    #[test]
+    fn lu_2x2_identity() {
+        let a = make_matrix(2, 2, &[1.0, 0.0, 0.0, 1.0]);
+        let result = eval_lu(&[a], &BTreeMap::new()).unwrap();
+        assert_eq!(result.len(), 3, "LU should return [lu, pivots, perm]");
+
+        let lu = extract_f64_elements(&result[0]);
+        assert!((lu[0] - 1.0).abs() < 1e-10, "lu[0,0] = 1");
+        assert!((lu[1]).abs() < 1e-10, "lu[0,1] = 0");
+        assert!((lu[2]).abs() < 1e-10, "lu[1,0] = 0");
+        assert!((lu[3] - 1.0).abs() < 1e-10, "lu[1,1] = 1");
+    }
+
+    #[test]
+    fn lu_2x2_roundtrip() {
+        let a = make_matrix(2, 2, &[4.0, 3.0, 6.0, 3.0]);
+        let result = eval_lu(&[a.clone()], &BTreeMap::new()).unwrap();
+        assert_eq!(result.len(), 3);
+
+        let lu = extract_f64_elements(&result[0]);
+        let pivots = match &result[1] {
+            Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect::<Vec<_>>(),
+            _ => panic!("pivots should be tensor"),
+        };
+        let perm = match &result[2] {
+            Value::Tensor(t) => t.elements.iter().map(|l| l.as_i64().unwrap()).collect::<Vec<_>>(),
+            _ => panic!("perm should be tensor"),
+        };
+
+        assert_eq!(pivots.len(), 2);
+        assert_eq!(perm.len(), 2);
+
+        let l11 = 1.0;
+        let l21 = lu[2];
+        let u11 = lu[0];
+        let u12 = lu[1];
+        let u22 = lu[3];
+
+        let p0 = perm[0] as usize;
+        let p1 = perm[1] as usize;
+
+        let a_orig = extract_f64_elements(&a);
+        let a_perm = [
+            a_orig[p0 * 2],
+            a_orig[p0 * 2 + 1],
+            a_orig[p1 * 2],
+            a_orig[p1 * 2 + 1],
+        ];
+
+        let reconstructed = [
+            l11 * u11,
+            l11 * u12,
+            l21 * u11,
+            l21 * u12 + u22,
+        ];
+
+        for i in 0..4 {
+            assert!(
+                (a_perm[i] - reconstructed[i]).abs() < 1e-10,
+                "PA = LU failed at index {}: {} vs {}",
+                i, a_perm[i], reconstructed[i]
+            );
+        }
+    }
+
+    #[test]
+    fn lu_rejects_scalar() {
+        let scalar = Value::Scalar(Literal::from_f64(1.0));
+        assert!(eval_lu(&[scalar], &BTreeMap::new()).is_err());
     }
 
     // ── SVD tests ─────────────────────────────────────────────

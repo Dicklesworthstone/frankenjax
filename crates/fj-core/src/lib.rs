@@ -183,6 +183,7 @@ pub enum Primitive {
     // Linear algebra
     Cholesky,
     Qr,
+    Lu,
     Svd,
     TriangularSolve,
     Eigh,
@@ -330,6 +331,7 @@ impl Primitive {
         Self::ReducePrecision,
         Self::Cholesky,
         Self::Qr,
+        Self::Lu,
         Self::Svd,
         Self::TriangularSolve,
         Self::Eigh,
@@ -475,6 +477,7 @@ impl Primitive {
             Self::ReducePrecision => "reduce_precision",
             Self::Cholesky => "cholesky",
             Self::Qr => "qr",
+            Self::Lu => "lu",
             Self::Svd => "svd",
             Self::TriangularSolve => "triangular_solve",
             Self::Eigh => "eigh",
