@@ -88,17 +88,24 @@ fn all_primitives() -> &'static [Primitive] {
 
 fn primitive_arity(primitive: Primitive) -> usize {
     match primitive {
+        // Binary operations (2 inputs)
         Primitive::Add
         | Primitive::Sub
         | Primitive::Mul
         | Primitive::Max
         | Primitive::Min
         | Primitive::Pow
+        | Primitive::Hypot
+        | Primitive::LogAddExp
+        | Primitive::LogAddExp2
         | Primitive::Div
         | Primitive::Rem
+        | Primitive::Gcd
+        | Primitive::Lcm
         | Primitive::Atan2
         | Primitive::Complex
         | Primitive::Dot
+        | Primitive::DotGeneral
         | Primitive::Gather
         | Primitive::Eq
         | Primitive::Ne
@@ -115,8 +122,25 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::ShiftRightArithmetic
         | Primitive::ShiftRightLogical
         | Primitive::Nextafter
-        | Primitive::TriangularSolve => 2,
-        Primitive::Select | Primitive::Scatter | Primitive::Clamp | Primitive::Cond => 3,
+        | Primitive::TriangularSolve
+        | Primitive::Polygamma
+        | Primitive::Igamma
+        | Primitive::Igammac
+        | Primitive::Zeta
+        | Primitive::Heaviside
+        | Primitive::CopySign
+        | Primitive::Ldexp
+        | Primitive::XLogY
+        | Primitive::XLog1PY => 2,
+        // Ternary operations (3 inputs)
+        Primitive::Select
+        | Primitive::Scatter
+        | Primitive::Clamp
+        | Primitive::Cond
+        | Primitive::Fma
+        | Primitive::Betainc
+        | Primitive::SelectN => 3,
+        // Unary operations (1 input)
         Primitive::Neg
         | Primitive::Abs
         | Primitive::Exp
@@ -126,12 +150,15 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Floor
         | Primitive::Ceil
         | Primitive::Round
+        | Primitive::Trunc
         | Primitive::Sin
         | Primitive::Cos
         | Primitive::Tan
         | Primitive::Asin
         | Primitive::Acos
         | Primitive::Atan
+        | Primitive::Deg2Rad
+        | Primitive::Rad2Deg
         | Primitive::Sinh
         | Primitive::Cosh
         | Primitive::Tanh
@@ -140,6 +167,9 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Atanh
         | Primitive::Expm1
         | Primitive::Log1p
+        | Primitive::Log2
+        | Primitive::Exp2
+        | Primitive::Sinc
         | Primitive::Sign
         | Primitive::Square
         | Primitive::Reciprocal
@@ -162,6 +192,7 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::ReduceWindow
         | Primitive::PopulationCount
         | Primitive::CountLeadingZeros
+        | Primitive::CountTrailingZeros
         | Primitive::Conj
         | Primitive::Real
         | Primitive::Imag
@@ -170,8 +201,14 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Digamma
         | Primitive::ErfInv
         | Primitive::IsFinite
+        | Primitive::IsNan
+        | Primitive::IsInf
+        | Primitive::Signbit
+        | Primitive::BesselI0e
+        | Primitive::BesselI1e
         | Primitive::Cholesky
         | Primitive::Qr
+        | Primitive::Lu
         | Primitive::Svd
         | Primitive::Eigh
         | Primitive::Fft
@@ -181,8 +218,13 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::OneHot
         | Primitive::Cumsum
         | Primitive::Cumprod
+        | Primitive::Cummax
+        | Primitive::Cummin
         | Primitive::Sort
         | Primitive::Argsort
+        | Primitive::TopK
+        | Primitive::Argmin
+        | Primitive::Argmax
         | Primitive::Psum
         | Primitive::Pmean
         | Primitive::AllGather
@@ -192,10 +234,15 @@ fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Squeeze
         | Primitive::Split
         | Primitive::ExpandDims
+        | Primitive::Tile
         | Primitive::IntegerPow
         | Primitive::BitcastConvertType
+        | Primitive::ConvertElementType
+        | Primitive::StopGradient
         | Primitive::ReducePrecision => 1,
+        // Zero-input operations
         Primitive::Iota | Primitive::BroadcastedIota | Primitive::AxisIndex => 0,
+        // Variable-arity operations
         Primitive::DynamicUpdateSlice | Primitive::While => 3,
         Primitive::Conv => 2,
         Primitive::Scan => 2,
@@ -236,7 +283,7 @@ fn primitive_inventory_comes_from_core_source_of_truth() {
 
     assert_eq!(
         all_primitives().len(),
-        118,
+        157,
         "update Primitive::ALL and this audit count when the core enum changes"
     );
     assert_eq!(
@@ -245,7 +292,7 @@ fn primitive_inventory_comes_from_core_source_of_truth() {
         "pmap collective inventory should stay explicit while V1 fails closed"
     );
     assert_eq!(
-        local_primitive_count, 113,
+        local_primitive_count, 152,
         "V1 local eval/AD docs should track non-pmap primitive scope"
     );
 
