@@ -69,6 +69,21 @@ fn oracle_erf_inv_zero() {
 }
 
 #[test]
+fn oracle_erf_inv_signed_zero_bits() {
+    let positive_zero = Value::Scalar(Literal::from_f64(0.0));
+    let positive_result =
+        eval_primitive(Primitive::ErfInv, &[positive_zero], &no_params()).unwrap();
+    let positive_vals = extract_f64_vec(&positive_result);
+    assert_eq!(positive_vals[0].to_bits(), 0.0_f64.to_bits());
+
+    let negative_zero = Value::Scalar(Literal::from_f64(-0.0));
+    let negative_result =
+        eval_primitive(Primitive::ErfInv, &[negative_zero], &no_params()).unwrap();
+    let negative_vals = extract_f64_vec(&negative_result);
+    assert_eq!(negative_vals[0].to_bits(), (-0.0_f64).to_bits());
+}
+
+#[test]
 fn oracle_erf_inv_small_positive() {
     // erfinv(0.5) ≈ 0.4769
     let input = Value::Scalar(Literal::from_f64(0.5));
