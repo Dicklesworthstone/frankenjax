@@ -272,3 +272,39 @@ fn dot_general_multiple_contracting_dims() {
     let val = extract_f64_scalar(&result);
     assert!((val - 91.0).abs() < 1e-12, "expected 91.0, got {val}");
 }
+
+#[test]
+fn dot_general_preserves_dtype() {
+    let a = vector_f64(&[1.0, 2.0]);
+    let b = vector_f64(&[3.0, 4.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn dot_general_transpose_matmul() {
+    // A @ B^T via contracting different dims
+    // A: [2, 3], B: [2, 3] => contract A dim 1 with B dim 1 => [2, 2]
+    let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let b = matrix_f64(2, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "1", "", "")).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    // A @ B^T where B^T = [[1, 0], [0, 1], [0, 0]]
+    // Row 0 of A [1, 2, 3] dot cols of B^T: [1, 2]
+    // Row 1 of A [4, 5, 6] dot cols of B^T: [4, 5]
+    assert_close(&extract_f64_vec(&result), &[1.0, 2.0, 4.0, 5.0], 1e-12);
+}
+
+#[test]
+fn dot_general_single_element_tensors() {
+    let a = tensor_f64(vec![1, 1], &[3.0]);
+    let b = tensor_f64(vec![1, 1], &[4.0]);
+    let result =
+        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![1, 1]);
+    assert_close(&extract_f64_vec(&result), &[12.0], 1e-12);
+}

@@ -186,3 +186,33 @@ fn oracle_argsort_with_zeros() {
     let sorted: Vec<f64> = indices.iter().map(|&i| original[i as usize]).collect();
     assert!(sorted.windows(2).all(|w| w[0] <= w[1]), "result should be sorted");
 }
+
+#[test]
+fn oracle_argsort_all_equal() {
+    let input = make_f64_tensor(&[4], vec![5.0, 5.0, 5.0, 5.0]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+    let indices = extract_i64_vec(&result);
+    // All equal: stable sort should preserve original order
+    assert_eq!(indices, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn oracle_argsort_large_values() {
+    let input = make_f64_tensor(&[4], vec![1e10, -1e10, 1e-10, -1e-10]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+    let indices = extract_i64_vec(&result);
+    // Sorted: -1e10, -1e-10, 1e-10, 1e10
+    assert_eq!(indices, vec![1, 3, 2, 0]);
+}
+
+#[test]
+fn oracle_argsort_descending_3d() {
+    // 3D tensor, sort along last axis descending
+    let input = make_f64_tensor(&[2, 1, 3], vec![1.0, 3.0, 2.0, 6.0, 4.0, 5.0]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, true)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 1, 3]);
+    let indices = extract_i64_vec(&result);
+    // [1, 3, 2] desc -> [3, 2, 1] -> indices [1, 2, 0]
+    // [6, 4, 5] desc -> [6, 5, 4] -> indices [0, 2, 1]
+    assert_eq!(indices, vec![1, 2, 0, 0, 2, 1]);
+}
