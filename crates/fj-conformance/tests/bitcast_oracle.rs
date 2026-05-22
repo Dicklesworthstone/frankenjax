@@ -308,3 +308,54 @@ fn oracle_bitcast_single_element() {
     .unwrap();
     assert_eq!(extract_shape(&result), vec![1]);
 }
+
+#[test]
+fn oracle_bitcast_nan_preserved() {
+    let input = Value::Scalar(Literal::from_f64(f64::NAN));
+    let as_i64 = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    let back = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[as_i64],
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let val = extract_f64_vec(&back)[0];
+    assert!(val.is_nan(), "NaN bit pattern should round-trip");
+}
+
+#[test]
+fn oracle_bitcast_inf_preserved() {
+    let input = Value::Scalar(Literal::from_f64(f64::INFINITY));
+    let as_i64 = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    let back = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[as_i64],
+        &bitcast_params("f64"),
+    )
+    .unwrap();
+    let val = extract_f64_vec(&back)[0];
+    assert!(val.is_infinite() && val > 0.0, "Inf should round-trip");
+}
+
+#[test]
+fn oracle_bitcast_empty_tensor() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(extract_i64_vec(&result), vec![] as Vec<i64>);
+}

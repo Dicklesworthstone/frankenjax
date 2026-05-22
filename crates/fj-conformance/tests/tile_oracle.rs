@@ -210,3 +210,35 @@ fn oracle_tile_3d() {
     // All 4 2-element blocks should be [1, 2]
     assert_eq!(vals, vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
 }
+
+#[test]
+fn oracle_tile_negative_values() {
+    let input = make_f64_tensor(&[3], vec![-1.0, -2.0, -3.0]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2])).unwrap();
+    assert_eq!(extract_shape(&result), vec![6]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![-1.0, -2.0, -3.0, -1.0, -2.0, -3.0]
+    );
+}
+
+#[test]
+fn oracle_tile_metamorphic_product() {
+    // tile(x, [a]) then tile(result, [b]) should equal tile(x, [a*b])
+    let input = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let once = eval_primitive(Primitive::Tile, &[input.clone()], &tile_params(&[6])).unwrap();
+    let twice = {
+        let step1 = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2])).unwrap();
+        eval_primitive(Primitive::Tile, &[step1], &tile_params(&[3])).unwrap()
+    };
+    assert_eq!(extract_shape(&once), extract_shape(&twice));
+    assert_eq!(extract_f64_vec(&once), extract_f64_vec(&twice));
+}
+
+#[test]
+fn oracle_tile_empty_input() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[5])).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(extract_f64_vec(&result), vec![] as Vec<f64>);
+}

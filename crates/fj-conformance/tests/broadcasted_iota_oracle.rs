@@ -229,3 +229,39 @@ fn property_broadcasted_iota_preserves_all_supported_dtypes() {
         "broadcasted_iota with bool dtype must error"
     );
 }
+
+#[test]
+fn oracle_broadcasted_iota_rejects_dim_out_of_range() {
+    let err = eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[3, 4], 5))
+        .expect_err("dimension out of range should fail");
+    assert!(
+        err.to_string().contains("dimension")
+            || err.to_string().contains("out of")
+            || err.to_string().contains("range")
+            || err.to_string().contains("rank"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn oracle_broadcasted_iota_large_shape() {
+    let result =
+        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[100, 1], 0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![100, 1]);
+    let vals = extract_i64_vec(&result);
+    assert_eq!(vals.len(), 100);
+    assert_eq!(vals[0], 0);
+    assert_eq!(vals[99], 99);
+}
+
+#[test]
+fn oracle_broadcasted_iota_4d() {
+    let result =
+        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 2, 2, 2], 3)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
+    let vals = extract_i64_vec(&result);
+    // dimension 3 (innermost) should alternate [0, 1, 0, 1, ...]
+    for chunk in vals.chunks(2) {
+        assert_eq!(chunk, &[0, 1]);
+    }
+}

@@ -206,3 +206,37 @@ fn oracle_sinc_matrix() {
     assert!((vals[2] - 2.0 / PI).abs() < 1e-15);
     assert!(vals[3].abs() < 1e-15);
 }
+
+#[test]
+fn oracle_sinc_integer_zeros() {
+    // sinc(n) = 0 for all nonzero integers n
+    for n in [3, 4, 5, 10, -3, -5] {
+        let input = make_f64_tensor(&[], vec![n as f64]);
+        let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+        let actual = extract_f64_scalar(&result);
+        assert!(
+            actual.abs() < 1e-14,
+            "sinc({}) should be ~0, got {}",
+            n,
+            actual
+        );
+    }
+}
+
+#[test]
+fn oracle_sinc_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![0.0, 0.5, 1.0]);
+    let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+    match &result {
+        Value::Tensor(t) => assert_eq!(t.dtype, DType::F64),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_sinc_empty_tensor() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(extract_f64_vec(&result), vec![] as Vec<f64>);
+}
