@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use fj_core::{Atom, DType, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
-use fj_lax::eval_primitive;
+use fj_lax::{eval_primitive, eval_primitive_multi};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -2908,6 +2908,57 @@ pub fn vjp(
             // Use zeros_like so the cotangent shape matches the input.
             require_input_arity(inputs, 1)?;
             Ok(vec![zeros_like(&inputs[0])])
+        }
+        Primitive::TopK => {
+            // TopK VJP: scatter gradient from top-k values back to original positions.
+            // output[0] = top_values, output[1] = top_indices
+            // Gradient flows only through values; indices are non-differentiable.
+            require_input_arity(inputs, 1)?;
+            let g_values = if gs.is_empty() {
+                zeros_like(&output_values[0])
+            } else {
+                gs[0].clone()
+            };
+            let indices = if output_values.len() > 1 {
+                &output_values[1]
+            } else {
+                return Err(AdError::EvalFailed(
+                    "TopK VJP requires indices output".to_owned(),
+                ));
+            };
+
+            match (&inputs[0], &g_values, indices) {
+                (Value::Scalar(_), _, _) => Ok(vec![g_values]),
+                (Value::Tensor(input_t), Value::Tensor(g_t), Value::Tensor(idx_t)) => {
+                    let input_rank = input_t.shape.rank();
+                    if input_rank == 0 {
+                        return Ok(vec![g_values]);
+                    }
+                    let axis_size = input_t.shape.dims[input_rank - 1] as usize;
+                    let k = g_t.shape.dims[g_t.shape.rank() - 1] as usize;
+                    let n_slices = input_t.elements.len() / axis_size;
+                    let g_vals: Vec<f64> = g_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
+                    let idx_vals: Vec<i64> = idx_t.elements.iter().map(|l| l.as_i64().unwrap_or(0)).collect();
+
+                    let mut result = vec![0.0_f64; input_t.elements.len()];
+                    for slice_idx in 0..n_slices {
+                        let g_base = slice_idx * k;
+                        let out_base = slice_idx * axis_size;
+                        for j in 0..k {
+                            let orig_idx = idx_vals[g_base + j] as usize;
+                            if orig_idx < axis_size {
+                                result[out_base + orig_idx] += g_vals[g_base + j];
+                            }
+                        }
+                    }
+
+                    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+                    let tensor = TensorValue::new(DType::F64, input_t.shape.clone(), elements)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    Ok(vec![Value::Tensor(tensor)])
+                }
+                _ => Ok(vec![zeros_like(&inputs[0])]),
+            }
         }
         Primitive::Conv => {
             // Conv 1D VJP for layout lhs=[N, W, C_in], rhs=[K, C_in, C_out], out=[N, W_out, C_out]
@@ -6587,6 +6638,46 @@ fn jvp_rule(
         Primitive::Cumprod => cumprod_jvp_value(&primals[0], &tangents[0], params),
         Primitive::Sort => ep_p(Primitive::Sort, &[tangents[0].clone()], params),
         Primitive::Argsort => Ok(zeros_like(&primals[0])),
+        Primitive::TopK => {
+            // TopK JVP: gather tangents at the same positions as top-k values.
+            // The tangent follows the same selection as the primal.
+            // Returns tangent for values; indices tangent is zeros.
+            let outputs = eval_primitive_multi(Primitive::TopK, primals, params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let indices = &outputs[1];
+            match (&primals[0], &tangents[0], indices) {
+                (Value::Scalar(_), Value::Scalar(t), _) => Ok(Value::Scalar(*t)),
+                (Value::Tensor(p_t), Value::Tensor(dx_t), Value::Tensor(idx_t)) => {
+                    let rank = p_t.shape.rank();
+                    if rank == 0 {
+                        return Ok(tangents[0].clone());
+                    }
+                    let axis_size = p_t.shape.dims[rank - 1] as usize;
+                    let k = idx_t.shape.dims[idx_t.shape.rank() - 1] as usize;
+                    let n_slices = p_t.elements.len() / axis_size;
+                    let dx_vals: Vec<f64> = dx_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
+                    let idx_vals: Vec<i64> = idx_t.elements.iter().map(|l| l.as_i64().unwrap_or(0)).collect();
+
+                    let mut result = Vec::with_capacity(n_slices * k);
+                    for slice_idx in 0..n_slices {
+                        let dx_base = slice_idx * axis_size;
+                        let idx_base = slice_idx * k;
+                        for j in 0..k {
+                            let orig_idx = idx_vals[idx_base + j] as usize;
+                            result.push(dx_vals.get(dx_base + orig_idx).copied().unwrap_or(0.0));
+                        }
+                    }
+
+                    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+                    let mut out_dims = p_t.shape.dims.clone();
+                    out_dims[rank - 1] = k as u32;
+                    let tensor = TensorValue::new(DType::F64, Shape { dims: out_dims }, elements)
+                        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    Ok(Value::Tensor(tensor))
+                }
+                _ => Ok(zeros_like(&primals[0])),
+            }
+        }
         Primitive::Argmin | Primitive::Argmax => Ok(zeros_like(&primals[0])),
         Primitive::Conv => ep_p(Primitive::Conv, tangents, params),
 

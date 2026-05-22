@@ -194,6 +194,7 @@ pub enum Primitive {
     // Sorting
     Sort,
     Argsort,
+    TopK,
     // Index-of-extremum
     Argmin,
     Argmax,
@@ -331,6 +332,7 @@ impl Primitive {
         Self::Cumprod,
         Self::Sort,
         Self::Argsort,
+        Self::TopK,
         Self::Argmin,
         Self::Argmax,
         Self::Conv,
@@ -470,6 +472,7 @@ impl Primitive {
             Self::Cumprod => "cumprod",
             Self::Sort => "sort",
             Self::Argsort => "argsort",
+            Self::TopK => "top_k",
             Self::Argmin => "argmin",
             Self::Argmax => "argmax",
             Self::Conv => "conv",

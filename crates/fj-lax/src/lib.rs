@@ -30,10 +30,9 @@ use reduction::{eval_cumulative, eval_reduce_axes, eval_reduce_bitwise_axes};
 use tensor_ops::{
     eval_argmax, eval_argmin, eval_argsort, eval_bitcast_convert_type, eval_broadcast_in_dim,
     eval_broadcasted_iota, eval_concatenate, eval_conv, eval_convert_element_type, eval_copy,
-    eval_dynamic_slice, eval_dynamic_update_slice,
-    eval_expand_dims, eval_gather, eval_iota, eval_one_hot, eval_pad, eval_reduce_precision,
-    eval_reshape, eval_rev, eval_scatter, eval_slice, eval_sort, eval_split, eval_squeeze,
-    eval_tile, eval_transpose,
+    eval_dynamic_slice, eval_dynamic_update_slice, eval_expand_dims, eval_gather, eval_iota,
+    eval_one_hot, eval_pad, eval_reduce_precision, eval_reshape, eval_rev, eval_scatter,
+    eval_slice, eval_sort, eval_split, eval_squeeze, eval_tile, eval_top_k, eval_transpose,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,6 +414,11 @@ pub fn eval_primitive(
         // Sorting
         Primitive::Sort => eval_sort(primitive, inputs, params),
         Primitive::Argsort => eval_argsort(primitive, inputs, params),
+        Primitive::TopK => {
+            // TopK is multi-output; return first output (values) for single-value API.
+            let mut outputs = eval_top_k(inputs, params)?;
+            Ok(outputs.remove(0))
+        }
         // Index-of-extremum
         Primitive::Argmin => eval_argmin(primitive, inputs, params),
         Primitive::Argmax => eval_argmax(primitive, inputs, params),
@@ -463,6 +467,7 @@ pub fn eval_primitive_multi(
         Primitive::Qr => eval_qr(inputs, params),
         Primitive::Svd => eval_svd(inputs, params),
         Primitive::Eigh => eval_eigh(inputs, params),
+        Primitive::TopK => eval_top_k(inputs, params),
         _ => eval_primitive(primitive, inputs, params).map(|v| vec![v]),
     }
 }

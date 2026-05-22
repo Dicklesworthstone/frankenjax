@@ -3098,6 +3098,107 @@ pub(crate) fn eval_argmax(
     eval_arg_extremum(primitive, inputs, params, true)
 }
 
+pub(crate) fn eval_top_k(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, EvalError> {
+    let primitive = Primitive::TopK;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let k: usize = params
+        .get("k")
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or(EvalError::Unsupported {
+            primitive,
+            detail: "top_k requires 'k' param".to_owned(),
+        })?;
+
+    match &inputs[0] {
+        Value::Scalar(lit) => {
+            if k == 0 {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "k must be >= 1".to_owned(),
+                });
+            }
+            Ok(vec![
+                Value::Scalar(*lit),
+                Value::Scalar(Literal::I64(0)),
+            ])
+        }
+        Value::Tensor(tensor) => {
+            let rank = tensor.shape.rank();
+            if rank == 0 {
+                if k == 0 {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "k must be >= 1".to_owned(),
+                    });
+                }
+                return Ok(vec![
+                    Value::Scalar(tensor.elements[0]),
+                    Value::Scalar(Literal::I64(0)),
+                ]);
+            }
+
+            let axis_size = tensor.shape.dims[rank - 1] as usize;
+            if k > axis_size {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("k={k} exceeds axis size {axis_size}"),
+                });
+            }
+
+            let mut output_dims = tensor.shape.dims.clone();
+            output_dims[rank - 1] = k as u32;
+
+            let stride = axis_size;
+            let n_slices = tensor.elements.len() / stride;
+
+            let mut values_elements = Vec::with_capacity(n_slices * k);
+            let mut indices_elements = Vec::with_capacity(n_slices * k);
+
+            for slice_idx in 0..n_slices {
+                let base = slice_idx * stride;
+                let mut indexed: Vec<(usize, &Literal)> = tensor.elements[base..base + stride]
+                    .iter()
+                    .enumerate()
+                    .collect();
+
+                indexed.sort_by(|a, b| {
+                    let a_val = a.1.as_f64().unwrap_or(f64::NEG_INFINITY);
+                    let b_val = b.1.as_f64().unwrap_or(f64::NEG_INFINITY);
+                    b_val.partial_cmp(&a_val).unwrap_or(std::cmp::Ordering::Equal)
+                });
+
+                for (orig_idx, lit) in indexed.iter().take(k) {
+                    values_elements.push(**lit);
+                    indices_elements.push(Literal::I64(*orig_idx as i64));
+                }
+            }
+
+            let values = TensorValue::new(tensor.dtype, Shape { dims: output_dims.clone() }, values_elements)
+                .map_err(|e| EvalError::Unsupported {
+                    primitive,
+                    detail: e.to_string(),
+                })?;
+            let indices = TensorValue::new(DType::I64, Shape { dims: output_dims }, indices_elements)
+                .map_err(|e| EvalError::Unsupported {
+                    primitive,
+                    detail: e.to_string(),
+                })?;
+
+            Ok(vec![Value::Tensor(values), Value::Tensor(indices)])
+        }
+    }
+}
+
 fn eval_arg_extremum(
     primitive: Primitive,
     inputs: &[Value],
@@ -4478,6 +4579,14 @@ mod tests {
             .map(|l| l.as_f64().unwrap())
             .collect()
     }
+    fn extract_i64_vec(val: &Value) -> Vec<i64> {
+        val.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect()
+    }
     fn extract_shape(val: &Value) -> Vec<u32> {
         val.as_tensor().unwrap().shape.dims.clone()
     }
@@ -5051,5 +5160,50 @@ mod tests {
         assert_eq!(super::normalize_dynamic_start(5, 10, 0), 5);
         assert_eq!(super::normalize_dynamic_start(10, 10, 0), 10);
         assert_eq!(super::normalize_dynamic_start(15, 10, 0), 10); // clamp
+    }
+
+    // ── TopK ──
+
+    #[test]
+    fn top_k_basic() {
+        let x = v_f64(&[3.0, 1.0, 4.0, 1.0, 5.0, 9.0]);
+        let p = params(&[("k", "3")]);
+        let outputs = super::eval_top_k(&[x], &p).unwrap();
+        assert_eq!(outputs.len(), 2);
+        let values = extract_f64_vec(&outputs[0]);
+        assert_eq!(values, vec![9.0, 5.0, 4.0]);
+        let indices = extract_i64_vec(&outputs[1]);
+        assert_eq!(indices, vec![5, 4, 2]);
+    }
+
+    #[test]
+    fn top_k_k_equals_len() {
+        let x = v_f64(&[2.0, 1.0, 3.0]);
+        let p = params(&[("k", "3")]);
+        let outputs = super::eval_top_k(&[x], &p).unwrap();
+        let values = extract_f64_vec(&outputs[0]);
+        assert_eq!(values, vec![3.0, 2.0, 1.0]);
+        let indices = extract_i64_vec(&outputs[1]);
+        assert_eq!(indices, vec![2, 0, 1]);
+    }
+
+    #[test]
+    fn top_k_k_one() {
+        let x = v_f64(&[5.0, 10.0, 3.0, 8.0]);
+        let p = params(&[("k", "1")]);
+        let outputs = super::eval_top_k(&[x], &p).unwrap();
+        let values = extract_f64_vec(&outputs[0]);
+        assert_eq!(values, vec![10.0]);
+        let indices = extract_i64_vec(&outputs[1]);
+        assert_eq!(indices, vec![1]);
+    }
+
+    #[test]
+    fn top_k_scalar() {
+        let x = Value::Scalar(fj_core::Literal::from_f64(42.0));
+        let p = params(&[("k", "1")]);
+        let outputs = super::eval_top_k(&[x], &p).unwrap();
+        assert!(matches!(outputs[0], Value::Scalar(_)));
+        assert_eq!(outputs[0].as_f64_scalar().unwrap(), 42.0);
     }
 }
