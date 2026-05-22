@@ -2483,6 +2483,39 @@ fn eval_ternary_elementwise(
     }
 }
 
+pub(crate) fn zeta_approx(s: f64) -> f64 {
+    if s.is_nan() {
+        return f64::NAN;
+    }
+    if s == 1.0 {
+        return f64::INFINITY;
+    }
+    if s < 0.0 && (s.floor() == s) && (s as i64) % 2 == 0 {
+        return 0.0;
+    }
+
+    if s > 1.0 {
+        let mut sum = 0.0;
+        for n in 1..=10000 {
+            let term = 1.0 / (n as f64).powf(s);
+            sum += term;
+            if term < sum * 1e-15 {
+                break;
+            }
+        }
+        sum
+    } else {
+        let pi = std::f64::consts::PI;
+        let factor = (2.0_f64).powf(s) * pi.powf(s - 1.0) * (pi * s / 2.0).sin();
+        let gamma_1_minus_s = lgamma_approx(1.0 - s).exp();
+        factor * gamma_1_minus_s * zeta_approx(1.0 - s)
+    }
+}
+
+pub(crate) fn eval_zeta(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    eval_unary_elementwise(primitive, inputs, zeta_approx)
+}
+
 pub(crate) fn bessel_i0e_approx(x: f64) -> f64 {
     let ax = x.abs();
     if ax < 3.75 {

@@ -21,7 +21,7 @@ use arithmetic::{
     eval_cosh, eval_digamma, eval_dot, eval_dot_general, eval_erf_inv, eval_exp, eval_igamma,
     eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_lgamma, eval_log, eval_neg,
     eval_nextafter, eval_polygamma, eval_real, eval_round, eval_select, eval_select_n, eval_sin,
-    eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float,
+    eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float, eval_zeta,
 };
 
 use comparison::eval_comparison;
@@ -243,6 +243,7 @@ pub fn eval_primitive(
         Primitive::Igamma => eval_igamma(primitive, inputs),
         Primitive::Igammac => eval_igammac(primitive, inputs),
         Primitive::Betainc => eval_betainc(primitive, inputs),
+        Primitive::Zeta => eval_zeta(primitive, inputs),
         Primitive::BesselI0e => eval_bessel_i0e(primitive, inputs),
         Primitive::BesselI1e => eval_bessel_i1e(primitive, inputs),
         Primitive::Conj => eval_conj(primitive, inputs),

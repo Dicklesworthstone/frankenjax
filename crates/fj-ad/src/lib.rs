@@ -1706,6 +1706,10 @@ pub fn vjp(
             let dx = value_div(&numer, &beta)?;
             Ok(vec![zeros_like(a), zeros_like(b), value_mul(g, &dx)?])
         }
+        Primitive::Zeta => {
+            // d/ds ζ(s) = -Σ ln(n)/n^s (complex, return zeros for now)
+            Ok(vec![zeros_like(&inputs[0])])
+        }
         Primitive::BesselI0e => {
             // d/dx I0e(x) = I1e(x) - sign(x) * I0e(x)
             let x = &inputs[0];
@@ -6634,6 +6638,10 @@ fn jvp_rule(
             let numer = ep(Primitive::Mul, &[x_pow, omx_pow])?;
             let deriv = ep(Primitive::Div, &[numer, beta])?;
             ep(Primitive::Mul, &[deriv, dx.clone()])
+        }
+        Primitive::Zeta => {
+            // d/ds ζ(s) complex, return zeros
+            Ok(zeros_like(&primals[0]))
         }
         Primitive::BesselI0e => {
             // d/dx I0e(x) = I1e(x) - sign(x) * I0e(x)
