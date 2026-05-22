@@ -162,6 +162,12 @@ def test_value_scalar():
     assert all(isinstance(item, fj.Array) for item in iterated)
     assert vec[0].as_i64() == 1
     assert vec[-1].as_i64() == 3
+    assert vec[1:].shape == (2,)
+    assert vec[1:].as_i64_list() == [2, 3]
+    assert vec[::-1].shape == (3,)
+    assert vec[::-1].as_i64_list() == [3, 2, 1]
+    assert vec[3:].shape == (0,)
+    assert vec[3:].as_i64_list() == []
     try:
         vec[3]
     except IndexError as exc:

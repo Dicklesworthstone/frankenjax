@@ -2,9 +2,9 @@
 
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyBytes, PyFrozenSet, PyList, PySet, PyTuple};
+use pyo3::types::{PyBool, PyBytes, PyFrozenSet, PyList, PySet, PySlice, PySliceMethods, PyTuple};
 
-use fj_core::{DType, Jaxpr, Literal, ProgramSpec, Value, build_program};
+use fj_core::{DType, Jaxpr, Literal, ProgramSpec, Shape, TensorValue, Value, build_program};
 
 #[pyclass]
 #[derive(Clone)]
@@ -90,6 +90,60 @@ impl PyValue {
         })?;
         let value = tensor.slice_axis0(index).map_err(value_error)?;
         Ok(Self::from_value(value))
+    }
+
+    fn axis0_slice(&self, slice: &Bound<'_, PySlice>) -> PyResult<Self> {
+        let Value::Tensor(tensor) = &self.inner else {
+            return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                "Too many indices: array is 0-dimensional, but 1 were indexed",
+            ));
+        };
+
+        let first_dim = tensor.leading_dim().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                "Too many indices: array is 0-dimensional, but 1 were indexed",
+            )
+        })?;
+        let axis_size = isize::try_from(first_dim).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyOverflowError, _>("array length does not fit isize")
+        })?;
+        let indices = slice.indices(axis_size)?;
+        if indices.slicelength == 0 {
+            let mut dims = tensor.shape.dims.clone();
+            let first_dim = dims.first_mut().ok_or_else(|| {
+                PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                    "Too many indices: array is 0-dimensional, but 1 were indexed",
+                )
+            })?;
+            *first_dim = 0;
+            let tensor =
+                TensorValue::new(tensor.dtype, Shape { dims }, Vec::new()).map_err(value_error)?;
+            return Ok(Self::from_value(Value::Tensor(tensor)));
+        }
+
+        let mut values = Vec::with_capacity(indices.slicelength);
+        let mut current = indices.start;
+        for position in 0..indices.slicelength {
+            if !(0..axis_size).contains(&current) {
+                return Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                    "normalized slice index is out of bounds",
+                ));
+            }
+            let index = usize::try_from(current).map_err(|_| {
+                PyErr::new::<pyo3::exceptions::PyOverflowError, _>("slice index does not fit usize")
+            })?;
+            values.push(tensor.slice_axis0(index).map_err(value_error)?);
+            if position + 1 < indices.slicelength {
+                current = current.checked_add(indices.step).ok_or_else(|| {
+                    PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                        "slice index progression overflowed",
+                    )
+                })?;
+            }
+        }
+
+        let tensor = TensorValue::stack_axis0(&values).map_err(value_error)?;
+        Ok(Self::from_value(Value::Tensor(tensor)))
     }
 }
 
@@ -387,8 +441,18 @@ impl PyValue {
             .unbind())
     }
 
-    fn __getitem__(&self, index: isize) -> PyResult<Self> {
-        self.axis0_value_at(index)
+    fn __getitem__(&self, index: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(index) = index.extract::<isize>() {
+            return self.axis0_value_at(index);
+        }
+        if let Ok(slice) = index.downcast::<PySlice>() {
+            return self.axis0_slice(slice);
+        }
+
+        let type_repr: String = index.get_type().repr()?.extract()?;
+        Err(PyErr::new::<pyo3::exceptions::PyIndexError, _>(format!(
+            "Unrecognized index type: {type_repr}"
+        )))
     }
 
     fn block_until_ready(&self) -> Self {
@@ -2140,7 +2204,7 @@ mod tests {
         assert_eq!(v.itemsize(), 8);
         assert_eq!(v.nbytes(), 8);
         assert!(v.leading_axis_values().is_err());
-        assert!(v.__getitem__(0).is_err());
+        assert!(v.axis0_value_at(0).is_err());
         assert!(!v.weak_type());
         assert!(!v.committed());
         let device = v.device();
@@ -2273,13 +2337,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
-        assert_eq!(ints.__getitem__(0).unwrap().as_i64().unwrap(), 1);
-        assert_eq!(ints.__getitem__(-1).unwrap().as_i64().unwrap(), 3);
-        assert!(ints.__getitem__(3).is_err());
+        assert_eq!(ints.axis0_value_at(0).unwrap().as_i64().unwrap(), 1);
+        assert_eq!(ints.axis0_value_at(-1).unwrap().as_i64().unwrap(), 3);
+        assert!(ints.axis0_value_at(3).is_err());
         Python::with_gil(|py| {
             assert!(ints.__int__(py).is_err());
             assert!(ints.__complex__(py).is_err());
             assert!(ints.__index__(py).is_err());
+            let tail = ints.axis0_slice(&PySlice::new(py, 1, 3, 1)).unwrap();
+            assert_eq!(tail.shape_dims(), vec![2]);
+            assert_eq!(tail.as_i64_list().unwrap(), vec![2, 3]);
+            let reversed = ints.axis0_slice(&PySlice::new(py, 2, -4, -1)).unwrap();
+            assert_eq!(reversed.shape_dims(), vec![3]);
+            assert_eq!(reversed.as_i64_list().unwrap(), vec![3, 2, 1]);
+            let empty = ints.axis0_slice(&PySlice::new(py, 3, 3, 1)).unwrap();
+            assert_eq!(empty.shape_dims(), vec![0]);
+            assert_eq!(empty.as_i64_list().unwrap(), Vec::<i64>::new());
             let values = ints.tolist(py).unwrap();
             assert_eq!(
                 values.bind(py).extract::<Vec<i64>>().unwrap(),
