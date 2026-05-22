@@ -439,3 +439,22 @@ fn oracle_nextafter_scalar_tensor_broadcast_2d() {
     assert!(vals[2] > 0.0, "0 towards 2");
     assert!(vals[3] < 0.0, "0 towards -2");
 }
+
+#[test]
+fn oracle_nextafter_all_scalars_broadcast() {
+    // scalar nextafter scalar -> scalar
+    let x = Value::Scalar(Literal::from_f64(1.0));
+    let y = Value::Scalar(Literal::from_f64(2.0));
+    let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0] > 1.0, "1 towards 2");
+}
+
+#[test]
+fn oracle_nextafter_incompatible_shapes_error() {
+    // [2] nextafter [3] should error
+    let x = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let y = make_f64_tensor(&[3], vec![10.0, 10.0, 10.0]);
+    let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
