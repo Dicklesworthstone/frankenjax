@@ -1614,6 +1614,44 @@ pub fn vjp(
             let factor = value_mul(&coeff, &exp_term)?;
             Ok(vec![value_mul(g, &factor)?])
         }
+        Primitive::Igamma => {
+            // d/dx igamma(a, x) = x^(a-1) * exp(-x) / Gamma(a)
+            // d/da is complex; use zeros for now
+            let a = &inputs[0];
+            let x = &inputs[1];
+            let a_minus_1 = value_sub(a, &scalar_constant_matching_dtype(1.0, a))?;
+            let x_pow_am1 = eval_primitive(Primitive::Pow, &[x.clone(), a_minus_1], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let neg_x = value_neg(x)?;
+            let exp_neg_x = eval_primitive(Primitive::Exp, &[neg_x], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let lgamma_a = eval_primitive(Primitive::Lgamma, std::slice::from_ref(a), params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gamma_a = eval_primitive(Primitive::Exp, &[lgamma_a], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let numer = value_mul(&x_pow_am1, &exp_neg_x)?;
+            let dx = value_div(&numer, &gamma_a)?;
+            Ok(vec![zeros_like(a), value_mul(g, &dx)?])
+        }
+        Primitive::Igammac => {
+            // d/dx igammac(a, x) = -d/dx igamma(a, x)
+            let a = &inputs[0];
+            let x = &inputs[1];
+            let a_minus_1 = value_sub(a, &scalar_constant_matching_dtype(1.0, a))?;
+            let x_pow_am1 = eval_primitive(Primitive::Pow, &[x.clone(), a_minus_1], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let neg_x = value_neg(x)?;
+            let exp_neg_x = eval_primitive(Primitive::Exp, &[neg_x], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let lgamma_a = eval_primitive(Primitive::Lgamma, std::slice::from_ref(a), params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gamma_a = eval_primitive(Primitive::Exp, &[lgamma_a], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let numer = value_mul(&x_pow_am1, &exp_neg_x)?;
+            let dx = value_div(&numer, &gamma_a)?;
+            let neg_dx = value_neg(&dx)?;
+            Ok(vec![zeros_like(a), value_mul(g, &neg_dx)?])
+        }
         Primitive::Div => {
             // d/da (a/b) = 1/b, d/db (a/b) = -a/b²
             let a = &inputs[0];
@@ -6421,6 +6459,39 @@ fn jvp_rule(
             );
             let factor = ep(Primitive::Mul, &[coeff, exp_term])?;
             ep(Primitive::Mul, &[factor, tangents[0].clone()])
+        }
+        Primitive::Igamma => {
+            // d/dx igamma(a, x) = x^(a-1) * exp(-x) / Gamma(a)
+            let a = &primals[0];
+            let x = &primals[1];
+            let dx = &tangents[1];
+            let one = scalar_constant_matching_dtype(1.0, a);
+            let a_m1 = ep(Primitive::Sub, &[a.clone(), one])?;
+            let x_pow = ep(Primitive::Pow, &[x.clone(), a_m1])?;
+            let neg_x = ep(Primitive::Neg, &[x.clone()])?;
+            let exp_neg_x = ep(Primitive::Exp, &[neg_x])?;
+            let lgamma_a = ep(Primitive::Lgamma, &[a.clone()])?;
+            let gamma_a = ep(Primitive::Exp, &[lgamma_a])?;
+            let numer = ep(Primitive::Mul, &[x_pow, exp_neg_x])?;
+            let deriv = ep(Primitive::Div, &[numer, gamma_a])?;
+            ep(Primitive::Mul, &[deriv, dx.clone()])
+        }
+        Primitive::Igammac => {
+            // d/dx igammac(a, x) = -d/dx igamma(a, x)
+            let a = &primals[0];
+            let x = &primals[1];
+            let dx = &tangents[1];
+            let one = scalar_constant_matching_dtype(1.0, a);
+            let a_m1 = ep(Primitive::Sub, &[a.clone(), one])?;
+            let x_pow = ep(Primitive::Pow, &[x.clone(), a_m1])?;
+            let neg_x = ep(Primitive::Neg, &[x.clone()])?;
+            let exp_neg_x = ep(Primitive::Exp, &[neg_x])?;
+            let lgamma_a = ep(Primitive::Lgamma, &[a.clone()])?;
+            let gamma_a = ep(Primitive::Exp, &[lgamma_a])?;
+            let numer = ep(Primitive::Mul, &[x_pow, exp_neg_x])?;
+            let deriv = ep(Primitive::Div, &[numer, gamma_a])?;
+            let neg_deriv = ep(Primitive::Neg, &[deriv])?;
+            ep(Primitive::Mul, &[neg_deriv, dx.clone()])
         }
 
         // ── Binary ops with quotient rule ──

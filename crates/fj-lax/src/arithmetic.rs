@@ -2024,6 +2024,120 @@ pub(crate) fn eval_erf_inv(primitive: Primitive, inputs: &[Value]) -> Result<Val
     eval_unary_elementwise(primitive, inputs, erf_inv_approx)
 }
 
+fn igamma_series(a: f64, x: f64) -> f64 {
+    if x == 0.0 {
+        return 0.0;
+    }
+    let mut term = 1.0 / a;
+    let mut sum = term;
+    let mut n = 1.0;
+    while term.abs() > sum.abs() * 1e-15 && n < 1000.0 {
+        term *= x / (a + n);
+        sum += term;
+        n += 1.0;
+    }
+    sum * (-x + a * x.ln() - lgamma_approx(a)).exp()
+}
+
+fn igammac_cf(a: f64, x: f64) -> f64 {
+    let mut f = 1.0e-30_f64;
+    let mut c = f;
+    let mut d = 0.0;
+    for n in 1..=1000 {
+        let an = if n == 1 {
+            1.0
+        } else if n % 2 == 0 {
+            let k = (n / 2) as f64;
+            k * (a - k) / ((a + 2.0 * k - 1.0) * (a + 2.0 * k))
+        } else {
+            let k = ((n - 1) / 2) as f64;
+            -((a + k) * (a + k + 1.0) / ((a + 2.0 * k) * (a + 2.0 * k + 1.0)))
+        };
+        let bn = if n == 1 { x - a + 1.0 } else { 2.0 };
+        d = bn + an * d;
+        if d.abs() < 1e-30 {
+            d = 1e-30;
+        }
+        c = bn + an / c;
+        if c.abs() < 1e-30 {
+            c = 1e-30;
+        }
+        d = 1.0 / d;
+        let delta = c * d;
+        f *= delta;
+        if (delta - 1.0).abs() < 1e-15 {
+            break;
+        }
+    }
+    f * (-x + a * x.ln() - lgamma_approx(a)).exp()
+}
+
+pub(crate) fn igamma_approx(a: f64, x: f64) -> f64 {
+    if a.is_nan() || x.is_nan() || a <= 0.0 || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+    if x.is_infinite() {
+        return 1.0;
+    }
+    if x < a + 1.0 {
+        igamma_series(a, x)
+    } else {
+        1.0 - igammac_cf(a, x)
+    }
+}
+
+pub(crate) fn igammac_approx(a: f64, x: f64) -> f64 {
+    if a.is_nan() || x.is_nan() || a <= 0.0 || x < 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 1.0;
+    }
+    if x.is_infinite() {
+        return 0.0;
+    }
+    if x < a + 1.0 {
+        1.0 - igamma_series(a, x)
+    } else {
+        igammac_cf(a, x)
+    }
+}
+
+pub(crate) fn eval_igamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+    eval_binary_elementwise(
+        primitive,
+        inputs,
+        |a, x| igamma_approx(a as f64, x as f64) as i64,
+        |a, x| igamma_approx(a, x),
+    )
+}
+
+pub(crate) fn eval_igammac(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+    eval_binary_elementwise(
+        primitive,
+        inputs,
+        |a, x| igammac_approx(a as f64, x as f64) as i64,
+        |a, x| igammac_approx(a, x),
+    )
+}
+
 fn dot_result_is_integral(lhs: &TensorValue, rhs: &TensorValue) -> bool {
     lhs.elements.iter().all(|literal| literal.is_integral())
         && rhs.elements.iter().all(|literal| literal.is_integral())
@@ -3807,5 +3921,39 @@ mod tests {
         assert_eq!(t.shape.dims, vec![2, 2, 1]);
         let vals = extract_f64_vec(&Value::Tensor(t));
         assert_eq!(vals, vec![1.0, 4.0, 8.0, 11.0]);
+    }
+
+    // ── Igamma/Igammac ──
+
+    #[test]
+    fn igamma_scalars() {
+        let result = eval_igamma(Primitive::Igamma, &[s_f64(1.0), s_f64(1.0)]).unwrap();
+        let val = extract_f64(&result);
+        let expected = 1.0 - (-1.0_f64).exp();
+        assert!((val - expected).abs() < 1e-10, "igamma(1,1) should be 1-e^-1");
+    }
+
+    #[test]
+    fn igamma_at_zero() {
+        let result = eval_igamma(Primitive::Igamma, &[s_f64(2.0), s_f64(0.0)]).unwrap();
+        let val = extract_f64(&result);
+        assert!(val.abs() < 1e-12, "igamma(a, 0) = 0");
+    }
+
+    #[test]
+    fn igammac_scalars() {
+        let result = eval_igammac(Primitive::Igammac, &[s_f64(1.0), s_f64(1.0)]).unwrap();
+        let val = extract_f64(&result);
+        let expected = (-1.0_f64).exp();
+        assert!((val - expected).abs() < 1e-10, "igammac(1,1) should be e^-1");
+    }
+
+    #[test]
+    fn igamma_igammac_sum_to_one() {
+        let a = s_f64(2.5);
+        let x = s_f64(1.5);
+        let igamma_val = extract_f64(&eval_igamma(Primitive::Igamma, &[a.clone(), x.clone()]).unwrap());
+        let igammac_val = extract_f64(&eval_igammac(Primitive::Igammac, &[a, x]).unwrap());
+        assert!((igamma_val + igammac_val - 1.0).abs() < 1e-10, "P + Q = 1");
     }
 }
