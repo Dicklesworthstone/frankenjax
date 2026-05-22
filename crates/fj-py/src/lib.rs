@@ -450,6 +450,18 @@ impl PyShapeDtypeStruct {
             .fold(1_u64, |size, dim| size.saturating_mul(u64::from(*dim)))
     }
 
+    fn __len__(&self) -> PyResult<usize> {
+        let first_dim = self.shape.first().copied().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>("len() of unsized object")
+        })?;
+
+        usize::try_from(first_dim).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                "shape dtype struct length does not fit usize",
+            )
+        })
+    }
+
     #[getter]
     fn weak_type(&self) -> bool {
         self.weak_type
@@ -1966,11 +1978,13 @@ mod tests {
         assert_eq!(meta.dtype(), "F64");
         assert_eq!(meta.ndim(), 2);
         assert_eq!(meta.size(), 6);
+        assert_eq!(meta.__len__().unwrap(), 2);
         assert!(!meta.weak_type());
         assert!(!meta.is_ref());
         assert_eq!(meta.__repr__(), "ShapeDtypeStruct(shape=[2, 3], dtype=F64)");
 
         let weak_meta = PyShapeDtypeStruct::new(vec![], "F64".to_owned(), true, true);
+        assert!(weak_meta.__len__().is_err());
         assert!(weak_meta.weak_type());
         assert!(weak_meta.is_ref());
         assert_eq!(

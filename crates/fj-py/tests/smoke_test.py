@@ -290,6 +290,7 @@ def test_shape_dtype_struct_constructor():
     assert meta.dtype == "F64"
     assert meta.ndim == 2
     assert meta.size == 6
+    assert len(meta) == 2
     assert meta.weak_type is False
     assert meta.is_ref is False
     assert repr(meta) == "ShapeDtypeStruct(shape=[2, 3], dtype=F64)"
@@ -298,6 +299,12 @@ def test_shape_dtype_struct_constructor():
     assert weak_meta.dtype == "F64"
     assert weak_meta.ndim == 0
     assert weak_meta.size == 1
+    try:
+        len(weak_meta)
+    except TypeError as exc:
+        assert str(exc) == "len() of unsized object"
+    else:
+        raise AssertionError("len(scalar ShapeDtypeStruct) should raise TypeError")
     assert weak_meta.weak_type is True
     assert weak_meta.is_ref is True
     assert repr(weak_meta) == (
@@ -314,6 +321,12 @@ def test_typeof():
     assert scalar_meta.dtype == "I64"
     assert scalar_meta.ndim == 0
     assert scalar_meta.size == 1
+    try:
+        len(scalar_meta)
+    except TypeError as exc:
+        assert str(exc) == "len() of unsized object"
+    else:
+        raise AssertionError("len(scalar typeof metadata) should raise TypeError")
     assert scalar_meta.weak_type is False
     assert scalar_meta.is_ref is False
 
@@ -323,6 +336,7 @@ def test_typeof():
     assert vector_meta.dtype == "F64"
     assert vector_meta.ndim == 1
     assert vector_meta.size == 3
+    assert len(vector_meta) == 3
     assert vector_meta.weak_type is False
     assert vector_meta.is_ref is False
     print("✓ typeof returns ShapeDtypeStruct metadata for scalar and vector values")
