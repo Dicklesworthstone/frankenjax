@@ -511,6 +511,21 @@ fn process_indices(backend: Option<String>) -> PyResult<Vec<usize>> {
     Ok(vec![0])
 }
 
+#[pyfunction(signature = (backend=None))]
+fn host_id(backend: Option<String>) -> PyResult<usize> {
+    process_index(backend)
+}
+
+#[pyfunction(signature = (backend=None))]
+fn host_count(backend: Option<String>) -> PyResult<usize> {
+    process_count(backend)
+}
+
+#[pyfunction(signature = (backend=None))]
+fn host_ids(backend: Option<String>) -> PyResult<Vec<usize>> {
+    process_indices(backend)
+}
+
 #[pyfunction(signature = (function, name=None))]
 fn named_call(function: Py<PyAny>, _name: Option<String>) -> Py<PyAny> {
     function
@@ -640,6 +655,9 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(process_index, m)?)?;
     m.add_function(wrap_pyfunction!(process_count, m)?)?;
     m.add_function(wrap_pyfunction!(process_indices, m)?)?;
+    m.add_function(wrap_pyfunction!(host_id, m)?)?;
+    m.add_function(wrap_pyfunction!(host_count, m)?)?;
+    m.add_function(wrap_pyfunction!(host_ids, m)?)?;
     m.add_function(wrap_pyfunction!(named_call, m)?)?;
     m.add_function(wrap_pyfunction!(named_scope, m)?)?;
     m.add_function(wrap_pyfunction!(disable_jit, m)?)?;
@@ -823,6 +841,9 @@ mod tests {
         assert_eq!(process_index(None::<String>).unwrap(), 0);
         assert_eq!(process_count(None::<String>).unwrap(), 1);
         assert_eq!(process_indices(None::<String>).unwrap(), vec![0]);
+        assert_eq!(host_id(None::<String>).unwrap(), 0);
+        assert_eq!(host_count(None::<String>).unwrap(), 1);
+        assert_eq!(host_ids(None::<String>).unwrap(), vec![0]);
 
         let all_devices = devices(None::<String>).unwrap();
         assert_eq!(all_devices.len(), 1);

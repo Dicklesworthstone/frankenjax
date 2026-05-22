@@ -160,6 +160,12 @@ def test_backend_topology_helpers():
     assert fj.process_index() == 0
     assert fj.process_count() == 1
     assert fj.process_indices() == [0]
+    assert fj.host_id() == 0
+    assert fj.host_count() == 1
+    assert fj.host_ids() == [0]
+    assert fj.host_id("cpu") == 0
+    assert fj.host_count("cpu") == 1
+    assert fj.host_ids("cpu") == [0]
 
     devices = fj.devices()
     assert len(devices) == 1
@@ -186,6 +192,13 @@ def test_backend_topology_helpers():
         assert "unsupported backend" in str(exc)
     else:
         raise AssertionError("device_count should reject unsupported backend")
+
+    try:
+        fj.host_count("gpu")
+    except ValueError as exc:
+        assert "unsupported backend" in str(exc)
+    else:
+        raise AssertionError("host_count should reject unsupported backend")
 
     print("✓ backend topology helpers expose one local CPU device")
 
