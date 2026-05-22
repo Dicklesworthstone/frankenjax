@@ -261,3 +261,52 @@ fn oracle_reduce_xor_single_element() {
     let result = eval_primitive(Primitive::ReduceXor, &[input], &no_params()).unwrap();
     assert_eq!(extract_bool_vec(&result), vec![true]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_reduce_and_3d() {
+    let input = make_bool_tensor(&[2, 2, 2], vec![true, true, true, false, true, true, true, true]);
+    let result = eval_primitive(Primitive::ReduceAnd, &[input], &reduce_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    assert_eq!(extract_bool_vec(&result), vec![true, true, true, false]);
+}
+
+#[test]
+fn oracle_reduce_xor_3d() {
+    let input = make_bool_tensor(&[2, 2, 2], vec![true, true, false, false, true, false, true, true]);
+    let result = eval_primitive(Primitive::ReduceXor, &[input], &reduce_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    // XOR along axis 0: [T^T, T^F, F^T, F^T] = [F, T, T, T]
+    assert_eq!(extract_bool_vec(&result), vec![false, true, true, true]);
+}
+
+#[test]
+fn oracle_reduce_and_empty() {
+    let input = make_bool_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::ReduceAnd, &[input], &no_params()).unwrap();
+    // Empty AND reduction returns identity (true for bool)
+    assert_eq!(extract_bool_vec(&result), vec![true]);
+}
+
+#[test]
+fn oracle_reduce_xor_empty() {
+    let input = make_bool_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::ReduceXor, &[input], &no_params()).unwrap();
+    // Empty XOR reduction returns identity (false for bool)
+    assert_eq!(extract_bool_vec(&result), vec![false]);
+}
+
+#[test]
+fn oracle_reduce_and_preserves_dtype() {
+    let input = make_i64_tensor(&[3], vec![0xFF, 0x0F, 0x03]);
+    let result = eval_primitive(Primitive::ReduceAnd, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}
+
+#[test]
+fn oracle_reduce_xor_preserves_dtype() {
+    let input = make_i64_tensor(&[3], vec![0xFF, 0x0F, 0xF0]);
+    let result = eval_primitive(Primitive::ReduceXor, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}

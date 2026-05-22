@@ -266,3 +266,62 @@ fn oracle_rad2deg_vector() {
     assert!((vals[2] - 180.0).abs() < 1e-13);
     assert!((vals[3] - 360.0).abs() < 1e-12);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_deg2rad_3d() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, 45.0]);
+    let result = eval_primitive(Primitive::Deg2Rad, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 0.0).abs() < 1e-15);
+    assert!((vals[7] - PI / 4.0).abs() < 1e-15);
+}
+
+#[test]
+fn oracle_rad2deg_3d() {
+    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI, -PI / 2.0, -PI, PI / 4.0]);
+    let result = eval_primitive(Primitive::Rad2Deg, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 0.0).abs() < 1e-13);
+    assert!((vals[7] - 45.0).abs() < 1e-13);
+}
+
+#[test]
+fn oracle_deg2rad_empty() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Deg2Rad, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+}
+
+#[test]
+fn oracle_rad2deg_empty() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Rad2Deg, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+}
+
+#[test]
+fn oracle_deg2rad_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![0.0, 90.0, 180.0]);
+    let result = eval_primitive(Primitive::Deg2Rad, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_rad2deg_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![0.0, PI / 2.0, PI]);
+    let result = eval_primitive(Primitive::Rad2Deg, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_deg2rad_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Deg2Rad, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
