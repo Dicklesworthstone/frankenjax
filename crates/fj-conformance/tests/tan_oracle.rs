@@ -432,3 +432,59 @@ fn metamorphic_tan_tensor_sin_over_cos() {
         }
     }
 }
+
+// ====================== ADDITIONAL COVERAGE ======================
+
+#[test]
+fn oracle_tan_3d_shape() {
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
+    );
+    let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 2]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals[0], 0.0);
+    assert_close(vals[7], 0.7_f64.tan(), 1e-14, "tan(0.7)");
+}
+
+#[test]
+fn oracle_tan_empty_tensor() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert!(extract_f64_vec(&result).is_empty());
+}
+
+#[test]
+fn oracle_tan_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 3]);
+}
+
+#[test]
+fn oracle_tan_preserves_dtype() {
+    let input = make_f64_tensor(&[3], vec![0.0, 0.5, 1.0]);
+    let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
+
+#[test]
+fn oracle_tan_neg_infinity() {
+    let input = make_f64_tensor(&[], vec![f64::NEG_INFINITY]);
+    let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+    assert!(extract_f64_scalar(&result).is_nan(), "tan(-inf) = NaN");
+}
+
+#[test]
+fn oracle_tan_subnormal() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = make_f64_tensor(&[], vec![subnormal]);
+    let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    // For small x, tan(x) ≈ x
+    assert!((val - subnormal).abs() < subnormal * 0.01, "tan(subnormal) ≈ subnormal");
+}

@@ -278,3 +278,60 @@ fn oracle_squeeze_5d() {
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_squeeze_3d_no_change() {
+    // 3D tensor with no size-1 dims
+    let input = make_i64_tensor(&[2, 3, 4], (1..=24).collect());
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3, 4]);
+}
+
+#[test]
+fn oracle_squeeze_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::I64, Shape { dims: vec![1, 0] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+}
+
+#[test]
+fn oracle_squeeze_special_values() {
+    let input = make_f64_tensor(&[1, 4], vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_nan());
+    assert!(vals[1].is_infinite() && vals[1] > 0.0);
+    assert!(vals[2].is_infinite() && vals[2] < 0.0);
+    assert_eq!(vals[3].to_bits(), (-0.0_f64).to_bits());
+}
+
+#[test]
+fn oracle_squeeze_bool_dtype() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape { dims: vec![1, 3] },
+            vec![Literal::Bool(true), Literal::Bool(false), Literal::Bool(true)],
+        )
+        .unwrap(),
+    );
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(result.dtype(), DType::Bool);
+}
+
+#[test]
+fn oracle_squeeze_subnormal_values() {
+    let subnormal = f64::MIN_POSITIVE / 2.0;
+    let input = make_f64_tensor(&[1, 2], vec![subnormal, -subnormal]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals[0].to_bits(), subnormal.to_bits());
+    assert_eq!(vals[1].to_bits(), (-subnormal).to_bits());
+}
