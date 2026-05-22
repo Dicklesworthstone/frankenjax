@@ -268,6 +268,16 @@ impl PyValue {
         cpu_device()
     }
 
+    fn devices(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        let devices = PySet::empty(py)?;
+        devices.add(cpu_device())?;
+        Ok(devices.into_any().unbind())
+    }
+
+    fn on_device_size_in_bytes(&self) -> u64 {
+        self.nbytes()
+    }
+
     #[getter]
     fn is_fully_addressable(&self) -> bool {
         true
@@ -1935,6 +1945,7 @@ mod tests {
         assert_eq!(device.id(), 0);
         assert_eq!(device.process_index(), 0);
         assert_eq!(device.platform(), "cpu");
+        assert_eq!(v.on_device_size_in_bytes(), v.nbytes());
         assert!(v.is_fully_addressable());
         assert!(v.is_fully_replicated());
         assert!(v.__len__().is_err());
@@ -1943,6 +1954,8 @@ mod tests {
         assert!((v.copy().as_f64().unwrap() - 42.0).abs() < 1e-12);
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
+            let devices = v.devices(py).unwrap();
+            assert_eq!(devices.bind(py).len().unwrap(), 1);
             let value = v.tolist(py).unwrap();
             assert!((value.bind(py).extract::<f64>().unwrap() - 42.0).abs() < 1e-12);
             let value = v.__int__(py).unwrap();
