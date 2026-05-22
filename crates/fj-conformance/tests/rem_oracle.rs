@@ -57,6 +57,26 @@ fn extract_shape(v: &Value) -> Vec<u32> {
     }
 }
 
+fn extract_i64_scalar(v: &Value) -> i64 {
+    match v {
+        Value::Tensor(t) => {
+            assert_eq!(t.shape.dims.len(), 0, "expected scalar");
+            t.elements[0].as_i64().unwrap()
+        }
+        Value::Scalar(l) => l.as_i64().unwrap(),
+    }
+}
+
+fn extract_f64_scalar(v: &Value) -> f64 {
+    match v {
+        Value::Tensor(t) => {
+            assert_eq!(t.shape.dims.len(), 0, "expected scalar");
+            t.elements[0].as_f64().unwrap()
+        }
+        Value::Scalar(l) => l.as_f64().unwrap(),
+    }
+}
+
 fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
@@ -297,6 +317,151 @@ fn oracle_rem_3d_i64() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_i64(v: i64) -> Value {
+    Value::Scalar(Literal::I64(v))
+}
+
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_rem_i64_scalar_dividend_tensor_divisor_broadcast() {
+    // scalar dividend % tensor divisor
+    let a = scalar_i64(17);
+    let b = make_i64_tensor(&[4], vec![3, 5, 7, 11]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![2, 2, 3, 6]); // 17%3, 17%5, 17%7, 17%11
+}
+
+#[test]
+fn oracle_rem_i64_tensor_dividend_scalar_divisor_broadcast() {
+    // tensor dividend % scalar divisor
+    let a = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let b = scalar_i64(7);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_i64_vec(&result), vec![3, 6, 2, 5]); // 10%7, 20%7, 30%7, 40%7
+}
+
+#[test]
+fn oracle_rem_i64_singleton_dividend_vector_divisor_broadcast() {
+    // [1] dividend % [3] divisor -> [3]
+    let a = make_i64_tensor(&[1], vec![17]);
+    let b = make_i64_tensor(&[3], vec![3, 5, 7]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_i64_vec(&result), vec![2, 2, 3]);
+}
+
+#[test]
+fn oracle_rem_i64_vector_dividend_singleton_divisor_broadcast() {
+    // [3] dividend % [1] divisor -> [3]
+    let a = make_i64_tensor(&[3], vec![10, 20, 30]);
+    let b = make_i64_tensor(&[1], vec![7]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_i64_vec(&result), vec![3, 6, 2]);
+}
+
+#[test]
+fn oracle_rem_i64_column_dividend_matrix_divisor_broadcast() {
+    // [2, 1] dividend % [2, 3] divisor -> [2, 3]
+    let a = make_i64_tensor(&[2, 1], vec![17, 23]);
+    let b = make_i64_tensor(&[2, 3], vec![3, 5, 7, 4, 6, 8]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_i64_vec(&result);
+    // Row 0: 17%3, 17%5, 17%7 = 2, 2, 3
+    assert_eq!(vals[0], 2);
+    assert_eq!(vals[1], 2);
+    assert_eq!(vals[2], 3);
+    // Row 1: 23%4, 23%6, 23%8 = 3, 5, 7
+    assert_eq!(vals[3], 3);
+    assert_eq!(vals[4], 5);
+    assert_eq!(vals[5], 7);
+}
+
+#[test]
+fn oracle_rem_i64_different_ranks_broadcast() {
+    // [3] dividend % [2, 3] divisor -> [2, 3]
+    let a = make_i64_tensor(&[3], vec![10, 20, 30]);
+    let b = make_i64_tensor(&[2, 3], vec![3, 7, 11, 4, 9, 13]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_i64_vec(&result);
+    // Row 0: 10%3=1, 20%7=6, 30%11=8
+    assert_eq!(vals[0], 1);
+    assert_eq!(vals[1], 6);
+    assert_eq!(vals[2], 8);
+    // Row 1: 10%4=2, 20%9=2, 30%13=4
+    assert_eq!(vals[3], 2);
+    assert_eq!(vals[4], 2);
+    assert_eq!(vals[5], 4);
+}
+
+#[test]
+fn oracle_rem_i64_all_scalars_broadcast() {
+    // scalar % scalar -> scalar
+    let a = scalar_i64(17);
+    let b = scalar_i64(5);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+    assert_eq!(extract_i64_scalar(&result), 2);
+}
+
+#[test]
+fn oracle_rem_f64_all_scalars_broadcast() {
+    // scalar % scalar -> scalar (float)
+    let a = scalar_f64(7.5);
+    let b = scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+    assert!((extract_f64_scalar(&result) - 1.5).abs() < 1e-10);
+}
+
+#[test]
+fn oracle_rem_f64_scalar_dividend_tensor_divisor_broadcast() {
+    // scalar dividend % tensor divisor (float)
+    let a = scalar_f64(10.5);
+    let b = make_f64_tensor(&[3], vec![3.0, 4.0, 5.0]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 1.5).abs() < 1e-10); // 10.5 % 3.0 = 1.5
+    assert!((vals[1] - 2.5).abs() < 1e-10); // 10.5 % 4.0 = 2.5
+    assert!((vals[2] - 0.5).abs() < 1e-10); // 10.5 % 5.0 = 0.5
+}
+
+#[test]
+fn oracle_rem_f64_tensor_dividend_scalar_divisor_broadcast() {
+    // tensor dividend % scalar divisor (float)
+    let a = make_f64_tensor(&[3], vec![7.5, 8.5, 9.5]);
+    let b = scalar_f64(3.0);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert!((vals[0] - 1.5).abs() < 1e-10); // 7.5 % 3.0 = 1.5
+    assert!((vals[1] - 2.5).abs() < 1e-10); // 8.5 % 3.0 = 2.5
+    assert!((vals[2] - 0.5).abs() < 1e-10); // 9.5 % 3.0 = 0.5
+}
+
+#[test]
+fn oracle_rem_incompatible_shapes_error() {
+    // [2] % [3] should error
+    let a = make_i64_tensor(&[2], vec![10, 20]);
+    let b = make_i64_tensor(&[3], vec![3, 5, 7]);
+    let result = eval_primitive(Primitive::Rem, &[a, b], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_rem_i64_vector_scalar_divisor_broadcast() {
     let a = make_i64_tensor(&[4], vec![7, 8, -7, -8]);
@@ -428,16 +593,6 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
         actual,
         (actual - expected).abs()
     );
-}
-
-fn extract_f64_scalar(v: &Value) -> f64 {
-    match v {
-        Value::Tensor(t) => {
-            assert!(t.shape.dims.is_empty(), "expected scalar");
-            t.elements[0].as_f64().unwrap()
-        }
-        Value::Scalar(l) => l.as_f64().unwrap(),
-    }
 }
 
 // ======================== METAMORPHIC: Rem(Neg(x), y) = Neg(Rem(x, y)) ========================
