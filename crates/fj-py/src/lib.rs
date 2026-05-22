@@ -190,6 +190,15 @@ fn vmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
 }
 
 #[pyfunction]
+fn pmap(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyValue>> {
+    let rust_args = py_values_to_rust(args);
+    fj_api::pmap(jaxpr.inner.clone())
+        .call(rust_args)
+        .map(py_values_from_rust)
+        .map_err(runtime_error)
+}
+
+#[pyfunction]
 fn value_and_grad(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<(Vec<PyValue>, Vec<PyValue>)> {
     let rust_args = py_values_to_rust(args);
     fj_api::value_and_grad(jaxpr.inner.clone())
@@ -234,6 +243,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(jit, m)?)?;
     m.add_function(wrap_pyfunction!(grad, m)?)?;
     m.add_function(wrap_pyfunction!(vmap, m)?)?;
+    m.add_function(wrap_pyfunction!(pmap, m)?)?;
     m.add_function(wrap_pyfunction!(value_and_grad, m)?)?;
     m.add_function(wrap_pyfunction!(jacobian, m)?)?;
     m.add_function(wrap_pyfunction!(hessian, m)?)?;
@@ -307,5 +317,22 @@ mod tests {
         let hess = hessian(&jaxpr, args).unwrap();
         assert_eq!(hess.shape(), vec![1, 1]);
         assert!((hess.as_f64_list().unwrap()[0] - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn pmap_wrapper_surfaces_fail_closed_error() {
+        pyo3::prepare_freethreaded_python();
+        let jaxpr = make_jaxpr_add_one();
+        let result = pmap(&jaxpr, vec![PyValue::vector_f64(vec![1.0, 2.0]).unwrap()]);
+        assert!(
+            result.is_err(),
+            "pmap should fail closed without multi-device context"
+        );
+        let err = result
+            .err()
+            .expect("pmap error should be available after is_err");
+        let message = err.to_string().to_ascii_lowercase();
+        assert!(message.contains("pmap unavailable"), "{message}");
+        assert!(message.contains("multi-device"), "{message}");
     }
 }

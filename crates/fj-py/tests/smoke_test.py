@@ -66,6 +66,21 @@ def test_vmap():
     print("✓ vmap(add_one)([1,2,3]) = [2,3,4]")
 
 
+def test_pmap_fails_closed():
+    """Test pmap reports the V1 multi-device unsupported contract."""
+    jaxpr = fj.make_jaxpr_add_one()
+    batch = fj.PyValue.vector_f64([1.0, 2.0])
+    try:
+        fj.pmap(jaxpr, [batch])
+    except RuntimeError as exc:
+        message = str(exc).lower()
+        assert "pmap unavailable" in message
+        assert "multi-device" in message
+    else:
+        raise AssertionError("pmap should fail closed without multi-device context")
+    print("✓ pmap fails closed without multi-device context")
+
+
 def test_jacobian_and_hessian():
     """Test Jacobian and Hessian transform wrappers."""
     jaxpr = fj.make_jaxpr_square()
@@ -104,6 +119,7 @@ if __name__ == "__main__":
     test_grad_square()
     test_value_and_grad()
     test_vmap()
+    test_pmap_fails_closed()
     test_jacobian_and_hessian()
     test_checkpoint()
     print("\n✅ All smoke tests passed!")
