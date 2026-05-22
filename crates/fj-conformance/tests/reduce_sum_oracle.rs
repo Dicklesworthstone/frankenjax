@@ -622,7 +622,7 @@ fn property_reduce_sum_preserves_all_float_dtypes() {
 
     for (dtype, input) in cases {
         // Full reduction → scalar
-        let result = eval_primitive(Primitive::ReduceSum, &[input.clone()], &BTreeMap::new())
+        let result = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &BTreeMap::new())
             .unwrap_or_else(|e| panic!("reduce_sum {dtype:?} failed: {e}"));
         match result {
             Value::Scalar(lit) => {

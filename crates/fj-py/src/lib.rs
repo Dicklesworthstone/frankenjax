@@ -39,6 +39,13 @@ impl PyValue {
     }
 
     #[staticmethod]
+    fn vector_i64(values: Vec<i64>) -> PyResult<Self> {
+        Value::vector_i64(&values)
+            .map(|v| PyValue { inner: v })
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))
+    }
+
+    #[staticmethod]
     fn vector_f64(values: Vec<f64>) -> PyResult<Self> {
         Value::vector_f64(&values)
             .map(|v| PyValue { inner: v })
@@ -51,6 +58,14 @@ impl PyValue {
 
     fn as_i64(&self) -> Option<i64> {
         self.inner.as_i64_scalar()
+    }
+
+    fn as_f64_list(&self) -> Option<Vec<f64>> {
+        self.inner.as_tensor().and_then(|tensor| tensor.to_f64_vec())
+    }
+
+    fn as_i64_list(&self) -> Option<Vec<i64>> {
+        self.inner.as_tensor().and_then(|tensor| tensor.to_i64_vec())
     }
 
     fn __repr__(&self) -> String {
@@ -198,6 +213,17 @@ mod tests {
     fn value_scalar_roundtrip() {
         let v = PyValue::scalar_f64(42.0);
         assert!((v.as_f64().unwrap() - 42.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn value_vector_roundtrip() {
+        let floats = PyValue::vector_f64(vec![1.0, 2.5, 4.0]).unwrap();
+        assert_eq!(floats.as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
+        assert_eq!(floats.as_i64_list(), None);
+
+        let ints = PyValue::vector_i64(vec![1, 2, 3]).unwrap();
+        assert_eq!(ints.as_i64_list().unwrap(), vec![1, 2, 3]);
+        assert_eq!(ints.as_f64_list(), None);
     }
 
     #[test]

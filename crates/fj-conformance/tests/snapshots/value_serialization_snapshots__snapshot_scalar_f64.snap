@@ -1,9 +1,10 @@
 ---
 source: crates/fj-conformance/tests/value_serialization_snapshots.rs
+assertion_line: 17
 expression: json
 ---
 {
   "Scalar": {
-    "F64Bits": 4614256650576692846
+    "F64Bits": 4614320624209399644
   }
 }

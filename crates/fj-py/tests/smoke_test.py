@@ -19,6 +19,11 @@ def test_value_scalar():
     assert v2.as_i64() == 123
     print("✓ scalar_i64 roundtrip")
 
+    vec = fj.PyValue.vector_i64([1, 2, 3])
+    assert vec.as_i64_list() == [1, 2, 3]
+    assert vec.as_f64_list() is None
+    print("✓ vector_i64 roundtrip")
+
 
 def test_jit_add():
     """Test JIT compilation of add2."""
@@ -54,7 +59,8 @@ def test_vmap():
     batch = fj.PyValue.vector_f64([1.0, 2.0, 3.0])
     result = fj.vmap(jaxpr, [batch])
     # add_one adds 1 to each element
-    print("✓ vmap(add_one)([1,2,3]) ran successfully")
+    assert result[0].as_f64_list() == [2.0, 3.0, 4.0]
+    print("✓ vmap(add_one)([1,2,3]) = [2,3,4]")
 
 
 def test_checkpoint():

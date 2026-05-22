@@ -46,7 +46,7 @@ fn snapshot_atom_literal_f64() {
     insta::assert_snapshot!(json, @r###"
     {
       "Lit": {
-        "F64Bits": 4614256650576692846
+        "F64Bits": 4614320624209399644
       }
     }
     "###);

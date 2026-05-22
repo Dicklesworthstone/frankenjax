@@ -373,7 +373,7 @@ fn property_cumulative_preserves_all_float_dtypes() {
 
     for (dtype, input) in cases {
         for primitive in [Primitive::Cumsum, Primitive::Cumprod] {
-            let result = eval_primitive(primitive, &[input.clone()], &no_params())
+            let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
                 .unwrap_or_else(|e| panic!("{primitive:?} {dtype:?} failed: {e}"));
             let Value::Tensor(t) = result else {
                 panic!("{primitive:?} {dtype:?}: expected tensor");
