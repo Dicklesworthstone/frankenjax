@@ -543,6 +543,14 @@ impl PyValue {
         )))
     }
 
+    fn __setitem__(&self, _index: &Bound<'_, PyAny>, _value: &Bound<'_, PyAny>) -> PyResult<()> {
+        self.ensure_not_deleted()?;
+        Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(
+            "JAX arrays are immutable and do not support in-place item assignment. \
+             Instead of x[idx] = y, use x = x.at[idx].set(y) or another .at[] method.",
+        ))
+    }
+
     fn block_until_ready(&self) -> PyResult<Self> {
         self.ensure_not_deleted()?;
         Ok(self.clone())

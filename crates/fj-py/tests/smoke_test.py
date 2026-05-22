@@ -146,6 +146,10 @@ def test_value_scalar():
     assert deleted.is_deleted() is False
     assert deleted.delete() is None
     assert deleted.is_deleted() is True
+
+    def assign_first(array):
+        array[0] = 9
+
     try:
         deleted.is_ready()
     except RuntimeError as exc:
@@ -169,6 +173,7 @@ def test_value_scalar():
         ("module copy_to_host_async", lambda: fj.copy_to_host_async(deleted)),
         ("item", deleted.item),
         ("indexing", lambda: deleted[0]),
+        ("item assignment", lambda: assign_first(deleted)),
         ("array protocol", lambda: np.asarray(deleted)),
         ("DLPack device protocol", deleted.__dlpack_device__),
         ("addressable_shards", lambda: deleted.addressable_shards),
@@ -267,6 +272,13 @@ def test_value_scalar():
         assert "out of bounds" in str(exc)
     else:
         raise AssertionError("vector item(index) should reject out-of-bounds indexes")
+    try:
+        vec[0] = 9
+    except TypeError as exc:
+        assert "immutable" in str(exc)
+        assert "x.at" in str(exc)
+    else:
+        raise AssertionError("Array item assignment should be immutable")
     iterated = list(vec)
     assert [item.as_i64() for item in iterated] == [1, 2, 3]
     assert [item.shape for item in iterated] == [(), (), ()]
