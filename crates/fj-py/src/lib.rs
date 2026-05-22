@@ -482,10 +482,14 @@ fn devices(backend: Option<String>) -> PyResult<Vec<PyDevice>> {
     Ok(vec![cpu_device()])
 }
 
-#[pyfunction(signature = (process_index=None, backend=None))]
-fn local_devices(process_index: Option<usize>, backend: Option<String>) -> PyResult<Vec<PyDevice>> {
+#[pyfunction(signature = (process_index=None, backend=None, host_id=None))]
+fn local_devices(
+    process_index: Option<usize>,
+    backend: Option<String>,
+    host_id: Option<usize>,
+) -> PyResult<Vec<PyDevice>> {
     validate_cpu_backend(backend.as_deref())?;
-    match process_index {
+    match host_id.or(process_index) {
         None | Some(0) => Ok(vec![cpu_device()]),
         Some(process_index) => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
             "unknown process_index {process_index}"
@@ -851,10 +855,19 @@ mod tests {
         assert_eq!(all_devices[0].process_index(), 0);
         assert_eq!(all_devices[0].platform(), "cpu");
 
-        let local = local_devices(None, None::<String>).unwrap();
+        let local = local_devices(None, None::<String>, None).unwrap();
         assert_eq!(local.len(), 1);
         assert_eq!(local[0].id(), 0);
-        assert!(local_devices(Some(1), None::<String>).is_err());
+        assert_eq!(
+            local_devices(Some(0), None::<String>, None).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            local_devices(None, None::<String>, Some(0)).unwrap().len(),
+            1
+        );
+        assert!(local_devices(Some(1), None::<String>, None).is_err());
+        assert!(local_devices(None, None::<String>, Some(1)).is_err());
     }
 
     #[test]

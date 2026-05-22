@@ -178,6 +178,7 @@ def test_backend_topology_helpers():
     assert len(local_devices) == 1
     assert local_devices[0].id == 0
     assert fj.local_devices(0)[0].id == 0
+    assert fj.local_devices(host_id=0)[0].id == 0
 
     try:
         fj.local_devices(1)
@@ -185,6 +186,13 @@ def test_backend_topology_helpers():
         assert "process_index" in str(exc)
     else:
         raise AssertionError("local_devices should reject unknown process_index")
+
+    try:
+        fj.local_devices(host_id=1)
+    except ValueError as exc:
+        assert "process_index" in str(exc)
+    else:
+        raise AssertionError("local_devices should reject unknown host_id")
 
     try:
         fj.device_count("gpu")
