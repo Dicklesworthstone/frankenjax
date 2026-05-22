@@ -104,6 +104,16 @@ fn oracle_lgamma_half() {
 }
 
 #[test]
+fn oracle_lgamma_negative_half() {
+    // lgamma(-0.5) = ln(abs(Gamma(-0.5))) = ln(2 * sqrt(pi)).
+    let input = Value::Scalar(Literal::from_f64(-0.5));
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap();
+    let vals = extract_f64_vec(&result);
+    let expected = (2.0 * std::f64::consts::PI.sqrt()).ln();
+    assert!((vals[0] - expected).abs() < 0.01);
+}
+
+#[test]
 fn oracle_lgamma_1d() {
     let input = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
     let result = eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap();
