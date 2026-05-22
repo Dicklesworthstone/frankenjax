@@ -1,0 +1,39 @@
+{
+  "schema_version": "frankenjax.test-log.v1",
+  "test_id": "fj_trace::tests::v2_linalg_fft_shape_contracts",
+  "fixture_id": "22962dc20f7446d12b4ec7a99712a77e19d8f5472d3e088e1ee8bce114a8a200",
+  "seed": null,
+  "mode": "strict",
+  "env": {
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "os": "linux",
+    "cargo_target_dir": "/data/tmp/cargo-target",
+    "timestamp_unix_ms": 1779439883990
+  },
+  "artifact_refs": [
+    "cholesky:[4, 4]",
+    "qr_q:[5, 3]",
+    "qr_r:[3, 3]",
+    "svd_u:[5, 3]",
+    "svd_s:[3]",
+    "svd_vt:[3, 3]",
+    "triangular_solve:[2, 4, 3]",
+    "eigh_vals:[4]",
+    "eigh_vecs:[4, 4]",
+    "fft:[8]",
+    "rfft:[5]",
+    "irfft:[8]",
+    "packet:FJ-P2C-001",
+    "replay: cargo test -p fj-trace --lib fj_trace::tests::v2_linalg_fft_shape_contracts -- --exact --nocapture",
+    "/data/projects/frankenjax/crates/fj-trace/../../artifacts/testing/logs/fj-trace/fj_trace__tests__v2_linalg_fft_shape_contracts.json"
+  ],
+  "result": "pass",
+  "duration_ms": 97,
+  "details": "packet_id=FJ-P2C-001;suite_id=fj-trace;result=pass",
+  "phase_timings": {
+    "setup_ms": 31,
+    "execute_ms": 0,
+    "verify_ms": 0,
+    "teardown_ms": 65
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "frankenjax.test-log.v1",
+  "test_id": "fj_core::tests::validate_well_formed_recurses_into_sub_jaxprs",
+  "fixture_id": "50b6f4d7de0924bd1591cbd3dc68e8a152d838af3d00a5a8709447090643bc00",
+  "seed": null,
+  "mode": "strict",
+  "env": {
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "os": "linux",
+    "cargo_target_dir": "/data/tmp/cargo-target",
+    "timestamp_unix_ms": 1779439883443
+  },
+  "artifact_refs": [
+    "packet:FJ-P2C-001",
+    "replay: cargo test -p fj-core --lib fj_core::tests::validate_well_formed_recurses_into_sub_jaxprs -- --exact --nocapture",
+    "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__validate_well_formed_recurses_into_sub_jaxprs.json"
+  ],
+  "result": "pass",
+  "duration_ms": 103,
+  "details": "packet_id=FJ-P2C-001;suite_id=fj-core;result=pass",
+  "phase_timings": {
+    "setup_ms": 33,
+    "execute_ms": 0,
+    "verify_ms": 0,
+    "teardown_ms": 69
+  }
+}

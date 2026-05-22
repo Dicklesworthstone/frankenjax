@@ -1,0 +1,79 @@
+{
+  "schema_version": "frankenjax.golden-journey.v1",
+  "scenario_id": "gj_08_ledger_inspection",
+  "scenario_category": "ledger_inspection",
+  "ts_utc_unix_ms": 1777453392177,
+  "replay_command": "cargo test -p fj-conformance --test golden_journeys -- golden_journey_08 --exact --nocapture",
+  "input_capture": {
+    "dispatch_count": 4,
+    "programs": [
+      "Add2",
+      "Square",
+      "AddOne",
+      "Square"
+    ]
+  },
+  "assertions": [
+    {
+      "name": "ledger_0_has_one_entry",
+      "passed": true,
+      "detail": "dispatch_0 ledger_len=1"
+    },
+    {
+      "name": "ledger_1_has_one_entry",
+      "passed": true,
+      "detail": "dispatch_1 ledger_len=1"
+    },
+    {
+      "name": "ledger_2_has_one_entry",
+      "passed": true,
+      "detail": "dispatch_2 ledger_len=1"
+    },
+    {
+      "name": "ledger_3_has_one_entry",
+      "passed": true,
+      "detail": "dispatch_3 ledger_len=1"
+    },
+    {
+      "name": "all_cache_keys_unique",
+      "passed": true,
+      "detail": "total=4, unique=4"
+    },
+    {
+      "name": "ledger_0_decision_id_matches_cache_key",
+      "passed": true,
+      "detail": "decision_id=fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8, cache_key=fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8"
+    },
+    {
+      "name": "ledger_1_decision_id_matches_cache_key",
+      "passed": true,
+      "detail": "decision_id=fjx-956d8b29b9d0c2c8abe91a3da10ea3360c36f9029e3efc72f072143c2ce7a162, cache_key=fjx-956d8b29b9d0c2c8abe91a3da10ea3360c36f9029e3efc72f072143c2ce7a162"
+    },
+    {
+      "name": "ledger_2_decision_id_matches_cache_key",
+      "passed": true,
+      "detail": "decision_id=fjx-feea388aecff1e279a996f7a66338e88af40a3bcfc5b073d796fdca090f13c29, cache_key=fjx-feea388aecff1e279a996f7a66338e88af40a3bcfc5b073d796fdca090f13c29"
+    },
+    {
+      "name": "ledger_3_decision_id_matches_cache_key",
+      "passed": true,
+      "detail": "decision_id=fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159, cache_key=fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159"
+    }
+  ],
+  "output_capture": {
+    "cache_keys": [
+      "fjx-90afc045c399ed3bad94d18a7bbcc70e46a6bcf3d4a2793a52fa52af415df7e8",
+      "fjx-956d8b29b9d0c2c8abe91a3da10ea3360c36f9029e3efc72f072143c2ce7a162",
+      "fjx-feea388aecff1e279a996f7a66338e88af40a3bcfc5b073d796fdca090f13c29",
+      "fjx-76d109d1362137c3a8b2a7622f21dddd95dc24d5ea94e8871b2e0ac90fdaa159"
+    ],
+    "ledger_lengths": [
+      1,
+      1,
+      1,
+      1
+    ]
+  },
+  "result": "pass",
+  "duration_ms": 5
+}

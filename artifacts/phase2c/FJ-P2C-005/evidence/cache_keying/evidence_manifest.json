@@ -1,0 +1,73 @@
+{
+  "schema_version": "frankenjax.evidence-manifest.v1",
+  "packet_id": "FJ-P2C-005",
+  "subsystem": "cache_keying",
+  "generated_at": "2026-02-20T11:50:00Z",
+  "parity_gates": [
+    {
+      "gate_id": "G1",
+      "name": "Artifact format compliance",
+      "status": "PASS",
+      "evidence": "legacy_anchor_map.v1.json, contract_table.v1.json, security_threat_matrix.md — all schema-validated"
+    },
+    {
+      "gate_id": "G2",
+      "name": "Unit tests",
+      "status": "PASS",
+      "evidence": "36 unit tests in fj-cache covering key generation, sensitivity, persistence, eviction, stability"
+    },
+    {
+      "gate_id": "G3",
+      "name": "Oracle/differential conformance",
+      "status": "PASS",
+      "evidence": "5 oracle tests: determinism (100 iterations), sensitivity (6 fields), hit/miss, mode separation, collision resistance (1540+ keys)"
+    },
+    {
+      "gate_id": "G4",
+      "name": "Adversarial validation",
+      "status": "PASS",
+      "evidence": "6 adversarial tests: large program, uniform rejection, empty program, delimiter injection, streaming/owned agreement, persistence"
+    },
+    {
+      "gate_id": "G5",
+      "name": "Metamorphic properties",
+      "status": "PASS",
+      "evidence": "4 metamorphic tests: restart invariance, f(x)!=f(y), f!=g, eviction correctness"
+    },
+    {
+      "gate_id": "G6",
+      "name": "Performance targets",
+      "status": "PASS",
+      "evidence": "Streaming key gen: 234ns (<1µs target). Cache miss: 52ns (<200ns target). 32.6% improvement via zero-alloc hasher."
+    },
+    {
+      "gate_id": "G7",
+      "name": "E2E scenarios",
+      "status": "PASS",
+      "evidence": "6 E2E scenarios: hit/miss, key stability, eviction under pressure, strict rejection, hardened inclusion, collision resistance"
+    },
+    {
+      "gate_id": "G8",
+      "name": "Property tests",
+      "status": "PASS",
+      "evidence": "prop_cache_key_stability (256+ cases), prop_distinct_backends_produce_distinct_keys (256+ cases)"
+    },
+    {
+      "gate_id": "G9",
+      "name": "Risk analysis",
+      "status": "PASS",
+      "evidence": "5-threat risk note with mitigation evidence. 8 invariants verified."
+    },
+    {
+      "gate_id": "G10",
+      "name": "Durability (RaptorQ)",
+      "status": "PASS",
+      "evidence": "conformance_report sidecar (25 symbols, 22 source, 3 repair), perf_delta sidecar (9 symbols, 8 source, 1 repair)"
+    }
+  ],
+  "overall_verdict": "PASS",
+  "known_issues": [
+    "No version string in cache key (coarse namespace separation only)",
+    "Delimiter injection in field values theoretically possible but SHA-256 prevents aliasing"
+  ]
+}

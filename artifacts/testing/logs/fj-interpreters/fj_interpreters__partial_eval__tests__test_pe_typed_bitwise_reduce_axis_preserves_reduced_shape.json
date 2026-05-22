@@ -1,0 +1,27 @@
+{
+  "schema_version": "frankenjax.test-log.v1",
+  "test_id": "fj_interpreters::partial_eval::tests::test_pe_typed_bitwise_reduce_axis_preserves_reduced_shape",
+  "fixture_id": "d285e1a2f1156261cc4717d05c65bbad0032683443e770f4370fc12423e2ec2d",
+  "seed": null,
+  "mode": "strict",
+  "env": {
+    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "os": "linux",
+    "cargo_target_dir": "/data/projects/.rch-targets/frankenjax",
+    "timestamp_unix_ms": 1779254288016
+  },
+  "artifact_refs": [
+    "packet:FJ-P2C-003",
+    "replay: cargo test -p fj-interpreters --lib fj_interpreters::partial_eval::tests::test_pe_typed_bitwise_reduce_axis_preserves_reduced_shape -- --exact --nocapture",
+    "/data/projects/frankenjax/crates/fj-interpreters/../../artifacts/testing/logs/fj-interpreters/fj_interpreters__partial_eval__tests__test_pe_typed_bitwise_reduce_axis_preserves_reduced_shape.json"
+  ],
+  "result": "pass",
+  "duration_ms": 58,
+  "details": "packet_id=FJ-P2C-003;suite_id=fj-interpreters;result=pass",
+  "phase_timings": {
+    "setup_ms": 47,
+    "execute_ms": 0,
+    "verify_ms": 0,
+    "teardown_ms": 10
+  }
+}
