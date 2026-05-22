@@ -1593,7 +1593,7 @@ fn select_n_index_to_usize(
             }
             if b { 1 } else { 0 }
         }
-        _ => idx_lit.as_i64().ok_or_else(|| EvalError::TypeMismatch {
+        _ => idx_lit.as_i64().ok_or(EvalError::TypeMismatch {
             primitive,
             detail: "select_n index must be an integer or boolean",
         })? as usize,
@@ -1699,7 +1699,13 @@ pub(crate) fn eval_select_n(primitive: Primitive, inputs: &[Value]) -> Result<Va
 
                 let operand = match &operands[idx] {
                     Value::Tensor(t) => t,
-                    _ => unreachable!(),
+                    Value::Scalar(_) => {
+                        return Err(EvalError::Unsupported {
+                            primitive,
+                            detail: "select_n operands must all be tensors when index is tensor"
+                                .into(),
+                        });
+                    }
                 };
                 elements.push(operand.elements[i]);
             }
@@ -2578,7 +2584,7 @@ pub(crate) fn eval_igamma(primitive: Primitive, inputs: &[Value]) -> Result<Valu
         primitive,
         inputs,
         |a, x| igamma_approx(a as f64, x as f64) as i64,
-        |a, x| igamma_approx(a, x),
+        igamma_approx,
     )
 }
 
@@ -2594,7 +2600,7 @@ pub(crate) fn eval_igammac(primitive: Primitive, inputs: &[Value]) -> Result<Val
         primitive,
         inputs,
         |a, x| igammac_approx(a as f64, x as f64) as i64,
-        |a, x| igammac_approx(a, x),
+        igammac_approx,
     )
 }
 
@@ -2651,7 +2657,7 @@ pub(crate) fn betainc_approx(a: f64, b: f64, x: f64) -> f64 {
     if x.is_nan() || a.is_nan() || b.is_nan() {
         return f64::NAN;
     }
-    if x < 0.0 || x > 1.0 {
+    if !(0.0..=1.0).contains(&x) {
         return f64::NAN;
     }
     if x == 0.0 {
@@ -2684,7 +2690,7 @@ pub(crate) fn eval_betainc(primitive: Primitive, inputs: &[Value]) -> Result<Val
             actual: inputs.len(),
         });
     }
-    eval_ternary_elementwise(primitive, inputs, |a, b, x| betainc_approx(a, b, x))
+    eval_ternary_elementwise(primitive, inputs, betainc_approx)
 }
 
 fn eval_ternary_elementwise(
@@ -2807,15 +2813,14 @@ pub(crate) fn bessel_i0e_approx(x: f64) -> f64 {
         i0 * (-ax).exp()
     } else {
         let t = 3.75 / ax;
-        let i0e = (0.39894228
+        (0.39894228
             + t * (0.01328592
                 + t * (0.00225319
                     + t * (-0.00157565
                         + t * (0.00916281
                             + t * (-0.02057706
                                 + t * (0.02635537 + t * (-0.01647633 + t * 0.00392377))))))))
-            / ax.sqrt();
-        i0e
+            / ax.sqrt()
     }
 }
 
@@ -3403,30 +3408,24 @@ pub(crate) fn eval_dot_general(
 
                     let mut lhs_index = 0usize;
                     for (i, &d) in lhs_batch.iter().enumerate() {
-                        lhs_index +=
-                            batch_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                        lhs_index += batch_idx.get(i).copied().unwrap_or(0) * lhs_strides[d];
                     }
                     for (i, &d) in lhs_free_dims.iter().enumerate() {
-                        lhs_index +=
-                            lhs_free_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                        lhs_index += lhs_free_idx.get(i).copied().unwrap_or(0) * lhs_strides[d];
                     }
                     for (i, &d) in lhs_contracting.iter().enumerate() {
-                        lhs_index +=
-                            contract_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                        lhs_index += contract_idx.get(i).copied().unwrap_or(0) * lhs_strides[d];
                     }
 
                     let mut rhs_index = 0usize;
                     for (i, &d) in rhs_batch.iter().enumerate() {
-                        rhs_index +=
-                            batch_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                        rhs_index += batch_idx.get(i).copied().unwrap_or(0) * rhs_strides[d];
                     }
                     for (i, &d) in rhs_free_dims.iter().enumerate() {
-                        rhs_index +=
-                            rhs_free_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                        rhs_index += rhs_free_idx.get(i).copied().unwrap_or(0) * rhs_strides[d];
                     }
                     for (i, &d) in rhs_contracting.iter().enumerate() {
-                        rhs_index +=
-                            contract_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                        rhs_index += contract_idx.get(i).copied().unwrap_or(0) * rhs_strides[d];
                     }
 
                     (lhs.elements[lhs_index], rhs.elements[rhs_index])
@@ -3459,7 +3458,7 @@ struct MultiIndexIterator {
 
 impl MultiIndexIterator {
     fn new(dims: &[u32]) -> Self {
-        let done = dims.iter().any(|&d| d == 0);
+        let done = dims.contains(&0);
         Self {
             dims: dims.to_vec(),
             current: vec![0; dims.len()],
@@ -4236,8 +4235,12 @@ mod tests {
         // tensor, silently corrupting the dtype/element invariant.
         let input = v_f32(&[0.0, 1.0, 2.0]);
         let result = eval_exp(Primitive::Exp, &[input]).unwrap();
-        let Value::Tensor(t) = result else {
-            panic!("expected tensor");
+        let t = match result {
+            Value::Tensor(t) => t,
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "expected tensor");
+                return;
+            }
         };
         assert_eq!(t.dtype, DType::F32);
         t.validate_dtype_consistency()
@@ -4249,8 +4252,12 @@ mod tests {
         // Regression test for frankenjax-eldm.
         let input = v_f32(&[0.0, 1.0, 2.0]);
         let result = eval_sin(Primitive::Sin, &[input]).unwrap();
-        let Value::Tensor(t) = result else {
-            panic!("expected tensor");
+        let t = match result {
+            Value::Tensor(t) => t,
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "expected tensor");
+                return;
+            }
         };
         assert_eq!(t.dtype, DType::F32);
         t.validate_dtype_consistency()
@@ -4387,7 +4394,13 @@ mod tests {
         let expected = digamma_approx(1.0);
         let got = match result {
             Value::Scalar(Literal::F64Bits(bits)) => f64::from_bits(bits),
-            _ => panic!("expected F64Bits scalar"),
+            other => {
+                assert!(
+                    matches!(other, Value::Scalar(Literal::F64Bits(_))),
+                    "expected F64Bits scalar"
+                );
+                return;
+            }
         };
         assert!((got - expected).abs() < 1e-10);
     }
@@ -4868,8 +4881,12 @@ mod tests {
         params.insert("lhs_batch_dims".to_string(), "".to_string());
         params.insert("rhs_batch_dims".to_string(), "".to_string());
         let result = eval_dot_general(&[a, b], &params).unwrap();
-        let Value::Tensor(t) = result else {
-            panic!("expected tensor");
+        let t = match result {
+            Value::Tensor(t) => t,
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "expected tensor");
+                return;
+            }
         };
         assert_eq!(t.shape.dims, vec![2, 2]);
         let vals = extract_f64_vec(&Value::Tensor(t));
@@ -4886,8 +4903,12 @@ mod tests {
         params.insert("lhs_batch_dims".to_string(), "".to_string());
         params.insert("rhs_batch_dims".to_string(), "".to_string());
         let result = eval_dot_general(&[a, b], &params).unwrap();
-        let Value::Tensor(t) = result else {
-            panic!("expected tensor");
+        let t = match result {
+            Value::Tensor(t) => t,
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "expected tensor");
+                return;
+            }
         };
         assert_eq!(t.shape.dims, vec![2, 3]);
         let vals = extract_f64_vec(&Value::Tensor(t));
@@ -4909,8 +4930,12 @@ mod tests {
         params.insert("lhs_batch_dims".to_string(), "0".to_string());
         params.insert("rhs_batch_dims".to_string(), "0".to_string());
         let result = eval_dot_general(&[a, b], &params).unwrap();
-        let Value::Tensor(t) = result else {
-            panic!("expected tensor");
+        let t = match result {
+            Value::Tensor(t) => t,
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "expected tensor");
+                return;
+            }
         };
         assert_eq!(t.shape.dims, vec![2, 2, 1]);
         let vals = extract_f64_vec(&Value::Tensor(t));

@@ -1167,7 +1167,7 @@ mod tests {
     #[test]
     fn lu_2x2_roundtrip() {
         let a = make_matrix(2, 2, &[4.0, 3.0, 6.0, 3.0]);
-        let result = eval_lu(&[a.clone()], &BTreeMap::new()).unwrap();
+        let result = eval_lu(std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
         assert_eq!(result.len(), 3);
 
         let lu = extract_f64_elements(&result[0]);
@@ -1177,7 +1177,10 @@ mod tests {
                 .iter()
                 .map(|l| l.as_i64().unwrap())
                 .collect::<Vec<_>>(),
-            _ => panic!("pivots should be tensor"),
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "pivots should be tensor");
+                Vec::new()
+            }
         };
         let perm = match &result[2] {
             Value::Tensor(t) => t
@@ -1185,7 +1188,10 @@ mod tests {
                 .iter()
                 .map(|l| l.as_i64().unwrap())
                 .collect::<Vec<_>>(),
-            _ => panic!("perm should be tensor"),
+            other => {
+                assert!(matches!(other, Value::Tensor(_)), "perm should be tensor");
+                Vec::new()
+            }
         };
 
         assert_eq!(pivots.len(), 2);

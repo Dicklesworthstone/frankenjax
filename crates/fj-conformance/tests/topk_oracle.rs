@@ -48,6 +48,21 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
         .collect()
 }
 
+fn extract_f64_bits(v: &Value) -> Vec<u64> {
+    v.as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|literal| {
+            let Literal::F64Bits(bits) = literal else {
+                return None;
+            };
+            Some(*bits)
+        })
+        .collect::<Option<Vec<_>>>()
+        .expect("expected f64 literals")
+}
+
 fn extract_i64_vec(v: &Value) -> Vec<i64> {
     v.as_tensor()
         .expect("expected tensor")
@@ -162,6 +177,41 @@ fn oracle_topk_multi_output_indices_are_per_last_axis_slice() {
 }
 
 #[test]
+fn oracle_topk_multi_output_nan_sorts_above_finite_values() {
+    // JAX 0.10.1: lax.top_k(jnp.array([5.0, nan, 4.0]), 3)
+    // yields values [nan, 5.0, 4.0] and indices [1, 0, 2].
+    let input = make_f64_tensor(&[3], vec![5.0, f64::NAN, 4.0]);
+    let result = eval_primitive_multi(Primitive::TopK, &[input], &topk_params(3)).unwrap();
+
+    let values = extract_f64_vec(&result[0]);
+    assert!(values[0].is_nan(), "NaN should sort before finite values");
+    assert_eq!(values[1..], [5.0, 4.0]);
+    assert_eq!(extract_i64_vec(&result[1]), vec![1, 0, 2]);
+}
+
+#[test]
+fn oracle_topk_multi_output_positive_zero_sorts_above_negative_zero() {
+    // JAX 0.10.1 total-order behavior puts +0.0 before -0.0 for top_k.
+    let input = make_f64_tensor(&[3], vec![-0.0, 0.0, 1.0]);
+    let result = eval_primitive_multi(Primitive::TopK, &[input], &topk_params(3)).unwrap();
+
+    assert_eq!(
+        extract_f64_bits(&result[0]),
+        vec![1.0_f64.to_bits(), 0.0_f64.to_bits(), (-0.0_f64).to_bits()]
+    );
+    assert_eq!(extract_i64_vec(&result[1]), vec![2, 1, 0]);
+}
+
+#[test]
+fn oracle_topk_multi_output_equal_nonzero_ties_keep_lower_index_first() {
+    let input = make_f64_tensor(&[4], vec![5.0, 5.0, 4.0, 4.0]);
+    let result = eval_primitive_multi(Primitive::TopK, &[input], &topk_params(3)).unwrap();
+
+    assert_eq!(extract_f64_vec(&result[0]), vec![5.0, 5.0, 4.0]);
+    assert_eq!(extract_i64_vec(&result[1]), vec![0, 1, 2]);
+}
+
+#[test]
 fn oracle_topk_multi_output_allows_zero_k() {
     let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let result = eval_primitive_multi(Primitive::TopK, &[input], &topk_params(0)).unwrap();
@@ -191,8 +241,7 @@ fn oracle_topk_rejects_scalar_operand() {
         .expect_err("scalar operand should fail");
 
     assert!(
-        err.to_string().contains(">= 1 dimension")
-            || err.to_string().contains("ndim"),
+        err.to_string().contains(">= 1 dimension") || err.to_string().contains("ndim"),
         "unexpected scalar error: {err}",
     );
 }
@@ -204,8 +253,7 @@ fn oracle_topk_rejects_0d_tensor() {
         .expect_err("0-d tensor should fail");
 
     assert!(
-        err.to_string().contains(">= 1 dimension")
-            || err.to_string().contains("ndim"),
+        err.to_string().contains(">= 1 dimension") || err.to_string().contains("ndim"),
         "unexpected 0-d tensor error: {err}",
     );
 }

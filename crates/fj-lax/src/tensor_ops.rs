@@ -3121,12 +3121,10 @@ pub(crate) fn eval_top_k(
             })?;
 
     match &inputs[0] {
-        Value::Scalar(_) => {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: "top_k operand must have >= 1 dimension".to_owned(),
-            });
-        }
+        Value::Scalar(_) => Err(EvalError::Unsupported {
+            primitive,
+            detail: "top_k operand must have >= 1 dimension".to_owned(),
+        }),
         Value::Tensor(tensor) => {
             let rank = tensor.shape.rank();
             if rank == 0 {
@@ -3155,21 +3153,21 @@ pub(crate) fn eval_top_k(
 
             for slice_idx in 0..n_slices {
                 let base = slice_idx * stride;
-                let mut indexed: Vec<(usize, &Literal)> = tensor.elements[base..base + stride]
+                let mut indexed: Vec<(usize, Literal, SortKey)> = Vec::with_capacity(stride);
+                for (orig_idx, literal) in tensor.elements[base..base + stride]
                     .iter()
+                    .copied()
                     .enumerate()
-                    .collect();
+                {
+                    let key = sort_key(literal)
+                        .map_err(|detail| EvalError::Unsupported { primitive, detail })?;
+                    indexed.push((orig_idx, literal, key));
+                }
 
-                indexed.sort_by(|a, b| {
-                    let a_val = a.1.as_f64().unwrap_or(f64::NEG_INFINITY);
-                    let b_val = b.1.as_f64().unwrap_or(f64::NEG_INFINITY);
-                    b_val
-                        .partial_cmp(&a_val)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                });
+                indexed.sort_by(|a, b| compare_sort_keys(b.2, a.2).then_with(|| a.0.cmp(&b.0)));
 
-                for (orig_idx, lit) in indexed.iter().take(k) {
-                    values_elements.push(**lit);
+                for (orig_idx, lit, _) in indexed.iter().take(k) {
+                    values_elements.push(*lit);
                     indices_elements.push(Literal::I64(*orig_idx as i64));
                 }
             }
@@ -4469,7 +4467,7 @@ pub(crate) fn eval_tile(
                 });
             }
 
-            if reps.iter().any(|&r| r == 0) {
+            if reps.contains(&0) {
                 return Err(EvalError::Unsupported {
                     primitive,
                     detail: "tile reps must all be positive".into(),
@@ -4530,9 +4528,7 @@ fn tile_recursive(
 
     if depth == dims.len() - 1 {
         for _ in 0..rep {
-            for i in 0..dim {
-                result.push(elements[i]);
-            }
+            result.extend(elements.iter().take(dim).copied());
         }
     } else {
         for _ in 0..rep {
@@ -5008,14 +5004,20 @@ mod tests {
                 let vals: Vec<f32> = t
                     .elements
                     .iter()
-                    .map(|l| match l {
-                        Literal::F32Bits(bits) => f32::from_bits(*bits),
-                        _ => panic!("expected F32Bits"),
+                    .map(|literal| {
+                        let Literal::F32Bits(bits) = literal else {
+                            return None;
+                        };
+                        Some(f32::from_bits(*bits))
                     })
-                    .collect();
+                    .collect::<Option<Vec<_>>>()
+                    .expect("expected F32Bits");
                 assert_eq!(vals, vec![1.5_f32, 2.5_f32, 3.5_f32]);
             }
-            _ => panic!("expected tensor"),
+            other => assert!(
+                matches!(other, Value::Tensor(_)),
+                "expected tensor, got {other:?}"
+            ),
         }
     }
 
@@ -5030,7 +5032,10 @@ mod tests {
                 let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
                 assert_eq!(vals, vec![1, 2, -3]);
             }
-            _ => panic!("expected tensor"),
+            other => assert!(
+                matches!(other, Value::Tensor(_)),
+                "expected tensor, got {other:?}"
+            ),
         }
     }
 
@@ -5052,7 +5057,7 @@ mod tests {
 
     #[test]
     fn convert_element_type_scalar() {
-        let x = Value::Scalar(Literal::from_f64(3.14));
+        let x = Value::Scalar(Literal::from_f64(std::f64::consts::PI));
         let p = params(&[("new_dtype", "i64")]);
         let result = eval_convert_element_type(&[x], &p).unwrap();
         assert_eq!(result.as_i64_scalar(), Some(3));
