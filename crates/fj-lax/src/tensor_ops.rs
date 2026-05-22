@@ -4300,6 +4300,147 @@ pub(crate) fn eval_expand_dims(
     }
 }
 
+pub(crate) fn eval_tile(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::Tile;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let reps = parse_usize_param(primitive, "reps", params)?;
+
+    match &inputs[0] {
+        Value::Scalar(lit) => {
+            if reps.is_empty() || reps.len() > 1 {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("scalar tile requires 1 rep, got {}", reps.len()),
+                });
+            }
+            let rep = reps[0];
+            if rep == 0 {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "tile rep must be positive".into(),
+                });
+            }
+            if rep == 1 {
+                return Ok(inputs[0].clone());
+            }
+            let dtype = match lit {
+                Literal::I64(_) => DType::I64,
+                Literal::U32(_) => DType::U32,
+                Literal::U64(_) => DType::U64,
+                Literal::Bool(_) => DType::Bool,
+                Literal::BF16Bits(_) => DType::BF16,
+                Literal::F16Bits(_) => DType::F16,
+                Literal::F32Bits(_) => DType::F32,
+                Literal::F64Bits(_) => DType::F64,
+                Literal::Complex64Bits(..) => DType::Complex64,
+                Literal::Complex128Bits(..) => DType::Complex128,
+            };
+            Ok(Value::Tensor(
+                TensorValue::new(dtype, Shape::vector(rep as u32), vec![*lit; rep])
+                    .map_err(EvalError::InvalidTensor)?,
+            ))
+        }
+        Value::Tensor(tensor) => {
+            let rank = tensor.shape.rank();
+            if reps.len() != rank {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "reps length {} does not match tensor rank {}",
+                        reps.len(),
+                        rank
+                    ),
+                });
+            }
+
+            if reps.iter().any(|&r| r == 0) {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: "tile reps must all be positive".into(),
+                });
+            }
+
+            if reps.iter().all(|&r| r == 1) {
+                return Ok(inputs[0].clone());
+            }
+
+            let new_dims: Vec<u32> = tensor
+                .shape
+                .dims
+                .iter()
+                .zip(reps.iter())
+                .map(|(&d, &r)| d.checked_mul(r as u32).ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: "tile result dimension overflows u32".into(),
+                }))
+                .collect::<Result<_, _>>()?;
+
+            let new_count: u64 = new_dims.iter().try_fold(1_u64, |acc, &d| {
+                acc.checked_mul(u64::from(d))
+            }).ok_or_else(|| EvalError::Unsupported {
+                primitive,
+                detail: "tile result element count overflows u64".into(),
+            })?;
+
+            let mut result = Vec::with_capacity(new_count as usize);
+            tile_recursive(
+                &tensor.elements,
+                &tensor.shape.dims,
+                &reps,
+                0,
+                &mut result,
+            );
+
+            Ok(Value::Tensor(
+                TensorValue::new(tensor.dtype, Shape { dims: new_dims }, result)
+                    .map_err(EvalError::InvalidTensor)?,
+            ))
+        }
+    }
+}
+
+fn tile_recursive(
+    elements: &[Literal],
+    dims: &[u32],
+    reps: &[usize],
+    depth: usize,
+    result: &mut Vec<Literal>,
+) {
+    if depth == dims.len() {
+        return;
+    }
+
+    let dim = dims[depth] as usize;
+    let rep = reps[depth];
+    let stride: usize = dims[depth + 1..].iter().map(|&d| d as usize).product();
+
+    if depth == dims.len() - 1 {
+        for _ in 0..rep {
+            for i in 0..dim {
+                result.push(elements[i]);
+            }
+        }
+    } else {
+        for _ in 0..rep {
+            for i in 0..dim {
+                let start = i * stride;
+                let sub_elements = &elements[start..start + stride];
+                tile_recursive(sub_elements, &dims[depth + 1..], &reps[depth + 1..], 0, result);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4797,6 +4938,45 @@ mod tests {
         let p = params(&[("new_dtype", "i64")]);
         let result = eval_convert_element_type(&[x], &p).unwrap();
         assert_eq!(result.as_i64_scalar(), Some(3));
+    }
+
+    // ── Tile ──
+
+    #[test]
+    fn tile_1d_repeat_twice() {
+        let x = v_f64(&[1.0, 2.0, 3.0]);
+        let p = params(&[("reps", "2")]);
+        let result = eval_tile(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![6]);
+        assert_eq!(
+            extract_f64_vec(&result),
+            vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn tile_2d_repeat() {
+        let x = mat_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        let p = params(&[("reps", "2,3")]);
+        let result = eval_tile(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![4, 6]);
+    }
+
+    #[test]
+    fn tile_scalar_repeat() {
+        let x = Value::Scalar(Literal::from_f64(5.0));
+        let p = params(&[("reps", "3")]);
+        let result = eval_tile(&[x], &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![3]);
+        assert_eq!(extract_f64_vec(&result), vec![5.0, 5.0, 5.0]);
+    }
+
+    #[test]
+    fn tile_identity_reps() {
+        let x = v_f64(&[1.0, 2.0]);
+        let p = params(&[("reps", "1")]);
+        let result = eval_tile(&[x], &p).unwrap();
+        assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0]);
     }
 
     // ── Squeeze ──

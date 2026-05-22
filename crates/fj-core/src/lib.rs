@@ -153,6 +153,7 @@ pub enum Primitive {
     Squeeze,
     Split,
     ExpandDims,
+    Tile,
     // Special math
     Cbrt,
     Lgamma,
@@ -295,6 +296,7 @@ impl Primitive {
         Self::Squeeze,
         Self::Split,
         Self::ExpandDims,
+        Self::Tile,
         Self::Cbrt,
         Self::Lgamma,
         Self::Digamma,
@@ -430,6 +432,7 @@ impl Primitive {
             Self::Squeeze => "squeeze",
             Self::Split => "split",
             Self::ExpandDims => "expand_dims",
+            Self::Tile => "tile",
             Self::Cbrt => "cbrt",
             Self::Lgamma => "lgamma",
             Self::Digamma => "digamma",

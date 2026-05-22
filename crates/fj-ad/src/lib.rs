@@ -2902,6 +2902,12 @@ pub fn vjp(
             ])
         }
 
+        // Tile: gradient is reshaped and summed back to original shape
+        Primitive::Tile => {
+            require_input_arity(inputs, 1)?;
+            tile_vjp(&inputs[0], g, params)
+        }
+
         // Bitwise ops are not differentiable — gradient is zero.
         Primitive::BitwiseAnd | Primitive::BitwiseOr | Primitive::BitwiseXor => {
             Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])])
@@ -4491,6 +4497,100 @@ fn while_jvp(
     Err(AdError::EvalFailed(format!(
         "while JVP exceeded max_iter={max_iter}"
     )))
+}
+
+/// Tile VJP: sum gradient back to original shape.
+///
+/// If input has shape [A, B] and reps is [2, 3], output has shape [2A, 3B].
+/// The gradient for input[i, j] is the sum of output gradients at positions
+/// [i + k*A, j + l*B] for k in 0..2, l in 0..3.
+fn tile_vjp(
+    input: &Value,
+    g: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, AdError> {
+    let reps_str = params.get("reps").ok_or_else(|| {
+        AdError::EvalFailed("missing reps param for tile VJP".into())
+    })?;
+    let reps: Vec<usize> = reps_str
+        .split(',')
+        .map(|s| s.trim().parse())
+        .collect::<Result<_, _>>()
+        .map_err(|_| {
+            AdError::EvalFailed("invalid reps param".into())
+        })?;
+
+    match (input, g) {
+        (Value::Scalar(_), Value::Tensor(g_tensor)) => {
+            if reps.len() != 1 {
+                return Ok(vec![zeros_like(input)]);
+            }
+            let sum: f64 = g_tensor
+                .elements
+                .iter()
+                .filter_map(|l| l.as_f64())
+                .sum();
+            Ok(vec![Value::Scalar(Literal::from_f64(sum))])
+        }
+        (Value::Scalar(_), Value::Scalar(_)) => Ok(vec![g.clone()]),
+        (Value::Tensor(input_tensor), Value::Tensor(g_tensor)) => {
+            let input_shape = &input_tensor.shape.dims;
+            let rank = input_shape.len();
+
+            if reps.len() != rank {
+                return Ok(vec![zeros_like(input)]);
+            }
+
+            if reps.iter().all(|&r| r == 1) {
+                return Ok(vec![g.clone()]);
+            }
+
+            let input_count = input_tensor.elements.len();
+            let mut grad_elements = vec![0.0_f64; input_count];
+
+            let input_strides: Vec<usize> = (0..rank)
+                .map(|i| input_shape[i + 1..].iter().map(|&d| d as usize).product())
+                .collect();
+
+            for (g_flat, g_lit) in g_tensor.elements.iter().enumerate() {
+                let g_val = g_lit.as_f64().unwrap_or(0.0);
+                let mut g_coords = Vec::with_capacity(rank);
+                let mut remaining = g_flat;
+                for i in 0..rank {
+                    let g_dim = (input_shape[i] as usize) * reps[i];
+                    let g_stride: usize = (i + 1..rank)
+                        .map(|j| (input_shape[j] as usize) * reps[j])
+                        .product();
+                    let g_stride = if g_stride == 0 { 1 } else { g_stride };
+                    g_coords.push(remaining / g_stride);
+                    remaining %= g_stride;
+                }
+
+                let input_coords: Vec<usize> = g_coords
+                    .iter()
+                    .zip(input_shape.iter())
+                    .map(|(&gc, &dim)| gc % (dim as usize))
+                    .collect();
+
+                let input_flat: usize = input_coords
+                    .iter()
+                    .zip(input_strides.iter())
+                    .map(|(&c, &s)| c * s)
+                    .sum();
+
+                if input_flat < input_count {
+                    grad_elements[input_flat] += g_val;
+                }
+            }
+
+            let elements: Vec<Literal> = grad_elements.into_iter().map(Literal::from_f64).collect();
+            Ok(vec![Value::Tensor(
+                TensorValue::new(DType::F64, input_tensor.shape.clone(), elements)
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            )])
+        }
+        _ => Ok(vec![zeros_like(input)]),
+    }
 }
 
 /// Conv 1D VJP: compute proper gradients for both input and kernel.
@@ -6292,6 +6392,7 @@ fn jvp_rule(
         Primitive::Squeeze => ep_p(Primitive::Squeeze, &[tangents[0].clone()], params),
         Primitive::Split => ep_p(Primitive::Split, &[tangents[0].clone()], params),
         Primitive::ExpandDims => ep_p(Primitive::ExpandDims, &[tangents[0].clone()], params),
+        Primitive::Tile => ep_p(Primitive::Tile, &[tangents[0].clone()], params),
         Primitive::Concatenate => ep_p(Primitive::Concatenate, tangents, params),
         Primitive::Gather => {
             // Gather: tangent follows same indexing from tangent source
