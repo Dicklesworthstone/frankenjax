@@ -433,6 +433,11 @@ fn eval_shape(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<Vec<PyShapeDtypeS
         .map_err(runtime_error)
 }
 
+#[pyfunction(name = "typeof")]
+fn typeof_value(value: &PyValue) -> PyShapeDtypeStruct {
+    py_shape_dtype_from_rust(&value.inner)
+}
+
 #[pyfunction]
 fn device_put(value: PyValue) -> PyValue {
     value
@@ -679,6 +684,7 @@ fn frankenjax(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(vjp, m)?)?;
     m.add_function(wrap_pyfunction!(linearize, m)?)?;
     m.add_function(wrap_pyfunction!(eval_shape, m)?)?;
+    m.add_function(wrap_pyfunction!(typeof_value, m)?)?;
     m.add_function(wrap_pyfunction!(device_put, m)?)?;
     m.add_function(wrap_pyfunction!(device_put_replicated, m)?)?;
     m.add_function(wrap_pyfunction!(device_put_sharded, m)?)?;
@@ -847,6 +853,18 @@ mod tests {
         assert_eq!(vector_meta.len(), 1);
         assert_eq!(vector_meta[0].shape(), vec![3]);
         assert_eq!(vector_meta[0].dtype(), "F64");
+    }
+
+    #[test]
+    fn typeof_returns_value_shape_dtype_metadata() {
+        let scalar_meta = typeof_value(&PyValue::scalar_i64(7));
+        assert_eq!(scalar_meta.shape(), Vec::<u32>::new());
+        assert_eq!(scalar_meta.dtype(), "I64");
+
+        let vector = PyValue::vector_f64(vec![1.0, 2.0, 3.0]).unwrap();
+        let vector_meta = typeof_value(&vector);
+        assert_eq!(vector_meta.shape(), vec![3]);
+        assert_eq!(vector_meta.dtype(), "F64");
     }
 
     #[test]

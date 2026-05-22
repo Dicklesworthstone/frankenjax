@@ -117,6 +117,20 @@ def test_eval_shape():
     print("✓ eval_shape returns shape/dtype metadata for scalar and vector outputs")
 
 
+def test_typeof():
+    """Test typeof metadata for scalar and vector values."""
+    scalar_meta = fj.typeof(fj.PyValue.scalar_i64(7))
+    assert isinstance(scalar_meta, fj.ShapeDtypeStruct)
+    assert scalar_meta.shape() == []
+    assert scalar_meta.dtype() == "I64"
+
+    vector_meta = fj.typeof(fj.PyValue.vector_f64([1.0, 2.0, 3.0]))
+    assert isinstance(vector_meta, fj.ShapeDtypeStruct)
+    assert vector_meta.shape() == [3]
+    assert vector_meta.dtype() == "F64"
+    print("✓ typeof returns ShapeDtypeStruct metadata for scalar and vector values")
+
+
 def test_value_and_grad():
     """Test value_and_grad of x^2."""
     jaxpr = fj.make_jaxpr_square()
@@ -385,6 +399,7 @@ if __name__ == "__main__":
     test_vjp_square()
     test_linearize_square()
     test_eval_shape()
+    test_typeof()
     test_value_and_grad()
     test_device_helpers()
     test_backend_topology_helpers()
