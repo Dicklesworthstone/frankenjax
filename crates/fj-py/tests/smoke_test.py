@@ -73,6 +73,11 @@ def test_value_scalar():
     copied = v.copy()
     assert isinstance(copied, fj.Array)
     assert abs(copied.as_f64() - 42.0) < 1e-12
+    deleted = v.copy()
+    assert deleted.is_deleted() is False
+    assert deleted.delete() is None
+    assert deleted.is_deleted() is True
+    assert v.is_deleted() is False
     assert v.tolist() == 42.0
     assert float(v) == 42.0
     assert int(v) == 42

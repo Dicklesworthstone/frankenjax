@@ -16,6 +16,16 @@ struct PyJaxpr {
 #[derive(Clone)]
 struct PyValue {
     inner: Value,
+    deleted: bool,
+}
+
+impl PyValue {
+    fn from_value(inner: Value) -> Self {
+        Self {
+            inner,
+            deleted: false,
+        }
+    }
 }
 
 #[pyclass]
@@ -185,29 +195,25 @@ struct PyFloat0DType;
 impl PyValue {
     #[staticmethod]
     fn scalar_f64(v: f64) -> Self {
-        PyValue {
-            inner: Value::scalar_f64(v),
-        }
+        PyValue::from_value(Value::scalar_f64(v))
     }
 
     #[staticmethod]
     fn scalar_i64(v: i64) -> Self {
-        PyValue {
-            inner: Value::scalar_i64(v),
-        }
+        PyValue::from_value(Value::scalar_i64(v))
     }
 
     #[staticmethod]
     fn vector_i64(values: Vec<i64>) -> PyResult<Self> {
         Value::vector_i64(&values)
-            .map(|v| PyValue { inner: v })
+            .map(PyValue::from_value)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))
     }
 
     #[staticmethod]
     fn vector_f64(values: Vec<f64>) -> PyResult<Self> {
         Value::vector_f64(&values)
-            .map(|v| PyValue { inner: v })
+            .map(PyValue::from_value)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))
     }
 
@@ -312,6 +318,14 @@ impl PyValue {
 
     fn copy(&self) -> Self {
         self.clone()
+    }
+
+    fn delete(&mut self) {
+        self.deleted = true;
+    }
+
+    fn is_deleted(&self) -> bool {
+        self.deleted
     }
 
     fn tolist(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -805,7 +819,7 @@ fn py_values_to_rust(args: Vec<PyValue>) -> Vec<Value> {
 }
 
 fn py_values_from_rust(values: Vec<Value>) -> Vec<PyValue> {
-    values.into_iter().map(|inner| PyValue { inner }).collect()
+    values.into_iter().map(PyValue::from_value).collect()
 }
 
 fn dtype_itemsize(dtype: DType) -> u64 {
@@ -1790,7 +1804,7 @@ fn jacobian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     let rust_args = py_values_to_rust(args);
     fj_api::jacobian(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|inner| PyValue { inner })
+        .map(PyValue::from_value)
         .map_err(runtime_error)
 }
 
@@ -1809,7 +1823,7 @@ fn hessian(jaxpr: &PyJaxpr, args: Vec<PyValue>) -> PyResult<PyValue> {
     let rust_args = py_values_to_rust(args);
     fj_api::hessian(jaxpr.inner.clone())
         .call(rust_args)
-        .map(|inner| PyValue { inner })
+        .map(PyValue::from_value)
         .map_err(runtime_error)
 }
 
@@ -1952,6 +1966,11 @@ mod tests {
         assert!((v.block_until_ready().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!((v.copy_to_host_async().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!((v.copy().as_f64().unwrap() - 42.0).abs() < 1e-12);
+        let mut deleted = v.copy();
+        assert!(!deleted.is_deleted());
+        deleted.delete();
+        assert!(deleted.is_deleted());
+        assert!(!v.is_deleted());
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
             let devices = v.devices(py).unwrap();
