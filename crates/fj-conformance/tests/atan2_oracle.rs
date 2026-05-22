@@ -14,6 +14,7 @@
 //! - Infinity cases
 //! - NaN propagation
 //! - Tensor shapes
+//! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -355,6 +356,50 @@ fn oracle_atan2_2d() {
     );
 }
 
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_atan2_vector_scalar_x_broadcast() {
+    let y_values = [1.0, -1.0, 2.0, -2.0];
+    let y = make_f64_tensor(&[4], y_values.to_vec());
+    let x = make_f64_tensor(&[], vec![1.0]);
+    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    for (i, (&actual, &y_value)) in vals.iter().zip(y_values.iter()).enumerate() {
+        let expected = y_value.atan2(1.0);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast scalar x element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn oracle_atan2_matrix_row_x_broadcast() {
+    let y_values = [1.0, 1.0, -1.0, -1.0];
+    let x_values = [1.0, -1.0];
+    let y = make_f64_tensor(&[2, 2], y_values.to_vec());
+    let x = make_f64_tensor(&[2], x_values.to_vec());
+    let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_f64_vec(&result);
+    for (i, ((&actual, &y_value), &x_value)) in vals
+        .iter()
+        .zip(y_values.iter())
+        .zip(x_values.iter().cycle())
+        .enumerate()
+    {
+        let expected = y_value.atan2(x_value);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast row x element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
 // ======================== Identity: tan(atan2(y, x)) = y/x for x > 0 ========================
 
 #[test]
@@ -391,8 +436,7 @@ fn metamorphic_atan2_scaling_invariant() {
         for k in [2.0, 10.0, 0.5, 100.0] {
             let ky_t = make_f64_tensor(&[], vec![k * y]);
             let kx_t = make_f64_tensor(&[], vec![k * x]);
-            let scaled =
-                eval_primitive(Primitive::Atan2, &[ky_t, kx_t], &no_params()).unwrap();
+            let scaled = eval_primitive(Primitive::Atan2, &[ky_t, kx_t], &no_params()).unwrap();
 
             assert_close(
                 extract_f64_scalar(&scaled),
@@ -415,17 +459,20 @@ fn metamorphic_atan2_sin_cos_div() {
         let x_t = make_f64_tensor(&[], vec![x]);
         let angle = eval_primitive(Primitive::Atan2, &[y_t, x_t], &no_params()).unwrap();
 
-        let sin_angle = eval_primitive(Primitive::Sin, std::slice::from_ref(&angle), &no_params()).unwrap();
+        let sin_angle =
+            eval_primitive(Primitive::Sin, std::slice::from_ref(&angle), &no_params()).unwrap();
         let cos_angle = eval_primitive(Primitive::Cos, &[angle], &no_params()).unwrap();
 
-        let sin_div_cos =
-            extract_f64_scalar(&sin_angle) / extract_f64_scalar(&cos_angle);
+        let sin_div_cos = extract_f64_scalar(&sin_angle) / extract_f64_scalar(&cos_angle);
 
         assert_close(
             sin_div_cos,
             y / x,
             1e-12,
-            &format!("sin(atan2({},{}))/cos(atan2({},{})) = {}/{}", y, x, y, x, y, x),
+            &format!(
+                "sin(atan2({},{}))/cos(atan2({},{})) = {}/{}",
+                y, x, y, x, y, x
+            ),
         );
     }
 }
