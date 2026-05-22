@@ -2,7 +2,7 @@
 
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyFrozenSet, PyList, PySet};
+use pyo3::types::{PyBool, PyBytes, PyFrozenSet, PyList, PySet};
 
 use fj_core::{DType, Jaxpr, Literal, ProgramSpec, Value, build_program};
 
@@ -333,6 +333,28 @@ impl PyValue {
             Value::Scalar(literal) => literal_to_py_object(py, *literal),
             Value::Tensor(tensor) => literals_to_py_list(py, &tensor.elements),
         }
+    }
+
+    #[pyo3(signature = (order = "C"))]
+    fn tobytes(&self, py: Python<'_>, order: &str) -> PyResult<Py<PyAny>> {
+        validate_tobytes_order(order)?;
+
+        let capacity = usize::try_from(self.nbytes()).map_err(|_| {
+            PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                "array byte length does not fit usize",
+            )
+        })?;
+        let mut bytes = Vec::with_capacity(capacity);
+        match &self.inner {
+            Value::Scalar(literal) => literal_to_native_bytes(*literal, &mut bytes),
+            Value::Tensor(tensor) => {
+                for literal in &tensor.elements {
+                    literal_to_native_bytes(*literal, &mut bytes);
+                }
+            }
+        }
+
+        Ok(PyBytes::new(py, &bytes).into_any().unbind())
     }
 
     fn __bool__(&self) -> PyResult<bool> {
@@ -957,6 +979,37 @@ fn literals_to_py_list(py: Python<'_>, literals: &[Literal]) -> PyResult<Py<PyAn
     Ok(PyList::new(py, values.iter().map(|value| value.bind(py)))?
         .into_any()
         .unbind())
+}
+
+fn validate_tobytes_order(order: &str) -> PyResult<()> {
+    match order {
+        "C" | "F" | "A" | "K" => Ok(()),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "order must be one of 'C', 'F', 'A', or 'K' (got {order:?})"
+        ))),
+    }
+}
+
+fn literal_to_native_bytes(literal: Literal, bytes: &mut Vec<u8>) {
+    match literal {
+        Literal::I64(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
+        Literal::U32(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
+        Literal::U64(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
+        Literal::Bool(value) => bytes.push(u8::from(value)),
+        Literal::BF16Bits(bits) | Literal::F16Bits(bits) => {
+            bytes.extend_from_slice(&bits.to_ne_bytes());
+        }
+        Literal::F32Bits(bits) => bytes.extend_from_slice(&bits.to_ne_bytes()),
+        Literal::F64Bits(bits) => bytes.extend_from_slice(&bits.to_ne_bytes()),
+        Literal::Complex64Bits(re, im) => {
+            bytes.extend_from_slice(&re.to_ne_bytes());
+            bytes.extend_from_slice(&im.to_ne_bytes());
+        }
+        Literal::Complex128Bits(re, im) => {
+            bytes.extend_from_slice(&re.to_ne_bytes());
+            bytes.extend_from_slice(&im.to_ne_bytes());
+        }
+    }
 }
 
 fn validate_cpu_backend(backend: Option<&str>) -> PyResult<()> {
@@ -1995,6 +2048,11 @@ mod tests {
             assert!((value.bind(py).extract::<f64>().unwrap() - 42.0).abs() < 1e-12);
             let value = v.__int__(py).unwrap();
             assert_eq!(value.bind(py).extract::<i64>().unwrap(), 42);
+            let value = v.tobytes(py, "C").unwrap();
+            assert_eq!(
+                value.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                &42.0_f64.to_ne_bytes()
+            );
             let value = v.__complex__(py).unwrap();
             let value = value.bind(py);
             assert!(
@@ -2018,6 +2076,12 @@ mod tests {
             assert_eq!(value.bind(py).extract::<i64>().unwrap(), 123);
             assert_eq!(i.__hex__(py).unwrap(), "0x7b");
             assert_eq!(i.__oct__(py).unwrap(), "0o173");
+            let value = i.tobytes(py, "K").unwrap();
+            assert_eq!(
+                value.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                &123_i64.to_ne_bytes()
+            );
+            assert!(i.tobytes(py, "bad").is_err());
             assert!(v.__hex__(py).is_err());
             assert!(v.__oct__(py).is_err());
         });
@@ -2054,6 +2118,15 @@ mod tests {
                 values.bind(py).extract::<Vec<f64>>().unwrap(),
                 vec![1.0, 2.5, 4.0]
             );
+            let bytes = floats.tobytes(py, "A").unwrap();
+            let mut expected = Vec::new();
+            for value in [1.0_f64, 2.5, 4.0] {
+                expected.extend_from_slice(&value.to_ne_bytes());
+            }
+            assert_eq!(
+                bytes.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                expected
+            );
         });
         assert_eq!(floats.as_f64_list().unwrap(), vec![1.0, 2.5, 4.0]);
         assert_eq!(floats.as_i64_list(), None);
@@ -2080,6 +2153,15 @@ mod tests {
             assert_eq!(
                 values.bind(py).extract::<Vec<i64>>().unwrap(),
                 vec![1, 2, 3]
+            );
+            let bytes = ints.tobytes(py, "F").unwrap();
+            let mut expected = Vec::new();
+            for value in [1_i64, 2, 3] {
+                expected.extend_from_slice(&value.to_ne_bytes());
+            }
+            assert_eq!(
+                bytes.bind(py).downcast::<PyBytes>().unwrap().as_bytes(),
+                expected
             );
         });
         assert_eq!(ints.as_i64_list().unwrap(), vec![1, 2, 3]);

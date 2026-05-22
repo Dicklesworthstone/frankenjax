@@ -8,6 +8,7 @@ Run after building with:
 
 import frankenjax as fj
 import operator
+import struct
 
 
 def test_version_metadata():
@@ -79,6 +80,14 @@ def test_value_scalar():
     assert deleted.is_deleted() is True
     assert v.is_deleted() is False
     assert v.tolist() == 42.0
+    assert v.tobytes() == struct.pack("@d", 42.0)
+    assert v.tobytes(order="F") == struct.pack("@d", 42.0)
+    try:
+        v.tobytes(order="bad")
+    except ValueError as exc:
+        assert "order must be one of" in str(exc)
+    else:
+        raise AssertionError("tobytes should reject invalid order")
     assert float(v) == 42.0
     assert int(v) == 42
     assert complex(v) == complex(42.0, 0.0)
@@ -115,6 +124,7 @@ def test_value_scalar():
     assert operator.index(v2) == 123
     assert v2.__hex__() == "0x7b"
     assert v2.__oct__() == "0o173"
+    assert v2.tobytes(order="K") == struct.pack("@q", 123)
     assert bool(v2) is True
     assert bool(fj.PyValue.scalar_i64(0)) is False
     assert v2.as_i64() == 123
@@ -138,6 +148,7 @@ def test_value_scalar():
     assert vec.copy_to_host_async().as_i64_list() == [1, 2, 3]
     assert vec.copy().as_i64_list() == [1, 2, 3]
     assert vec.tolist() == [1, 2, 3]
+    assert vec.tobytes(order="A") == struct.pack("@qqq", 1, 2, 3)
     try:
         float(vec)
     except TypeError as exc:
