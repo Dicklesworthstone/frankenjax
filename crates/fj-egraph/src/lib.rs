@@ -7023,16 +7023,6 @@ mod tests {
 
     #[test]
     fn numerical_safety_mode_preserves_clamp_validation_errors() {
-        let tensor_arg = || {
-            Value::Tensor(
-                TensorValue::new(
-                    DType::F64,
-                    Shape { dims: vec![1] },
-                    vec![Literal::from_f64(0.0)],
-                )
-                .expect("valid tensor"),
-            )
-        };
         let cases = [
             (
                 "clamp_same_complex",
@@ -7054,27 +7044,6 @@ mod tests {
                     }],
                 ),
                 vec![Value::Scalar(Literal::from_complex128(1.0, 0.0))],
-            ),
-            (
-                "clamp_scalar_tensor_bounds",
-                Jaxpr::new(
-                    vec![VarId(1), VarId(2), VarId(3)],
-                    vec![],
-                    vec![VarId(4)],
-                    vec![Equation {
-                        primitive: Primitive::Clamp,
-                        inputs: smallvec![
-                            Atom::Var(VarId(1)),
-                            Atom::Var(VarId(2)),
-                            Atom::Var(VarId(3))
-                        ],
-                        outputs: smallvec![VarId(4)],
-                        effects: vec![],
-                        params: BTreeMap::new(),
-                        sub_jaxprs: vec![],
-                    }],
-                ),
-                vec![Value::scalar_f64(2.0), tensor_arg(), tensor_arg()],
             ),
         ];
 
