@@ -92,10 +92,7 @@ fn oracle_logaddexp_large_small() {
     let y = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        (actual - 100.0).abs() < 1e-10,
-        "logaddexp(100, 0) ~ 100"
-    );
+    assert!((actual - 100.0).abs() < 1e-10, "logaddexp(100, 0) ~ 100");
 }
 
 #[test]
@@ -104,10 +101,7 @@ fn oracle_logaddexp_small_large() {
     let y = make_f64_tensor(&[], vec![100.0]);
     let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        (actual - 100.0).abs() < 1e-10,
-        "logaddexp(0, 100) ~ 100"
-    );
+    assert!((actual - 100.0).abs() < 1e-10, "logaddexp(0, 100) ~ 100");
 }
 
 // ======================== Symmetry ========================
@@ -119,8 +113,7 @@ fn oracle_logaddexp_symmetry() {
         let y = make_f64_tensor(&[], vec![b]);
         let result1 =
             eval_primitive(Primitive::LogAddExp, &[x.clone(), y.clone()], &no_params()).unwrap();
-        let result2 =
-            eval_primitive(Primitive::LogAddExp, &[y, x], &no_params()).unwrap();
+        let result2 = eval_primitive(Primitive::LogAddExp, &[y, x], &no_params()).unwrap();
         let val1 = extract_f64_scalar(&result1);
         let val2 = extract_f64_scalar(&result2);
         assert!(
@@ -169,10 +162,7 @@ fn oracle_logaddexp_neg_inf_finite() {
     let y = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(
-        actual.abs() < 1e-15,
-        "logaddexp(-inf, 0) = log(0 + 1) = 0"
-    );
+    assert!(actual.abs() < 1e-15, "logaddexp(-inf, 0) = log(0 + 1) = 0");
 }
 
 #[test]
