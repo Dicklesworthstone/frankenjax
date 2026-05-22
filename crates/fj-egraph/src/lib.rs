@@ -17,6 +17,9 @@ define_language! {
         "max" = Max([Id; 2]),
         "min" = Min([Id; 2]),
         "atan2" = Atan2([Id; 2]),
+        "hypot" = Hypot([Id; 2]),
+        "logaddexp" = LogAddExp([Id; 2]),
+        "logaddexp2" = LogAddExp2([Id; 2]),
         "dot" = Dot([Id; 2]),
         // Arithmetic (unary)
         "neg" = Neg([Id; 1]),
@@ -49,10 +52,18 @@ define_language! {
         "logistic" = Logistic([Id; 1]),
         "erf" = Erf([Id; 1]),
         "erfc" = Erfc([Id; 1]),
+        // Angle conversion
+        "deg2rad" = Deg2Rad([Id; 1]),
+        "rad2deg" = Rad2Deg([Id; 1]),
+        // Additional log/exp
+        "log2" = Log2([Id; 1]),
+        "exp2" = Exp2([Id; 1]),
+        "sinc" = Sinc([Id; 1]),
         // Rounding
         "floor" = Floor([Id; 1]),
         "ceil" = Ceil([Id; 1]),
         "round" = Round([Id; 1]),
+        "trunc" = Trunc([Id; 1]),
         // Reductions
         "reduce_sum" = ReduceSum([Id; 1]),
         "reduce_max" = ReduceMax([Id; 1]),
@@ -76,9 +87,28 @@ define_language! {
         "digamma" = Digamma([Id; 1]),
         "erf_inv" = ErfInv([Id; 1]),
         "is_finite" = IsFinite([Id; 1]),
+        "is_nan" = IsNan([Id; 1]),
+        "is_inf" = IsInf([Id; 1]),
+        "signbit" = Signbit([Id; 1]),
+        "bessel_i0e" = BesselI0e([Id; 1]),
+        "bessel_i1e" = BesselI1e([Id; 1]),
+        "stop_gradient" = StopGradient([Id; 1]),
+        "convert_element_type" = ConvertElementType([Id; 1]),
+        "ctz" = CountTrailingZeros([Id; 1]),
         // Special math (binary)
         "integer_pow" = IntegerPow([Id; 2]),
         "nextafter" = Nextafter([Id; 2]),
+        "gcd" = Gcd([Id; 2]),
+        "lcm" = Lcm([Id; 2]),
+        "polygamma" = Polygamma([Id; 2]),
+        "igamma" = Igamma([Id; 2]),
+        "igammac" = Igammac([Id; 2]),
+        "zeta" = Zeta([Id; 2]),
+        "heaviside" = Heaviside([Id; 2]),
+        "copysign" = CopySign([Id; 2]),
+        "ldexp" = Ldexp([Id; 2]),
+        "xlogy" = XLogY([Id; 2]),
+        "xlog1py" = XLog1PY([Id; 2]),
         // Bitwise (binary)
         "bitwise_and" = BitwiseAnd([Id; 2]),
         "bitwise_or" = BitwiseOr([Id; 2]),
@@ -98,8 +128,15 @@ define_language! {
         "copy" = Copy([Id; 1]),
         // Select (ternary)
         "select" = Select([Id; 3]),
+        "select_n" = SelectN([Id; 3]),
         // Clamp (ternary)
         "clamp" = Clamp([Id; 3]),
+        // Fma (ternary: a*b+c)
+        "fma" = Fma([Id; 3]),
+        // Betainc (ternary)
+        "betainc" = Betainc([Id; 3]),
+        // DotGeneral (binary)
+        "dot_general" = DotGeneral([Id; 2]),
         // Leaves
         Num(i64),
         Symbol(egg::Symbol),
@@ -951,6 +988,12 @@ pub fn jaxpr_to_egraph(
             Primitive::Floor => FjLang::Floor([input_ids[0]]),
             Primitive::Ceil => FjLang::Ceil([input_ids[0]]),
             Primitive::Round => FjLang::Round([input_ids[0]]),
+            Primitive::Trunc => FjLang::Trunc([input_ids[0]]),
+            Primitive::Deg2Rad => FjLang::Deg2Rad([input_ids[0]]),
+            Primitive::Rad2Deg => FjLang::Rad2Deg([input_ids[0]]),
+            Primitive::Log2 => FjLang::Log2([input_ids[0]]),
+            Primitive::Exp2 => FjLang::Exp2([input_ids[0]]),
+            Primitive::Sinc => FjLang::Sinc([input_ids[0]]),
             Primitive::Sin => FjLang::Sin([input_ids[0]]),
             Primitive::Cos => FjLang::Cos([input_ids[0]]),
             Primitive::ReduceSum => FjLang::ReduceSum([input_ids[0]]),
@@ -968,6 +1011,21 @@ pub fn jaxpr_to_egraph(
             Primitive::Div => FjLang::Div([input_ids[0], input_ids[1]]),
             Primitive::Rem => FjLang::Rem([input_ids[0], input_ids[1]]),
             Primitive::Atan2 => FjLang::Atan2([input_ids[0], input_ids[1]]),
+            Primitive::Hypot => FjLang::Hypot([input_ids[0], input_ids[1]]),
+            Primitive::LogAddExp => FjLang::LogAddExp([input_ids[0], input_ids[1]]),
+            Primitive::LogAddExp2 => FjLang::LogAddExp2([input_ids[0], input_ids[1]]),
+            Primitive::Gcd => FjLang::Gcd([input_ids[0], input_ids[1]]),
+            Primitive::Lcm => FjLang::Lcm([input_ids[0], input_ids[1]]),
+            Primitive::Polygamma => FjLang::Polygamma([input_ids[0], input_ids[1]]),
+            Primitive::Igamma => FjLang::Igamma([input_ids[0], input_ids[1]]),
+            Primitive::Igammac => FjLang::Igammac([input_ids[0], input_ids[1]]),
+            Primitive::Zeta => FjLang::Zeta([input_ids[0], input_ids[1]]),
+            Primitive::Heaviside => FjLang::Heaviside([input_ids[0], input_ids[1]]),
+            Primitive::CopySign => FjLang::CopySign([input_ids[0], input_ids[1]]),
+            Primitive::Ldexp => FjLang::Ldexp([input_ids[0], input_ids[1]]),
+            Primitive::XLogY => FjLang::XLogY([input_ids[0], input_ids[1]]),
+            Primitive::XLog1PY => FjLang::XLog1PY([input_ids[0], input_ids[1]]),
+            Primitive::DotGeneral => FjLang::DotGeneral([input_ids[0], input_ids[1]]),
             // New unary ops
             Primitive::Sign => FjLang::Sign([input_ids[0]]),
             Primitive::Square => FjLang::Square([input_ids[0]]),
@@ -993,18 +1051,31 @@ pub fn jaxpr_to_egraph(
             Primitive::Imag => FjLang::Imag([input_ids[0]]),
             // Ternary
             Primitive::Select => FjLang::Select([input_ids[0], input_ids[1], input_ids[2]]),
+            Primitive::SelectN => FjLang::SelectN([input_ids[0], input_ids[1], input_ids[2]]),
             // Clamp (ternary)
             Primitive::Clamp => FjLang::Clamp([input_ids[0], input_ids[1], input_ids[2]]),
+            // Fma (ternary: a*b+c)
+            Primitive::Fma => FjLang::Fma([input_ids[0], input_ids[1], input_ids[2]]),
+            // Betainc (ternary)
+            Primitive::Betainc => FjLang::Betainc([input_ids[0], input_ids[1], input_ids[2]]),
             // New unary ops
             Primitive::Cbrt => FjLang::Cbrt([input_ids[0]]),
             Primitive::Lgamma => FjLang::Lgamma([input_ids[0]]),
             Primitive::Digamma => FjLang::Digamma([input_ids[0]]),
             Primitive::ErfInv => FjLang::ErfInv([input_ids[0]]),
             Primitive::IsFinite => FjLang::IsFinite([input_ids[0]]),
+            Primitive::IsNan => FjLang::IsNan([input_ids[0]]),
+            Primitive::IsInf => FjLang::IsInf([input_ids[0]]),
+            Primitive::Signbit => FjLang::Signbit([input_ids[0]]),
+            Primitive::BesselI0e => FjLang::BesselI0e([input_ids[0]]),
+            Primitive::BesselI1e => FjLang::BesselI1e([input_ids[0]]),
+            Primitive::StopGradient => FjLang::StopGradient([input_ids[0]]),
+            Primitive::ConvertElementType => FjLang::ConvertElementType([input_ids[0]]),
             Primitive::Copy => FjLang::Copy([input_ids[0]]),
             Primitive::BitwiseNot => FjLang::BitwiseNot([input_ids[0]]),
             Primitive::PopulationCount => FjLang::PopulationCount([input_ids[0]]),
             Primitive::CountLeadingZeros => FjLang::CountLeadingZeros([input_ids[0]]),
+            Primitive::CountTrailingZeros => FjLang::CountTrailingZeros([input_ids[0]]),
             Primitive::ReduceAnd => FjLang::ReduceAnd([input_ids[0]]),
             Primitive::ReduceOr => FjLang::ReduceOr([input_ids[0]]),
             Primitive::ReduceXor => FjLang::ReduceXor([input_ids[0]]),
@@ -1075,7 +1146,22 @@ fn expected_egraph_input_arity(primitive: Primitive) -> Option<usize> {
         | Primitive::Div
         | Primitive::Rem
         | Primitive::Atan2
+        | Primitive::Hypot
+        | Primitive::LogAddExp
+        | Primitive::LogAddExp2
+        | Primitive::Gcd
+        | Primitive::Lcm
         | Primitive::Complex
+        | Primitive::Polygamma
+        | Primitive::Igamma
+        | Primitive::Igammac
+        | Primitive::Zeta
+        | Primitive::Heaviside
+        | Primitive::CopySign
+        | Primitive::Ldexp
+        | Primitive::XLogY
+        | Primitive::XLog1PY
+        | Primitive::DotGeneral
         | Primitive::Nextafter
         | Primitive::BitwiseAnd
         | Primitive::BitwiseOr
@@ -1083,7 +1169,7 @@ fn expected_egraph_input_arity(primitive: Primitive) -> Option<usize> {
         | Primitive::ShiftLeft
         | Primitive::ShiftRightArithmetic
         | Primitive::ShiftRightLogical => 2,
-        Primitive::Select | Primitive::Clamp => 3,
+        Primitive::Select | Primitive::SelectN | Primitive::Clamp | Primitive::Fma | Primitive::Betainc => 3,
         Primitive::Neg
         | Primitive::Abs
         | Primitive::Exp
@@ -1095,6 +1181,12 @@ fn expected_egraph_input_arity(primitive: Primitive) -> Option<usize> {
         | Primitive::Round
         | Primitive::Sin
         | Primitive::Cos
+        | Primitive::Trunc
+        | Primitive::Deg2Rad
+        | Primitive::Rad2Deg
+        | Primitive::Log2
+        | Primitive::Exp2
+        | Primitive::Sinc
         | Primitive::ReduceSum
         | Primitive::ReduceMax
         | Primitive::ReduceMin
@@ -1117,6 +1209,14 @@ fn expected_egraph_input_arity(primitive: Primitive) -> Option<usize> {
         | Primitive::Logistic
         | Primitive::Erf
         | Primitive::Erfc
+        | Primitive::IsNan
+        | Primitive::IsInf
+        | Primitive::Signbit
+        | Primitive::BesselI0e
+        | Primitive::BesselI1e
+        | Primitive::StopGradient
+        | Primitive::ConvertElementType
+        | Primitive::CountTrailingZeros
         | Primitive::Conj
         | Primitive::Real
         | Primitive::Imag
@@ -1451,10 +1551,171 @@ pub fn egraph_to_jaxpr(
                 &mut equations,
                 expr,
             ),
+            FjLang::Hypot([a, b]) => push_binary(
+                idx,
+                Primitive::Hypot,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::LogAddExp([a, b]) => push_binary(
+                idx,
+                Primitive::LogAddExp,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::LogAddExp2([a, b]) => push_binary(
+                idx,
+                Primitive::LogAddExp2,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Gcd([a, b]) => push_binary(
+                idx,
+                Primitive::Gcd,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Lcm([a, b]) => push_binary(
+                idx,
+                Primitive::Lcm,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Polygamma([a, b]) => push_binary(
+                idx,
+                Primitive::Polygamma,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Igamma([a, b]) => push_binary(
+                idx,
+                Primitive::Igamma,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Igammac([a, b]) => push_binary(
+                idx,
+                Primitive::Igammac,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Zeta([a, b]) => push_binary(
+                idx,
+                Primitive::Zeta,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Heaviside([a, b]) => push_binary(
+                idx,
+                Primitive::Heaviside,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::CopySign([a, b]) => push_binary(
+                idx,
+                Primitive::CopySign,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Ldexp([a, b]) => push_binary(
+                idx,
+                Primitive::Ldexp,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::XLogY([a, b]) => push_binary(
+                idx,
+                Primitive::XLogY,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::XLog1PY([a, b]) => push_binary(
+                idx,
+                Primitive::XLog1PY,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::DotGeneral([a, b]) => push_binary(
+                idx,
+                Primitive::DotGeneral,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
             // Ternary ops
             FjLang::Select([cond, a, b]) => push_ternary(
                 idx,
                 Primitive::Select,
+                *cond,
+                *a,
+                *b,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::SelectN([cond, a, b]) => push_ternary(
+                idx,
+                Primitive::SelectN,
                 *cond,
                 *a,
                 *b,
@@ -1469,6 +1730,28 @@ pub fn egraph_to_jaxpr(
                 *x,
                 *lo,
                 *hi,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Fma([a, b, c]) => push_ternary(
+                idx,
+                Primitive::Fma,
+                *a,
+                *b,
+                *c,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Betainc([a, b, c]) => push_ternary(
+                idx,
+                Primitive::Betainc,
+                *a,
+                *b,
+                *c,
                 &mut node_to_var,
                 &mut next_var,
                 &mut equations,
@@ -1550,6 +1833,60 @@ pub fn egraph_to_jaxpr(
             FjLang::Round([a]) => push_unary(
                 idx,
                 Primitive::Round,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Trunc([a]) => push_unary(
+                idx,
+                Primitive::Trunc,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Deg2Rad([a]) => push_unary(
+                idx,
+                Primitive::Deg2Rad,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Rad2Deg([a]) => push_unary(
+                idx,
+                Primitive::Rad2Deg,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Log2([a]) => push_unary(
+                idx,
+                Primitive::Log2,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Exp2([a]) => push_unary(
+                idx,
+                Primitive::Exp2,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Sinc([a]) => push_unary(
+                idx,
+                Primitive::Sinc,
                 *a,
                 &mut node_to_var,
                 &mut next_var,
@@ -1856,6 +2193,69 @@ pub fn egraph_to_jaxpr(
                 &mut equations,
                 expr,
             ),
+            FjLang::IsNan([a]) => push_unary(
+                idx,
+                Primitive::IsNan,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::IsInf([a]) => push_unary(
+                idx,
+                Primitive::IsInf,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::Signbit([a]) => push_unary(
+                idx,
+                Primitive::Signbit,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::BesselI0e([a]) => push_unary(
+                idx,
+                Primitive::BesselI0e,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::BesselI1e([a]) => push_unary(
+                idx,
+                Primitive::BesselI1e,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::StopGradient([a]) => push_unary(
+                idx,
+                Primitive::StopGradient,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::ConvertElementType([a]) => push_unary(
+                idx,
+                Primitive::ConvertElementType,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
             FjLang::IntegerPow([a, b]) => push_integer_pow(
                 idx,
                 *a,
@@ -1957,6 +2357,15 @@ pub fn egraph_to_jaxpr(
             FjLang::CountLeadingZeros([a]) => push_unary(
                 idx,
                 Primitive::CountLeadingZeros,
+                *a,
+                &mut node_to_var,
+                &mut next_var,
+                &mut equations,
+                expr,
+            ),
+            FjLang::CountTrailingZeros([a]) => push_unary(
+                idx,
+                Primitive::CountTrailingZeros,
                 *a,
                 &mut node_to_var,
                 &mut next_var,
@@ -2626,12 +3035,14 @@ fn excluded_primitive_reason(primitive: Primitive) -> Option<ExclusionReason> {
         | Primitive::Rev
         | Primitive::Squeeze
         | Primitive::Split
-        | Primitive::ExpandDims => Some(ExclusionReason::ShapeManipulation),
+        | Primitive::ExpandDims
+        | Primitive::Tile => Some(ExclusionReason::ShapeManipulation),
         // Linear algebra decompositions need richer result structure and
         // decomposition metadata than the algebraic e-graph can model.
         Primitive::Cholesky
         | Primitive::Qr
         | Primitive::Svd
+        | Primitive::Lu
         | Primitive::TriangularSolve
         | Primitive::Eigh => Some(ExclusionReason::LinearAlgebra),
         // FFT lowering depends on transform-length and layout metadata.
@@ -2643,7 +3054,9 @@ fn excluded_primitive_reason(primitive: Primitive) -> Option<ExclusionReason> {
             Some(ExclusionReason::ControlFlow)
         }
         // Sorting needs explicit axis and comparator metadata.
-        Primitive::Sort | Primitive::Argsort => Some(ExclusionReason::Sorting),
+        Primitive::Sort | Primitive::Argsort | Primitive::TopK | Primitive::Argmin | Primitive::Argmax => {
+            Some(ExclusionReason::Sorting)
+        }
         // Convolution needs window, stride, and padding metadata.
         Primitive::Conv => Some(ExclusionReason::Convolution),
         // Index and utility helpers need dynamic index/update metadata.
@@ -2655,7 +3068,9 @@ fn excluded_primitive_reason(primitive: Primitive) -> Option<ExclusionReason> {
             Some(ExclusionReason::TypeConversion)
         }
         // Cumulative ops need axis and direction metadata.
-        Primitive::Cumsum | Primitive::Cumprod => Some(ExclusionReason::Cumulative),
+        Primitive::Cumsum | Primitive::Cumprod | Primitive::Cummax | Primitive::Cummin => {
+            Some(ExclusionReason::Cumulative)
+        }
         // Windowed reduction carries window geometry.
         Primitive::ReduceWindow => Some(ExclusionReason::Windowed),
         // OneHot needs category-depth and axis metadata.
