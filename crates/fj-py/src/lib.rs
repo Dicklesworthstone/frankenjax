@@ -761,6 +761,21 @@ impl PyValue {
         array_namespace(py, api_version)
     }
 
+    #[pyo3(signature = (dtype = None, copy = false, device = None))]
+    fn astype(
+        &self,
+        py: Python<'_>,
+        dtype: Option<Py<PyAny>>,
+        copy: bool,
+        device: Option<Py<PyAny>>,
+    ) -> PyResult<Self> {
+        let _ = copy;
+        self.ensure_not_deleted()?;
+        validate_astype_device(py, device)?;
+        let dtype = dtype_from_py_arg(py, dtype)?;
+        cast_value_to_dtype(&self.inner, dtype).map(Self::from_value)
+    }
+
     #[pyo3(signature = (decimals = 0, out = None))]
     fn round(&self, decimals: i32, out: Option<Py<PyAny>>) -> PyResult<Self> {
         self.ensure_not_deleted()?;
@@ -1540,6 +1555,47 @@ fn numpy_dtype_object(py: Python<'_>, dtype: DType) -> PyResult<Py<PyAny>> {
         .unbind())
 }
 
+fn dtype_from_py_arg(py: Python<'_>, dtype: Option<Py<PyAny>>) -> PyResult<DType> {
+    let Some(dtype) = dtype else {
+        return Ok(DType::F64);
+    };
+    let dtype = dtype.bind(py);
+    if dtype.is_none() {
+        return Ok(DType::F64);
+    }
+    if let Ok(name) = dtype.extract::<String>() {
+        return dtype_from_name(&name);
+    }
+
+    let name = py
+        .import("numpy")?
+        .getattr("dtype")?
+        .call1((dtype,))?
+        .getattr("name")?
+        .extract::<String>()?;
+    dtype_from_name(&name)
+}
+
+fn dtype_from_name(name: &str) -> PyResult<DType> {
+    let name = name.to_ascii_lowercase();
+    match name.as_str() {
+        "bool" | "bool_" | "boolean" => Ok(DType::Bool),
+        "i32" | "int32" => Ok(DType::I32),
+        "i64" | "int" | "int64" | "long" => Ok(DType::I64),
+        "u32" | "uint32" => Ok(DType::U32),
+        "u64" | "uint64" => Ok(DType::U64),
+        "bf16" | "bfloat16" => Ok(DType::BF16),
+        "f16" | "float16" | "half" => Ok(DType::F16),
+        "f32" | "float32" | "single" => Ok(DType::F32),
+        "f64" | "float" | "float64" | "double" => Ok(DType::F64),
+        "c64" | "complex64" => Ok(DType::Complex64),
+        "c128" | "complex" | "complex128" => Ok(DType::Complex128),
+        _ => Err(PyErr::new::<pyo3::exceptions::PyTypeError, _>(format!(
+            "unsupported dtype {name:?}"
+        ))),
+    }
+}
+
 fn literal_truth_value(literal: Literal) -> bool {
     match literal {
         Literal::Bool(value) => value,
@@ -1786,6 +1842,111 @@ fn zero_literal_for_dtype(dtype: DType) -> Literal {
         DType::Complex64 => Literal::from_complex64(0.0, 0.0),
         DType::Complex128 => Literal::from_complex128(0.0, 0.0),
     }
+}
+
+fn cast_value_to_dtype(value: &Value, dtype: DType) -> PyResult<Value> {
+    match value {
+        Value::Scalar(literal) => cast_literal_to_dtype(*literal, dtype).map(Value::Scalar),
+        Value::Tensor(tensor) => {
+            let elements = tensor
+                .elements
+                .iter()
+                .copied()
+                .map(|literal| cast_literal_to_dtype(literal, dtype))
+                .collect::<PyResult<Vec<_>>>()?;
+            TensorValue::new(dtype, tensor.shape.clone(), elements)
+                .map(Value::Tensor)
+                .map_err(value_error)
+        }
+    }
+}
+
+fn cast_literal_to_dtype(literal: Literal, dtype: DType) -> PyResult<Literal> {
+    match dtype {
+        DType::Bool => Ok(Literal::Bool(literal_truth_value(literal))),
+        DType::I32 => float_to_i64(
+            literal_real_f64(literal)?,
+            i64::from(i32::MIN),
+            i64::from(i32::MAX),
+        )
+        .map(Literal::I64),
+        DType::I64 => {
+            float_to_i64(literal_real_f64(literal)?, i64::MIN, i64::MAX).map(Literal::I64)
+        }
+        DType::U32 => {
+            float_to_u64(literal_real_f64(literal)?, u64::from(u32::MAX)).and_then(|value| {
+                u32::try_from(value).map(Literal::U32).map_err(|_| {
+                    PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+                        "cast value does not fit uint32",
+                    )
+                })
+            })
+        }
+        DType::U64 => float_to_u64(literal_real_f64(literal)?, u64::MAX).map(Literal::U64),
+        DType::BF16 => Ok(Literal::from_bf16_f32(literal_real_f64(literal)? as f32)),
+        DType::F16 => Ok(Literal::from_f16_f32(literal_real_f64(literal)? as f32)),
+        DType::F32 => Ok(Literal::from_f32(literal_real_f64(literal)? as f32)),
+        DType::F64 => Ok(Literal::from_f64(literal_real_f64(literal)?)),
+        DType::Complex64 => {
+            let (re, im) = literal_complex_f64(literal)?;
+            Ok(Literal::from_complex64(re as f32, im as f32))
+        }
+        DType::Complex128 => {
+            let (re, im) = literal_complex_f64(literal)?;
+            Ok(Literal::from_complex128(re, im))
+        }
+    }
+}
+
+fn literal_real_f64(literal: Literal) -> PyResult<f64> {
+    match literal {
+        Literal::Bool(value) => Ok(if value { 1.0 } else { 0.0 }),
+        Literal::Complex64Bits(re, _) => Ok(f64::from(f32::from_bits(re))),
+        Literal::Complex128Bits(re, _) => Ok(f64::from_bits(re)),
+        _ => literal.as_f64().ok_or_else(|| {
+            PyErr::new::<pyo3::exceptions::PyTypeError, _>("cannot cast literal to a real dtype")
+        }),
+    }
+}
+
+fn literal_complex_f64(literal: Literal) -> PyResult<(f64, f64)> {
+    match literal {
+        Literal::Complex64Bits(re, im) => {
+            Ok((f64::from(f32::from_bits(re)), f64::from(f32::from_bits(im))))
+        }
+        Literal::Complex128Bits(re, im) => Ok((f64::from_bits(re), f64::from_bits(im))),
+        _ => Ok((literal_real_f64(literal)?, 0.0)),
+    }
+}
+
+fn float_to_i64(value: f64, min: i64, max: i64) -> PyResult<i64> {
+    if !value.is_finite() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "cannot cast non-finite value to int",
+        ));
+    }
+    let value = value.trunc();
+    if value < min as f64 || value > max as f64 {
+        return Err(PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+            "cast value does not fit signed integer dtype",
+        ));
+    }
+    Ok(value as i64)
+}
+
+fn float_to_u64(value: f64, max: u64) -> PyResult<u64> {
+    if !value.is_finite() {
+        return Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+            "cannot cast non-finite value to uint",
+        ));
+    }
+    let value = value.trunc();
+    if value < 0.0 || value > max as f64 {
+        return Err(PyErr::new::<pyo3::exceptions::PyOverflowError, _>(
+            "cast value does not fit unsigned integer dtype",
+        ));
+    }
+    Ok(value as u64)
 }
 
 fn round_value(value: &Value, decimals: i32, cast_to_int: bool) -> PyResult<Value> {
@@ -2069,6 +2230,22 @@ fn validate_cpu_device(device: &PyDevice) -> PyResult<()> {
             "fj-py currently supports exactly one local CPU device",
         ))
     }
+}
+
+fn validate_astype_device(py: Python<'_>, device: Option<Py<PyAny>>) -> PyResult<()> {
+    let Some(device) = device else {
+        return Ok(());
+    };
+    let device = device.bind(py);
+    if device.is_none() {
+        return Ok(());
+    }
+    if let Ok(device) = device.extract::<PyRef<'_, PyDevice>>() {
+        return validate_cpu_device(&device);
+    }
+    Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(
+        "astype device must be None or a fj-py CPU Device",
+    ))
 }
 
 fn validate_enum_value(value: &str, allowed: &[&str], option_name: &str) -> PyResult<()> {
@@ -3161,6 +3338,7 @@ mod tests {
             assert!(deleted.tolist(py).is_err());
             assert!(deleted.tobytes(py, "C").is_err());
             assert!(deleted.transpose(&PyTuple::empty(py)).is_err());
+            assert!(deleted.astype(py, None, false, None).is_err());
             assert!(deleted.__array__(py, None, None, None).is_err());
             assert!(deleted.__dlpack_device__(py).is_err());
             assert_eq!(
@@ -3184,6 +3362,25 @@ mod tests {
             );
             assert_eq!(v.__str__(py).unwrap(), "42.0");
             assert_eq!(v.__format__(py, ".1f").unwrap(), "42.0");
+            let int_dtype = pyo3::types::PyString::new(py, "int64")
+                .to_owned()
+                .into_any()
+                .unbind();
+            assert_eq!(
+                v.astype(py, Some(int_dtype), false, None)
+                    .unwrap()
+                    .as_i64()
+                    .unwrap(),
+                42
+            );
+            assert!(
+                (v.astype(py, None, false, None).unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12
+            );
+            let bad_device = pyo3::types::PyString::new(py, "gpu")
+                .to_owned()
+                .into_any()
+                .unbind();
+            assert!(v.astype(py, None, false, Some(bad_device)).is_err());
             if py.import("numpy").is_ok() {
                 let array = v.__array__(py, None, None, None).unwrap();
                 let array = array.bind(py);
@@ -3262,6 +3459,19 @@ mod tests {
         Python::with_gil(|py| {
             let value = i.__index__(py).unwrap();
             assert_eq!(value.bind(py).extract::<i64>().unwrap(), 123);
+            let float_dtype = pyo3::types::PyString::new(py, "float64")
+                .to_owned()
+                .into_any()
+                .unbind();
+            assert!(
+                (i.astype(py, Some(float_dtype), false, None)
+                    .unwrap()
+                    .as_f64()
+                    .unwrap()
+                    - 123.0)
+                    .abs()
+                    < 1e-12
+            );
             assert_eq!(i.__hex__(py).unwrap(), "0x7b");
             assert_eq!(i.__oct__(py).unwrap(), "0o173");
             let value = i.tobytes(py, "K").unwrap();
@@ -3316,6 +3526,18 @@ mod tests {
         assert_eq!(rounded_ints.as_i64_list().unwrap(), vec![10, 22]);
         pyo3::prepare_freethreaded_python();
         Python::with_gil(|py| {
+            let int_dtype = pyo3::types::PyString::new(py, "int64")
+                .to_owned()
+                .into_any()
+                .unbind();
+            assert_eq!(
+                floats
+                    .astype(py, Some(int_dtype), false, None)
+                    .unwrap()
+                    .as_i64_list()
+                    .unwrap(),
+                vec![1, 2, 4]
+            );
             let values = floats.tolist(py).unwrap();
             assert_eq!(
                 values.bind(py).extract::<Vec<f64>>().unwrap(),
@@ -3376,6 +3598,17 @@ mod tests {
             assert!(ints.__int__(py).is_err());
             assert!(ints.__complex__(py).is_err());
             assert!(ints.__index__(py).is_err());
+            let float_dtype = pyo3::types::PyString::new(py, "float64")
+                .to_owned()
+                .into_any()
+                .unbind();
+            assert_eq!(
+                ints.astype(py, Some(float_dtype), false, None)
+                    .unwrap()
+                    .as_f64_list()
+                    .unwrap(),
+                vec![1.0, 2.0, 3.0]
+            );
             let shards = ints.addressable_shards().unwrap();
             assert_eq!(shards.len(), 1);
             let shard = shards.first().unwrap();

@@ -88,6 +88,14 @@ def test_value_scalar():
     assert {device.platform for device in v.devices()} == {"cpu"}
     assert str(v) == "42.0"
     assert format(v, ".1f") == "42.0"
+    assert v.astype("int64").as_i64() == 42
+    assert abs(v.astype(None).as_f64() - 42.0) < 1e-12
+    try:
+        v.astype("float64", device="gpu")
+    except ValueError as exc:
+        assert "device" in str(exc)
+    else:
+        raise AssertionError("Array.astype should reject non-CPU devices")
     assert abs(v.round().as_f64() - 42.0) < 1e-12
     assert round(fj.PyValue.scalar_f64(10.5)).as_i64() == 10
     assert round(fj.PyValue.scalar_f64(21.5)).as_i64() == 22
@@ -193,6 +201,7 @@ def test_value_scalar():
         ("device_get", lambda: fj.device_get(deleted)),
         ("module block_until_ready", lambda: fj.block_until_ready(deleted)),
         ("module copy_to_host_async", lambda: fj.copy_to_host_async(deleted)),
+        ("astype", lambda: deleted.astype("float64")),
         ("item", deleted.item),
         ("indexing", lambda: deleted[0]),
         ("item assignment", lambda: assign_first(deleted)),
@@ -276,6 +285,7 @@ def test_value_scalar():
     assert v2.__oct__() == "0o173"
     assert v2.real.as_i64() == 123
     assert v2.imag.as_i64() == 0
+    assert abs(v2.astype("float64").as_f64() - 123.0) < 1e-12
     assert v2.round().as_i64() == 123
     try:
         v2.round(decimals=-1)
@@ -372,6 +382,7 @@ def test_value_scalar():
     assert vec.copy_to_host_async() is None
     assert vec.copy().as_i64_list() == [1, 2, 3]
     assert vec.tolist() == [1, 2, 3]
+    assert vec.astype("float64").as_f64_list() == [1.0, 2.0, 3.0]
     assert vec.round().as_i64_list() == [1, 2, 3]
     rounded = fj.PyValue.vector_f64([10.5, 21.5, 12.5, 31.5])
     assert rounded.round().as_f64_list() == [10.0, 22.0, 12.0, 32.0]
