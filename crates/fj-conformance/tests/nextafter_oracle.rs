@@ -451,6 +451,72 @@ fn oracle_nextafter_all_scalars_broadcast() {
 }
 
 #[test]
+fn oracle_nextafter_singleton_x_vector_y_broadcast() {
+    // [1] x with [3] y -> [3]
+    let x = make_f64_tensor(&[1], vec![0.0]);
+    let y = make_f64_tensor(&[3], vec![1.0, -1.0, 100.0]);
+    let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0] > 0.0, "0 towards 1");
+    assert!(vals[1] < 0.0, "0 towards -1");
+    assert!(vals[2] > 0.0, "0 towards 100");
+}
+
+#[test]
+fn oracle_nextafter_vector_x_singleton_y_broadcast() {
+    // [3] x with [1] y -> [3]
+    let x = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let y = make_f64_tensor(&[1], vec![10.0]);
+    let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0] > 1.0, "1 towards 10");
+    assert!(vals[1] > 2.0, "2 towards 10");
+    assert!(vals[2] > 3.0, "3 towards 10");
+}
+
+#[test]
+fn oracle_nextafter_column_x_matrix_y_broadcast() {
+    // [2, 1] x with [2, 3] y -> [2, 3]
+    let x = make_f64_tensor(&[2, 1], vec![0.0, 5.0]);
+    let y = make_f64_tensor(&[2, 3], vec![1.0, -1.0, 0.0, 10.0, 0.0, 5.0]);
+    let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: 0 towards 1 (positive), 0 towards -1 (negative), 0 towards 0 (same)
+    assert!(vals[0] > 0.0, "0 towards 1");
+    assert!(vals[1] < 0.0, "0 towards -1");
+    assert!((vals[2] - 0.0).abs() < 1e-15, "0 towards 0");
+    // Row 1: 5 towards 10 (bigger), 5 towards 0 (smaller), 5 towards 5 (same)
+    assert!(vals[3] > 5.0, "5 towards 10");
+    assert!(vals[4] < 5.0, "5 towards 0");
+    assert!((vals[5] - 5.0).abs() < 1e-15, "5 towards 5");
+}
+
+#[test]
+fn oracle_nextafter_different_ranks_broadcast() {
+    // [3] x with [2, 3] y -> [2, 3]
+    let x = make_f64_tensor(&[3], vec![0.0, 1.0, -1.0]);
+    let y = make_f64_tensor(&[2, 3], vec![10.0, 10.0, 10.0, -10.0, -10.0, -10.0]);
+    let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: towards 10 (all positive direction)
+    assert!(vals[0] > 0.0, "0 towards 10");
+    assert!(vals[1] > 1.0, "1 towards 10");
+    assert!(vals[2] > -1.0, "-1 towards 10");
+    // Row 1: towards -10 (all negative direction)
+    assert!(vals[3] < 0.0, "0 towards -10");
+    assert!(vals[4] < 1.0, "1 towards -10");
+    assert!(vals[5] < -1.0, "-1 towards -10");
+}
+
+#[test]
 fn oracle_nextafter_incompatible_shapes_error() {
     // [2] nextafter [3] should error
     let x = make_f64_tensor(&[2], vec![1.0, 2.0]);

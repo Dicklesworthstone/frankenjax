@@ -3862,16 +3862,30 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
             Ok(Value::Scalar(next_after_literal(primitive, *lhs, *rhs)?))
         }
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
-            if lhs.shape != rhs.shape {
-                return Err(EvalError::ShapeMismatch {
+            let out_shape =
+                broadcast_shape(&lhs.shape, &rhs.shape).ok_or(EvalError::ShapeMismatch {
                     primitive,
                     left: lhs.shape.clone(),
                     right: rhs.shape.clone(),
-                });
-            }
-            let mut elements = Vec::with_capacity(lhs.elements.len());
-            for (l, r) in lhs.elements.iter().zip(rhs.elements.iter()) {
-                elements.push(next_after_literal(primitive, *l, *r)?);
+                })?;
+
+            let total_elements: usize = out_shape.dims.iter().map(|&d| d as usize).product();
+            let mut elements = Vec::with_capacity(total_elements);
+
+            let out_strides = compute_strides(&out_shape.dims);
+            let lhs_strides = broadcast_strides(&lhs.shape, &out_shape);
+            let rhs_strides = broadcast_strides(&rhs.shape, &out_shape);
+
+            let mut multi = Vec::with_capacity(out_shape.rank());
+            for flat in 0..total_elements {
+                flat_to_multi_into(flat, &out_strides, &mut multi);
+                let lhs_idx = broadcast_flat_index(&multi, &lhs_strides);
+                let rhs_idx = broadcast_flat_index(&multi, &rhs_strides);
+                elements.push(next_after_literal(
+                    primitive,
+                    lhs.elements[lhs_idx],
+                    rhs.elements[rhs_idx],
+                )?);
             }
 
             let dtype = match (lhs.dtype, rhs.dtype) {
@@ -3879,11 +3893,7 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
                 (DType::F64, DType::F64) => DType::F64,
                 _ => DType::F64,
             };
-            Ok(Value::Tensor(TensorValue::new(
-                dtype,
-                lhs.shape.clone(),
-                elements,
-            )?))
+            Ok(Value::Tensor(TensorValue::new(dtype, out_shape, elements)?))
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
             let mut elements = Vec::with_capacity(rhs.elements.len());
