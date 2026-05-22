@@ -414,6 +414,19 @@ pub fn eval_primitive(
                 |x, y| if x == 0.0 { 0.0 } else { x * y.ln() },
             )
         }
+        Primitive::XLog1PY => {
+            // xlog1py(x, y) = x * log1p(y), with 0 * log1p(anything) = 0
+            eval_binary_elementwise(
+                primitive,
+                inputs,
+                |a, b| {
+                    let x = a as f64;
+                    let y = b as f64;
+                    if x == 0.0 { 0 } else { (x * y.ln_1p()) as i64 }
+                },
+                |x, y| if x == 0.0 { 0.0 } else { x * y.ln_1p() },
+            )
+        }
         Primitive::IntegerPow => eval_integer_pow(primitive, inputs, params),
         Primitive::Nextafter => eval_nextafter(primitive, inputs),
         Primitive::Slice => eval_slice(inputs, params),

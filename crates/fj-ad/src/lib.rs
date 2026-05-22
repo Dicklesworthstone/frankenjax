@@ -3327,6 +3327,25 @@ pub fn vjp(
             let gy = value_mul(g, &value_div(x, y)?)?;
             Ok(vec![gx, gy])
         }
+        Primitive::XLog1PY => {
+            // xlog1py(x, y) = x * log1p(y), with 0 * log1p(anything) = 0
+            // gx = where(x == 0, 0, g * log1p(y))
+            // gy = g * x / (1 + y)
+            let x = &inputs[0];
+            let y = &inputs[1];
+            let zero = zeros_like(x);
+            let one = ones_like(y);
+            let x_is_zero = eval_primitive(Primitive::Eq, &[x.clone(), zero.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let log1p_y = eval_primitive(Primitive::Log1p, std::slice::from_ref(y), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let g_log1p_y = value_mul(g, &log1p_y)?;
+            let gx = eval_primitive(Primitive::Select, &[x_is_zero, zero.clone(), g_log1p_y], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let one_plus_y = value_add(&one, y)?;
+            let gy = value_mul(g, &value_div(x, &one_plus_y)?)?;
+            Ok(vec![gx, gy])
+        }
         // IntegerPow: d/dx x^n = n * x^(n-1)
         Primitive::IntegerPow => {
             let n: i32 = params
@@ -6847,6 +6866,21 @@ fn jvp_rule(
             let dx_term = ep(Primitive::Select, &[x_is_zero.clone(), zeros.clone(), dx_log_y])?;
             let x_over_y = ep(Primitive::Div, &[primals[0].clone(), primals[1].clone()])?;
             let dy_term = ep(Primitive::Mul, &[x_over_y, tangents[1].clone()])?;
+            ep(Primitive::Add, &[dx_term, dy_term])
+        }
+
+        Primitive::XLog1PY => {
+            // xlog1py(x, y) = x * log1p(y), with 0 * log1p(anything) = 0
+            // d(xlog1py) = dx * log1p(y) + x/(1+y) * dy, with special handling for x=0
+            let zeros = zeros_like(&primals[0]);
+            let one = scalar_constant_matching_dtype(1.0, &tangents[0]);
+            let x_is_zero = ep(Primitive::Eq, &[primals[0].clone(), zeros.clone()])?;
+            let log1p_y = ep(Primitive::Log1p, &[primals[1].clone()])?;
+            let dx_log1p_y = ep(Primitive::Mul, &[tangents[0].clone(), log1p_y])?;
+            let dx_term = ep(Primitive::Select, &[x_is_zero.clone(), zeros.clone(), dx_log1p_y])?;
+            let one_plus_y = ep(Primitive::Add, &[one, primals[1].clone()])?;
+            let x_over_1py = ep(Primitive::Div, &[primals[0].clone(), one_plus_y])?;
+            let dy_term = ep(Primitive::Mul, &[x_over_1py, tangents[1].clone()])?;
             ep(Primitive::Add, &[dx_term, dy_term])
         }
 

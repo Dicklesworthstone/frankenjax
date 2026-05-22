@@ -180,6 +180,7 @@ pub enum Primitive {
     CopySign,
     Ldexp,
     XLogY,
+    XLog1PY,
     IntegerPow,
     Nextafter,
     // Clamping
@@ -347,6 +348,7 @@ impl Primitive {
         Self::CopySign,
         Self::Ldexp,
         Self::XLogY,
+        Self::XLog1PY,
         Self::IntegerPow,
         Self::Nextafter,
         Self::Clamp,
@@ -508,6 +510,7 @@ impl Primitive {
             Self::CopySign => "copysign",
             Self::Ldexp => "ldexp",
             Self::XLogY => "xlogy",
+            Self::XLog1PY => "xlog1py",
             Self::IntegerPow => "integer_pow",
             Self::Nextafter => "nextafter",
             Self::Clamp => "clamp",
