@@ -57,7 +57,16 @@ fn assert_close(actual: f64, expected: f64, tol: f64, msg: &str) {
 fn oracle_asinh_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Asinh, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "asinh(0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "asinh(0) = +0");
+}
+
+#[test]
+fn oracle_asinh_neg_zero() {
+    let input = make_f64_tensor(&[], vec![-0.0]);
+    let result = eval_primitive(Primitive::Asinh, &[input], &no_params()).unwrap();
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), (-0.0_f64).to_bits(), "asinh(-0.0) = -0");
 }
 
 // ======================== Basic Values ========================
@@ -279,13 +288,19 @@ fn metamorphic_asinh_tensor_odd_function() {
 #[test]
 fn metamorphic_asinh_tensor_sinh_inverse() {
     let input = make_f64_tensor(&[5], vec![-2.0, -1.0, 0.0, 1.0, 2.0]);
-    let asinh_result = eval_primitive(Primitive::Asinh, std::slice::from_ref(&input), &no_params()).unwrap();
+    let asinh_result =
+        eval_primitive(Primitive::Asinh, std::slice::from_ref(&input), &no_params()).unwrap();
     let sinh_asinh = eval_primitive(Primitive::Sinh, &[asinh_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);
     let round_trip = extract_f64_vec(&sinh_asinh);
 
     for (orig, rt) in original.iter().zip(round_trip.iter()) {
-        assert_close(*rt, *orig, 1e-12, &format!("sinh(asinh({})) = {}", orig, orig));
+        assert_close(
+            *rt,
+            *orig,
+            1e-12,
+            &format!("sinh(asinh({})) = {}", orig, orig),
+        );
     }
 }
