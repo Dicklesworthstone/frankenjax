@@ -68,11 +68,11 @@ fn extract_f64_vec(v: &Value) -> Vec<f64> {
         .collect()
 }
 
-fn extract_i64_scalar(v: &Value) -> i64 {
+fn extract_i64_scalar(v: &Value) -> Option<i64> {
     match v {
-        Value::Scalar(l) => l.as_i64().unwrap(),
-        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements[0].as_i64().unwrap(),
-        _ => panic!("expected scalar or 0-d tensor"),
+        Value::Scalar(l) => l.as_i64(),
+        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements.first()?.as_i64(),
+        _ => None,
     }
 }
 
@@ -220,6 +220,52 @@ fn oracle_cumprod_reverse_2d_last_axis() {
     assert_eq!(extract_i64_vec(&result), vec![6, 6, 3, 120, 30, 6]);
 }
 
+// ======================== Cummax Oracle Tests ========================
+
+#[test]
+fn oracle_cummax_1d_i64_with_duplicates() {
+    let input = make_i64_tensor(&[6], vec![1, 3, 2, 4, 4, 0]);
+    let result = eval_primitive(Primitive::Cummax, &[input], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![1, 3, 3, 4, 4, 4]);
+}
+
+#[test]
+fn oracle_cummax_2d_first_axis() {
+    let input = make_i64_tensor(&[2, 3], vec![1, 5, 2, 4, 3, 6]);
+    let result = eval_primitive(Primitive::Cummax, &[input], &axis_params(0)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![1, 5, 2, 4, 5, 6]);
+}
+
+#[test]
+fn oracle_cummax_reverse_1d_i64() {
+    let input = make_i64_tensor(&[4], vec![1, 4, 2, 3]);
+    let result = eval_primitive(Primitive::Cummax, &[input], &reverse_axis_params(0)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![4, 4, 3, 3]);
+}
+
+// ======================== Cummin Oracle Tests ========================
+
+#[test]
+fn oracle_cummin_1d_i64_with_duplicates() {
+    let input = make_i64_tensor(&[5], vec![4, 2, 3, 2, 1]);
+    let result = eval_primitive(Primitive::Cummin, &[input], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![4, 2, 2, 2, 1]);
+}
+
+#[test]
+fn oracle_cummin_2d_last_axis() {
+    let input = make_i64_tensor(&[2, 3], vec![3, 1, 2, 4, 6, 5]);
+    let result = eval_primitive(Primitive::Cummin, &[input], &axis_params(-1)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![3, 1, 1, 4, 4, 4]);
+}
+
+#[test]
+fn oracle_cummin_reverse_2d_first_axis() {
+    let input = make_i64_tensor(&[3, 2], vec![3, 5, 2, 7, 4, 1]);
+    let result = eval_primitive(Primitive::Cummin, &[input], &reverse_axis_params(0)).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![2, 1, 2, 1, 4, 1]);
+}
+
 #[test]
 fn oracle_cumulative_rejects_invalid_reverse_param() {
     let input = make_i64_tensor(&[3], vec![1, 2, 3]);
@@ -239,15 +285,19 @@ fn oracle_cumulative_rejects_invalid_reverse_param() {
 fn metamorphic_cumsum_last_equals_sum() {
     // last(cumsum(x)) = reduce_sum(x)
     let input = make_i64_tensor(&[5], vec![3, 1, 4, 1, 5]);
-    let cumsum_result = eval_primitive(Primitive::Cumsum, std::slice::from_ref(&input), &no_params()).unwrap();
+    let cumsum_result = eval_primitive(
+        Primitive::Cumsum,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let cumsum_vals = extract_i64_vec(&cumsum_result);
 
     let sum_result = eval_primitive(Primitive::ReduceSum, &[input], &axis_params(0)).unwrap();
-    let sum_val = extract_i64_scalar(&sum_result);
 
     assert_eq!(
         cumsum_vals.last().copied(),
-        Some(sum_val),
+        extract_i64_scalar(&sum_result),
         "last(cumsum(x)) should equal reduce_sum(x)"
     );
 }
@@ -265,15 +315,19 @@ fn metamorphic_cumsum_first_element_identity() {
 fn metamorphic_cumprod_last_equals_product() {
     // last(cumprod(x)) = reduce_prod(x)
     let input = make_i64_tensor(&[4], vec![2, 3, 4, 5]);
-    let cumprod_result = eval_primitive(Primitive::Cumprod, std::slice::from_ref(&input), &no_params()).unwrap();
+    let cumprod_result = eval_primitive(
+        Primitive::Cumprod,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let cumprod_vals = extract_i64_vec(&cumprod_result);
 
     let prod_result = eval_primitive(Primitive::ReduceProd, &[input], &axis_params(0)).unwrap();
-    let prod_val = extract_i64_scalar(&prod_result);
 
     assert_eq!(
         cumprod_vals.last().copied(),
-        Some(prod_val),
+        extract_i64_scalar(&prod_result),
         "last(cumprod(x)) should equal reduce_prod(x)"
     );
 }
@@ -297,22 +351,20 @@ fn oracle_cumsum_f32_preserves_dtype() {
         .into_iter()
         .map(Literal::from_f32)
         .collect();
-    let input =
-        Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![4] }, data).unwrap());
+    let input = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![4] }, data).unwrap());
     let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
-    let Value::Tensor(t) = result else {
-        panic!("expected tensor");
-    };
+    let t = result.as_tensor().expect("expected tensor");
     assert_eq!(t.dtype, DType::F32);
     t.validate_dtype_consistency()
         .expect("F32 cumsum output dtype/element invariant");
-    match t.elements.last().unwrap() {
-        Literal::F32Bits(bits) => {
-            let v = f32::from_bits(*bits);
-            assert!((v - 10.0).abs() < 1e-5, "expected 10.0, got {v}");
-        }
-        other => panic!("expected F32Bits, got {other:?}"),
-    }
+    let last_value = t.elements.last().and_then(|literal| match literal {
+        Literal::F32Bits(bits) => Some(f32::from_bits(*bits)),
+        _ => None,
+    });
+    assert!(
+        matches!(last_value, Some(v) if (v - 10.0).abs() < 1e-5),
+        "expected final F32 cumsum value near 10.0, got {last_value:?}",
+    );
 }
 
 #[test]
@@ -321,12 +373,9 @@ fn oracle_cumprod_f32_preserves_dtype() {
         .into_iter()
         .map(Literal::from_f32)
         .collect();
-    let input =
-        Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![4] }, data).unwrap());
+    let input = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![4] }, data).unwrap());
     let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
-    let Value::Tensor(t) = result else {
-        panic!("expected tensor");
-    };
+    let t = result.as_tensor().expect("expected tensor");
     assert_eq!(t.dtype, DType::F32);
     t.validate_dtype_consistency()
         .expect("F32 cumprod output dtype/element invariant");
@@ -372,19 +421,23 @@ fn property_cumulative_preserves_all_float_dtypes() {
     ];
 
     for (dtype, input) in cases {
-        for primitive in [Primitive::Cumsum, Primitive::Cumprod] {
+        for primitive in [
+            Primitive::Cumsum,
+            Primitive::Cumprod,
+            Primitive::Cummax,
+            Primitive::Cummin,
+        ] {
             let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
-                .unwrap_or_else(|e| panic!("{primitive:?} {dtype:?} failed: {e}"));
-            let Value::Tensor(t) = result else {
-                panic!("{primitive:?} {dtype:?}: expected tensor");
-            };
+                .expect("cumulative primitive should succeed for float dtype");
+            let t = result
+                .as_tensor()
+                .expect("cumulative primitive should return tensor");
             assert_eq!(
                 t.dtype, dtype,
                 "{primitive:?} {dtype:?}: tensor dtype mismatch"
             );
-            t.validate_dtype_consistency().unwrap_or_else(|e| {
-                panic!("{primitive:?} {dtype:?}: validate_dtype_consistency failed: {e}")
-            });
+            t.validate_dtype_consistency()
+                .expect("cumulative output should preserve dtype consistency");
         }
     }
 }
