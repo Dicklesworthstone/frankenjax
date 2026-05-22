@@ -151,6 +151,29 @@ fn polygamma_tensor_order_is_elementwise() {
 }
 
 #[test]
+fn polygamma_same_shape_tensors_are_elementwise() {
+    let result = eval_polygamma(vector(&[0.0, 1.0]), vector(&[1.0, 2.0]));
+    let tensor = result.as_tensor().expect("expected tensor result");
+
+    assert_eq!(tensor.dtype, DType::F64);
+    assert_eq!(tensor.shape, Shape::vector(2));
+
+    let values = extract_vector(&result);
+    assert_close(
+        values[0],
+        -EULER_MASCHERONI,
+        POLYGAMMA_APPROX_TOL,
+        "polygamma([0, 1], [1, 2])[0]",
+    );
+    assert_close(
+        values[1],
+        std::f64::consts::PI.powi(2) / 6.0 - 1.0,
+        POLYGAMMA_APPROX_TOL,
+        "polygamma([0, 1], [1, 2])[1]",
+    );
+}
+
+#[test]
 fn polygamma_first_order_recurrence() {
     let x = 2.5;
     let at_x = extract_scalar(&eval_polygamma(scalar(1.0), scalar(x)));
