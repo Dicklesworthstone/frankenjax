@@ -5,7 +5,7 @@
 //! Tests:
 //! - Basic values
 //! - Negative values (square always positive)
-//! - Zero
+//! - Zero: square(+0.0) = square(-0.0) = +0.0
 //! - Infinity
 //! - NaN propagation
 //! - Identity: square(x) = x * x
@@ -165,7 +165,8 @@ fn oracle_square_i64_neg_ten() {
 fn oracle_square_f64_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0);
+    let val = extract_f64_scalar(&result);
+    assert_eq!(val.to_bits(), 0.0_f64.to_bits(), "square(+0.0) = +0.0");
 }
 
 #[test]
@@ -230,7 +231,7 @@ fn oracle_square_f64_neg_zero() {
     let input = make_f64_tensor(&[], vec![-0.0]);
     let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
-    assert_eq!(val, 0.0);
+    assert_eq!(val.to_bits(), 0.0_f64.to_bits(), "square(-0.0) = +0.0");
 }
 
 // ======================== Float Infinity ========================
@@ -412,8 +413,14 @@ fn metamorphic_square_equals_mul() {
     // square(x) = Mul(x, x) using Mul primitive
     for x in [-2.5, -1.0, 0.0, 1.0, 2.5, 10.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let square_result = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
-        let mul_result = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
+        let square_result = eval_primitive(
+            Primitive::Square,
+            std::slice::from_ref(&input),
+            &no_params(),
+        )
+        .unwrap();
+        let mul_result =
+            eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
 
         assert_close(
             extract_f64_scalar(&square_result),
@@ -431,7 +438,12 @@ fn metamorphic_sqrt_square_abs() {
     // sqrt(square(x)) = abs(x) using Sqrt and Abs primitives
     for x in [-2.5, -1.0, 0.0, 1.0, 2.5, 10.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let squared = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
+        let squared = eval_primitive(
+            Primitive::Square,
+            std::slice::from_ref(&input),
+            &no_params(),
+        )
+        .unwrap();
         let sqrt_squared = eval_primitive(Primitive::Sqrt, &[squared], &no_params()).unwrap();
         let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
 
@@ -451,7 +463,8 @@ fn metamorphic_square_negation_invariant() {
     // square(Neg(x)) = square(x) (even function) using Neg primitive
     for x in [1.0, 2.0, 0.5, 10.0, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
 
         let square_x = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
         let square_neg_x = eval_primitive(Primitive::Square, &[neg_x], &no_params()).unwrap();
@@ -473,7 +486,12 @@ fn metamorphic_square_tensor_mul() {
     let data = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
     let input = make_f64_tensor(&[5], data);
 
-    let square_result = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
+    let square_result = eval_primitive(
+        Primitive::Square,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let mul_result = eval_primitive(Primitive::Mul, &[input.clone(), input], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&square_result), vec![5]);
