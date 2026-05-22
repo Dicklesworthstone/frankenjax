@@ -289,6 +289,7 @@ def test_shape_dtype_struct_constructor():
     assert meta.shape == [2, 3]
     assert meta.dtype == "F64"
     assert meta.sharding is None
+    assert meta.vma is None
     assert meta.ndim == 2
     assert meta.size == 6
     assert len(meta) == 2
@@ -300,6 +301,7 @@ def test_shape_dtype_struct_constructor():
     assert weak_meta.shape == []
     assert weak_meta.dtype == "F64"
     assert weak_meta.sharding is None
+    assert weak_meta.vma is None
     assert weak_meta.ndim == 0
     assert weak_meta.size == 1
     try:
@@ -318,6 +320,7 @@ def test_shape_dtype_struct_constructor():
     assert updated.shape == [4]
     assert updated.dtype == "I64"
     assert updated.sharding is None
+    assert updated.vma is None
     assert updated.ndim == 1
     assert updated.size == 4
     assert len(updated) == 4

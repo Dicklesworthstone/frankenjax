@@ -471,6 +471,11 @@ impl PyShapeDtypeStruct {
     }
 
     #[getter]
+    fn vma(&self) -> Option<Py<PyAny>> {
+        None
+    }
+
+    #[getter]
     fn ndim(&self) -> usize {
         self.shape.len()
     }
@@ -2050,6 +2055,7 @@ mod tests {
         assert_eq!(meta.shape(), vec![2, 3]);
         assert_eq!(meta.dtype(), "F64");
         assert!(meta.sharding().is_none());
+        assert!(meta.vma().is_none());
         assert_eq!(meta.ndim(), 2);
         assert_eq!(meta.size(), 6);
         assert_eq!(meta.__len__().unwrap(), 2);
@@ -2061,6 +2067,7 @@ mod tests {
         let weak_meta = PyShapeDtypeStruct::new(vec![], "F64".to_owned(), true, true);
         assert!(weak_meta.__len__().is_err());
         assert!(weak_meta.sharding().is_none());
+        assert!(weak_meta.vma().is_none());
         assert!(weak_meta.weak_type());
         assert!(weak_meta.is_ref());
         assert_eq!(
@@ -2078,6 +2085,7 @@ mod tests {
         assert_eq!(updated.shape(), vec![4]);
         assert_eq!(updated.dtype(), "I64");
         assert!(updated.sharding().is_none());
+        assert!(updated.vma().is_none());
         assert_eq!(updated.__len__().unwrap(), 4);
         assert!(updated.weak_type());
         assert!(updated.is_ref());
