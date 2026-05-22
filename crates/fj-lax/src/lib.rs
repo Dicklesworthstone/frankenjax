@@ -193,6 +193,23 @@ pub fn eval_primitive(
                 |a, b| a.max(b) + (-(a - b).abs()).exp().ln_1p(),
             )
         }
+        Primitive::LogAddExp2 => {
+            // log2(2^x + 2^y) = max(x,y) + log2(1 + 2^(min - max))
+            //                = max(x,y) + log2(1 + 2^(-|x-y|))
+            eval_binary_elementwise(
+                primitive,
+                inputs,
+                |a, b| {
+                    let (a, b) = (a as f64, b as f64);
+                    let diff = -(a - b).abs();
+                    (a.max(b) + (1.0 + 2f64.powf(diff)).log2()) as i64
+                },
+                |a, b| {
+                    let diff = -(a - b).abs();
+                    a.max(b) + (1.0 + 2f64.powf(diff)).log2()
+                },
+            )
+        }
         // Unary arithmetic
         Primitive::Neg => eval_neg(primitive, inputs),
         Primitive::Abs => eval_abs(primitive, inputs),

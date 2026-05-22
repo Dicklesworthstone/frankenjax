@@ -1398,6 +1398,23 @@ pub fn vjp(
             let gy = value_mul(g, &sig_yx)?;
             Ok(vec![gx, gy])
         }
+        Primitive::LogAddExp2 => {
+            // log2(2^x + 2^y)
+            // d/dx = 2^(x - logaddexp2(x, y)), d/dy = 2^(y - logaddexp2(x, y))
+            let x = &inputs[0];
+            let y = &inputs[1];
+            let lae2 = eval_primitive(Primitive::LogAddExp2, &[x.clone(), y.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let x_norm = value_sub(x, &lae2)?;
+            let y_norm = value_sub(y, &lae2)?;
+            let wx = eval_primitive(Primitive::Exp2, &[x_norm], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let wy = eval_primitive(Primitive::Exp2, &[y_norm], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gx = value_mul(g, &wx)?;
+            let gy = value_mul(g, &wy)?;
+            Ok(vec![gx, gy])
+        }
         Primitive::Exp => {
             let x = &inputs[0];
             let exp_x = eval_primitive(Primitive::Exp, std::slice::from_ref(x), &BTreeMap::new())
@@ -6836,6 +6853,18 @@ fn jvp_rule(
             let sig_yx = ep(Primitive::Logistic, &[y_minus_x])?;
             let dx_term = ep(Primitive::Mul, &[sig_xy, tangents[0].clone()])?;
             let dy_term = ep(Primitive::Mul, &[sig_yx, tangents[1].clone()])?;
+            ep(Primitive::Add, &[dx_term, dy_term])
+        }
+
+        Primitive::LogAddExp2 => {
+            // d(logaddexp2) = 2^(x-lae2) * dx + 2^(y-lae2) * dy
+            let lae2 = ep(Primitive::LogAddExp2, &[primals[0].clone(), primals[1].clone()])?;
+            let x_norm = ep(Primitive::Sub, &[primals[0].clone(), lae2.clone()])?;
+            let y_norm = ep(Primitive::Sub, &[primals[1].clone(), lae2])?;
+            let wx = ep(Primitive::Exp2, &[x_norm])?;
+            let wy = ep(Primitive::Exp2, &[y_norm])?;
+            let dx_term = ep(Primitive::Mul, &[wx, tangents[0].clone()])?;
+            let dy_term = ep(Primitive::Mul, &[wy, tangents[1].clone()])?;
             ep(Primitive::Add, &[dx_term, dy_term])
         }
 
