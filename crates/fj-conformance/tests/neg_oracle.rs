@@ -4,7 +4,7 @@
 //!
 //! Properties:
 //! - neg(neg(x)) = x (double negation / involution)
-//! - neg(0) = 0 (but neg(-0) = 0 in IEEE 754)
+//! - neg(+0.0) = -0.0 and neg(-0.0) = +0.0 in IEEE 754
 //! - neg(x) + x = 0
 //! - neg(x + y) = neg(x) + neg(y) (linearity)
 //! - neg(x * y) = neg(x) * y = x * neg(y)
@@ -186,7 +186,15 @@ fn oracle_neg_zero_f64() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
-    assert!(val == 0.0, "neg(0) = 0 or -0");
+    assert_eq!(val.to_bits(), (-0.0_f64).to_bits(), "neg(+0.0) = -0.0");
+}
+
+#[test]
+fn oracle_neg_neg_zero_f64() {
+    let input = make_f64_tensor(&[], vec![-0.0]);
+    let result = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    assert_eq!(val.to_bits(), 0.0_f64.to_bits(), "neg(-0.0) = +0.0");
 }
 
 #[test]
@@ -454,13 +462,7 @@ fn metamorphic_neg_involution() {
         let neg1 = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
         let neg2 = eval_primitive(Primitive::Neg, &[neg1], &no_params()).unwrap();
 
-        assert_eq!(
-            extract_f64_scalar(&neg2),
-            x,
-            "Neg(Neg({})) = {}",
-            x,
-            x
-        );
+        assert_eq!(extract_f64_scalar(&neg2), x, "Neg(Neg({})) = {}", x, x);
     }
 }
 
@@ -471,16 +473,11 @@ fn metamorphic_neg_add_zero() {
     // Add(x, Neg(x)) = 0 using Add primitive
     for x in [-5.5, -1.0, 1.0, 5.5, 100.0, -100.0] {
         let input = make_f64_tensor(&[], vec![x]);
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let sum = eval_primitive(Primitive::Add, &[input, neg_x], &no_params()).unwrap();
 
-        assert_eq!(
-            extract_f64_scalar(&sum),
-            0.0,
-            "Add({}, Neg({})) = 0",
-            x,
-            x
-        );
+        assert_eq!(extract_f64_scalar(&sum), 0.0, "Add({}, Neg({})) = 0", x, x);
     }
 }
 
@@ -495,7 +492,12 @@ fn metamorphic_neg_distributes_add() {
         let y_tensor = make_f64_tensor(&[], vec![y]);
 
         // Neg(Add(x, y))
-        let sum = eval_primitive(Primitive::Add, &[x_tensor.clone(), y_tensor.clone()], &no_params()).unwrap();
+        let sum = eval_primitive(
+            Primitive::Add,
+            &[x_tensor.clone(), y_tensor.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let neg_sum = eval_primitive(Primitive::Neg, &[sum], &no_params()).unwrap();
 
         // Add(Neg(x), Neg(y))
