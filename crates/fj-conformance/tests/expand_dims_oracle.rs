@@ -279,3 +279,83 @@ fn oracle_expand_dims_squeeze_identity() {
     assert_eq!(extract_shape(&squeezed), vec![2, 3]);
     assert_eq!(extract_i64_vec(&squeezed), vec![1, 2, 3, 4, 5, 6]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_expand_dims_empty() {
+    let input = make_i64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0]);
+}
+
+#[test]
+fn oracle_expand_dims_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0, 3]);
+}
+
+fn make_bool_tensor(shape: &[u32], data: Vec<bool>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter().map(Literal::Bool).collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_bool_vec(v: &Value) -> Vec<bool> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::Bool(b) => *b,
+                _ => panic!("expected bool"),
+            })
+            .collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_expand_dims_bool_dtype() {
+    let input = make_bool_tensor(&[3], vec![true, false, true]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 3]);
+    assert_eq!(extract_bool_vec(&result), vec![true, false, true]);
+    assert_eq!(result.dtype(), DType::Bool);
+}
+
+#[test]
+fn oracle_expand_dims_special_values() {
+    let input = make_f64_tensor(&[4], vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 0.0]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![4, 1]);
+    let vals = extract_f64_vec(&result);
+    assert!(vals[0].is_nan());
+    assert_eq!(vals[1], f64::INFINITY);
+    assert_eq!(vals[2], f64::NEG_INFINITY);
+    assert_eq!(vals[3], 0.0);
+}
+
+#[test]
+fn oracle_expand_dims_preserves_dtype_i64() {
+    let input = make_i64_tensor(&[3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}
+
+#[test]
+fn oracle_expand_dims_preserves_dtype_f64() {
+    let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(result.dtype(), DType::F64);
+}
