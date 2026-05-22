@@ -10,6 +10,7 @@
 //! - Special values: infinity, NaN
 //! - Extreme values: signed zero, overflow, and underflow sign preservation
 //! - Tensor shapes
+//! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -238,4 +239,48 @@ fn oracle_ldexp_matrix() {
     let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_eq!(extract_f64_vec(&result), vec![2.0, 8.0, 24.0, 4.0]);
+}
+
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_ldexp_vector_scalar_exp_broadcast() {
+    let x_values = [1.0, 2.0, 0.5, 4.0];
+    let x = make_f64_tensor(&[4], x_values.to_vec());
+    let n = make_i64_tensor(&[], vec![3]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let actual = extract_f64_vec(&result);
+    for (i, (&actual, &x_value)) in actual.iter().zip(x_values.iter()).enumerate() {
+        let expected = x_value * 2.0_f64.powi(3);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast scalar exponent element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn oracle_ldexp_matrix_row_exp_broadcast() {
+    let x_values = [1.0, 2.0, 3.0, 4.0];
+    let n_values = [1_i32, -1_i32];
+    let x = make_f64_tensor(&[2, 2], x_values.to_vec());
+    let n = make_i64_tensor(&[2], n_values.iter().copied().map(i64::from).collect());
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let actual = extract_f64_vec(&result);
+    for (i, ((&actual, &x_value), &n_value)) in actual
+        .iter()
+        .zip(x_values.iter())
+        .zip(n_values.iter().cycle())
+        .enumerate()
+    {
+        let expected = x_value * 2.0_f64.powi(n_value);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast row exponent element {i}: expected {expected}, got {actual}"
+        );
+    }
 }
