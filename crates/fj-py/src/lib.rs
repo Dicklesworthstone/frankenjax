@@ -720,6 +720,11 @@ impl PyValue {
             .unbind())
     }
 
+    fn __dlpack_device__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.ensure_not_deleted()?;
+        Ok(PyTuple::new(py, [1_i32, 0_i32])?.into_any().unbind())
+    }
+
     fn __repr__(&self) -> String {
         format!("{:?}", self.inner)
     }
@@ -2334,8 +2339,20 @@ mod tests {
             assert!(deleted.tolist(py).is_err());
             assert!(deleted.tobytes(py, "C").is_err());
             assert!(deleted.__array__(py, None, None, None).is_err());
+            assert!(deleted.__dlpack_device__(py).is_err());
             let devices = v.devices(py).unwrap();
             assert_eq!(devices.bind(py).len().unwrap(), 1);
+            let dlpack_device = v.__dlpack_device__(py).unwrap();
+            let dlpack_device = dlpack_device.bind(py).downcast::<PyTuple>().unwrap();
+            assert_eq!(dlpack_device.len(), 2);
+            assert_eq!(
+                dlpack_device.get_item(0).unwrap().extract::<i32>().unwrap(),
+                1
+            );
+            assert_eq!(
+                dlpack_device.get_item(1).unwrap().extract::<i32>().unwrap(),
+                0
+            );
             assert_eq!(v.__str__(py).unwrap(), "42.0");
             assert_eq!(v.__format__(py, ".1f").unwrap(), "42.0");
             if py.import("numpy").is_ok() {

@@ -64,6 +64,9 @@ def test_value_scalar():
     assert array.shape == ()
     assert abs(array.item() - 42.0) < 1e-12
     assert np.asarray(v, dtype=np.float32).dtype == np.dtype("float32")
+    dl_device_type, dl_device_id = v.__dlpack_device__()
+    assert int(dl_device_type) == 1
+    assert dl_device_id == 0
     try:
         v.device_buffer
     except AttributeError as exc:
@@ -141,6 +144,7 @@ def test_value_scalar():
         ("module copy_to_host_async", lambda: fj.copy_to_host_async(deleted)),
         ("indexing", lambda: deleted[0]),
         ("array protocol", lambda: np.asarray(deleted)),
+        ("DLPack device protocol", deleted.__dlpack_device__),
     ]
     for name, accessor in deleted_accessors:
         try:
