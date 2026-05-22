@@ -293,3 +293,88 @@ fn stop_gradient_jvp_scalar() {
     assert_eq!(result.primals[0].as_f64_scalar(), Some(5.0));
     assert_eq!(result.tangents[0].as_f64_scalar(), Some(0.0));
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn stop_gradient_preserves_3d_shape() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![2, 2, 2] },
+            (1..=8).map(|x| Literal::from_f64(x as f64)).collect(),
+        )
+        .unwrap(),
+    );
+    let output = eval_primitive(
+        Primitive::StopGradient,
+        std::slice::from_ref(&input),
+        &BTreeMap::new(),
+    )
+    .expect("stop_gradient 3D eval should succeed");
+
+    let tensor = output.as_tensor().expect("expected tensor output");
+    assert_eq!(tensor.shape.dims, vec![2, 2, 2]);
+    assert_eq!(extract_f64_vec(&output), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+}
+
+#[test]
+fn stop_gradient_preserves_bool_dtype() {
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape::vector(3),
+            vec![Literal::Bool(true), Literal::Bool(false), Literal::Bool(true)],
+        )
+        .unwrap(),
+    );
+    let output = eval_primitive(
+        Primitive::StopGradient,
+        std::slice::from_ref(&input),
+        &BTreeMap::new(),
+    )
+    .expect("stop_gradient bool eval should succeed");
+
+    let tensor = output.as_tensor().expect("expected tensor output");
+    assert_eq!(tensor.dtype, DType::Bool);
+}
+
+#[test]
+fn stop_gradient_large_tensor() {
+    let data: Vec<f64> = (0..100).map(|x| x as f64).collect();
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            Shape { dims: vec![10, 10] },
+            data.iter().copied().map(Literal::from_f64).collect(),
+        )
+        .unwrap(),
+    );
+    let output = eval_primitive(
+        Primitive::StopGradient,
+        std::slice::from_ref(&input),
+        &BTreeMap::new(),
+    )
+    .expect("stop_gradient large tensor should succeed");
+
+    let tensor = output.as_tensor().expect("expected tensor output");
+    assert_eq!(tensor.shape.dims, vec![10, 10]);
+    let values = extract_f64_vec(&output);
+    assert_eq!(values.len(), 100);
+    assert_eq!(values[0], 0.0);
+    assert_eq!(values[99], 99.0);
+}
+
+#[test]
+fn stop_gradient_complex_dtype() {
+    let input = Value::scalar_complex128(3.0, 4.0);
+    let output = eval_primitive(
+        Primitive::StopGradient,
+        std::slice::from_ref(&input),
+        &BTreeMap::new(),
+    )
+    .expect("stop_gradient complex should succeed");
+
+    assert_eq!(output.dtype(), DType::Complex128);
+    assert_eq!(output.as_complex128_scalar(), Some((3.0, 4.0)));
+}

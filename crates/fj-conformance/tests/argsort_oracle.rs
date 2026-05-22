@@ -216,3 +216,67 @@ fn oracle_argsort_descending_3d() {
     // [6, 4, 5] desc -> [6, 5, 4] -> indices [0, 2, 1]
     assert_eq!(indices, vec![1, 2, 0, 0, 2, 1]);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_argsort_empty_tensor() {
+    let input = make_f64_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(extract_i64_vec(&result), vec![] as Vec<i64>);
+}
+
+#[test]
+fn oracle_argsort_preserves_shape() {
+    let input = make_f64_tensor(&[2, 3], vec![3.0, 1.0, 2.0, 6.0, 4.0, 5.0]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+}
+
+#[test]
+fn oracle_argsort_special_values() {
+    // NaN should sort to the end in ascending order per IEEE 754
+    let input = make_f64_tensor(&[5], vec![f64::NAN, 1.0, f64::INFINITY, 0.0, f64::NEG_INFINITY]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+    let indices = extract_i64_vec(&result);
+    // Expected order: -inf (4), 0 (3), 1 (1), inf (2), nan (0)
+    // NaN handling varies by implementation, but finite values should be ordered correctly
+    assert_eq!(indices.len(), 5);
+    // Check that -inf comes first
+    assert_eq!(indices[0], 4);
+    // And inf comes before nan
+    assert_eq!(indices[3], 2);
+}
+
+#[test]
+fn oracle_argsort_2d_both_axes() {
+    // Test sorting along both axes
+    let input = make_f64_tensor(&[3, 3], vec![9.0, 7.0, 8.0, 6.0, 4.0, 5.0, 3.0, 1.0, 2.0]);
+
+    // Sort along axis 0 (columns)
+    let result_axis0 = eval_primitive(Primitive::Argsort, &[input.clone()], &argsort_params(0, false)).unwrap();
+    assert_eq!(extract_shape(&result_axis0), vec![3, 3]);
+    let indices0 = extract_i64_vec(&result_axis0);
+    // Column 0: [9, 6, 3] -> sorted indices [2, 1, 0]
+    // Column 1: [7, 4, 1] -> sorted indices [2, 1, 0]
+    // Column 2: [8, 5, 2] -> sorted indices [2, 1, 0]
+    assert_eq!(indices0, vec![2, 2, 2, 1, 1, 1, 0, 0, 0]);
+
+    // Sort along axis 1 (rows)
+    let result_axis1 = eval_primitive(Primitive::Argsort, &[input], &argsort_params(1, false)).unwrap();
+    assert_eq!(extract_shape(&result_axis1), vec![3, 3]);
+}
+
+#[test]
+fn oracle_argsort_result_is_permutation() {
+    // Verify that argsort result is a valid permutation
+    let input = make_f64_tensor(&[6], vec![5.0, 3.0, 1.0, 4.0, 2.0, 6.0]);
+    let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+    let indices = extract_i64_vec(&result);
+
+    // Check that indices form a valid permutation (each 0..6 appears exactly once)
+    let mut sorted_indices = indices.clone();
+    sorted_indices.sort();
+    assert_eq!(sorted_indices, vec![0, 1, 2, 3, 4, 5]);
+}
