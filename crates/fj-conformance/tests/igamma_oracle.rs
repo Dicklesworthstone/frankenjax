@@ -174,6 +174,145 @@ fn oracle_igammac_vector() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_igamma_scalar_a_tensor_x_broadcast() {
+    // scalar a with tensor x
+    let a = scalar_f64(1.0);
+    let x = make_f64_tensor(&[3], vec![0.0, 0.5, 1.0]);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    // igamma(1, x) = 1 - exp(-x)
+    assert!((vals[0] - 0.0).abs() < 1e-14, "igamma(1, 0) = 0");
+    assert!((vals[1] - (1.0 - (-0.5_f64).exp())).abs() < 1e-12);
+    assert!((vals[2] - (1.0 - (-1.0_f64).exp())).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_igamma_tensor_a_scalar_x_broadcast() {
+    // tensor a with scalar x
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let x = scalar_f64(0.0);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_f64_vec(&result);
+    // igamma(a, 0) = 0 for all a
+    assert_eq!(vals[0], 0.0);
+    assert_eq!(vals[1], 0.0);
+}
+
+#[test]
+fn oracle_igamma_singleton_a_vector_x_broadcast() {
+    // [1] a with [3] x -> [3]
+    let a = make_f64_tensor(&[1], vec![1.0]);
+    let x = make_f64_tensor(&[3], vec![0.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_f64_vec(&result);
+    // igamma(1, x) = 1 - exp(-x)
+    assert_eq!(vals[0], 0.0);
+    assert!((vals[1] - (1.0 - (-1.0_f64).exp())).abs() < 1e-14);
+    assert!((vals[2] - (1.0 - (-2.0_f64).exp())).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_igamma_column_a_matrix_x_broadcast() {
+    // [2, 1] a with [2, 3] x -> [2, 3]
+    let a = make_f64_tensor(&[2, 1], vec![1.0, 1.0]);
+    let x = make_f64_tensor(&[2, 3], vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: igamma(1, 0)=0, igamma(1, 1)=1-e^-1, igamma(1, 2)=1-e^-2
+    assert_eq!(vals[0], 0.0);
+    assert!((vals[1] - (1.0 - (-1.0_f64).exp())).abs() < 1e-14);
+    assert!((vals[2] - (1.0 - (-2.0_f64).exp())).abs() < 1e-14);
+    // Row 1: same values
+    assert_eq!(vals[3], 0.0);
+    assert!((vals[4] - (1.0 - (-1.0_f64).exp())).abs() < 1e-14);
+    assert!((vals[5] - (1.0 - (-2.0_f64).exp())).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_igamma_different_ranks_broadcast() {
+    // [3] a with [2, 3] x -> [2, 3]
+    let a = make_f64_tensor(&[3], vec![1.0, 1.0, 1.0]);
+    let x = make_f64_tensor(&[2, 3], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: x=0, so igamma=0
+    assert_eq!(vals[0], 0.0);
+    assert_eq!(vals[1], 0.0);
+    assert_eq!(vals[2], 0.0);
+    // Row 1: x=1, so igamma(1,1) = 1-e^-1
+    let expected = 1.0 - (-1.0_f64).exp();
+    assert!((vals[3] - expected).abs() < 1e-14);
+    assert!((vals[4] - expected).abs() < 1e-14);
+    assert!((vals[5] - expected).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_igamma_all_scalars_broadcast() {
+    // scalar igamma scalar -> scalar
+    let a = scalar_f64(1.0);
+    let x = scalar_f64(1.0);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
+    let val = extract_f64_scalar(&result);
+    let expected = 1.0 - (-1.0_f64).exp();
+    assert!((val - expected).abs() < 1e-14);
+}
+
+#[test]
+fn oracle_igamma_incompatible_shapes_error() {
+    // [2] igamma [3] should error
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let x = make_f64_tensor(&[3], vec![0.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
+#[test]
+fn oracle_igammac_tensor_a_scalar_x_broadcast() {
+    // tensor a with scalar x (complement)
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let x = scalar_f64(0.0);
+    let result = eval_primitive(Primitive::Igammac, &[a, x], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_f64_vec(&result);
+    // igammac(a, 0) = 1 for all a
+    assert_eq!(vals[0], 1.0);
+    assert_eq!(vals[1], 1.0);
+}
+
+#[test]
+fn oracle_igammac_all_scalars_broadcast() {
+    // scalar igammac scalar -> scalar
+    let a = scalar_f64(1.0);
+    let x = scalar_f64(0.0);
+    let result = eval_primitive(Primitive::Igammac, &[a, x], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), 1.0);
+}
+
+#[test]
+fn oracle_igammac_incompatible_shapes_error() {
+    // [2] igammac [3] should error
+    let a = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let x = make_f64_tensor(&[3], vec![0.0, 1.0, 2.0]);
+    let result = eval_primitive(Primitive::Igammac, &[a, x], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_igamma_scalar_a_vector_x_broadcast() {
     let a = make_f64_tensor(&[], vec![1.0]);
