@@ -67,6 +67,9 @@ def test_value_scalar():
     host_copy = v.copy_to_host_async()
     assert isinstance(host_copy, fj.Array)
     assert abs(host_copy.as_f64() - 42.0) < 1e-12
+    copied = v.copy()
+    assert isinstance(copied, fj.Array)
+    assert abs(copied.as_f64() - 42.0) < 1e-12
     assert abs(v.as_f64() - 42.0) < 1e-12
     print("✓ scalar_f64 roundtrip")
 
@@ -101,6 +104,7 @@ def test_value_scalar():
     assert len(vec) == 3
     assert vec.block_until_ready().as_i64_list() == [1, 2, 3]
     assert vec.copy_to_host_async().as_i64_list() == [1, 2, 3]
+    assert vec.copy().as_i64_list() == [1, 2, 3]
     assert vec.as_i64_list() == [1, 2, 3]
     assert vec.as_f64_list() == [1.0, 2.0, 3.0]
     print("✓ vector_i64 roundtrip")
