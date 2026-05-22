@@ -8,6 +8,7 @@
 //! - Zero value: ldexp(0, n) = 0
 //! - Negative exponents: ldexp(8, -3) = 1
 //! - Special values: infinity, NaN
+//! - Extreme values: signed zero, overflow, and underflow sign preservation
 //! - Tensor shapes
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
@@ -55,6 +56,16 @@ fn extract_f64_scalar(v: &Value) -> f64 {
         }
         Value::Scalar(l) => l.as_f64().unwrap(),
     }
+}
+
+fn assert_same_f64_bits(actual: f64, expected: f64, context: &str) {
+    assert_eq!(
+        actual.to_bits(),
+        expected.to_bits(),
+        "{context}: expected bits {:016x}, got {:016x}",
+        expected.to_bits(),
+        actual.to_bits()
+    );
 }
 
 fn extract_shape(v: &Value) -> Vec<u32> {
@@ -110,6 +121,17 @@ fn oracle_ldexp_zero_value() {
     let n = make_i64_tensor(&[], vec![10]);
     let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
     assert_eq!(extract_f64_scalar(&result), 0.0, "ldexp(0, 10) = 0");
+}
+
+#[test]
+fn oracle_ldexp_preserves_signed_zero() {
+    let x = make_f64_tensor(&[2], vec![-0.0, 0.0]);
+    let n = make_i64_tensor(&[2], vec![10, -10]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+    let actual = extract_f64_vec(&result);
+
+    assert_same_f64_bits(actual[0], -0.0, "ldexp(-0, 10)");
+    assert_same_f64_bits(actual[1], 0.0, "ldexp(+0, -10)");
 }
 
 // ======================== Negative Exponents ========================
@@ -172,6 +194,30 @@ fn oracle_ldexp_nan() {
     let n = make_i64_tensor(&[], vec![5]);
     let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
     assert!(extract_f64_scalar(&result).is_nan(), "ldexp(NaN, 5) = NaN");
+}
+
+// ======================== Extreme Values ========================
+
+#[test]
+fn oracle_ldexp_overflow_preserves_sign() {
+    let x = make_f64_tensor(&[2], vec![1.0, -1.0]);
+    let n = make_i64_tensor(&[2], vec![1024, 1024]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+    let actual = extract_f64_vec(&result);
+
+    assert_eq!(actual[0], f64::INFINITY, "ldexp(1, 1024) = +inf");
+    assert_eq!(actual[1], f64::NEG_INFINITY, "ldexp(-1, 1024) = -inf");
+}
+
+#[test]
+fn oracle_ldexp_underflow_preserves_sign() {
+    let x = make_f64_tensor(&[2], vec![1.0, -1.0]);
+    let n = make_i64_tensor(&[2], vec![-1075, -1075]);
+    let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
+    let actual = extract_f64_vec(&result);
+
+    assert_same_f64_bits(actual[0], 0.0, "ldexp(1, -1075)");
+    assert_same_f64_bits(actual[1], -0.0, "ldexp(-1, -1075)");
 }
 
 // ======================== Tensor Shapes ========================
