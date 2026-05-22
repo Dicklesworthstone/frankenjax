@@ -20,7 +20,8 @@ use arithmetic::{
     eval_binary_elementwise, eval_clamp, eval_complex, eval_conj, eval_cos, eval_cosh,
     eval_digamma, eval_dot, eval_dot_general, eval_erf_inv, eval_exp, eval_igamma, eval_igammac,
     eval_imag, eval_integer_pow, eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter,
-    eval_real, eval_round, eval_select, eval_select_n, eval_sin, eval_sinh, eval_tan, eval_tanh,
+    eval_polygamma, eval_real, eval_round, eval_select, eval_select_n, eval_sin, eval_sinh,
+    eval_tan, eval_tanh,
     eval_unary_elementwise, eval_unary_int_or_float,
 };
 
@@ -236,6 +237,7 @@ pub fn eval_primitive(
         Primitive::Erfc => eval_unary_elementwise(primitive, inputs, |x| 1.0 - erf_approx(x)),
         Primitive::Lgamma => eval_lgamma(primitive, inputs),
         Primitive::Digamma => eval_digamma(primitive, inputs),
+        Primitive::Polygamma => eval_polygamma(primitive, inputs),
         Primitive::ErfInv => eval_erf_inv(primitive, inputs),
         Primitive::Igamma => eval_igamma(primitive, inputs),
         Primitive::Igammac => eval_igammac(primitive, inputs),

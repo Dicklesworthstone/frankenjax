@@ -1600,6 +1600,18 @@ pub fn vjp(
             let trigamma_x = trigamma_value(&inputs[0])?;
             Ok(vec![value_mul(g, &trigamma_x)?])
         }
+        Primitive::Polygamma => {
+            // d/dn polygamma(n, x) = 0 (n is integer)
+            // d/dx polygamma(n, x) = polygamma(n+1, x)
+            let n = &inputs[0];
+            let x = &inputs[1];
+            let n_plus_1 = value_add(n, &scalar_constant_matching_dtype(1.0, n))?;
+            let poly_n_plus_1 =
+                eval_primitive(Primitive::Polygamma, &[n_plus_1, x.clone()], params)
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let dx = value_mul(g, &poly_n_plus_1)?;
+            Ok(vec![zeros_like(n), dx])
+        }
         Primitive::ErfInv => {
             // d/dx erf_inv(x) = sqrt(pi)/2 * exp(erf_inv(x)^2)
             let erf_inv_x = eval_primitive(Primitive::ErfInv, inputs, &BTreeMap::new())
@@ -6476,6 +6488,16 @@ fn jvp_rule(
             // trigamma(x) * dx
             let trigamma_x = trigamma_value(&primals[0])?;
             ep(Primitive::Mul, &[trigamma_x, tangents[0].clone()])
+        }
+        Primitive::Polygamma => {
+            // polygamma(n+1, x) * dx (n tangent ignored, n is integer)
+            let n = &primals[0];
+            let x = &primals[1];
+            let dx = &tangents[1];
+            let one = scalar_constant_matching_dtype(1.0, n);
+            let n_plus_1 = ep(Primitive::Add, &[n.clone(), one])?;
+            let poly_n_plus_1 = ep(Primitive::Polygamma, &[n_plus_1, x.clone()])?;
+            ep(Primitive::Mul, &[poly_n_plus_1, dx.clone()])
         }
         Primitive::ErfInv => {
             // sqrt(pi)/2 * exp(erf_inv(x)^2) * dx

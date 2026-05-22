@@ -1939,6 +1939,104 @@ pub(crate) fn digamma_approx(x: f64) -> f64 {
         - 5.0 * inv10 / 660.0
 }
 
+pub(crate) fn polygamma_approx(n: i64, x: f64) -> f64 {
+    if n < 0 {
+        return f64::NAN;
+    }
+    if n == 0 {
+        return digamma_approx(x);
+    }
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return if x.is_sign_positive() { 0.0 } else { f64::NAN };
+    }
+    if x <= 0.0 && is_near_integer(x) {
+        return if n % 2 == 0 {
+            f64::NEG_INFINITY
+        } else {
+            f64::INFINITY
+        };
+    }
+
+    if x < 0.5 {
+        let pi = std::f64::consts::PI;
+        let sign = if n % 2 == 0 { -1.0 } else { 1.0 };
+        let cot_deriv = polygamma_cot_derivative(n, pi * x) * pi.powi(n as i32 + 1);
+        return sign * polygamma_approx(n, 1.0 - x) + cot_deriv;
+    }
+
+    let mut shifted = x;
+    let mut result = 0.0;
+    let sign = if n % 2 == 0 { -1.0 } else { 1.0 };
+    let n_fact = factorial(n as u32) as f64;
+    while shifted < 8.0 {
+        result += sign * n_fact / shifted.powi(n as i32 + 1);
+        shifted += 1.0;
+    }
+
+    result + polygamma_asymptotic(n, shifted)
+}
+
+fn polygamma_cot_derivative(n: i64, x: f64) -> f64 {
+    let sin_x = x.sin();
+    let cos_x = x.cos();
+    if sin_x.abs() < 1e-15 {
+        return if n % 2 == 0 { f64::NAN } else { f64::INFINITY };
+    }
+    match n {
+        1 => -1.0 / (sin_x * sin_x),
+        2 => 2.0 * cos_x / sin_x.powi(3),
+        3 => -2.0 * (1.0 + 3.0 * cos_x * cos_x) / sin_x.powi(4),
+        _ => {
+            let h = 1e-6;
+            (polygamma_cot_derivative(n - 1, x + h) - polygamma_cot_derivative(n - 1, x - h))
+                / (2.0 * h)
+        }
+    }
+}
+
+fn polygamma_asymptotic(n: i64, x: f64) -> f64 {
+    let sign = if n % 2 == 0 { -1.0 } else { 1.0 };
+    let n_fact = factorial(n as u32) as f64;
+    let inv = 1.0 / x;
+
+    let bernoulli = [
+        1.0,
+        -0.5,
+        1.0 / 6.0,
+        0.0,
+        -1.0 / 30.0,
+        0.0,
+        1.0 / 42.0,
+        0.0,
+        -1.0 / 30.0,
+    ];
+
+    let mut sum = 0.0;
+    let mut pow = inv.powi(n as i32);
+    sum += sign * factorial((n - 1) as u32) as f64 * pow;
+
+    pow *= inv;
+    sum += sign * n_fact * 0.5 * pow;
+
+    for k in 1..=4 {
+        let rising = rising_factorial(n as u32 + 1, 2 * k as u32 - 1);
+        pow *= inv * inv;
+        sum += sign * bernoulli[2 * k] * rising as f64 * pow;
+    }
+    sum
+}
+
+fn factorial(n: u32) -> u64 {
+    (1..=n as u64).product()
+}
+
+fn rising_factorial(x: u32, n: u32) -> u64 {
+    (0..n).map(|i| (x + i) as u64).product()
+}
+
 #[cfg(test)]
 pub(crate) fn trigamma_approx(x: f64) -> f64 {
     if x.is_nan() {
@@ -2018,6 +2116,100 @@ pub(crate) fn eval_lgamma(primitive: Primitive, inputs: &[Value]) -> Result<Valu
 
 pub(crate) fn eval_digamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     eval_unary_elementwise(primitive, inputs, digamma_approx)
+}
+
+pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+    let n_val = &inputs[0];
+    let x_val = &inputs[1];
+
+    match (n_val, x_val) {
+        (Value::Scalar(n_lit), Value::Scalar(x_lit)) => {
+            let n = polygamma_literal_to_i64(*n_lit, primitive)?;
+            let x = polygamma_literal_to_f64(*x_lit, primitive)?;
+            Ok(Value::Scalar(Literal::from_f64(polygamma_approx(n, x))))
+        }
+        (Value::Scalar(n_lit), Value::Tensor(x_tensor)) => {
+            let n = polygamma_literal_to_i64(*n_lit, primitive)?;
+            let mut elements = Vec::with_capacity(x_tensor.elements.len());
+            for x_elem in &x_tensor.elements {
+                let x = polygamma_literal_to_f64(*x_elem, primitive)?;
+                elements.push(Literal::from_f64(polygamma_approx(n, x)));
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                DType::F64,
+                x_tensor.shape.clone(),
+                elements,
+            )?))
+        }
+        (Value::Tensor(n_tensor), Value::Scalar(x_lit)) => {
+            let x = polygamma_literal_to_f64(*x_lit, primitive)?;
+            let mut elements = Vec::with_capacity(n_tensor.elements.len());
+            for n_elem in &n_tensor.elements {
+                let n = polygamma_literal_to_i64(*n_elem, primitive)?;
+                elements.push(Literal::from_f64(polygamma_approx(n, x)));
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                DType::F64,
+                n_tensor.shape.clone(),
+                elements,
+            )?))
+        }
+        (Value::Tensor(n_tensor), Value::Tensor(x_tensor)) => {
+            if n_tensor.shape != x_tensor.shape {
+                return Err(EvalError::ShapeMismatch {
+                    primitive,
+                    left: n_tensor.shape.clone(),
+                    right: x_tensor.shape.clone(),
+                });
+            }
+            let mut elements = Vec::with_capacity(x_tensor.elements.len());
+            for (n_elem, x_elem) in n_tensor.elements.iter().zip(x_tensor.elements.iter()) {
+                let n = polygamma_literal_to_i64(*n_elem, primitive)?;
+                let x = polygamma_literal_to_f64(*x_elem, primitive)?;
+                elements.push(Literal::from_f64(polygamma_approx(n, x)));
+            }
+            Ok(Value::Tensor(TensorValue::new(
+                DType::F64,
+                x_tensor.shape.clone(),
+                elements,
+            )?))
+        }
+    }
+}
+
+fn polygamma_literal_to_i64(lit: Literal, primitive: Primitive) -> Result<i64, EvalError> {
+    match lit {
+        Literal::I64(v) => Ok(v),
+        Literal::U32(v) => Ok(i64::from(v)),
+        Literal::U64(v) => Ok(v as i64),
+        Literal::F32Bits(bits) => Ok(f32::from_bits(bits) as i64),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits) as i64),
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: "polygamma order must be numeric".to_string(),
+        }),
+    }
+}
+
+fn polygamma_literal_to_f64(lit: Literal, primitive: Primitive) -> Result<f64, EvalError> {
+    match lit {
+        Literal::I64(v) => Ok(v as f64),
+        Literal::U32(v) => Ok(f64::from(v)),
+        Literal::U64(v) => Ok(v as f64),
+        Literal::F32Bits(bits) => Ok(f64::from(f32::from_bits(bits))),
+        Literal::F64Bits(bits) => Ok(f64::from_bits(bits)),
+        _ => Err(EvalError::Unsupported {
+            primitive,
+            detail: "polygamma argument must be numeric".to_string(),
+        }),
+    }
 }
 
 pub(crate) fn eval_erf_inv(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
@@ -3457,6 +3649,49 @@ mod tests {
         // ψ(1) = -γ ≈ -0.5772156649
         let euler_gamma = 0.5772156649;
         assert!((digamma_approx(1.0) + euler_gamma).abs() < 1e-4);
+    }
+
+    #[test]
+    fn polygamma_n0_is_digamma() {
+        let x = 2.0;
+        let pg0 = polygamma_approx(0, x);
+        let dg = digamma_approx(x);
+        assert!((pg0 - dg).abs() < 1e-10, "polygamma(0,x) should equal digamma(x)");
+    }
+
+    #[test]
+    fn polygamma_n1_is_trigamma() {
+        let x = 2.0;
+        let pg1 = polygamma_approx(1, x);
+        let tg = trigamma_approx(x);
+        assert!((pg1 - tg).abs() < 1e-2, "polygamma(1,x) should equal trigamma(x): got {} vs {}", pg1, tg);
+    }
+
+    #[test]
+    fn polygamma_recurrence() {
+        // ψ^(n)(x+1) = ψ^(n)(x) + (-1)^n * n! / x^(n+1)
+        let x = 1.5;
+        let n = 2_i64;
+        let pg_x = polygamma_approx(n, x);
+        let pg_x1 = polygamma_approx(n, x + 1.0);
+        let sign = if n % 2 == 0 { 1.0 } else { -1.0 };
+        let n_fact = (1..=n as u64).product::<u64>() as f64;
+        let expected = pg_x + sign * n_fact / x.powi(n as i32 + 1);
+        assert!((pg_x1 - expected).abs() < 1e-6, "recurrence failed: {} vs {}", pg_x1, expected);
+    }
+
+    #[test]
+    fn eval_polygamma_scalar() {
+        let result = eval_polygamma(
+            Primitive::Polygamma,
+            &[Value::Scalar(Literal::I64(0)), Value::Scalar(Literal::from_f64(1.0))],
+        ).unwrap();
+        let expected = digamma_approx(1.0);
+        let got = match result {
+            Value::Scalar(Literal::F64Bits(bits)) => f64::from_bits(bits),
+            _ => panic!("expected F64Bits scalar"),
+        };
+        assert!((got - expected).abs() < 1e-10);
     }
 
     #[test]
