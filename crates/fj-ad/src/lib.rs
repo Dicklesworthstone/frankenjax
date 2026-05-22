@@ -1040,6 +1040,97 @@ fn dot_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
     }
 }
 
+fn dot_general_vjp(
+    inputs: &[Value],
+    g: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, AdError> {
+    let lhs_contracting = parse_dim_list(params.get("lhs_contracting_dims").map_or("", |s| s));
+    let rhs_contracting = parse_dim_list(params.get("rhs_contracting_dims").map_or("", |s| s));
+    let lhs_batch = parse_dim_list(params.get("lhs_batch_dims").map_or("", |s| s));
+    let rhs_batch = parse_dim_list(params.get("rhs_batch_dims").map_or("", |s| s));
+
+    let lhs = &inputs[0];
+    let rhs = &inputs[1];
+
+    let (lhs_tensor, rhs_tensor) = match (lhs, rhs) {
+        (Value::Tensor(l), Value::Tensor(r)) => (l, r),
+        _ => {
+            return Err(AdError::EvalFailed(
+                "dot_general VJP requires tensor inputs".into(),
+            ))
+        }
+    };
+
+    let lhs_rank = lhs_tensor.rank();
+    let rhs_rank = rhs_tensor.rank();
+
+    let lhs_free_dims: Vec<usize> = (0..lhs_rank)
+        .filter(|d| !lhs_contracting.contains(d) && !lhs_batch.contains(d))
+        .collect();
+    let rhs_free_dims: Vec<usize> = (0..rhs_rank)
+        .filter(|d| !rhs_contracting.contains(d) && !rhs_batch.contains(d))
+        .collect();
+
+    let mut d_lhs_params = BTreeMap::new();
+    let g_contracting: Vec<usize> = (lhs_batch.len()..lhs_batch.len() + lhs_free_dims.len()).collect();
+    let rhs_new_contracting: Vec<usize> = rhs_free_dims.clone();
+    d_lhs_params.insert(
+        "lhs_contracting_dims".to_string(),
+        g_contracting.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+    d_lhs_params.insert(
+        "rhs_contracting_dims".to_string(),
+        rhs_new_contracting.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+    d_lhs_params.insert(
+        "lhs_batch_dims".to_string(),
+        (0..lhs_batch.len()).map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+    d_lhs_params.insert(
+        "rhs_batch_dims".to_string(),
+        rhs_batch.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+
+    let d_lhs = eval_primitive(Primitive::DotGeneral, &[g.clone(), rhs.clone()], &d_lhs_params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+    let mut d_rhs_params = BTreeMap::new();
+    let lhs_new_contracting: Vec<usize> = lhs_free_dims.clone();
+    let g_contracting_rhs: Vec<usize> =
+        (lhs_batch.len()..lhs_batch.len() + lhs_free_dims.len()).collect();
+    d_rhs_params.insert(
+        "lhs_contracting_dims".to_string(),
+        lhs_new_contracting.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+    d_rhs_params.insert(
+        "rhs_contracting_dims".to_string(),
+        g_contracting_rhs.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+    d_rhs_params.insert(
+        "lhs_batch_dims".to_string(),
+        lhs_batch.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+    d_rhs_params.insert(
+        "rhs_batch_dims".to_string(),
+        (0..rhs_batch.len()).map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+    );
+
+    let d_rhs = eval_primitive(Primitive::DotGeneral, &[lhs.clone(), g.clone()], &d_rhs_params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+    Ok(vec![d_lhs, d_rhs])
+}
+
+fn parse_dim_list(s: &str) -> Vec<usize> {
+    if s.trim().is_empty() {
+        return Vec::new();
+    }
+    s.split(',')
+        .filter_map(|x| x.trim().parse::<usize>().ok())
+        .collect()
+}
+
 /// Extract the lower triangle (including diagonal) of a square matrix.
 /// Zeroes out the strict upper triangle.
 fn tril(a: &TensorValue) -> Result<TensorValue, AdError> {
@@ -1739,6 +1830,7 @@ pub fn vjp(
             Ok(vec![zeros_like(&inputs[0])])
         }
         Primitive::Dot => dot_vjp(inputs, g),
+        Primitive::DotGeneral => dot_general_vjp(inputs, g, params),
         // Comparison ops have zero gradient
         Primitive::Eq
         | Primitive::Ne
@@ -6409,6 +6501,20 @@ fn jvp_rule(
             // d(a·b) = da·b + a·db
             let da_b = ep(Primitive::Dot, &[tangents[0].clone(), primals[1].clone()])?;
             let a_db = ep(Primitive::Dot, &[primals[0].clone(), tangents[1].clone()])?;
+            ep(Primitive::Add, &[da_b, a_db])
+        }
+        Primitive::DotGeneral => {
+            // d(dot_general(a, b)) = dot_general(da, b) + dot_general(a, db)
+            let da_b = ep_p(
+                Primitive::DotGeneral,
+                &[tangents[0].clone(), primals[1].clone()],
+                params,
+            )?;
+            let a_db = ep_p(
+                Primitive::DotGeneral,
+                &[primals[0].clone(), tangents[1].clone()],
+                params,
+            )?;
             ep(Primitive::Add, &[da_b, a_db])
         }
 

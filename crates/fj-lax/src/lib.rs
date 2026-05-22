@@ -17,10 +17,10 @@ use std::collections::BTreeMap;
 
 use arithmetic::{
     erf_approx, eval_abs, eval_acosh, eval_asinh, eval_atanh, eval_binary_elementwise, eval_clamp,
-    eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_erf_inv, eval_exp,
-    eval_imag, eval_integer_pow, eval_is_finite, eval_lgamma, eval_log, eval_neg, eval_nextafter,
-    eval_real, eval_round, eval_select, eval_select_n, eval_sin, eval_sinh, eval_tan, eval_tanh,
-    eval_unary_elementwise, eval_unary_int_or_float,
+    eval_complex, eval_conj, eval_cos, eval_cosh, eval_digamma, eval_dot, eval_dot_general,
+    eval_erf_inv, eval_exp, eval_imag, eval_integer_pow, eval_is_finite, eval_lgamma, eval_log,
+    eval_neg, eval_nextafter, eval_real, eval_round, eval_select, eval_select_n, eval_sin,
+    eval_sinh, eval_tan, eval_tanh, eval_unary_elementwise, eval_unary_int_or_float,
 };
 
 use comparison::eval_comparison;
@@ -265,6 +265,7 @@ pub fn eval_primitive(
         Primitive::SelectN => eval_select_n(primitive, inputs),
         // Dot product
         Primitive::Dot => eval_dot(inputs),
+        Primitive::DotGeneral => eval_dot_general(inputs, params),
         // Comparison
         Primitive::Eq => eval_comparison(primitive, inputs, |a, b| a == b, |a, b| a == b),
         Primitive::Ne => eval_comparison(primitive, inputs, |a, b| a != b, |a, b| a != b),

@@ -2380,6 +2380,285 @@ pub(crate) fn eval_dot(inputs: &[Value]) -> Result<Value, EvalError> {
     }
 }
 
+fn parse_dim_list(s: &str) -> Vec<usize> {
+    if s.trim().is_empty() {
+        return Vec::new();
+    }
+    s.split(',')
+        .filter_map(|x| x.trim().parse::<usize>().ok())
+        .collect()
+}
+
+pub(crate) fn eval_dot_general(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::DotGeneral;
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+
+    let lhs_contracting = parse_dim_list(params.get("lhs_contracting_dims").map_or("", |s| s));
+    let rhs_contracting = parse_dim_list(params.get("rhs_contracting_dims").map_or("", |s| s));
+    let lhs_batch = parse_dim_list(params.get("lhs_batch_dims").map_or("", |s| s));
+    let rhs_batch = parse_dim_list(params.get("rhs_batch_dims").map_or("", |s| s));
+
+    if lhs_contracting.len() != rhs_contracting.len() {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "lhs and rhs must have same number of contracting dims".into(),
+        });
+    }
+    if lhs_batch.len() != rhs_batch.len() {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "lhs and rhs must have same number of batch dims".into(),
+        });
+    }
+
+    let (lhs, rhs) = match (&inputs[0], &inputs[1]) {
+        (Value::Tensor(l), Value::Tensor(r)) => (l, r),
+        _ => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "dot_general requires tensor inputs".into(),
+            })
+        }
+    };
+
+    let lhs_rank = lhs.rank();
+    let rhs_rank = rhs.rank();
+
+    for &d in &lhs_contracting {
+        if d >= lhs_rank {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("lhs contracting dim {d} out of range for rank {lhs_rank}"),
+            });
+        }
+    }
+    for &d in &rhs_contracting {
+        if d >= rhs_rank {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("rhs contracting dim {d} out of range for rank {rhs_rank}"),
+            });
+        }
+    }
+    for &d in &lhs_batch {
+        if d >= lhs_rank {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("lhs batch dim {d} out of range for rank {lhs_rank}"),
+            });
+        }
+    }
+    for &d in &rhs_batch {
+        if d >= rhs_rank {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("rhs batch dim {d} out of range for rank {rhs_rank}"),
+            });
+        }
+    }
+
+    for (i, (&ld, &rd)) in lhs_contracting.iter().zip(rhs_contracting.iter()).enumerate() {
+        if lhs.shape.dims[ld] != rhs.shape.dims[rd] {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!(
+                    "contracting dim size mismatch at pair {i}: lhs[{ld}]={} != rhs[{rd}]={}",
+                    lhs.shape.dims[ld], rhs.shape.dims[rd]
+                ),
+            });
+        }
+    }
+    for (i, (&ld, &rd)) in lhs_batch.iter().zip(rhs_batch.iter()).enumerate() {
+        if lhs.shape.dims[ld] != rhs.shape.dims[rd] {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!(
+                    "batch dim size mismatch at pair {i}: lhs[{ld}]={} != rhs[{rd}]={}",
+                    lhs.shape.dims[ld], rhs.shape.dims[rd]
+                ),
+            });
+        }
+    }
+
+    let mut lhs_free_dims = Vec::new();
+    for d in 0..lhs_rank {
+        if !lhs_contracting.contains(&d) && !lhs_batch.contains(&d) {
+            lhs_free_dims.push(d);
+        }
+    }
+    let mut rhs_free_dims = Vec::new();
+    for d in 0..rhs_rank {
+        if !rhs_contracting.contains(&d) && !rhs_batch.contains(&d) {
+            rhs_free_dims.push(d);
+        }
+    }
+
+    let mut output_dims = Vec::new();
+    for &d in &lhs_batch {
+        output_dims.push(lhs.shape.dims[d]);
+    }
+    for &d in &lhs_free_dims {
+        output_dims.push(lhs.shape.dims[d]);
+    }
+    for &d in &rhs_free_dims {
+        output_dims.push(rhs.shape.dims[d]);
+    }
+
+    let contracting_size: usize = lhs_contracting
+        .iter()
+        .map(|&d| lhs.shape.dims[d] as usize)
+        .product();
+    if contracting_size == 0 && !lhs_contracting.is_empty() {
+        let output_count = output_dims.iter().map(|&d| d as usize).product::<usize>();
+        let output_kind = dot_output_kind(lhs, rhs);
+        let dtype = output_kind.tensor_dtype();
+        let zero = match output_kind {
+            DotOutputKind::Real(dt) => real_literal_from_f64(dt, 0.0),
+            DotOutputKind::Complex(dt) => match dt {
+                DType::Complex64 => Literal::from_complex64(0.0, 0.0),
+                _ => Literal::from_complex128(0.0, 0.0),
+            },
+            DotOutputKind::Integral(dt) => match dt {
+                DType::U32 => Literal::U32(0),
+                DType::U64 => Literal::U64(0),
+                _ => Literal::I64(0),
+            },
+        };
+        return dot_output_value(dtype, output_dims, vec![zero; output_count]);
+    }
+
+    let batch_size: usize = lhs_batch
+        .iter()
+        .map(|&d| lhs.shape.dims[d] as usize)
+        .product();
+    let lhs_free_size: usize = lhs_free_dims
+        .iter()
+        .map(|&d| lhs.shape.dims[d] as usize)
+        .product();
+    let rhs_free_size: usize = rhs_free_dims
+        .iter()
+        .map(|&d| rhs.shape.dims[d] as usize)
+        .product();
+
+    let output_kind = dot_output_kind(lhs, rhs);
+    let dtype = output_kind.tensor_dtype();
+    let output_count = batch_size.max(1) * lhs_free_size.max(1) * rhs_free_size.max(1);
+    let mut elements = Vec::with_capacity(output_count);
+
+    let lhs_strides = compute_strides(&lhs.shape.dims);
+    let rhs_strides = compute_strides(&rhs.shape.dims);
+
+    let batch_ranges: Vec<u32> = lhs_batch.iter().map(|&d| lhs.shape.dims[d]).collect();
+    let lhs_free_ranges: Vec<u32> = lhs_free_dims.iter().map(|&d| lhs.shape.dims[d]).collect();
+    let rhs_free_ranges: Vec<u32> = rhs_free_dims.iter().map(|&d| rhs.shape.dims[d]).collect();
+    let contract_ranges: Vec<u32> = lhs_contracting.iter().map(|&d| lhs.shape.dims[d]).collect();
+
+    for batch_idx in MultiIndexIterator::new(&batch_ranges) {
+        for lhs_free_idx in MultiIndexIterator::new(&lhs_free_ranges) {
+            for rhs_free_idx in MultiIndexIterator::new(&rhs_free_ranges) {
+                let acc = dot_accumulate(primitive, output_kind, contracting_size.max(1), |k| {
+                    let contract_idx = linear_to_multi_index(k, &contract_ranges);
+
+                    let mut lhs_index = 0usize;
+                    for (i, &d) in lhs_batch.iter().enumerate() {
+                        lhs_index += batch_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                    }
+                    for (i, &d) in lhs_free_dims.iter().enumerate() {
+                        lhs_index += lhs_free_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                    }
+                    for (i, &d) in lhs_contracting.iter().enumerate() {
+                        lhs_index += contract_idx.get(i).copied().unwrap_or(0) as usize * lhs_strides[d];
+                    }
+
+                    let mut rhs_index = 0usize;
+                    for (i, &d) in rhs_batch.iter().enumerate() {
+                        rhs_index += batch_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                    }
+                    for (i, &d) in rhs_free_dims.iter().enumerate() {
+                        rhs_index += rhs_free_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                    }
+                    for (i, &d) in rhs_contracting.iter().enumerate() {
+                        rhs_index += contract_idx.get(i).copied().unwrap_or(0) as usize * rhs_strides[d];
+                    }
+
+                    (lhs.elements[lhs_index], rhs.elements[rhs_index])
+                })?;
+                elements.push(acc);
+            }
+        }
+    }
+
+    dot_output_value(dtype, output_dims, elements)
+}
+
+fn linear_to_multi_index(mut linear: usize, dims: &[u32]) -> Vec<usize> {
+    let mut result = vec![0usize; dims.len()];
+    for i in (0..dims.len()).rev() {
+        let size = dims[i] as usize;
+        if size > 0 {
+            result[i] = linear % size;
+            linear /= size;
+        }
+    }
+    result
+}
+
+struct MultiIndexIterator {
+    dims: Vec<u32>,
+    current: Vec<usize>,
+    done: bool,
+}
+
+impl MultiIndexIterator {
+    fn new(dims: &[u32]) -> Self {
+        let done = dims.iter().any(|&d| d == 0);
+        Self {
+            dims: dims.to_vec(),
+            current: vec![0; dims.len()],
+            done: done || dims.is_empty(),
+        }
+    }
+}
+
+impl Iterator for MultiIndexIterator {
+    type Item = Vec<usize>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            if self.dims.is_empty() && self.current.is_empty() {
+                self.done = true;
+                self.current.push(0);
+                return Some(Vec::new());
+            }
+            return None;
+        }
+
+        let result = self.current.clone();
+
+        for i in (0..self.dims.len()).rev() {
+            self.current[i] += 1;
+            if self.current[i] < self.dims[i] as usize {
+                break;
+            }
+            self.current[i] = 0;
+            if i == 0 {
+                self.done = true;
+            }
+        }
+
+        Some(result)
+    }
+}
+
 /// IsFinite: returns Bool indicating whether each element is finite (not NaN or Inf).
 pub(crate) fn eval_is_finite(primitive: Primitive, inputs: &[Value]) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
@@ -3456,5 +3735,77 @@ mod tests {
             &[s_i64(3), s_f64(10.0), s_f64(20.0), s_f64(30.0)],
         );
         assert!(result.is_err());
+    }
+
+    // ── DotGeneral ──
+
+    #[test]
+    fn dot_general_vector_vector_contract() {
+        let a = v_f64(&[1.0, 2.0, 3.0]);
+        let b = v_f64(&[4.0, 5.0, 6.0]);
+        let mut params = BTreeMap::new();
+        params.insert("lhs_contracting_dims".to_string(), "0".to_string());
+        params.insert("rhs_contracting_dims".to_string(), "0".to_string());
+        params.insert("lhs_batch_dims".to_string(), "".to_string());
+        params.insert("rhs_batch_dims".to_string(), "".to_string());
+        let result = eval_dot_general(&[a, b], &params).unwrap();
+        let val = extract_f64(&result);
+        assert!((val - 32.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dot_general_matmul_like() {
+        let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = matrix_f64(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut params = BTreeMap::new();
+        params.insert("lhs_contracting_dims".to_string(), "1".to_string());
+        params.insert("rhs_contracting_dims".to_string(), "0".to_string());
+        params.insert("lhs_batch_dims".to_string(), "".to_string());
+        params.insert("rhs_batch_dims".to_string(), "".to_string());
+        let result = eval_dot_general(&[a, b], &params).unwrap();
+        let Value::Tensor(t) = result else { panic!("expected tensor"); };
+        assert_eq!(t.shape.dims, vec![2, 2]);
+        let vals = extract_f64_vec(&Value::Tensor(t));
+        assert_eq!(vals, vec![22.0, 28.0, 49.0, 64.0]);
+    }
+
+    #[test]
+    fn dot_general_outer_product() {
+        let a = v_f64(&[1.0, 2.0]);
+        let b = v_f64(&[3.0, 4.0, 5.0]);
+        let mut params = BTreeMap::new();
+        params.insert("lhs_contracting_dims".to_string(), "".to_string());
+        params.insert("rhs_contracting_dims".to_string(), "".to_string());
+        params.insert("lhs_batch_dims".to_string(), "".to_string());
+        params.insert("rhs_batch_dims".to_string(), "".to_string());
+        let result = eval_dot_general(&[a, b], &params).unwrap();
+        let Value::Tensor(t) = result else { panic!("expected tensor"); };
+        assert_eq!(t.shape.dims, vec![2, 3]);
+        let vals = extract_f64_vec(&Value::Tensor(t));
+        assert_eq!(vals, vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0]);
+    }
+
+    #[test]
+    fn dot_general_batched_matmul() {
+        let a = tensor_f64(vec![2, 2, 3], &[
+            1.0, 2.0, 3.0,
+            4.0, 5.0, 6.0,
+            7.0, 8.0, 9.0,
+            10.0, 11.0, 12.0,
+        ]);
+        let b = tensor_f64(vec![2, 3, 1], &[
+            1.0, 0.0, 0.0,
+            0.0, 1.0, 0.0,
+        ]);
+        let mut params = BTreeMap::new();
+        params.insert("lhs_contracting_dims".to_string(), "2".to_string());
+        params.insert("rhs_contracting_dims".to_string(), "1".to_string());
+        params.insert("lhs_batch_dims".to_string(), "0".to_string());
+        params.insert("rhs_batch_dims".to_string(), "0".to_string());
+        let result = eval_dot_general(&[a, b], &params).unwrap();
+        let Value::Tensor(t) = result else { panic!("expected tensor"); };
+        assert_eq!(t.shape.dims, vec![2, 2, 1]);
+        let vals = extract_f64_vec(&Value::Tensor(t));
+        assert_eq!(vals, vec![1.0, 4.0, 8.0, 11.0]);
     }
 }
