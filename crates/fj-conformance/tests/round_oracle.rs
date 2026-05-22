@@ -71,14 +71,16 @@ fn rounding_params(method: &str) -> BTreeMap<String, String> {
 fn oracle_round_zero() {
     let input = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Round, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "round(0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), 0.0_f64.to_bits(), "round(0) = +0");
 }
 
 #[test]
 fn oracle_round_neg_zero() {
     let input = make_f64_tensor(&[], vec![-0.0]);
     let result = eval_primitive(Primitive::Round, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), 0.0, "round(-0.0) = 0");
+    let actual = extract_f64_scalar(&result);
+    assert_eq!(actual.to_bits(), (-0.0_f64).to_bits(), "round(-0.0) = -0");
 }
 
 #[test]
@@ -412,7 +414,8 @@ fn metamorphic_round_neg_commutes() {
         let x_val = make_f64_tensor(&[], vec![x]);
 
         // Round(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let round_neg = eval_primitive(Primitive::Round, &[neg_x], &no_params()).unwrap();
 
         // Neg(Round(x))
@@ -434,12 +437,23 @@ fn metamorphic_round_neg_commutes() {
 fn metamorphic_round_integer_translation() {
     // Round(x + n) = Round(x) + n for integer n (when x is not exactly at a half-boundary)
     // Note: values ending in .5 require special handling due to round-away-from-zero semantics
-    for (x, n) in [(0.3, 5.0), (1.7, 10.0), (0.0, 7.0), (-0.4, 2.0), (2.3, -3.0)] {
+    for (x, n) in [
+        (0.3, 5.0),
+        (1.7, 10.0),
+        (0.0, 7.0),
+        (-0.4, 2.0),
+        (2.3, -3.0),
+    ] {
         let x_val = make_f64_tensor(&[], vec![x]);
         let n_val = make_f64_tensor(&[], vec![n]);
 
         // Round(x + n)
-        let x_plus_n = eval_primitive(Primitive::Add, &[x_val.clone(), n_val.clone()], &no_params()).unwrap();
+        let x_plus_n = eval_primitive(
+            Primitive::Add,
+            &[x_val.clone(), n_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let round_sum = eval_primitive(Primitive::Round, &[x_plus_n], &no_params()).unwrap();
 
         // Round(x) + n
@@ -467,7 +481,9 @@ fn metamorphic_round_bounded_distance() {
         assert!(
             distance <= 0.5 + 1e-14,
             "|Round({}) - {}| = {} should be <= 0.5",
-            x, x, distance
+            x,
+            x,
+            distance
         );
     }
 }
@@ -480,14 +496,24 @@ fn metamorphic_round_between_floor_ceil() {
     for x in [0.3, 0.5, 0.7, 1.4, 1.5, 1.6, -0.3, -0.5, -0.7, 2.5] {
         let x_val = make_f64_tensor(&[], vec![x]);
 
-        let floor_x = extract_f64_scalar(&eval_primitive(Primitive::Floor, std::slice::from_ref(&x_val), &no_params()).unwrap());
-        let round_x = extract_f64_scalar(&eval_primitive(Primitive::Round, std::slice::from_ref(&x_val), &no_params()).unwrap());
-        let ceil_x = extract_f64_scalar(&eval_primitive(Primitive::Ceil, &[x_val], &no_params()).unwrap());
+        let floor_x = extract_f64_scalar(
+            &eval_primitive(Primitive::Floor, std::slice::from_ref(&x_val), &no_params()).unwrap(),
+        );
+        let round_x = extract_f64_scalar(
+            &eval_primitive(Primitive::Round, std::slice::from_ref(&x_val), &no_params()).unwrap(),
+        );
+        let ceil_x =
+            extract_f64_scalar(&eval_primitive(Primitive::Ceil, &[x_val], &no_params()).unwrap());
 
         assert!(
             floor_x <= round_x && round_x <= ceil_x,
             "Floor({}) <= Round({}) <= Ceil({}): {} <= {} <= {}",
-            x, x, x, floor_x, round_x, ceil_x
+            x,
+            x,
+            x,
+            floor_x,
+            round_x,
+            ceil_x
         );
     }
 }
