@@ -215,6 +215,103 @@ fn oracle_copysign_matrix() {
 
 // ======================== Broadcasting ========================
 
+fn scalar_f64(v: f64) -> Value {
+    Value::Scalar(Literal::from_f64(v))
+}
+
+#[test]
+fn oracle_copysign_scalar_x_tensor_y_broadcast() {
+    // scalar magnitude with tensor sign
+    let x = scalar_f64(5.0);
+    let y = make_f64_tensor(&[4], vec![1.0, -1.0, 1.0, -1.0]);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![5.0, -5.0, 5.0, -5.0]);
+}
+
+#[test]
+fn oracle_copysign_tensor_x_scalar_y_broadcast() {
+    // tensor magnitude with scalar sign
+    let x = make_f64_tensor(&[4], vec![1.0, -2.0, 3.0, -4.0]);
+    let y = scalar_f64(-1.0);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    assert_eq!(extract_f64_vec(&result), vec![-1.0, -2.0, -3.0, -4.0]);
+}
+
+#[test]
+fn oracle_copysign_singleton_x_vector_y_broadcast() {
+    // [1] magnitude with [3] sign -> [3]
+    let x = make_f64_tensor(&[1], vec![7.0]);
+    let y = make_f64_tensor(&[3], vec![1.0, -1.0, 1.0]);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![7.0, -7.0, 7.0]);
+}
+
+#[test]
+fn oracle_copysign_vector_x_singleton_y_broadcast() {
+    // [3] magnitude with [1] sign -> [3]
+    let x = make_f64_tensor(&[3], vec![1.0, -2.0, 3.0]);
+    let y = make_f64_tensor(&[1], vec![-1.0]);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_f64_vec(&result), vec![-1.0, -2.0, -3.0]);
+}
+
+#[test]
+fn oracle_copysign_column_x_matrix_y_broadcast() {
+    // [2, 1] magnitude with [2, 3] sign -> [2, 3]
+    let x = make_f64_tensor(&[2, 1], vec![3.0, 5.0]);
+    let y = make_f64_tensor(&[2, 3], vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0]);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    // Row 0: copysign(3, 1)=3, copysign(3, -1)=-3, copysign(3, 1)=3
+    assert_eq!(vals[0], 3.0);
+    assert_eq!(vals[1], -3.0);
+    assert_eq!(vals[2], 3.0);
+    // Row 1: copysign(5, -1)=-5, copysign(5, 1)=5, copysign(5, -1)=-5
+    assert_eq!(vals[3], -5.0);
+    assert_eq!(vals[4], 5.0);
+    assert_eq!(vals[5], -5.0);
+}
+
+#[test]
+fn oracle_copysign_different_ranks_broadcast() {
+    // [3] magnitude with [2, 3] sign -> [2, 3]
+    let x = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let y = make_f64_tensor(&[2, 3], vec![1.0, -1.0, 1.0, -1.0, 1.0, -1.0]);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    assert_eq!(vals, vec![1.0, -2.0, 3.0, -1.0, 2.0, -3.0]);
+}
+
+#[test]
+fn oracle_copysign_all_scalars_broadcast() {
+    // scalar copysign scalar -> scalar
+    let x = scalar_f64(7.0);
+    let y = scalar_f64(-1.0);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params()).unwrap();
+    assert_eq!(extract_f64_scalar(&result), -7.0);
+}
+
+#[test]
+fn oracle_copysign_incompatible_shapes_error() {
+    // [2] copysign [3] should error
+    let x = make_f64_tensor(&[2], vec![1.0, 2.0]);
+    let y = make_f64_tensor(&[3], vec![1.0, -1.0, 1.0]);
+    let result = eval_primitive(Primitive::CopySign, &[x, y], &no_params());
+    assert!(result.is_err(), "incompatible shapes should error");
+}
+
 #[test]
 fn oracle_copysign_matrix_scalar_sign_broadcast() {
     let x = make_f64_tensor(&[2, 3], vec![1.0, -2.0, 3.0, -4.0, 5.0, -6.0]);
