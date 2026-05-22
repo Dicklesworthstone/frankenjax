@@ -48,6 +48,11 @@ def test_value_scalar():
     assert v.nbytes == 8
     assert v.weak_type is False
     assert v.committed is False
+    assert isinstance(v.device, fj.Device)
+    assert v.device.id == 0
+    assert v.device.process_index == 0
+    assert v.device.platform == "cpu"
+    assert v.device.device_kind == "cpu"
     assert v.is_fully_addressable is True
     assert v.is_fully_replicated is True
     try:
@@ -90,6 +95,7 @@ def test_value_scalar():
     assert vec.nbytes == 24
     assert vec.weak_type is False
     assert vec.committed is False
+    assert vec.device.platform == "cpu"
     assert vec.is_fully_addressable is True
     assert vec.is_fully_replicated is True
     assert len(vec) == 3

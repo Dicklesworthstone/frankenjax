@@ -159,6 +159,11 @@ impl PyValue {
     }
 
     #[getter]
+    fn device(&self) -> PyDevice {
+        cpu_device()
+    }
+
+    #[getter]
     fn is_fully_addressable(&self) -> bool {
         true
     }
@@ -1519,6 +1524,10 @@ mod tests {
         assert_eq!(v.nbytes(), 8);
         assert!(!v.weak_type());
         assert!(!v.committed());
+        let device = v.device();
+        assert_eq!(device.id(), 0);
+        assert_eq!(device.process_index(), 0);
+        assert_eq!(device.platform(), "cpu");
         assert!(v.is_fully_addressable());
         assert!(v.is_fully_replicated());
         assert!(v.__len__().is_err());
@@ -1538,6 +1547,7 @@ mod tests {
         assert_eq!(floats.nbytes(), 24);
         assert!(!floats.weak_type());
         assert!(!floats.committed());
+        assert_eq!(floats.device().platform(), "cpu");
         assert!(floats.is_fully_addressable());
         assert!(floats.is_fully_replicated());
         assert_eq!(floats.__len__().unwrap(), 3);
