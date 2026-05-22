@@ -12,6 +12,7 @@
 //! - Negative bases with integer exponents
 //! - Infinity and NaN cases
 //! - Tensor shapes
+//! - Broadcast-compatible operands
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
@@ -339,6 +340,50 @@ fn oracle_pow_2d() {
     assert_eq!(vals[3], 1.0, "5^0");
 }
 
+// ======================== Broadcasting ========================
+
+#[test]
+fn oracle_pow_vector_scalar_exp_broadcast() {
+    let base_values = [2.0, 3.0, 4.0, 5.0];
+    let base = make_f64_tensor(&[4], base_values.to_vec());
+    let exp = make_f64_tensor(&[], vec![2.0]);
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_f64_vec(&result);
+    for (i, (&actual, &base_value)) in vals.iter().zip(base_values.iter()).enumerate() {
+        let expected = base_value.powf(2.0);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast scalar exponent element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
+#[test]
+fn oracle_pow_row_base_matrix_exp_broadcast() {
+    let base_values = [2.0, 3.0, 1.0];
+    let exp_values = [4.0, 1.0, 6.0, 2.0, 3.0, 5.0];
+    let base = make_f64_tensor(&[3], base_values.to_vec());
+    let exp = make_f64_tensor(&[2, 3], exp_values.to_vec());
+    let result = eval_primitive(Primitive::Pow, &[base, exp], &no_params()).unwrap();
+
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_f64_vec(&result);
+    for (i, ((&actual, &base_value), &exp_value)) in vals
+        .iter()
+        .zip(base_values.iter().cycle())
+        .zip(exp_values.iter())
+        .enumerate()
+    {
+        let expected = base_value.powf(exp_value);
+        assert!(
+            (actual - expected).abs() < 1e-14,
+            "broadcast row base element {i}: expected {expected}, got {actual}"
+        );
+    }
+}
+
 // ======================== Identity: x^y = e^(y*ln(x)) ========================
 
 #[test]
@@ -363,7 +408,12 @@ fn oracle_pow_identity() {
 #[test]
 fn metamorphic_pow_exponent_sum() {
     // x^(a+b) = x^a * x^b
-    for (x, a, b) in [(2.0, 3.0, 2.0), (3.0, 1.5, 0.5), (1.5, 2.0, 3.0), (4.0, 0.5, 1.5)] {
+    for (x, a, b) in [
+        (2.0, 3.0, 2.0),
+        (3.0, 1.5, 0.5),
+        (1.5, 2.0, 3.0),
+        (4.0, 0.5, 1.5),
+    ] {
         let base = make_f64_tensor(&[], vec![x]);
         let exp_sum = make_f64_tensor(&[], vec![a + b]);
         let exp_a = make_f64_tensor(&[], vec![a]);
@@ -391,7 +441,12 @@ fn metamorphic_pow_product_base() {
         let base_y = make_f64_tensor(&[], vec![y]);
         let exp = make_f64_tensor(&[], vec![a]);
 
-        let product = eval_primitive(Primitive::Mul, &[base_x.clone(), base_y.clone()], &no_params()).unwrap();
+        let product = eval_primitive(
+            Primitive::Mul,
+            &[base_x.clone(), base_y.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let lhs = eval_primitive(Primitive::Pow, &[product, exp.clone()], &no_params()).unwrap();
 
         let pow_x = eval_primitive(Primitive::Pow, &[base_x, exp.clone()], &no_params()).unwrap();
