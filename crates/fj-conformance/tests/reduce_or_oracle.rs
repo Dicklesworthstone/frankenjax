@@ -289,3 +289,56 @@ fn oracle_reduce_or_identity_element() {
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
     assert_eq!(extract_i64_scalar(&result), 0x5678);
 }
+
+// ======================== Additional Coverage ========================
+
+#[test]
+fn oracle_reduce_or_empty_tensor() {
+    let input = make_bool_tensor(&[0], vec![]);
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
+    // Empty OR reduction returns identity (false for bool)
+    assert!(!extract_bool_scalar(&result));
+}
+
+#[test]
+fn oracle_reduce_or_4d_bool() {
+    let input = make_bool_tensor(
+        &[2, 2, 2, 2],
+        vec![
+            false, false, false, false, false, false, false, true, false, false, false, false,
+            false, false, false, false,
+        ],
+    );
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0, 1, 2, 3])).unwrap();
+    assert!(extract_bool_scalar(&result)); // One true in tensor
+}
+
+#[test]
+fn oracle_reduce_or_preserves_dtype_bool() {
+    let input = make_bool_tensor(&[3], vec![true, false, true]);
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
+    assert_eq!(result.dtype(), DType::Bool);
+}
+
+#[test]
+fn oracle_reduce_or_preserves_dtype_i64() {
+    let input = make_i64_tensor(&[3], vec![1, 2, 4]);
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
+    assert_eq!(result.dtype(), DType::I64);
+}
+
+#[test]
+fn oracle_reduce_or_single_element() {
+    let input = make_bool_tensor(&[1], vec![true]);
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
+    assert!(extract_bool_scalar(&result));
+}
+
+#[test]
+fn oracle_reduce_or_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Bool, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+}
