@@ -189,3 +189,39 @@ fn property_iota_preserves_all_supported_dtypes() {
         "iota with bool dtype must error"
     );
 }
+
+#[test]
+fn oracle_iota_u32() {
+    let result = eval_primitive(Primitive::Iota, &[], &iota_params(4, "U32")).unwrap();
+    assert_eq!(extract_dtype(&result), DType::U32);
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals: Vec<u64> = result
+        .as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| l.as_u64().unwrap())
+        .collect();
+    assert_eq!(vals, vec![0, 1, 2, 3]);
+}
+
+#[test]
+fn oracle_iota_rejects_invalid_dtype() {
+    let err = eval_primitive(Primitive::Iota, &[], &iota_params(5, "invalid"))
+        .expect_err("invalid dtype should fail");
+    assert!(
+        err.to_string().contains("unsupported")
+            || err.to_string().contains("dtype")
+            || err.to_string().contains("unknown"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn oracle_iota_values_are_contiguous() {
+    let result = eval_primitive(Primitive::Iota, &[], &iota_params(10, "I64")).unwrap();
+    let vals = extract_i64_vec(&result);
+    for i in 0..10 {
+        assert_eq!(vals[i], i as i64, "iota value at index {i}");
+    }
+}
