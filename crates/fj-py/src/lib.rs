@@ -406,6 +406,20 @@ impl PyValue {
         Ok(devices.into_any().unbind())
     }
 
+    #[getter]
+    fn device_buffer(&self) -> PyResult<()> {
+        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
+            "arr.device_buffer has been deprecated. Use arr.addressable_data(0)",
+        ))
+    }
+
+    #[getter]
+    fn device_buffers(&self) -> PyResult<()> {
+        Err(PyErr::new::<pyo3::exceptions::PyAttributeError, _>(
+            "arr.device_buffers has been deprecated. Use [x.data for x in arr.addressable_shards]",
+        ))
+    }
+
     fn addressable_data(&self, index: isize) -> PyResult<Self> {
         if self.deleted {
             return Err(runtime_error("Array has been deleted."));
@@ -2236,6 +2250,8 @@ mod tests {
         assert_eq!(device.process_index(), 0);
         assert_eq!(device.platform(), "cpu");
         assert_eq!(v.platform(), "cpu");
+        assert!(v.device_buffer().is_err());
+        assert!(v.device_buffers().is_err());
         assert!((v.addressable_data(0).unwrap().as_f64().unwrap() - 42.0).abs() < 1e-12);
         assert!(v.addressable_data(1).is_err());
         assert_eq!(v.on_device_size_in_bytes(), v.nbytes());

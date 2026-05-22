@@ -57,6 +57,18 @@ def test_value_scalar():
     assert v.device.device_kind == "cpu"
     assert v.platform() == "cpu"
     assert {device.platform for device in v.devices()} == {"cpu"}
+    try:
+        v.device_buffer
+    except AttributeError as exc:
+        assert "Use arr.addressable_data(0)" in str(exc)
+    else:
+        raise AssertionError("device_buffer should raise the upstream deprecation error")
+    try:
+        v.device_buffers
+    except AttributeError as exc:
+        assert "Use [x.data for x in arr.addressable_shards]" in str(exc)
+    else:
+        raise AssertionError("device_buffers should raise the upstream deprecation error")
     assert abs(v.addressable_data(0).as_f64() - 42.0) < 1e-12
     try:
         v.addressable_data(1)
