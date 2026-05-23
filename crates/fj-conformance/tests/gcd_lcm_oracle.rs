@@ -351,3 +351,21 @@ fn oracle_lcm_incompatible_shapes_error() {
     let result = eval_primitive(Primitive::Lcm, &[a, b], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_gcd_preserves_int_dtype() {
+    let a = make_i64_tensor(&[3], vec![12, 18, 24]);
+    let b = make_i64_tensor(&[3], vec![6, 9, 12]);
+    let result = eval_primitive(Primitive::Gcd, &[a, b], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::I64, "gcd should preserve I64 dtype");
+}
+
+#[test]
+fn property_lcm_preserves_int_dtype() {
+    let a = make_i64_tensor(&[3], vec![2, 3, 4]);
+    let b = make_i64_tensor(&[3], vec![3, 4, 5]);
+    let result = eval_primitive(Primitive::Lcm, &[a, b], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::I64, "lcm should preserve I64 dtype");
+}
