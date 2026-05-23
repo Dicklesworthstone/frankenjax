@@ -369,3 +369,92 @@ fn property_lcm_preserves_int_dtype() {
     let result = eval_primitive(Primitive::Lcm, &[a, b], &no_params()).unwrap();
     assert_eq!(result.dtype(), DType::I64, "lcm should preserve I64 dtype");
 }
+
+// ======================== METAMORPHIC: mathematical identities ========================
+
+#[test]
+fn metamorphic_gcd_commutativity() {
+    // gcd(a, b) = gcd(b, a)
+    let a = make_i64_tensor(&[5], vec![12, 15, 24, 35, 100]);
+    let b = make_i64_tensor(&[5], vec![8, 10, 18, 14, 25]);
+    let gcd_ab = eval_primitive(Primitive::Gcd, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let gcd_ba = eval_primitive(Primitive::Gcd, &[b, a], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&gcd_ab), extract_i64_vec(&gcd_ba), "gcd(a, b) should equal gcd(b, a)");
+}
+
+#[test]
+fn metamorphic_lcm_commutativity() {
+    // lcm(a, b) = lcm(b, a)
+    let a = make_i64_tensor(&[5], vec![12, 15, 24, 35, 100]);
+    let b = make_i64_tensor(&[5], vec![8, 10, 18, 14, 25]);
+    let lcm_ab = eval_primitive(Primitive::Lcm, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let lcm_ba = eval_primitive(Primitive::Lcm, &[b, a], &no_params()).unwrap();
+    assert_eq!(extract_i64_vec(&lcm_ab), extract_i64_vec(&lcm_ba), "lcm(a, b) should equal lcm(b, a)");
+}
+
+#[test]
+fn metamorphic_gcd_associativity() {
+    // gcd(a, gcd(b, c)) = gcd(gcd(a, b), c)
+    let a = make_i64_tensor(&[4], vec![24, 36, 48, 60]);
+    let b = make_i64_tensor(&[4], vec![18, 24, 36, 45]);
+    let c = make_i64_tensor(&[4], vec![12, 18, 24, 30]);
+
+    let gcd_bc = eval_primitive(Primitive::Gcd, &[b.clone(), c.clone()], &no_params()).unwrap();
+    let gcd_a_bc = eval_primitive(Primitive::Gcd, &[a.clone(), gcd_bc], &no_params()).unwrap();
+
+    let gcd_ab = eval_primitive(Primitive::Gcd, &[a, b], &no_params()).unwrap();
+    let gcd_ab_c = eval_primitive(Primitive::Gcd, &[gcd_ab, c], &no_params()).unwrap();
+
+    assert_eq!(
+        extract_i64_vec(&gcd_a_bc),
+        extract_i64_vec(&gcd_ab_c),
+        "gcd(a, gcd(b, c)) should equal gcd(gcd(a, b), c)"
+    );
+}
+
+#[test]
+fn metamorphic_gcd_lcm_product_relation() {
+    // gcd(a, b) * lcm(a, b) = |a * b| for multiple pairs
+    let pairs: Vec<(i64, i64)> = vec![(12, 8), (15, 10), (24, 36), (7, 11), (100, 25)];
+    for (a_val, b_val) in pairs {
+        let a = make_i64_tensor(&[], vec![a_val]);
+        let b = make_i64_tensor(&[], vec![b_val]);
+        let gcd = extract_i64_scalar(&eval_primitive(Primitive::Gcd, &[a.clone(), b.clone()], &no_params()).unwrap());
+        let lcm = extract_i64_scalar(&eval_primitive(Primitive::Lcm, &[a, b], &no_params()).unwrap());
+        let expected = (a_val * b_val).abs();
+        assert_eq!(
+            gcd * lcm, expected,
+            "gcd({a_val}, {b_val}) * lcm({a_val}, {b_val}) should equal {expected}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_gcd_divisibility() {
+    // gcd(a, b) divides both a and b
+    let a = make_i64_tensor(&[4], vec![12, 15, 24, 35]);
+    let b = make_i64_tensor(&[4], vec![8, 10, 18, 14]);
+    let gcd = eval_primitive(Primitive::Gcd, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let a_vals = extract_i64_vec(&a);
+    let b_vals = extract_i64_vec(&b);
+    let gcd_vals = extract_i64_vec(&gcd);
+    for (i, (&g, (&a_v, &b_v))) in gcd_vals.iter().zip(a_vals.iter().zip(b_vals.iter())).enumerate() {
+        assert_eq!(a_v % g, 0, "gcd should divide a at index {i}");
+        assert_eq!(b_v % g, 0, "gcd should divide b at index {i}");
+    }
+}
+
+#[test]
+fn metamorphic_lcm_divisibility() {
+    // lcm(a, b) is divisible by both a and b
+    let a = make_i64_tensor(&[4], vec![4, 6, 8, 10]);
+    let b = make_i64_tensor(&[4], vec![6, 9, 12, 15]);
+    let lcm = eval_primitive(Primitive::Lcm, &[a.clone(), b.clone()], &no_params()).unwrap();
+    let a_vals = extract_i64_vec(&a);
+    let b_vals = extract_i64_vec(&b);
+    let lcm_vals = extract_i64_vec(&lcm);
+    for (i, (&l, (&a_v, &b_v))) in lcm_vals.iter().zip(a_vals.iter().zip(b_vals.iter())).enumerate() {
+        assert_eq!(l % a_v, 0, "lcm should be divisible by a at index {i}");
+        assert_eq!(l % b_v, 0, "lcm should be divisible by b at index {i}");
+    }
+}
