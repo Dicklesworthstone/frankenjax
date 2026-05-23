@@ -410,3 +410,41 @@ fn metamorphic_cosh_tensor_roundtrip() {
         );
     }
 }
+
+// ======================== Property: dtype preservation across all float types ========================
+
+#[test]
+fn property_cosh_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            _ => unreachable!(),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape { dims: vec![values.len() as u32] },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    // Use small values to avoid overflow in lower precision types
+    let values = [-1.0_f64, 0.0, 1.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let input = make_vec(dtype, &values);
+        let result = eval_primitive(Primitive::Cosh, &[input], &no_params())
+            .unwrap_or_else(|e| panic!("cosh {dtype:?} failed: {e}"));
+        let Value::Tensor(t) = result else {
+            panic!("cosh {dtype:?}: expected tensor");
+        };
+        assert_eq!(t.dtype, dtype, "cosh {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency().unwrap_or_else(|e| {
+            panic!("cosh {dtype:?}: validate_dtype_consistency failed: {e}")
+        });
+    }
+}

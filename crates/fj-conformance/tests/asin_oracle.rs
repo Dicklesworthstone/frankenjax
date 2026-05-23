@@ -425,3 +425,41 @@ fn oracle_asin_acos_relationship() {
         );
     }
 }
+
+// ======================== Property: dtype preservation across all float types ========================
+
+#[test]
+fn property_asin_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lit_for = |v: f64| match dtype {
+            DType::BF16 => Literal::from_bf16_f32(v as f32),
+            DType::F16 => Literal::from_f16_f32(v as f32),
+            DType::F32 => Literal::from_f32(v as f32),
+            DType::F64 => Literal::from_f64(v),
+            _ => unreachable!(),
+        };
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape { dims: vec![values.len() as u32] },
+                values.iter().copied().map(lit_for).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    // Use values in asin domain [-1, 1]
+    let values = [-0.5_f64, 0.0, 0.5];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let input = make_vec(dtype, &values);
+        let result = eval_primitive(Primitive::Asin, &[input], &no_params())
+            .unwrap_or_else(|e| panic!("asin {dtype:?} failed: {e}"));
+        let Value::Tensor(t) = result else {
+            panic!("asin {dtype:?}: expected tensor");
+        };
+        assert_eq!(t.dtype, dtype, "asin {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency().unwrap_or_else(|e| {
+            panic!("asin {dtype:?}: validate_dtype_consistency failed: {e}")
+        });
+    }
+}
