@@ -34,6 +34,7 @@ fn complex_conj(a: (f64, f64)) -> (f64, f64) {
     (a.0, -a.1)
 }
 
+#[allow(dead_code)]
 fn complex_sqrt_real(x: f64) -> (f64, f64) {
     if x >= 0.0 {
         (x.sqrt(), 0.0)
@@ -46,6 +47,7 @@ fn complex_sqrt_real(x: f64) -> (f64, f64) {
 
 /// Extract a rank-2 (matrix) tensor from Value, returning its dimensions and
 /// complex (re, im) elements in row-major order. Real numbers become (x, 0.0).
+#[allow(clippy::type_complexity)]
 fn extract_complex_matrix(
     primitive: Primitive,
     value: &Value,
@@ -929,6 +931,7 @@ fn jacobi_eigendecomposition(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 
 /// Extend a set of k orthogonal columns in an m×k matrix to m×m_full
 /// by adding orthogonal complement columns via Gram-Schmidt.
+#[allow(dead_code)]
 fn extend_orthogonal_columns(u: &[f64], m: usize, k: usize, m_full: usize) -> Vec<f64> {
     let mut result = vec![0.0_f64; m * m_full];
 

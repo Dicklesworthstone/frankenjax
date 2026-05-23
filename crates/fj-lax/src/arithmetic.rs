@@ -357,6 +357,7 @@ fn complex_erf_inv(w: (f64, f64)) -> (f64, f64) {
 
 fn complex_lgamma(z: (f64, f64)) -> (f64, f64) {
     const G: f64 = 7.0;
+    #[allow(clippy::excessive_precision)]
     const LANCZOS_COEFFS: [f64; 9] = [
         0.99999999999980993,
         676.5203681218851,
@@ -392,7 +393,7 @@ fn complex_lgamma(z: (f64, f64)) -> (f64, f64) {
 }
 
 fn complex_digamma(z: (f64, f64)) -> (f64, f64) {
-    let (mut re, mut im) = z;
+    let (mut re, im) = z;
     let mut result = (0.0, 0.0);
     while re < 6.0 {
         result = complex_sub(result, complex_reciprocal((re, im)));
