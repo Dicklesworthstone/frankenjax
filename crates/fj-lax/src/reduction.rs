@@ -137,20 +137,30 @@ pub(crate) fn eval_reduce(
             }
 
             if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
-                if primitive != Primitive::ReduceSum {
+                if primitive != Primitive::ReduceSum && primitive != Primitive::ReduceProd {
                     return Err(EvalError::Unsupported {
                         primitive,
-                        detail: "complex reduction is currently supported only for reduce_sum"
+                        detail: "complex reduction is currently supported only for reduce_sum and reduce_prod"
                             .to_owned(),
                     });
                 }
 
-                let mut re_acc = 0.0_f64;
-                let mut im_acc = 0.0_f64;
+                let (mut re_acc, mut im_acc) = if primitive == Primitive::ReduceProd {
+                    (1.0_f64, 0.0_f64)
+                } else {
+                    (0.0_f64, 0.0_f64)
+                };
                 for literal in &tensor.elements {
                     let (re, im) = literal_to_complex_parts(primitive, *literal)?;
-                    re_acc += re;
-                    im_acc += im;
+                    if primitive == Primitive::ReduceProd {
+                        let new_re = re_acc * re - im_acc * im;
+                        let new_im = re_acc * im + im_acc * re;
+                        re_acc = new_re;
+                        im_acc = new_im;
+                    } else {
+                        re_acc += re;
+                        im_acc += im;
+                    }
                 }
                 return Ok(Value::Scalar(complex_literal_from_parts(
                     tensor.dtype,
@@ -255,25 +265,30 @@ pub(crate) fn eval_reduce_axes(
             let strides = checked_strides(primitive, "reduction input", &tensor.shape.dims)?;
 
             if is_complex {
-                if primitive != Primitive::ReduceSum {
+                if primitive != Primitive::ReduceSum && primitive != Primitive::ReduceProd {
                     return Err(EvalError::Unsupported {
                         primitive,
-                        detail: "complex reduction is currently supported only for reduce_sum"
+                        detail: "complex reduction is currently supported only for reduce_sum and reduce_prod"
                             .to_owned(),
                     });
                 }
 
+                let (init_re, init_im) = if primitive == Primitive::ReduceProd {
+                    (1.0, 0.0)
+                } else {
+                    (float_init, float_init)
+                };
                 let mut result_re = try_filled_vec(
                     primitive,
                     "reduction real accumulator",
                     out_count,
-                    float_init,
+                    init_re,
                 )?;
                 let mut result_im = try_filled_vec(
                     primitive,
                     "reduction imaginary accumulator",
                     out_count,
-                    float_init,
+                    init_im,
                 )?;
                 let total = tensor.elements.len();
                 let mut multi = Vec::with_capacity(strides.len());
@@ -287,8 +302,15 @@ pub(crate) fn eval_reduce_axes(
                         &out_dims,
                     )?;
                     let (re, im) = literal_to_complex_parts(primitive, tensor.elements[flat_idx])?;
-                    result_re[out_idx] = float_op(result_re[out_idx], re);
-                    result_im[out_idx] = float_op(result_im[out_idx], im);
+                    if primitive == Primitive::ReduceProd {
+                        let acc_re = result_re[out_idx];
+                        let acc_im = result_im[out_idx];
+                        result_re[out_idx] = acc_re * re - acc_im * im;
+                        result_im[out_idx] = acc_re * im + acc_im * re;
+                    } else {
+                        result_re[out_idx] = float_op(result_re[out_idx], re);
+                        result_im[out_idx] = float_op(result_im[out_idx], im);
+                    }
                 }
 
                 let elements: Vec<Literal> = result_re

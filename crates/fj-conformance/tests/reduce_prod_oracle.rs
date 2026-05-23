@@ -639,7 +639,7 @@ fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn oracle_reduce_prod_complex64_1d() {
     // (1+0i) * (2+0i) * (3+0i) = 6+0i
     let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
@@ -650,7 +650,7 @@ fn oracle_reduce_prod_complex64_1d() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn oracle_reduce_prod_complex64_with_imaginary() {
     // i * i = -1, so i * i * i = -i
     let input = make_complex64_tensor(&[3], vec![(0.0, 1.0), (0.0, 1.0), (0.0, 1.0)]);
@@ -661,7 +661,7 @@ fn oracle_reduce_prod_complex64_with_imaginary() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn oracle_reduce_prod_complex128_1d() {
     // (1+1i) * (1-1i) = 1 - i^2 = 2
     let input = make_complex128_tensor(&[2], vec![(1.0, 1.0), (1.0, -1.0)]);
@@ -672,7 +672,7 @@ fn oracle_reduce_prod_complex128_1d() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn oracle_reduce_prod_complex64_2d_axis0() {
     // [[1+0i, 2+0i], [3+0i, 4+0i]] along axis 0 => [3+0i, 8+0i]
     let input = make_complex64_tensor(&[2, 2], vec![
@@ -687,7 +687,7 @@ fn oracle_reduce_prod_complex64_2d_axis0() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn oracle_reduce_prod_complex64_with_zero() {
     // (2+0i) * (0+0i) = 0+0i
     let input = make_complex64_tensor(&[2], vec![(2.0, 0.0), (0.0, 0.0)]);
@@ -698,7 +698,7 @@ fn oracle_reduce_prod_complex64_with_zero() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn oracle_reduce_prod_complex64_single_element() {
     let input = make_complex64_tensor(&[1], vec![(42.0, -17.0)]);
     let result = eval_primitive(Primitive::ReduceProd, &[input], &no_params()).unwrap();
@@ -708,7 +708,7 @@ fn oracle_reduce_prod_complex64_single_element() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: complex reduction only supported for reduce_sum, not reduce_prod"]
+
 fn property_reduce_prod_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {
