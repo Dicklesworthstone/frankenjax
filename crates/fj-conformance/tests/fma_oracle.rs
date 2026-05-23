@@ -427,3 +427,100 @@ fn property_fma_preserves_f32_f64_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex Type Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: shape.to_vec() },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: shape.to_vec() },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+#[test]
+#[ignore = "PARITY GAP: fma not supported for complex operands"]
+fn oracle_fma_complex64_basic() {
+    // fma(1+i, 1+i, 0) = (1+i)*(1+i) + 0 = 2i
+    let a = make_complex64_tensor(&[1], vec![(1.0, 1.0)]);
+    let b = make_complex64_tensor(&[1], vec![(1.0, 1.0)]);
+    let c = make_complex64_tensor(&[1], vec![(0.0, 0.0)]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params())
+        .expect("fma complex64 should succeed");
+    let vals = extract_complex64_vec(&result);
+    assert!(vals[0].0.abs() < 1e-5, "expected 0, got {}", vals[0].0);
+    assert!((vals[0].1 - 2.0).abs() < 1e-5, "expected 2, got {}", vals[0].1);
+}
+
+#[test]
+#[ignore = "PARITY GAP: fma not supported for complex operands"]
+fn oracle_fma_complex64_with_addend() {
+    // fma(1, 2, 3+4i) = 1*2 + (3+4i) = 5+4i
+    let a = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
+    let b = make_complex64_tensor(&[1], vec![(2.0, 0.0)]);
+    let c = make_complex64_tensor(&[1], vec![(3.0, 4.0)]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params())
+        .expect("fma complex64 with addend should succeed");
+    let vals = extract_complex64_vec(&result);
+    assert!((vals[0].0 - 5.0).abs() < 1e-5);
+    assert!((vals[0].1 - 4.0).abs() < 1e-5);
+}
+
+#[test]
+#[ignore = "PARITY GAP: fma not supported for complex operands"]
+fn oracle_fma_complex128_preserves_dtype() {
+    let a = make_complex128_tensor(&[1], vec![(1.0, 0.0)]);
+    let b = make_complex128_tensor(&[1], vec![(2.0, 0.0)]);
+    let c = make_complex128_tensor(&[1], vec![(3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params())
+        .expect("fma complex128 should succeed");
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+#[ignore = "PARITY GAP: fma not supported for complex operands"]
+fn property_fma_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let (a, b, c) = match dtype {
+            DType::Complex64 => (
+                make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]),
+                make_complex64_tensor(&[2], vec![(2.0, 0.0), (3.0, 0.0)]),
+                make_complex64_tensor(&[2], vec![(0.0, 0.0), (0.0, 0.0)]),
+            ),
+            DType::Complex128 => (
+                make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]),
+                make_complex128_tensor(&[2], vec![(2.0, 0.0), (3.0, 0.0)]),
+                make_complex128_tensor(&[2], vec![(0.0, 0.0), (0.0, 0.0)]),
+            ),
+            _ => unreachable!(),
+        };
+        let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params())
+            .expect("fma should succeed for complex dtype");
+        assert_eq!(result.dtype(), dtype, "fma {dtype:?}: dtype mismatch");
+    }
+}
