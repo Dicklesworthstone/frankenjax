@@ -528,3 +528,14 @@ fn oracle_imag_special_values() {
     assert!(vals[2].is_nan());
     assert_eq!(vals[3].to_bits(), (-0.0_f64).to_bits());
 }
+
+// ======================== PROPERTY: output dtype ========================
+
+#[test]
+fn property_real_imag_output_f64() {
+    let input = make_complex128_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let real_result = eval_primitive(Primitive::Real, &[input.clone()], &no_params()).unwrap();
+    let imag_result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
+    assert_eq!(real_result.dtype(), DType::F64, "Real should output F64");
+    assert_eq!(imag_result.dtype(), DType::F64, "Imag should output F64");
+}

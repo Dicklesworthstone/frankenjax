@@ -391,3 +391,17 @@ fn oracle_reduce_precision_subnormal() {
     let vals = extract_f64_vec(&result);
     assert!(vals[0].is_finite(), "subnormal should remain finite");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_reduce_precision_preserves_dtype() {
+    let input = Value::Scalar(Literal::from_f64(3.14159));
+    let result = eval_primitive(
+        Primitive::ReducePrecision,
+        &[input],
+        &precision_params(11, 52),
+    )
+    .unwrap();
+    assert_eq!(result.dtype(), DType::F64, "reduce_precision should preserve F64 dtype");
+}

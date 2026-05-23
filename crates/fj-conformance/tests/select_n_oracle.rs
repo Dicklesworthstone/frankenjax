@@ -410,3 +410,16 @@ fn select_n_tensor_negative_index_rejected() {
         "unexpected tensor-negative-index error: {err}"
     );
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_select_n_preserves_dtype() {
+    let result = select_n(vec![
+        Value::scalar_i64(0),
+        Value::scalar_f64(1.0),
+        Value::scalar_f64(2.0),
+    ])
+    .unwrap();
+    assert_eq!(result.dtype(), DType::F64, "select_n should preserve F64 dtype");
+}
