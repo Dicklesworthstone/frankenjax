@@ -367,3 +367,40 @@ fn oracle_betainc_large_params() {
     let val = extract_f64_scalar(&result);
     assert!((val - 0.5).abs() < 0.01, "betainc(100, 100, 0.5) ~ 0.5");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_betainc_outputs_f64() {
+    // Betainc always outputs F64 regardless of input dtype for numerical precision.
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
+        )
+    }
+
+    let a_values = [1.0_f64, 2.0, 3.0];
+    let b_values = [2.0_f64, 3.0, 4.0];
+    let x_values = [0.25_f64, 0.5, 0.75];
+    for input_dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let a = make_vec(input_dtype, &a_values);
+        let b = make_vec(input_dtype, &b_values);
+        let x = make_vec(input_dtype, &x_values);
+        let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        // Betainc always promotes to F64 for precision
+        assert_eq!(t.dtype, DType::F64, "betainc {input_dtype:?}->F64: output should be F64");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
