@@ -364,3 +364,196 @@ fn property_squeeze_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex64/Complex128 Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        Value::Scalar(l) => vec![l.as_complex64().unwrap()],
+    }
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
+        Value::Scalar(l) => vec![l.as_complex128().unwrap()],
+    }
+}
+
+#[test]
+fn oracle_squeeze_complex64_auto() {
+    // Shape [1, 3] -> [3]
+    let input = make_complex64_tensor(&[1, 3], vec![(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_squeeze_complex64_explicit() {
+    // Shape [1, 2, 1], squeeze axis 0 only
+    let input = make_complex64_tensor(&[1, 2, 1], vec![(1.0, 2.0), (3.0, 4.0)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params(&[0])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 1]);
+}
+
+#[test]
+fn oracle_squeeze_complex64_to_scalar() {
+    // [1, 1, 1] -> scalar
+    let input = make_complex64_tensor(&[1, 1, 1], vec![(42.0, -42.0)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![] as Vec<u32>);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(42.0, -42.0)]);
+}
+
+#[test]
+fn oracle_squeeze_complex64_multiple_dims() {
+    // Shape [1, 2, 1, 3, 1] -> [2, 3]
+    let input = make_complex64_tensor(
+        &[1, 2, 1, 3, 1],
+        vec![
+            (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
+            (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
+        ],
+    );
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+}
+
+#[test]
+fn oracle_squeeze_complex64_no_change() {
+    // [2, 3] has no size-1 dims
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
+            (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
+        ],
+    );
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+}
+
+#[test]
+fn oracle_squeeze_complex64_preserves_data() {
+    let input = make_complex64_tensor(&[1, 2, 1, 2], vec![
+        (1.0, 2.0), (3.0, 4.0),
+        (5.0, 6.0), (7.0, 8.0),
+    ]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+}
+
+#[test]
+fn oracle_squeeze_complex128_auto() {
+    let input = make_complex128_tensor(&[1, 3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(result.dtype(), DType::Complex128);
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+}
+
+#[test]
+fn oracle_squeeze_complex128_to_scalar() {
+    let input = make_complex128_tensor(&[1, 1], vec![(99.5, -0.5)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![] as Vec<u32>);
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(99.5, -0.5)]);
+}
+
+#[test]
+fn oracle_squeeze_complex64_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Complex64, Shape { dims: vec![1, 0] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![0]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_squeeze_complex64_preserves_dtype() {
+    let input = make_complex64_tensor(&[1, 3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_squeeze_complex128_preserves_dtype() {
+    let input = make_complex128_tensor(&[1, 3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn property_squeeze_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let lits: Vec<Literal> = match dtype {
+            DType::Complex64 => vec![
+                Literal::from_complex64(1.0, 2.0),
+                Literal::from_complex64(3.0, 4.0),
+                Literal::from_complex64(5.0, 6.0),
+            ],
+            DType::Complex128 => vec![
+                Literal::from_complex128(1.0, 2.0),
+                Literal::from_complex128(3.0, 4.0),
+                Literal::from_complex128(5.0, 6.0),
+            ],
+            _ => unreachable!(),
+        };
+        let input = Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![1, 3, 1] }, lits).unwrap(),
+        );
+        let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "squeeze {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
