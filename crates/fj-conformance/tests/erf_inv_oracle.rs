@@ -340,3 +340,65 @@ fn property_erf_inv_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex Type Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: shape.to_vec() },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: shape.to_vec() },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+#[ignore = "PARITY GAP: erf_inv is not supported for complex dtypes"]
+fn oracle_erf_inv_complex64_real_axis() {
+    // erf_inv on real axis: erf_inv(0) = 0
+    let input = make_complex64_tensor(&[2], vec![(0.0, 0.0), (0.5, 0.0)]);
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params())
+        .expect("erf_inv complex64 should succeed");
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+#[ignore = "PARITY GAP: erf_inv is not supported for complex dtypes"]
+fn oracle_erf_inv_complex128_preserves_dtype() {
+    let input = make_complex128_tensor(&[2], vec![(0.0, 0.0), (0.5, 0.0)]);
+    let result = eval_primitive(Primitive::ErfInv, &[input], &no_params())
+        .expect("erf_inv complex128 should succeed");
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+#[ignore = "PARITY GAP: erf_inv is not supported for complex dtypes"]
+fn property_erf_inv_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let input = match dtype {
+            DType::Complex64 => make_complex64_tensor(&[2], vec![(0.0, 0.0), (0.5, 0.0)]),
+            DType::Complex128 => make_complex128_tensor(&[2], vec![(0.0, 0.0), (0.5, 0.0)]),
+            _ => unreachable!(),
+        };
+        let result = eval_primitive(Primitive::ErfInv, &[input], &no_params())
+            .expect("erf_inv should succeed for complex dtype");
+        assert_eq!(result.dtype(), dtype, "erf_inv {dtype:?}: dtype mismatch");
+    }
+}
