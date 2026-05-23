@@ -589,3 +589,30 @@ fn oracle_clamp_incompatible_shapes_error() {
     let result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
 }
+
+// ====================== COMPLEX DTYPE TESTS ======================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+#[ignore = "PARITY GAP: Clamp not supported for complex - requires ordering comparison"]
+fn oracle_clamp_complex64_not_supported() {
+    let lo = make_complex64_tensor(&[1], vec![(0.0, 0.0)]);
+    let x = make_complex64_tensor(&[1], vec![(5.0, 0.0)]);
+    let hi = make_complex64_tensor(&[1], vec![(10.0, 0.0)]);
+    let _result = eval_primitive(Primitive::Clamp, &[lo, x, hi], &no_params())
+        .expect("clamp should work on complex64");
+}
