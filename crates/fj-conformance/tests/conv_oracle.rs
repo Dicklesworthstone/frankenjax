@@ -614,7 +614,6 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 }
 
 #[test]
-#[ignore = "PARITY GAP: conv requires floating dtypes, rejects complex"]
 fn oracle_conv_1d_complex64_simple() {
     // 1D conv with complex-valued input and kernel
     // input: [1+0i, 2+0i, 3+0i] shape [1, 3, 1] (batch, length, channels)
@@ -634,7 +633,6 @@ fn oracle_conv_1d_complex64_simple() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: conv requires floating dtypes, rejects complex"]
 fn oracle_conv_1d_complex64_with_imaginary() {
     // Complex conv: [1+i, 2+2i] * [1+0i, i]
     // Position 0: (1+i)*1 + (2+2i)*i = 1+i + 2i - 2 = -1 + 3i
@@ -652,7 +650,6 @@ fn oracle_conv_1d_complex64_with_imaginary() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: conv requires floating dtypes, rejects complex"]
 fn oracle_conv_1d_complex128_simple() {
     let lhs = make_complex128_tensor(&[1, 3, 1], vec![
         (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
@@ -666,7 +663,6 @@ fn oracle_conv_1d_complex128_simple() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: conv requires floating dtypes, rejects complex"]
 fn property_conv_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let (lhs, rhs) = match dtype {
