@@ -479,3 +479,61 @@ fn property_gamma_funcs_preserves_complex_dtypes() {
         }
     }
 }
+
+// ======================== METAMORPHIC: mathematical identities ========================
+
+#[test]
+fn metamorphic_lgamma_recurrence_relation() {
+    // lgamma(n+1) - lgamma(n) = ln(n) for positive integers
+    // This follows from Γ(n+1) = n * Γ(n)
+    for n in 1..=5 {
+        let n_f = n as f64;
+        let input_n = Value::Scalar(Literal::from_f64(n_f));
+        let input_n1 = Value::Scalar(Literal::from_f64(n_f + 1.0));
+        let lgamma_n = extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input_n], &no_params()).unwrap())[0];
+        let lgamma_n1 = extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input_n1], &no_params()).unwrap())[0];
+        let diff = lgamma_n1 - lgamma_n;
+        let expected = n_f.ln();
+        assert!(
+            (diff - expected).abs() < 0.01,
+            "lgamma({n}+1) - lgamma({n}) should equal ln({n}) = {expected}, got {diff}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_digamma_recurrence_relation() {
+    // digamma(n+1) - digamma(n) = 1/n for positive integers
+    // This follows from ψ(x+1) = ψ(x) + 1/x
+    for n in 1..=5 {
+        let n_f = n as f64;
+        let input_n = Value::Scalar(Literal::from_f64(n_f));
+        let input_n1 = Value::Scalar(Literal::from_f64(n_f + 1.0));
+        let digamma_n = extract_f64_vec(&eval_primitive(Primitive::Digamma, &[input_n], &no_params()).unwrap())[0];
+        let digamma_n1 = extract_f64_vec(&eval_primitive(Primitive::Digamma, &[input_n1], &no_params()).unwrap())[0];
+        let diff = digamma_n1 - digamma_n;
+        let expected = 1.0 / n_f;
+        assert!(
+            (diff - expected).abs() < 0.01,
+            "digamma({n}+1) - digamma({n}) should equal 1/{n} = {expected}, got {diff}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_lgamma_factorial_sequence() {
+    // lgamma(n+1) = ln(n!) for positive integers
+    // Verify this matches cumulative sum of ln values
+    let mut expected_log_factorial = 0.0;
+    for n in 1..=6 {
+        let n_f = n as f64;
+        let input = Value::Scalar(Literal::from_f64(n_f + 1.0));
+        let lgamma_val = extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap())[0];
+        assert!(
+            (lgamma_val - expected_log_factorial).abs() < 0.01,
+            "lgamma({}) should equal ln({}!) = {}, got {}",
+            n + 1, n, expected_log_factorial, lgamma_val
+        );
+        expected_log_factorial += (n_f + 1.0).ln();
+    }
+}
