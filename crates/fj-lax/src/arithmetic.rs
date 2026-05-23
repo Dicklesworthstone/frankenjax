@@ -178,6 +178,12 @@ fn apply_complex_binary(
                 Ok(complex_mul(lhs, complex_log(rhs)))
             }
         }
+        Primitive::LogAddExp => {
+            let exp_lhs = complex_exp(lhs);
+            let exp_rhs = complex_exp(rhs);
+            let sum = complex_add(exp_lhs, exp_rhs);
+            Ok(complex_log(sum))
+        }
         _ => Err(EvalError::TypeMismatch {
             primitive,
             detail: complex_binary_unsupported_detail(primitive),
@@ -472,7 +478,8 @@ fn eval_binary_elementwise_complex(
         | Primitive::Min
         | Primitive::Pow
         | Primitive::Atan2
-        | Primitive::XLogY => {}
+        | Primitive::XLogY
+        | Primitive::LogAddExp => {}
         _ => {
             return Err(EvalError::TypeMismatch {
                 primitive,
