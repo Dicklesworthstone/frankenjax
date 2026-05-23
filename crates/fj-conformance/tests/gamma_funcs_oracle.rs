@@ -390,3 +390,97 @@ fn property_digamma_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex Type Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: shape.to_vec() },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: shape.to_vec() },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+#[test]
+#[ignore = "PARITY GAP: lgamma/digamma not supported for complex dtypes"]
+fn oracle_lgamma_complex64_positive_real() {
+    // lgamma on positive real axis should match real lgamma
+    // lgamma(1) = 0, lgamma(2) = 0
+    let input = make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params())
+        .expect("lgamma complex64 should succeed");
+    let vals = extract_complex64_vec(&result);
+    assert!(vals[0].0.abs() < 1e-5, "lgamma(1) = 0");
+    assert!(vals[1].0.abs() < 1e-5, "lgamma(2) = 0");
+}
+
+#[test]
+#[ignore = "PARITY GAP: lgamma/digamma not supported for complex dtypes"]
+fn oracle_lgamma_complex128_preserves_dtype() {
+    let input = make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
+    let result = eval_primitive(Primitive::Lgamma, &[input], &no_params())
+        .expect("lgamma complex128 should succeed");
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+#[ignore = "PARITY GAP: lgamma/digamma not supported for complex dtypes"]
+fn oracle_digamma_complex64_positive_real() {
+    // digamma(1) = -gamma (Euler-Mascheroni) ≈ -0.5772
+    let input = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params())
+        .expect("digamma complex64 should succeed");
+    let vals = extract_complex64_vec(&result);
+    assert!((vals[0].0 - (-0.5772)).abs() < 0.01, "digamma(1) ≈ -0.5772");
+}
+
+#[test]
+#[ignore = "PARITY GAP: lgamma/digamma not supported for complex dtypes"]
+fn oracle_digamma_complex128_preserves_dtype() {
+    let input = make_complex128_tensor(&[1], vec![(1.0, 0.0)]);
+    let result = eval_primitive(Primitive::Digamma, &[input], &no_params())
+        .expect("digamma complex128 should succeed");
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+#[ignore = "PARITY GAP: lgamma/digamma not supported for complex dtypes"]
+fn property_gamma_funcs_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let input = match dtype {
+            DType::Complex64 => make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]),
+            DType::Complex128 => make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]),
+            _ => unreachable!(),
+        };
+        for primitive in [Primitive::Lgamma, Primitive::Digamma] {
+            let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
+                .expect("gamma func should succeed for complex dtype");
+            assert_eq!(result.dtype(), dtype, "{primitive:?} {dtype:?}: dtype mismatch");
+        }
+    }
+}
