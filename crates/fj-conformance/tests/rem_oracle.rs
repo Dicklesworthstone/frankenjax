@@ -748,3 +748,29 @@ fn property_rem_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ====================== COMPLEX DTYPE TESTS ======================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+#[ignore = "PARITY GAP: Rem not supported for complex - modulo undefined"]
+fn oracle_rem_complex64_not_supported() {
+    let a = make_complex64_tensor(&[1], vec![(5.0, 0.0)]);
+    let b = make_complex64_tensor(&[1], vec![(2.0, 0.0)]);
+    let _result = eval_primitive(Primitive::Rem, &[a, b], &no_params())
+        .expect("rem should work on complex64");
+}
