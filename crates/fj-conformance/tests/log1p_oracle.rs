@@ -467,3 +467,214 @@ fn property_log1p_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== COMPLEX64/COMPLEX128 TESTS ========================
+
+fn make_complex64_scalar(re: f32, im: f32) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex64(re, im)],
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_scalar(re: f64, im: f64) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex128(re, im)],
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: shape.to_vec() },
+            pairs
+                .into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_complex64().unwrap()
+        }
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_complex128_scalar(v: &Value) -> (f64, f64) {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_complex128().unwrap()
+        }
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn assert_complex64_close(actual: (f32, f32), expected: (f32, f32), tol: f32, msg: &str) {
+    let diff_re = (actual.0 - expected.0).abs();
+    let diff_im = (actual.1 - expected.1).abs();
+    assert!(
+        diff_re < tol && diff_im < tol,
+        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
+        msg,
+        expected.0,
+        expected.1,
+        actual.0,
+        actual.1,
+        diff_re,
+        diff_im
+    );
+}
+
+fn assert_complex128_close(actual: (f64, f64), expected: (f64, f64), tol: f64, msg: &str) {
+    let diff_re = (actual.0 - expected.0).abs();
+    let diff_im = (actual.1 - expected.1).abs();
+    assert!(
+        diff_re < tol && diff_im < tol,
+        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
+        msg,
+        expected.0,
+        expected.1,
+        actual.0,
+        actual.1,
+        diff_re,
+        diff_im
+    );
+}
+
+#[test]
+fn oracle_log1p_complex64_zero() {
+    // log1p(0+0i) = log(1) = 0
+    let input = make_complex64_scalar(0.0, 0.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (0.0, 0.0), 1e-6, "log1p(0)");
+}
+
+#[test]
+fn oracle_log1p_complex64_real() {
+    // log1p(e-1) = log(e) = 1
+    let e_minus_1 = std::f32::consts::E - 1.0;
+    let input = make_complex64_scalar(e_minus_1, 0.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (1.0, 0.0), 1e-5, "log1p(e-1) = 1");
+}
+
+#[test]
+fn oracle_log1p_complex64_pure_imaginary() {
+    // log1p(i) = log(1+i)
+    // 1+i has modulus sqrt(2) and argument pi/4
+    // log(1+i) = ln(sqrt(2)) + i*pi/4 = 0.5*ln(2) + i*pi/4
+    let expected_re = 0.5_f32 * 2.0_f32.ln();
+    let expected_im = std::f32::consts::FRAC_PI_4;
+    let input = make_complex64_scalar(0.0, 1.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (expected_re, expected_im), 1e-5, "log1p(i) = log(1+i)");
+}
+
+#[test]
+fn oracle_log1p_complex64_general() {
+    // log1p(1+i) = log(2+i)
+    // 2+i has modulus sqrt(5) and argument atan(1/2)
+    let modulus = 5.0_f32.sqrt();
+    let argument = 0.5_f32.atan();
+    let expected_re = modulus.ln();
+    let expected_im = argument;
+    let input = make_complex64_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (expected_re, expected_im), 1e-5, "log1p(1+i) = log(2+i)");
+}
+
+#[test]
+fn oracle_log1p_complex64_log_identity() {
+    // Verify log1p(z) = log(1 + z)
+    let z = make_complex64_scalar(0.5, 0.3);
+    let log1p_result = eval_primitive(Primitive::Log1p, &[z.clone()], &no_params()).unwrap();
+
+    // Compute 1 + z manually
+    let one_plus_z = make_complex64_scalar(1.5, 0.3);
+    let log_result = eval_primitive(Primitive::Log, &[one_plus_z], &no_params()).unwrap();
+
+    let (log1p_re, log1p_im) = extract_complex64_scalar(&log1p_result);
+    let (log_re, log_im) = extract_complex64_scalar(&log_result);
+
+    assert_complex64_close(
+        (log1p_re, log1p_im),
+        (log_re, log_im),
+        1e-5,
+        "log1p(z) = log(1+z)",
+    );
+}
+
+#[test]
+fn oracle_log1p_complex64_vector() {
+    let input = make_complex64_tensor(&[3], vec![(0.0, 0.0), (std::f32::consts::E - 1.0, 0.0), (0.0, 1.0)]);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+
+    // log1p(0) = 0
+    assert_complex64_close(vals[0], (0.0, 0.0), 1e-5, "log1p(0)");
+    // log1p(e-1) = 1
+    assert_complex64_close(vals[1], (1.0, 0.0), 1e-4, "log1p(e-1)");
+    // log1p(i) = 0.5*ln(2) + i*pi/4
+    let expected_re = 0.5_f32 * 2.0_f32.ln();
+    let expected_im = std::f32::consts::FRAC_PI_4;
+    assert_complex64_close(vals[2], (expected_re, expected_im), 1e-4, "log1p(i)");
+}
+
+#[test]
+fn oracle_log1p_complex128_general() {
+    // log1p(1+i) = log(2+i) with higher precision
+    let modulus = 5.0_f64.sqrt();
+    let argument = 0.5_f64.atan();
+    let expected_re = modulus.ln();
+    let expected_im = argument;
+    let input = make_complex128_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex128_scalar(&result);
+    assert_complex128_close((re, im), (expected_re, expected_im), 1e-12, "log1p(1+i) Complex128");
+}
+
+#[test]
+fn oracle_log1p_complex64_preserves_dtype() {
+    let input = make_complex64_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_log1p_complex128_preserves_dtype() {
+    let input = make_complex128_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}

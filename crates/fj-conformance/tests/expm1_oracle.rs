@@ -491,3 +491,203 @@ fn property_expm1_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== COMPLEX64/COMPLEX128 TESTS ========================
+
+fn make_complex64_scalar(re: f32, im: f32) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex64(re, im)],
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_scalar(re: f64, im: f64) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex128(re, im)],
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: shape.to_vec() },
+            pairs
+                .into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_complex64().unwrap()
+        }
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_complex128_scalar(v: &Value) -> (f64, f64) {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_complex128().unwrap()
+        }
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn assert_complex64_close(actual: (f32, f32), expected: (f32, f32), tol: f32, msg: &str) {
+    let diff_re = (actual.0 - expected.0).abs();
+    let diff_im = (actual.1 - expected.1).abs();
+    assert!(
+        diff_re < tol && diff_im < tol,
+        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
+        msg,
+        expected.0,
+        expected.1,
+        actual.0,
+        actual.1,
+        diff_re,
+        diff_im
+    );
+}
+
+fn assert_complex128_close(actual: (f64, f64), expected: (f64, f64), tol: f64, msg: &str) {
+    let diff_re = (actual.0 - expected.0).abs();
+    let diff_im = (actual.1 - expected.1).abs();
+    assert!(
+        diff_re < tol && diff_im < tol,
+        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
+        msg,
+        expected.0,
+        expected.1,
+        actual.0,
+        actual.1,
+        diff_re,
+        diff_im
+    );
+}
+
+#[test]
+fn oracle_expm1_complex64_zero() {
+    // expm1(0+0i) = e^0 - 1 = 0
+    let input = make_complex64_scalar(0.0, 0.0);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (0.0, 0.0), 1e-6, "expm1(0)");
+}
+
+#[test]
+fn oracle_expm1_complex64_real() {
+    // expm1(1+0i) = e - 1 ≈ 1.718
+    let input = make_complex64_scalar(1.0, 0.0);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    let expected = std::f32::consts::E - 1.0;
+    assert_complex64_close((re, im), (expected, 0.0), 1e-5, "expm1(1)");
+}
+
+#[test]
+fn oracle_expm1_complex64_pure_imaginary() {
+    // expm1(i*pi) = e^(i*pi) - 1 = -1 - 1 = -2
+    let pi = std::f32::consts::PI;
+    let input = make_complex64_scalar(0.0, pi);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (-2.0, 0.0), 1e-4, "expm1(i*pi)");
+}
+
+#[test]
+fn oracle_expm1_complex64_general() {
+    // expm1(1+i) = e^(1+i) - 1 = e*e^i - 1 = e*(cos(1) + i*sin(1)) - 1
+    let e = std::f32::consts::E;
+    let expected_re = e * 1.0_f32.cos() - 1.0;
+    let expected_im = e * 1.0_f32.sin();
+    let input = make_complex64_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_close((re, im), (expected_re, expected_im), 1e-4, "expm1(1+i)");
+}
+
+#[test]
+fn oracle_expm1_complex64_exp_minus_one_identity() {
+    // Verify expm1(z) = exp(z) - 1
+    let z = make_complex64_scalar(0.5, 0.3);
+    let expm1_result = eval_primitive(Primitive::Expm1, &[z.clone()], &no_params()).unwrap();
+    let exp_result = eval_primitive(Primitive::Exp, &[z], &no_params()).unwrap();
+
+    let (expm1_re, expm1_im) = extract_complex64_scalar(&expm1_result);
+    let (exp_re, exp_im) = extract_complex64_scalar(&exp_result);
+
+    assert_complex64_close(
+        (expm1_re, expm1_im),
+        (exp_re - 1.0, exp_im),
+        1e-5,
+        "expm1(z) = exp(z) - 1",
+    );
+}
+
+#[test]
+fn oracle_expm1_complex64_vector() {
+    let input = make_complex64_tensor(&[3], vec![(0.0, 0.0), (1.0, 0.0), (0.0, std::f32::consts::PI)]);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+
+    // expm1(0) = 0
+    assert_complex64_close(vals[0], (0.0, 0.0), 1e-5, "expm1(0)");
+    // expm1(1) = e - 1
+    assert_complex64_close(vals[1], (std::f32::consts::E - 1.0, 0.0), 1e-4, "expm1(1)");
+    // expm1(i*pi) = -2
+    assert_complex64_close(vals[2], (-2.0, 0.0), 1e-4, "expm1(i*pi)");
+}
+
+#[test]
+fn oracle_expm1_complex128_general() {
+    // expm1(1+i) with higher precision
+    let e = std::f64::consts::E;
+    let expected_re = e * 1.0_f64.cos() - 1.0;
+    let expected_im = e * 1.0_f64.sin();
+    let input = make_complex128_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    let (re, im) = extract_complex128_scalar(&result);
+    assert_complex128_close((re, im), (expected_re, expected_im), 1e-10, "expm1(1+i) Complex128");
+}
+
+#[test]
+fn oracle_expm1_complex64_preserves_dtype() {
+    let input = make_complex64_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_expm1_complex128_preserves_dtype() {
+    let input = make_complex128_scalar(1.0, 1.0);
+    let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
