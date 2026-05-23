@@ -263,3 +263,29 @@ fn oracle_signbit_2d_empty() {
     let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
+
+// ======================== PROPERTY: signbit always returns Bool ========================
+
+#[test]
+fn property_signbit_always_returns_bool() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
+    }
+
+    let values = [-1.0_f64, 0.0, 1.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let input = make_vec(dtype, &values);
+        let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
+        assert_eq!(result.dtype(), DType::Bool, "signbit with {dtype:?} input should return Bool");
+    }
+}

@@ -486,3 +486,22 @@ fn oracle_shift_incompatible_shapes_error() {
     let result = eval_primitive(Primitive::ShiftLeft, &[a, b], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_shift_preserves_int_dtypes() {
+    for (dtype, lits) in [
+        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
+        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+    ] {
+        let shift_amount = match dtype {
+            DType::I64 => Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![3] }, vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)]).unwrap()),
+            DType::U64 => Value::Tensor(TensorValue::new(DType::U64, Shape { dims: vec![3] }, vec![Literal::U64(1), Literal::U64(2), Literal::U64(3)]).unwrap()),
+            _ => unreachable!(),
+        };
+        let a = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
+        let result = eval_primitive(Primitive::ShiftLeft, &[a, shift_amount], &no_params()).unwrap();
+        assert_eq!(result.dtype(), dtype, "ShiftLeft {dtype:?}: dtype mismatch");
+    }
+}

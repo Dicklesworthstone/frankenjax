@@ -432,3 +432,19 @@ fn oracle_popcount_i32_vs_i64_distinguishes() {
     assert_eq!(extract_i64_scalar(&i32_result), 32, "I32: 32 bits");
     assert_eq!(extract_i64_scalar(&i64_result), 64, "I64: 64 bits");
 }
+
+// ======================== PROPERTY: output dtype ========================
+
+#[test]
+fn property_popcount_always_outputs_i64() {
+    for (dtype, lits) in [
+        (DType::I32, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
+        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
+        (DType::U32, vec![Literal::U32(0xFF), Literal::U32(0xF0), Literal::U32(0x0F)]),
+        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+    ] {
+        let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
+        let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
+        assert_eq!(result.dtype(), DType::I64, "popcount {dtype:?} input: output should always be I64");
+    }
+}
