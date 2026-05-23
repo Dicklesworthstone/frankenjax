@@ -267,6 +267,20 @@ fn complex_logistic(input: (f64, f64)) -> (f64, f64) {
     complex_reciprocal(complex_add((1.0, 0.0), complex_exp(neg_input)))
 }
 
+fn complex_sin((re, im): (f64, f64)) -> (f64, f64) {
+    (re.sin() * im.cosh(), re.cos() * im.sinh())
+}
+
+fn complex_sinc(input: (f64, f64)) -> (f64, f64) {
+    if input.0 == 0.0 && input.1 == 0.0 {
+        return (1.0, 0.0);
+    }
+    let pi = std::f64::consts::PI;
+    let pi_z = (input.0 * pi, input.1 * pi);
+    let sin_pi_z = complex_sin(pi_z);
+    complex_div(sin_pi_z, pi_z)
+}
+
 fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<(f64, f64)> {
     match primitive {
         Primitive::Sqrt => Some(complex_sqrt(input)),
@@ -288,6 +302,7 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
             let ln2 = std::f64::consts::LN_2;
             Some((result.0 / ln2, result.1 / ln2))
         }
+        Primitive::Sinc => Some(complex_sinc(input)),
         _ => None,
     }
 }

@@ -366,7 +366,7 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 }
 
 #[test]
-#[ignore = "PARITY GAP: sinc not supported for complex operands"]
+
 fn oracle_sinc_complex64_at_zero() {
     // sinc(0) = 1 for any dtype
     let input = make_complex64_tensor(&[1], vec![(0.0, 0.0)]);
@@ -378,7 +378,7 @@ fn oracle_sinc_complex64_at_zero() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: sinc not supported for complex operands"]
+
 fn oracle_sinc_complex64_real_axis() {
     // sinc on real axis should match real sinc
     let input = make_complex64_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
@@ -391,7 +391,7 @@ fn oracle_sinc_complex64_real_axis() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: sinc not supported for complex operands"]
+
 fn oracle_sinc_complex128_preserves_dtype() {
     let input = make_complex128_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive(Primitive::Sinc, &[input], &no_params())
@@ -400,7 +400,7 @@ fn oracle_sinc_complex128_preserves_dtype() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: sinc not supported for complex operands"]
+
 fn property_sinc_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {
