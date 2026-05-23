@@ -748,6 +748,7 @@ pub(crate) fn eval_cumulative(
             let reverse = parse_bool_param(primitive, params, "reverse", false)?;
 
             let is_integral = tensor.dtype == DType::I64 || tensor.dtype == DType::I32;
+            let is_complex = matches!(tensor.dtype, DType::Complex64 | DType::Complex128);
 
             let axis_dim = tensor.shape.dims[axis] as usize;
 
@@ -785,7 +786,38 @@ pub(crate) fn eval_cumulative(
                     flat
                 };
 
-                if is_integral {
+                if is_complex {
+                    if primitive != Primitive::Cumsum && primitive != Primitive::Cumprod {
+                        return Err(EvalError::Unsupported {
+                            primitive,
+                            detail: "complex cumulative is supported only for cumsum and cumprod".to_owned(),
+                        });
+                    }
+                    let (mut acc_re, mut acc_im) = if primitive == Primitive::Cumprod {
+                        (1.0_f64, 0.0_f64)
+                    } else {
+                        (0.0_f64, 0.0_f64)
+                    };
+                    let iter: Box<dyn Iterator<Item = usize>> = if reverse {
+                        Box::new((0..axis_dim).rev())
+                    } else {
+                        Box::new(0..axis_dim)
+                    };
+                    for i in iter {
+                        let flat_idx = base + i * axis_stride;
+                        let (re, im) = literal_to_complex_parts(primitive, elements[flat_idx])?;
+                        if primitive == Primitive::Cumprod {
+                            let new_re = acc_re * re - acc_im * im;
+                            let new_im = acc_re * im + acc_im * re;
+                            acc_re = new_re;
+                            acc_im = new_im;
+                        } else {
+                            acc_re += re;
+                            acc_im += im;
+                        }
+                        elements[flat_idx] = complex_literal_from_parts(tensor.dtype, acc_re, acc_im);
+                    }
+                } else if is_integral {
                     let mut acc = int_init;
                     if reverse {
                         for i in (0..axis_dim).rev() {
