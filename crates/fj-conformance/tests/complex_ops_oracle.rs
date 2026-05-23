@@ -299,3 +299,53 @@ fn oracle_conj_preserves_dtype() {
         _ => panic!("expected tensor"),
     }
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+fn property_conj_preserves_complex_dtypes() {
+    let c64_input = make_complex64_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let c64_result = eval_primitive(Primitive::Conj, &[c64_input], &no_params()).unwrap();
+    let c64_t = c64_result.as_tensor().expect("tensor result");
+    assert_eq!(c64_t.dtype, DType::Complex64, "Conj should preserve Complex64 dtype");
+    c64_t.validate_dtype_consistency().expect("literal/dtype consistency");
+
+    let c128_input = make_complex128_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let c128_result = eval_primitive(Primitive::Conj, &[c128_input], &no_params()).unwrap();
+    let c128_t = c128_result.as_tensor().expect("tensor result");
+    assert_eq!(c128_t.dtype, DType::Complex128, "Conj should preserve Complex128 dtype");
+    c128_t.validate_dtype_consistency().expect("literal/dtype consistency");
+}
+
+#[test]
+fn property_real_extracts_to_float_dtype() {
+    let c128_input = make_complex128_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let result = eval_primitive(Primitive::Real, &[c128_input], &no_params()).unwrap();
+    let t = result.as_tensor().expect("tensor result");
+    assert_eq!(t.dtype, DType::F64, "Real on Complex128 should produce F64");
+    t.validate_dtype_consistency().expect("literal/dtype consistency");
+}
+
+#[test]
+fn property_imag_extracts_to_float_dtype() {
+    let c128_input = make_complex128_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let result = eval_primitive(Primitive::Imag, &[c128_input], &no_params()).unwrap();
+    let t = result.as_tensor().expect("tensor result");
+    assert_eq!(t.dtype, DType::F64, "Imag on Complex128 should produce F64");
+    t.validate_dtype_consistency().expect("literal/dtype consistency");
+}
