@@ -443,7 +443,7 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 }
 
 #[test]
-#[ignore = "PARITY GAP: erfc is not supported for complex dtypes"]
+
 fn oracle_erfc_complex64_real_axis() {
     // erfc on real axis: erfc(0) = 1, erfc(1) ≈ 0.157
     let input = make_complex64_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
@@ -453,7 +453,7 @@ fn oracle_erfc_complex64_real_axis() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: erfc is not supported for complex dtypes"]
+
 fn oracle_erfc_complex128_preserves_dtype() {
     let input = make_complex128_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive(Primitive::Erfc, &[input], &no_params())
@@ -462,7 +462,7 @@ fn oracle_erfc_complex128_preserves_dtype() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: erfc is not supported for complex dtypes"]
+
 fn property_erfc_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {

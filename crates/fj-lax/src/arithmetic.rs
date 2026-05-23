@@ -294,6 +294,31 @@ fn complex_sinc(input: (f64, f64)) -> (f64, f64) {
     complex_div(sin_pi_z, pi_z)
 }
 
+fn complex_erf(z: (f64, f64)) -> (f64, f64) {
+    let two_over_sqrt_pi = 2.0 / std::f64::consts::PI.sqrt();
+    let mut result = z;
+    let mut z_power = z;
+    let z_squared = complex_mul(z, z);
+    let neg_z_squared = (-z_squared.0, -z_squared.1);
+    let mut n_factorial = 1.0_f64;
+    for n in 1..50 {
+        z_power = complex_mul(z_power, neg_z_squared);
+        n_factorial *= n as f64;
+        let denom = n_factorial * (2 * n + 1) as f64;
+        let term = (z_power.0 / denom, z_power.1 / denom);
+        result = complex_add(result, term);
+        if term.0.abs() < 1e-15 && term.1.abs() < 1e-15 {
+            break;
+        }
+    }
+    (result.0 * two_over_sqrt_pi, result.1 * two_over_sqrt_pi)
+}
+
+fn complex_erfc(z: (f64, f64)) -> (f64, f64) {
+    let erf_z = complex_erf(z);
+    (1.0 - erf_z.0, -erf_z.1)
+}
+
 fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<(f64, f64)> {
     match primitive {
         Primitive::Sqrt => Some(complex_sqrt(input)),
@@ -316,6 +341,8 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
             Some((result.0 / ln2, result.1 / ln2))
         }
         Primitive::Sinc => Some(complex_sinc(input)),
+        Primitive::Erf => Some(complex_erf(input)),
+        Primitive::Erfc => Some(complex_erfc(input)),
         _ => None,
     }
 }
@@ -331,8 +358,6 @@ fn complex_unary_unsupported_detail(primitive: Primitive) -> &'static str {
         Primitive::Round => "round is not supported for complex dtypes",
         Primitive::Lgamma => "lgamma is not supported for complex dtypes",
         Primitive::Digamma => "digamma is not supported for complex dtypes",
-        Primitive::Erf => "erf is not supported for complex dtypes",
-        Primitive::Erfc => "erfc is not supported for complex dtypes",
         Primitive::ErfInv => "erf_inv is not supported for complex dtypes",
         _ => "operation is not supported for complex operands",
     }
