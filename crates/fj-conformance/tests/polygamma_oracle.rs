@@ -416,3 +416,14 @@ fn polygamma_3d_shape() {
     assert_eq!(vals.len(), 8);
     assert!(vals.iter().all(|&v| v.is_finite()));
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_polygamma_preserves_f64() {
+    // Polygamma only supports F64 due to precision requirements
+    let order = scalar_f64(1.0);
+    let x = tensor_f64(&[3], &[1.0, 2.0, 3.0]);
+    let result = eval_polygamma(order, x);
+    assert_eq!(result.dtype(), DType::F64, "polygamma should output F64");
+}
