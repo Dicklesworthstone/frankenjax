@@ -638,3 +638,199 @@ fn property_scatter_preserves_dtype() {
     let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
     assert_eq!(result.dtype(), DType::I64, "scatter should preserve I64 dtype");
 }
+
+// ======================== Complex64/Complex128 Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_gather_complex64_1d() {
+    let operand = make_complex64_tensor(&[5], vec![
+        (0.0, 0.0), (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0),
+    ]);
+    let indices = make_i64_tensor(&[2], vec![1, 3]);
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 1.0), (3.0, 3.0)]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_gather_complex64_multiple_elements() {
+    let operand = make_complex64_tensor(&[6], vec![
+        (0.0, 0.0), (1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0), (5.0, -5.0),
+    ]);
+    let indices = make_i64_tensor(&[3], vec![0, 2, 4]);
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(0.0, 0.0), (2.0, -2.0), (4.0, -4.0)]);
+}
+
+#[test]
+fn oracle_gather_complex128_1d() {
+    let operand = make_complex128_tensor(&[4], vec![
+        (1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0),
+    ]);
+    let indices = make_i64_tensor(&[2], vec![0, 2]);
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0), (5.0, 6.0)]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_scatter_complex64_1d() {
+    let operand = make_complex64_tensor(&[5], vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0), (5.0, 0.0),
+    ]);
+    let indices = make_i64_tensor(&[2], vec![1, 3]);
+    let updates = make_complex64_tensor(&[2], vec![(10.0, 10.0), (30.0, 30.0)]);
+    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![5]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (1.0, 0.0), (10.0, 10.0), (3.0, 0.0), (30.0, 30.0), (5.0, 0.0),
+    ]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_scatter_complex64_single() {
+    let operand = make_complex64_tensor(&[4], vec![
+        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0),
+    ]);
+    let indices = make_i64_tensor(&[1], vec![2]);
+    let updates = make_complex64_tensor(&[1], vec![(99.0, -99.0)]);
+    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (1.0, 1.0), (2.0, 2.0), (99.0, -99.0), (4.0, 4.0),
+    ]);
+}
+
+#[test]
+fn oracle_scatter_complex128_1d() {
+    let operand = make_complex128_tensor(&[4], vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+    ]);
+    let indices = make_i64_tensor(&[1], vec![1]);
+    let updates = make_complex128_tensor(&[1], vec![(99.0, 99.0)]);
+    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![
+        (1.0, 0.0), (99.0, 99.0), (3.0, 0.0), (4.0, 0.0),
+    ]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_gather_complex64_preserves_dtype() {
+    let operand = make_complex64_tensor(&[4], vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+    ]);
+    let indices = make_i64_tensor(&[2], vec![0, 2]);
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_scatter_complex64_preserves_dtype() {
+    let operand = make_complex64_tensor(&[4], vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+    ]);
+    let indices = make_i64_tensor(&[1], vec![1]);
+    let updates = make_complex64_tensor(&[1], vec![(99.0, 0.0)]);
+    let result = eval_primitive(Primitive::Scatter, &[operand, indices, updates], &scatter_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn property_gather_scatter_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let (operand, updates) = match dtype {
+            DType::Complex64 => (
+                make_complex64_tensor(&[4], vec![
+                    (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+                ]),
+                make_complex64_tensor(&[1], vec![(99.0, 0.0)]),
+            ),
+            DType::Complex128 => (
+                make_complex128_tensor(&[4], vec![
+                    (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+                ]),
+                make_complex128_tensor(&[1], vec![(99.0, 0.0)]),
+            ),
+            _ => unreachable!(),
+        };
+        let indices = make_i64_tensor(&[1], vec![1]);
+
+        // Test gather
+        let gather_result = eval_primitive(
+            Primitive::Gather,
+            &[operand.clone(), indices.clone()],
+            &gather_params(&[1]),
+        )
+        .unwrap();
+        assert_eq!(gather_result.dtype(), dtype, "gather {dtype:?}: dtype mismatch");
+
+        // Test scatter
+        let scatter_result = eval_primitive(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &scatter_params(),
+        )
+        .unwrap();
+        assert_eq!(scatter_result.dtype(), dtype, "scatter {dtype:?}: dtype mismatch");
+    }
+}
