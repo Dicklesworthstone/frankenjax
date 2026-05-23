@@ -152,10 +152,16 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Max
         | Primitive::Min
         | Primitive::Pow
+        | Primitive::Hypot
+        | Primitive::LogAddExp
+        | Primitive::LogAddExp2
         | Primitive::Div
         | Primitive::Rem
+        | Primitive::Gcd
+        | Primitive::Lcm
         | Primitive::Atan2
         | Primitive::Dot
+        | Primitive::DotGeneral
         | Primitive::Gather
         | Primitive::Eq
         | Primitive::Ne
@@ -166,7 +172,16 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Concatenate
         | Primitive::Pad
         | Primitive::Complex
+        | Primitive::CopySign
+        | Primitive::Ldexp
+        | Primitive::XLogY
+        | Primitive::XLog1PY
         | Primitive::Nextafter
+        | Primitive::Heaviside
+        | Primitive::Polygamma
+        | Primitive::Igamma
+        | Primitive::Igammac
+        | Primitive::Zeta
         | Primitive::TriangularSolve
         | Primitive::BitwiseAnd
         | Primitive::BitwiseOr
@@ -175,23 +190,34 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::ShiftRightArithmetic
         | Primitive::ShiftRightLogical => 2,
         // Ternary ops
-        Primitive::Select | Primitive::Scatter | Primitive::Clamp | Primitive::Cond => 3,
+        Primitive::Select
+        | Primitive::Scatter
+        | Primitive::Clamp
+        | Primitive::Cond
+        | Primitive::Fma
+        | Primitive::Betainc => 3,
         // Unary ops
         Primitive::Neg
         | Primitive::Abs
         | Primitive::Exp
+        | Primitive::Exp2
         | Primitive::Log
+        | Primitive::Log2
         | Primitive::Sqrt
         | Primitive::Rsqrt
         | Primitive::Floor
         | Primitive::Ceil
         | Primitive::Round
+        | Primitive::Trunc
         | Primitive::Sin
         | Primitive::Cos
         | Primitive::Tan
+        | Primitive::Sinc
         | Primitive::Asin
         | Primitive::Acos
         | Primitive::Atan
+        | Primitive::Deg2Rad
+        | Primitive::Rad2Deg
         | Primitive::Sinh
         | Primitive::Cosh
         | Primitive::Tanh
@@ -218,6 +244,7 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Transpose
         | Primitive::BroadcastInDim
         | Primitive::DynamicSlice
+        | Primitive::Tile
         | Primitive::Conj
         | Primitive::Real
         | Primitive::Imag
@@ -229,19 +256,32 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::Lgamma
         | Primitive::Digamma
         | Primitive::ErfInv
+        | Primitive::BesselI0e
+        | Primitive::BesselI1e
         | Primitive::IsFinite
+        | Primitive::IsNan
+        | Primitive::IsInf
+        | Primitive::Signbit
         | Primitive::IntegerPow
         | Primitive::Copy
+        | Primitive::StopGradient
+        | Primitive::ConvertElementType
         | Primitive::BitcastConvertType
         | Primitive::ReducePrecision
         | Primitive::Cholesky
         | Primitive::Qr
+        | Primitive::Lu
         | Primitive::Svd
         | Primitive::Eigh
         | Primitive::Fft
         | Primitive::Ifft
         | Primitive::Rfft
         | Primitive::Irfft
+        | Primitive::Cummax
+        | Primitive::Cummin
+        | Primitive::TopK
+        | Primitive::Argmin
+        | Primitive::Argmax
         | Primitive::Psum
         | Primitive::Pmean
         | Primitive::AllGather
@@ -249,7 +289,8 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         | Primitive::BitwiseNot
         | Primitive::ReduceWindow
         | Primitive::PopulationCount
-        | Primitive::CountLeadingZeros => 1,
+        | Primitive::CountLeadingZeros
+        | Primitive::CountTrailingZeros => 1,
         // Nullary ops
         Primitive::Iota | Primitive::BroadcastedIota | Primitive::AxisIndex => 0,
         // Parameterized primitives with fixed or minimum input counts.
@@ -263,6 +304,8 @@ pub fn primitive_arity(primitive: Primitive) -> usize {
         Primitive::Scan => 2,
         Primitive::While => 3,
         Primitive::Switch => 2,
+        // SelectN takes predicate plus N-1 branches (minimum 2: predicate + one branch)
+        Primitive::SelectN => 2,
     }
 }
 
