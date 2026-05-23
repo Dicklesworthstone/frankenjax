@@ -406,3 +406,61 @@ fn property_lu_preserves_all_float_dtypes() {
         );
     }
 }
+
+// ====================== COMPLEX DTYPE TESTS ======================
+
+fn make_complex64_matrix(rows: u32, cols: u32, data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: vec![rows, cols],
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_matrix(rows: u32, cols: u32, data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![rows, cols],
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+#[ignore = "PARITY GAP: LU decomposition not yet supported for complex matrices"]
+fn oracle_lu_complex64_basic() {
+    let input = make_complex64_matrix(2, 2, vec![
+        (1.0, 0.0), (2.0, 0.0),
+        (3.0, 0.0), (5.0, 0.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("LU should work on complex64 matrices");
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].dtype(), DType::Complex64);
+}
+
+#[test]
+#[ignore = "PARITY GAP: LU decomposition not yet supported for complex matrices"]
+fn oracle_lu_complex128_basic() {
+    let input = make_complex128_matrix(2, 2, vec![
+        (1.0, 0.0), (2.0, 1.0),
+        (3.0, -1.0), (5.0, 0.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+        .expect("LU should work on complex128 matrices");
+    assert_eq!(result.len(), 3);
+    assert_eq!(result[0].dtype(), DType::Complex128);
+}
