@@ -429,3 +429,40 @@ fn dynamic_slice_2d_empty_output() {
     assert_eq!(shape, vec![2, 0]);
     assert!(vals.is_empty());
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_dynamic_slice_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![4] }, lits).unwrap())
+    }
+
+    let values = [1.0_f64, 2.0, 3.0, 4.0];
+    let mut params = BTreeMap::new();
+    params.insert("slice_sizes".to_owned(), "2".to_owned());
+
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let input = make_vec(dtype, &values);
+        let result = eval_primitive(
+            Primitive::DynamicSlice,
+            &[input, Value::scalar_i64(1)],
+            &params,
+        )
+        .unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "dynamic_slice {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
