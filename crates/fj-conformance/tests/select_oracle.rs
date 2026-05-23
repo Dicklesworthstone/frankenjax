@@ -587,3 +587,36 @@ fn metamorphic_select_preserves_dtype() {
     let vals = extract_i64_vec(&result);
     assert_eq!(vals, vec![1, 20, 3], "Select preserves i64 dtype");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_select_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
+    }
+
+    let cond = make_bool_tensor(&[3], vec![true, false, true]);
+    let on_true_vals = [1.0_f64, 2.0, 3.0];
+    let on_false_vals = [10.0_f64, 20.0, 30.0];
+
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let on_true = make_vec(dtype, &on_true_vals);
+        let on_false = make_vec(dtype, &on_false_vals);
+        let result = eval_primitive(Primitive::Select, &[cond.clone(), on_true, on_false], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "select {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
