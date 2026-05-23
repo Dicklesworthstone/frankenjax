@@ -678,3 +678,36 @@ fn property_reduce_min_preserves_all_float_dtypes() {
         assert_eq!(result.dtype(), dtype, "reduce_min {dtype:?}: dtype mismatch");
     }
 }
+
+// ====================== COMPLEX DTYPE TESTS ======================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+#[test]
+#[ignore = "PARITY GAP: ReduceMin not supported for complex - no natural ordering"]
+fn oracle_reduce_min_complex64_not_supported() {
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let _result = eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0]))
+        .expect("reduce_min should work on complex64");
+}
+
+#[test]
+#[ignore = "PARITY GAP: ReduceMax not supported for complex - no natural ordering"]
+fn oracle_reduce_max_complex64_not_supported() {
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let _result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0]))
+        .expect("reduce_max should work on complex64");
+}
