@@ -441,3 +441,196 @@ fn property_cumulative_preserves_all_float_dtypes() {
         }
     }
 }
+
+// ======================== Complex64/Complex128 Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    let tensor = v.as_tensor().expect("expected tensor");
+    tensor
+        .elements
+        .iter()
+        .map(|l| l.as_complex64().unwrap())
+        .collect()
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    let tensor = v.as_tensor().expect("expected tensor");
+    tensor
+        .elements
+        .iter()
+        .map(|l| l.as_complex128().unwrap())
+        .collect()
+}
+
+fn extract_shape(v: &Value) -> Vec<u32> {
+    v.as_tensor().expect("expected tensor").shape.dims.clone()
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumsum_complex64_1d() {
+    // cumsum([1+i, 2+2i, 3+3i]) = [1+i, 3+3i, 6+6i]
+    let input = make_complex64_tensor(&[3], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 1.0), (3.0, 3.0), (6.0, 6.0)]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumsum_complex64_2d_axis0() {
+    // cumsum along axis 0
+    let input = make_complex64_tensor(&[2, 3], vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
+        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
+    ]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &axis_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    let vals = extract_complex64_vec(&result);
+    // Row 0 stays same, row 1 = row 0 + row 1
+    assert_eq!(vals, vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
+        (5.0, 0.0), (7.0, 0.0), (9.0, 0.0),
+    ]);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumsum_complex64_2d_axis1() {
+    // cumsum along axis 1 (within each row)
+    let input = make_complex64_tensor(&[2, 3], vec![
+        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
+        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
+    ]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &axis_params(1)).unwrap();
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (1.0, 1.0), (3.0, 3.0), (6.0, 6.0),
+        (4.0, 4.0), (9.0, 9.0), (15.0, 15.0),
+    ]);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumprod_complex64_1d() {
+    // cumprod([1+0i, 2+0i, 3+0i]) = [1, 2, 6] for real parts
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 0.0), (2.0, 0.0), (6.0, 0.0)]);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumprod_complex64_with_imaginary() {
+    // cumprod([i, i]) = [i, i*i] = [i, -1]
+    let input = make_complex64_tensor(&[2], vec![(0.0, 1.0), (0.0, 1.0)]);
+    let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+    assert!((vals[0].0 - 0.0).abs() < 1e-6);  // 0 + i
+    assert!((vals[0].1 - 1.0).abs() < 1e-6);
+    assert!((vals[1].0 - (-1.0)).abs() < 1e-6);  // -1 + 0i
+    assert!((vals[1].1 - 0.0).abs() < 1e-6);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumsum_complex128_1d() {
+    let input = make_complex128_tensor(&[3], vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0)]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(1.0, -1.0), (3.0, -3.0), (6.0, -6.0)]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumprod_complex128_1d() {
+    let input = make_complex128_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(1.0, 0.0), (2.0, 0.0), (6.0, 0.0)]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumsum_complex64_single_element() {
+    let input = make_complex64_tensor(&[1], vec![(42.0, -42.0)]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(42.0, -42.0)]);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumsum_complex64_preserves_dtype() {
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Cumsum, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn oracle_cumprod_complex64_preserves_dtype() {
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+#[ignore = "PARITY GAP: cumsum/cumprod reject complex types with 'expected numeric tensor'"]
+fn property_cumulative_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let input = match dtype {
+            DType::Complex64 => make_complex64_tensor(&[4], vec![
+                (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+            ]),
+            DType::Complex128 => make_complex128_tensor(&[4], vec![
+                (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
+            ]),
+            _ => unreachable!(),
+        };
+
+        for primitive in [Primitive::Cumsum, Primitive::Cumprod] {
+            let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
+                .expect("cumulative primitive should succeed for complex dtype");
+            let t = result.as_tensor().expect("should return tensor");
+            assert_eq!(t.dtype, dtype, "{primitive:?} {dtype:?}: dtype mismatch");
+            t.validate_dtype_consistency()
+                .expect("cumulative output should preserve dtype consistency");
+        }
+    }
+}
