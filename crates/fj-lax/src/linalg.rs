@@ -7,7 +7,102 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use crate::EvalError;
 use crate::type_promotion::promote_dtype;
 
-// ── Helpers ──────────────────────────────────────────────────────────
+// ── Complex Arithmetic Helpers ──────────────────────────────────────
+
+fn complex_abs(z: (f64, f64)) -> f64 {
+    (z.0 * z.0 + z.1 * z.1).sqrt()
+}
+
+fn complex_mul(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0)
+}
+
+fn complex_div(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let denom = b.0 * b.0 + b.1 * b.1;
+    ((a.0 * b.0 + a.1 * b.1) / denom, (a.1 * b.0 - a.0 * b.1) / denom)
+}
+
+fn complex_sub(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    (a.0 - b.0, a.1 - b.1)
+}
+
+// ── Matrix Helpers ──────────────────────────────────────────────────────────
+
+/// Extract a rank-2 (matrix) tensor from Value, returning its dimensions and
+/// complex (re, im) elements in row-major order. Real numbers become (x, 0.0).
+fn extract_complex_matrix(
+    primitive: Primitive,
+    value: &Value,
+) -> Result<(usize, usize, Vec<(f64, f64)>, DType), EvalError> {
+    let tensor = match value {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "expected matrix (rank-2 tensor), got scalar".to_owned(),
+            });
+        }
+    };
+
+    if tensor.rank() != 2 {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "expected rank-2 tensor (matrix), got rank-{}",
+                tensor.rank()
+            ),
+        });
+    }
+
+    let m = tensor.shape.dims[0] as usize;
+    let n = tensor.shape.dims[1] as usize;
+
+    let elements: Vec<(f64, f64)> = tensor
+        .elements
+        .iter()
+        .map(|lit| {
+            if let Some((re, im)) = lit.as_complex128() {
+                Ok((re, im))
+            } else if let Some((re, im)) = lit.as_complex64() {
+                Ok((re as f64, im as f64))
+            } else if let Some(v) = lit.as_f64() {
+                Ok((v, 0.0))
+            } else {
+                Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "expected numeric elements",
+                })
+            }
+        })
+        .collect::<Result<_, _>>()?;
+
+    Ok((m, n, elements, tensor.dtype))
+}
+
+/// Build a Value::Tensor from row-major complex data and shape.
+fn complex_matrix_to_value(
+    m: usize,
+    n: usize,
+    data: &[(f64, f64)],
+    dtype: DType,
+) -> Result<Value, EvalError> {
+    let elements: Vec<Literal> = data
+        .iter()
+        .map(|&(re, im)| match dtype {
+            DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+            DType::Complex128 => Literal::from_complex128(re, im),
+            DType::BF16 => Literal::from_bf16_f32(re as f32),
+            DType::F16 => Literal::from_f16_f32(re as f32),
+            DType::F32 => Literal::from_f32(re as f32),
+            _ => Literal::from_f64(re),
+        })
+        .collect();
+    let shape = Shape {
+        dims: vec![m as u32, n as u32],
+    };
+    let tensor = TensorValue::new(dtype, shape, elements).map_err(EvalError::InvalidTensor)?;
+    Ok(Value::Tensor(tensor))
+}
 
 /// Extract a rank-2 (matrix) tensor from Value, returning its dimensions and
 /// f64 elements in row-major order.
@@ -420,7 +515,7 @@ pub(crate) fn eval_lu(
         });
     }
 
-    let (m, n, a, dtype) = extract_matrix(primitive, &inputs[0])?;
+    let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
     let k = m.min(n);
 
     let mut lu = a;
@@ -428,10 +523,10 @@ pub(crate) fn eval_lu(
     let mut perm: Vec<i64> = (0..m as i64).collect();
 
     for col in 0..k {
-        let mut max_val = lu[col * n + col].abs();
+        let mut max_val = complex_abs(lu[col * n + col]);
         let mut max_row = col;
         for row in (col + 1)..m {
-            let val = lu[row * n + col].abs();
+            let val = complex_abs(lu[row * n + col]);
             if val > max_val {
                 max_val = val;
                 max_row = row;
@@ -448,20 +543,20 @@ pub(crate) fn eval_lu(
         }
 
         let diag = lu[col * n + col];
-        if diag.abs() < f64::EPSILON * 1e-10 {
+        if complex_abs(diag) < f64::EPSILON * 1e-10 {
             continue;
         }
 
         for row in (col + 1)..m {
-            let factor = lu[row * n + col] / diag;
+            let factor = complex_div(lu[row * n + col], diag);
             lu[row * n + col] = factor;
             for j in (col + 1)..n {
-                lu[row * n + j] -= factor * lu[col * n + j];
+                lu[row * n + j] = complex_sub(lu[row * n + j], complex_mul(factor, lu[col * n + j]));
             }
         }
     }
 
-    let lu_val = matrix_to_value(m, n, &lu, dtype)?;
+    let lu_val = complex_matrix_to_value(m, n, &lu, dtype)?;
 
     // Upstream JAX returns pivots and permutation as int32 (see lax.linalg.lu)
     let pivots_lits: Vec<Literal> = pivots.iter().map(|&p| Literal::I64(p)).collect();

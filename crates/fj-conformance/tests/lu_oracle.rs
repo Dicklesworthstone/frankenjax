@@ -440,7 +440,6 @@ fn make_complex128_matrix(rows: u32, cols: u32, data: Vec<(f64, f64)>) -> Value 
 }
 
 #[test]
-#[ignore = "PARITY GAP: LU decomposition not yet supported for complex matrices"]
 fn oracle_lu_complex64_basic() {
     let input = make_complex64_matrix(2, 2, vec![
         (1.0, 0.0), (2.0, 0.0),
@@ -453,7 +452,6 @@ fn oracle_lu_complex64_basic() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: LU decomposition not yet supported for complex matrices"]
 fn oracle_lu_complex128_basic() {
     let input = make_complex128_matrix(2, 2, vec![
         (1.0, 0.0), (2.0, 1.0),
