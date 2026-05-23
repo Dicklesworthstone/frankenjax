@@ -448,3 +448,162 @@ fn property_dot_general_preserves_all_float_dtypes() {
         }
     }
 }
+
+// ======================== Complex Type Tests ========================
+
+fn vector_complex64(data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape::vector(data.len() as u32),
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn vector_complex128(data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape::vector(data.len() as u32),
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn matrix_complex64(rows: u32, cols: u32, data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![rows, cols] },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
+    match v {
+        Value::Scalar(l) => l.as_complex64().unwrap(),
+        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements[0].as_complex64().unwrap(),
+        _ => panic!("expected scalar or 0-d tensor"),
+    }
+}
+
+fn extract_complex128_scalar(v: &Value) -> (f64, f64) {
+    match v {
+        Value::Scalar(l) => l.as_complex128().unwrap(),
+        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements[0].as_complex128().unwrap(),
+        _ => panic!("expected scalar or 0-d tensor"),
+    }
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    v.as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_complex64().unwrap())
+        .collect()
+}
+
+#[test]
+fn oracle_dot_general_complex64_vec_dot() {
+    // [1+i, 2+2i] . [1-i, 1-i] = (1+i)(1-i) + (2+2i)(1-i)
+    // = (1 - i^2) + (2 - 2i + 2i - 2i^2) = 2 + (2 + 2) = 2 + 4 = 6
+    let a = vector_complex64(vec![(1.0, 1.0), (2.0, 2.0)]);
+    let b = vector_complex64(vec![(1.0, -1.0), (1.0, -1.0)]);
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert!((re - 6.0).abs() < 1e-5, "expected 6, got {re}");
+    assert!(im.abs() < 1e-5, "expected 0, got {im}");
+}
+
+#[test]
+fn oracle_dot_general_complex64_purely_imaginary() {
+    // [i] . [i] = i * i = -1
+    let a = vector_complex64(vec![(0.0, 1.0)]);
+    let b = vector_complex64(vec![(0.0, 1.0)]);
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert!((re - (-1.0)).abs() < 1e-5, "expected -1, got {re}");
+    assert!(im.abs() < 1e-5, "expected 0, got {im}");
+}
+
+#[test]
+fn oracle_dot_general_complex128_vec_dot() {
+    // [1+0i, 2+0i] . [3+0i, 4+0i] = 3 + 8 = 11
+    let a = vector_complex128(vec![(1.0, 0.0), (2.0, 0.0)]);
+    let b = vector_complex128(vec![(3.0, 0.0), (4.0, 0.0)]);
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    let (re, im) = extract_complex128_scalar(&result);
+    assert!((re - 11.0).abs() < 1e-10, "expected 11, got {re}");
+    assert!(im.abs() < 1e-10, "expected 0, got {im}");
+}
+
+#[test]
+fn oracle_dot_general_complex64_matmul() {
+    // [[1+i]] * [[2+0i]] = [[2+2i]]
+    let a = matrix_complex64(1, 1, vec![(1.0, 1.0)]);
+    let b = matrix_complex64(1, 1, vec![(2.0, 0.0)]);
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 1]);
+    let vals = extract_complex64_vec(&result);
+    assert!((vals[0].0 - 2.0).abs() < 1e-5);
+    assert!((vals[0].1 - 2.0).abs() < 1e-5);
+}
+
+#[test]
+fn oracle_dot_general_complex64_2x2_matmul() {
+    // [[1, i], [0, 1]] * [[1, 0], [i, 1]]
+    // Row 0: (1*1 + i*i, 1*0 + i*1) = (1-1, i) = (0, i)
+    // Row 1: (0*1 + 1*i, 0*0 + 1*1) = (i, 1)
+    let a = matrix_complex64(2, 2, vec![
+        (1.0, 0.0), (0.0, 1.0),
+        (0.0, 0.0), (1.0, 0.0),
+    ]);
+    let b = matrix_complex64(2, 2, vec![
+        (1.0, 0.0), (0.0, 0.0),
+        (0.0, 1.0), (1.0, 0.0),
+    ]);
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_complex64_vec(&result);
+    // Result should be [[0, i], [i, 1]]
+    assert!(vals[0].0.abs() < 1e-5, "expected 0, got {}", vals[0].0);
+    assert!(vals[0].1.abs() < 1e-5, "expected 0, got {}", vals[0].1);
+    assert!(vals[1].0.abs() < 1e-5, "expected 0, got {}", vals[1].0);
+    assert!((vals[1].1 - 1.0).abs() < 1e-5, "expected 1, got {}", vals[1].1);
+    assert!(vals[2].0.abs() < 1e-5, "expected 0, got {}", vals[2].0);
+    assert!((vals[2].1 - 1.0).abs() < 1e-5, "expected 1, got {}", vals[2].1);
+    assert!((vals[3].0 - 1.0).abs() < 1e-5, "expected 1, got {}", vals[3].0);
+    assert!(vals[3].1.abs() < 1e-5, "expected 0, got {}", vals[3].1);
+}
+
+#[test]
+fn property_dot_general_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let (a, b) = match dtype {
+            DType::Complex64 => (
+                vector_complex64(vec![(1.0, 0.0), (2.0, 0.0)]),
+                vector_complex64(vec![(3.0, 0.0), (4.0, 0.0)]),
+            ),
+            DType::Complex128 => (
+                vector_complex128(vec![(1.0, 0.0), (2.0, 0.0)]),
+                vector_complex128(vec![(3.0, 0.0), (4.0, 0.0)]),
+            ),
+            _ => unreachable!(),
+        };
+        let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", ""))
+            .expect("dot_general should succeed for complex dtype");
+        assert_eq!(result.dtype(), dtype, "dot_general {dtype:?}: dtype mismatch");
+    }
+}
