@@ -383,3 +383,36 @@ fn oracle_hypot_unit_circle() {
     let actual = extract_f64_scalar(&result);
     assert!((actual - 1.0).abs() < 1e-15, "hypot(0.6, 0.8) = 1.0");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_hypot_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
+        )
+    }
+
+    let x_values = [3.0_f64, 5.0, 8.0];
+    let y_values = [4.0_f64, 12.0, 15.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let x = make_vec(dtype, &x_values);
+        let y = make_vec(dtype, &y_values);
+        let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "hypot {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}

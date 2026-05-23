@@ -485,3 +485,36 @@ fn oracle_logaddexp_inf_inf() {
     let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
     assert!(extract_f64_scalar(&result).is_nan(), "logaddexp(inf, inf) = NaN due to inf-inf");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_logaddexp_preserves_all_float_dtypes() {
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
+        )
+    }
+
+    let x_values = [0.0_f64, 1.0, 2.0];
+    let y_values = [0.0_f64, 1.0, 2.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let x = make_vec(dtype, &x_values);
+        let y = make_vec(dtype, &y_values);
+        let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "logaddexp {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}

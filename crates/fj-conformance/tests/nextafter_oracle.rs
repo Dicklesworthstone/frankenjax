@@ -524,3 +524,35 @@ fn oracle_nextafter_incompatible_shapes_error() {
     let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params());
     assert!(result.is_err(), "incompatible shapes should error");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_nextafter_preserves_f32_f64_dtypes() {
+    // Note: BF16/F16 inputs are promoted to F64 for numerical precision.
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not F32 or F64"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
+        )
+    }
+
+    let x_values = [0.0_f64, 1.0, -1.0];
+    let y_values = [1.0_f64, 2.0, 0.0];
+    for dtype in [DType::F32, DType::F64] {
+        let x = make_vec(dtype, &x_values);
+        let y = make_vec(dtype, &y_values);
+        let result = eval_primitive(Primitive::Nextafter, &[x, y], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "nextafter {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
