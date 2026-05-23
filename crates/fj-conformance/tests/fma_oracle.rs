@@ -520,3 +520,95 @@ fn property_fma_preserves_complex_dtypes() {
         assert_eq!(result.dtype(), dtype, "fma {dtype:?}: dtype mismatch");
     }
 }
+
+// ======================== METAMORPHIC: mathematical identities ========================
+
+#[test]
+fn metamorphic_fma_zero_addend_equals_mul() {
+    // fma(a, b, 0) = a * b
+    let a = make_f64_tensor(&[4], vec![2.0, 3.0, -4.0, 5.0]);
+    let b = make_f64_tensor(&[4], vec![3.0, 4.0, 5.0, -6.0]);
+    let zero = make_f64_tensor(&[4], vec![0.0, 0.0, 0.0, 0.0]);
+
+    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), b.clone(), zero], &no_params()).unwrap();
+    let mul_result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
+
+    let fma_vals = extract_f64_vec(&fma_result);
+    let mul_vals = extract_f64_vec(&mul_result);
+
+    for (i, (&fma_v, &mul_v)) in fma_vals.iter().zip(mul_vals.iter()).enumerate() {
+        assert!(
+            (fma_v - mul_v).abs() < 1e-10,
+            "fma(a, b, 0) should equal a*b at index {i}: got {fma_v}, expected {mul_v}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_fma_one_multiplier_equals_add() {
+    // fma(a, 1, c) = a + c
+    let a = make_f64_tensor(&[4], vec![2.0, 3.0, -4.0, 5.0]);
+    let one = make_f64_tensor(&[4], vec![1.0, 1.0, 1.0, 1.0]);
+    let c = make_f64_tensor(&[4], vec![10.0, 20.0, 30.0, 40.0]);
+
+    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), one, c.clone()], &no_params()).unwrap();
+    let add_result = eval_primitive(Primitive::Add, &[a, c], &no_params()).unwrap();
+
+    let fma_vals = extract_f64_vec(&fma_result);
+    let add_vals = extract_f64_vec(&add_result);
+
+    for (i, (&fma_v, &add_v)) in fma_vals.iter().zip(add_vals.iter()).enumerate() {
+        assert!(
+            (fma_v - add_v).abs() < 1e-10,
+            "fma(a, 1, c) should equal a+c at index {i}: got {fma_v}, expected {add_v}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_fma_zero_first_operand() {
+    // fma(0, b, c) = c
+    let zero = make_f64_tensor(&[3], vec![0.0, 0.0, 0.0]);
+    let b = make_f64_tensor(&[3], vec![100.0, 200.0, 300.0]);
+    let c = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+
+    let result = eval_primitive(Primitive::Fma, &[zero, b, c.clone()], &no_params()).unwrap();
+    let result_vals = extract_f64_vec(&result);
+    let c_vals = extract_f64_vec(&c);
+
+    for (i, (&r, &expected)) in result_vals.iter().zip(c_vals.iter()).enumerate() {
+        assert!(
+            (r - expected).abs() < 1e-10,
+            "fma(0, b, c) should equal c at index {i}: got {r}, expected {expected}"
+        );
+    }
+}
+
+#[test]
+fn metamorphic_fma_associativity_via_distribution() {
+    // fma(a, b+c, d) = a*b + a*c + d
+    let a = make_f64_tensor(&[3], vec![2.0, 3.0, 4.0]);
+    let b = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
+    let c = make_f64_tensor(&[3], vec![4.0, 5.0, 6.0]);
+    let d = make_f64_tensor(&[3], vec![10.0, 20.0, 30.0]);
+
+    // Compute b+c
+    let bc = eval_primitive(Primitive::Add, &[b.clone(), c.clone()], &no_params()).unwrap();
+    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), bc, d.clone()], &no_params()).unwrap();
+
+    // Compute a*b + a*c + d manually
+    let ab = eval_primitive(Primitive::Mul, &[a.clone(), b], &no_params()).unwrap();
+    let ac = eval_primitive(Primitive::Mul, &[a, c], &no_params()).unwrap();
+    let ab_ac = eval_primitive(Primitive::Add, &[ab, ac], &no_params()).unwrap();
+    let manual_result = eval_primitive(Primitive::Add, &[ab_ac, d], &no_params()).unwrap();
+
+    let fma_vals = extract_f64_vec(&fma_result);
+    let manual_vals = extract_f64_vec(&manual_result);
+
+    for (i, (&fma_v, &manual_v)) in fma_vals.iter().zip(manual_vals.iter()).enumerate() {
+        assert!(
+            (fma_v - manual_v).abs() < 1e-10,
+            "fma distribution at index {i}: got {fma_v}, expected {manual_v}"
+        );
+    }
+}
