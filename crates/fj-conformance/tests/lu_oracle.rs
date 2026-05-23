@@ -357,3 +357,52 @@ fn lu_large_values() {
     assert_eq!(result.len(), 3);
     assert_eq!(shape(&result[0]), Some(Shape { dims: vec![2, 2] }));
 }
+
+// ======================== PROPERTY: LU preserves input dtype ========================
+
+#[test]
+fn property_lu_preserves_all_float_dtypes() {
+    fn make_matrix(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::BF16 => Literal::from_bf16_f32(v as f32),
+                DType::F16 => Literal::from_f16_f32(v as f32),
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a float dtype"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![2, 2] }, lits)
+                .expect("valid matrix"),
+        )
+    }
+
+    let values = [1.0_f64, 2.0, 3.0, 5.0];
+    for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
+        let input = make_matrix(dtype, &values);
+        let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
+            .unwrap_or_else(|e| panic!("LU failed for {dtype:?}: {e}"));
+
+        assert_eq!(result.len(), 3, "LU should return 3 outputs for {dtype:?}");
+
+        let lu_dtype = result[0].dtype();
+        assert_eq!(
+            lu_dtype, dtype,
+            "LU matrix output should preserve {dtype:?}, got {lu_dtype:?}"
+        );
+
+        let pivots_dtype = result[1].dtype();
+        assert!(
+            matches!(pivots_dtype, DType::I32 | DType::I64),
+            "LU pivots should be integer type for {dtype:?}, got {pivots_dtype:?}"
+        );
+
+        let perm_dtype = result[2].dtype();
+        assert!(
+            matches!(perm_dtype, DType::I32 | DType::I64),
+            "LU permutation should be integer type for {dtype:?}, got {perm_dtype:?}"
+        );
+    }
+}

@@ -514,3 +514,86 @@ fn oracle_fft_power_of_two_length_8() {
     // DC component should be 4 (sum of input)
     assert!((y[0].0 - 4.0).abs() < 1e-10 && y[0].1.abs() < 1e-10);
 }
+
+// ======================== PROPERTY: FFT/IFFT preserve complex dtype ========================
+
+#[test]
+fn property_fft_ifft_preserve_complex_dtype() {
+    fn make_complex_vec(dtype: DType, pairs: &[(f64, f64)]) -> Value {
+        let lits: Vec<Literal> = pairs
+            .iter()
+            .map(|&(re, im)| match dtype {
+                DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+                DType::Complex128 => Literal::from_complex128(re, im),
+                _ => panic!("not a complex dtype"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![4] }, lits)
+                .expect("valid complex vector"),
+        )
+    }
+
+    let pairs = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)];
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let input = make_complex_vec(dtype, &pairs);
+
+        let fft_result =
+            eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &BTreeMap::new())
+                .unwrap_or_else(|e| panic!("FFT failed for {dtype:?}: {e}"));
+        assert_eq!(
+            fft_result.dtype(),
+            dtype,
+            "FFT should preserve {dtype:?}"
+        );
+
+        let ifft_result =
+            eval_primitive(Primitive::Ifft, std::slice::from_ref(&input), &BTreeMap::new())
+                .unwrap_or_else(|e| panic!("IFFT failed for {dtype:?}: {e}"));
+        assert_eq!(
+            ifft_result.dtype(),
+            dtype,
+            "IFFT should preserve {dtype:?}"
+        );
+    }
+}
+
+#[test]
+fn property_rfft_irfft_dtype_conversion() {
+    fn make_real_vec(dtype: DType, data: &[f64]) -> Value {
+        let lits: Vec<Literal> = data
+            .iter()
+            .map(|&v| match dtype {
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not a real float dtype"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![4] }, lits)
+                .expect("valid real vector"),
+        )
+    }
+
+    let data = [1.0, 2.0, 3.0, 4.0];
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+
+    for real_dtype in [DType::F32, DType::F64] {
+        let input = make_real_vec(real_dtype, &data);
+        let expected_complex = match real_dtype {
+            DType::F32 => DType::Complex64,
+            DType::F64 => DType::Complex128,
+            _ => unreachable!(),
+        };
+
+        let rfft_result =
+            eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &params)
+                .unwrap_or_else(|e| panic!("RFFT failed for {real_dtype:?}: {e}"));
+        assert_eq!(
+            rfft_result.dtype(),
+            expected_complex,
+            "RFFT of {real_dtype:?} should produce {expected_complex:?}"
+        );
+    }
+}
