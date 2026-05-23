@@ -532,3 +532,203 @@ fn property_square_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex64/Complex128 coverage ========================
+//
+// Complex square: (a + bi)² = (a² - b²) + 2abi
+
+fn make_complex64_tensor(shape: &[u32], data: &[(f32, f32)]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.iter()
+                .map(|&(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: &[(f64, f64)]) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.iter()
+                .map(|&(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::Complex64Bits(re, im) => (f32::from_bits(*re), f32::from_bits(*im)),
+                _ => panic!("expected Complex64"),
+            })
+            .collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+fn assert_complex_close(actual: (f64, f64), expected: (f64, f64), tol: f64, msg: &str) {
+    let (ar, ai) = actual;
+    let (er, ei) = expected;
+    let re_diff = (ar - er).abs();
+    let im_diff = (ai - ei).abs();
+    assert!(
+        re_diff < tol && im_diff < tol,
+        "{}: expected ({}, {}), got ({}, {}), diff=({}, {})",
+        msg,
+        er,
+        ei,
+        ar,
+        ai,
+        re_diff,
+        im_diff
+    );
+}
+
+#[test]
+fn oracle_square_complex64_zero() {
+    let input = make_complex64_tensor(&[], &[(0.0, 0.0)]);
+    let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+    let vec = extract_complex64_vec(&result);
+    assert_eq!(vec.len(), 1);
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-6,
+        "square(0+0i)",
+    );
+}
+
+#[test]
+fn oracle_square_complex128_real() {
+    // square(3+0i) = 9+0i
+    let input = make_complex128_tensor(&[], &[(3.0, 0.0)]);
+    let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+    let vec = extract_complex128_vec(&result);
+    assert_eq!(vec.len(), 1);
+    assert_complex_close(vec[0], (9.0, 0.0), 1e-10, "square(3+0i) = 9");
+}
+
+#[test]
+fn oracle_square_complex128_pure_imaginary() {
+    // square(0+3i) = -9+0i (since i² = -1)
+    let input = make_complex128_tensor(&[], &[(0.0, 3.0)]);
+    let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+    let vec = extract_complex128_vec(&result);
+    assert_eq!(vec.len(), 1);
+    assert_complex_close(vec[0], (-9.0, 0.0), 1e-10, "square(3i) = -9");
+}
+
+#[test]
+fn oracle_square_complex128_unit_plus_i() {
+    // square(1+i) = (1-1) + 2i = 0+2i
+    let input = make_complex128_tensor(&[], &[(1.0, 1.0)]);
+    let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+    let vec = extract_complex128_vec(&result);
+    assert_eq!(vec.len(), 1);
+    assert_complex_close(vec[0], (0.0, 2.0), 1e-10, "square(1+i) = 2i");
+}
+
+#[test]
+fn oracle_square_complex128_general() {
+    // square(2+3i) = (4-9) + 12i = -5+12i
+    let input = make_complex128_tensor(&[], &[(2.0, 3.0)]);
+    let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+    let vec = extract_complex128_vec(&result);
+    assert_eq!(vec.len(), 1);
+    assert_complex_close(vec[0], (-5.0, 12.0), 1e-10, "square(2+3i) = -5+12i");
+}
+
+#[test]
+fn oracle_square_complex64_vector() {
+    let data: &[(f32, f32)] = &[(0.0, 0.0), (2.0, 0.0), (0.0, 2.0), (1.0, 1.0), (2.0, 3.0)];
+    let input = make_complex64_tensor(&[5], data);
+    let result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+    let vec = extract_complex64_vec(&result);
+    assert_eq!(vec.len(), 5);
+
+    // square(0) = 0
+    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-5, "square(0)");
+
+    // square(2) = 4
+    assert_complex_close((vec[1].0 as f64, vec[1].1 as f64), (4.0, 0.0), 1e-4, "square(2)");
+
+    // square(2i) = -4
+    assert_complex_close((vec[2].0 as f64, vec[2].1 as f64), (-4.0, 0.0), 1e-4, "square(2i)");
+
+    // square(1+i) = 2i
+    assert_complex_close((vec[3].0 as f64, vec[3].1 as f64), (0.0, 2.0), 1e-4, "square(1+i)");
+
+    // square(2+3i) = -5+12i
+    assert_complex_close((vec[4].0 as f64, vec[4].1 as f64), (-5.0, 12.0), 1e-4, "square(2+3i)");
+}
+
+#[test]
+fn oracle_square_complex_dtype_preservation() {
+    // Complex64 -> Complex64
+    let c64_input = make_complex64_tensor(&[2], &[(2.0, 3.0), (1.0, 1.0)]);
+    let c64_result = eval_primitive(Primitive::Square, &[c64_input], &no_params()).unwrap();
+    match &c64_result {
+        Value::Tensor(t) => {
+            assert_eq!(t.dtype, DType::Complex64, "square should preserve Complex64");
+            t.validate_dtype_consistency().unwrap();
+        }
+        _ => panic!("expected tensor"),
+    }
+
+    // Complex128 -> Complex128
+    let c128_input = make_complex128_tensor(&[2], &[(2.0, 3.0), (1.0, 1.0)]);
+    let c128_result = eval_primitive(Primitive::Square, &[c128_input], &no_params()).unwrap();
+    match &c128_result {
+        Value::Tensor(t) => {
+            assert_eq!(t.dtype, DType::Complex128, "square should preserve Complex128");
+            t.validate_dtype_consistency().unwrap();
+        }
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_square_complex_sqrt_roundtrip() {
+    // For non-negative real part: sqrt(square(z)) has same magnitude as z
+    // Note: sqrt(z²) = |z| for principal sqrt, not always z
+    let values: &[(f64, f64)] = &[(1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (2.0, 3.0)];
+
+    for &(a, b) in values {
+        let input = make_complex128_tensor(&[], &[(a, b)]);
+        let sq_result = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
+        let sq = extract_complex128_vec(&sq_result)[0];
+
+        // (a+bi)² = (a²-b²) + 2abi
+        let expected_re = a * a - b * b;
+        let expected_im = 2.0 * a * b;
+
+        assert_complex_close(
+            sq,
+            (expected_re, expected_im),
+            1e-10,
+            &format!("({a}+{b}i)² = ({expected_re}+{expected_im}i)"),
+        );
+    }
+}
