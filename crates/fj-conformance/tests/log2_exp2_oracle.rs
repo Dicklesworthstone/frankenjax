@@ -450,7 +450,7 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn oracle_exp2_complex64_real_values() {
     // exp2([0+0i, 1+0i, 2+0i]) = [1+0i, 2+0i, 4+0i]
     let input = make_complex64_tensor(&[3], vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
@@ -463,7 +463,7 @@ fn oracle_exp2_complex64_real_values() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn oracle_exp2_complex64_with_imaginary() {
     // exp2(i*pi/ln(2)) = 2^(i*pi/ln(2)) = e^(i*pi) = -1
     // pi / ln(2) ≈ 4.5324
@@ -477,7 +477,7 @@ fn oracle_exp2_complex64_with_imaginary() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn oracle_log2_complex64_real_positive() {
     // log2([1+0i, 2+0i, 4+0i]) = [0+0i, 1+0i, 2+0i]
     let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (4.0, 0.0)]);
@@ -490,7 +490,7 @@ fn oracle_log2_complex64_real_positive() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn oracle_log2_complex64_negative_real() {
     // log2(-1) = log(-1)/log(2) = (i*pi)/log(2)
     let input = make_complex64_tensor(&[1], vec![(-1.0, 0.0)]);
@@ -503,7 +503,7 @@ fn oracle_log2_complex64_negative_real() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn oracle_exp2_complex128_preserves_dtype() {
     let input = make_complex128_tensor(&[2], vec![(0.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive(Primitive::Exp2, &[input], &no_params())
@@ -512,7 +512,7 @@ fn oracle_exp2_complex128_preserves_dtype() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn oracle_log2_complex128_preserves_dtype() {
     let input = make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
     let result = eval_primitive(Primitive::Log2, &[input], &no_params())
@@ -521,7 +521,7 @@ fn oracle_log2_complex128_preserves_dtype() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: log2/exp2 not supported for complex operands"]
+
 fn property_log2_exp2_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {

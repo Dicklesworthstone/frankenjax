@@ -279,6 +279,15 @@ fn complex_unary_elementwise(primitive: Primitive, input: (f64, f64)) -> Option<
         Primitive::Expm1 => Some(complex_expm1(input)),
         Primitive::Log1p => Some(complex_log((input.0 + 1.0, input.1))),
         Primitive::Reciprocal => Some(complex_reciprocal(input)),
+        Primitive::Exp2 => {
+            let ln2 = std::f64::consts::LN_2;
+            Some(complex_exp((input.0 * ln2, input.1 * ln2)))
+        }
+        Primitive::Log2 => {
+            let result = complex_log(input);
+            let ln2 = std::f64::consts::LN_2;
+            Some((result.0 / ln2, result.1 / ln2))
+        }
         _ => None,
     }
 }
