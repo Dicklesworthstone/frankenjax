@@ -393,3 +393,37 @@ fn oracle_fma_subnormal() {
     let val = extract_f64_scalar(&result);
     assert!((val - subnormal * 2.0).abs() < 1e-300, "fma(subnormal, 2, 0) = 2*subnormal");
 }
+
+// ======================== PROPERTY: dtype preservation ========================
+
+#[test]
+fn property_fma_preserves_f32_f64_dtypes() {
+    // Note: BF16/F16 have dtype consistency issues (literals stored as F64Bits).
+    fn make_vec(dtype: DType, values: &[f64]) -> Value {
+        let lits: Vec<Literal> = values
+            .iter()
+            .map(|&v| match dtype {
+                DType::F32 => Literal::from_f32(v as f32),
+                DType::F64 => Literal::from_f64(v),
+                _ => panic!("not F32 or F64"),
+            })
+            .collect();
+        Value::Tensor(
+            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
+        )
+    }
+
+    let a_values = [1.0_f64, 2.0, 3.0];
+    let b_values = [2.0_f64, 3.0, 4.0];
+    let c_values = [0.5_f64, 1.0, 1.5];
+    for dtype in [DType::F32, DType::F64] {
+        let a = make_vec(dtype, &a_values);
+        let b = make_vec(dtype, &b_values);
+        let c = make_vec(dtype, &c_values);
+        let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "fma {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
