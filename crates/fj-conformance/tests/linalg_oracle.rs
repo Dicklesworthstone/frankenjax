@@ -1142,3 +1142,141 @@ fn property_triangular_solve_preserves_complex_dtypes() {
         assert_eq!(result[0].dtype(), dtype, "TriangularSolve {dtype:?}: dtype mismatch");
     }
 }
+
+// ======================== Complex SVD ========================
+
+#[test]
+fn oracle_svd_complex64_2x2_real_values() {
+    // SVD of a complex matrix with real entries should match real SVD
+    // A = [[3, 0], [0, 2]] has singular values 3, 2
+    let a = make_complex64_matrix(2, 2, &[
+        (3.0, 0.0), (0.0, 0.0),
+        (0.0, 0.0), (2.0, 0.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())
+        .expect("svd complex64 should succeed");
+    assert_eq!(result.len(), 3);
+    // S should have singular values 3, 2 (in descending order)
+    let s = result[1].as_tensor().unwrap();
+    assert_eq!(s.dtype, DType::F32);
+    let s_vals: Vec<f64> = s.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert!((s_vals[0] - 3.0).abs() < 1e-4, "s[0] = {}, expected 3", s_vals[0]);
+    assert!((s_vals[1] - 2.0).abs() < 1e-4, "s[1] = {}, expected 2", s_vals[1]);
+}
+
+#[test]
+fn oracle_svd_complex64_with_imaginary() {
+    // A = [[1+i, 0], [0, 1-i]]
+    // |1+i| = |1-i| = sqrt(2), so singular values should be sqrt(2), sqrt(2)
+    let a = make_complex64_matrix(2, 2, &[
+        (1.0, 1.0), (0.0, 0.0),
+        (0.0, 0.0), (1.0, -1.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())
+        .expect("svd complex64 with imaginary should succeed");
+    let s = result[1].as_tensor().unwrap();
+    let s_vals: Vec<f64> = s.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    let sqrt2 = std::f64::consts::SQRT_2;
+    assert!((s_vals[0] - sqrt2).abs() < 1e-5, "s[0] = {}, expected sqrt(2)", s_vals[0]);
+    assert!((s_vals[1] - sqrt2).abs() < 1e-5, "s[1] = {}, expected sqrt(2)", s_vals[1]);
+}
+
+#[test]
+fn property_svd_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let a = match dtype {
+            DType::Complex64 => make_complex64_matrix(2, 2, &[
+                (1.0, 0.0), (0.0, 0.0),
+                (0.0, 0.0), (1.0, 0.0),
+            ]),
+            DType::Complex128 => make_complex128_matrix(2, 2, &[
+                (1.0, 0.0), (0.0, 0.0),
+                (0.0, 0.0), (1.0, 0.0),
+            ]),
+            _ => unreachable!(),
+        };
+        let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())
+            .unwrap_or_else(|e| panic!("SVD {dtype:?} failed: {e}"));
+        // U and Vt should be complex, S should be real
+        assert_eq!(result[0].dtype(), dtype, "SVD {dtype:?}: U dtype mismatch");
+        let s_dtype = if dtype == DType::Complex64 { DType::F32 } else { DType::F64 };
+        assert_eq!(result[1].dtype(), s_dtype, "SVD {dtype:?}: S dtype mismatch");
+        assert_eq!(result[2].dtype(), dtype, "SVD {dtype:?}: Vt dtype mismatch");
+    }
+}
+
+// ======================== Complex Eigh ========================
+
+#[test]
+fn oracle_eigh_complex64_hermitian_2x2() {
+    // Hermitian matrix: A = [[2, 1-i], [1+i, 3]]
+    // Eigenvalues can be computed: trace = 5, det = 6 - |1-i|^2 = 6 - 2 = 4
+    // λ² - 5λ + 4 = 0 → λ = 1, 4
+    let a = make_complex64_matrix(2, 2, &[
+        (2.0, 0.0), (1.0, -1.0),
+        (1.0, 1.0), (3.0, 0.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
+        .expect("eigh complex64 should succeed");
+    assert_eq!(result.len(), 2);
+    // Eigenvalues should be real (ascending order: 1, 4)
+    let w = result[0].as_tensor().unwrap();
+    assert_eq!(w.dtype, DType::F32);
+    let w_vals: Vec<f64> = w.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert!((w_vals[0] - 1.0).abs() < 1e-3, "w[0] = {}, expected 1", w_vals[0]);
+    assert!((w_vals[1] - 4.0).abs() < 1e-3, "w[1] = {}, expected 4", w_vals[1]);
+}
+
+#[test]
+fn oracle_eigh_complex64_diagonal() {
+    // Diagonal Hermitian: eigenvalues = [1, 4] (diagonal elements)
+    let a = make_complex64_matrix(2, 2, &[
+        (1.0, 0.0), (0.0, 0.0),
+        (0.0, 0.0), (4.0, 0.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
+        .expect("eigh complex64 diagonal should succeed");
+    let w = result[0].as_tensor().unwrap();
+    let w_vals: Vec<f64> = w.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert!((w_vals[0] - 1.0).abs() < 1e-4, "w[0] = {}, expected 1", w_vals[0]);
+    assert!((w_vals[1] - 4.0).abs() < 1e-4, "w[1] = {}, expected 4", w_vals[1]);
+}
+
+#[test]
+fn oracle_eigh_complex128_hermitian_identity() {
+    // Hermitian identity: eigenvalues = [1, 1]
+    let a = make_complex128_matrix(2, 2, &[
+        (1.0, 0.0), (0.0, 0.0),
+        (0.0, 0.0), (1.0, 0.0),
+    ]);
+    let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
+        .expect("eigh complex128 should succeed");
+    let w = result[0].as_tensor().unwrap();
+    assert_eq!(w.dtype, DType::F64);
+    let w_vals: Vec<f64> = w.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    assert!((w_vals[0] - 1.0).abs() < 1e-10, "w[0] = {}, expected 1", w_vals[0]);
+    assert!((w_vals[1] - 1.0).abs() < 1e-10, "w[1] = {}, expected 1", w_vals[1]);
+}
+
+#[test]
+fn property_eigh_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let a = match dtype {
+            DType::Complex64 => make_complex64_matrix(2, 2, &[
+                (2.0, 0.0), (1.0, -1.0),
+                (1.0, 1.0), (3.0, 0.0),
+            ]),
+            DType::Complex128 => make_complex128_matrix(2, 2, &[
+                (2.0, 0.0), (1.0, -1.0),
+                (1.0, 1.0), (3.0, 0.0),
+            ]),
+            _ => unreachable!(),
+        };
+        let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
+            .unwrap_or_else(|e| panic!("Eigh {dtype:?} failed: {e}"));
+        // Eigenvalues should be real, eigenvectors should be complex
+        let w_dtype = if dtype == DType::Complex64 { DType::F32 } else { DType::F64 };
+        assert_eq!(result[0].dtype(), w_dtype, "Eigh {dtype:?}: W dtype mismatch");
+        assert_eq!(result[1].dtype(), dtype, "Eigh {dtype:?}: V dtype mismatch");
+    }
+}

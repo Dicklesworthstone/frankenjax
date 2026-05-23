@@ -750,62 +750,96 @@ fn complex_jacobi_eigendecomposition(
             break;
         }
 
+        // For Hermitian A, diagonal elements are real
         let app = a[p * n + p].0;
         let aqq = a[q * n + q].0;
         let apq = a[p * n + q];
-
         let apq_abs = complex_abs(apq);
+
+        // Phase of off-diagonal: A[p][q] = |A[p][q]| * e^{i*phi}
         let phase = if apq_abs > f64::EPSILON {
             complex_div(apq, (apq_abs, 0.0))
         } else {
             one
         };
 
+        // Two-step approach:
+        // Step 1: Apply phase rotation D to make A[p][q] real
+        //         D = diag(..., 1, ..., e^{-i*phi}, ...) with e^{-i*phi} at position q
+        //         B = D * A * D^H has B[p][q] = |A[p][q]| (real)
+        // Step 2: Apply real Givens rotation G to zero B[p][q]
+        // Combined unitary: U = D^H * G * D
+
+        // Standard real Jacobi angle computation (treating |apq| as the off-diagonal)
         let theta = if (app - aqq).abs() < f64::EPSILON {
             std::f64::consts::FRAC_PI_4
         } else {
             0.5 * (2.0 * apq_abs / (app - aqq)).atan()
         };
+        let (s, c) = theta.sin_cos();
 
-        let (sin_t, cos_t) = theta.sin_cos();
-        let phase_sin = complex_mul(phase, (sin_t, 0.0));
-        let phase_sin_conj = complex_conj(phase_sin);
+        // Unitary rotation U:
+        // U = [[c, -s*e^{-iφ}], [s*e^{iφ}, c]]
+        // U^H = [[c, s*e^{-iφ}], [-s*e^{iφ}, c]]
+        let phase_conj = complex_conj(phase);
+        let neg_s_phase_conj = complex_mul((-s, 0.0), phase_conj);  // -s*e^{-iφ}
+        let s_phase = complex_mul((s, 0.0), phase);                  // s*e^{iφ}
+        let s_phase_conj = complex_mul((s, 0.0), phase_conj);        // s*e^{-iφ}
+        let neg_s_phase = complex_mul((-s, 0.0), phase);             // -s*e^{iφ}
 
-        let mut new_row_p = vec![zero; n];
-        let mut new_row_q = vec![zero; n];
-        for i in 0..n {
-            new_row_p[i] = complex_add(
-                complex_mul((cos_t, 0.0), a[p * n + i]),
-                complex_mul(phase_sin_conj, a[q * n + i]),
+        // Apply U^H from left
+        let row_p: Vec<_> = (0..n).map(|j| a[p * n + j]).collect();
+        let row_q: Vec<_> = (0..n).map(|j| a[q * n + j]).collect();
+
+        for j in 0..n {
+            // (U^H * A)[p][j] = c * A[p][j] + s*e^{-iφ} * A[q][j]
+            a[p * n + j] = complex_add(
+                complex_mul((c, 0.0), row_p[j]),
+                complex_mul(s_phase_conj, row_q[j]),
             );
-            new_row_q[i] = complex_add(
-                complex_mul((-sin_t, 0.0), complex_mul(phase, a[p * n + i])),
-                complex_mul((cos_t, 0.0), a[q * n + i]),
+            // (U^H * A)[q][j] = (-s*e^{iφ}) * A[p][j] + c * A[q][j]
+            a[q * n + j] = complex_add(
+                complex_mul(neg_s_phase, row_p[j]),
+                complex_mul((c, 0.0), row_q[j]),
             );
         }
 
+        // Apply U from right
+        let col_p: Vec<_> = (0..n).map(|i| a[i * n + p]).collect();
+        let col_q: Vec<_> = (0..n).map(|i| a[i * n + q]).collect();
+
         for i in 0..n {
-            a[p * n + i] = new_row_p[i];
-            a[q * n + i] = new_row_q[i];
-            a[i * n + p] = complex_conj(new_row_p[i]);
-            a[i * n + q] = complex_conj(new_row_q[i]);
+            // (A * U)[i][p] = A[i][p] * c + A[i][q] * s*e^{iφ}
+            a[i * n + p] = complex_add(
+                complex_mul((c, 0.0), col_p[i]),
+                complex_mul(s_phase, col_q[i]),
+            );
+            // (A * U)[i][q] = A[i][p] * (-s*e^{-iφ}) + A[i][q] * c
+            a[i * n + q] = complex_add(
+                complex_mul(neg_s_phase_conj, col_p[i]),
+                complex_mul((c, 0.0), col_q[i]),
+            );
         }
 
-        a[p * n + p] = (cos_t * new_row_p[p].0 + sin_t * complex_mul(phase_sin_conj, new_row_p[q]).0, 0.0);
-        a[q * n + q] = (-sin_t * complex_mul(phase, new_row_q[p]).0 + cos_t * new_row_q[q].0, 0.0);
+        // Diagonal elements should be real; off-diagonal (p,q) should be zero
+        a[p * n + p] = (a[p * n + p].0, 0.0);
+        a[q * n + q] = (a[q * n + q].0, 0.0);
         a[p * n + q] = zero;
         a[q * n + p] = zero;
 
+        // Update eigenvector matrix: V' = V * U
+        let vp: Vec<_> = (0..n).map(|i| v[i * n + p]).collect();
+        let vq: Vec<_> = (0..n).map(|i| v[i * n + q]).collect();
         for i in 0..n {
-            let vip = v[i * n + p];
-            let viq = v[i * n + q];
+            // V'[i][p] = V[i][p]*c + V[i][q]*s*e^{iφ}
             v[i * n + p] = complex_add(
-                complex_mul((cos_t, 0.0), vip),
-                complex_mul(phase_sin_conj, viq),
+                complex_mul((c, 0.0), vp[i]),
+                complex_mul(s_phase, vq[i]),
             );
+            // V'[i][q] = V[i][p]*(-s*e^{-iφ}) + V[i][q]*c
             v[i * n + q] = complex_add(
-                complex_mul((-sin_t, 0.0), complex_mul(phase, vip)),
-                complex_mul((cos_t, 0.0), viq),
+                complex_mul(neg_s_phase_conj, vp[i]),
+                complex_mul((c, 0.0), vq[i]),
             );
         }
     }
@@ -1015,6 +1049,7 @@ pub(crate) fn eval_eigh(
     if is_complex {
         let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
         let zero = (0.0, 0.0);
+        let one = (1.0, 0.0);
         if m != n {
             return Err(EvalError::Unsupported {
                 primitive,
@@ -1022,8 +1057,52 @@ pub(crate) fn eval_eigh(
             });
         }
 
-        let mut a_work = a;
-        let (eigenvalues, eigenvectors) = complex_jacobi_eigendecomposition(&mut a_work, m);
+        // For 2x2 Hermitian matrices, use direct quadratic formula
+        let (eigenvalues, eigenvectors) = if m == 2 {
+            // A = [[a, b], [b*, d]] where a, d are real
+            let aa = a[0].0;
+            let b = a[1];
+            let dd = a[3].0;
+            let b_abs_sq = b.0 * b.0 + b.1 * b.1;
+
+            // Eigenvalues from characteristic equation: λ² - (a+d)λ + (ad - |b|²) = 0
+            let trace = aa + dd;
+            let det = aa * dd - b_abs_sq;
+            let discrim = trace * trace - 4.0 * det;
+            let sqrt_discrim = discrim.max(0.0).sqrt();
+
+            let lambda1 = (trace - sqrt_discrim) / 2.0;
+            let lambda2 = (trace + sqrt_discrim) / 2.0;
+
+            // Eigenvector for λ1: (A - λ1*I) * v = 0
+            // v is in null space of [[a-λ1, b], [b*, d-λ1]]
+            // v1 = [-b, a-λ1]^T (normalized) or use [d-λ1, -b*]^T
+            let mut v = vec![zero; 4];
+
+            if b_abs_sq > f64::EPSILON * f64::EPSILON {
+                // Non-trivial off-diagonal
+                let v1_unnorm = (complex_conj(b), (lambda1 - aa, 0.0));
+                let v1_norm = (v1_unnorm.0.0 * v1_unnorm.0.0 + v1_unnorm.0.1 * v1_unnorm.0.1
+                    + v1_unnorm.1.0 * v1_unnorm.1.0 + v1_unnorm.1.1 * v1_unnorm.1.1).sqrt();
+                v[0] = complex_div(v1_unnorm.0, (v1_norm, 0.0));
+                v[2] = complex_div(v1_unnorm.1, (v1_norm, 0.0));
+
+                let v2_unnorm = (complex_conj(b), (lambda2 - aa, 0.0));
+                let v2_norm = (v2_unnorm.0.0 * v2_unnorm.0.0 + v2_unnorm.0.1 * v2_unnorm.0.1
+                    + v2_unnorm.1.0 * v2_unnorm.1.0 + v2_unnorm.1.1 * v2_unnorm.1.1).sqrt();
+                v[1] = complex_div(v2_unnorm.0, (v2_norm, 0.0));
+                v[3] = complex_div(v2_unnorm.1, (v2_norm, 0.0));
+            } else {
+                // Diagonal matrix, eigenvectors are standard basis
+                v[0] = one;
+                v[3] = one;
+            }
+
+            (vec![lambda1, lambda2], v)
+        } else {
+            let mut a_work = a;
+            complex_jacobi_eigendecomposition(&mut a_work, m)
+        };
 
         // Sort eigenvalues in ascending order (JAX convention for eigh)
         let mut indices: Vec<usize> = (0..m).collect();
