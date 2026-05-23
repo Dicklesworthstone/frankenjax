@@ -7,8 +7,8 @@
   "env": {
     "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
     "os": "linux",
-    "cargo_target_dir": "/data/projects/frankenjax/.rch-target-ts1-job-29850584173516126-1779485706268313957-0",
-    "timestamp_unix_ms": 1779485817372
+    "cargo_target_dir": "/data/projects/frankenjax/.rch-target-ts1-job-29850584173520104-1779556771077907997-0",
+    "timestamp_unix_ms": 1779556909589
   },
   "artifact_refs": [
     "cholesky:[4, 4]",
@@ -28,12 +28,12 @@
     "/data/projects/frankenjax/crates/fj-trace/../../artifacts/testing/logs/fj-trace/fj_trace__tests__v2_linalg_fft_shape_contracts.json"
   ],
   "result": "pass",
-  "duration_ms": 85,
+  "duration_ms": 260,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-trace;result=pass",
   "phase_timings": {
-    "setup_ms": 19,
+    "setup_ms": 97,
     "execute_ms": 0,
     "verify_ms": 0,
-    "teardown_ms": 65
+    "teardown_ms": 162
   }
 }
