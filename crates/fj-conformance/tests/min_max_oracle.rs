@@ -927,3 +927,229 @@ fn property_max_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== COMPLEX64/COMPLEX128 TESTS ========================
+// Complex min/max uses lexicographic ordering: compare real parts first, then imaginary
+
+fn make_complex64_scalar(re: f32, im: f32) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex64(re, im)],
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_scalar(re: f64, im: f64) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: vec![] },
+            vec![Literal::from_complex128(re, im)],
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape { dims: shape.to_vec() },
+            pairs
+                .into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_complex64().unwrap()
+        }
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_complex128_scalar(v: &Value) -> (f64, f64) {
+    match v {
+        Value::Tensor(t) => {
+            assert!(t.shape.dims.is_empty(), "expected scalar");
+            t.elements[0].as_complex128().unwrap()
+        }
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        _ => unreachable!("expected tensor"),
+    }
+}
+
+fn assert_complex64_eq(actual: (f32, f32), expected: (f32, f32), msg: &str) {
+    assert_eq!(
+        actual, expected,
+        "{}: expected ({}, {}), got ({}, {})",
+        msg, expected.0, expected.1, actual.0, actual.1
+    );
+}
+
+fn assert_complex128_eq(actual: (f64, f64), expected: (f64, f64), msg: &str) {
+    assert_eq!(
+        actual, expected,
+        "{}: expected ({}, {}), got ({}, {})",
+        msg, expected.0, expected.1, actual.0, actual.1
+    );
+}
+
+#[test]
+fn oracle_min_complex64_different_real() {
+    // 1+2i vs 3+0i: min is 1+2i (smaller real part)
+    let a = make_complex64_scalar(1.0, 2.0);
+    let b = make_complex64_scalar(3.0, 0.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_eq((re, im), (1.0, 2.0), "min(1+2i, 3) = 1+2i");
+}
+
+#[test]
+fn oracle_max_complex64_different_real() {
+    // 1+2i vs 3+0i: max is 3+0i (larger real part)
+    let a = make_complex64_scalar(1.0, 2.0);
+    let b = make_complex64_scalar(3.0, 0.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_eq((re, im), (3.0, 0.0), "max(1+2i, 3) = 3");
+}
+
+#[test]
+fn oracle_min_complex64_same_real() {
+    // 2+1i vs 2+3i: same real, compare imaginary -> min is 2+1i
+    let a = make_complex64_scalar(2.0, 1.0);
+    let b = make_complex64_scalar(2.0, 3.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_eq((re, im), (2.0, 1.0), "min(2+1i, 2+3i) = 2+1i");
+}
+
+#[test]
+fn oracle_max_complex64_same_real() {
+    // 2+1i vs 2+3i: same real, compare imaginary -> max is 2+3i
+    let a = make_complex64_scalar(2.0, 1.0);
+    let b = make_complex64_scalar(2.0, 3.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_eq((re, im), (2.0, 3.0), "max(2+1i, 2+3i) = 2+3i");
+}
+
+#[test]
+fn oracle_min_complex64_identical() {
+    // min(z, z) = z
+    let a = make_complex64_scalar(3.0, 4.0);
+    let b = make_complex64_scalar(3.0, 4.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_eq((re, im), (3.0, 4.0), "min(z, z) = z");
+}
+
+#[test]
+fn oracle_max_complex64_identical() {
+    // max(z, z) = z
+    let a = make_complex64_scalar(3.0, 4.0);
+    let b = make_complex64_scalar(3.0, 4.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex64_scalar(&result);
+    assert_complex64_eq((re, im), (3.0, 4.0), "max(z, z) = z");
+}
+
+#[test]
+fn oracle_min_complex64_vector() {
+    let a = make_complex64_tensor(&[3], vec![(1.0, 5.0), (3.0, 1.0), (2.0, 2.0)]);
+    let b = make_complex64_tensor(&[3], vec![(2.0, 0.0), (3.0, 0.0), (2.0, 3.0)]);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+
+    // 1+5i vs 2+0i: 1+5i has smaller real
+    assert_complex64_eq(vals[0], (1.0, 5.0), "min[0]");
+    // 3+1i vs 3+0i: same real, 3+0i has smaller imag
+    assert_complex64_eq(vals[1], (3.0, 0.0), "min[1]");
+    // 2+2i vs 2+3i: same real, 2+2i has smaller imag
+    assert_complex64_eq(vals[2], (2.0, 2.0), "min[2]");
+}
+
+#[test]
+fn oracle_max_complex64_vector() {
+    let a = make_complex64_tensor(&[3], vec![(1.0, 5.0), (3.0, 1.0), (2.0, 2.0)]);
+    let b = make_complex64_tensor(&[3], vec![(2.0, 0.0), (3.0, 0.0), (2.0, 3.0)]);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    let vals = extract_complex64_vec(&result);
+
+    // 1+5i vs 2+0i: 2+0i has larger real
+    assert_complex64_eq(vals[0], (2.0, 0.0), "max[0]");
+    // 3+1i vs 3+0i: same real, 3+1i has larger imag
+    assert_complex64_eq(vals[1], (3.0, 1.0), "max[1]");
+    // 2+2i vs 2+3i: same real, 2+3i has larger imag
+    assert_complex64_eq(vals[2], (2.0, 3.0), "max[2]");
+}
+
+#[test]
+fn oracle_min_complex128_different_real() {
+    let a = make_complex128_scalar(1.0, 2.0);
+    let b = make_complex128_scalar(3.0, 0.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex128_scalar(&result);
+    assert_complex128_eq((re, im), (1.0, 2.0), "min Complex128");
+}
+
+#[test]
+fn oracle_max_complex128_different_real() {
+    let a = make_complex128_scalar(1.0, 2.0);
+    let b = make_complex128_scalar(3.0, 0.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    let (re, im) = extract_complex128_scalar(&result);
+    assert_complex128_eq((re, im), (3.0, 0.0), "max Complex128");
+}
+
+#[test]
+fn oracle_min_complex64_preserves_dtype() {
+    let a = make_complex64_scalar(1.0, 2.0);
+    let b = make_complex64_scalar(3.0, 4.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_max_complex64_preserves_dtype() {
+    let a = make_complex64_scalar(1.0, 2.0);
+    let b = make_complex64_scalar(3.0, 4.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_min_complex128_preserves_dtype() {
+    let a = make_complex128_scalar(1.0, 2.0);
+    let b = make_complex128_scalar(3.0, 4.0);
+    let result = eval_primitive(Primitive::Min, &[a, b], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_max_complex128_preserves_dtype() {
+    let a = make_complex128_scalar(1.0, 2.0);
+    let b = make_complex128_scalar(3.0, 4.0);
+    let result = eval_primitive(Primitive::Max, &[a, b], &no_params()).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
