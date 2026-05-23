@@ -388,3 +388,235 @@ fn property_expand_dims_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex64/Complex128 Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        Value::Scalar(l) => vec![l.as_complex64().unwrap()],
+        _ => panic!("expected Complex64 tensor or scalar"),
+    }
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
+        Value::Scalar(l) => vec![l.as_complex128().unwrap()],
+        _ => panic!("expected Complex128 tensor or scalar"),
+    }
+}
+
+#[test]
+fn oracle_expand_dims_complex64_scalar() {
+    let input = Value::Scalar(Literal::from_complex64(1.0, 2.0));
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0)]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_expand_dims_complex128_scalar() {
+    let input = Value::Scalar(Literal::from_complex128(3.0, 4.0));
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1]);
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(3.0, 4.0)]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_1d_axis0() {
+    // [3] -> [1, 3]
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 3]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_1d_axis1() {
+    // [3] -> [3, 1]
+    let input = make_complex64_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![3, 1]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_2d_axis0() {
+    // [2, 2] -> [1, 2, 2]
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)],
+    );
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 2, 2]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(
+        vals,
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]
+    );
+}
+
+#[test]
+fn oracle_expand_dims_complex64_2d_axis1() {
+    // [2, 2] -> [2, 1, 2]
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)],
+    );
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 1, 2]);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_2d_axis2() {
+    // [2, 2] -> [2, 2, 1]
+    let input = make_complex64_tensor(&[2, 2], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(2)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2, 1]);
+}
+
+#[test]
+fn oracle_expand_dims_complex128_1d() {
+    let input = make_complex128_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 3]);
+    assert_eq!(result.dtype(), DType::Complex128);
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
+}
+
+#[test]
+fn oracle_expand_dims_complex128_2d() {
+    let input = make_complex128_tensor(&[2, 2], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 1, 2]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_preserves_dtype() {
+    let input = make_complex64_tensor(&[2], vec![(1.0, 0.0), (0.0, 1.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_expand_dims_complex128_preserves_dtype() {
+    let input = make_complex128_tensor(&[2], vec![(1.0, 0.0), (0.0, 1.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_preserves_data_order() {
+    let input = make_complex64_tensor(&[4], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(1)).unwrap();
+    assert_eq!(extract_shape(&result), vec![4, 1]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)]);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::Complex64, Shape { dims: vec![0] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 0]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_unit_tensor() {
+    let input = make_complex64_tensor(&[1, 1], vec![(42.0, -42.0)]);
+    let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&result), vec![1, 1, 1]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(42.0, -42.0)]);
+}
+
+#[test]
+fn oracle_expand_dims_complex64_squeeze_identity() {
+    let input = make_complex64_tensor(&[2, 3], vec![
+        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
+        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
+    ]);
+    let expanded = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+    assert_eq!(extract_shape(&expanded), vec![1, 2, 3]);
+
+    let mut squeeze_params = BTreeMap::new();
+    squeeze_params.insert("dimensions".to_string(), "0".to_string());
+    let squeezed = eval_primitive(Primitive::Squeeze, &[expanded], &squeeze_params).unwrap();
+    assert_eq!(extract_shape(&squeezed), vec![2, 3]);
+    assert_eq!(squeezed.dtype(), DType::Complex64);
+}
+
+#[test]
+fn property_expand_dims_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let lits: Vec<Literal> = match dtype {
+            DType::Complex64 => vec![
+                Literal::from_complex64(1.0, 2.0),
+                Literal::from_complex64(3.0, 4.0),
+                Literal::from_complex64(5.0, 6.0),
+            ],
+            DType::Complex128 => vec![
+                Literal::from_complex128(1.0, 2.0),
+                Literal::from_complex128(3.0, 4.0),
+                Literal::from_complex128(5.0, 6.0),
+            ],
+            _ => unreachable!(),
+        };
+        let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
+        let result = eval_primitive(Primitive::ExpandDims, &[input], &expand_params(0)).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "expand_dims {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
