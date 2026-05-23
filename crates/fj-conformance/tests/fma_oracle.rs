@@ -464,7 +464,6 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 }
 
 #[test]
-#[ignore = "PARITY GAP: fma not supported for complex operands"]
 fn oracle_fma_complex64_basic() {
     // fma(1+i, 1+i, 0) = (1+i)*(1+i) + 0 = 2i
     let a = make_complex64_tensor(&[1], vec![(1.0, 1.0)]);
@@ -478,7 +477,6 @@ fn oracle_fma_complex64_basic() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: fma not supported for complex operands"]
 fn oracle_fma_complex64_with_addend() {
     // fma(1, 2, 3+4i) = 1*2 + (3+4i) = 5+4i
     let a = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
@@ -492,7 +490,6 @@ fn oracle_fma_complex64_with_addend() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: fma not supported for complex operands"]
 fn oracle_fma_complex128_preserves_dtype() {
     let a = make_complex128_tensor(&[1], vec![(1.0, 0.0)]);
     let b = make_complex128_tensor(&[1], vec![(2.0, 0.0)]);
@@ -503,7 +500,6 @@ fn oracle_fma_complex128_preserves_dtype() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: fma not supported for complex operands"]
 fn property_fma_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let (a, b, c) = match dtype {

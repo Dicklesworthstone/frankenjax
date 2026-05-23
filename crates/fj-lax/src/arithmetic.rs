@@ -1747,6 +1747,30 @@ pub(crate) fn eval_fma(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
                 let cf = f32::from_bits(cb);
                 Ok(Literal::from_f32(af.mul_add(bf, cf)))
             }
+            (
+                Literal::Complex64Bits(a_re, a_im),
+                Literal::Complex64Bits(b_re, b_im),
+                Literal::Complex64Bits(c_re, c_im),
+            ) => {
+                let a = (f32::from_bits(a_re) as f64, f32::from_bits(a_im) as f64);
+                let b = (f32::from_bits(b_re) as f64, f32::from_bits(b_im) as f64);
+                let c = (f32::from_bits(c_re) as f64, f32::from_bits(c_im) as f64);
+                let prod = complex_mul(a, b);
+                let result = complex_add(prod, c);
+                Ok(Literal::from_complex64(result.0 as f32, result.1 as f32))
+            }
+            (
+                Literal::Complex128Bits(a_re, a_im),
+                Literal::Complex128Bits(b_re, b_im),
+                Literal::Complex128Bits(c_re, c_im),
+            ) => {
+                let a = (f64::from_bits(a_re), f64::from_bits(a_im));
+                let b = (f64::from_bits(b_re), f64::from_bits(b_im));
+                let c = (f64::from_bits(c_re), f64::from_bits(c_im));
+                let prod = complex_mul(a, b);
+                let result = complex_add(prod, c);
+                Ok(Literal::from_complex128(result.0, result.1))
+            }
             _ => {
                 let af = a.as_f64().ok_or("expected numeric")?;
                 let bf = b.as_f64().ok_or("expected numeric")?;
