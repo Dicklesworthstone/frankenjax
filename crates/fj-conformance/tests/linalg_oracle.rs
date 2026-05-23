@@ -1108,7 +1108,6 @@ fn oracle_cholesky_complex64_hermitian_2x2() {
 }
 
 #[test]
-#[ignore = "PARITY GAP: QR not yet implemented for complex types"]
 fn oracle_qr_complex64_2x2() {
     // QR decomposition of a simple complex matrix
     let matrix = make_complex64_matrix(2, 2, &[

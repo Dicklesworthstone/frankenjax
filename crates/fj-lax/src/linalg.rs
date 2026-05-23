@@ -380,7 +380,7 @@ pub(crate) fn eval_triangular_solve(
 
 /// Compute the thin QR decomposition A = Q R using Householder reflections.
 ///
-/// Returns `[Q, R]` where Q is m×k orthogonal and R is k×n upper-triangular,
+/// Returns `[Q, R]` where Q is m×k unitary and R is k×n upper-triangular,
 /// with k = min(m, n). When `full_matrices=true`, Q is m×m and R is m×n.
 pub(crate) fn eval_qr(
     inputs: &[Value],
@@ -396,108 +396,106 @@ pub(crate) fn eval_qr(
         });
     }
 
-    let (m, n, a, dtype) = extract_matrix(primitive, &inputs[0])?;
+    let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
     let k = m.min(n);
+    let zero = (0.0, 0.0);
+    let one = (1.0, 0.0);
 
     let full_matrices = params
         .get("full_matrices")
         .is_some_and(|v| v.trim() == "true");
 
-    // Work on a copy of A; we'll transform it into R in-place using Householder reflections.
     let mut r = a;
-
-    // Store Householder vectors for building Q later.
-    let mut v_store: Vec<Vec<f64>> = Vec::with_capacity(k);
-    let mut tau_store: Vec<f64> = Vec::with_capacity(k);
+    let mut v_store: Vec<Vec<(f64, f64)>> = Vec::with_capacity(k);
+    let mut tau_store: Vec<(f64, f64)> = Vec::with_capacity(k);
 
     for j in 0..k {
-        // Extract the column vector a[j:m, j]
-        let mut v: Vec<f64> = (j..m).map(|i| r[i * n + j]).collect();
-        let norm_v = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let mut v: Vec<(f64, f64)> = (j..m).map(|i| r[i * n + j]).collect();
+        let norm_v = v.iter().map(|x| x.0 * x.0 + x.1 * x.1).sum::<f64>().sqrt();
 
-        // Householder reflection: v = x - alpha*e1, tau = 2 / (v^T v)
-        let alpha = if v[0] >= 0.0 { -norm_v } else { norm_v };
-        v[0] -= alpha;
-        let v_norm_sq: f64 = v.iter().map(|x| x * x).sum();
+        let v0_abs = complex_abs(v[0]);
+        let alpha = if v0_abs > 0.0 {
+            let phase = (v[0].0 / v0_abs, v[0].1 / v0_abs);
+            (-norm_v * phase.0, -norm_v * phase.1)
+        } else {
+            (-norm_v, 0.0)
+        };
+        v[0] = complex_sub(v[0], alpha);
+        let v_norm_sq: f64 = v.iter().map(|x| x.0 * x.0 + x.1 * x.1).sum();
 
         if v_norm_sq > f64::EPSILON * 1e4 {
-            let tau = 2.0 / v_norm_sq;
+            let tau = (2.0 / v_norm_sq, 0.0);
 
-            // Apply H = I - tau * v * v^T to R[j:m, j:n]
             for col in j..n {
-                let mut dot = 0.0;
+                let mut dot = zero;
                 for (vi, row) in v.iter().zip(j..m) {
-                    dot += vi * r[row * n + col];
+                    dot = complex_add(dot, complex_mul(complex_conj(*vi), r[row * n + col]));
                 }
+                let tau_dot = complex_mul(tau, dot);
                 for (vi, row) in v.iter().zip(j..m) {
-                    r[row * n + col] -= tau * vi * dot;
+                    r[row * n + col] = complex_sub(r[row * n + col], complex_mul(*vi, tau_dot));
                 }
             }
 
             v_store.push(v);
             tau_store.push(tau);
         } else {
-            // Zero column — no reflection needed
-            v_store.push(vec![0.0; m - j]);
-            tau_store.push(0.0);
+            v_store.push(vec![zero; m - j]);
+            tau_store.push(zero);
         }
     }
 
-    // Build Q by accumulating Householder reflections.
     let q_cols = if full_matrices { m } else { k };
-    let mut q = vec![0.0_f64; m * q_cols];
+    let mut q = vec![zero; m * q_cols];
 
-    // Initialize Q to identity (m × q_cols)
     for i in 0..q_cols.min(m) {
-        q[i * q_cols + i] = 1.0;
+        q[i * q_cols + i] = one;
     }
 
-    // Apply reflections in reverse order: Q = H_0 * H_1 * ... * H_{k-1}
     for j in (0..k).rev() {
         let v = &v_store[j];
         let tau = tau_store[j];
-        if tau.abs() < f64::EPSILON {
+        if complex_abs(tau) < f64::EPSILON {
             continue;
         }
 
-        // Apply H_j to Q[j:m, j:q_cols]
         for col in j..q_cols {
-            let mut dot = 0.0;
+            let mut dot = zero;
             for (vi, row) in v.iter().zip(j..m) {
-                dot += vi * q[row * q_cols + col];
+                dot = complex_add(dot, complex_mul(complex_conj(*vi), q[row * q_cols + col]));
             }
+            let tau_dot = complex_mul(tau, dot);
             for (vi, row) in v.iter().zip(j..m) {
-                q[row * q_cols + col] -= tau * vi * dot;
+                q[row * q_cols + col] = complex_sub(q[row * q_cols + col], complex_mul(*vi, tau_dot));
             }
         }
     }
 
-    // Build R output (upper triangular portion)
     let r_rows = if full_matrices { m } else { k };
-    let mut r_out = vec![0.0_f64; r_rows * n];
+    let mut r_out = vec![zero; r_rows * n];
     for i in 0..r_rows {
-        for j in i..n {
-            r_out[i * n + j] = r[i * n + j];
+        for jj in i..n {
+            r_out[i * n + jj] = r[i * n + jj];
         }
     }
 
-    // Sign correction: ensure R has non-negative diagonal entries.
-    // If R[i,i] < 0, flip signs of row i in R and column i in Q.
     for i in 0..k {
-        if r_out[i * n + i] < 0.0 {
-            // Flip row i of R
-            for j in 0..n {
-                r_out[i * n + j] = -r_out[i * n + j];
+        let diag = r_out[i * n + i];
+        let diag_abs = complex_abs(diag);
+        if diag_abs > f64::EPSILON {
+            let phase = complex_div(diag, (diag_abs, 0.0));
+            let phase_conj = complex_conj(phase);
+            for jj in 0..n {
+                r_out[i * n + jj] = complex_mul(phase_conj, r_out[i * n + jj]);
             }
-            // Flip column i of Q
             for row in 0..m {
-                q[row * q_cols + i] = -q[row * q_cols + i];
+                q[row * q_cols + i] = complex_mul(q[row * q_cols + i], phase);
             }
         }
     }
 
-    let q_val = matrix_to_value(m, q_cols, &q, dtype)?;
-    let r_val = matrix_to_value(r_rows, n, &r_out, dtype)?;
+    let q_val = complex_matrix_to_value(m, q_cols, &q, dtype)?;
+    let r_val = complex_matrix_to_value(r_rows, n, &r_out, dtype)?;
 
     Ok(vec![q_val, r_val])
 }
