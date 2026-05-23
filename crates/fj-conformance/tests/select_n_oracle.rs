@@ -423,3 +423,118 @@ fn property_select_n_preserves_dtype() {
     .unwrap();
     assert_eq!(result.dtype(), DType::F64, "select_n should preserve F64 dtype");
 }
+
+// ======================== Complex Type Tests ========================
+
+fn scalar_complex64(re: f32, im: f32) -> Value {
+    Value::Scalar(Literal::from_complex64(re, im))
+}
+
+fn scalar_complex128(re: f64, im: f64) -> Value {
+    Value::Scalar(Literal::from_complex128(re, im))
+}
+
+fn vector_complex64(data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape::vector(data.len() as u32),
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64(v: &Value) -> (f32, f32) {
+    match v {
+        Value::Scalar(l) => l.as_complex64().unwrap(),
+        Value::Tensor(t) if t.shape.dims.is_empty() => t.elements[0].as_complex64().unwrap(),
+        _ => panic!("expected scalar complex64"),
+    }
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    v.as_tensor()
+        .expect("expected tensor")
+        .elements
+        .iter()
+        .map(|l| l.as_complex64().unwrap())
+        .collect()
+}
+
+#[test]
+fn oracle_select_n_complex64_scalar_case0() {
+    // select_n(0, [1+i, 2+2i]) = 1+i
+    let result = select_n(vec![
+        Value::scalar_i64(0),
+        scalar_complex64(1.0, 1.0),
+        scalar_complex64(2.0, 2.0),
+    ])
+    .expect("select_n complex64 should succeed");
+    let (re, im) = extract_complex64(&result);
+    assert!((re - 1.0).abs() < 1e-5);
+    assert!((im - 1.0).abs() < 1e-5);
+}
+
+#[test]
+fn oracle_select_n_complex64_scalar_case1() {
+    // select_n(1, [1+i, 2+2i]) = 2+2i
+    let result = select_n(vec![
+        Value::scalar_i64(1),
+        scalar_complex64(1.0, 1.0),
+        scalar_complex64(2.0, 2.0),
+    ])
+    .expect("select_n complex64 should succeed");
+    let (re, im) = extract_complex64(&result);
+    assert!((re - 2.0).abs() < 1e-5);
+    assert!((im - 2.0).abs() < 1e-5);
+}
+
+#[test]
+fn oracle_select_n_complex64_tensor() {
+    // select_n([0, 1, 0], [[1+i, 2+i, 3+i], [10+i, 20+i, 30+i]])
+    // = [1+i, 20+i, 3+i]
+    let result = select_n(vec![
+        vector_i64(&[0, 1, 0]),
+        vector_complex64(vec![(1.0, 1.0), (2.0, 1.0), (3.0, 1.0)]),
+        vector_complex64(vec![(10.0, 1.0), (20.0, 1.0), (30.0, 1.0)]),
+    ])
+    .expect("select_n complex64 tensor should succeed");
+    let vals = extract_complex64_vec(&result);
+    assert!((vals[0].0 - 1.0).abs() < 1e-5);
+    assert!((vals[1].0 - 20.0).abs() < 1e-5);
+    assert!((vals[2].0 - 3.0).abs() < 1e-5);
+}
+
+#[test]
+fn oracle_select_n_complex128_preserves_dtype() {
+    let result = select_n(vec![
+        Value::scalar_i64(0),
+        scalar_complex128(1.0, 1.0),
+        scalar_complex128(2.0, 2.0),
+    ])
+    .expect("select_n complex128 should succeed");
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn property_select_n_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let (case0, case1) = match dtype {
+            DType::Complex64 => (
+                scalar_complex64(1.0, 0.0),
+                scalar_complex64(2.0, 0.0),
+            ),
+            DType::Complex128 => (
+                scalar_complex128(1.0, 0.0),
+                scalar_complex128(2.0, 0.0),
+            ),
+            _ => unreachable!(),
+        };
+        let result = select_n(vec![Value::scalar_i64(0), case0, case1])
+            .expect("select_n should succeed for complex dtype");
+        assert_eq!(result.dtype(), dtype, "select_n {dtype:?}: dtype mismatch");
+    }
+}
