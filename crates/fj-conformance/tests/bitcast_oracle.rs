@@ -441,3 +441,18 @@ fn oracle_bitcast_preserves_dtype() {
     .unwrap();
     assert_eq!(result.dtype(), DType::I64);
 }
+
+#[test]
+fn oracle_bitcast_2d_empty() {
+    let input = Value::Tensor(
+        TensorValue::new(DType::F64, Shape { dims: vec![0, 4] }, vec![]).unwrap(),
+    );
+    let result = eval_primitive(
+        Primitive::BitcastConvertType,
+        &[input],
+        &bitcast_params("i64"),
+    )
+    .unwrap();
+    assert_eq!(extract_shape(&result), vec![0, 4]);
+    assert_eq!(result.dtype(), DType::I64);
+}
