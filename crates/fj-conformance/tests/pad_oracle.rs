@@ -454,3 +454,219 @@ fn property_pad_preserves_all_float_dtypes() {
             .expect("literal/dtype consistency");
     }
 }
+
+// ======================== Complex64/Complex128 Tests ========================
+
+fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex64,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex64(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
+    Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: shape.to_vec(),
+            },
+            data.into_iter()
+                .map(|(re, im)| Literal::from_complex128(re, im))
+                .collect(),
+        )
+        .unwrap(),
+    )
+}
+
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
+    match v {
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
+        _ => panic!("expected tensor"),
+    }
+}
+
+#[test]
+fn oracle_pad_complex64_1d_low() {
+    let operand = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
+    let params = pad_params(&[2], &[0], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![5]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (0.0, 0.0), (0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
+    ]);
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_pad_complex64_1d_high() {
+    let operand = make_complex64_tensor(&[3], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex64(9.0, 9.0));
+    let params = pad_params(&[0], &[2], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![5]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (9.0, 9.0), (9.0, 9.0),
+    ]);
+}
+
+#[test]
+fn oracle_pad_complex64_1d_both() {
+    let operand = make_complex64_tensor(&[2], vec![(1.0, -1.0), (2.0, -2.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
+    let params = pad_params(&[1], &[1], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (0.0, 0.0), (1.0, -1.0), (2.0, -2.0), (0.0, 0.0),
+    ]);
+}
+
+#[test]
+fn oracle_pad_complex64_1d_interior() {
+    let operand = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
+    let params = pad_params(&[0], &[0], &[1]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![5]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![
+        (1.0, 0.0), (0.0, 0.0), (2.0, 0.0), (0.0, 0.0), (3.0, 0.0),
+    ]);
+}
+
+#[test]
+fn oracle_pad_complex64_2d() {
+    let operand = make_complex64_tensor(&[2, 2], vec![
+        (1.0, 0.0), (2.0, 0.0),
+        (3.0, 0.0), (4.0, 0.0),
+    ]);
+    let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
+    let params = pad_params(&[1, 1], &[0, 0], &[0, 0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![3, 3]);
+    let vals = extract_complex64_vec(&result);
+    // First row and first column should be zeros
+    assert_eq!(vals[0], (0.0, 0.0));
+    assert_eq!(vals[1], (0.0, 0.0));
+    assert_eq!(vals[3], (0.0, 0.0));
+    // Original data at [1,1], [1,2], [2,1], [2,2]
+    assert_eq!(vals[4], (1.0, 0.0));
+    assert_eq!(vals[5], (2.0, 0.0));
+}
+
+#[test]
+fn oracle_pad_complex128_1d() {
+    let operand = make_complex128_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex128(0.0, 0.0));
+    let params = pad_params(&[1], &[1], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![4]);
+    let vals = extract_complex128_vec(&result);
+    assert_eq!(vals, vec![
+        (0.0, 0.0), (1.0, 2.0), (3.0, 4.0), (0.0, 0.0),
+    ]);
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn oracle_pad_complex64_zero_padding() {
+    let operand = make_complex64_tensor(&[2, 2], vec![
+        (1.0, 1.0), (2.0, 2.0),
+        (3.0, 3.0), (4.0, 4.0),
+    ]);
+    let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
+    let params = pad_params(&[0, 0], &[0, 0], &[0, 0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 2]);
+    let vals = extract_complex64_vec(&result);
+    assert_eq!(vals, vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]);
+}
+
+#[test]
+fn oracle_pad_complex64_preserves_dtype() {
+    let operand = make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
+    let params = pad_params(&[1], &[1], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(result.dtype(), DType::Complex64);
+}
+
+#[test]
+fn oracle_pad_complex128_preserves_dtype() {
+    let operand = make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
+    let pad_value = Value::Scalar(Literal::from_complex128(0.0, 0.0));
+    let params = pad_params(&[1], &[1], &[0]);
+    let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+    assert_eq!(result.dtype(), DType::Complex128);
+}
+
+#[test]
+fn property_pad_preserves_complex_dtypes() {
+    for dtype in [DType::Complex64, DType::Complex128] {
+        let (operand, pad_value) = match dtype {
+            DType::Complex64 => (
+                Value::Tensor(
+                    TensorValue::new(
+                        dtype,
+                        Shape { dims: vec![2] },
+                        vec![
+                            Literal::from_complex64(1.0, 2.0),
+                            Literal::from_complex64(3.0, 4.0),
+                        ],
+                    )
+                    .unwrap(),
+                ),
+                Value::Scalar(Literal::from_complex64(0.0, 0.0)),
+            ),
+            DType::Complex128 => (
+                Value::Tensor(
+                    TensorValue::new(
+                        dtype,
+                        Shape { dims: vec![2] },
+                        vec![
+                            Literal::from_complex128(1.0, 2.0),
+                            Literal::from_complex128(3.0, 4.0),
+                        ],
+                    )
+                    .unwrap(),
+                ),
+                Value::Scalar(Literal::from_complex128(0.0, 0.0)),
+            ),
+            _ => unreachable!(),
+        };
+        let params = pad_params(&[1], &[1], &[0]);
+        let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
+        let t = result.as_tensor().expect("tensor result");
+        assert_eq!(t.dtype, dtype, "pad {dtype:?}: dtype mismatch");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
+    }
+}
