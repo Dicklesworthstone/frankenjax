@@ -11,6 +11,7 @@ mod reduction;
 pub mod tensor_contraction;
 mod tensor_ops;
 pub mod threefry;
+pub mod tree_util;
 mod type_promotion;
 
 /// Public access to `promote_dtype` for conformance tests.
