@@ -1204,6 +1204,292 @@ pub(crate) fn eval_eigh(
     Ok(vec![w_val, v_val])
 }
 
+// ── Determinant ─────────────────────────────────────────────────────
+
+/// Compute the determinant of a square matrix via LU decomposition.
+///
+/// Matches `jnp.linalg.det(a)`.
+pub fn det(a: &[f64], n: usize) -> f64 {
+    if n == 0 {
+        return 1.0; // Empty matrix has determinant 1
+    }
+    if n == 1 {
+        return a[0];
+    }
+    if n == 2 {
+        return a[0] * a[3] - a[1] * a[2];
+    }
+
+    // LU decomposition with partial pivoting
+    let mut lu = a.to_vec();
+    let mut sign = 1.0_f64;
+
+    for k in 0..n {
+        // Find pivot
+        let mut max_val = lu[k * n + k].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let val = lu[i * n + k].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = i;
+            }
+        }
+
+        if max_val < 1e-15 {
+            return 0.0; // Singular matrix
+        }
+
+        // Swap rows if needed
+        if max_row != k {
+            for j in 0..n {
+                lu.swap(k * n + j, max_row * n + j);
+            }
+            sign = -sign;
+        }
+
+        // Eliminate below pivot
+        for i in (k + 1)..n {
+            let factor = lu[i * n + k] / lu[k * n + k];
+            lu[i * n + k] = factor;
+            for j in (k + 1)..n {
+                lu[i * n + j] -= factor * lu[k * n + j];
+            }
+        }
+    }
+
+    // Determinant is product of diagonal elements times sign
+    let mut result = sign;
+    for i in 0..n {
+        result *= lu[i * n + i];
+    }
+    result
+}
+
+/// Compute sign and log of absolute determinant.
+///
+/// Returns (sign, logabsdet) where det(a) = sign * exp(logabsdet).
+/// Matches `jnp.linalg.slogdet(a)`.
+pub fn slogdet(a: &[f64], n: usize) -> (f64, f64) {
+    let d = det(a, n);
+    if d == 0.0 {
+        (0.0, f64::NEG_INFINITY)
+    } else if d > 0.0 {
+        (1.0, d.ln())
+    } else {
+        (-1.0, (-d).ln())
+    }
+}
+
+// ── Matrix Inverse ──────────────────────────────────────────────────
+
+/// Compute the inverse of a square matrix via Gauss-Jordan elimination.
+///
+/// Matches `jnp.linalg.inv(a)`.
+pub fn inv(a: &[f64], n: usize) -> Option<Vec<f64>> {
+    if n == 0 {
+        return Some(vec![]);
+    }
+
+    // Create augmented matrix [A | I]
+    let mut aug = vec![0.0; n * 2 * n];
+    for i in 0..n {
+        for j in 0..n {
+            aug[i * 2 * n + j] = a[i * n + j];
+        }
+        aug[i * 2 * n + n + i] = 1.0;
+    }
+
+    // Gauss-Jordan elimination
+    for k in 0..n {
+        // Find pivot
+        let mut max_val = aug[k * 2 * n + k].abs();
+        let mut max_row = k;
+        for i in (k + 1)..n {
+            let val = aug[i * 2 * n + k].abs();
+            if val > max_val {
+                max_val = val;
+                max_row = i;
+            }
+        }
+
+        if max_val < 1e-15 {
+            return None; // Singular matrix
+        }
+
+        // Swap rows
+        if max_row != k {
+            for j in 0..(2 * n) {
+                aug.swap(k * 2 * n + j, max_row * 2 * n + j);
+            }
+        }
+
+        // Scale pivot row
+        let pivot = aug[k * 2 * n + k];
+        for j in 0..(2 * n) {
+            aug[k * 2 * n + j] /= pivot;
+        }
+
+        // Eliminate column
+        for i in 0..n {
+            if i != k {
+                let factor = aug[i * 2 * n + k];
+                for j in 0..(2 * n) {
+                    aug[i * 2 * n + j] -= factor * aug[k * 2 * n + j];
+                }
+            }
+        }
+    }
+
+    // Extract inverse from right half
+    let mut result = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..n {
+            result[i * n + j] = aug[i * 2 * n + n + j];
+        }
+    }
+
+    Some(result)
+}
+
+/// Compute the Moore-Penrose pseudoinverse via SVD.
+///
+/// Matches `jnp.linalg.pinv(a, rcond)`.
+pub fn pinv(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
+    if m == 0 || n == 0 {
+        return vec![0.0; n * m];
+    }
+
+    // For very small matrices, use direct formula
+    if m == 1 && n == 1 {
+        let val = a[0];
+        if val.abs() < rcond {
+            return vec![0.0];
+        }
+        return vec![1.0 / val];
+    }
+
+    // Compute A^T * A or A * A^T depending on which is smaller
+    if m >= n {
+        // A^+ = (A^T A)^{-1} A^T for tall/square matrices
+        let mut ata = vec![0.0; n * n];
+        for i in 0..n {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for k in 0..m {
+                    sum += a[k * n + i] * a[k * n + j];
+                }
+                ata[i * n + j] = sum;
+            }
+        }
+
+        if let Some(ata_inv) = inv(&ata, n) {
+            // A^+ = (A^T A)^{-1} A^T
+            let mut result = vec![0.0; n * m];
+            for i in 0..n {
+                for j in 0..m {
+                    let mut sum = 0.0;
+                    for k in 0..n {
+                        sum += ata_inv[i * n + k] * a[j * n + k];
+                    }
+                    result[i * m + j] = sum;
+                }
+            }
+            result
+        } else {
+            vec![0.0; n * m]
+        }
+    } else {
+        // A^+ = A^T (A A^T)^{-1} for wide matrices
+        let mut aat = vec![0.0; m * m];
+        for i in 0..m {
+            for j in 0..m {
+                let mut sum = 0.0;
+                for k in 0..n {
+                    sum += a[i * n + k] * a[j * n + k];
+                }
+                aat[i * m + j] = sum;
+            }
+        }
+
+        if let Some(aat_inv) = inv(&aat, m) {
+            // A^+ = A^T (A A^T)^{-1}
+            let mut result = vec![0.0; n * m];
+            for i in 0..n {
+                for j in 0..m {
+                    let mut sum = 0.0;
+                    for k in 0..m {
+                        sum += a[k * n + i] * aat_inv[k * m + j];
+                    }
+                    result[i * m + j] = sum;
+                }
+            }
+            result
+        } else {
+            vec![0.0; n * m]
+        }
+    }
+}
+
+// ── Norms ───────────────────────────────────────────────────────────
+
+/// Compute vector or matrix norms.
+///
+/// For vectors: ord=None or 2 gives L2 norm, ord=1 gives L1, ord=inf gives max.
+/// For matrices: ord=None or "fro" gives Frobenius norm.
+///
+/// Matches `jnp.linalg.norm(x, ord)`.
+pub fn vector_norm(x: &[f64], ord: f64) -> f64 {
+    if x.is_empty() {
+        return 0.0;
+    }
+
+    if ord == 0.0 {
+        // L0 "norm": count of non-zero elements
+        x.iter().filter(|&&v| v != 0.0).count() as f64
+    } else if ord == 1.0 {
+        // L1 norm: sum of absolute values
+        x.iter().map(|&v| v.abs()).sum()
+    } else if ord == 2.0 {
+        // L2 norm: Euclidean
+        x.iter().map(|&v| v * v).sum::<f64>().sqrt()
+    } else if ord == f64::INFINITY {
+        // L-infinity norm: max absolute value
+        x.iter().map(|&v| v.abs()).fold(0.0_f64, f64::max)
+    } else if ord == f64::NEG_INFINITY {
+        // L-neg-infinity norm: min absolute value
+        x.iter().map(|&v| v.abs()).fold(f64::INFINITY, f64::min)
+    } else {
+        // General Lp norm
+        x.iter().map(|&v| v.abs().powf(ord)).sum::<f64>().powf(1.0 / ord)
+    }
+}
+
+/// Frobenius norm of a matrix: sqrt(sum of squared elements).
+pub fn frobenius_norm(a: &[f64]) -> f64 {
+    a.iter().map(|&v| v * v).sum::<f64>().sqrt()
+}
+
+/// Matrix 1-norm (max column sum of absolute values).
+pub fn matrix_norm_1(a: &[f64], m: usize, n: usize) -> f64 {
+    let mut max_col_sum = 0.0_f64;
+    for j in 0..n {
+        let col_sum: f64 = (0..m).map(|i| a[i * n + j].abs()).sum();
+        max_col_sum = max_col_sum.max(col_sum);
+    }
+    max_col_sum
+}
+
+/// Matrix infinity-norm (max row sum of absolute values).
+pub fn matrix_norm_inf(a: &[f64], m: usize, n: usize) -> f64 {
+    let mut max_row_sum = 0.0_f64;
+    for i in 0..m {
+        let row_sum: f64 = (0..n).map(|j| a[i * n + j].abs()).sum();
+        max_row_sum = max_row_sum.max(row_sum);
+    }
+    max_row_sum
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1770,5 +2056,171 @@ mod tests {
         let a = make_matrix(2, 2, &[f64::NAN, 0.0, 0.0, 1.0]);
         let outcome = std::panic::catch_unwind(|| eval_eigh(&[a], &BTreeMap::new()));
         assert!(outcome.is_ok(), "Eigh eigenvalue sorting should not panic");
+    }
+
+    // ── Determinant tests ───────────────────────────────────────────
+
+    #[test]
+    fn det_2x2_basic() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let d = det(&a, 2);
+        assert!((d - (-2.0)).abs() < 1e-10, "det = {d}, expected -2");
+    }
+
+    #[test]
+    fn det_3x3_identity() {
+        let a = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let d = det(&a, 3);
+        assert!((d - 1.0).abs() < 1e-10, "det(I) = {d}, expected 1");
+    }
+
+    #[test]
+    fn det_singular() {
+        let a = [1.0, 2.0, 2.0, 4.0]; // Rows are linearly dependent
+        let d = det(&a, 2);
+        assert!(d.abs() < 1e-10, "det of singular matrix should be ~0");
+    }
+
+    #[test]
+    fn det_1x1() {
+        let a = [5.0];
+        let d = det(&a, 1);
+        assert!((d - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn det_empty() {
+        let d = det(&[], 0);
+        assert!((d - 1.0).abs() < 1e-10, "det of empty matrix is 1");
+    }
+
+    #[test]
+    fn slogdet_positive() {
+        let a = [2.0, 0.0, 0.0, 3.0];
+        let (sign, logabsdet) = slogdet(&a, 2);
+        assert!((sign - 1.0).abs() < 1e-10);
+        assert!((logabsdet - (6.0_f64).ln()).abs() < 1e-10);
+    }
+
+    #[test]
+    fn slogdet_negative() {
+        let a = [1.0, 2.0, 3.0, 4.0]; // det = -2
+        let (sign, logabsdet) = slogdet(&a, 2);
+        assert!((sign - (-1.0)).abs() < 1e-10);
+        assert!((logabsdet - (2.0_f64).ln()).abs() < 1e-10);
+    }
+
+    // ── Inverse tests ───────────────────────────────────────────────
+
+    #[test]
+    fn inv_2x2_basic() {
+        let a = [4.0, 7.0, 2.0, 6.0];
+        let inv_a = inv(&a, 2).expect("should be invertible");
+        // Verify A * A^{-1} = I
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut val = 0.0;
+                for k in 0..2 {
+                    val += a[i * 2 + k] * inv_a[k * 2 + j];
+                }
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((val - expected).abs() < 1e-10, "A*A^-1[{i},{j}] = {val}");
+            }
+        }
+    }
+
+    #[test]
+    fn inv_singular_returns_none() {
+        let a = [1.0, 2.0, 2.0, 4.0];
+        assert!(inv(&a, 2).is_none());
+    }
+
+    #[test]
+    fn inv_identity() {
+        let a = [1.0, 0.0, 0.0, 1.0];
+        let inv_a = inv(&a, 2).expect("identity invertible");
+        assert!((inv_a[0] - 1.0).abs() < 1e-10);
+        assert!(inv_a[1].abs() < 1e-10);
+        assert!(inv_a[2].abs() < 1e-10);
+        assert!((inv_a[3] - 1.0).abs() < 1e-10);
+    }
+
+    // ── Pseudoinverse tests ─────────────────────────────────────────
+
+    #[test]
+    fn pinv_square_invertible() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let p = pinv(&a, 2, 2, 1e-15);
+        // A * A^+ * A ≈ A for pseudoinverse
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut val = 0.0;
+                for k in 0..2 {
+                    for l in 0..2 {
+                        val += a[i * 2 + k] * p[k * 2 + l] * a[l * 2 + j];
+                    }
+                }
+                assert!(
+                    (val - a[i * 2 + j]).abs() < 1e-8,
+                    "A*A^+*A[{i},{j}] = {val}, expected {}",
+                    a[i * 2 + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pinv_tall_matrix() {
+        // 3x2 matrix
+        let a = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let p = pinv(&a, 3, 2, 1e-15);
+        assert_eq!(p.len(), 2 * 3); // n x m
+    }
+
+    // ── Norm tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn vector_norm_l2() {
+        let x = [3.0, 4.0];
+        let n = vector_norm(&x, 2.0);
+        assert!((n - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_l1() {
+        let x = [-3.0, 4.0];
+        let n = vector_norm(&x, 1.0);
+        assert!((n - 7.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn vector_norm_linf() {
+        let x = [-3.0, 4.0, -5.0];
+        let n = vector_norm(&x, f64::INFINITY);
+        assert!((n - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn frobenius_norm_basic() {
+        let a = [1.0, 2.0, 3.0, 4.0];
+        let n = frobenius_norm(&a);
+        let expected = (1.0 + 4.0 + 9.0 + 16.0_f64).sqrt();
+        assert!((n - expected).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_norm_1_basic() {
+        let a = [1.0, -2.0, 3.0, 4.0];
+        let n = matrix_norm_1(&a, 2, 2);
+        // Column sums: |1|+|3|=4, |-2|+|4|=6 → max = 6
+        assert!((n - 6.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matrix_norm_inf_basic() {
+        let a = [1.0, -2.0, 3.0, 4.0];
+        let n = matrix_norm_inf(&a, 2, 2);
+        // Row sums: |1|+|-2|=3, |3|+|4|=7 → max = 7
+        assert!((n - 7.0).abs() < 1e-10);
     }
 }
