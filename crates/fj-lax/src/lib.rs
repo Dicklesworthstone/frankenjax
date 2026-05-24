@@ -4,6 +4,7 @@ mod arithmetic;
 mod comparison;
 mod fft;
 mod linalg;
+pub mod nn;
 mod reduction;
 mod tensor_ops;
 pub mod threefry;
