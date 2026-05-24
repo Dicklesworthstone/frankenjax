@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod array_creation;
 mod arithmetic;
 mod comparison;
 mod fft;
