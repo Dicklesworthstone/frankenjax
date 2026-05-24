@@ -398,7 +398,12 @@ fn metamorphic_mul_reciprocal_identity() {
     // Mul(x, Reciprocal(x)) = 1 for x != 0
     for x in [0.5, 1.0, 2.0, 3.0, 0.1, 10.0, -2.0, -0.5] {
         let x_val = make_f64_tensor(&[], vec![x]);
-        let recip = eval_primitive(Primitive::Reciprocal, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let recip = eval_primitive(
+            Primitive::Reciprocal,
+            std::slice::from_ref(&x_val),
+            &no_params(),
+        )
+        .unwrap();
         let result = eval_primitive(Primitive::Mul, &[x_val, recip], &no_params()).unwrap();
         assert_close(
             extract_f64_scalar(&result),
@@ -418,7 +423,12 @@ fn metamorphic_div_equals_mul_reciprocal() {
         let x_val = make_f64_tensor(&[], vec![x]);
         let y_val = make_f64_tensor(&[], vec![y]);
 
-        let div_direct = eval_primitive(Primitive::Div, &[x_val.clone(), y_val.clone()], &no_params()).unwrap();
+        let div_direct = eval_primitive(
+            Primitive::Div,
+            &[x_val.clone(), y_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
         let recip_y = eval_primitive(Primitive::Reciprocal, &[y_val], &no_params()).unwrap();
         let mul_recip = eval_primitive(Primitive::Mul, &[x_val, recip_y], &no_params()).unwrap();
 
@@ -441,8 +451,10 @@ fn metamorphic_mul_neg_distributive() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Mul(Neg(x), y)
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
-        let mul_neg = eval_primitive(Primitive::Mul, &[neg_x, y_val.clone()], &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let mul_neg =
+            eval_primitive(Primitive::Mul, &[neg_x, y_val.clone()], &no_params()).unwrap();
 
         // Neg(Mul(x, y))
         let mul_xy = eval_primitive(Primitive::Mul, &[x_val, y_val], &no_params()).unwrap();
@@ -467,8 +479,10 @@ fn metamorphic_div_neg_distributive() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Div(Neg(x), y)
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
-        let div_neg = eval_primitive(Primitive::Div, &[neg_x, y_val.clone()], &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let div_neg =
+            eval_primitive(Primitive::Div, &[neg_x, y_val.clone()], &no_params()).unwrap();
 
         // Neg(Div(x, y))
         let div_xy = eval_primitive(Primitive::Div, &[x_val, y_val], &no_params()).unwrap();
@@ -546,7 +560,10 @@ fn oracle_mul_column_vector_broadcast() {
     let b = make_f64_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![2.0, 4.0, 6.0, 12.0, 15.0, 18.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![2.0, 4.0, 6.0, 12.0, 15.0, 18.0]
+    );
 }
 
 #[test]
@@ -566,7 +583,10 @@ fn oracle_mul_different_ranks_broadcast() {
     let b = make_f64_tensor(&[2, 3], vec![10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
     let result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![10.0, 20.0, 30.0, 20.0, 40.0, 60.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![10.0, 20.0, 30.0, 20.0, 40.0, 60.0]
+    );
 }
 
 #[test]
@@ -576,7 +596,10 @@ fn oracle_div_different_ranks_broadcast() {
     let b = make_f64_tensor(&[3], vec![2.0, 3.0, 4.0]);
     let result = eval_primitive(Primitive::Div, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![6.0, 4.0, 3.0, 12.0, 8.0, 6.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![6.0, 4.0, 3.0, 12.0, 8.0, 6.0]
+    );
 }
 
 #[test]
@@ -630,9 +653,7 @@ fn property_mul_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -660,9 +681,7 @@ fn property_div_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [1.0_f64, 4.0, 9.0];
@@ -705,7 +724,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))

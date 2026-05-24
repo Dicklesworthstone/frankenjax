@@ -292,9 +292,8 @@ fn oracle_sinc_f32_dtype() {
 
 #[test]
 fn oracle_sinc_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 4] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 4] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Sinc, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 4]);
 }
@@ -314,9 +313,7 @@ fn property_sinc_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [0.0_f64, 0.5, 1.0];
@@ -336,7 +333,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -349,7 +348,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -360,7 +361,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }

@@ -937,7 +937,9 @@ fn golden_journey_10_linear_algebra() {
         Value::Tensor(
             TensorValue::new(
                 DType::F64,
-                Shape { dims: shape.to_vec() },
+                Shape {
+                    dims: shape.to_vec(),
+                },
                 data.iter().copied().map(Literal::from_f64).collect(),
             )
             .unwrap(),
@@ -945,11 +947,13 @@ fn golden_journey_10_linear_algebra() {
     };
 
     // 10a: QR decomposition of 3x3 matrix, verify Q@R ≈ A
-    let a_qr = matrix_f64(&[3, 3], &[
-        1.0, 2.0, 3.0,
-        4.0, 5.0, 6.0,
-        7.0, 8.0, 10.0, // slightly perturbed to avoid singular
-    ]);
+    let a_qr = matrix_f64(
+        &[3, 3],
+        &[
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
+            10.0, // slightly perturbed to avoid singular
+        ],
+    );
 
     let qr_result = eval_primitive(Primitive::Qr, std::slice::from_ref(&a_qr), &BTreeMap::new());
     assertions.push(JourneyAssertion {
@@ -1044,11 +1048,7 @@ fn golden_journey_10_linear_algebra() {
         &[Transform::Jit],
         vec![a_qr.clone()],
     ));
-    let eager_qr_resp = dispatch(make_request(
-        ProgramSpec::LaxQr,
-        &[],
-        vec![a_qr],
-    ));
+    let eager_qr_resp = dispatch(make_request(ProgramSpec::LaxQr, &[], vec![a_qr]));
     assertions.push(JourneyAssertion {
         name: "jit_qr_matches_eager".into(),
         passed: jit_qr_resp.is_ok() == eager_qr_resp.is_ok(),

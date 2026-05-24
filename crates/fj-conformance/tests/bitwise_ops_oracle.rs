@@ -567,7 +567,12 @@ fn metamorphic_bitwise_not_involution() {
     // BitwiseNot(BitwiseNot(x)) = x (double negation is identity)
     for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
         let x_val = make_i64_tensor(&[], vec![x]);
-        let not_x = eval_primitive(Primitive::BitwiseNot, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let not_x = eval_primitive(
+            Primitive::BitwiseNot,
+            std::slice::from_ref(&x_val),
+            &no_params(),
+        )
+        .unwrap();
         let not_not_x = eval_primitive(Primitive::BitwiseNot, &[not_x], &no_params()).unwrap();
         assert_eq!(
             extract_i64_scalar(&not_not_x),
@@ -586,7 +591,8 @@ fn metamorphic_bitwise_xor_self_zero() {
     // BitwiseXor(x, x) = 0 (XOR with self is always zero)
     for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
         let x_val = make_i64_tensor(&[], vec![x]);
-        let result = eval_primitive(Primitive::BitwiseXor, &[x_val.clone(), x_val], &no_params()).unwrap();
+        let result =
+            eval_primitive(Primitive::BitwiseXor, &[x_val.clone(), x_val], &no_params()).unwrap();
         assert_eq!(
             extract_i64_scalar(&result),
             0,
@@ -604,7 +610,12 @@ fn metamorphic_bitwise_and_complement_zero() {
     // BitwiseAnd(x, BitwiseNot(x)) = 0 (AND with complement is zero)
     for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
         let x_val = make_i64_tensor(&[], vec![x]);
-        let not_x = eval_primitive(Primitive::BitwiseNot, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let not_x = eval_primitive(
+            Primitive::BitwiseNot,
+            std::slice::from_ref(&x_val),
+            &no_params(),
+        )
+        .unwrap();
         let result = eval_primitive(Primitive::BitwiseAnd, &[x_val, not_x], &no_params()).unwrap();
         assert_eq!(
             extract_i64_scalar(&result),
@@ -623,7 +634,12 @@ fn metamorphic_bitwise_or_complement_all_ones() {
     // BitwiseOr(x, BitwiseNot(x)) = -1 (all ones in two's complement)
     for x in [0i64, 1, -1, 0xFF, 0xABCD, i64::MAX, i64::MIN] {
         let x_val = make_i64_tensor(&[], vec![x]);
-        let not_x = eval_primitive(Primitive::BitwiseNot, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let not_x = eval_primitive(
+            Primitive::BitwiseNot,
+            std::slice::from_ref(&x_val),
+            &no_params(),
+        )
+        .unwrap();
         let result = eval_primitive(Primitive::BitwiseOr, &[x_val, not_x], &no_params()).unwrap();
         assert_eq!(
             extract_i64_scalar(&result),
@@ -704,7 +720,10 @@ fn oracle_bitwise_and_row_vector_broadcast() {
     let mat = make_i64_tensor(&[2, 3], vec![0xFF, 0xFF, 0xFF, 0xAA, 0x55, 0x33]);
     let result = eval_primitive(Primitive::BitwiseAnd, &[row, mat], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_i64_vec(&result), vec![0x0F, 0xF0, 0xFF, 0x0A, 0x50, 0x33]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![0x0F, 0xF0, 0xFF, 0x0A, 0x50, 0x33]
+    );
 }
 
 #[test]
@@ -714,7 +733,10 @@ fn oracle_bitwise_and_column_vector_broadcast() {
     let mat = make_i64_tensor(&[2, 3], vec![0xFF, 0xAA, 0x55, 0xFF, 0xAA, 0x55]);
     let result = eval_primitive(Primitive::BitwiseAnd, &[col, mat], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_i64_vec(&result), vec![0x0F, 0x0A, 0x05, 0xF0, 0xA0, 0x50]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![0x0F, 0x0A, 0x05, 0xF0, 0xA0, 0x50]
+    );
 }
 
 #[test]
@@ -723,7 +745,10 @@ fn oracle_bitwise_or_row_vector_broadcast() {
     let mat = make_i64_tensor(&[2, 3], vec![0x10, 0x20, 0x40, 0x00, 0x00, 0x00]);
     let result = eval_primitive(Primitive::BitwiseOr, &[row, mat], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_i64_vec(&result), vec![0x11, 0x22, 0x44, 0x01, 0x02, 0x04]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![0x11, 0x22, 0x44, 0x01, 0x02, 0x04]
+    );
 }
 
 #[test]
@@ -733,7 +758,10 @@ fn oracle_bitwise_xor_different_ranks_broadcast() {
     let mat = make_i64_tensor(&[2, 3], vec![0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF]);
     let result = eval_primitive(Primitive::BitwiseXor, &[vec, mat], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_i64_vec(&result), vec![0x0F, 0xF0, 0xFF, 0xF0, 0x0F, 0x00]);
+    assert_eq!(
+        extract_i64_vec(&result),
+        vec![0x0F, 0xF0, 0xFF, 0xF0, 0x0F, 0x00]
+    );
 }
 
 #[test]
@@ -752,15 +780,16 @@ fn oracle_bitwise_and_3d_broadcast() {
     let b = make_i64_tensor(
         &[2, 2, 3],
         vec![
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
         ],
     );
     let result = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 3]);
     assert_eq!(
         extract_i64_vec(&result),
-        vec![0x0F, 0xF0, 0xFF, 0x00, 0xAA, 0x55, 0x01, 0x00, 0x03, 0x00, 0x00, 0x04]
+        vec![
+            0x0F, 0xF0, 0xFF, 0x00, 0xAA, 0x55, 0x01, 0x00, 0x03, 0x00, 0x00, 0x04
+        ]
     );
 }
 
@@ -779,23 +808,41 @@ fn oracle_bitwise_or_zero_dim_broadcast() {
 #[test]
 fn property_bitwise_and_preserves_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)],
+        ),
     ] {
-        let a = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
+        let a =
+            Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
         let b = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::BitwiseAnd, &[a, b], &no_params()).unwrap();
-        assert_eq!(result.dtype(), dtype, "BitwiseAnd {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "BitwiseAnd {dtype:?}: dtype mismatch"
+        );
     }
 }
 
 #[test]
 fn property_bitwise_or_preserves_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)],
+        ),
     ] {
-        let a = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
+        let a =
+            Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
         let b = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::BitwiseOr, &[a, b], &no_params()).unwrap();
         assert_eq!(result.dtype(), dtype, "BitwiseOr {dtype:?}: dtype mismatch");
@@ -805,24 +852,45 @@ fn property_bitwise_or_preserves_int_dtypes() {
 #[test]
 fn property_bitwise_xor_preserves_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)],
+        ),
     ] {
-        let a = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
+        let a =
+            Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
         let b = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::BitwiseXor, &[a, b], &no_params()).unwrap();
-        assert_eq!(result.dtype(), dtype, "BitwiseXor {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "BitwiseXor {dtype:?}: dtype mismatch"
+        );
     }
 }
 
 #[test]
 fn property_bitwise_not_preserves_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)],
+        ),
     ] {
         let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::BitwiseNot, &[input], &no_params()).unwrap();
-        assert_eq!(result.dtype(), dtype, "BitwiseNot {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "BitwiseNot {dtype:?}: dtype mismatch"
+        );
     }
 }

@@ -1,6 +1,8 @@
 //! Oracle tests for Tile primitive.
 //!
 //! tile(x, reps) repeats the input array according to reps
+
+#![allow(clippy::cloned_ref_to_slice_refs)]
 //!
 //! For example:
 //! - tile([1, 2], [2]) = [1, 2, 1, 2]
@@ -86,10 +88,7 @@ fn oracle_tile_1d_repeat_2() {
     let input = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2])).unwrap();
     assert_eq!(extract_shape(&result), vec![6]);
-    assert_eq!(
-        extract_f64_vec(&result),
-        vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]
-    );
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]);
 }
 
 #[test]
@@ -97,10 +96,7 @@ fn oracle_tile_1d_repeat_3() {
     let input = make_f64_tensor(&[2], vec![1.0, 2.0]);
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[3])).unwrap();
     assert_eq!(extract_shape(&result), vec![6]);
-    assert_eq!(
-        extract_f64_vec(&result),
-        vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0]
-    );
+    assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 1.0, 2.0, 1.0, 2.0]);
 }
 
 #[test]
@@ -250,7 +246,10 @@ fn oracle_tile_4d() {
     assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
     let vals = extract_f64_vec(&result);
     assert_eq!(vals.len(), 16);
-    assert!(vals.iter().all(|&v| (v - 1.0).abs() < 1e-10 || (v - 2.0).abs() < 1e-10));
+    assert!(
+        vals.iter()
+            .all(|&v| (v - 1.0).abs() < 1e-10 || (v - 2.0).abs() < 1e-10)
+    );
 }
 
 #[test]
@@ -266,9 +265,8 @@ fn oracle_tile_special_values() {
 
 #[test]
 fn oracle_tile_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 6]);
 }
@@ -288,10 +286,14 @@ fn oracle_tile_bool_dtype() {
     match &result {
         Value::Tensor(t) => {
             assert_eq!(t.dtype, DType::Bool);
-            let vals: Vec<bool> = t.elements.iter().map(|l| match l {
-                Literal::Bool(b) => *b,
-                _ => panic!("expected bool"),
-            }).collect();
+            let vals: Vec<bool> = t
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Bool(b) => *b,
+                    _ => panic!("expected bool"),
+                })
+                .collect();
             assert_eq!(vals, vec![true, false, true, false, true, false]);
         }
         _ => panic!("expected tensor"),
@@ -387,51 +389,78 @@ fn oracle_tile_complex64_1d() {
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2])).unwrap();
     assert_eq!(extract_shape(&result), vec![6]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+        ]
+    );
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
 #[test]
 fn oracle_tile_complex64_2d_rows() {
-    let input = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 1.0), (2.0, 2.0),
-        (3.0, 3.0), (4.0, 4.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)],
+    );
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2, 1])).unwrap();
     assert_eq!(extract_shape(&result), vec![4, 2]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (2.0, 2.0),
-        (3.0, 3.0), (4.0, 4.0),
-        (1.0, 1.0), (2.0, 2.0),
-        (3.0, 3.0), (4.0, 4.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+        ]
+    );
 }
 
 #[test]
 fn oracle_tile_complex64_2d_cols() {
-    let input = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 0.0), (2.0, 0.0),
-        (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)],
+    );
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[1, 3])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 6]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (2.0, 0.0), (1.0, 0.0), (2.0, 0.0), (1.0, 0.0), (2.0, 0.0),
-        (3.0, 0.0), (4.0, 0.0), (3.0, 0.0), (4.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+        ]
+    );
 }
 
 #[test]
 fn oracle_tile_complex64_2d_both() {
-    let input = make_complex64_tensor(&[2, 2], vec![
-        (1.0, -1.0), (2.0, -2.0),
-        (3.0, -3.0), (4.0, -4.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0), (4.0, -4.0)],
+    );
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[2, 2])).unwrap();
     assert_eq!(extract_shape(&result), vec![4, 4]);
 }
@@ -442,11 +471,17 @@ fn oracle_tile_complex128_1d() {
     let result = eval_primitive(Primitive::Tile, &[input], &tile_params(&[3])).unwrap();
     assert_eq!(extract_shape(&result), vec![6]);
     let vals = extract_complex128_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 2.0), (3.0, 4.0),
-        (1.0, 2.0), (3.0, 4.0),
-        (1.0, 2.0), (3.0, 4.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 2.0),
+            (3.0, 4.0),
+            (1.0, 2.0),
+            (3.0, 4.0),
+            (1.0, 2.0),
+            (3.0, 4.0),
+        ]
+    );
     assert_eq!(result.dtype(), DType::Complex128);
 }
 

@@ -732,9 +732,7 @@ fn property_rem_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [5.0_f64, 7.0, 10.0];

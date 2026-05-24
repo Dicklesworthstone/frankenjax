@@ -661,9 +661,7 @@ fn property_pow_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // Pow requires positive base for fractional exponents
@@ -708,7 +706,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))

@@ -118,7 +118,12 @@ fn snapshot_tensor_2d_i64() {
 #[test]
 fn snapshot_tensor_scalar_shape() {
     let val = Value::Tensor(
-        TensorValue::new(DType::F32, Shape { dims: vec![] }, vec![Literal::from_f32(1.5)]).unwrap(),
+        TensorValue::new(
+            DType::F32,
+            Shape { dims: vec![] },
+            vec![Literal::from_f32(1.5)],
+        )
+        .unwrap(),
     );
     let json = serde_json::to_string_pretty(&val).unwrap();
     insta::assert_snapshot!(json);
@@ -148,9 +153,7 @@ fn snapshot_tensor_special_f64() {
 
 #[test]
 fn snapshot_tensor_empty() {
-    let val = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
-    );
+    let val = Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
     let json = serde_json::to_string_pretty(&val).unwrap();
     insta::assert_snapshot!(json, @r###"
     {

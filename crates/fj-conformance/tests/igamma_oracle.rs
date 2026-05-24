@@ -371,12 +371,10 @@ fn oracle_igamma_empty() {
 
 #[test]
 fn oracle_igamma_2d_empty() {
-    let a = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
-    let x = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let a =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
+    let x =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Igamma, &[a, x], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -431,9 +429,7 @@ fn property_igamma_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let a_values = [1.0_f64, 2.0, 3.0];
@@ -462,9 +458,7 @@ fn property_igammac_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let a_values = [1.0_f64, 2.0, 3.0];
@@ -488,7 +482,8 @@ fn metamorphic_igamma_igammac_sum_to_one() {
     let a = make_f64_tensor(&[5], vec![1.0, 2.0, 3.0, 5.0, 10.0]);
     let x = make_f64_tensor(&[5], vec![0.5, 1.0, 2.0, 3.0, 5.0]);
 
-    let igamma_result = eval_primitive(Primitive::Igamma, &[a.clone(), x.clone()], &no_params()).unwrap();
+    let igamma_result =
+        eval_primitive(Primitive::Igamma, &[a.clone(), x.clone()], &no_params()).unwrap();
     let igammac_result = eval_primitive(Primitive::Igammac, &[a, x], &no_params()).unwrap();
 
     let igamma_vals = extract_f64_vec(&igamma_result);
@@ -532,7 +527,7 @@ fn metamorphic_igamma_bounded_output() {
 
     for (i, &v) in vals.iter().enumerate() {
         assert!(
-            v >= 0.0 && v <= 1.0,
+            (0.0..=1.0).contains(&v),
             "igamma output should be in [0, 1] at index {i}: got {v}"
         );
     }

@@ -228,10 +228,7 @@ fn stop_gradient_vjp_rank2_zero_cotangent() {
     assert_eq!(cotangents.len(), 1);
     let tensor = cotangents[0].as_tensor().expect("expected tensor");
     assert_eq!(tensor.shape.dims, vec![2, 2]);
-    assert_eq!(
-        extract_f64_vec(&cotangents[0]),
-        vec![0.0, 0.0, 0.0, 0.0]
-    );
+    assert_eq!(extract_f64_vec(&cotangents[0]), vec![0.0, 0.0, 0.0, 0.0]);
 }
 
 #[test]
@@ -254,9 +251,8 @@ fn stop_gradient_preserves_special_values() {
 
 #[test]
 fn stop_gradient_empty_tensor() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
     let output = eval_primitive(
         Primitive::StopGradient,
         std::slice::from_ref(&input),
@@ -301,7 +297,9 @@ fn stop_gradient_preserves_3d_shape() {
     let input = Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: vec![2, 2, 2] },
+            Shape {
+                dims: vec![2, 2, 2],
+            },
             (1..=8).map(|x| Literal::from_f64(x as f64)).collect(),
         )
         .unwrap(),
@@ -315,7 +313,10 @@ fn stop_gradient_preserves_3d_shape() {
 
     let tensor = output.as_tensor().expect("expected tensor output");
     assert_eq!(tensor.shape.dims, vec![2, 2, 2]);
-    assert_eq!(extract_f64_vec(&output), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+    assert_eq!(
+        extract_f64_vec(&output),
+        vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    );
 }
 
 #[test]
@@ -324,7 +325,11 @@ fn stop_gradient_preserves_bool_dtype() {
         TensorValue::new(
             DType::Bool,
             Shape::vector(3),
-            vec![Literal::Bool(true), Literal::Bool(false), Literal::Bool(true)],
+            vec![
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::Bool(true),
+            ],
         )
         .unwrap(),
     );
@@ -384,7 +389,9 @@ fn stop_gradient_4d_shape() {
     let input = Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: vec![2, 2, 2, 2] },
+            Shape {
+                dims: vec![2, 2, 2, 2],
+            },
             (1..=16).map(|x| Literal::from_f64(x as f64)).collect(),
         )
         .unwrap(),
@@ -402,9 +409,8 @@ fn stop_gradient_4d_shape() {
 
 #[test]
 fn stop_gradient_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let output = eval_primitive(
         Primitive::StopGradient,
         std::slice::from_ref(&input),

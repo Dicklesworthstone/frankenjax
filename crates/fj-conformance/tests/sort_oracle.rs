@@ -304,8 +304,12 @@ fn metamorphic_sort_idempotent() {
 
     let sorted_once =
         eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
-    let sorted_twice =
-        eval_primitive(Primitive::Sort, std::slice::from_ref(&sorted_once), &no_params()).unwrap();
+    let sorted_twice = eval_primitive(
+        Primitive::Sort,
+        std::slice::from_ref(&sorted_once),
+        &no_params(),
+    )
+    .unwrap();
 
     assert_eq!(
         extract_i64_vec(&sorted_once),
@@ -322,8 +326,12 @@ fn metamorphic_sort_idempotent_f64() {
 
     let sorted_once =
         eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
-    let sorted_twice =
-        eval_primitive(Primitive::Sort, std::slice::from_ref(&sorted_once), &no_params()).unwrap();
+    let sorted_twice = eval_primitive(
+        Primitive::Sort,
+        std::slice::from_ref(&sorted_once),
+        &no_params(),
+    )
+    .unwrap();
 
     let vals1 = extract_f64_vec(&sorted_once);
     let vals2 = extract_f64_vec(&sorted_twice);
@@ -340,8 +348,12 @@ fn metamorphic_sort_2d_idempotent() {
 
     let sorted_once =
         eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
-    let sorted_twice =
-        eval_primitive(Primitive::Sort, std::slice::from_ref(&sorted_once), &no_params()).unwrap();
+    let sorted_twice = eval_primitive(
+        Primitive::Sort,
+        std::slice::from_ref(&sorted_once),
+        &no_params(),
+    )
+    .unwrap();
 
     assert_eq!(
         extract_i64_vec(&sorted_once),
@@ -381,8 +393,7 @@ fn metamorphic_sort_descending_reverses_ascending() {
 
     let sorted_asc =
         eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &no_params()).unwrap();
-    let sorted_desc =
-        eval_primitive(Primitive::Sort, &[input], &descending_params()).unwrap();
+    let sorted_desc = eval_primitive(Primitive::Sort, &[input], &descending_params()).unwrap();
 
     let asc_vals = extract_i64_vec(&sorted_asc);
     let desc_vals = extract_i64_vec(&sorted_desc);

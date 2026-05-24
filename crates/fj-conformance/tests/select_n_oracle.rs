@@ -315,7 +315,9 @@ fn matrix_f64(rows: u32, cols: u32, values: &[f64]) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: vec![rows, cols] },
+            Shape {
+                dims: vec![rows, cols],
+            },
             values.iter().copied().map(Literal::from_f64).collect(),
         )
         .unwrap(),
@@ -326,7 +328,9 @@ fn matrix_i64(rows: u32, cols: u32, values: &[i64]) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::I64,
-            Shape { dims: vec![rows, cols] },
+            Shape {
+                dims: vec![rows, cols],
+            },
             values.iter().copied().map(Literal::I64).collect(),
         )
         .unwrap(),
@@ -345,22 +349,20 @@ fn select_n_2d_elementwise() {
 
     let tensor = result.as_tensor().expect("expected tensor");
     assert_eq!(tensor.shape.dims, vec![2, 2]);
-    let vals: Vec<f64> = tensor.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+    let vals: Vec<f64> = tensor
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap())
+        .collect();
     assert_eq!(vals, vec![1.0, 20.0, 30.0, 4.0]);
 }
 
 #[test]
 fn select_n_empty_tensors() {
     let result = select_n(vec![
-        Value::Tensor(
-            TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap(),
-        ),
-        Value::Tensor(
-            TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
-        ),
-        Value::Tensor(
-            TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
-        ),
+        Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0] }, vec![]).unwrap()),
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap()),
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap()),
     ])
     .expect("empty tensor select_n should succeed");
 
@@ -421,7 +423,11 @@ fn property_select_n_preserves_dtype() {
         Value::scalar_f64(2.0),
     ])
     .unwrap();
-    assert_eq!(result.dtype(), DType::F64, "select_n should preserve F64 dtype");
+    assert_eq!(
+        result.dtype(),
+        DType::F64,
+        "select_n should preserve F64 dtype"
+    );
 }
 
 // ======================== Complex Type Tests ========================
@@ -523,14 +529,8 @@ fn oracle_select_n_complex128_preserves_dtype() {
 fn property_select_n_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let (case0, case1) = match dtype {
-            DType::Complex64 => (
-                scalar_complex64(1.0, 0.0),
-                scalar_complex64(2.0, 0.0),
-            ),
-            DType::Complex128 => (
-                scalar_complex128(1.0, 0.0),
-                scalar_complex128(2.0, 0.0),
-            ),
+            DType::Complex64 => (scalar_complex64(1.0, 0.0), scalar_complex64(2.0, 0.0)),
+            DType::Complex128 => (scalar_complex128(1.0, 0.0), scalar_complex128(2.0, 0.0)),
             _ => unreachable!(),
         };
         let result = select_n(vec![Value::scalar_i64(0), case0, case1])

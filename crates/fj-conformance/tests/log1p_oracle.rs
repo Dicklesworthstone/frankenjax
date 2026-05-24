@@ -3,6 +3,8 @@
 //! log1p(x) = log(1 + x)
 //!
 //! This function is numerically stable for small x, avoiding loss of precision
+
+#![allow(dead_code)]
 //! when computing log(1 + x) directly for small x.
 //!
 //! Tests:
@@ -451,9 +453,7 @@ fn property_log1p_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // log1p domain is x > -1
@@ -496,7 +496,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -598,7 +600,12 @@ fn oracle_log1p_complex64_pure_imaginary() {
     let input = make_complex64_scalar(0.0, 1.0);
     let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
     let (re, im) = extract_complex64_scalar(&result);
-    assert_complex64_close((re, im), (expected_re, expected_im), 1e-5, "log1p(i) = log(1+i)");
+    assert_complex64_close(
+        (re, im),
+        (expected_re, expected_im),
+        1e-5,
+        "log1p(i) = log(1+i)",
+    );
 }
 
 #[test]
@@ -612,7 +619,12 @@ fn oracle_log1p_complex64_general() {
     let input = make_complex64_scalar(1.0, 1.0);
     let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
     let (re, im) = extract_complex64_scalar(&result);
-    assert_complex64_close((re, im), (expected_re, expected_im), 1e-5, "log1p(1+i) = log(2+i)");
+    assert_complex64_close(
+        (re, im),
+        (expected_re, expected_im),
+        1e-5,
+        "log1p(1+i) = log(2+i)",
+    );
 }
 
 #[test]
@@ -638,7 +650,10 @@ fn oracle_log1p_complex64_log_identity() {
 
 #[test]
 fn oracle_log1p_complex64_vector() {
-    let input = make_complex64_tensor(&[3], vec![(0.0, 0.0), (std::f32::consts::E - 1.0, 0.0), (0.0, 1.0)]);
+    let input = make_complex64_tensor(
+        &[3],
+        vec![(0.0, 0.0), (std::f32::consts::E - 1.0, 0.0), (0.0, 1.0)],
+    );
     let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
 
@@ -662,7 +677,12 @@ fn oracle_log1p_complex128_general() {
     let input = make_complex128_scalar(1.0, 1.0);
     let result = eval_primitive(Primitive::Log1p, &[input], &no_params()).unwrap();
     let (re, im) = extract_complex128_scalar(&result);
-    assert_complex128_close((re, im), (expected_re, expected_im), 1e-12, "log1p(1+i) Complex128");
+    assert_complex128_close(
+        (re, im),
+        (expected_re, expected_im),
+        1e-12,
+        "log1p(1+i) Complex128",
+    );
 }
 
 #[test]

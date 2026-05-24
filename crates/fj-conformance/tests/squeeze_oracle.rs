@@ -291,16 +291,18 @@ fn oracle_squeeze_3d_no_change() {
 
 #[test]
 fn oracle_squeeze_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::I64, Shape { dims: vec![1, 0] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![1, 0] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0]);
 }
 
 #[test]
 fn oracle_squeeze_special_values() {
-    let input = make_f64_tensor(&[1, 4], vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0]);
+    let input = make_f64_tensor(
+        &[1, 4],
+        vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.0],
+    );
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_f64_vec(&result);
@@ -316,7 +318,11 @@ fn oracle_squeeze_bool_dtype() {
         TensorValue::new(
             DType::Bool,
             Shape { dims: vec![1, 3] },
-            vec![Literal::Bool(true), Literal::Bool(false), Literal::Bool(true)],
+            vec![
+                Literal::Bool(true),
+                Literal::Bool(false),
+                Literal::Bool(true),
+            ],
         )
         .unwrap(),
     );
@@ -351,7 +357,16 @@ fn property_squeeze_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![1, 3, 1] }, lits).unwrap())
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                lits,
+            )
+            .unwrap(),
+        )
     }
 
     let values = [1.0_f64, 2.0, 3.0];
@@ -454,8 +469,12 @@ fn oracle_squeeze_complex64_multiple_dims() {
     let input = make_complex64_tensor(
         &[1, 2, 1, 3, 1],
         vec![
-            (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-            (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
         ],
     );
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
@@ -468,8 +487,12 @@ fn oracle_squeeze_complex64_no_change() {
     let input = make_complex64_tensor(
         &[2, 3],
         vec![
-            (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-            (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
         ],
     );
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
@@ -478,10 +501,10 @@ fn oracle_squeeze_complex64_no_change() {
 
 #[test]
 fn oracle_squeeze_complex64_preserves_data() {
-    let input = make_complex64_tensor(&[1, 2, 1, 2], vec![
-        (1.0, 2.0), (3.0, 4.0),
-        (5.0, 6.0), (7.0, 8.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[1, 2, 1, 2],
+        vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0)],
+    );
     let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_complex64_vec(&result);
@@ -548,7 +571,14 @@ fn property_squeeze_preserves_complex_dtypes() {
             _ => unreachable!(),
         };
         let input = Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![1, 3, 1] }, lits).unwrap(),
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                lits,
+            )
+            .unwrap(),
         );
         let result = eval_primitive(Primitive::Squeeze, &[input], &no_params()).unwrap();
         let t = result.as_tensor().expect("tensor result");

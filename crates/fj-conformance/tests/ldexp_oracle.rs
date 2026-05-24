@@ -401,7 +401,11 @@ fn property_ldexp_preserves_float_dtype() {
     let x = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let n = make_i64_tensor(&[3], vec![1, 2, 3]);
     let result = eval_primitive(Primitive::Ldexp, &[x, n], &no_params()).unwrap();
-    assert_eq!(result.dtype(), DType::F64, "ldexp should preserve F64 dtype");
+    assert_eq!(
+        result.dtype(),
+        DType::F64,
+        "ldexp should preserve F64 dtype"
+    );
 }
 
 // ======================== METAMORPHIC: mathematical identities ========================
@@ -480,7 +484,11 @@ fn metamorphic_ldexp_scaling_relation() {
     let double_vals = extract_f64_vec(&double);
     let half_vals = extract_f64_vec(&half);
 
-    for (i, (&x_v, (&d, &h))) in x_vals.iter().zip(double_vals.iter().zip(half_vals.iter())).enumerate() {
+    for (i, (&x_v, (&d, &h))) in x_vals
+        .iter()
+        .zip(double_vals.iter().zip(half_vals.iter()))
+        .enumerate()
+    {
         assert!(
             (d - 2.0 * x_v).abs() < 1e-10,
             "ldexp(x, 1) should equal 2*x at index {i}: got {d}, expected {}",

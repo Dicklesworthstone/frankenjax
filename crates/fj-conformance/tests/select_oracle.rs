@@ -142,8 +142,12 @@ fn oracle_select_accepts_scalar_integer_condition() {
 
     // Zero integer treated as false
     let cond_zero = Value::scalar_i64(0);
-    let result_zero =
-        eval_primitive(Primitive::Select, &[cond_zero, on_true, on_false], &no_params()).unwrap();
+    let result_zero = eval_primitive(
+        Primitive::Select,
+        &[cond_zero, on_true, on_false],
+        &no_params(),
+    )
+    .unwrap();
     assert_eq!(result_zero.as_i64_scalar().unwrap(), 200);
 }
 
@@ -163,8 +167,12 @@ fn oracle_select_accepts_scalar_float_condition() {
 
     // Zero float treated as false
     let cond_zero = Value::Scalar(Literal::from_f64(0.0));
-    let result_zero =
-        eval_primitive(Primitive::Select, &[cond_zero, on_true, on_false], &no_params()).unwrap();
+    let result_zero = eval_primitive(
+        Primitive::Select,
+        &[cond_zero, on_true, on_false],
+        &no_params(),
+    )
+    .unwrap();
     assert_eq!(result_zero.as_i64_scalar().unwrap(), 0);
 }
 
@@ -212,11 +220,23 @@ fn oracle_select_infinity_is_truthy() {
         &no_params(),
     )
     .unwrap();
-    assert_eq!(result_pos.as_i64_scalar().unwrap(), 1, "+Inf should be truthy");
+    assert_eq!(
+        result_pos.as_i64_scalar().unwrap(),
+        1,
+        "+Inf should be truthy"
+    );
 
-    let result_neg =
-        eval_primitive(Primitive::Select, &[cond_neg, on_true, on_false], &no_params()).unwrap();
-    assert_eq!(result_neg.as_i64_scalar().unwrap(), 1, "-Inf should be truthy");
+    let result_neg = eval_primitive(
+        Primitive::Select,
+        &[cond_neg, on_true, on_false],
+        &no_params(),
+    )
+    .unwrap();
+    assert_eq!(
+        result_neg.as_i64_scalar().unwrap(),
+        1,
+        "-Inf should be truthy"
+    );
 }
 
 // ======================== 1D Tensor Tests ========================
@@ -530,7 +550,8 @@ fn metamorphic_select_same_branches() {
         for cond_val in [true, false] {
             let cond = Value::Scalar(Literal::Bool(cond_val));
             let a = make_f64_tensor(&[], vec![x]);
-            let result = eval_primitive(Primitive::Select, &[cond, a.clone(), a], &no_params()).unwrap();
+            let result =
+                eval_primitive(Primitive::Select, &[cond, a.clone(), a], &no_params()).unwrap();
             assert_close(
                 extract_f64_scalar(&result),
                 x,
@@ -549,7 +570,12 @@ fn metamorphic_select_all_true_tensor() {
     let cond = make_bool_tensor(&[4], vec![true, true, true, true]);
     let on_true = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
     let on_false = make_f64_tensor(&[4], vec![10.0, 20.0, 30.0, 40.0]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true.clone(), on_false], &no_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Select,
+        &[cond, on_true.clone(), on_false],
+        &no_params(),
+    )
+    .unwrap();
     assert_eq!(
         extract_f64_vec(&result),
         extract_f64_vec(&on_true),
@@ -565,7 +591,12 @@ fn metamorphic_select_all_false_tensor() {
     let cond = make_bool_tensor(&[4], vec![false, false, false, false]);
     let on_true = make_f64_tensor(&[4], vec![1.0, 2.0, 3.0, 4.0]);
     let on_false = make_f64_tensor(&[4], vec![10.0, 20.0, 30.0, 40.0]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false.clone()], &no_params()).unwrap();
+    let result = eval_primitive(
+        Primitive::Select,
+        &[cond, on_true, on_false.clone()],
+        &no_params(),
+    )
+    .unwrap();
     assert_eq!(
         extract_f64_vec(&result),
         extract_f64_vec(&on_false),
@@ -581,7 +612,8 @@ fn metamorphic_select_preserves_dtype() {
     let cond = make_bool_tensor(&[3], vec![true, false, true]);
     let on_true = make_i64_tensor(&[3], vec![1, 2, 3]);
     let on_false = make_i64_tensor(&[3], vec![10, 20, 30]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
 
     // Verify we can extract as i64 (would fail if dtype changed)
     let vals = extract_i64_vec(&result);
@@ -613,7 +645,12 @@ fn property_select_preserves_all_float_dtypes() {
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let on_true = make_vec(dtype, &on_true_vals);
         let on_false = make_vec(dtype, &on_false_vals);
-        let result = eval_primitive(Primitive::Select, &[cond.clone(), on_true, on_false], &no_params()).unwrap();
+        let result = eval_primitive(
+            Primitive::Select,
+            &[cond.clone(), on_true, on_false],
+            &no_params(),
+        )
+        .unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "select {dtype:?}: dtype mismatch");
         t.validate_dtype_consistency()
@@ -680,7 +717,8 @@ fn oracle_select_complex64_basic() {
     let cond = make_bool_tensor(&[3], vec![true, false, true]);
     let on_true = make_complex64_tensor(&[3], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0)]);
     let on_false = make_complex64_tensor(&[3], vec![(10.0, 10.0), (20.0, 20.0), (30.0, 30.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
     let vals = extract_complex64_vec(&result);
     assert_eq!(vals, vec![(1.0, 1.0), (20.0, 20.0), (3.0, 3.0)]);
@@ -692,7 +730,8 @@ fn oracle_select_complex64_all_true() {
     let cond = make_bool_tensor(&[3], vec![true, true, true]);
     let on_true = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
     let on_false = make_complex64_tensor(&[3], vec![(10.0, 0.0), (20.0, 0.0), (30.0, 0.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
     assert_eq!(vals, vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
 }
@@ -702,7 +741,8 @@ fn oracle_select_complex64_all_false() {
     let cond = make_bool_tensor(&[3], vec![false, false, false]);
     let on_true = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
     let on_false = make_complex64_tensor(&[3], vec![(10.0, 0.0), (20.0, 0.0), (30.0, 0.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
     assert_eq!(vals, vec![(10.0, 0.0), (20.0, 0.0), (30.0, 0.0)]);
 }
@@ -710,21 +750,22 @@ fn oracle_select_complex64_all_false() {
 #[test]
 fn oracle_select_complex64_2d() {
     let cond = make_bool_tensor(&[2, 2], vec![true, false, false, true]);
-    let on_true = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 1.0), (2.0, 2.0),
-        (3.0, 3.0), (4.0, 4.0),
-    ]);
-    let on_false = make_complex64_tensor(&[2, 2], vec![
-        (10.0, 10.0), (20.0, 20.0),
-        (30.0, 30.0), (40.0, 40.0),
-    ]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let on_true = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)],
+    );
+    let on_false = make_complex64_tensor(
+        &[2, 2],
+        vec![(10.0, 10.0), (20.0, 20.0), (30.0, 30.0), (40.0, 40.0)],
+    );
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (20.0, 20.0),
-        (30.0, 30.0), (4.0, 4.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(1.0, 1.0), (20.0, 20.0), (30.0, 30.0), (4.0, 4.0),]
+    );
 }
 
 #[test]
@@ -732,7 +773,8 @@ fn oracle_select_complex128_basic() {
     let cond = make_bool_tensor(&[3], vec![false, true, false]);
     let on_true = make_complex128_tensor(&[3], vec![(1.0, -1.0), (2.0, -2.0), (3.0, -3.0)]);
     let on_false = make_complex128_tensor(&[3], vec![(10.0, -10.0), (20.0, -20.0), (30.0, -30.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     let vals = extract_complex128_vec(&result);
     assert_eq!(vals, vec![(10.0, -10.0), (2.0, -2.0), (30.0, -30.0)]);
     assert_eq!(result.dtype(), DType::Complex128);
@@ -743,7 +785,8 @@ fn oracle_select_complex64_scalar_cond() {
     let cond = Value::Scalar(Literal::Bool(true));
     let on_true = make_complex64_tensor(&[2], vec![(1.0, 1.0), (2.0, 2.0)]);
     let on_false = make_complex64_tensor(&[2], vec![(10.0, 10.0), (20.0, 20.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
     assert_eq!(vals, vec![(1.0, 1.0), (2.0, 2.0)]);
 }
@@ -753,7 +796,8 @@ fn oracle_select_complex64_preserves_dtype() {
     let cond = make_bool_tensor(&[2], vec![true, false]);
     let on_true = make_complex64_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
     let on_false = make_complex64_tensor(&[2], vec![(10.0, 0.0), (20.0, 0.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
@@ -762,7 +806,8 @@ fn oracle_select_complex128_preserves_dtype() {
     let cond = make_bool_tensor(&[2], vec![true, false]);
     let on_true = make_complex128_tensor(&[2], vec![(1.0, 0.0), (2.0, 0.0)]);
     let on_false = make_complex128_tensor(&[2], vec![(10.0, 0.0), (20.0, 0.0)]);
-    let result = eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::Select, &[cond, on_true, on_false], &no_params()).unwrap();
     assert_eq!(result.dtype(), DType::Complex128);
 }
 
@@ -781,7 +826,12 @@ fn property_select_preserves_complex_dtypes() {
             ),
             _ => unreachable!(),
         };
-        let result = eval_primitive(Primitive::Select, &[cond.clone(), on_true, on_false], &no_params()).unwrap();
+        let result = eval_primitive(
+            Primitive::Select,
+            &[cond.clone(), on_true, on_false],
+            &no_params(),
+        )
+        .unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "select {dtype:?}: dtype mismatch");
         t.validate_dtype_consistency()

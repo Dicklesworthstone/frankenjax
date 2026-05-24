@@ -417,9 +417,8 @@ fn oracle_atan_empty() {
 
 #[test]
 fn oracle_atan_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Atan, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -470,7 +469,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -575,12 +576,7 @@ fn oracle_atan_complex64_pure_imaginary() {
     let input = make_complex64_scalar(0.0, y);
     let result = eval_primitive(Primitive::Atan, &[input], &no_params()).unwrap();
     let (re, im) = extract_complex64_scalar(&result);
-    assert_complex64_close(
-        (re, im),
-        (0.0, atanh_y),
-        1e-5,
-        "atan(0.5i) = i*atanh(0.5)",
-    );
+    assert_complex64_close((re, im), (0.0, atanh_y), 1e-5, "atan(0.5i) = i*atanh(0.5)");
 }
 
 #[test]
@@ -667,7 +663,9 @@ fn property_atan_preserves_all_float_dtypes() {
         Value::Tensor(
             TensorValue::new(
                 dtype,
-                Shape { dims: vec![values.len() as u32] },
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
                 values.iter().copied().map(lit_for).collect(),
             )
             .unwrap(),
@@ -684,8 +682,7 @@ fn property_atan_preserves_all_float_dtypes() {
             panic!("atan {dtype:?}: expected tensor");
         };
         assert_eq!(t.dtype, dtype, "atan {dtype:?}: dtype mismatch");
-        t.validate_dtype_consistency().unwrap_or_else(|e| {
-            panic!("atan {dtype:?}: validate_dtype_consistency failed: {e}")
-        });
+        t.validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("atan {dtype:?}: validate_dtype_consistency failed: {e}"));
     }
 }

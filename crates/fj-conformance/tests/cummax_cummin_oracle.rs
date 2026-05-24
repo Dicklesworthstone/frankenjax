@@ -221,8 +221,12 @@ fn oracle_cummin_already_descending() {
 #[test]
 fn metamorphic_cummax_last_equals_reduce_max() {
     let input = make_i64_tensor(&[5], vec![3, 1, 4, 1, 5]);
-    let cummax_result =
-        eval_primitive(Primitive::Cummax, std::slice::from_ref(&input), &no_params()).unwrap();
+    let cummax_result = eval_primitive(
+        Primitive::Cummax,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let cummax_vals = extract_i64_vec(&cummax_result);
 
     let max_result = eval_primitive(Primitive::ReduceMax, &[input], &axis_params(0)).unwrap();
@@ -238,8 +242,12 @@ fn metamorphic_cummax_last_equals_reduce_max() {
 #[test]
 fn metamorphic_cummin_last_equals_reduce_min() {
     let input = make_i64_tensor(&[5], vec![3, 1, 4, 1, 5]);
-    let cummin_result =
-        eval_primitive(Primitive::Cummin, std::slice::from_ref(&input), &no_params()).unwrap();
+    let cummin_result = eval_primitive(
+        Primitive::Cummin,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let cummin_vals = extract_i64_vec(&cummin_result);
 
     let min_result = eval_primitive(Primitive::ReduceMin, &[input], &axis_params(0)).unwrap();
@@ -320,9 +328,7 @@ fn property_cummax_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [1.0_f64, 3.0, 2.0];
@@ -349,9 +355,7 @@ fn property_cummin_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [3.0_f64, 1.0, 2.0];

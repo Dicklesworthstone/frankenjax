@@ -322,14 +322,26 @@ fn property_conj_preserves_complex_dtypes() {
     let c64_input = make_complex64_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
     let c64_result = eval_primitive(Primitive::Conj, &[c64_input], &no_params()).unwrap();
     let c64_t = c64_result.as_tensor().expect("tensor result");
-    assert_eq!(c64_t.dtype, DType::Complex64, "Conj should preserve Complex64 dtype");
-    c64_t.validate_dtype_consistency().expect("literal/dtype consistency");
+    assert_eq!(
+        c64_t.dtype,
+        DType::Complex64,
+        "Conj should preserve Complex64 dtype"
+    );
+    c64_t
+        .validate_dtype_consistency()
+        .expect("literal/dtype consistency");
 
     let c128_input = make_complex128_tensor(&[3], vec![(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)]);
     let c128_result = eval_primitive(Primitive::Conj, &[c128_input], &no_params()).unwrap();
     let c128_t = c128_result.as_tensor().expect("tensor result");
-    assert_eq!(c128_t.dtype, DType::Complex128, "Conj should preserve Complex128 dtype");
-    c128_t.validate_dtype_consistency().expect("literal/dtype consistency");
+    assert_eq!(
+        c128_t.dtype,
+        DType::Complex128,
+        "Conj should preserve Complex128 dtype"
+    );
+    c128_t
+        .validate_dtype_consistency()
+        .expect("literal/dtype consistency");
 }
 
 #[test]
@@ -338,7 +350,8 @@ fn property_real_extracts_to_float_dtype() {
     let result = eval_primitive(Primitive::Real, &[c128_input], &no_params()).unwrap();
     let t = result.as_tensor().expect("tensor result");
     assert_eq!(t.dtype, DType::F64, "Real on Complex128 should produce F64");
-    t.validate_dtype_consistency().expect("literal/dtype consistency");
+    t.validate_dtype_consistency()
+        .expect("literal/dtype consistency");
 }
 
 #[test]
@@ -347,7 +360,8 @@ fn property_imag_extracts_to_float_dtype() {
     let result = eval_primitive(Primitive::Imag, &[c128_input], &no_params()).unwrap();
     let t = result.as_tensor().expect("tensor result");
     assert_eq!(t.dtype, DType::F64, "Imag on Complex128 should produce F64");
-    t.validate_dtype_consistency().expect("literal/dtype consistency");
+    t.validate_dtype_consistency()
+        .expect("literal/dtype consistency");
 }
 
 // ======================== METAMORPHIC: mathematical identities ========================
@@ -386,7 +400,8 @@ fn metamorphic_complex_real_imag_roundtrip() {
     let z = make_complex128_tensor(&[3], vec![(3.0, 4.0), (-1.0, 2.0), (0.0, -7.0)]);
     let real_z = eval_primitive(Primitive::Real, &[z.clone()], &no_params()).unwrap();
     let imag_z = eval_primitive(Primitive::Imag, &[z.clone()], &no_params()).unwrap();
-    let reconstructed = eval_primitive(Primitive::Complex, &[real_z, imag_z], &no_params()).unwrap();
+    let reconstructed =
+        eval_primitive(Primitive::Complex, &[real_z, imag_z], &no_params()).unwrap();
     let orig_vals = extract_complex_vec(&z);
     let recon_vals = extract_complex_vec(&reconstructed);
     for ((orig_re, orig_im), (recon_re, recon_im)) in orig_vals.iter().zip(recon_vals.iter()) {

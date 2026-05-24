@@ -524,7 +524,11 @@ fn metamorphic_reduce_prod_commutative() {
         .unwrap(),
     );
 
-    assert_eq!(prod_x * prod_y, prod_y * prod_x, "prod(x) * prod(y) = prod(y) * prod(x)");
+    assert_eq!(
+        prod_x * prod_y,
+        prod_y * prod_x,
+        "prod(x) * prod(y) = prod(y) * prod(x)"
+    );
 }
 
 #[test]
@@ -562,9 +566,7 @@ fn property_reduce_prod_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [1.0_f64, 2.0, 3.0];
@@ -572,7 +574,11 @@ fn property_reduce_prod_preserves_all_float_dtypes() {
         let input = make_vec(dtype, &values);
         let result = eval_primitive(Primitive::ReduceProd, &[input], &no_params()).unwrap();
         // ReduceProd returns scalar or tensor depending on impl
-        assert_eq!(result.dtype(), dtype, "reduce_prod {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "reduce_prod {dtype:?}: dtype mismatch"
+        );
     }
 }
 
@@ -582,7 +588,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -595,7 +603,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -626,14 +636,11 @@ fn extract_complex128_scalar(v: &Value) -> (f64, f64) {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
-        _ => unreachable!("expected tensor"),
-    }
-}
-
-fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
-    match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -675,10 +682,10 @@ fn oracle_reduce_prod_complex128_1d() {
 
 fn oracle_reduce_prod_complex64_2d_axis0() {
     // [[1+0i, 2+0i], [3+0i, 4+0i]] along axis 0 => [3+0i, 8+0i]
-    let input = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 0.0), (2.0, 0.0),
-        (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)],
+    );
     let result = eval_primitive(Primitive::ReduceProd, &[input], &axis_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![2]);
     let vals = extract_complex64_vec(&result);
@@ -712,16 +719,20 @@ fn oracle_reduce_prod_complex64_single_element() {
 fn property_reduce_prod_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {
-            DType::Complex64 => make_complex64_tensor(&[3], vec![
-                (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-            ]),
-            DType::Complex128 => make_complex128_tensor(&[3], vec![
-                (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-            ]),
+            DType::Complex64 => {
+                make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)])
+            }
+            DType::Complex128 => {
+                make_complex128_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)])
+            }
             _ => unreachable!(),
         };
         let result = eval_primitive(Primitive::ReduceProd, &[input], &no_params())
             .expect("reduce_prod should succeed for complex dtype");
-        assert_eq!(result.dtype(), dtype, "reduce_prod {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "reduce_prod {dtype:?}: dtype mismatch"
+        );
     }
 }

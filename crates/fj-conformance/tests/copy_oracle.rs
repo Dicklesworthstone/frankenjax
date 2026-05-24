@@ -278,9 +278,8 @@ fn oracle_copy_subnormal_values() {
 
 #[test]
 fn oracle_copy_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
     assert!(result.as_tensor().unwrap().elements.is_empty());
@@ -318,10 +317,22 @@ fn property_copy_preserves_all_float_dtypes() {
 #[test]
 fn property_copy_preserves_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I32, vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)]),
-        (DType::I64, vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)]),
-        (DType::U32, vec![Literal::U32(1), Literal::U32(2), Literal::U32(3)]),
-        (DType::U64, vec![Literal::U64(1), Literal::U64(2), Literal::U64(3)]),
+        (
+            DType::I32,
+            vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)],
+        ),
+        (
+            DType::I64,
+            vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)],
+        ),
+        (
+            DType::U32,
+            vec![Literal::U32(1), Literal::U32(2), Literal::U32(3)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(1), Literal::U64(2), Literal::U64(3)],
+        ),
     ] {
         let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::Copy, &[input], &no_params()).unwrap();

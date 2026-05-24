@@ -285,6 +285,10 @@ fn property_is_finite_always_returns_bool() {
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
         let result = eval_primitive(Primitive::IsFinite, &[input], &no_params()).unwrap();
-        assert_eq!(result.dtype(), DType::Bool, "is_finite with {dtype:?} input should return Bool");
+        assert_eq!(
+            result.dtype(),
+            DType::Bool,
+            "is_finite with {dtype:?} input should return Bool"
+        );
     }
 }

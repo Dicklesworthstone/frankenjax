@@ -84,7 +84,13 @@ fn oracle_log2_power_of_two() {
         let val = (1_u64 << n) as f64;
         let input = make_f64_tensor(&[], vec![val]);
         let result = eval_primitive(Primitive::Log2, &[input], &no_params()).unwrap();
-        assert_eq!(extract_f64_scalar(&result), n as f64, "log2(2^{}) = {}", n, n);
+        assert_eq!(
+            extract_f64_scalar(&result),
+            n as f64,
+            "log2(2^{}) = {}",
+            n,
+            n
+        );
     }
 }
 
@@ -204,8 +210,7 @@ fn oracle_exp2_log2_inverse() {
     for x in [0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 100.0] {
         let input = make_f64_tensor(&[], vec![x]);
         let log2_result = eval_primitive(Primitive::Log2, &[input.clone()], &no_params()).unwrap();
-        let roundtrip =
-            eval_primitive(Primitive::Exp2, &[log2_result], &no_params()).unwrap();
+        let roundtrip = eval_primitive(Primitive::Exp2, &[log2_result], &no_params()).unwrap();
         let actual = extract_f64_scalar(&roundtrip);
         assert!(
             (actual - x).abs() / x < 1e-10,
@@ -222,8 +227,7 @@ fn oracle_log2_exp2_inverse() {
     for x in [-5.0, -1.0, 0.0, 1.0, 5.0, 10.0] {
         let input = make_f64_tensor(&[], vec![x]);
         let exp2_result = eval_primitive(Primitive::Exp2, &[input.clone()], &no_params()).unwrap();
-        let roundtrip =
-            eval_primitive(Primitive::Log2, &[exp2_result], &no_params()).unwrap();
+        let roundtrip = eval_primitive(Primitive::Log2, &[exp2_result], &no_params()).unwrap();
         let actual = extract_f64_scalar(&roundtrip);
         assert!(
             (actual - x).abs() < 1e-10,
@@ -273,7 +277,10 @@ fn oracle_exp2_matrix() {
 
 #[test]
 fn oracle_log2_3d_shape() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0],
+    );
     let result = eval_primitive(Primitive::Log2, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -309,18 +316,16 @@ fn oracle_exp2_empty_tensor() {
 
 #[test]
 fn oracle_log2_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Log2, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
 
 #[test]
 fn oracle_exp2_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Exp2, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -343,7 +348,11 @@ fn oracle_exp2_preserves_dtype() {
 fn oracle_log2_neg_zero() {
     let input = make_f64_tensor(&[], vec![-0.0]);
     let result = eval_primitive(Primitive::Log2, &[input], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), f64::NEG_INFINITY, "log2(-0) = -inf");
+    assert_eq!(
+        extract_f64_scalar(&result),
+        f64::NEG_INFINITY,
+        "log2(-0) = -inf"
+    );
 }
 
 #[test]
@@ -368,9 +377,7 @@ fn property_log2_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // log2 domain is x > 0
@@ -398,9 +405,7 @@ fn property_exp2_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -420,7 +425,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -433,7 +440,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -444,7 +453,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -472,7 +485,11 @@ fn oracle_exp2_complex64_with_imaginary() {
     let result = eval_primitive(Primitive::Exp2, &[input], &no_params())
         .expect("exp2 complex64 with imaginary should succeed");
     let vals = extract_complex64_vec(&result);
-    assert!((vals[0].0 - (-1.0)).abs() < 1e-4, "expected -1, got {}", vals[0].0);
+    assert!(
+        (vals[0].0 - (-1.0)).abs() < 1e-4,
+        "expected -1, got {}",
+        vals[0].0
+    );
     assert!(vals[0].1.abs() < 1e-4, "expected 0, got {}", vals[0].1);
 }
 
@@ -499,7 +516,11 @@ fn oracle_log2_complex64_negative_real() {
     let vals = extract_complex64_vec(&result);
     let expected_im = std::f32::consts::PI / 2.0_f32.ln();
     assert!(vals[0].0.abs() < 1e-4, "expected 0, got {}", vals[0].0);
-    assert!((vals[0].1 - expected_im).abs() < 1e-4, "expected {expected_im}, got {}", vals[0].1);
+    assert!(
+        (vals[0].1 - expected_im).abs() < 1e-4,
+        "expected {expected_im}, got {}",
+        vals[0].1
+    );
 }
 
 #[test]
@@ -532,7 +553,11 @@ fn property_log2_exp2_preserves_complex_dtypes() {
         for primitive in [Primitive::Log2, Primitive::Exp2] {
             let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
                 .expect("log2/exp2 should succeed for complex dtype");
-            assert_eq!(result.dtype(), dtype, "{primitive:?} {dtype:?}: dtype mismatch");
+            assert_eq!(
+                result.dtype(),
+                dtype,
+                "{primitive:?} {dtype:?}: dtype mismatch"
+            );
         }
     }
 }

@@ -5,6 +5,8 @@
 //! - first index wins for ties
 //! - scalar inputs return index 0
 
+#![allow(clippy::cloned_ref_to_slice_refs)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -307,7 +309,8 @@ fn property_argmin_argmax_output_i64_for_all_float_inputs() {
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
 
-        let min_result = eval_primitive(Primitive::Argmin, &[input.clone()], &axis_params(0)).unwrap();
+        let min_result =
+            eval_primitive(Primitive::Argmin, &[input.clone()], &axis_params(0)).unwrap();
         assert!(
             matches!(min_result.dtype(), DType::I32 | DType::I64),
             "argmin on {dtype:?} should return integer indices, got {:?}",

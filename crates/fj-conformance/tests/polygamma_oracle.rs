@@ -214,7 +214,9 @@ fn tensor_f64(shape: &[u32], data: &[f64]) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::F64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.iter().copied().map(Literal::from_f64).collect(),
         )
         .unwrap(),
@@ -294,9 +296,24 @@ fn polygamma_broadcast_singleton_to_vector() {
     let expected_trigamma_1 = std::f64::consts::PI.powi(2) / 6.0;
     let expected_trigamma_2 = expected_trigamma_1 - 1.0;
     let expected_trigamma_3 = expected_trigamma_2 - 0.25;
-    assert_close(vals[0], expected_trigamma_1, POLYGAMMA_APPROX_TOL, "singleton→vec[0]");
-    assert_close(vals[1], expected_trigamma_2, POLYGAMMA_APPROX_TOL, "singleton→vec[1]");
-    assert_close(vals[2], expected_trigamma_3, POLYGAMMA_APPROX_TOL, "singleton→vec[2]");
+    assert_close(
+        vals[0],
+        expected_trigamma_1,
+        POLYGAMMA_APPROX_TOL,
+        "singleton→vec[0]",
+    );
+    assert_close(
+        vals[1],
+        expected_trigamma_2,
+        POLYGAMMA_APPROX_TOL,
+        "singleton→vec[1]",
+    );
+    assert_close(
+        vals[2],
+        expected_trigamma_3,
+        POLYGAMMA_APPROX_TOL,
+        "singleton→vec[2]",
+    );
 }
 
 #[test]
@@ -327,8 +344,18 @@ fn polygamma_broadcast_column_to_row() {
     assert_eq!(get_shape(&result), vec![2, 3]);
     let vals = get_elements(&result);
     // Row 0: digamma, Row 1: trigamma
-    assert_close(vals[0], -EULER_MASCHERONI, POLYGAMMA_APPROX_TOL, "col×row[0,0]");
-    assert_close(vals[1], 1.0 - EULER_MASCHERONI, POLYGAMMA_APPROX_TOL, "col×row[0,1]");
+    assert_close(
+        vals[0],
+        -EULER_MASCHERONI,
+        POLYGAMMA_APPROX_TOL,
+        "col×row[0,0]",
+    );
+    assert_close(
+        vals[1],
+        1.0 - EULER_MASCHERONI,
+        POLYGAMMA_APPROX_TOL,
+        "col×row[0,1]",
+    );
     let trigamma_1 = std::f64::consts::PI.powi(2) / 6.0;
     assert_close(vals[3], trigamma_1, POLYGAMMA_APPROX_TOL, "col×row[1,0]");
 }
@@ -350,7 +377,10 @@ fn polygamma_broadcast_different_ranks() {
 fn polygamma_broadcast_incompatible_shapes_error() {
     let result = eval_primitive(
         Primitive::Polygamma,
-        &[tensor_f64(&[2], &[1.0, 1.0]), tensor_f64(&[3], &[1.0, 2.0, 3.0])],
+        &[
+            tensor_f64(&[2], &[1.0, 1.0]),
+            tensor_f64(&[3], &[1.0, 2.0, 3.0]),
+        ],
         &no_params(),
     );
     assert!(
@@ -399,9 +429,8 @@ fn polygamma_noninteger_order() {
 #[test]
 fn polygamma_2d_empty() {
     let order = scalar_f64(1.0);
-    let x = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let x =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_polygamma(order, x);
     assert_eq!(get_shape(&result), vec![0, 3]);
 }

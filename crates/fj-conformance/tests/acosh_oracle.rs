@@ -288,9 +288,8 @@ fn oracle_acosh_3d() {
 
 #[test]
 fn oracle_acosh_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -307,15 +306,20 @@ fn oracle_acosh_near_one() {
     let input = make_f64_tensor(&[], vec![1.0 + 1e-10]);
     let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
-    assert!(val > 0.0 && val < 1e-4, "acosh(1+tiny) should be small positive");
+    assert!(
+        val > 0.0 && val < 1e-4,
+        "acosh(1+tiny) should be small positive"
+    );
 }
 
 #[test]
 fn oracle_acosh_4d() {
-    let input = make_f64_tensor(&[2, 2, 2, 2], vec![
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0,
-        1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5,
-    ]);
+    let input = make_f64_tensor(
+        &[2, 2, 2, 2],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5,
+        ],
+    );
     let result = eval_primitive(Primitive::Acosh, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
 }
@@ -335,9 +339,7 @@ fn property_acosh_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // acosh domain is x >= 1
@@ -402,7 +404,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -455,7 +461,7 @@ fn oracle_acosh_complex128_pure_imaginary() {
     let vec = extract_complex128_vec(&result);
     assert_eq!(vec.len(), 1);
     // Approximate expected value
-    let expected = (0.8813735870195430, std::f64::consts::FRAC_PI_2);
+    let expected = (0.881_373_587_019_543, std::f64::consts::FRAC_PI_2);
     assert_complex_close(vec[0], expected, 1e-10, "acosh(i)");
 }
 
@@ -468,7 +474,12 @@ fn oracle_acosh_complex64_vector() {
     assert_eq!(vec.len(), 3);
 
     // acosh(1) = 0
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-5, "acosh(1)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-5,
+        "acosh(1)",
+    );
 
     // acosh(2) = acosh(2)
     assert_complex_close(
@@ -490,7 +501,12 @@ fn oracle_acosh_complex_cosh_inverse_identity() {
         let cosh_acosh = eval_primitive(Primitive::Cosh, &[acosh_result], &no_params()).unwrap();
 
         let result = extract_complex128_vec(&cosh_acosh)[0];
-        assert_complex_close(result, (a, b), 1e-9, &format!("cosh(acosh({a}+{b}i)) = {a}+{b}i"));
+        assert_complex_close(
+            result,
+            (a, b),
+            1e-9,
+            &format!("cosh(acosh({a}+{b}i)) = {a}+{b}i"),
+        );
     }
 }
 
@@ -512,7 +528,11 @@ fn oracle_acosh_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Acosh, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "acosh should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "acosh should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

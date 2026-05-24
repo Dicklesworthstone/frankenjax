@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![allow(clippy::cloned_ref_to_slice_refs)]
 
 use fj_core::{Atom, DType, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_lax::{eval_primitive, eval_primitive_multi};
@@ -354,12 +355,8 @@ fn zeros_like(v: &Value) -> Value {
             Literal::F16Bits(_) => Value::Scalar(Literal::from_f16_f32(0.0)),
             Literal::F32Bits(_) => Value::scalar_f32(0.0),
             Literal::F64Bits(_) => Value::scalar_f64(0.0),
-            Literal::Complex64Bits(..) => {
-                Value::Scalar(Literal::from_complex64(0.0, 0.0))
-            }
-            Literal::Complex128Bits(..) => {
-                Value::Scalar(Literal::from_complex128(0.0, 0.0))
-            }
+            Literal::Complex64Bits(..) => Value::Scalar(Literal::from_complex64(0.0, 0.0)),
+            Literal::Complex128Bits(..) => Value::Scalar(Literal::from_complex128(0.0, 0.0)),
         },
         Value::Tensor(t) => {
             // Preserve dtype for differentiable types (F*, Complex*);
@@ -368,9 +365,7 @@ fn zeros_like(v: &Value) -> Value {
             // stays I64 to match the existing scalar arm.
             let (zero_lit, out_dtype) = match t.dtype {
                 DType::I64 | DType::I32 => (Literal::I64(0), DType::I64),
-                DType::U32 | DType::U64 | DType::Bool => {
-                    (Literal::from_f64(0.0), DType::F64)
-                }
+                DType::U32 | DType::U64 | DType::Bool => (Literal::from_f64(0.0), DType::F64),
                 _ => (zero_literal_for_dtype(t.dtype), t.dtype),
             };
             let elements = vec![zero_lit; t.elements.len()];
@@ -425,12 +420,8 @@ fn ones_like(v: &Value) -> Value {
             Literal::F16Bits(_) => Value::Scalar(Literal::from_f16_f32(1.0)),
             Literal::F32Bits(_) => Value::scalar_f32(1.0),
             Literal::F64Bits(_) => Value::scalar_f64(1.0),
-            Literal::Complex64Bits(..) => {
-                Value::Scalar(Literal::from_complex64(1.0, 0.0))
-            }
-            Literal::Complex128Bits(..) => {
-                Value::Scalar(Literal::from_complex128(1.0, 0.0))
-            }
+            Literal::Complex64Bits(..) => Value::Scalar(Literal::from_complex64(1.0, 0.0)),
+            Literal::Complex128Bits(..) => Value::Scalar(Literal::from_complex128(1.0, 0.0)),
         },
         Value::Tensor(t) => {
             let (one_lit, out_dtype) = match t.dtype {
@@ -1075,7 +1066,7 @@ fn dot_general_vjp(
         _ => {
             return Err(AdError::EvalFailed(
                 "dot_general VJP requires tensor inputs".into(),
-            ))
+            ));
         }
     };
 
@@ -1090,27 +1081,47 @@ fn dot_general_vjp(
         .collect();
 
     let mut d_lhs_params = BTreeMap::new();
-    let g_contracting: Vec<usize> = (lhs_batch.len()..lhs_batch.len() + lhs_free_dims.len()).collect();
+    let g_contracting: Vec<usize> =
+        (lhs_batch.len()..lhs_batch.len() + lhs_free_dims.len()).collect();
     let rhs_new_contracting: Vec<usize> = rhs_free_dims.clone();
     d_lhs_params.insert(
         "lhs_contracting_dims".to_string(),
-        g_contracting.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        g_contracting
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     d_lhs_params.insert(
         "rhs_contracting_dims".to_string(),
-        rhs_new_contracting.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        rhs_new_contracting
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     d_lhs_params.insert(
         "lhs_batch_dims".to_string(),
-        (0..lhs_batch.len()).map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        (0..lhs_batch.len())
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     d_lhs_params.insert(
         "rhs_batch_dims".to_string(),
-        rhs_batch.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        rhs_batch
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
 
-    let d_lhs = eval_primitive(Primitive::DotGeneral, &[g.clone(), rhs.clone()], &d_lhs_params)
-        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let d_lhs = eval_primitive(
+        Primitive::DotGeneral,
+        &[g.clone(), rhs.clone()],
+        &d_lhs_params,
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
     let mut d_rhs_params = BTreeMap::new();
     let lhs_new_contracting: Vec<usize> = lhs_free_dims.clone();
@@ -1118,23 +1129,42 @@ fn dot_general_vjp(
         (lhs_batch.len()..lhs_batch.len() + lhs_free_dims.len()).collect();
     d_rhs_params.insert(
         "lhs_contracting_dims".to_string(),
-        lhs_new_contracting.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        lhs_new_contracting
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     d_rhs_params.insert(
         "rhs_contracting_dims".to_string(),
-        g_contracting_rhs.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        g_contracting_rhs
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     d_rhs_params.insert(
         "lhs_batch_dims".to_string(),
-        lhs_batch.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        lhs_batch
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
     d_rhs_params.insert(
         "rhs_batch_dims".to_string(),
-        (0..rhs_batch.len()).map(|d| d.to_string()).collect::<Vec<_>>().join(","),
+        (0..rhs_batch.len())
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
     );
 
-    let d_rhs = eval_primitive(Primitive::DotGeneral, &[lhs.clone(), g.clone()], &d_rhs_params)
-        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let d_rhs = eval_primitive(
+        Primitive::DotGeneral,
+        &[lhs.clone(), g.clone()],
+        &d_rhs_params,
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
     Ok(vec![d_lhs, d_rhs])
 }
@@ -1430,8 +1460,12 @@ pub fn vjp(
             // d/dx = 2^(x - logaddexp2(x, y)), d/dy = 2^(y - logaddexp2(x, y))
             let x = &inputs[0];
             let y = &inputs[1];
-            let lae2 = eval_primitive(Primitive::LogAddExp2, &[x.clone(), y.clone()], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let lae2 = eval_primitive(
+                Primitive::LogAddExp2,
+                &[x.clone(), y.clone()],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let x_norm = value_sub(x, &lae2)?;
             let y_norm = value_sub(y, &lae2)?;
             let wx = eval_primitive(Primitive::Exp2, &[x_norm], &BTreeMap::new())
@@ -1502,10 +1536,7 @@ pub fn vjp(
             )
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let neg_half = scalar_constant_matching_dtype(-0.5, g);
-            Ok(vec![value_mul(
-                g,
-                &value_mul(&neg_half, &x_pow_neg1p5)?,
-            )?])
+            Ok(vec![value_mul(g, &value_mul(&neg_half, &x_pow_neg1p5)?)?])
         }
         Primitive::Floor | Primitive::Ceil | Primitive::Round | Primitive::Trunc => {
             Ok(vec![zeros_like(&inputs[0])])
@@ -1675,10 +1706,7 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             // Match the 2/√π coefficient to the gradient's dtype so an
             // F32 erf input doesn't widen to F64 via F64×F32.
-            let coeff = scalar_constant_matching_dtype(
-                2.0 / std::f64::consts::PI.sqrt(),
-                g,
-            );
+            let coeff = scalar_constant_matching_dtype(2.0 / std::f64::consts::PI.sqrt(), g);
             let factor = value_mul(&coeff, &exp_neg_x2)?;
             Ok(vec![value_mul(g, &factor)?])
         }
@@ -1689,10 +1717,7 @@ pub fn vjp(
             let neg_x2 = value_neg(&x2)?;
             let exp_neg_x2 = eval_primitive(Primitive::Exp, &[neg_x2], &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let coeff = scalar_constant_matching_dtype(
-                -2.0 / std::f64::consts::PI.sqrt(),
-                g,
-            );
+            let coeff = scalar_constant_matching_dtype(-2.0 / std::f64::consts::PI.sqrt(), g);
             let factor = value_mul(&coeff, &exp_neg_x2)?;
             Ok(vec![value_mul(g, &factor)?])
         }
@@ -1727,10 +1752,7 @@ pub fn vjp(
             let erf_inv_sq = value_mul(&erf_inv_x, &erf_inv_x)?;
             let exp_term = eval_primitive(Primitive::Exp, &[erf_inv_sq], &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let coeff = scalar_constant_matching_dtype(
-                std::f64::consts::PI.sqrt() / 2.0,
-                g,
-            );
+            let coeff = scalar_constant_matching_dtype(std::f64::consts::PI.sqrt() / 2.0, g);
             let factor = value_mul(&coeff, &exp_term)?;
             Ok(vec![value_mul(g, &factor)?])
         }
@@ -1853,9 +1875,7 @@ pub fn vjp(
             Ok(vec![g.clone(), db])
         }
         // Gcd/Lcm: integer operations, non-differentiable
-        Primitive::Gcd | Primitive::Lcm => {
-            Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])])
-        }
+        Primitive::Gcd | Primitive::Lcm => Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])]),
         Primitive::Atan2 => {
             // d/da atan2(a,b) = b/(a²+b²), d/db = -a/(a²+b²)
             let a = &inputs[0];
@@ -2452,12 +2472,9 @@ pub fn vjp(
                 &BTreeMap::new(),
             )
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let min_lt_max = eval_primitive(
-                Primitive::Lt,
-                &[min.clone(), max.clone()],
-                &BTreeMap::new(),
-            )
-            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let min_lt_max =
+                eval_primitive(Primitive::Lt, &[min.clone(), max.clone()], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let operand_gt_min = eval_primitive(
                 Primitive::Gt,
                 &[operand.clone(), min.clone()],
@@ -2668,9 +2685,13 @@ pub fn vjp(
             let input_dtype = inputs[0].dtype();
             let mut back_params = BTreeMap::new();
             back_params.insert("new_dtype".to_owned(), format!("{input_dtype:?}"));
-            eval_primitive(Primitive::ConvertElementType, std::slice::from_ref(g), &back_params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))
-                .map(|v| vec![v])
+            eval_primitive(
+                Primitive::ConvertElementType,
+                std::slice::from_ref(g),
+                &back_params,
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))
+            .map(|v| vec![v])
         }
         Primitive::BitcastConvertType => Ok(vec![zeros_like(&inputs[0])]),
         Primitive::ReducePrecision => Ok(vec![g.clone()]),
@@ -2729,10 +2750,9 @@ pub fn vjp(
                                         f64::from(f32::from_bits(*re)),
                                         f64::from(f32::from_bits(*im)),
                                     ),
-                                    Literal::Complex128Bits(re, im) => (
-                                        f64::from_bits(*re),
-                                        f64::from_bits(*im),
-                                    ),
+                                    Literal::Complex128Bits(re, im) => {
+                                        (f64::from_bits(*re), f64::from_bits(*im))
+                                    }
                                     _ => (0.0, 0.0),
                                 })
                                 .collect();
@@ -3185,8 +3205,16 @@ pub fn vjp(
                     let axis_size = input_t.shape.dims[input_rank - 1] as usize;
                     let k = g_t.shape.dims[g_t.shape.rank() - 1] as usize;
                     let n_slices = input_t.elements.len() / axis_size;
-                    let g_vals: Vec<f64> = g_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
-                    let idx_vals: Vec<i64> = idx_t.elements.iter().map(|l| l.as_i64().unwrap_or(0)).collect();
+                    let g_vals: Vec<f64> = g_t
+                        .elements
+                        .iter()
+                        .map(|l| l.as_f64().unwrap_or(0.0))
+                        .collect();
+                    let idx_vals: Vec<i64> = idx_t
+                        .elements
+                        .iter()
+                        .map(|l| l.as_i64().unwrap_or(0))
+                        .collect();
 
                     let mut result = vec![0.0_f64; input_t.elements.len()];
                     for slice_idx in 0..n_slices {
@@ -3200,7 +3228,8 @@ pub fn vjp(
                         }
                     }
 
-                    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+                    let elements: Vec<Literal> =
+                        result.into_iter().map(Literal::from_f64).collect();
                     let tensor = TensorValue::new(DType::F64, input_t.shape.clone(), elements)
                         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
                     Ok(vec![Value::Tensor(tensor)])
@@ -3328,9 +3357,10 @@ pub fn vjp(
         Primitive::BitwiseAnd | Primitive::BitwiseOr | Primitive::BitwiseXor => {
             Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])])
         }
-        Primitive::BitwiseNot | Primitive::PopulationCount | Primitive::CountLeadingZeros | Primitive::CountTrailingZeros => {
-            Ok(vec![zeros_like(&inputs[0])])
-        }
+        Primitive::BitwiseNot
+        | Primitive::PopulationCount
+        | Primitive::CountLeadingZeros
+        | Primitive::CountTrailingZeros => Ok(vec![zeros_like(&inputs[0])]),
         Primitive::ShiftLeft | Primitive::ShiftRightArithmetic | Primitive::ShiftRightLogical => {
             Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])])
         }
@@ -3372,8 +3402,12 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let one = ones_like(h0);
             let zero_h0 = zeros_like(h0);
-            let gh0_mask = eval_primitive(Primitive::Select, &[x_is_zero, one, zero_h0], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gh0_mask = eval_primitive(
+                Primitive::Select,
+                &[x_is_zero, one, zero_h0],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let gh0 = value_mul(g, &gh0_mask)?;
             Ok(vec![gx, gh0])
         }
@@ -3410,13 +3444,18 @@ pub fn vjp(
             let x = &inputs[0];
             let y = &inputs[1];
             let zero = zeros_like(x);
-            let x_is_zero = eval_primitive(Primitive::Eq, &[x.clone(), zero.clone()], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let x_is_zero =
+                eval_primitive(Primitive::Eq, &[x.clone(), zero.clone()], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let log_y = eval_primitive(Primitive::Log, std::slice::from_ref(y), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let g_log_y = value_mul(g, &log_y)?;
-            let gx = eval_primitive(Primitive::Select, &[x_is_zero, zero.clone(), g_log_y], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gx = eval_primitive(
+                Primitive::Select,
+                &[x_is_zero, zero.clone(), g_log_y],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let gy = value_mul(g, &value_div(x, y)?)?;
             Ok(vec![gx, gy])
         }
@@ -3428,13 +3467,19 @@ pub fn vjp(
             let y = &inputs[1];
             let zero = zeros_like(x);
             let one = ones_like(y);
-            let x_is_zero = eval_primitive(Primitive::Eq, &[x.clone(), zero.clone()], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let log1p_y = eval_primitive(Primitive::Log1p, std::slice::from_ref(y), &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let x_is_zero =
+                eval_primitive(Primitive::Eq, &[x.clone(), zero.clone()], &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let log1p_y =
+                eval_primitive(Primitive::Log1p, std::slice::from_ref(y), &BTreeMap::new())
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let g_log1p_y = value_mul(g, &log1p_y)?;
-            let gx = eval_primitive(Primitive::Select, &[x_is_zero, zero.clone(), g_log1p_y], &BTreeMap::new())
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let gx = eval_primitive(
+                Primitive::Select,
+                &[x_is_zero, zero.clone(), g_log1p_y],
+                &BTreeMap::new(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let one_plus_y = value_add(&one, y)?;
             let gy = value_mul(g, &value_div(x, &one_plus_y)?)?;
             Ok(vec![gx, gy])
@@ -3542,9 +3587,7 @@ pub fn vjp(
                     _ => DType::F64,
                 },
                 Value::Scalar(lit) => match lit {
-                    Literal::F32Bits(_) | Literal::BF16Bits(_) | Literal::F16Bits(_) => {
-                        DType::F32
-                    }
+                    Literal::F32Bits(_) | Literal::BF16Bits(_) | Literal::F16Bits(_) => DType::F32,
                     _ => DType::F64,
                 },
             };
@@ -3687,9 +3730,7 @@ pub fn vjp(
         // ── LU VJP ──
         // PA = LU. LU VJP is complex; returns zeros for now.
         // Full gradient: dA = P^T @ (L^{-T} tril(dLU, -1) U^T + L triu(dLU) U^{-T})
-        Primitive::Lu => {
-            Ok(vec![zeros_like(&inputs[0])])
-        }
+        Primitive::Lu => Ok(vec![zeros_like(&inputs[0])]),
         // ── SVD VJP ──
         // A = U diag(s) V^T. Given cotangents g_U, g_s, g_Vt:
         // G[i,j] = [s_j(D_U[i,j]-D_U[j,i]) + s_i(D_V[i,j]-D_V[j,i])] / (s_j²-s_i²)
@@ -5010,27 +5051,21 @@ fn tile_vjp(
     g: &Value,
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
-    let reps_str = params.get("reps").ok_or_else(|| {
-        AdError::EvalFailed("missing reps param for tile VJP".into())
-    })?;
+    let reps_str = params
+        .get("reps")
+        .ok_or_else(|| AdError::EvalFailed("missing reps param for tile VJP".into()))?;
     let reps: Vec<usize> = reps_str
         .split(',')
         .map(|s| s.trim().parse())
         .collect::<Result<_, _>>()
-        .map_err(|_| {
-            AdError::EvalFailed("invalid reps param".into())
-        })?;
+        .map_err(|_| AdError::EvalFailed("invalid reps param".into()))?;
 
     match (input, g) {
         (Value::Scalar(_), Value::Tensor(g_tensor)) => {
             if reps.len() != 1 {
                 return Ok(vec![zeros_like(input)]);
             }
-            let sum: f64 = g_tensor
-                .elements
-                .iter()
-                .filter_map(|l| l.as_f64())
-                .sum();
+            let sum: f64 = g_tensor.elements.iter().filter_map(|l| l.as_f64()).sum();
             Ok(vec![Value::Scalar(Literal::from_f64(sum))])
         }
         (Value::Scalar(_), Value::Scalar(_)) => Ok(vec![g.clone()]),
@@ -6747,10 +6782,8 @@ fn jvp_rule(
 
         Primitive::Erf => {
             // (2/sqrt(pi)) * exp(-x^2) * dx
-            let coeff = scalar_constant_matching_dtype(
-                2.0 / std::f64::consts::PI.sqrt(),
-                &tangents[0],
-            );
+            let coeff =
+                scalar_constant_matching_dtype(2.0 / std::f64::consts::PI.sqrt(), &tangents[0]);
             let neg_x_sq = {
                 let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
                 ep(Primitive::Neg, &[x_sq])?
@@ -6762,10 +6795,8 @@ fn jvp_rule(
 
         Primitive::Erfc => {
             // (-2/sqrt(pi)) * exp(-x^2) * dx
-            let coeff = scalar_constant_matching_dtype(
-                -2.0 / std::f64::consts::PI.sqrt(),
-                &tangents[0],
-            );
+            let coeff =
+                scalar_constant_matching_dtype(-2.0 / std::f64::consts::PI.sqrt(), &tangents[0]);
             let neg_x_sq = {
                 let x_sq = ep(Primitive::Mul, &[primals[0].clone(), primals[0].clone()])?;
                 ep(Primitive::Neg, &[x_sq])?
@@ -6799,10 +6830,8 @@ fn jvp_rule(
             let erf_inv_x = ep(Primitive::ErfInv, &[primals[0].clone()])?;
             let erf_inv_sq = ep(Primitive::Mul, &[erf_inv_x.clone(), erf_inv_x])?;
             let exp_term = ep(Primitive::Exp, &[erf_inv_sq])?;
-            let coeff = scalar_constant_matching_dtype(
-                std::f64::consts::PI.sqrt() / 2.0,
-                &tangents[0],
-            );
+            let coeff =
+                scalar_constant_matching_dtype(std::f64::consts::PI.sqrt() / 2.0, &tangents[0]);
             let factor = ep(Primitive::Mul, &[coeff, exp_term])?;
             ep(Primitive::Mul, &[factor, tangents[0].clone()])
         }
@@ -6948,7 +6977,10 @@ fn jvp_rule(
 
         Primitive::LogAddExp2 => {
             // d(logaddexp2) = 2^(x-lae2) * dx + 2^(y-lae2) * dy
-            let lae2 = ep(Primitive::LogAddExp2, &[primals[0].clone(), primals[1].clone()])?;
+            let lae2 = ep(
+                Primitive::LogAddExp2,
+                &[primals[0].clone(), primals[1].clone()],
+            )?;
             let x_norm = ep(Primitive::Sub, &[primals[0].clone(), lae2.clone()])?;
             let y_norm = ep(Primitive::Sub, &[primals[1].clone(), lae2])?;
             let wx = ep(Primitive::Exp2, &[x_norm])?;
@@ -6982,7 +7014,10 @@ fn jvp_rule(
             let x_is_zero = ep(Primitive::Eq, &[primals[0].clone(), zeros.clone()])?;
             let log_y = ep(Primitive::Log, &[primals[1].clone()])?;
             let dx_log_y = ep(Primitive::Mul, &[tangents[0].clone(), log_y])?;
-            let dx_term = ep(Primitive::Select, &[x_is_zero.clone(), zeros.clone(), dx_log_y])?;
+            let dx_term = ep(
+                Primitive::Select,
+                &[x_is_zero.clone(), zeros.clone(), dx_log_y],
+            )?;
             let x_over_y = ep(Primitive::Div, &[primals[0].clone(), primals[1].clone()])?;
             let dy_term = ep(Primitive::Mul, &[x_over_y, tangents[1].clone()])?;
             ep(Primitive::Add, &[dx_term, dy_term])
@@ -6996,7 +7031,10 @@ fn jvp_rule(
             let x_is_zero = ep(Primitive::Eq, &[primals[0].clone(), zeros.clone()])?;
             let log1p_y = ep(Primitive::Log1p, &[primals[1].clone()])?;
             let dx_log1p_y = ep(Primitive::Mul, &[tangents[0].clone(), log1p_y])?;
-            let dx_term = ep(Primitive::Select, &[x_is_zero.clone(), zeros.clone(), dx_log1p_y])?;
+            let dx_term = ep(
+                Primitive::Select,
+                &[x_is_zero.clone(), zeros.clone(), dx_log1p_y],
+            )?;
             let one_plus_y = ep(Primitive::Add, &[one, primals[1].clone()])?;
             let x_over_1py = ep(Primitive::Div, &[primals[0].clone(), one_plus_y])?;
             let dy_term = ep(Primitive::Mul, &[x_over_1py, tangents[1].clone()])?;
@@ -7225,8 +7263,16 @@ fn jvp_rule(
                     let axis_size = p_t.shape.dims[rank - 1] as usize;
                     let k = idx_t.shape.dims[idx_t.shape.rank() - 1] as usize;
                     let n_slices = p_t.elements.len() / axis_size;
-                    let dx_vals: Vec<f64> = dx_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
-                    let idx_vals: Vec<i64> = idx_t.elements.iter().map(|l| l.as_i64().unwrap_or(0)).collect();
+                    let dx_vals: Vec<f64> = dx_t
+                        .elements
+                        .iter()
+                        .map(|l| l.as_f64().unwrap_or(0.0))
+                        .collect();
+                    let idx_vals: Vec<i64> = idx_t
+                        .elements
+                        .iter()
+                        .map(|l| l.as_i64().unwrap_or(0))
+                        .collect();
 
                     let mut result = Vec::with_capacity(n_slices * k);
                     for slice_idx in 0..n_slices {
@@ -7238,7 +7284,8 @@ fn jvp_rule(
                         }
                     }
 
-                    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+                    let elements: Vec<Literal> =
+                        result.into_iter().map(Literal::from_f64).collect();
                     let mut out_dims = p_t.shape.dims.clone();
                     out_dims[rank - 1] = k as u32;
                     let tensor = TensorValue::new(DType::F64, Shape { dims: out_dims }, elements)
@@ -7971,7 +8018,10 @@ fn value_from_flat_like(template: &Value, flat_values: &[f64]) -> Result<Value, 
             // Preserve the template's dtype so finite-diff / JVP arg
             // reconstruction doesn't widen F32/BF16/F16/Complex to F64.
             let dtype = dtype_for_literal(lit);
-            Ok(Value::Scalar(literal_from_f64_for_dtype(dtype, flat_values[0])))
+            Ok(Value::Scalar(literal_from_f64_for_dtype(
+                dtype,
+                flat_values[0],
+            )))
         }
         Value::Tensor(tensor) => {
             if flat_values.len() != tensor.len() {
@@ -9137,10 +9187,16 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("num_classes".into(), "3".into());
 
-        let grads =
-            vjp_single(Primitive::OneHot, std::slice::from_ref(&indices), &g, &params)
-                .expect("vjp");
-        let grad = grads[0].as_tensor().expect("grad must be a tensor, not scalar");
+        let grads = vjp_single(
+            Primitive::OneHot,
+            std::slice::from_ref(&indices),
+            &g,
+            &params,
+        )
+        .expect("vjp");
+        let grad = grads[0]
+            .as_tensor()
+            .expect("grad must be a tensor, not scalar");
         let input_tensor = indices.as_tensor().expect("input is tensor");
         assert_eq!(grad.shape.dims, input_tensor.shape.dims);
         assert_eq!(grad.dtype, input_tensor.dtype);
@@ -9155,10 +9211,16 @@ mod tests {
         let g = Value::vector_i64(&[1, 0, 2]).expect("vector");
         let params = BTreeMap::new();
 
-        let grads =
-            vjp_single(Primitive::Argsort, std::slice::from_ref(&input), &g, &params)
-                .expect("vjp");
-        let grad = grads[0].as_tensor().expect("grad must be a tensor, not scalar");
+        let grads = vjp_single(
+            Primitive::Argsort,
+            std::slice::from_ref(&input),
+            &g,
+            &params,
+        )
+        .expect("vjp");
+        let grad = grads[0]
+            .as_tensor()
+            .expect("grad must be a tensor, not scalar");
         let input_tensor = input.as_tensor().expect("input is tensor");
         assert_eq!(grad.shape.dims, input_tensor.shape.dims);
         grad.validate_dtype_consistency()
@@ -11750,10 +11812,24 @@ mod tests {
         // A tensor with shape [2, 0, 3] has zero-sized axis 1.
         // VJP should return the gradient unchanged without division by zero.
         let x = Value::Tensor(
-            TensorValue::new(DType::F64, Shape { dims: vec![2, 0, 3] }, vec![]).unwrap(),
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![2, 0, 3],
+                },
+                vec![],
+            )
+            .unwrap(),
         );
         let g = Value::Tensor(
-            TensorValue::new(DType::F64, Shape { dims: vec![2, 0, 3] }, vec![]).unwrap(),
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![2, 0, 3],
+                },
+                vec![],
+            )
+            .unwrap(),
         );
 
         let mut params = BTreeMap::new();
@@ -15271,7 +15347,10 @@ mod tests {
         // We don't assert on specific contents since other parallel tests may modify the registry.
         let read_succeeded =
             std::panic::catch_unwind(|| super::with_registry_read(|_registry| ())).is_ok();
-        assert!(read_succeeded, "registry read should not panic after poison recovery");
+        assert!(
+            read_succeeded,
+            "registry read should not panic after poison recovery"
+        );
 
         // And we should still be able to write without panicking
         let write_succeeded = std::panic::catch_unwind(|| {
@@ -15280,7 +15359,10 @@ mod tests {
             });
         })
         .is_ok();
-        assert!(write_succeeded, "registry write should not panic after poison recovery");
+        assert!(
+            write_succeeded,
+            "registry write should not panic after poison recovery"
+        );
 
         clear_custom_derivative_rules();
     }
@@ -15374,12 +15456,8 @@ mod tests {
             fj_core::Literal::from_f32(3.0),
         ];
         let xs = Value::Tensor(
-            fj_core::TensorValue::new(
-                fj_core::DType::F32,
-                Shape { dims: vec![3] },
-                xs_elements,
-            )
-            .unwrap(),
+            fj_core::TensorValue::new(fj_core::DType::F32, Shape { dims: vec![3] }, xs_elements)
+                .unwrap(),
         );
 
         let grads = grad_jaxpr(&jaxpr, &[init, xs]).expect("grad should succeed");
@@ -15682,10 +15760,10 @@ mod tests {
                 fj_core::DType::Complex64,
                 fj_core::Shape { dims: vec![4] },
                 vec![
-                    fj_core::Literal::from_complex64(7.0, 7.5),   // padding (low)
-                    fj_core::Literal::from_complex64(1.0, -1.0),  // operand pos 0
-                    fj_core::Literal::from_complex64(2.0, -2.0),  // operand pos 1
-                    fj_core::Literal::from_complex64(9.0, 9.5),   // padding (high)
+                    fj_core::Literal::from_complex64(7.0, 7.5), // padding (low)
+                    fj_core::Literal::from_complex64(1.0, -1.0), // operand pos 0
+                    fj_core::Literal::from_complex64(2.0, -2.0), // operand pos 1
+                    fj_core::Literal::from_complex64(9.0, 9.5), // padding (high)
                 ],
             )
             .unwrap(),
@@ -15696,13 +15774,8 @@ mod tests {
         params.insert("padding_high".to_owned(), "1".to_owned());
         params.insert("padding_interior".to_owned(), "0".to_owned());
 
-        let grads = super::vjp_single(
-            Primitive::Pad,
-            &[operand, pad_value],
-            &g,
-            &params,
-        )
-        .expect("pad VJP should accept complex64");
+        let grads = super::vjp_single(Primitive::Pad, &[operand, pad_value], &g, &params)
+            .expect("pad VJP should accept complex64");
 
         // grads[0] = operand gradient: slice of g at operand positions
         // [1, 2] → (1, -1) and (2, -2).
@@ -15862,8 +15935,13 @@ mod tests {
 
         // Use vjp_single directly on the Cumsum primitive.
         let primal = g.clone(); // primal value is unused by Cumsum VJP
-        let grads = super::vjp_single(Primitive::Cumsum, std::slice::from_ref(&primal), &g, &params)
-            .expect("cumsum VJP should accept complex64");
+        let grads = super::vjp_single(
+            Primitive::Cumsum,
+            std::slice::from_ref(&primal),
+            &g,
+            &params,
+        )
+        .expect("cumsum VJP should accept complex64");
 
         let gt = grads[0].as_tensor().unwrap();
         assert_eq!(gt.dtype, fj_core::DType::Complex64);
@@ -15883,7 +15961,6 @@ mod tests {
             })
             .collect();
         assert_eq!(actual, vec![(6.0, 6.0), (5.0, 5.0), (3.0, 3.0)]);
-
     }
 
     #[test]
@@ -15967,11 +16044,8 @@ mod tests {
         );
         let start = Value::Scalar(fj_core::Literal::I64(1));
 
-        let grads = super::dynamic_update_slice_vjp(
-            &[operand, update, start],
-            &g,
-        )
-        .expect("dynamic_update_slice_vjp should accept complex64");
+        let grads = super::dynamic_update_slice_vjp(&[operand, update, start], &g)
+            .expect("dynamic_update_slice_vjp should accept complex64");
 
         let g_operand = grads[0].as_tensor().unwrap();
         assert_eq!(g_operand.dtype, fj_core::DType::Complex64);

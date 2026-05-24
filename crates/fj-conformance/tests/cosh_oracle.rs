@@ -395,7 +395,8 @@ fn metamorphic_acosh_cosh_abs_identity() {
 fn metamorphic_cosh_tensor_roundtrip() {
     // For positive values, acosh(cosh(x)) = x
     let input = make_f64_tensor(&[5], vec![0.0, 0.5, 1.0, 2.0, 3.0]);
-    let cosh_result = eval_primitive(Primitive::Cosh, std::slice::from_ref(&input), &no_params()).unwrap();
+    let cosh_result =
+        eval_primitive(Primitive::Cosh, std::slice::from_ref(&input), &no_params()).unwrap();
     let acosh_cosh = eval_primitive(Primitive::Acosh, &[cosh_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);
@@ -426,7 +427,9 @@ fn property_cosh_preserves_all_float_dtypes() {
         Value::Tensor(
             TensorValue::new(
                 dtype,
-                Shape { dims: vec![values.len() as u32] },
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
                 values.iter().copied().map(lit_for).collect(),
             )
             .unwrap(),
@@ -443,9 +446,8 @@ fn property_cosh_preserves_all_float_dtypes() {
             panic!("cosh {dtype:?}: expected tensor");
         };
         assert_eq!(t.dtype, dtype, "cosh {dtype:?}: dtype mismatch");
-        t.validate_dtype_consistency().unwrap_or_else(|e| {
-            panic!("cosh {dtype:?}: validate_dtype_consistency failed: {e}")
-        });
+        t.validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("cosh {dtype:?}: validate_dtype_consistency failed: {e}"));
     }
 }
 
@@ -499,7 +501,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -570,12 +576,7 @@ fn oracle_cosh_complex128_general() {
     let result = eval_primitive(Primitive::Cosh, &[input], &no_params()).unwrap();
     let vec = extract_complex128_vec(&result);
     assert_eq!(vec.len(), 1);
-    assert_complex_close(
-        vec[0],
-        (expected_re, expected_im),
-        1e-10,
-        "cosh(0.5+0.3i)",
-    );
+    assert_complex_close(vec[0], (expected_re, expected_im), 1e-10, "cosh(0.5+0.3i)");
 }
 
 #[test]
@@ -587,7 +588,12 @@ fn oracle_cosh_complex64_vector() {
     assert_eq!(vec.len(), 4);
 
     // cosh(0+0i) = 1+0i
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (1.0, 0.0), 1e-5, "cosh(0)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (1.0, 0.0),
+        1e-5,
+        "cosh(0)",
+    );
 
     // cosh(1+0i) = cosh(1)+0i ≈ 1.5431
     assert_complex_close(
@@ -634,7 +640,11 @@ fn oracle_cosh_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Cosh, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "cosh should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "cosh should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

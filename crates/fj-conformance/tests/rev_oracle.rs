@@ -277,9 +277,8 @@ fn oracle_rev_bool_dtype() {
 
 #[test]
 fn oracle_rev_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -380,61 +379,82 @@ fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
 
 #[test]
 fn oracle_rev_complex64_1d() {
-    let input = make_complex64_tensor(&[4], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
     let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (4.0, 0.0), (3.0, 0.0), (2.0, 0.0), (1.0, 0.0),
-    ]);
+    assert_eq!(vals, vec![(4.0, 0.0), (3.0, 0.0), (2.0, 0.0), (1.0, 0.0),]);
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
 #[test]
 fn oracle_rev_complex64_2d_axis0() {
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+        ],
+    );
     let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+        ]
+    );
 }
 
 #[test]
 fn oracle_rev_complex64_2d_axis1() {
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ],
+    );
     let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[1])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (3.0, 0.0), (2.0, 0.0), (1.0, 0.0),
-        (6.0, 0.0), (5.0, 0.0), (4.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (3.0, 0.0),
+            (2.0, 0.0),
+            (1.0, 0.0),
+            (6.0, 0.0),
+            (5.0, 0.0),
+            (4.0, 0.0),
+        ]
+    );
 }
 
 #[test]
 fn oracle_rev_complex64_2d_both_axes() {
-    let input = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 0.0), (2.0, 0.0),
-        (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)],
+    );
     let result = eval_primitive(Primitive::Rev, &[input], &axes_params(&[0, 1])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (4.0, 0.0), (3.0, 0.0),
-        (2.0, 0.0), (1.0, 0.0),
-    ]);
+    assert_eq!(vals, vec![(4.0, 0.0), (3.0, 0.0), (2.0, 0.0), (1.0, 0.0),]);
 }
 
 #[test]

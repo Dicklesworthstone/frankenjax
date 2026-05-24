@@ -28,3 +28,9 @@ fj-test-utils = { path = "../fj-test-utils" }
 insta = "1.47"
 jsonschema = "0.42"
 tempfile = "3.25"
+
+[lints.clippy]
+# Test patterns that are clearer than clippy's alternatives
+cloned_ref_to_slice_refs = "allow"
+useless_vec = "allow"
+needless_range_loop = "allow"

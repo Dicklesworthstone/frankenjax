@@ -344,9 +344,7 @@ fn property_lgamma_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // lgamma domain: positive values (avoid poles at non-positive integers)
@@ -374,9 +372,7 @@ fn property_digamma_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // digamma domain: positive values (avoid poles at non-positive integers)
@@ -397,7 +393,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -410,7 +408,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -421,7 +421,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -475,7 +479,11 @@ fn property_gamma_funcs_preserves_complex_dtypes() {
         for primitive in [Primitive::Lgamma, Primitive::Digamma] {
             let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
                 .expect("gamma func should succeed for complex dtype");
-            assert_eq!(result.dtype(), dtype, "{primitive:?} {dtype:?}: dtype mismatch");
+            assert_eq!(
+                result.dtype(),
+                dtype,
+                "{primitive:?} {dtype:?}: dtype mismatch"
+            );
         }
     }
 }
@@ -490,8 +498,12 @@ fn metamorphic_lgamma_recurrence_relation() {
         let n_f = n as f64;
         let input_n = Value::Scalar(Literal::from_f64(n_f));
         let input_n1 = Value::Scalar(Literal::from_f64(n_f + 1.0));
-        let lgamma_n = extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input_n], &no_params()).unwrap())[0];
-        let lgamma_n1 = extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input_n1], &no_params()).unwrap())[0];
+        let lgamma_n =
+            extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input_n], &no_params()).unwrap())
+                [0];
+        let lgamma_n1 =
+            extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input_n1], &no_params()).unwrap())
+                [0];
         let diff = lgamma_n1 - lgamma_n;
         let expected = n_f.ln();
         assert!(
@@ -509,8 +521,12 @@ fn metamorphic_digamma_recurrence_relation() {
         let n_f = n as f64;
         let input_n = Value::Scalar(Literal::from_f64(n_f));
         let input_n1 = Value::Scalar(Literal::from_f64(n_f + 1.0));
-        let digamma_n = extract_f64_vec(&eval_primitive(Primitive::Digamma, &[input_n], &no_params()).unwrap())[0];
-        let digamma_n1 = extract_f64_vec(&eval_primitive(Primitive::Digamma, &[input_n1], &no_params()).unwrap())[0];
+        let digamma_n =
+            extract_f64_vec(&eval_primitive(Primitive::Digamma, &[input_n], &no_params()).unwrap())
+                [0];
+        let digamma_n1 = extract_f64_vec(
+            &eval_primitive(Primitive::Digamma, &[input_n1], &no_params()).unwrap(),
+        )[0];
         let diff = digamma_n1 - digamma_n;
         let expected = 1.0 / n_f;
         assert!(
@@ -528,11 +544,15 @@ fn metamorphic_lgamma_factorial_sequence() {
     for n in 1..=6 {
         let n_f = n as f64;
         let input = Value::Scalar(Literal::from_f64(n_f + 1.0));
-        let lgamma_val = extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap())[0];
+        let lgamma_val =
+            extract_f64_vec(&eval_primitive(Primitive::Lgamma, &[input], &no_params()).unwrap())[0];
         assert!(
             (lgamma_val - expected_log_factorial).abs() < 0.01,
             "lgamma({}) should equal ln({}!) = {}, got {}",
-            n + 1, n, expected_log_factorial, lgamma_val
+            n + 1,
+            n,
+            expected_log_factorial,
+            lgamma_val
         );
         expected_log_factorial += (n_f + 1.0).ln();
     }

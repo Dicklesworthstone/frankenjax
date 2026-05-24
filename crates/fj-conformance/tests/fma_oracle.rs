@@ -206,11 +206,16 @@ fn oracle_fma_matrix() {
 
 #[test]
 fn oracle_fma_equals_mul_add() {
-    let a = make_f64_tensor(&[], vec![3.14159]);
-    let b = make_f64_tensor(&[], vec![2.71828]);
-    let c = make_f64_tensor(&[], vec![1.41421]);
+    let a = make_f64_tensor(&[], vec![std::f64::consts::PI]);
+    let b = make_f64_tensor(&[], vec![std::f64::consts::E]);
+    let c = make_f64_tensor(&[], vec![std::f64::consts::SQRT_2]);
 
-    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), b.clone(), c.clone()], &no_params()).unwrap();
+    let fma_result = eval_primitive(
+        Primitive::Fma,
+        &[a.clone(), b.clone(), c.clone()],
+        &no_params(),
+    )
+    .unwrap();
 
     let mul_result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
     let add_result = eval_primitive(Primitive::Add, &[mul_result, c], &no_params()).unwrap();
@@ -282,7 +287,10 @@ fn oracle_fma_row_matrix_broadcast() {
     let c = make_f64_tensor(&[2, 3], vec![1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 7.0, 4.0, 7.0, 10.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![3.0, 5.0, 7.0, 4.0, 7.0, 10.0]
+    );
 }
 
 #[test]
@@ -293,7 +301,10 @@ fn oracle_fma_column_matrix_broadcast() {
     let c = make_f64_tensor(&[2, 3], vec![10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![12.0, 14.0, 16.0, 23.0, 26.0, 29.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![12.0, 14.0, 16.0, 23.0, 26.0, 29.0]
+    );
 }
 
 #[test]
@@ -304,7 +315,10 @@ fn oracle_fma_different_ranks_broadcast() {
     let c = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![3.0, 5.0, 7.0, 4.0, 7.0, 10.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![3.0, 5.0, 7.0, 4.0, 7.0, 10.0]
+    );
 }
 
 #[test]
@@ -336,7 +350,7 @@ fn oracle_fma_3d_shape() {
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
-    assert_eq!(vals[0], 3.0);  // 1*2+1
+    assert_eq!(vals[0], 3.0); // 1*2+1
     assert_eq!(vals[7], 17.0); // 8*2+1
 }
 
@@ -352,15 +366,12 @@ fn oracle_fma_empty_tensor() {
 
 #[test]
 fn oracle_fma_2d_empty() {
-    let a = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
-    let b = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
-    let c = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let a =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
+    let b =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
+    let c =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -380,7 +391,11 @@ fn oracle_fma_neg_inf() {
     let b = make_f64_tensor(&[], vec![2.0]);
     let c = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
-    assert_eq!(extract_f64_scalar(&result), f64::NEG_INFINITY, "fma(-inf, 2, 1) = -inf");
+    assert_eq!(
+        extract_f64_scalar(&result),
+        f64::NEG_INFINITY,
+        "fma(-inf, 2, 1) = -inf"
+    );
 }
 
 #[test]
@@ -391,7 +406,10 @@ fn oracle_fma_subnormal() {
     let c = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Fma, &[a, b, c], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
-    assert!((val - subnormal * 2.0).abs() < 1e-300, "fma(subnormal, 2, 0) = 2*subnormal");
+    assert!(
+        (val - subnormal * 2.0).abs() < 1e-300,
+        "fma(subnormal, 2, 0) = 2*subnormal"
+    );
 }
 
 // ======================== PROPERTY: dtype preservation ========================
@@ -408,9 +426,7 @@ fn property_fma_preserves_f32_f64_dtypes() {
                 _ => panic!("not F32 or F64"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let a_values = [1.0_f64, 2.0, 3.0];
@@ -434,7 +450,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -447,7 +465,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -458,7 +478,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -473,7 +497,11 @@ fn oracle_fma_complex64_basic() {
         .expect("fma complex64 should succeed");
     let vals = extract_complex64_vec(&result);
     assert!(vals[0].0.abs() < 1e-5, "expected 0, got {}", vals[0].0);
-    assert!((vals[0].1 - 2.0).abs() < 1e-5, "expected 2, got {}", vals[0].1);
+    assert!(
+        (vals[0].1 - 2.0).abs() < 1e-5,
+        "expected 2, got {}",
+        vals[0].1
+    );
 }
 
 #[test]
@@ -530,7 +558,8 @@ fn metamorphic_fma_zero_addend_equals_mul() {
     let b = make_f64_tensor(&[4], vec![3.0, 4.0, 5.0, -6.0]);
     let zero = make_f64_tensor(&[4], vec![0.0, 0.0, 0.0, 0.0]);
 
-    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), b.clone(), zero], &no_params()).unwrap();
+    let fma_result =
+        eval_primitive(Primitive::Fma, &[a.clone(), b.clone(), zero], &no_params()).unwrap();
     let mul_result = eval_primitive(Primitive::Mul, &[a, b], &no_params()).unwrap();
 
     let fma_vals = extract_f64_vec(&fma_result);
@@ -551,7 +580,8 @@ fn metamorphic_fma_one_multiplier_equals_add() {
     let one = make_f64_tensor(&[4], vec![1.0, 1.0, 1.0, 1.0]);
     let c = make_f64_tensor(&[4], vec![10.0, 20.0, 30.0, 40.0]);
 
-    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), one, c.clone()], &no_params()).unwrap();
+    let fma_result =
+        eval_primitive(Primitive::Fma, &[a.clone(), one, c.clone()], &no_params()).unwrap();
     let add_result = eval_primitive(Primitive::Add, &[a, c], &no_params()).unwrap();
 
     let fma_vals = extract_f64_vec(&fma_result);
@@ -594,7 +624,8 @@ fn metamorphic_fma_associativity_via_distribution() {
 
     // Compute b+c
     let bc = eval_primitive(Primitive::Add, &[b.clone(), c.clone()], &no_params()).unwrap();
-    let fma_result = eval_primitive(Primitive::Fma, &[a.clone(), bc, d.clone()], &no_params()).unwrap();
+    let fma_result =
+        eval_primitive(Primitive::Fma, &[a.clone(), bc, d.clone()], &no_params()).unwrap();
 
     // Compute a*b + a*c + d manually
     let ab = eval_primitive(Primitive::Mul, &[a.clone(), b], &no_params()).unwrap();

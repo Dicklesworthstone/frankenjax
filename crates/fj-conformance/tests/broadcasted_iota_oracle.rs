@@ -213,9 +213,7 @@ fn property_broadcasted_iota_preserves_all_supported_dtypes() {
         );
         assert_eq!(t.shape.dims, vec![3, 2]);
         t.validate_dtype_consistency().unwrap_or_else(|e| {
-            panic!(
-                "broadcasted_iota dtype={token}: validate_dtype_consistency failed: {e}"
-            )
+            panic!("broadcasted_iota dtype={token}: validate_dtype_consistency failed: {e}")
         });
     }
     // Bool must be rejected (no integer ramp semantics for booleans).
@@ -256,8 +254,12 @@ fn oracle_broadcasted_iota_large_shape() {
 
 #[test]
 fn oracle_broadcasted_iota_4d() {
-    let result =
-        eval_primitive(Primitive::BroadcastedIota, &[], &iota_params(&[2, 2, 2, 2], 3)).unwrap();
+    let result = eval_primitive(
+        Primitive::BroadcastedIota,
+        &[],
+        &iota_params(&[2, 2, 2, 2], 3),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2, 2]);
     let vals = extract_i64_vec(&result);
     // dimension 3 (innermost) should alternate [0, 1, 0, 1, ...]

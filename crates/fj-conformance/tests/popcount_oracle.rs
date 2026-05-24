@@ -368,7 +368,9 @@ fn make_i32_tensor(shape: &[u32], data: Vec<i32>) -> Value {
             Shape {
                 dims: shape.to_vec(),
             },
-            data.into_iter().map(|v| Literal::I64(i64::from(v))).collect(),
+            data.into_iter()
+                .map(|v| Literal::I64(i64::from(v)))
+                .collect(),
         )
         .unwrap(),
     )
@@ -391,11 +393,7 @@ fn oracle_popcount_i32_max() {
     // i32::MAX = 0x7FFFFFFF = 31 bits set
     let input = make_i32_tensor(&[], vec![i32::MAX]);
     let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        31,
-        "popcount(i32::MAX) = 31"
-    );
+    assert_eq!(extract_i64_scalar(&result), 31, "popcount(i32::MAX) = 31");
 }
 
 #[test]
@@ -403,11 +401,7 @@ fn oracle_popcount_i32_min() {
     // i32::MIN = 0x80000000 = 1 bit set
     let input = make_i32_tensor(&[], vec![i32::MIN]);
     let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        1,
-        "popcount(i32::MIN) = 1"
-    );
+    assert_eq!(extract_i64_scalar(&result), 1, "popcount(i32::MIN) = 1");
 }
 
 #[test]
@@ -426,8 +420,10 @@ fn oracle_popcount_i32_vs_i64_distinguishes() {
     let i32_input = make_i32_tensor(&[], vec![-1i32]);
     let i64_input = make_i64_tensor(&[], vec![-1i64]);
 
-    let i32_result = eval_primitive(Primitive::PopulationCount, &[i32_input], &no_params()).unwrap();
-    let i64_result = eval_primitive(Primitive::PopulationCount, &[i64_input], &no_params()).unwrap();
+    let i32_result =
+        eval_primitive(Primitive::PopulationCount, &[i32_input], &no_params()).unwrap();
+    let i64_result =
+        eval_primitive(Primitive::PopulationCount, &[i64_input], &no_params()).unwrap();
 
     assert_eq!(extract_i64_scalar(&i32_result), 32, "I32: 32 bits");
     assert_eq!(extract_i64_scalar(&i64_result), 64, "I64: 64 bits");
@@ -438,13 +434,29 @@ fn oracle_popcount_i32_vs_i64_distinguishes() {
 #[test]
 fn property_popcount_always_outputs_i64() {
     for (dtype, lits) in [
-        (DType::I32, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U32, vec![Literal::U32(0xFF), Literal::U32(0xF0), Literal::U32(0x0F)]),
-        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+        (
+            DType::I32,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U32,
+            vec![Literal::U32(0xFF), Literal::U32(0xF0), Literal::U32(0x0F)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)],
+        ),
     ] {
         let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::PopulationCount, &[input], &no_params()).unwrap();
-        assert_eq!(result.dtype(), DType::I64, "popcount {dtype:?} input: output should always be I64");
+        assert_eq!(
+            result.dtype(),
+            DType::I64,
+            "popcount {dtype:?} input: output should always be I64"
+        );
     }
 }

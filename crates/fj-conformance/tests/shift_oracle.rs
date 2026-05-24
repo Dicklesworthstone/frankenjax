@@ -330,8 +330,7 @@ fn oracle_shift_right_arithmetic_large_amount_wraps() {
     // Shift by 64 on i64 wraps to shift by 0
     let a = Value::scalar_i64(-100);
     let b = Value::scalar_i64(64);
-    let result =
-        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    let result = eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_i64_vec(&result), vec![-100]); // Unchanged
 }
 
@@ -408,8 +407,7 @@ fn oracle_shift_left_column_vector_broadcast() {
 fn oracle_shift_right_arithmetic_scalar_tensor_broadcast() {
     let a = Value::scalar_i64(-128);
     let b = make_i64_tensor(&[4], vec![1, 2, 3, 4]);
-    let result =
-        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    let result = eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     assert_eq!(extract_i64_vec(&result), vec![-64, -32, -16, -8]);
 }
@@ -418,8 +416,7 @@ fn oracle_shift_right_arithmetic_scalar_tensor_broadcast() {
 fn oracle_shift_right_arithmetic_tensor_scalar_broadcast() {
     let a = make_i64_tensor(&[4], vec![64, -64, 128, -128]);
     let b = Value::scalar_i64(2);
-    let result =
-        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    let result = eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     assert_eq!(extract_i64_vec(&result), vec![16, -16, 32, -32]);
 }
@@ -429,8 +426,7 @@ fn oracle_shift_right_arithmetic_row_vector_broadcast() {
     // [1, 3] >> [2, 3] -> [2, 3]
     let a = make_i64_tensor(&[1, 3], vec![64, 128, 256]);
     let b = make_i64_tensor(&[2, 3], vec![1, 2, 3, 2, 3, 4]);
-    let result =
-        eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
+    let result = eval_primitive(Primitive::ShiftRightArithmetic, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     assert_eq!(extract_i64_vec(&result), vec![32, 32, 32, 16, 16, 16]);
 }
@@ -492,16 +488,38 @@ fn oracle_shift_incompatible_shapes_error() {
 #[test]
 fn property_shift_preserves_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U64, vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)]),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(0xFF), Literal::U64(0xF0), Literal::U64(0x0F)],
+        ),
     ] {
         let shift_amount = match dtype {
-            DType::I64 => Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![3] }, vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)]).unwrap()),
-            DType::U64 => Value::Tensor(TensorValue::new(DType::U64, Shape { dims: vec![3] }, vec![Literal::U64(1), Literal::U64(2), Literal::U64(3)]).unwrap()),
+            DType::I64 => Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape { dims: vec![3] },
+                    vec![Literal::I64(1), Literal::I64(2), Literal::I64(3)],
+                )
+                .unwrap(),
+            ),
+            DType::U64 => Value::Tensor(
+                TensorValue::new(
+                    DType::U64,
+                    Shape { dims: vec![3] },
+                    vec![Literal::U64(1), Literal::U64(2), Literal::U64(3)],
+                )
+                .unwrap(),
+            ),
             _ => unreachable!(),
         };
-        let a = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
-        let result = eval_primitive(Primitive::ShiftLeft, &[a, shift_amount], &no_params()).unwrap();
+        let a =
+            Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
+        let result =
+            eval_primitive(Primitive::ShiftLeft, &[a, shift_amount], &no_params()).unwrap();
         assert_eq!(result.dtype(), dtype, "ShiftLeft {dtype:?}: dtype mismatch");
     }
 }

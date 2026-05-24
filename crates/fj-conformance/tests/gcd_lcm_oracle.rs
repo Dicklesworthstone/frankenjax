@@ -379,7 +379,11 @@ fn metamorphic_gcd_commutativity() {
     let b = make_i64_tensor(&[5], vec![8, 10, 18, 14, 25]);
     let gcd_ab = eval_primitive(Primitive::Gcd, &[a.clone(), b.clone()], &no_params()).unwrap();
     let gcd_ba = eval_primitive(Primitive::Gcd, &[b, a], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&gcd_ab), extract_i64_vec(&gcd_ba), "gcd(a, b) should equal gcd(b, a)");
+    assert_eq!(
+        extract_i64_vec(&gcd_ab),
+        extract_i64_vec(&gcd_ba),
+        "gcd(a, b) should equal gcd(b, a)"
+    );
 }
 
 #[test]
@@ -389,7 +393,11 @@ fn metamorphic_lcm_commutativity() {
     let b = make_i64_tensor(&[5], vec![8, 10, 18, 14, 25]);
     let lcm_ab = eval_primitive(Primitive::Lcm, &[a.clone(), b.clone()], &no_params()).unwrap();
     let lcm_ba = eval_primitive(Primitive::Lcm, &[b, a], &no_params()).unwrap();
-    assert_eq!(extract_i64_vec(&lcm_ab), extract_i64_vec(&lcm_ba), "lcm(a, b) should equal lcm(b, a)");
+    assert_eq!(
+        extract_i64_vec(&lcm_ab),
+        extract_i64_vec(&lcm_ba),
+        "lcm(a, b) should equal lcm(b, a)"
+    );
 }
 
 #[test]
@@ -419,11 +427,15 @@ fn metamorphic_gcd_lcm_product_relation() {
     for (a_val, b_val) in pairs {
         let a = make_i64_tensor(&[], vec![a_val]);
         let b = make_i64_tensor(&[], vec![b_val]);
-        let gcd = extract_i64_scalar(&eval_primitive(Primitive::Gcd, &[a.clone(), b.clone()], &no_params()).unwrap());
-        let lcm = extract_i64_scalar(&eval_primitive(Primitive::Lcm, &[a, b], &no_params()).unwrap());
+        let gcd = extract_i64_scalar(
+            &eval_primitive(Primitive::Gcd, &[a.clone(), b.clone()], &no_params()).unwrap(),
+        );
+        let lcm =
+            extract_i64_scalar(&eval_primitive(Primitive::Lcm, &[a, b], &no_params()).unwrap());
         let expected = (a_val * b_val).abs();
         assert_eq!(
-            gcd * lcm, expected,
+            gcd * lcm,
+            expected,
             "gcd({a_val}, {b_val}) * lcm({a_val}, {b_val}) should equal {expected}"
         );
     }
@@ -438,7 +450,11 @@ fn metamorphic_gcd_divisibility() {
     let a_vals = extract_i64_vec(&a);
     let b_vals = extract_i64_vec(&b);
     let gcd_vals = extract_i64_vec(&gcd);
-    for (i, (&g, (&a_v, &b_v))) in gcd_vals.iter().zip(a_vals.iter().zip(b_vals.iter())).enumerate() {
+    for (i, (&g, (&a_v, &b_v))) in gcd_vals
+        .iter()
+        .zip(a_vals.iter().zip(b_vals.iter()))
+        .enumerate()
+    {
         assert_eq!(a_v % g, 0, "gcd should divide a at index {i}");
         assert_eq!(b_v % g, 0, "gcd should divide b at index {i}");
     }
@@ -453,7 +469,11 @@ fn metamorphic_lcm_divisibility() {
     let a_vals = extract_i64_vec(&a);
     let b_vals = extract_i64_vec(&b);
     let lcm_vals = extract_i64_vec(&lcm);
-    for (i, (&l, (&a_v, &b_v))) in lcm_vals.iter().zip(a_vals.iter().zip(b_vals.iter())).enumerate() {
+    for (i, (&l, (&a_v, &b_v))) in lcm_vals
+        .iter()
+        .zip(a_vals.iter().zip(b_vals.iter()))
+        .enumerate()
+    {
         assert_eq!(l % a_v, 0, "lcm should be divisible by a at index {i}");
         assert_eq!(l % b_v, 0, "lcm should be divisible by b at index {i}");
     }

@@ -323,7 +323,10 @@ fn oracle_heaviside_3d() {
     let h0 = make_f64_tensor(&[2, 2, 2], vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
     let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
-    assert_eq!(extract_f64_vec(&result), vec![0.0, 0.5, 1.0, 0.0, 1.0, 0.5, 0.0, 1.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![0.0, 0.5, 1.0, 0.0, 1.0, 0.5, 0.0, 1.0]
+    );
 }
 
 #[test]
@@ -336,12 +339,10 @@ fn oracle_heaviside_empty() {
 
 #[test]
 fn oracle_heaviside_2d_empty() {
-    let x = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
-    let h0 = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let x =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
+    let h0 =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Heaviside, &[x, h0], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -390,9 +391,7 @@ fn property_heaviside_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let x_values = [-1.0_f64, 0.0, 1.0];
@@ -465,7 +464,8 @@ fn metamorphic_heaviside_h0_independent_for_nonzero() {
         assert!(
             (va - vb).abs() < 1e-10,
             "for x != 0, heaviside should be independent of h0 at index {i}: got {} vs {}",
-            va, vb
+            va,
+            vb
         );
     }
 }
@@ -479,7 +479,7 @@ fn metamorphic_heaviside_output_bounded() {
     let vals = extract_f64_vec(&result);
     for (i, &v) in vals.iter().enumerate() {
         assert!(
-            v >= 0.0 && v <= 1.0,
+            (0.0..=1.0).contains(&v),
             "heaviside output should be in [0, 1] at index {i}: got {v}"
         );
     }

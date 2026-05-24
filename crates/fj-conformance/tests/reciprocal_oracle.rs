@@ -476,9 +476,7 @@ fn property_reciprocal_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     // Avoid zero
@@ -543,7 +541,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -623,10 +625,20 @@ fn oracle_reciprocal_complex64_vector() {
     assert_eq!(vec.len(), 4);
 
     // reciprocal(2) = 0.5
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.5, 0.0), 1e-4, "reciprocal(2)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.5, 0.0),
+        1e-4,
+        "reciprocal(2)",
+    );
 
     // reciprocal(2i) = -0.5i
-    assert_complex_close((vec[1].0 as f64, vec[1].1 as f64), (0.0, -0.5), 1e-4, "reciprocal(2i)");
+    assert_complex_close(
+        (vec[1].0 as f64, vec[1].1 as f64),
+        (0.0, -0.5),
+        1e-4,
+        "reciprocal(2i)",
+    );
 
     // reciprocal(1+i) = 0.5-0.5i
     assert_complex_close(
@@ -673,7 +685,11 @@ fn oracle_reciprocal_complex_dtype_preservation() {
     let c64_result = eval_primitive(Primitive::Reciprocal, &[c64_input], &no_params()).unwrap();
     match &c64_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex64, "reciprocal should preserve Complex64");
+            assert_eq!(
+                t.dtype,
+                DType::Complex64,
+                "reciprocal should preserve Complex64"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),
@@ -684,7 +700,11 @@ fn oracle_reciprocal_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Reciprocal, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "reciprocal should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "reciprocal should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

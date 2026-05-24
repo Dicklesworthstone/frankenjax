@@ -77,7 +77,8 @@ fn oracle_zeta_2_q1() {
     assert!(
         (actual - expected).abs() < 1e-4,
         "zeta(2, 1) = π²/6 ≈ {}, got {}",
-        expected, actual
+        expected,
+        actual
     );
 }
 
@@ -92,7 +93,8 @@ fn oracle_zeta_4_q1() {
     assert!(
         (actual - expected).abs() < 1e-4,
         "zeta(4, 1) = π⁴/90 ≈ {}, got {}",
-        expected, actual
+        expected,
+        actual
     );
 }
 
@@ -107,7 +109,8 @@ fn oracle_zeta_3_q1() {
     assert!(
         (actual - expected).abs() < 1e-4,
         "zeta(3, 1) ≈ {}, got {}",
-        expected, actual
+        expected,
+        actual
     );
 }
 
@@ -124,7 +127,8 @@ fn oracle_zeta_2_q2() {
     assert!(
         (actual - expected).abs() < 1e-4,
         "zeta(2, 2) = π²/6 - 1 ≈ {}, got {}",
-        expected, actual
+        expected,
+        actual
     );
 }
 
@@ -140,7 +144,8 @@ fn oracle_zeta_2_q_half() {
     assert!(
         (actual - expected).abs() < 1e-3,
         "zeta(2, 0.5) ≈ π²/2 = {}, got {}",
-        expected, actual
+        expected,
+        actual
     );
 }
 
@@ -188,7 +193,10 @@ fn oracle_zeta_q_zero() {
     let q = make_f64_tensor(&[], vec![0.0]);
     let result = eval_primitive(Primitive::Zeta, &[x, q], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(actual.is_nan(), "zeta(2, 0) should be NaN (q must be positive)");
+    assert!(
+        actual.is_nan(),
+        "zeta(2, 0) should be NaN (q must be positive)"
+    );
 }
 
 #[test]
@@ -207,7 +215,10 @@ fn oracle_zeta_x_one_pole() {
     let q = make_f64_tensor(&[], vec![1.0]);
     let result = eval_primitive(Primitive::Zeta, &[x, q], &no_params()).unwrap();
     let actual = extract_f64_scalar(&result);
-    assert!(actual.is_infinite() && actual > 0.0, "zeta(1, q) should be +inf");
+    assert!(
+        actual.is_infinite() && actual > 0.0,
+        "zeta(1, q) should be +inf"
+    );
 }
 
 // ======================== Tensor shapes ========================
@@ -349,7 +360,10 @@ fn oracle_zeta_arity_error() {
     // Unary call should fail (JAX zeta is binary)
     let x = make_f64_tensor(&[], vec![2.0]);
     let result = eval_primitive(Primitive::Zeta, &[x], &no_params());
-    assert!(result.is_err(), "Unary zeta should error - JAX zeta requires two arguments");
+    assert!(
+        result.is_err(),
+        "Unary zeta should error - JAX zeta requires two arguments"
+    );
 }
 
 // ======================== PROPERTY: dtype ========================

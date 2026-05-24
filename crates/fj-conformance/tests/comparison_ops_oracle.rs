@@ -771,9 +771,7 @@ fn oracle_comparison_broadcast_different_ranks() {
     let a = make_f64_tensor(&[2, 1, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let b = make_f64_tensor(
         &[4, 3],
-        vec![
-            1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0,
-        ],
+        vec![1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0],
     );
     let result = eval_primitive(Primitive::Eq, &[a, b], &no_params()).unwrap();
 
@@ -824,7 +822,11 @@ fn property_comparison_ops_always_return_bool() {
             (Primitive::Ge, "Ge"),
         ] {
             let result = eval_primitive(prim, &[a.clone(), b.clone()], &no_params()).unwrap();
-            assert_eq!(result.dtype(), DType::Bool, "{name} with {dtype:?} input should return Bool");
+            assert_eq!(
+                result.dtype(),
+                DType::Bool,
+                "{name} with {dtype:?} input should return Bool"
+            );
         }
     }
 }
@@ -865,8 +867,8 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 fn oracle_eq_complex64_equal() {
     let a = make_complex64_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
     let b = make_complex64_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
-    let result = eval_primitive(Primitive::Eq, &[a, b], &no_params())
-        .expect("Eq should work on complex64");
+    let result =
+        eval_primitive(Primitive::Eq, &[a, b], &no_params()).expect("Eq should work on complex64");
     assert_eq!(extract_bool_vec(&result), vec![true, true]);
 }
 
@@ -874,8 +876,8 @@ fn oracle_eq_complex64_equal() {
 fn oracle_eq_complex64_different_real() {
     let a = make_complex64_tensor(&[1], vec![(1.0, 2.0)]);
     let b = make_complex64_tensor(&[1], vec![(1.5, 2.0)]);
-    let result = eval_primitive(Primitive::Eq, &[a, b], &no_params())
-        .expect("Eq should work on complex64");
+    let result =
+        eval_primitive(Primitive::Eq, &[a, b], &no_params()).expect("Eq should work on complex64");
     assert_eq!(extract_bool_vec(&result), vec![false]);
 }
 
@@ -883,8 +885,8 @@ fn oracle_eq_complex64_different_real() {
 fn oracle_eq_complex64_different_imag() {
     let a = make_complex64_tensor(&[1], vec![(1.0, 2.0)]);
     let b = make_complex64_tensor(&[1], vec![(1.0, 2.5)]);
-    let result = eval_primitive(Primitive::Eq, &[a, b], &no_params())
-        .expect("Eq should work on complex64");
+    let result =
+        eval_primitive(Primitive::Eq, &[a, b], &no_params()).expect("Eq should work on complex64");
     assert_eq!(extract_bool_vec(&result), vec![false]);
 }
 
@@ -892,8 +894,8 @@ fn oracle_eq_complex64_different_imag() {
 fn oracle_ne_complex64_basic() {
     let a = make_complex64_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
     let b = make_complex64_tensor(&[2], vec![(1.0, 2.0), (3.0, 5.0)]);
-    let result = eval_primitive(Primitive::Ne, &[a, b], &no_params())
-        .expect("Ne should work on complex64");
+    let result =
+        eval_primitive(Primitive::Ne, &[a, b], &no_params()).expect("Ne should work on complex64");
     assert_eq!(extract_bool_vec(&result), vec![false, true]);
 }
 
@@ -901,8 +903,8 @@ fn oracle_ne_complex64_basic() {
 fn oracle_eq_complex128_equal() {
     let a = make_complex128_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
     let b = make_complex128_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
-    let result = eval_primitive(Primitive::Eq, &[a, b], &no_params())
-        .expect("Eq should work on complex128");
+    let result =
+        eval_primitive(Primitive::Eq, &[a, b], &no_params()).expect("Eq should work on complex128");
     assert_eq!(extract_bool_vec(&result), vec![true, true]);
 }
 
@@ -910,8 +912,8 @@ fn oracle_eq_complex128_equal() {
 fn oracle_ne_complex128_basic() {
     let a = make_complex128_tensor(&[2], vec![(1.0, 2.0), (3.0, 4.0)]);
     let b = make_complex128_tensor(&[2], vec![(1.0, 9.0), (3.0, 4.0)]);
-    let result = eval_primitive(Primitive::Ne, &[a, b], &no_params())
-        .expect("Ne should work on complex128");
+    let result =
+        eval_primitive(Primitive::Ne, &[a, b], &no_params()).expect("Ne should work on complex128");
     assert_eq!(extract_bool_vec(&result), vec![true, false]);
 }
 
@@ -920,8 +922,8 @@ fn oracle_ne_complex128_basic() {
 fn oracle_lt_complex64_not_supported() {
     let a = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
     let b = make_complex64_tensor(&[1], vec![(2.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Lt, &[a, b], &no_params())
-        .expect("Lt should work on complex64");
+    let _result =
+        eval_primitive(Primitive::Lt, &[a, b], &no_params()).expect("Lt should work on complex64");
 }
 
 #[test]
@@ -929,8 +931,8 @@ fn oracle_lt_complex64_not_supported() {
 fn oracle_le_complex64_not_supported() {
     let a = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
     let b = make_complex64_tensor(&[1], vec![(2.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Le, &[a, b], &no_params())
-        .expect("Le should work on complex64");
+    let _result =
+        eval_primitive(Primitive::Le, &[a, b], &no_params()).expect("Le should work on complex64");
 }
 
 #[test]
@@ -938,8 +940,8 @@ fn oracle_le_complex64_not_supported() {
 fn oracle_gt_complex64_not_supported() {
     let a = make_complex64_tensor(&[1], vec![(2.0, 0.0)]);
     let b = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Gt, &[a, b], &no_params())
-        .expect("Gt should work on complex64");
+    let _result =
+        eval_primitive(Primitive::Gt, &[a, b], &no_params()).expect("Gt should work on complex64");
 }
 
 #[test]
@@ -947,8 +949,8 @@ fn oracle_gt_complex64_not_supported() {
 fn oracle_ge_complex64_not_supported() {
     let a = make_complex64_tensor(&[1], vec![(2.0, 0.0)]);
     let b = make_complex64_tensor(&[1], vec![(1.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Ge, &[a, b], &no_params())
-        .expect("Ge should work on complex64");
+    let _result =
+        eval_primitive(Primitive::Ge, &[a, b], &no_params()).expect("Ge should work on complex64");
 }
 
 #[test]
@@ -968,7 +970,7 @@ fn property_eq_ne_complex_dtypes_return_bool() {
 
         for (prim, name) in [(Primitive::Eq, "Eq"), (Primitive::Ne, "Ne")] {
             let result = eval_primitive(prim, &[a.clone(), b.clone()], &no_params())
-                .expect(&format!("{name} should work on {dtype:?}"));
+                .unwrap_or_else(|_| panic!("{name} should work on {dtype:?}"));
             assert_eq!(
                 result.dtype(),
                 DType::Bool,

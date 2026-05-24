@@ -539,9 +539,7 @@ fn property_nextafter_preserves_f32_f64_dtypes() {
                 _ => panic!("not F32 or F64"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let x_values = [0.0_f64, 1.0, -1.0];

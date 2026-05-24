@@ -517,9 +517,7 @@ fn property_square_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -583,7 +581,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -669,19 +671,44 @@ fn oracle_square_complex64_vector() {
     assert_eq!(vec.len(), 5);
 
     // square(0) = 0
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-5, "square(0)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-5,
+        "square(0)",
+    );
 
     // square(2) = 4
-    assert_complex_close((vec[1].0 as f64, vec[1].1 as f64), (4.0, 0.0), 1e-4, "square(2)");
+    assert_complex_close(
+        (vec[1].0 as f64, vec[1].1 as f64),
+        (4.0, 0.0),
+        1e-4,
+        "square(2)",
+    );
 
     // square(2i) = -4
-    assert_complex_close((vec[2].0 as f64, vec[2].1 as f64), (-4.0, 0.0), 1e-4, "square(2i)");
+    assert_complex_close(
+        (vec[2].0 as f64, vec[2].1 as f64),
+        (-4.0, 0.0),
+        1e-4,
+        "square(2i)",
+    );
 
     // square(1+i) = 2i
-    assert_complex_close((vec[3].0 as f64, vec[3].1 as f64), (0.0, 2.0), 1e-4, "square(1+i)");
+    assert_complex_close(
+        (vec[3].0 as f64, vec[3].1 as f64),
+        (0.0, 2.0),
+        1e-4,
+        "square(1+i)",
+    );
 
     // square(2+3i) = -5+12i
-    assert_complex_close((vec[4].0 as f64, vec[4].1 as f64), (-5.0, 12.0), 1e-4, "square(2+3i)");
+    assert_complex_close(
+        (vec[4].0 as f64, vec[4].1 as f64),
+        (-5.0, 12.0),
+        1e-4,
+        "square(2+3i)",
+    );
 }
 
 #[test]
@@ -691,7 +718,11 @@ fn oracle_square_complex_dtype_preservation() {
     let c64_result = eval_primitive(Primitive::Square, &[c64_input], &no_params()).unwrap();
     match &c64_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex64, "square should preserve Complex64");
+            assert_eq!(
+                t.dtype,
+                DType::Complex64,
+                "square should preserve Complex64"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),
@@ -702,7 +733,11 @@ fn oracle_square_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Square, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "square should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "square should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

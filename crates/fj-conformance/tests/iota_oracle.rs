@@ -295,7 +295,10 @@ fn oracle_iota_f64_precision() {
     let result = eval_primitive(Primitive::Iota, &[], &iota_params(10, "F64")).unwrap();
     let vals = extract_f64_vec(&result);
     for (i, &v) in vals.iter().enumerate() {
-        assert!((v - i as f64).abs() < 1e-15, "iota f64 should have exact integer values");
+        assert!(
+            (v - i as f64).abs() < 1e-15,
+            "iota f64 should have exact integer values"
+        );
     }
 }
 

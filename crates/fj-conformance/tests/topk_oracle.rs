@@ -314,9 +314,8 @@ fn oracle_topk_inf_values() {
 #[test]
 fn oracle_topk_2d_batch_empty() {
     // Empty batch dimension - [0, 5] input with k=2 should yield [0, 2]
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 5] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 5] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::TopK, &[input], &topk_params(2)).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 2]);
 }

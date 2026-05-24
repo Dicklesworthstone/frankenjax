@@ -73,7 +73,10 @@ fn oracle_argsort_basic() {
     // Check that applying these indices sorts the array
     let original = vec![3.0, 1.0, 4.0, 1.0, 5.0];
     let sorted: Vec<f64> = indices.iter().map(|&i| original[i as usize]).collect();
-    assert!(sorted.windows(2).all(|w| w[0] <= w[1]), "result should be sorted");
+    assert!(
+        sorted.windows(2).all(|w| w[0] <= w[1]),
+        "result should be sorted"
+    );
 }
 
 #[test]
@@ -184,7 +187,10 @@ fn oracle_argsort_with_zeros() {
     // Sorted: -2, -1, 0, 0, 1 -> indices: 4, 1, 0 or 3, 3 or 0, 2
     let original = vec![0.0, -1.0, 1.0, 0.0, -2.0];
     let sorted: Vec<f64> = indices.iter().map(|&i| original[i as usize]).collect();
-    assert!(sorted.windows(2).all(|w| w[0] <= w[1]), "result should be sorted");
+    assert!(
+        sorted.windows(2).all(|w| w[0] <= w[1]),
+        "result should be sorted"
+    );
 }
 
 #[test]
@@ -237,7 +243,10 @@ fn oracle_argsort_preserves_shape() {
 #[test]
 fn oracle_argsort_special_values() {
     // NaN should sort to the end in ascending order per IEEE 754
-    let input = make_f64_tensor(&[5], vec![f64::NAN, 1.0, f64::INFINITY, 0.0, f64::NEG_INFINITY]);
+    let input = make_f64_tensor(
+        &[5],
+        vec![f64::NAN, 1.0, f64::INFINITY, 0.0, f64::NEG_INFINITY],
+    );
     let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
     let indices = extract_i64_vec(&result);
     // Expected order: -inf (4), 0 (3), 1 (1), inf (2), nan (0)
@@ -255,7 +264,12 @@ fn oracle_argsort_2d_both_axes() {
     let input = make_f64_tensor(&[3, 3], vec![9.0, 7.0, 8.0, 6.0, 4.0, 5.0, 3.0, 1.0, 2.0]);
 
     // Sort along axis 0 (columns)
-    let result_axis0 = eval_primitive(Primitive::Argsort, &[input.clone()], &argsort_params(0, false)).unwrap();
+    let result_axis0 = eval_primitive(
+        Primitive::Argsort,
+        &[input.clone()],
+        &argsort_params(0, false),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result_axis0), vec![3, 3]);
     let indices0 = extract_i64_vec(&result_axis0);
     // Column 0: [9, 6, 3] -> sorted indices [2, 1, 0]
@@ -264,7 +278,8 @@ fn oracle_argsort_2d_both_axes() {
     assert_eq!(indices0, vec![2, 2, 2, 1, 1, 1, 0, 0, 0]);
 
     // Sort along axis 1 (rows)
-    let result_axis1 = eval_primitive(Primitive::Argsort, &[input], &argsort_params(1, false)).unwrap();
+    let result_axis1 =
+        eval_primitive(Primitive::Argsort, &[input], &argsort_params(1, false)).unwrap();
     assert_eq!(extract_shape(&result_axis1), vec![3, 3]);
 }
 
@@ -283,19 +298,21 @@ fn oracle_argsort_result_is_permutation() {
 
 #[test]
 fn oracle_argsort_4d() {
-    let input = make_f64_tensor(&[2, 2, 2, 3], vec![
-        3.0, 1.0, 2.0, 6.0, 4.0, 5.0, 9.0, 7.0, 8.0, 12.0, 10.0, 11.0,
-        15.0, 13.0, 14.0, 18.0, 16.0, 17.0, 21.0, 19.0, 20.0, 24.0, 22.0, 23.0,
-    ]);
+    let input = make_f64_tensor(
+        &[2, 2, 2, 3],
+        vec![
+            3.0, 1.0, 2.0, 6.0, 4.0, 5.0, 9.0, 7.0, 8.0, 12.0, 10.0, 11.0, 15.0, 13.0, 14.0, 18.0,
+            16.0, 17.0, 21.0, 19.0, 20.0, 24.0, 22.0, 23.0,
+        ],
+    );
     let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2, 3]);
 }
 
 #[test]
 fn oracle_argsort_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -308,7 +325,10 @@ fn oracle_argsort_large_tensor() {
     assert_eq!(extract_shape(&result), vec![200]);
     let indices = extract_i64_vec(&result);
     let sorted: Vec<f64> = indices.iter().map(|&i| data[i as usize]).collect();
-    assert!(sorted.windows(2).all(|w| w[0] <= w[1]), "result should be sorted");
+    assert!(
+        sorted.windows(2).all(|w| w[0] <= w[1]),
+        "result should be sorted"
+    );
 }
 
 #[test]
@@ -341,7 +361,8 @@ fn property_argsort_output_i64_for_all_float_inputs() {
     let values = [3.0_f64, 1.0, 4.0, 2.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
-        let result = eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
+        let result =
+            eval_primitive(Primitive::Argsort, &[input], &argsort_params(-1, false)).unwrap();
         assert!(
             matches!(result.dtype(), DType::I32 | DType::I64),
             "argsort on {dtype:?} should return integer indices, got {:?}",

@@ -267,9 +267,8 @@ fn convert_element_type_f64_to_i32() {
 
 #[test]
 fn convert_element_type_empty_tensor() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0] }, vec![]).unwrap());
     let result = convert(input, "i64").expect("empty tensor conversion should succeed");
 
     assert_eq!(result.dtype(), DType::I64);
@@ -370,9 +369,8 @@ fn convert_element_type_bool_to_f64() {
 
 #[test]
 fn convert_element_type_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 5] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 5] }, vec![]).unwrap());
     let result = convert(input, "i32").expect("2D empty tensor conversion should succeed");
 
     assert_eq!(result.dtype(), DType::I32);

@@ -476,9 +476,7 @@ fn property_expm1_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -520,7 +518,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -654,7 +654,10 @@ fn oracle_expm1_complex64_exp_minus_one_identity() {
 
 #[test]
 fn oracle_expm1_complex64_vector() {
-    let input = make_complex64_tensor(&[3], vec![(0.0, 0.0), (1.0, 0.0), (0.0, std::f32::consts::PI)]);
+    let input = make_complex64_tensor(
+        &[3],
+        vec![(0.0, 0.0), (1.0, 0.0), (0.0, std::f32::consts::PI)],
+    );
     let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
 
@@ -675,7 +678,12 @@ fn oracle_expm1_complex128_general() {
     let input = make_complex128_scalar(1.0, 1.0);
     let result = eval_primitive(Primitive::Expm1, &[input], &no_params()).unwrap();
     let (re, im) = extract_complex128_scalar(&result);
-    assert_complex128_close((re, im), (expected_re, expected_im), 1e-10, "expm1(1+i) Complex128");
+    assert_complex128_close(
+        (re, im),
+        (expected_re, expected_im),
+        1e-10,
+        "expm1(1+i) Complex128",
+    );
 }
 
 #[test]

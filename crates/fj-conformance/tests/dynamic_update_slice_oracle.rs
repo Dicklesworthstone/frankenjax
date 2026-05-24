@@ -5,6 +5,8 @@
 //! `uv run --with 'jax[cpu]' python ...`
 //! using JAX 0.10.0 with `jax_enable_x64 = True`.
 
+#![allow(clippy::useless_vec)]
+
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
@@ -255,7 +257,13 @@ fn dynamic_update_slice_rank3() {
 
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
-        &[operand, update, starts[0].clone(), starts[1].clone(), starts[2].clone()],
+        &[
+            operand,
+            update,
+            starts[0].clone(),
+            starts[1].clone(),
+            starts[2].clone(),
+        ],
         &BTreeMap::new(),
     )
     .unwrap();
@@ -490,7 +498,16 @@ fn property_dynamic_update_slice_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(TensorValue::new(dtype, Shape { dims: shape.to_vec() }, lits).unwrap())
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: shape.to_vec(),
+                },
+                lits,
+            )
+            .unwrap(),
+        )
     }
 
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
@@ -503,7 +520,10 @@ fn property_dynamic_update_slice_preserves_all_float_dtypes() {
         )
         .unwrap();
         let t = result.as_tensor().expect("tensor result");
-        assert_eq!(t.dtype, dtype, "dynamic_update_slice {dtype:?}: dtype mismatch");
+        assert_eq!(
+            t.dtype, dtype,
+            "dynamic_update_slice {dtype:?}: dtype mismatch"
+        );
         t.validate_dtype_consistency()
             .expect("literal/dtype consistency");
     }
@@ -572,9 +592,10 @@ fn extract_shape(v: &Value) -> Vec<u32> {
 
 #[test]
 fn dynamic_update_slice_complex64_1d_middle() {
-    let operand = make_complex64_tensor(&[5], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0), (5.0, 0.0),
-    ]);
+    let operand = make_complex64_tensor(
+        &[5],
+        vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0), (5.0, 0.0)],
+    );
     let update = make_complex64_tensor(&[2], vec![(10.0, 10.0), (20.0, 20.0)]);
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
@@ -584,17 +605,22 @@ fn dynamic_update_slice_complex64_1d_middle() {
     .unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (10.0, 10.0), (20.0, 20.0), (4.0, 0.0), (5.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (10.0, 10.0),
+            (20.0, 20.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+        ]
+    );
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
 #[test]
 fn dynamic_update_slice_complex64_1d_start() {
-    let operand = make_complex64_tensor(&[4], vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0),
-    ]);
+    let operand = make_complex64_tensor(&[4], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]);
     let update = make_complex64_tensor(&[2], vec![(10.0, -10.0), (20.0, -20.0)]);
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
@@ -603,16 +629,15 @@ fn dynamic_update_slice_complex64_1d_start() {
     )
     .unwrap();
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (10.0, -10.0), (20.0, -20.0), (3.0, 3.0), (4.0, 4.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(10.0, -10.0), (20.0, -20.0), (3.0, 3.0), (4.0, 4.0),]
+    );
 }
 
 #[test]
 fn dynamic_update_slice_complex64_1d_end() {
-    let operand = make_complex64_tensor(&[4], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let operand = make_complex64_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
     let update = make_complex64_tensor(&[2], vec![(30.0, 30.0), (40.0, 40.0)]);
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
@@ -621,22 +646,32 @@ fn dynamic_update_slice_complex64_1d_end() {
     )
     .unwrap();
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (2.0, 0.0), (30.0, 30.0), (40.0, 40.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(1.0, 0.0), (2.0, 0.0), (30.0, 30.0), (40.0, 40.0),]
+    );
 }
 
 #[test]
 fn dynamic_update_slice_complex64_2d() {
-    let operand = make_complex64_tensor(&[3, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-        (7.0, 0.0), (8.0, 0.0), (9.0, 0.0),
-    ]);
-    let update = make_complex64_tensor(&[2, 2], vec![
-        (10.0, 10.0), (20.0, 20.0),
-        (30.0, 30.0), (40.0, 40.0),
-    ]);
+    let operand = make_complex64_tensor(
+        &[3, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+            (7.0, 0.0),
+            (8.0, 0.0),
+            (9.0, 0.0),
+        ],
+    );
+    let update = make_complex64_tensor(
+        &[2, 2],
+        vec![(10.0, 10.0), (20.0, 20.0), (30.0, 30.0), (40.0, 40.0)],
+    );
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
         &[operand, update, Value::scalar_i64(1), Value::scalar_i64(1)],
@@ -645,18 +680,26 @@ fn dynamic_update_slice_complex64_2d() {
     .unwrap();
     assert_eq!(extract_shape(&result), vec![3, 3]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (10.0, 10.0), (20.0, 20.0),
-        (7.0, 0.0), (30.0, 30.0), (40.0, 40.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (10.0, 10.0),
+            (20.0, 20.0),
+            (7.0, 0.0),
+            (30.0, 30.0),
+            (40.0, 40.0),
+        ]
+    );
 }
 
 #[test]
 fn dynamic_update_slice_complex128_1d() {
-    let operand = make_complex128_tensor(&[4], vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0),
-    ]);
+    let operand =
+        make_complex128_tensor(&[4], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]);
     let update = make_complex128_tensor(&[2], vec![(10.0, -10.0), (20.0, -20.0)]);
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
@@ -665,9 +708,10 @@ fn dynamic_update_slice_complex128_1d() {
     )
     .unwrap();
     let vals = extract_complex128_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (10.0, -10.0), (20.0, -20.0), (4.0, 4.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(1.0, 1.0), (10.0, -10.0), (20.0, -20.0), (4.0, 4.0),]
+    );
     assert_eq!(result.dtype(), DType::Complex128);
 }
 
@@ -687,9 +731,7 @@ fn dynamic_update_slice_complex64_full_replace() {
 
 #[test]
 fn dynamic_update_slice_complex64_preserves_dtype() {
-    let operand = make_complex64_tensor(&[4], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let operand = make_complex64_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
     let update = make_complex64_tensor(&[2], vec![(10.0, 0.0), (20.0, 0.0)]);
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
@@ -702,9 +744,8 @@ fn dynamic_update_slice_complex64_preserves_dtype() {
 
 #[test]
 fn dynamic_update_slice_complex128_preserves_dtype() {
-    let operand = make_complex128_tensor(&[4], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let operand =
+        make_complex128_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
     let update = make_complex128_tensor(&[2], vec![(10.0, 0.0), (20.0, 0.0)]);
     let result = eval_primitive(
         Primitive::DynamicUpdateSlice,
@@ -720,15 +761,11 @@ fn property_dynamic_update_slice_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let (operand, update) = match dtype {
             DType::Complex64 => (
-                make_complex64_tensor(&[4], vec![
-                    (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-                ]),
+                make_complex64_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]),
                 make_complex64_tensor(&[2], vec![(10.0, 0.0), (20.0, 0.0)]),
             ),
             DType::Complex128 => (
-                make_complex128_tensor(&[4], vec![
-                    (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-                ]),
+                make_complex128_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]),
                 make_complex128_tensor(&[2], vec![(10.0, 0.0), (20.0, 0.0)]),
             ),
             _ => unreachable!(),
@@ -740,7 +777,10 @@ fn property_dynamic_update_slice_preserves_complex_dtypes() {
         )
         .unwrap();
         let t = result.as_tensor().expect("tensor result");
-        assert_eq!(t.dtype, dtype, "dynamic_update_slice {dtype:?}: dtype mismatch");
+        assert_eq!(
+            t.dtype, dtype,
+            "dynamic_update_slice {dtype:?}: dtype mismatch"
+        );
         t.validate_dtype_consistency()
             .expect("literal/dtype consistency");
     }

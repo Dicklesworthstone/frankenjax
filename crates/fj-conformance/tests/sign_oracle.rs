@@ -390,7 +390,8 @@ fn metamorphic_sign_negation() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // sign(Neg(x))
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&input), &no_params()).unwrap();
         let sign_neg_x = eval_primitive(Primitive::Sign, &[neg_x], &no_params()).unwrap();
 
         // Neg(sign(x))
@@ -415,7 +416,8 @@ fn metamorphic_sign_abs_reconstruction() {
     for x in [-5.5, -1.0, 1.0, 5.5, 100.0, -100.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let sign_x = eval_primitive(Primitive::Sign, std::slice::from_ref(&input), &no_params()).unwrap();
+        let sign_x =
+            eval_primitive(Primitive::Sign, std::slice::from_ref(&input), &no_params()).unwrap();
         let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
         let reconstructed = eval_primitive(Primitive::Mul, &[sign_x, abs_x], &no_params()).unwrap();
 
@@ -438,14 +440,19 @@ fn metamorphic_sign_abs_tensor_reconstruction() {
     let data = vec![-3.0, -1.0, 1.0, 3.0, -2.5, 2.5];
     let input = make_f64_tensor(&[6], data.clone());
 
-    let sign_x = eval_primitive(Primitive::Sign, std::slice::from_ref(&input), &no_params()).unwrap();
+    let sign_x =
+        eval_primitive(Primitive::Sign, std::slice::from_ref(&input), &no_params()).unwrap();
     let abs_x = eval_primitive(Primitive::Abs, &[input], &no_params()).unwrap();
     let reconstructed = eval_primitive(Primitive::Mul, &[sign_x, abs_x], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&reconstructed), vec![6]);
     let result = extract_f64_vec(&reconstructed);
     for (i, (&orig, &rec)) in data.iter().zip(result.iter()).enumerate() {
-        assert_eq!(rec, orig, "element {}: Mul(sign, abs) should reconstruct", i);
+        assert_eq!(
+            rec, orig,
+            "element {}: Mul(sign, abs) should reconstruct",
+            i
+        );
     }
 }
 
@@ -464,9 +471,7 @@ fn property_sign_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -508,7 +513,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -637,7 +644,10 @@ fn oracle_sign_complex64_unit_circle() {
 
     // Verify it's on the unit circle: |sign(z)| = 1
     let magnitude = (re * re + im * im).sqrt();
-    assert!((magnitude - 1.0).abs() < 1e-5, "sign result should have magnitude 1");
+    assert!(
+        (magnitude - 1.0).abs() < 1e-5,
+        "sign result should have magnitude 1"
+    );
 }
 
 #[test]
@@ -652,12 +662,15 @@ fn oracle_sign_complex64_diagonal() {
 
 #[test]
 fn oracle_sign_complex64_vector() {
-    let input = make_complex64_tensor(&[4], vec![
-        (0.0, 0.0),   // zero
-        (5.0, 0.0),   // positive real
-        (0.0, 3.0),   // positive imaginary
-        (3.0, 4.0),   // 3-4-5 triangle
-    ]);
+    let input = make_complex64_tensor(
+        &[4],
+        vec![
+            (0.0, 0.0), // zero
+            (5.0, 0.0), // positive real
+            (0.0, 3.0), // positive imaginary
+            (3.0, 4.0), // 3-4-5 triangle
+        ],
+    );
     let result = eval_primitive(Primitive::Sign, &[input], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
 
@@ -677,7 +690,12 @@ fn oracle_sign_complex64_idempotent() {
     let (s1_re, s1_im) = extract_complex64_scalar(&sign_z);
     let (s2_re, s2_im) = extract_complex64_scalar(&sign_sign_z);
 
-    assert_complex64_close((s2_re, s2_im), (s1_re, s1_im), 1e-5, "sign(sign(z)) = sign(z)");
+    assert_complex64_close(
+        (s2_re, s2_im),
+        (s1_re, s1_im),
+        1e-5,
+        "sign(sign(z)) = sign(z)",
+    );
 }
 
 #[test]

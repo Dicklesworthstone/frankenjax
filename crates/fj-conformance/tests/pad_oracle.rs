@@ -517,9 +517,10 @@ fn oracle_pad_complex64_1d_low() {
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (0.0, 0.0), (0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(0.0, 0.0), (0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),]
+    );
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
@@ -531,9 +532,10 @@ fn oracle_pad_complex64_1d_high() {
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (9.0, 9.0), (9.0, 9.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (9.0, 9.0), (9.0, 9.0),]
+    );
 }
 
 #[test]
@@ -544,9 +546,10 @@ fn oracle_pad_complex64_1d_both() {
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (0.0, 0.0), (1.0, -1.0), (2.0, -2.0), (0.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(0.0, 0.0), (1.0, -1.0), (2.0, -2.0), (0.0, 0.0),]
+    );
 }
 
 #[test]
@@ -557,17 +560,18 @@ fn oracle_pad_complex64_1d_interior() {
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
     assert_eq!(extract_shape(&result), vec![5]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (0.0, 0.0), (2.0, 0.0), (0.0, 0.0), (3.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(1.0, 0.0), (0.0, 0.0), (2.0, 0.0), (0.0, 0.0), (3.0, 0.0),]
+    );
 }
 
 #[test]
 fn oracle_pad_complex64_2d() {
-    let operand = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 0.0), (2.0, 0.0),
-        (3.0, 0.0), (4.0, 0.0),
-    ]);
+    let operand = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)],
+    );
     let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
     let params = pad_params(&[1, 1], &[0, 0], &[0, 0]);
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
@@ -590,18 +594,16 @@ fn oracle_pad_complex128_1d() {
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();
     assert_eq!(extract_shape(&result), vec![4]);
     let vals = extract_complex128_vec(&result);
-    assert_eq!(vals, vec![
-        (0.0, 0.0), (1.0, 2.0), (3.0, 4.0), (0.0, 0.0),
-    ]);
+    assert_eq!(vals, vec![(0.0, 0.0), (1.0, 2.0), (3.0, 4.0), (0.0, 0.0),]);
     assert_eq!(result.dtype(), DType::Complex128);
 }
 
 #[test]
 fn oracle_pad_complex64_zero_padding() {
-    let operand = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 1.0), (2.0, 2.0),
-        (3.0, 3.0), (4.0, 4.0),
-    ]);
+    let operand = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)],
+    );
     let pad_value = Value::Scalar(Literal::from_complex64(0.0, 0.0));
     let params = pad_params(&[0, 0], &[0, 0], &[0, 0]);
     let result = eval_primitive(Primitive::Pad, &[operand, pad_value], &params).unwrap();

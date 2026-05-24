@@ -844,6 +844,7 @@ fn property_reduce_window_preserves_float_dtypes() {
         .unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "reduce_window {dtype:?}: dtype mismatch");
-        t.validate_dtype_consistency().expect("literal/dtype consistency");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
     }
 }

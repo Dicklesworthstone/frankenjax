@@ -336,7 +336,10 @@ fn metamorphic_cbrt_tensor_roundtrip() {
 
 #[test]
 fn oracle_cbrt_3d_shape() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![1.0, 8.0, 27.0, 64.0, 125.0, 216.0, 343.0, 512.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![1.0, 8.0, 27.0, 64.0, 125.0, 216.0, 343.0, 512.0],
+    );
     let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -355,9 +358,8 @@ fn oracle_cbrt_empty_tensor() {
 
 #[test]
 fn oracle_cbrt_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -376,7 +378,10 @@ fn oracle_cbrt_subnormal() {
     let result = eval_primitive(Primitive::Cbrt, &[input], &no_params()).unwrap();
     let val = extract_f64_vec(&result)[0];
     // cbrt of subnormal should be a small positive value
-    assert!(val > 0.0 && val.is_finite(), "cbrt(subnormal) should be small positive finite");
+    assert!(
+        val > 0.0 && val.is_finite(),
+        "cbrt(subnormal) should be small positive finite"
+    );
 }
 
 #[test]
@@ -405,9 +410,7 @@ fn property_cbrt_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 8.0];
@@ -471,7 +474,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -537,10 +544,20 @@ fn oracle_cbrt_complex64_vector() {
     assert_eq!(vec.len(), 3);
 
     // cbrt(8) = 2
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (2.0, 0.0), 1e-4, "cbrt(8)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (2.0, 0.0),
+        1e-4,
+        "cbrt(8)",
+    );
 
     // cbrt(1) = 1
-    assert_complex_close((vec[1].0 as f64, vec[1].1 as f64), (1.0, 0.0), 1e-4, "cbrt(1)");
+    assert_complex_close(
+        (vec[1].0 as f64, vec[1].1 as f64),
+        (1.0, 0.0),
+        1e-4,
+        "cbrt(1)",
+    );
 
     // cbrt(i) ≈ (sqrt(3)/2, 0.5)
     let expected_i = (3.0_f64.sqrt() / 2.0, 0.5);
@@ -595,7 +612,11 @@ fn oracle_cbrt_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Cbrt, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "cbrt should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "cbrt should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

@@ -141,14 +141,25 @@ fn lu_rejects_non_matrix_input() {
 #[test]
 fn lu_pivots_and_permutation_are_int32() {
     let input = f64_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]);
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("LU should succeed");
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("LU should succeed");
 
-    let pivots_dtype = result[1].as_tensor().expect("pivots should be tensor").dtype;
+    let pivots_dtype = result[1]
+        .as_tensor()
+        .expect("pivots should be tensor")
+        .dtype;
     let perm_dtype = result[2].as_tensor().expect("perm should be tensor").dtype;
 
-    assert_eq!(pivots_dtype, DType::I32, "pivots should be I32 per upstream JAX");
-    assert_eq!(perm_dtype, DType::I32, "permutation should be I32 per upstream JAX");
+    assert_eq!(
+        pivots_dtype,
+        DType::I32,
+        "pivots should be I32 per upstream JAX"
+    );
+    assert_eq!(
+        perm_dtype,
+        DType::I32,
+        "permutation should be I32 per upstream JAX"
+    );
 }
 
 // ======================== Additional Coverage ========================
@@ -156,17 +167,9 @@ fn lu_pivots_and_permutation_are_int32() {
 #[test]
 fn lu_3x3_matrix_factors_correctly() {
     // Test a 3x3 matrix that requires pivoting
-    let input = f64_matrix(
-        3,
-        3,
-        &[
-            2.0, 1.0, 1.0,
-            4.0, 3.0, 3.0,
-            8.0, 7.0, 9.0,
-        ],
-    );
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("3x3 LU should succeed");
+    let input = f64_matrix(3, 3, &[2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0]);
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("3x3 LU should succeed");
 
     assert_eq!(result.len(), 3);
     assert_eq!(shape(&result[0]), Some(Shape { dims: vec![3, 3] }));
@@ -191,8 +194,8 @@ fn lu_tall_rectangular_matrix() {
 #[test]
 fn lu_preserves_dtype_f64() {
     let input = f64_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]);
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("LU should succeed");
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("LU should succeed");
 
     let lu_dtype = result[0].as_tensor().expect("LU should be tensor").dtype;
     assert_eq!(lu_dtype, DType::F64, "LU output should preserve F64 dtype");
@@ -201,8 +204,8 @@ fn lu_preserves_dtype_f64() {
 #[test]
 fn lu_1x1_trivial_case() {
     let input = f64_matrix(1, 1, &[7.5]);
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("1x1 LU should succeed");
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("1x1 LU should succeed");
 
     assert_eq!(shape(&result[0]), Some(Shape { dims: vec![1, 1] }));
     let lu = f64_values(&result[0]).expect("expected f64 LU");
@@ -268,8 +271,8 @@ fn lu_4x4_matrix() {
             1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ],
     );
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("4x4 LU should succeed");
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("4x4 LU should succeed");
 
     assert_eq!(result.len(), 3);
     assert_eq!(shape(&result[0]), Some(Shape { dims: vec![4, 4] }));
@@ -318,8 +321,8 @@ fn f32_matrix(rows: u32, cols: u32, values: &[f32]) -> Value {
 #[test]
 fn lu_f32_dtype() {
     let input = f32_matrix(2, 2, &[1.0, 2.0, 3.0, 4.0]);
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("F32 LU should succeed");
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("F32 LU should succeed");
 
     assert_eq!(result.len(), 3);
     let lu_dtype = result[0].as_tensor().expect("LU should be tensor").dtype;
@@ -330,8 +333,8 @@ fn lu_f32_dtype() {
 fn lu_returns_three_outputs() {
     // Verify the exact tuple structure
     let input = f64_matrix(3, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 10.0]);
-    let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
-        .expect("LU should succeed");
+    let result =
+        eval_primitive_multi(Primitive::Lu, &[input], &no_params()).expect("LU should succeed");
 
     assert_eq!(result.len(), 3, "LU should return exactly 3 outputs");
 }
@@ -374,8 +377,7 @@ fn property_lu_preserves_all_float_dtypes() {
             })
             .collect();
         Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![2, 2] }, lits)
-                .expect("valid matrix"),
+            TensorValue::new(dtype, Shape { dims: vec![2, 2] }, lits).expect("valid matrix"),
         )
     }
 
@@ -441,10 +443,7 @@ fn make_complex128_matrix(rows: u32, cols: u32, data: Vec<(f64, f64)>) -> Value 
 
 #[test]
 fn oracle_lu_complex64_basic() {
-    let input = make_complex64_matrix(2, 2, vec![
-        (1.0, 0.0), (2.0, 0.0),
-        (3.0, 0.0), (5.0, 0.0),
-    ]);
+    let input = make_complex64_matrix(2, 2, vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (5.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
         .expect("LU should work on complex64 matrices");
     assert_eq!(result.len(), 3);
@@ -453,10 +452,7 @@ fn oracle_lu_complex64_basic() {
 
 #[test]
 fn oracle_lu_complex128_basic() {
-    let input = make_complex128_matrix(2, 2, vec![
-        (1.0, 0.0), (2.0, 1.0),
-        (3.0, -1.0), (5.0, 0.0),
-    ]);
+    let input = make_complex128_matrix(2, 2, vec![(1.0, 0.0), (2.0, 1.0), (3.0, -1.0), (5.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Lu, &[input], &no_params())
         .expect("LU should work on complex128 matrices");
     assert_eq!(result.len(), 3);

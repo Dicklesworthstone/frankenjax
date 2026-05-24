@@ -430,20 +430,15 @@ fn property_sqrt_preserves_all_float_dtypes() {
         let result = match eval_primitive(Primitive::Sqrt, &[input], &no_params()) {
             Ok(value) => value,
             Err(e) => {
-                assert!(false, "sqrt {dtype:?} failed: {e}");
-                return;
+                panic!("sqrt {dtype:?} failed: {e}");
             }
         };
         let Value::Tensor(t) = result else {
-            assert!(false, "sqrt {dtype:?}: expected tensor");
-            return;
+            panic!("sqrt {dtype:?}: expected tensor");
         };
         assert_eq!(t.dtype, dtype, "sqrt {dtype:?}: tensor dtype mismatch");
         if let Err(e) = t.validate_dtype_consistency() {
-            assert!(
-                false,
-                "sqrt {dtype:?}: validate_dtype_consistency failed: {e}"
-            );
+            panic!("sqrt {dtype:?}: validate_dtype_consistency failed: {e}");
         }
     }
 }
@@ -502,7 +497,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -523,13 +522,6 @@ fn assert_complex_close(actual: (f64, f64), expected: (f64, f64), tol: f64, msg:
         re_diff,
         im_diff
     );
-}
-
-fn complex_sqrt(a: f64, b: f64) -> (f64, f64) {
-    let modulus = (a * a + b * b).sqrt();
-    let re = ((modulus + a) / 2.0).sqrt();
-    let im = b.signum() * ((modulus - a) / 2.0).sqrt();
-    (re, im)
 }
 
 #[test]
@@ -605,16 +597,36 @@ fn oracle_sqrt_complex64_vector() {
     assert_eq!(vec.len(), 4);
 
     // sqrt(0) = 0
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-5, "sqrt(0)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-5,
+        "sqrt(0)",
+    );
 
     // sqrt(4) = 2
-    assert_complex_close((vec[1].0 as f64, vec[1].1 as f64), (2.0, 0.0), 1e-4, "sqrt(4)");
+    assert_complex_close(
+        (vec[1].0 as f64, vec[1].1 as f64),
+        (2.0, 0.0),
+        1e-4,
+        "sqrt(4)",
+    );
 
     // sqrt(-4) = 2i
-    assert_complex_close((vec[2].0 as f64, vec[2].1 as f64), (0.0, 2.0), 1e-4, "sqrt(-4)");
+    assert_complex_close(
+        (vec[2].0 as f64, vec[2].1 as f64),
+        (0.0, 2.0),
+        1e-4,
+        "sqrt(-4)",
+    );
 
     // sqrt(3+4i) = 2+i
-    assert_complex_close((vec[3].0 as f64, vec[3].1 as f64), (2.0, 1.0), 1e-4, "sqrt(3+4i)");
+    assert_complex_close(
+        (vec[3].0 as f64, vec[3].1 as f64),
+        (2.0, 1.0),
+        1e-4,
+        "sqrt(3+4i)",
+    );
 }
 
 #[test]
@@ -658,7 +670,11 @@ fn oracle_sqrt_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Sqrt, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "sqrt should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "sqrt should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

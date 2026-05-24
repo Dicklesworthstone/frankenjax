@@ -356,15 +356,25 @@ fn oracle_bitwise_identity_xor() {
 #[test]
 fn property_bitwise_ops_preserve_int_dtypes() {
     for (dtype, lits) in [
-        (DType::I64, vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)]),
-        (DType::U32, vec![Literal::U32(0xFF), Literal::U32(0xF0), Literal::U32(0x0F)]),
+        (
+            DType::I64,
+            vec![Literal::I64(0xFF), Literal::I64(0xF0), Literal::I64(0x0F)],
+        ),
+        (
+            DType::U32,
+            vec![Literal::U32(0xFF), Literal::U32(0xF0), Literal::U32(0x0F)],
+        ),
     ] {
-        let a = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
+        let a =
+            Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits.clone()).unwrap());
         let b = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
 
-        let and_result = eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b.clone()], &no_params()).unwrap();
-        let or_result = eval_primitive(Primitive::BitwiseOr, &[a.clone(), b.clone()], &no_params()).unwrap();
-        let xor_result = eval_primitive(Primitive::BitwiseXor, &[a.clone(), b], &no_params()).unwrap();
+        let and_result =
+            eval_primitive(Primitive::BitwiseAnd, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let or_result =
+            eval_primitive(Primitive::BitwiseOr, &[a.clone(), b.clone()], &no_params()).unwrap();
+        let xor_result =
+            eval_primitive(Primitive::BitwiseXor, &[a.clone(), b], &no_params()).unwrap();
         let not_result = eval_primitive(Primitive::BitwiseNot, &[a], &no_params()).unwrap();
 
         assert_eq!(and_result.dtype(), dtype, "BitwiseAnd {dtype:?}");

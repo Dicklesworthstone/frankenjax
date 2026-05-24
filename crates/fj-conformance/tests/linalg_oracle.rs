@@ -642,9 +642,12 @@ fn metamorphic_svd_scaling() {
 
     let result_a =
         eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
-    let result_scaled =
-        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&scaled_a), &no_params())
-            .unwrap();
+    let result_scaled = eval_primitive_multi(
+        Primitive::Svd,
+        std::slice::from_ref(&scaled_a),
+        &no_params(),
+    )
+    .unwrap();
 
     let s_a = extract_f64_vec_from_value(&result_a[1]);
     let s_scaled = extract_f64_vec_from_value(&result_scaled[1]);
@@ -668,12 +671,8 @@ fn metamorphic_cholesky_scaling() {
     let a = make_f64_matrix(2, 2, &a_data);
     let scaled_a = make_f64_matrix(2, 2, &scaled_data);
 
-    let result_a = eval_primitive_multi(
-        Primitive::Cholesky,
-        std::slice::from_ref(&a),
-        &no_params(),
-    )
-    .unwrap();
+    let result_a =
+        eval_primitive_multi(Primitive::Cholesky, std::slice::from_ref(&a), &no_params()).unwrap();
     let result_scaled = eval_primitive_multi(
         Primitive::Cholesky,
         std::slice::from_ref(&scaled_a),
@@ -705,9 +704,12 @@ fn metamorphic_eigh_scaling() {
 
     let result_a =
         eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params()).unwrap();
-    let result_scaled =
-        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&scaled_a), &no_params())
-            .unwrap();
+    let result_scaled = eval_primitive_multi(
+        Primitive::Eigh,
+        std::slice::from_ref(&scaled_a),
+        &no_params(),
+    )
+    .unwrap();
 
     let w_a = extract_f64_vec_from_value(&result_a[0]);
     let w_scaled = extract_f64_vec_from_value(&result_scaled[0]);
@@ -759,8 +761,8 @@ fn oracle_cholesky_f32_preserves_dtype() {
 #[test]
 fn oracle_qr_f32_preserves_dtype() {
     let a = make_f32_matrix(2, 2, &[3.0, 4.0, 0.0, 5.0]);
-    let result = eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &no_params())
-        .unwrap();
+    let result =
+        eval_primitive_multi(Primitive::Qr, std::slice::from_ref(&a), &no_params()).unwrap();
     for (label, val) in ["Q", "R"].iter().zip(result.iter()) {
         let Value::Tensor(t) = val else {
             panic!("{label}: expected tensor");
@@ -775,8 +777,8 @@ fn oracle_qr_f32_preserves_dtype() {
 fn oracle_eigh_f32_preserves_dtype() {
     // Symmetric 2x2 in F32.
     let a = make_f32_matrix(2, 2, &[2.0, 1.0, 1.0, 2.0]);
-    let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
-        .unwrap();
+    let result =
+        eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params()).unwrap();
     for (label, val) in ["W", "V"].iter().zip(result.iter()) {
         let Value::Tensor(t) = val else {
             panic!("{label}: expected tensor");
@@ -815,8 +817,9 @@ fn property_cholesky_preserves_all_float_dtypes() {
     let identity = [1.0_f64, 0.0, 0.0, 1.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let a = make_matrix(dtype, &identity);
-        let result = eval_primitive_multi(Primitive::Cholesky, std::slice::from_ref(&a), &no_params())
-            .unwrap_or_else(|e| panic!("Cholesky {dtype:?} failed: {e}"));
+        let result =
+            eval_primitive_multi(Primitive::Cholesky, std::slice::from_ref(&a), &no_params())
+                .unwrap_or_else(|e| panic!("Cholesky {dtype:?} failed: {e}"));
         let Value::Tensor(t) = &result[0] else {
             panic!("Cholesky {dtype:?}: expected tensor output");
         };
@@ -858,9 +861,8 @@ fn property_qr_preserves_all_float_dtypes() {
                 panic!("QR {dtype:?} output {idx}: expected tensor");
             };
             assert_eq!(t.dtype, dtype, "QR {dtype:?} output {idx}: dtype mismatch");
-            t.validate_dtype_consistency().unwrap_or_else(|e| {
-                panic!("QR {dtype:?} output {idx}: validate failed: {e}")
-            });
+            t.validate_dtype_consistency()
+                .unwrap_or_else(|e| panic!("QR {dtype:?} output {idx}: validate failed: {e}"));
         }
     }
 }
@@ -896,9 +898,8 @@ fn property_svd_preserves_all_float_dtypes() {
                 panic!("SVD {dtype:?} output {idx}: expected tensor");
             };
             assert_eq!(t.dtype, dtype, "SVD {dtype:?} output {idx}: dtype mismatch");
-            t.validate_dtype_consistency().unwrap_or_else(|e| {
-                panic!("SVD {dtype:?} output {idx}: validate failed: {e}")
-            });
+            t.validate_dtype_consistency()
+                .unwrap_or_else(|e| panic!("SVD {dtype:?} output {idx}: validate failed: {e}"));
         }
     }
 }
@@ -928,15 +929,21 @@ fn property_eigh_preserves_all_float_dtypes() {
         let a = make_matrix(dtype, &identity);
         let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
             .unwrap_or_else(|e| panic!("Eigh {dtype:?} failed: {e}"));
-        assert_eq!(result.len(), 2, "Eigh should return eigenvalues and eigenvectors for {dtype:?}");
+        assert_eq!(
+            result.len(),
+            2,
+            "Eigh should return eigenvalues and eigenvectors for {dtype:?}"
+        );
         for (idx, output) in result.iter().enumerate() {
             let Value::Tensor(t) = output else {
                 panic!("Eigh {dtype:?} output {idx}: expected tensor");
             };
-            assert_eq!(t.dtype, dtype, "Eigh {dtype:?} output {idx}: dtype mismatch");
-            t.validate_dtype_consistency().unwrap_or_else(|e| {
-                panic!("Eigh {dtype:?} output {idx}: validate failed: {e}")
-            });
+            assert_eq!(
+                t.dtype, dtype,
+                "Eigh {dtype:?} output {idx}: dtype mismatch"
+            );
+            t.validate_dtype_consistency()
+                .unwrap_or_else(|e| panic!("Eigh {dtype:?} output {idx}: validate failed: {e}"));
         }
     }
 }
@@ -969,14 +976,17 @@ fn property_triangular_solve_preserves_all_float_dtypes() {
         let b = make_matrix(dtype, &rhs);
         let result = eval_primitive_multi(Primitive::TriangularSolve, &[a, b], &no_params())
             .unwrap_or_else(|e| panic!("TriangularSolve {dtype:?} failed: {e}"));
-        assert_eq!(result.len(), 1, "TriangularSolve should return one output for {dtype:?}");
+        assert_eq!(
+            result.len(),
+            1,
+            "TriangularSolve should return one output for {dtype:?}"
+        );
         let Value::Tensor(t) = &result[0] else {
             panic!("TriangularSolve {dtype:?}: expected tensor output");
         };
         assert_eq!(t.dtype, dtype, "TriangularSolve {dtype:?}: dtype mismatch");
-        t.validate_dtype_consistency().unwrap_or_else(|e| {
-            panic!("TriangularSolve {dtype:?}: validate failed: {e}")
-        });
+        t.validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("TriangularSolve {dtype:?}: validate failed: {e}"));
     }
 }
 
@@ -987,7 +997,9 @@ fn make_complex64_matrix(rows: u32, cols: u32, data: &[(f32, f32)]) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: vec![rows, cols] },
+            Shape {
+                dims: vec![rows, cols],
+            },
             data.iter()
                 .map(|&(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -1001,7 +1013,9 @@ fn make_complex128_matrix(rows: u32, cols: u32, data: &[(f64, f64)]) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: vec![rows, cols] },
+            Shape {
+                dims: vec![rows, cols],
+            },
             data.iter()
                 .map(|&(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -1033,55 +1047,57 @@ fn oracle_triangular_solve_complex64_lower_2x2() {
     // Solve L * X = B where L is lower triangular
     // L = [[1+0i, 0], [0.5+0i, 1+0i]], B = I (identity)
     // Solution X = L^-1 = [[1, 0], [-0.5, 1]]
-    let lower = make_complex64_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 0.0),
-        (0.5, 0.0), (1.0, 0.0),
-    ]);
-    let rhs = make_complex64_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 0.0),
-        (0.0, 0.0), (1.0, 0.0),
-    ]);
+    let lower = make_complex64_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.5, 0.0), (1.0, 0.0)]);
+    let rhs = make_complex64_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::TriangularSolve, &[lower, rhs], &no_params())
         .expect("TriangularSolve complex64 should succeed");
     assert_eq!(result.len(), 1);
     let vals = extract_complex64_matrix(&result[0]);
-    assert!((vals[0].0 - 1.0).abs() < 1e-5, "expected 1, got {:?}", vals[0]);
-    assert!((vals[2].0 - (-0.5)).abs() < 1e-5, "expected -0.5, got {:?}", vals[2]);
-    assert!((vals[3].0 - 1.0).abs() < 1e-5, "expected 1, got {:?}", vals[3]);
+    assert!(
+        (vals[0].0 - 1.0).abs() < 1e-5,
+        "expected 1, got {:?}",
+        vals[0]
+    );
+    assert!(
+        (vals[2].0 - (-0.5)).abs() < 1e-5,
+        "expected -0.5, got {:?}",
+        vals[2]
+    );
+    assert!(
+        (vals[3].0 - 1.0).abs() < 1e-5,
+        "expected 1, got {:?}",
+        vals[3]
+    );
 }
 
 #[test]
 fn oracle_triangular_solve_complex64_with_imaginary() {
     // L = [[1+i, 0], [0, 1+i]], B = [[1+i, 0], [0, 1+i]]
     // Solution X = I (identity)
-    let lower = make_complex64_matrix(2, 2, &[
-        (1.0, 1.0), (0.0, 0.0),
-        (0.0, 0.0), (1.0, 1.0),
-    ]);
-    let rhs = make_complex64_matrix(2, 2, &[
-        (1.0, 1.0), (0.0, 0.0),
-        (0.0, 0.0), (1.0, 1.0),
-    ]);
+    let lower = make_complex64_matrix(2, 2, &[(1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (1.0, 1.0)]);
+    let rhs = make_complex64_matrix(2, 2, &[(1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (1.0, 1.0)]);
     let result = eval_primitive_multi(Primitive::TriangularSolve, &[lower, rhs], &no_params())
         .expect("TriangularSolve complex64 with imaginary should succeed");
     let vals = extract_complex64_matrix(&result[0]);
-    assert!((vals[0].0 - 1.0).abs() < 1e-5, "expected 1+0i, got {:?}", vals[0]);
+    assert!(
+        (vals[0].0 - 1.0).abs() < 1e-5,
+        "expected 1+0i, got {:?}",
+        vals[0]
+    );
     assert!(vals[0].1.abs() < 1e-5);
-    assert!((vals[3].0 - 1.0).abs() < 1e-5, "expected 1+0i, got {:?}", vals[3]);
+    assert!(
+        (vals[3].0 - 1.0).abs() < 1e-5,
+        "expected 1+0i, got {:?}",
+        vals[3]
+    );
     assert!(vals[3].1.abs() < 1e-5);
 }
 
 #[test]
 fn oracle_triangular_solve_complex128_lower_2x2() {
     // Same as complex64 but with higher precision
-    let lower = make_complex128_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 0.0),
-        (0.5, 0.0), (1.0, 0.0),
-    ]);
-    let rhs = make_complex128_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 0.0),
-        (0.0, 0.0), (1.0, 0.0),
-    ]);
+    let lower = make_complex128_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.5, 0.0), (1.0, 0.0)]);
+    let rhs = make_complex128_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::TriangularSolve, &[lower, rhs], &no_params())
         .expect("TriangularSolve complex128 should succeed");
     let vals = extract_complex128_matrix(&result[0]);
@@ -1095,32 +1111,38 @@ fn oracle_cholesky_complex64_hermitian_2x2() {
     // Hermitian positive-definite matrix: [[2, 1-i], [1+i, 2]]
     // This is A where A = L * L^H (conjugate transpose)
     // L should be approximately [[sqrt(2), 0], [(1+i)/sqrt(2), sqrt(1/2)]]
-    let matrix = make_complex64_matrix(2, 2, &[
-        (2.0, 0.0), (1.0, -1.0),
-        (1.0, 1.0), (2.0, 0.0),
-    ]);
+    let matrix = make_complex64_matrix(2, 2, &[(2.0, 0.0), (1.0, -1.0), (1.0, 1.0), (2.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Cholesky, &[matrix], &no_params())
         .expect("Cholesky complex64 hermitian should succeed");
     assert_eq!(result.len(), 1);
     let vals = extract_complex64_matrix(&result[0]);
     let sqrt2 = 2.0_f32.sqrt();
-    assert!((vals[0].0 - sqrt2).abs() < 1e-4, "L[0,0] expected sqrt(2)={sqrt2}, got {:?}", vals[0]);
+    assert!(
+        (vals[0].0 - sqrt2).abs() < 1e-4,
+        "L[0,0] expected sqrt(2)={sqrt2}, got {:?}",
+        vals[0]
+    );
 }
 
 #[test]
 fn oracle_qr_complex64_2x2() {
     // QR decomposition of a simple complex matrix
-    let matrix = make_complex64_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 1.0),
-        (0.0, 1.0), (1.0, 0.0),
-    ]);
+    let matrix = make_complex64_matrix(2, 2, &[(1.0, 0.0), (0.0, 1.0), (0.0, 1.0), (1.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Qr, &[matrix], &no_params())
         .expect("QR complex64 should succeed");
     assert!(result.len() >= 2, "QR should return Q and R");
     let q_dtype = result[0].dtype();
     let r_dtype = result[1].dtype();
-    assert_eq!(q_dtype, DType::Complex64, "Q should preserve complex64 dtype");
-    assert_eq!(r_dtype, DType::Complex64, "R should preserve complex64 dtype");
+    assert_eq!(
+        q_dtype,
+        DType::Complex64,
+        "Q should preserve complex64 dtype"
+    );
+    assert_eq!(
+        r_dtype,
+        DType::Complex64,
+        "R should preserve complex64 dtype"
+    );
 }
 
 #[test]
@@ -1139,7 +1161,11 @@ fn property_triangular_solve_preserves_complex_dtypes() {
         };
         let result = eval_primitive_multi(Primitive::TriangularSolve, &[lower, rhs], &no_params())
             .unwrap_or_else(|e| panic!("TriangularSolve {dtype:?} failed: {e}"));
-        assert_eq!(result[0].dtype(), dtype, "TriangularSolve {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result[0].dtype(),
+            dtype,
+            "TriangularSolve {dtype:?}: dtype mismatch"
+        );
     }
 }
 
@@ -1149,10 +1175,7 @@ fn property_triangular_solve_preserves_complex_dtypes() {
 fn oracle_svd_complex64_2x2_real_values() {
     // SVD of a complex matrix with real entries should match real SVD
     // A = [[3, 0], [0, 2]] has singular values 3, 2
-    let a = make_complex64_matrix(2, 2, &[
-        (3.0, 0.0), (0.0, 0.0),
-        (0.0, 0.0), (2.0, 0.0),
-    ]);
+    let a = make_complex64_matrix(2, 2, &[(3.0, 0.0), (0.0, 0.0), (0.0, 0.0), (2.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())
         .expect("svd complex64 should succeed");
     assert_eq!(result.len(), 3);
@@ -1160,47 +1183,66 @@ fn oracle_svd_complex64_2x2_real_values() {
     let s = result[1].as_tensor().unwrap();
     assert_eq!(s.dtype, DType::F32);
     let s_vals: Vec<f64> = s.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-    assert!((s_vals[0] - 3.0).abs() < 1e-4, "s[0] = {}, expected 3", s_vals[0]);
-    assert!((s_vals[1] - 2.0).abs() < 1e-4, "s[1] = {}, expected 2", s_vals[1]);
+    assert!(
+        (s_vals[0] - 3.0).abs() < 1e-4,
+        "s[0] = {}, expected 3",
+        s_vals[0]
+    );
+    assert!(
+        (s_vals[1] - 2.0).abs() < 1e-4,
+        "s[1] = {}, expected 2",
+        s_vals[1]
+    );
 }
 
 #[test]
 fn oracle_svd_complex64_with_imaginary() {
     // A = [[1+i, 0], [0, 1-i]]
     // |1+i| = |1-i| = sqrt(2), so singular values should be sqrt(2), sqrt(2)
-    let a = make_complex64_matrix(2, 2, &[
-        (1.0, 1.0), (0.0, 0.0),
-        (0.0, 0.0), (1.0, -1.0),
-    ]);
+    let a = make_complex64_matrix(2, 2, &[(1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (1.0, -1.0)]);
     let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())
         .expect("svd complex64 with imaginary should succeed");
     let s = result[1].as_tensor().unwrap();
     let s_vals: Vec<f64> = s.elements.iter().map(|l| l.as_f64().unwrap()).collect();
     let sqrt2 = std::f64::consts::SQRT_2;
-    assert!((s_vals[0] - sqrt2).abs() < 1e-5, "s[0] = {}, expected sqrt(2)", s_vals[0]);
-    assert!((s_vals[1] - sqrt2).abs() < 1e-5, "s[1] = {}, expected sqrt(2)", s_vals[1]);
+    assert!(
+        (s_vals[0] - sqrt2).abs() < 1e-5,
+        "s[0] = {}, expected sqrt(2)",
+        s_vals[0]
+    );
+    assert!(
+        (s_vals[1] - sqrt2).abs() < 1e-5,
+        "s[1] = {}, expected sqrt(2)",
+        s_vals[1]
+    );
 }
 
 #[test]
 fn property_svd_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let a = match dtype {
-            DType::Complex64 => make_complex64_matrix(2, 2, &[
-                (1.0, 0.0), (0.0, 0.0),
-                (0.0, 0.0), (1.0, 0.0),
-            ]),
-            DType::Complex128 => make_complex128_matrix(2, 2, &[
-                (1.0, 0.0), (0.0, 0.0),
-                (0.0, 0.0), (1.0, 0.0),
-            ]),
+            DType::Complex64 => {
+                make_complex64_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)])
+            }
+            DType::Complex128 => {
+                make_complex128_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)])
+            }
             _ => unreachable!(),
         };
         let result = eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params())
             .unwrap_or_else(|e| panic!("SVD {dtype:?} failed: {e}"));
         // U and Vt should be complex, S should be real
         assert_eq!(result[0].dtype(), dtype, "SVD {dtype:?}: U dtype mismatch");
-        let s_dtype = if dtype == DType::Complex64 { DType::F32 } else { DType::F64 };
-        assert_eq!(result[1].dtype(), s_dtype, "SVD {dtype:?}: S dtype mismatch");
+        let s_dtype = if dtype == DType::Complex64 {
+            DType::F32
+        } else {
+            DType::F64
+        };
+        assert_eq!(
+            result[1].dtype(),
+            s_dtype,
+            "SVD {dtype:?}: S dtype mismatch"
+        );
         assert_eq!(result[2].dtype(), dtype, "SVD {dtype:?}: Vt dtype mismatch");
     }
 }
@@ -1212,10 +1254,7 @@ fn oracle_eigh_complex64_hermitian_2x2() {
     // Hermitian matrix: A = [[2, 1-i], [1+i, 3]]
     // Eigenvalues can be computed: trace = 5, det = 6 - |1-i|^2 = 6 - 2 = 4
     // λ² - 5λ + 4 = 0 → λ = 1, 4
-    let a = make_complex64_matrix(2, 2, &[
-        (2.0, 0.0), (1.0, -1.0),
-        (1.0, 1.0), (3.0, 0.0),
-    ]);
+    let a = make_complex64_matrix(2, 2, &[(2.0, 0.0), (1.0, -1.0), (1.0, 1.0), (3.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
         .expect("eigh complex64 should succeed");
     assert_eq!(result.len(), 2);
@@ -1223,60 +1262,84 @@ fn oracle_eigh_complex64_hermitian_2x2() {
     let w = result[0].as_tensor().unwrap();
     assert_eq!(w.dtype, DType::F32);
     let w_vals: Vec<f64> = w.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-    assert!((w_vals[0] - 1.0).abs() < 1e-3, "w[0] = {}, expected 1", w_vals[0]);
-    assert!((w_vals[1] - 4.0).abs() < 1e-3, "w[1] = {}, expected 4", w_vals[1]);
+    assert!(
+        (w_vals[0] - 1.0).abs() < 1e-3,
+        "w[0] = {}, expected 1",
+        w_vals[0]
+    );
+    assert!(
+        (w_vals[1] - 4.0).abs() < 1e-3,
+        "w[1] = {}, expected 4",
+        w_vals[1]
+    );
 }
 
 #[test]
 fn oracle_eigh_complex64_diagonal() {
     // Diagonal Hermitian: eigenvalues = [1, 4] (diagonal elements)
-    let a = make_complex64_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 0.0),
-        (0.0, 0.0), (4.0, 0.0),
-    ]);
+    let a = make_complex64_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (4.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
         .expect("eigh complex64 diagonal should succeed");
     let w = result[0].as_tensor().unwrap();
     let w_vals: Vec<f64> = w.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-    assert!((w_vals[0] - 1.0).abs() < 1e-4, "w[0] = {}, expected 1", w_vals[0]);
-    assert!((w_vals[1] - 4.0).abs() < 1e-4, "w[1] = {}, expected 4", w_vals[1]);
+    assert!(
+        (w_vals[0] - 1.0).abs() < 1e-4,
+        "w[0] = {}, expected 1",
+        w_vals[0]
+    );
+    assert!(
+        (w_vals[1] - 4.0).abs() < 1e-4,
+        "w[1] = {}, expected 4",
+        w_vals[1]
+    );
 }
 
 #[test]
 fn oracle_eigh_complex128_hermitian_identity() {
     // Hermitian identity: eigenvalues = [1, 1]
-    let a = make_complex128_matrix(2, 2, &[
-        (1.0, 0.0), (0.0, 0.0),
-        (0.0, 0.0), (1.0, 0.0),
-    ]);
+    let a = make_complex128_matrix(2, 2, &[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
         .expect("eigh complex128 should succeed");
     let w = result[0].as_tensor().unwrap();
     assert_eq!(w.dtype, DType::F64);
     let w_vals: Vec<f64> = w.elements.iter().map(|l| l.as_f64().unwrap()).collect();
-    assert!((w_vals[0] - 1.0).abs() < 1e-10, "w[0] = {}, expected 1", w_vals[0]);
-    assert!((w_vals[1] - 1.0).abs() < 1e-10, "w[1] = {}, expected 1", w_vals[1]);
+    assert!(
+        (w_vals[0] - 1.0).abs() < 1e-10,
+        "w[0] = {}, expected 1",
+        w_vals[0]
+    );
+    assert!(
+        (w_vals[1] - 1.0).abs() < 1e-10,
+        "w[1] = {}, expected 1",
+        w_vals[1]
+    );
 }
 
 #[test]
 fn property_eigh_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let a = match dtype {
-            DType::Complex64 => make_complex64_matrix(2, 2, &[
-                (2.0, 0.0), (1.0, -1.0),
-                (1.0, 1.0), (3.0, 0.0),
-            ]),
-            DType::Complex128 => make_complex128_matrix(2, 2, &[
-                (2.0, 0.0), (1.0, -1.0),
-                (1.0, 1.0), (3.0, 0.0),
-            ]),
+            DType::Complex64 => {
+                make_complex64_matrix(2, 2, &[(2.0, 0.0), (1.0, -1.0), (1.0, 1.0), (3.0, 0.0)])
+            }
+            DType::Complex128 => {
+                make_complex128_matrix(2, 2, &[(2.0, 0.0), (1.0, -1.0), (1.0, 1.0), (3.0, 0.0)])
+            }
             _ => unreachable!(),
         };
         let result = eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&a), &no_params())
             .unwrap_or_else(|e| panic!("Eigh {dtype:?} failed: {e}"));
         // Eigenvalues should be real, eigenvectors should be complex
-        let w_dtype = if dtype == DType::Complex64 { DType::F32 } else { DType::F64 };
-        assert_eq!(result[0].dtype(), w_dtype, "Eigh {dtype:?}: W dtype mismatch");
+        let w_dtype = if dtype == DType::Complex64 {
+            DType::F32
+        } else {
+            DType::F64
+        };
+        assert_eq!(
+            result[0].dtype(),
+            w_dtype,
+            "Eigh {dtype:?}: W dtype mismatch"
+        );
         assert_eq!(result[1].dtype(), dtype, "Eigh {dtype:?}: V dtype mismatch");
     }
 }

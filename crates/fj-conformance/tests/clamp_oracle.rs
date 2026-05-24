@@ -559,7 +559,10 @@ fn oracle_clamp_column_lo_matrix_x_scalar_hi_broadcast() {
     assert_eq!(extract_shape(&result), vec![2, 3]);
     // Row 0: clamp([-1,2,8], 0, 10) = [0,2,8]
     // Row 1: clamp([3,6,12], 5, 10) = [5,6,10]
-    assert_eq!(extract_f64_vec(&result), vec![0.0, 2.0, 8.0, 5.0, 6.0, 10.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![0.0, 2.0, 8.0, 5.0, 6.0, 10.0]
+    );
 }
 
 #[test]

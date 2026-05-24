@@ -335,7 +335,10 @@ fn oracle_betainc_nan_propagates() {
 fn oracle_betainc_3d() {
     let a = make_f64_tensor(&[2, 2, 2], vec![1.0; 8]);
     let b = make_f64_tensor(&[2, 2, 2], vec![1.0; 8]);
-    let x = make_f64_tensor(&[2, 2, 2], vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.125, 0.375, 0.625]);
+    let x = make_f64_tensor(
+        &[2, 2, 2],
+        vec![0.0, 0.25, 0.5, 0.75, 1.0, 0.125, 0.375, 0.625],
+    );
     let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
 }
@@ -346,7 +349,10 @@ fn oracle_betainc_nan_in_b() {
     let b = make_f64_tensor(&[], vec![f64::NAN]);
     let x = make_f64_tensor(&[], vec![0.5]);
     let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
-    assert!(extract_f64_scalar(&result).is_nan(), "NaN in b should propagate");
+    assert!(
+        extract_f64_scalar(&result).is_nan(),
+        "NaN in b should propagate"
+    );
 }
 
 #[test]
@@ -355,7 +361,10 @@ fn oracle_betainc_nan_in_x() {
     let b = make_f64_tensor(&[], vec![3.0]);
     let x = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
-    assert!(extract_f64_scalar(&result).is_nan(), "NaN in x should propagate");
+    assert!(
+        extract_f64_scalar(&result).is_nan(),
+        "NaN in x should propagate"
+    );
 }
 
 #[test]
@@ -384,9 +393,7 @@ fn property_betainc_outputs_f64() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let a_values = [1.0_f64, 2.0, 3.0];
@@ -399,7 +406,11 @@ fn property_betainc_outputs_f64() {
         let result = eval_primitive(Primitive::Betainc, &[a, b, x], &no_params()).unwrap();
         let t = result.as_tensor().expect("tensor result");
         // Betainc always promotes to F64 for precision
-        assert_eq!(t.dtype, DType::F64, "betainc {input_dtype:?}->F64: output should be F64");
+        assert_eq!(
+            t.dtype,
+            DType::F64,
+            "betainc {input_dtype:?}->F64: output should be F64"
+        );
         t.validate_dtype_consistency()
             .expect("literal/dtype consistency");
     }
@@ -415,7 +426,8 @@ fn metamorphic_betainc_symmetry_relation() {
     let x = make_f64_tensor(&[4], vec![0.2, 0.4, 0.6, 0.8]);
     let one_minus_x = make_f64_tensor(&[4], vec![0.8, 0.6, 0.4, 0.2]);
 
-    let result1 = eval_primitive(Primitive::Betainc, &[a.clone(), b.clone(), x], &no_params()).unwrap();
+    let result1 =
+        eval_primitive(Primitive::Betainc, &[a.clone(), b.clone(), x], &no_params()).unwrap();
     let result2 = eval_primitive(Primitive::Betainc, &[b, a, one_minus_x], &no_params()).unwrap();
 
     let vals1 = extract_f64_vec(&result1);
@@ -439,7 +451,8 @@ fn metamorphic_betainc_monotonicity_in_x() {
     let mut prev = 0.0;
     for &x_val in &x_vals {
         let x = make_f64_tensor(&[], vec![x_val]);
-        let result = eval_primitive(Primitive::Betainc, &[a.clone(), b.clone(), x], &no_params()).unwrap();
+        let result =
+            eval_primitive(Primitive::Betainc, &[a.clone(), b.clone(), x], &no_params()).unwrap();
         let curr = extract_f64_scalar(&result);
         assert!(
             curr >= prev - 1e-10,
@@ -461,7 +474,7 @@ fn metamorphic_betainc_bounded_output() {
 
     for (i, &v) in vals.iter().enumerate() {
         assert!(
-            v >= 0.0 && v <= 1.0,
+            (0.0..=1.0).contains(&v),
             "betainc output should be in [0, 1] at index {i}: got {v}"
         );
     }

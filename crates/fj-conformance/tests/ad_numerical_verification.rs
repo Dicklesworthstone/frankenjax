@@ -738,11 +738,14 @@ fn add_vjp_numerical_complex64() {
         .expect("add VJP should accept complex64 scalars");
     assert_eq!(grads.len(), 2);
     for grad in &grads {
-        assert!(matches!(
-            grad,
-            Value::Scalar(Complex64Bits(re, im))
-                if f32::from_bits(*re) == 0.25 && f32::from_bits(*im) == 0.75
-        ), "Add VJP: every g_input must equal g; got {grad:?}");
+        assert!(
+            matches!(
+                grad,
+                Value::Scalar(Complex64Bits(re, im))
+                    if f32::from_bits(*re) == 0.25 && f32::from_bits(*im) == 0.75
+            ),
+            "Add VJP: every g_input must equal g; got {grad:?}"
+        );
     }
 }
 
@@ -763,18 +766,26 @@ fn sub_vjp_numerical_complex64() {
     assert_eq!(grads.len(), 2);
 
     // g_a = g
-    assert!(matches!(
-        grads[0],
-        Value::Scalar(Complex64Bits(re, im))
-            if f32::from_bits(re) == 0.25 && f32::from_bits(im) == 0.75
-    ), "Sub VJP g_a must equal g; got {:?}", grads[0]);
+    assert!(
+        matches!(
+            grads[0],
+            Value::Scalar(Complex64Bits(re, im))
+                if f32::from_bits(re) == 0.25 && f32::from_bits(im) == 0.75
+        ),
+        "Sub VJP g_a must equal g; got {:?}",
+        grads[0]
+    );
 
     // g_b = -g (both real and imaginary negated)
-    assert!(matches!(
-        grads[1],
-        Value::Scalar(Complex64Bits(re, im))
-            if f32::from_bits(re) == -0.25 && f32::from_bits(im) == -0.75
-    ), "Sub VJP g_b must equal -g; got {:?}", grads[1]);
+    assert!(
+        matches!(
+            grads[1],
+            Value::Scalar(Complex64Bits(re, im))
+                if f32::from_bits(re) == -0.25 && f32::from_bits(im) == -0.75
+        ),
+        "Sub VJP g_b must equal -g; got {:?}",
+        grads[1]
+    );
 }
 
 /// Complex64 scalar Neg VJP (frankenjax-6s96).
@@ -796,11 +807,15 @@ fn neg_vjp_numerical_complex64() {
     .expect("neg VJP should accept complex64 scalar");
     assert_eq!(grads.len(), 1);
 
-    assert!(matches!(
-        grads[0],
-        Value::Scalar(Complex64Bits(re, im))
-            if f32::from_bits(re) == -0.25 && f32::from_bits(im) == -0.75
-    ), "Neg VJP g_a must equal -g; got {:?}", grads[0]);
+    assert!(
+        matches!(
+            grads[0],
+            Value::Scalar(Complex64Bits(re, im))
+                if f32::from_bits(re) == -0.25 && f32::from_bits(im) == -0.75
+        ),
+        "Neg VJP g_a must equal -g; got {:?}",
+        grads[0]
+    );
 }
 
 /// Complex64 scalar Sin VJP.
@@ -1029,12 +1044,8 @@ fn tanh_vjp_numerical_complex64() {
     let g = Value::Scalar(Literal::from_complex64(1.0, 0.0));
 
     // Compute tanh(z) first
-    let tanh_result = eval_primitive(
-        Primitive::Tanh,
-        std::slice::from_ref(&z),
-        &BTreeMap::new(),
-    )
-    .expect("tanh should accept complex64");
+    let tanh_result = eval_primitive(Primitive::Tanh, std::slice::from_ref(&z), &BTreeMap::new())
+        .expect("tanh should accept complex64");
 
     let (tanh_re, tanh_im) = match tanh_result {
         Value::Scalar(Complex64Bits(re, im)) => {
@@ -2075,8 +2086,13 @@ fn fft_vjp_complex64_preserves_dtype() {
         .unwrap(),
     );
 
-    let vjp_result =
-        fj_ad::vjp_single(Primitive::Fft, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Fft,
+        std::slice::from_ref(&x),
+        &g,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     let vjp_tensor = vjp_result[0].as_tensor().unwrap();
 
     assert_eq!(
@@ -2115,8 +2131,13 @@ fn ifft_vjp_complex64_preserves_dtype() {
         .unwrap(),
     );
 
-    let vjp_result =
-        fj_ad::vjp_single(Primitive::Ifft, std::slice::from_ref(&x), &g, &BTreeMap::new()).unwrap();
+    let vjp_result = fj_ad::vjp_single(
+        Primitive::Ifft,
+        std::slice::from_ref(&x),
+        &g,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     let vjp_tensor = vjp_result[0].as_tensor().unwrap();
 
     assert_eq!(

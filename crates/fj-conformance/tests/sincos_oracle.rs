@@ -553,9 +553,7 @@ fn property_sin_cos_preserves_all_float_dtypes() {
                 "{primitive:?} {dtype:?}: tensor dtype mismatch"
             );
             t.validate_dtype_consistency().unwrap_or_else(|e| {
-                panic!(
-                    "{primitive:?} {dtype:?}: validate_dtype_consistency failed: {e}"
-                )
+                panic!("{primitive:?} {dtype:?}: validate_dtype_consistency failed: {e}")
             });
         }
     }
@@ -612,7 +610,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -641,7 +643,12 @@ fn oracle_sin_complex64_zero() {
     let result = eval_primitive(Primitive::Sin, &[input], &BTreeMap::new()).unwrap();
     let vec = extract_complex64_vec(&result);
     assert_eq!(vec.len(), 1);
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-6, "sin(0+0i)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-6,
+        "sin(0+0i)",
+    );
 }
 
 #[test]
@@ -650,7 +657,12 @@ fn oracle_cos_complex64_zero() {
     let result = eval_primitive(Primitive::Cos, &[input], &BTreeMap::new()).unwrap();
     let vec = extract_complex64_vec(&result);
     assert_eq!(vec.len(), 1);
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (1.0, 0.0), 1e-6, "cos(0+0i)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (1.0, 0.0),
+        1e-6,
+        "cos(0+0i)",
+    );
 }
 
 #[test]
@@ -738,8 +750,18 @@ fn oracle_sincos_complex64_vector() {
     assert_eq!(cos_vec.len(), 4);
 
     // sin(0) = 0, cos(0) = 1
-    assert_complex_close((sin_vec[0].0 as f64, sin_vec[0].1 as f64), (0.0, 0.0), 1e-5, "sin(0)");
-    assert_complex_close((cos_vec[0].0 as f64, cos_vec[0].1 as f64), (1.0, 0.0), 1e-5, "cos(0)");
+    assert_complex_close(
+        (sin_vec[0].0 as f64, sin_vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-5,
+        "sin(0)",
+    );
+    assert_complex_close(
+        (cos_vec[0].0 as f64, cos_vec[0].1 as f64),
+        (1.0, 0.0),
+        1e-5,
+        "cos(0)",
+    );
 
     // sin(0.5) pure real
     assert_complex_close(
@@ -774,7 +796,11 @@ fn oracle_sincos_complex_dtype_preservation() {
         let c64_result = eval_primitive(prim, &[c64_input], &BTreeMap::new()).unwrap();
         match &c64_result {
             Value::Tensor(t) => {
-                assert_eq!(t.dtype, DType::Complex64, "{prim:?} should preserve Complex64");
+                assert_eq!(
+                    t.dtype,
+                    DType::Complex64,
+                    "{prim:?} should preserve Complex64"
+                );
                 t.validate_dtype_consistency().unwrap();
             }
             _ => panic!("expected tensor"),
@@ -785,7 +811,11 @@ fn oracle_sincos_complex_dtype_preservation() {
         let c128_result = eval_primitive(prim, &[c128_input], &BTreeMap::new()).unwrap();
         match &c128_result {
             Value::Tensor(t) => {
-                assert_eq!(t.dtype, DType::Complex128, "{prim:?} should preserve Complex128");
+                assert_eq!(
+                    t.dtype,
+                    DType::Complex128,
+                    "{prim:?} should preserve Complex128"
+                );
                 t.validate_dtype_consistency().unwrap();
             }
             _ => panic!("expected tensor"),
@@ -834,9 +864,11 @@ fn oracle_sincos_pythagorean_identity_complex() {
 #[test]
 fn metamorphic_sin_cos_pythagorean() {
     // sin²(x) + cos²(x) = 1 for real x
-    let x = make_f64_tensor(&[6], vec![0.0, 0.5, 1.0, 2.0, -1.0, 3.14159]);
-    let sin_result = eval_primitive(Primitive::Sin, &[x.clone()], &BTreeMap::new()).unwrap();
-    let cos_result = eval_primitive(Primitive::Cos, &[x], &BTreeMap::new()).unwrap();
+    let x = make_f64_tensor(&[6], vec![0.0, 0.5, 1.0, 2.0, -1.0, std::f64::consts::PI]);
+    let sin_result =
+        eval_primitive(Primitive::Sin, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    let cos_result =
+        eval_primitive(Primitive::Cos, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
     let sin_vals = extract_f64_vec(&sin_result);
     let cos_vals = extract_f64_vec(&cos_result);
     for (i, (&s, &c)) in sin_vals.iter().zip(cos_vals.iter()).enumerate() {
@@ -886,18 +918,22 @@ fn metamorphic_cos_even_symmetry() {
 fn metamorphic_sincos_bounded_output() {
     // |sin(x)| <= 1 and |cos(x)| <= 1 for real x
     let x = make_f64_tensor(&[6], vec![0.0, 1.0, 10.0, -100.0, 1000.0, -0.001]);
-    let sin_result = eval_primitive(Primitive::Sin, &[x.clone()], &BTreeMap::new()).unwrap();
-    let cos_result = eval_primitive(Primitive::Cos, &[x], &BTreeMap::new()).unwrap();
+    let sin_result =
+        eval_primitive(Primitive::Sin, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
+    let cos_result =
+        eval_primitive(Primitive::Cos, std::slice::from_ref(&x), &BTreeMap::new()).unwrap();
     let sin_vals = extract_f64_vec(&sin_result);
     let cos_vals = extract_f64_vec(&cos_result);
     for (i, (&s, &c)) in sin_vals.iter().zip(cos_vals.iter()).enumerate() {
         assert!(
             s.abs() <= 1.0 + 1e-10,
-            "|sin(x)| should be <= 1 at index {i}: got {}", s.abs()
+            "|sin(x)| should be <= 1 at index {i}: got {}",
+            s.abs()
         );
         assert!(
             c.abs() <= 1.0 + 1e-10,
-            "|cos(x)| should be <= 1 at index {i}: got {}", c.abs()
+            "|cos(x)| should be <= 1 at index {i}: got {}",
+            c.abs()
         );
     }
 }

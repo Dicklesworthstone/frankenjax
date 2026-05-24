@@ -458,12 +458,10 @@ fn oracle_logaddexp_empty_tensor() {
 
 #[test]
 fn oracle_logaddexp_2d_empty() {
-    let x = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
-    let y = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let x =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
+    let y =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -483,7 +481,10 @@ fn oracle_logaddexp_inf_inf() {
     let x = make_f64_tensor(&[], vec![f64::INFINITY]);
     let y = make_f64_tensor(&[], vec![f64::INFINITY]);
     let result = eval_primitive(Primitive::LogAddExp, &[x, y], &no_params()).unwrap();
-    assert!(extract_f64_scalar(&result).is_nan(), "logaddexp(inf, inf) = NaN due to inf-inf");
+    assert!(
+        extract_f64_scalar(&result).is_nan(),
+        "logaddexp(inf, inf) = NaN due to inf-inf"
+    );
 }
 
 // ======================== PROPERTY: dtype preservation ========================
@@ -501,9 +502,7 @@ fn property_logaddexp_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let x_values = [0.0_f64, 1.0, 2.0];
@@ -525,7 +524,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -538,7 +539,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -596,7 +599,8 @@ fn metamorphic_logaddexp_commutativity() {
     // logaddexp(x, y) = logaddexp(y, x)
     let x = make_f64_tensor(&[5], vec![0.0, 1.0, -1.0, 10.0, -10.0]);
     let y = make_f64_tensor(&[5], vec![1.0, -1.0, 0.0, -5.0, 5.0]);
-    let result_xy = eval_primitive(Primitive::LogAddExp, &[x.clone(), y.clone()], &no_params()).unwrap();
+    let result_xy =
+        eval_primitive(Primitive::LogAddExp, &[x.clone(), y.clone()], &no_params()).unwrap();
     let result_yx = eval_primitive(Primitive::LogAddExp, &[y, x], &no_params()).unwrap();
     let vals_xy = extract_f64_vec(&result_xy);
     let vals_yx = extract_f64_vec(&result_yx);
@@ -604,7 +608,8 @@ fn metamorphic_logaddexp_commutativity() {
         assert!(
             (v1 - v2).abs() < 1e-10,
             "logaddexp(x, y) should equal logaddexp(y, x) at index {i}: got {} vs {}",
-            v1, v2
+            v1,
+            v2
         );
     }
 }
@@ -613,7 +618,8 @@ fn metamorphic_logaddexp_commutativity() {
 fn metamorphic_logaddexp_same_value() {
     // logaddexp(x, x) = x + ln(2)
     let x = make_f64_tensor(&[5], vec![0.0, 1.0, -1.0, 10.0, -10.0]);
-    let result = eval_primitive(Primitive::LogAddExp, &[x.clone(), x.clone()], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::LogAddExp, &[x.clone(), x.clone()], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     let x_vals = extract_f64_vec(&x);
     let ln2 = 2.0_f64.ln();
@@ -631,11 +637,16 @@ fn metamorphic_logaddexp_greater_than_max() {
     // logaddexp(x, y) >= max(x, y) always
     let x = make_f64_tensor(&[5], vec![0.0, 1.0, -1.0, 10.0, -10.0]);
     let y = make_f64_tensor(&[5], vec![1.0, -1.0, 0.0, -5.0, 5.0]);
-    let result = eval_primitive(Primitive::LogAddExp, &[x.clone(), y.clone()], &no_params()).unwrap();
+    let result =
+        eval_primitive(Primitive::LogAddExp, &[x.clone(), y.clone()], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     let x_vals = extract_f64_vec(&x);
     let y_vals = extract_f64_vec(&y);
-    for (i, (&v, (&x_v, &y_v))) in vals.iter().zip(x_vals.iter().zip(y_vals.iter())).enumerate() {
+    for (i, (&v, (&x_v, &y_v))) in vals
+        .iter()
+        .zip(x_vals.iter().zip(y_vals.iter()))
+        .enumerate()
+    {
         let max_val = x_v.max(y_v);
         assert!(
             v >= max_val - 1e-10,

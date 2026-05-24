@@ -326,7 +326,9 @@ fn make_i32_tensor(shape: &[u32], data: Vec<i32>) -> Value {
             Shape {
                 dims: shape.to_vec(),
             },
-            data.into_iter().map(|v| Literal::I64(i64::from(v))).collect(),
+            data.into_iter()
+                .map(|v| Literal::I64(i64::from(v)))
+                .collect(),
         )
         .unwrap(),
     )
@@ -337,11 +339,7 @@ fn oracle_clz_i32_one() {
     // clz(1_i32) = 31 (not 63)
     let input = make_i32_tensor(&[], vec![1i32]);
     let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        31,
-        "clz(1_i32) = 31 (not 63)"
-    );
+    assert_eq!(extract_i64_scalar(&result), 31, "clz(1_i32) = 31 (not 63)");
 }
 
 #[test]
@@ -349,11 +347,7 @@ fn oracle_clz_i32_zero() {
     // clz(0_i32) = 32 (all 32 bits are zero)
     let input = make_i32_tensor(&[], vec![0i32]);
     let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        32,
-        "clz(0_i32) = 32 (not 64)"
-    );
+    assert_eq!(extract_i64_scalar(&result), 32, "clz(0_i32) = 32 (not 64)");
 }
 
 #[test]
@@ -361,11 +355,7 @@ fn oracle_clz_i32_negative_one() {
     // clz(-1_i32) = 0 (all bits set, no leading zeros)
     let input = make_i32_tensor(&[], vec![-1i32]);
     let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        0,
-        "clz(-1_i32) = 0"
-    );
+    assert_eq!(extract_i64_scalar(&result), 0, "clz(-1_i32) = 0");
 }
 
 #[test]
@@ -373,11 +363,7 @@ fn oracle_clz_i32_min() {
     // clz(i32::MIN) = 0 (highest bit set)
     let input = make_i32_tensor(&[], vec![i32::MIN]);
     let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        0,
-        "clz(i32::MIN) = 0"
-    );
+    assert_eq!(extract_i64_scalar(&result), 0, "clz(i32::MIN) = 0");
 }
 
 #[test]
@@ -385,11 +371,7 @@ fn oracle_clz_i32_max() {
     // clz(i32::MAX) = 1 (only sign bit is zero)
     let input = make_i32_tensor(&[], vec![i32::MAX]);
     let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
-    assert_eq!(
-        extract_i64_scalar(&result),
-        1,
-        "clz(i32::MAX) = 1"
-    );
+    assert_eq!(extract_i64_scalar(&result), 1, "clz(i32::MAX) = 1");
 }
 
 #[test]
@@ -421,13 +403,29 @@ fn oracle_clz_i32_vs_i64_distinguishes() {
 #[test]
 fn property_clz_always_outputs_i64() {
     for (dtype, lits) in [
-        (DType::I32, vec![Literal::I64(1), Literal::I64(2), Literal::I64(4)]),
-        (DType::I64, vec![Literal::I64(1), Literal::I64(2), Literal::I64(4)]),
-        (DType::U32, vec![Literal::U32(1), Literal::U32(2), Literal::U32(4)]),
-        (DType::U64, vec![Literal::U64(1), Literal::U64(2), Literal::U64(4)]),
+        (
+            DType::I32,
+            vec![Literal::I64(1), Literal::I64(2), Literal::I64(4)],
+        ),
+        (
+            DType::I64,
+            vec![Literal::I64(1), Literal::I64(2), Literal::I64(4)],
+        ),
+        (
+            DType::U32,
+            vec![Literal::U32(1), Literal::U32(2), Literal::U32(4)],
+        ),
+        (
+            DType::U64,
+            vec![Literal::U64(1), Literal::U64(2), Literal::U64(4)],
+        ),
     ] {
         let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap());
         let result = eval_primitive(Primitive::CountLeadingZeros, &[input], &no_params()).unwrap();
-        assert_eq!(result.dtype(), DType::I64, "clz {dtype:?} input: output should always be I64");
+        assert_eq!(
+            result.dtype(),
+            DType::I64,
+            "clz {dtype:?} input: output should always be I64"
+        );
     }
 }

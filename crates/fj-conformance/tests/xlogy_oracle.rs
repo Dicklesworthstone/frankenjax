@@ -267,7 +267,14 @@ fn oracle_xlogy_all_scalars_broadcast() {
 #[test]
 fn oracle_xlogy_scalar_x_tensor_y_broadcast() {
     let x = scalar_f64(2.0);
-    let y = make_f64_tensor(&[3], vec![1.0, std::f64::consts::E, std::f64::consts::E * std::f64::consts::E]);
+    let y = make_f64_tensor(
+        &[3],
+        vec![
+            1.0,
+            std::f64::consts::E,
+            std::f64::consts::E * std::f64::consts::E,
+        ],
+    );
     let result = eval_primitive(Primitive::XLogY, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![3]);
@@ -314,7 +321,14 @@ fn oracle_xlogy_vector_scalar_y_broadcast() {
 #[test]
 fn oracle_xlogy_singleton_x_vector_y_broadcast() {
     let x = make_f64_tensor(&[1], vec![2.0]);
-    let y = make_f64_tensor(&[3], vec![1.0, std::f64::consts::E, std::f64::consts::E * std::f64::consts::E]);
+    let y = make_f64_tensor(
+        &[3],
+        vec![
+            1.0,
+            std::f64::consts::E,
+            std::f64::consts::E * std::f64::consts::E,
+        ],
+    );
     let result = eval_primitive(Primitive::XLogY, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![3]);
@@ -327,7 +341,17 @@ fn oracle_xlogy_singleton_x_vector_y_broadcast() {
 #[test]
 fn oracle_xlogy_column_x_matrix_y_broadcast() {
     let x = make_f64_tensor(&[2, 1], vec![1.0, 2.0]);
-    let y = make_f64_tensor(&[2, 3], vec![1.0, std::f64::consts::E, std::f64::consts::E, 1.0, std::f64::consts::E, std::f64::consts::E]);
+    let y = make_f64_tensor(
+        &[2, 3],
+        vec![
+            1.0,
+            std::f64::consts::E,
+            std::f64::consts::E,
+            1.0,
+            std::f64::consts::E,
+            std::f64::consts::E,
+        ],
+    );
     let result = eval_primitive(Primitive::XLogY, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 3]);
@@ -362,7 +386,17 @@ fn oracle_xlogy_matrix_row_y_broadcast() {
 #[test]
 fn oracle_xlogy_different_ranks_broadcast() {
     let x = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
-    let y = make_f64_tensor(&[2, 3], vec![std::f64::consts::E, std::f64::consts::E, std::f64::consts::E, 1.0, 1.0, 1.0]);
+    let y = make_f64_tensor(
+        &[2, 3],
+        vec![
+            std::f64::consts::E,
+            std::f64::consts::E,
+            std::f64::consts::E,
+            1.0,
+            1.0,
+            1.0,
+        ],
+    );
     let result = eval_primitive(Primitive::XLogY, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 3]);
@@ -519,7 +553,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -532,7 +568,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),

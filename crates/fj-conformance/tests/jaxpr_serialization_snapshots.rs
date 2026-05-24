@@ -114,16 +114,34 @@ fn snapshot_primitives_linalg() {
     assert_eq!(serde_json::to_string(&Primitive::Dot).unwrap(), r#""Dot""#);
     assert_eq!(serde_json::to_string(&Primitive::Qr).unwrap(), r#""Qr""#);
     assert_eq!(serde_json::to_string(&Primitive::Svd).unwrap(), r#""Svd""#);
-    assert_eq!(serde_json::to_string(&Primitive::Eigh).unwrap(), r#""Eigh""#);
-    assert_eq!(serde_json::to_string(&Primitive::Cholesky).unwrap(), r#""Cholesky""#);
+    assert_eq!(
+        serde_json::to_string(&Primitive::Eigh).unwrap(),
+        r#""Eigh""#
+    );
+    assert_eq!(
+        serde_json::to_string(&Primitive::Cholesky).unwrap(),
+        r#""Cholesky""#
+    );
 }
 
 #[test]
 fn snapshot_primitives_control_flow() {
-    assert_eq!(serde_json::to_string(&Primitive::Cond).unwrap(), r#""Cond""#);
-    assert_eq!(serde_json::to_string(&Primitive::While).unwrap(), r#""While""#);
-    assert_eq!(serde_json::to_string(&Primitive::Scan).unwrap(), r#""Scan""#);
-    assert_eq!(serde_json::to_string(&Primitive::Switch).unwrap(), r#""Switch""#);
+    assert_eq!(
+        serde_json::to_string(&Primitive::Cond).unwrap(),
+        r#""Cond""#
+    );
+    assert_eq!(
+        serde_json::to_string(&Primitive::While).unwrap(),
+        r#""While""#
+    );
+    assert_eq!(
+        serde_json::to_string(&Primitive::Scan).unwrap(),
+        r#""Scan""#
+    );
+    assert_eq!(
+        serde_json::to_string(&Primitive::Switch).unwrap(),
+        r#""Switch""#
+    );
 }
 
 // ======================== Jaxpr Snapshots ========================

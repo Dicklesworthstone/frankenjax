@@ -266,7 +266,10 @@ fn oracle_reduce_xor_single_element() {
 
 #[test]
 fn oracle_reduce_and_3d() {
-    let input = make_bool_tensor(&[2, 2, 2], vec![true, true, true, false, true, true, true, true]);
+    let input = make_bool_tensor(
+        &[2, 2, 2],
+        vec![true, true, true, false, true, true, true, true],
+    );
     let result = eval_primitive(Primitive::ReduceAnd, &[input], &reduce_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_eq!(extract_bool_vec(&result), vec![true, true, true, false]);
@@ -274,7 +277,10 @@ fn oracle_reduce_and_3d() {
 
 #[test]
 fn oracle_reduce_xor_3d() {
-    let input = make_bool_tensor(&[2, 2, 2], vec![true, true, false, false, true, false, true, true]);
+    let input = make_bool_tensor(
+        &[2, 2, 2],
+        vec![true, true, false, false, true, false, true, true],
+    );
     let result = eval_primitive(Primitive::ReduceXor, &[input], &reduce_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     // XOR along axis 0: [T^T, T^F, F^T, F^T] = [F, T, T, T]
@@ -317,7 +323,8 @@ fn oracle_reduce_xor_preserves_dtype() {
 fn property_reduce_and_xor_preserve_dtypes() {
     // Test ReduceAnd and ReduceXor preserve both Bool and I64 dtypes
     let bool_input = make_bool_tensor(&[3], vec![true, true, false]);
-    let and_result = eval_primitive(Primitive::ReduceAnd, &[bool_input.clone()], &no_params()).unwrap();
+    let and_result =
+        eval_primitive(Primitive::ReduceAnd, &[bool_input.clone()], &no_params()).unwrap();
     let xor_result = eval_primitive(Primitive::ReduceXor, &[bool_input], &no_params()).unwrap();
     assert_eq!(and_result.dtype(), DType::Bool, "ReduceAnd Bool");
     assert_eq!(xor_result.dtype(), DType::Bool, "ReduceXor Bool");

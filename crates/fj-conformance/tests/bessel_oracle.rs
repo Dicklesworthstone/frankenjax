@@ -133,10 +133,7 @@ fn oracle_bessel_i0e_inf() {
 fn oracle_bessel_i0e_nan() {
     let input = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::BesselI0e, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "I0e(NaN) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "I0e(NaN) = NaN");
 }
 
 // ======================== BesselI1e Cases ========================
@@ -209,10 +206,7 @@ fn oracle_bessel_i1e_inf() {
 fn oracle_bessel_i1e_nan() {
     let input = make_f64_tensor(&[], vec![f64::NAN]);
     let result = eval_primitive(Primitive::BesselI1e, &[input], &no_params()).unwrap();
-    assert!(
-        extract_f64_scalar(&result).is_nan(),
-        "I1e(NaN) = NaN"
-    );
+    assert!(extract_f64_scalar(&result).is_nan(), "I1e(NaN) = NaN");
 }
 
 // ======================== Tensor Shapes ========================
@@ -327,9 +321,7 @@ fn property_bessel_i0e_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [0.0_f64, 1.0, 2.0];
@@ -356,9 +348,7 @@ fn property_bessel_i1e_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [0.0_f64, 1.0, 2.0];
@@ -378,7 +368,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -391,7 +383,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -436,7 +430,11 @@ fn property_bessel_preserves_complex_dtypes() {
         for primitive in [Primitive::BesselI0e, Primitive::BesselI1e] {
             let result = eval_primitive(primitive, std::slice::from_ref(&input), &no_params())
                 .expect("bessel should succeed for complex dtype");
-            assert_eq!(result.dtype(), dtype, "{primitive:?} {dtype:?}: dtype mismatch");
+            assert_eq!(
+                result.dtype(),
+                dtype,
+                "{primitive:?} {dtype:?}: dtype mismatch"
+            );
         }
     }
 }

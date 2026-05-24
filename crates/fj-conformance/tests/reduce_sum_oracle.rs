@@ -427,20 +427,13 @@ fn metamorphic_reduce_sum_distributive_over_concat_2d() {
 
     let concat_ab = eval_primitive(
         Primitive::Concatenate,
-        &[
-            make_f64_tensor(&[2, 3], a),
-            make_f64_tensor(&[2, 3], b),
-        ],
+        &[make_f64_tensor(&[2, 3], a), make_f64_tensor(&[2, 3], b)],
         &concat_params(0),
     )
     .unwrap();
 
-    let sum_concat = eval_primitive(
-        Primitive::ReduceSum,
-        &[concat_ab],
-        &reduce_params(&[0]),
-    )
-    .unwrap();
+    let sum_concat =
+        eval_primitive(Primitive::ReduceSum, &[concat_ab], &reduce_params(&[0])).unwrap();
 
     let sum_a_vec = extract_f64_vec(&sum_a);
     let sum_b_vec = extract_f64_vec(&sum_b);
@@ -451,7 +444,10 @@ fn metamorphic_reduce_sum_distributive_over_concat_2d() {
             sum_concat_vec[i],
             sum_a_vec[i] + sum_b_vec[i],
             1e-14,
-            &format!("sum(concat(A, B), axis=0)[{}] = sum(A)[{}] + sum(B)[{}]", i, i, i),
+            &format!(
+                "sum(concat(A, B), axis=0)[{}] = sum(A)[{}] + sum(B)[{}]",
+                i, i, i
+            ),
         );
     }
 }
@@ -480,7 +476,11 @@ fn metamorphic_reduce_sum_commutative_with_add() {
         .unwrap(),
     );
 
-    assert_eq!(sum_x + sum_y, sum_y + sum_x, "sum(x) + sum(y) = sum(y) + sum(x)");
+    assert_eq!(
+        sum_x + sum_y,
+        sum_y + sum_x,
+        "sum(x) + sum(y) = sum(y) + sum(x)"
+    );
 }
 
 #[test]
@@ -547,8 +547,7 @@ fn oracle_reduce_sum_f32_full_preserves_dtype() {
         .into_iter()
         .map(Literal::from_f32)
         .collect();
-    let input =
-        Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![4] }, data).unwrap());
+    let input = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![4] }, data).unwrap());
 
     let result = eval_primitive(Primitive::ReduceSum, &[input], &BTreeMap::new()).unwrap();
     match result {
@@ -622,8 +621,12 @@ fn property_reduce_sum_preserves_all_float_dtypes() {
 
     for (dtype, input) in cases {
         // Full reduction → scalar
-        let result = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &BTreeMap::new())
-            .unwrap_or_else(|e| panic!("reduce_sum {dtype:?} failed: {e}"));
+        let result = eval_primitive(
+            Primitive::ReduceSum,
+            std::slice::from_ref(&input),
+            &BTreeMap::new(),
+        )
+        .unwrap_or_else(|e| panic!("reduce_sum {dtype:?} failed: {e}"));
         match result {
             Value::Scalar(lit) => {
                 assert!(
@@ -661,7 +664,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -675,7 +680,9 @@ fn make_complex128_tensor(shape: &[u32], pairs: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
@@ -761,20 +768,35 @@ fn oracle_reduce_sum_complex64_1d() {
 fn oracle_reduce_sum_complex64_2d_full() {
     // Full reduction of 2x2 matrix
     // [[1+1i, 2+2i], [3+3i, 4+4i]] -> 10+10i
-    let input = make_complex64_tensor(&[2, 2], vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0)],
+    );
     let result = eval_primitive(Primitive::ReduceSum, &[input], &BTreeMap::new()).unwrap();
     let (re, im) = extract_complex64_scalar(&result);
-    assert_complex64_close((re, im), (10.0, 10.0), 1e-5, "full reduction of 2x2 complex");
+    assert_complex64_close(
+        (re, im),
+        (10.0, 10.0),
+        1e-5,
+        "full reduction of 2x2 complex",
+    );
 }
 
 #[test]
 fn oracle_reduce_sum_complex64_axis0() {
     // Reduce axis 0 of 2x3 matrix
     // [[1+0i, 2+0i, 3+0i], [4+0i, 5+0i, 6+0i]] axis=0 -> [5+0i, 7+0i, 9+0i]
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ],
+    );
     let mut params = BTreeMap::new();
     params.insert("axes".to_string(), "0".to_string());
     let result = eval_primitive(Primitive::ReduceSum, &[input], &params).unwrap();
@@ -789,10 +811,17 @@ fn oracle_reduce_sum_complex64_axis0() {
 fn oracle_reduce_sum_complex64_axis1() {
     // Reduce axis 1 of 2x3 matrix
     // [[1+1i, 2+2i, 3+3i], [4+4i, 5+5i, 6+6i]] axis=1 -> [6+6i, 15+15i]
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+        ],
+    );
     let mut params = BTreeMap::new();
     params.insert("axes".to_string(), "1".to_string());
     let result = eval_primitive(Primitive::ReduceSum, &[input], &params).unwrap();

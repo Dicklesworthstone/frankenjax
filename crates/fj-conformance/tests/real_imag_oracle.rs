@@ -422,8 +422,14 @@ fn oracle_real_3d_c128() {
     let input = make_complex128_tensor(
         &[2, 2, 2],
         vec![
-            (1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0),
-            (9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0),
+            (1.0, 2.0),
+            (3.0, 4.0),
+            (5.0, 6.0),
+            (7.0, 8.0),
+            (9.0, 10.0),
+            (11.0, 12.0),
+            (13.0, 14.0),
+            (15.0, 16.0),
         ],
     );
     let result = eval_primitive(Primitive::Real, &[input], &no_params()).unwrap();
@@ -438,8 +444,14 @@ fn oracle_imag_3d_c128() {
     let input = make_complex128_tensor(
         &[2, 2, 2],
         vec![
-            (1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (7.0, 8.0),
-            (9.0, 10.0), (11.0, 12.0), (13.0, 14.0), (15.0, 16.0),
+            (1.0, 2.0),
+            (3.0, 4.0),
+            (5.0, 6.0),
+            (7.0, 8.0),
+            (9.0, 10.0),
+            (11.0, 12.0),
+            (13.0, 14.0),
+            (15.0, 16.0),
         ],
     );
     let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
@@ -463,9 +475,8 @@ fn oracle_real_empty_tensor() {
 
 #[test]
 fn oracle_imag_empty_tensor() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::Complex64, Shape { dims: vec![0] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::Complex64, Shape { dims: vec![0] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Imag, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0]);
     assert_eq!(result.dtype(), DType::F32);

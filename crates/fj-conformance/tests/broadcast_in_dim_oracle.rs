@@ -576,10 +576,17 @@ fn oracle_broadcast_complex64_1d_to_2d() {
     .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+        ]
+    );
 }
 
 #[test]
@@ -660,10 +667,17 @@ fn oracle_broadcast_complex128_1d_to_2d() {
     .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     let vals = extract_complex128_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0),
-        (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+        ]
+    );
 }
 
 #[test]

@@ -671,9 +671,7 @@ fn property_atan2_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let y_values = [1.0_f64, -1.0, 2.0];
@@ -717,7 +715,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -825,7 +825,10 @@ fn oracle_atan2_complex64_mixed() {
     let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
     let (re, im) = extract_complex64_scalar(&result);
     // Should be close to pi/4 with small imaginary perturbation
-    assert!((re - std::f32::consts::FRAC_PI_4).abs() < 0.1, "real part should be near pi/4");
+    assert!(
+        (re - std::f32::consts::FRAC_PI_4).abs() < 0.1,
+        "real part should be near pi/4"
+    );
     assert!(im.abs() < 0.1, "imaginary part should be small");
 }
 
@@ -837,7 +840,10 @@ fn oracle_atan2_complex64_general() {
     let result = eval_primitive(Primitive::Atan2, &[y, x], &no_params()).unwrap();
     let (re, im) = extract_complex64_scalar(&result);
     // Result should be finite
-    assert!(re.is_finite() && im.is_finite(), "atan2(1+i, 1) should be finite");
+    assert!(
+        re.is_finite() && im.is_finite(),
+        "atan2(1+i, 1) should be finite"
+    );
 }
 
 #[test]
@@ -848,11 +854,21 @@ fn oracle_atan2_complex64_vector() {
     let vals = extract_complex64_vec(&result);
 
     // atan2(1, 1) = pi/4
-    assert_complex64_close(vals[0], (std::f32::consts::FRAC_PI_4, 0.0), 1e-5, "atan2(1,1)");
+    assert_complex64_close(
+        vals[0],
+        (std::f32::consts::FRAC_PI_4, 0.0),
+        1e-5,
+        "atan2(1,1)",
+    );
     // atan2(0, 1) = 0
     assert_complex64_close(vals[1], (0.0, 0.0), 1e-5, "atan2(0,1)");
     // atan2(-1, 1) = -pi/4
-    assert_complex64_close(vals[2], (-std::f32::consts::FRAC_PI_4, 0.0), 1e-5, "atan2(-1,1)");
+    assert_complex64_close(
+        vals[2],
+        (-std::f32::consts::FRAC_PI_4, 0.0),
+        1e-5,
+        "atan2(-1,1)",
+    );
 }
 
 #[test]

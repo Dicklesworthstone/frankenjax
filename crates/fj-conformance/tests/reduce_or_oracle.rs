@@ -309,7 +309,8 @@ fn oracle_reduce_or_4d_bool() {
             false, false, false, false,
         ],
     );
-    let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0, 1, 2, 3])).unwrap();
+    let result =
+        eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0, 1, 2, 3])).unwrap();
     assert!(extract_bool_scalar(&result)); // One true in tensor
 }
 
@@ -336,9 +337,8 @@ fn oracle_reduce_or_single_element() {
 
 #[test]
 fn oracle_reduce_or_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::Bool, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::Bool, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![3]);
 }
@@ -349,12 +349,20 @@ fn oracle_reduce_or_2d_empty() {
 fn property_reduce_or_bool_preserves_dtype() {
     let input = make_bool_tensor(&[4], vec![false, true, false, true]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
-    assert_eq!(result.dtype(), DType::Bool, "reduce_or on Bool should return Bool");
+    assert_eq!(
+        result.dtype(),
+        DType::Bool,
+        "reduce_or on Bool should return Bool"
+    );
 }
 
 #[test]
 fn property_reduce_or_i64_preserves_dtype() {
     let input = make_i64_tensor(&[3], vec![0b1010, 0b0101, 0b1100]);
     let result = eval_primitive(Primitive::ReduceOr, &[input], &reduce_params(&[0])).unwrap();
-    assert_eq!(result.dtype(), DType::I64, "reduce_or on I64 should return I64");
+    assert_eq!(
+        result.dtype(),
+        DType::I64,
+        "reduce_or on I64 should return I64"
+    );
 }

@@ -705,11 +705,7 @@ fn e2e_custom_derivatives_oracle() {
 
 #[test]
 fn ad_rule_coverage_matrix_documents_exceptions() {
-    const VJP_ONLY_NO_JVP: &[Primitive] = &[
-        Primitive::Qr,
-        Primitive::Svd,
-        Primitive::Eigh,
-    ];
+    const VJP_ONLY_NO_JVP: &[Primitive] = &[Primitive::Qr, Primitive::Svd, Primitive::Eigh];
 
     const NO_AD_COLLECTIVE_OPS: &[Primitive] = &[
         Primitive::Psum,

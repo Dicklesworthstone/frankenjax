@@ -293,7 +293,12 @@ fn metamorphic_integer_pow_2_equals_square() {
     for x in [0.5, 1.0, 2.0, 3.0, -2.0, -3.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let pow2 = eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &pow_params(2)).unwrap();
+        let pow2 = eval_primitive(
+            Primitive::IntegerPow,
+            std::slice::from_ref(&input),
+            &pow_params(2),
+        )
+        .unwrap();
         let squared = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
 
         assert_close(
@@ -331,8 +336,18 @@ fn metamorphic_integer_pow_3_equals_square_mul() {
     for x in [0.5, 1.0, 2.0, 3.0, -2.0] {
         let input = make_f64_tensor(&[], vec![x]);
 
-        let pow3 = eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &pow_params(3)).unwrap();
-        let squared = eval_primitive(Primitive::Square, std::slice::from_ref(&input), &no_params()).unwrap();
+        let pow3 = eval_primitive(
+            Primitive::IntegerPow,
+            std::slice::from_ref(&input),
+            &pow_params(3),
+        )
+        .unwrap();
+        let squared = eval_primitive(
+            Primitive::Square,
+            std::slice::from_ref(&input),
+            &no_params(),
+        )
+        .unwrap();
         let cubed = eval_primitive(Primitive::Mul, &[squared, input], &no_params()).unwrap();
 
         assert_close(
@@ -352,7 +367,12 @@ fn metamorphic_integer_pow_tensor_square() {
     let data = vec![0.5, 1.0, 2.0, 3.0, -2.0];
     let input = make_f64_tensor(&[5], data);
 
-    let pow2 = eval_primitive(Primitive::IntegerPow, std::slice::from_ref(&input), &pow_params(2)).unwrap();
+    let pow2 = eval_primitive(
+        Primitive::IntegerPow,
+        std::slice::from_ref(&input),
+        &pow_params(2),
+    )
+    .unwrap();
     let squared = eval_primitive(Primitive::Square, &[input], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&pow2), vec![5]);
@@ -378,9 +398,7 @@ fn property_integer_pow_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [1.0_f64, 2.0, 3.0];
@@ -400,7 +418,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -413,7 +433,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -424,7 +446,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -438,7 +464,11 @@ fn oracle_integer_pow_complex64_square() {
         .expect("integer_pow complex64 should succeed");
     let vals = extract_complex64_vec(&result);
     assert!(vals[0].0.abs() < 1e-5, "expected 0, got {}", vals[0].0);
-    assert!((vals[0].1 - 2.0).abs() < 1e-5, "expected 2, got {}", vals[0].1);
+    assert!(
+        (vals[0].1 - 2.0).abs() < 1e-5,
+        "expected 2, got {}",
+        vals[0].1
+    );
 }
 
 #[test]
@@ -450,7 +480,11 @@ fn oracle_integer_pow_complex64_cube() {
         .expect("integer_pow complex64 cube should succeed");
     let vals = extract_complex64_vec(&result);
     assert!(vals[0].0.abs() < 1e-5, "expected 0, got {}", vals[0].0);
-    assert!((vals[0].1 - (-1.0)).abs() < 1e-5, "expected -1, got {}", vals[0].1);
+    assert!(
+        (vals[0].1 - (-1.0)).abs() < 1e-5,
+        "expected -1, got {}",
+        vals[0].1
+    );
 }
 
 #[test]
@@ -473,6 +507,10 @@ fn property_integer_pow_preserves_complex_dtypes() {
         };
         let result = eval_primitive(Primitive::IntegerPow, &[input], &pow_params(2))
             .expect("integer_pow should succeed for complex dtype");
-        assert_eq!(result.dtype(), dtype, "integer_pow {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "integer_pow {dtype:?}: dtype mismatch"
+        );
     }
 }

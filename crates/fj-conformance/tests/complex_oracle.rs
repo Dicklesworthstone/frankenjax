@@ -283,7 +283,10 @@ fn oracle_complex_broadcast_incompatible_shapes_error() {
     let re = make_f64_tensor(&[2], vec![1.0, 2.0]);
     let im = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let result = eval_primitive(Primitive::Complex, &[re, im], &no_params());
-    assert!(result.is_err(), "incompatible shapes [2] vs [3] should error");
+    assert!(
+        result.is_err(),
+        "incompatible shapes [2] vs [3] should error"
+    );
 }
 
 // ======================== Additional Coverage ========================
@@ -332,12 +335,10 @@ fn oracle_complex_special_values() {
 
 #[test]
 fn oracle_complex_2d_empty() {
-    let re = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
-    let im = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let re =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
+    let im =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Complex, &[re, im], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -396,7 +397,13 @@ fn metamorphic_complex_negation_symmetry() {
     let pos_vals = extract_complex_vec(&pos_result);
     let neg_vals = extract_complex_vec(&neg_result);
     for ((pos_re, pos_im), (neg_re, neg_im)) in pos_vals.iter().zip(neg_vals.iter()) {
-        assert!((*pos_re + *neg_re).abs() < 1e-10, "negation: real parts should sum to zero");
-        assert!((*pos_im + *neg_im).abs() < 1e-10, "negation: imag parts should sum to zero");
+        assert!(
+            (*pos_re + *neg_re).abs() < 1e-10,
+            "negation: real parts should sum to zero"
+        );
+        assert!(
+            (*pos_im + *neg_im).abs() < 1e-10,
+            "negation: imag parts should sum to zero"
+        );
     }
 }

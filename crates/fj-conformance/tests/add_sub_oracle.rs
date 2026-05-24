@@ -460,7 +460,12 @@ fn metamorphic_sub_equals_add_neg() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Sub(x, y)
-        let sub_direct = eval_primitive(Primitive::Sub, &[x_val.clone(), y_val.clone()], &no_params()).unwrap();
+        let sub_direct = eval_primitive(
+            Primitive::Sub,
+            &[x_val.clone(), y_val.clone()],
+            &no_params(),
+        )
+        .unwrap();
 
         // Add(x, Neg(y))
         let neg_y = eval_primitive(Primitive::Neg, &[y_val], &no_params()).unwrap();
@@ -482,7 +487,8 @@ fn metamorphic_add_neg_equals_zero() {
     // Add(x, Neg(x)) = 0 (additive inverse)
     for x in [0.5, 1.0, 2.0, 3.17, -2.0, -0.5, 100.0] {
         let x_val = make_f64_tensor(&[], vec![x]);
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
         let result = eval_primitive(Primitive::Add, &[x_val, neg_x], &no_params()).unwrap();
         assert_close(
             extract_f64_scalar(&result),
@@ -503,8 +509,10 @@ fn metamorphic_neg_distributes_over_add() {
         let y_val = make_f64_tensor(&[], vec![y]);
 
         // Add(Neg(x), Neg(y))
-        let neg_x = eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
-        let neg_y = eval_primitive(Primitive::Neg, std::slice::from_ref(&y_val), &no_params()).unwrap();
+        let neg_x =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&x_val), &no_params()).unwrap();
+        let neg_y =
+            eval_primitive(Primitive::Neg, std::slice::from_ref(&y_val), &no_params()).unwrap();
         let add_negs = eval_primitive(Primitive::Add, &[neg_x, neg_y], &no_params()).unwrap();
 
         // Neg(Add(x, y))
@@ -529,7 +537,8 @@ fn metamorphic_sub_zero_equals_neg() {
         let zero = make_f64_tensor(&[], vec![0.0]);
         let x_val = make_f64_tensor(&[], vec![x]);
 
-        let sub_zero = eval_primitive(Primitive::Sub, &[zero, x_val.clone()], &no_params()).unwrap();
+        let sub_zero =
+            eval_primitive(Primitive::Sub, &[zero, x_val.clone()], &no_params()).unwrap();
         let neg_x = eval_primitive(Primitive::Neg, &[x_val], &no_params()).unwrap();
 
         assert_close(
@@ -594,7 +603,10 @@ fn oracle_add_row_vector_broadcast() {
     let b = make_f64_tensor(&[2, 3], vec![10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
     let result = eval_primitive(Primitive::Add, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0]
+    );
 }
 
 #[test]
@@ -604,7 +616,10 @@ fn oracle_add_column_vector_broadcast() {
     let b = make_f64_tensor(&[2, 3], vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let result = eval_primitive(Primitive::Add, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![101.0, 102.0, 103.0, 204.0, 205.0, 206.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![101.0, 102.0, 103.0, 204.0, 205.0, 206.0]
+    );
 }
 
 #[test]
@@ -614,7 +629,10 @@ fn oracle_sub_row_vector_broadcast() {
     let b = make_f64_tensor(&[1, 3], vec![1.0, 2.0, 3.0]);
     let result = eval_primitive(Primitive::Sub, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![9.0, 18.0, 27.0, 39.0, 48.0, 57.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![9.0, 18.0, 27.0, 39.0, 48.0, 57.0]
+    );
 }
 
 #[test]
@@ -624,7 +642,10 @@ fn oracle_add_different_ranks_broadcast() {
     let b = make_f64_tensor(&[2, 3], vec![10.0, 10.0, 10.0, 20.0, 20.0, 20.0]);
     let result = eval_primitive(Primitive::Add, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![11.0, 12.0, 13.0, 21.0, 22.0, 23.0]
+    );
 }
 
 #[test]
@@ -634,7 +655,10 @@ fn oracle_sub_different_ranks_broadcast() {
     let b = make_f64_tensor(&[3], vec![1.0, 2.0, 3.0]);
     let result = eval_primitive(Primitive::Sub, &[a, b], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
-    assert_eq!(extract_f64_vec(&result), vec![9.0, 18.0, 27.0, 39.0, 48.0, 57.0]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![9.0, 18.0, 27.0, 39.0, 48.0, 57.0]
+    );
 }
 
 #[test]
@@ -688,9 +712,7 @@ fn property_add_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -718,9 +740,7 @@ fn property_sub_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [5.0_f64, 3.0, 1.0];
@@ -763,7 +783,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -864,9 +886,8 @@ fn oracle_add_complex64_commutative() {
     let zw = extract_complex64_scalar(
         &eval_primitive(Primitive::Add, &[z.clone(), w.clone()], &no_params()).unwrap(),
     );
-    let wz = extract_complex64_scalar(
-        &eval_primitive(Primitive::Add, &[w, z], &no_params()).unwrap(),
-    );
+    let wz =
+        extract_complex64_scalar(&eval_primitive(Primitive::Add, &[w, z], &no_params()).unwrap());
     assert_complex64_close(zw, wz, 1e-6, "z+w = w+z");
 }
 

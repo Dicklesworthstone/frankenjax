@@ -444,9 +444,8 @@ fn oracle_bitcast_preserves_dtype() {
 
 #[test]
 fn oracle_bitcast_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 4] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 4] }, vec![]).unwrap());
     let result = eval_primitive(
         Primitive::BitcastConvertType,
         &[input],
@@ -491,14 +490,22 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -561,10 +568,17 @@ fn oracle_bitcast_complex64_roundtrip() {
 
 #[test]
 fn oracle_bitcast_complex128_preserves_shape() {
-    let input = make_complex128_tensor(&[2, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-    ]);
+    let input = make_complex128_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ],
+    );
     let result = eval_primitive(
         Primitive::BitcastConvertType,
         &[input.clone()],

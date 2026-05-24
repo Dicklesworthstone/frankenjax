@@ -419,19 +419,20 @@ fn metamorphic_logistic_symmetry() {
         let input = make_f64_tensor(&[], vec![x]);
 
         // logistic(x)
-        let logistic_x = eval_primitive(Primitive::Logistic, std::slice::from_ref(&input), &no_params()).unwrap();
+        let logistic_x = eval_primitive(
+            Primitive::Logistic,
+            std::slice::from_ref(&input),
+            &no_params(),
+        )
+        .unwrap();
 
         // logistic(Neg(x))
         let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
         let logistic_neg_x = eval_primitive(Primitive::Logistic, &[neg_x], &no_params()).unwrap();
 
         // Add(logistic(x), logistic(-x)) should equal 1
-        let sum = eval_primitive(
-            Primitive::Add,
-            &[logistic_x, logistic_neg_x],
-            &no_params(),
-        )
-        .unwrap();
+        let sum =
+            eval_primitive(Primitive::Add, &[logistic_x, logistic_neg_x], &no_params()).unwrap();
 
         assert_close(
             extract_f64_scalar(&sum),
@@ -452,7 +453,12 @@ fn metamorphic_logistic_definition() {
         let one = make_f64_tensor(&[], vec![1.0]);
 
         // logistic(x) directly
-        let logistic_x = eval_primitive(Primitive::Logistic, std::slice::from_ref(&input), &no_params()).unwrap();
+        let logistic_x = eval_primitive(
+            Primitive::Logistic,
+            std::slice::from_ref(&input),
+            &no_params(),
+        )
+        .unwrap();
 
         // Reciprocal(Add(1, Exp(Neg(x))))
         let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
@@ -477,7 +483,12 @@ fn metamorphic_logistic_tensor_symmetry() {
     let data = vec![0.5, 1.0, 2.0, 3.0, 5.0];
     let input = make_f64_tensor(&[5], data);
 
-    let logistic_x = eval_primitive(Primitive::Logistic, std::slice::from_ref(&input), &no_params()).unwrap();
+    let logistic_x = eval_primitive(
+        Primitive::Logistic,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let neg_x = eval_primitive(Primitive::Neg, &[input], &no_params()).unwrap();
     let logistic_neg_x = eval_primitive(Primitive::Logistic, &[neg_x], &no_params()).unwrap();
     let sum = eval_primitive(Primitive::Add, &[logistic_x, logistic_neg_x], &no_params()).unwrap();
@@ -504,9 +515,7 @@ fn property_logistic_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -548,7 +557,9 @@ fn make_complex64_tensor(shape: &[u32], pairs: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             pairs
                 .into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
@@ -676,7 +687,12 @@ fn oracle_logistic_complex64_symmetry() {
     let (re2, im2) = extract_complex64_scalar(&log_neg_z);
 
     // Sum should be 1 + 0i
-    assert_complex64_close((re1 + re2, im1 + im2), (1.0, 0.0), 1e-4, "logistic(z) + logistic(-z) = 1");
+    assert_complex64_close(
+        (re1 + re2, im1 + im2),
+        (1.0, 0.0),
+        1e-4,
+        "logistic(z) + logistic(-z) = 1",
+    );
 }
 
 #[test]

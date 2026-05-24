@@ -437,10 +437,7 @@ fn metamorphic_tan_tensor_sin_over_cos() {
 
 #[test]
 fn oracle_tan_3d_shape() {
-    let input = make_f64_tensor(
-        &[2, 2, 2],
-        vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7],
-    );
+    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]);
     let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -458,9 +455,8 @@ fn oracle_tan_empty_tensor() {
 
 #[test]
 fn oracle_tan_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -486,7 +482,10 @@ fn oracle_tan_subnormal() {
     let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
     let val = extract_f64_scalar(&result);
     // For small x, tan(x) ≈ x
-    assert!((val - subnormal).abs() < subnormal * 0.01, "tan(subnormal) ≈ subnormal");
+    assert!(
+        (val - subnormal).abs() < subnormal * 0.01,
+        "tan(subnormal) ≈ subnormal"
+    );
 }
 
 // ======================== PROPERTY: dtype preservation ========================
@@ -568,7 +567,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -638,12 +641,7 @@ fn oracle_tan_complex128_general() {
     let result = eval_primitive(Primitive::Tan, &[input], &no_params()).unwrap();
     let vec = extract_complex128_vec(&result);
     assert_eq!(vec.len(), 1);
-    assert_complex_close(
-        vec[0],
-        (expected_re, expected_im),
-        1e-10,
-        "tan(0.3+0.2i)",
-    );
+    assert_complex_close(vec[0], (expected_re, expected_im), 1e-10, "tan(0.3+0.2i)");
 }
 
 #[test]
@@ -655,7 +653,12 @@ fn oracle_tan_complex64_vector() {
     assert_eq!(vec.len(), 4);
 
     // tan(0) = 0
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-5, "tan(0)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-5,
+        "tan(0)",
+    );
 
     // tan(0.5+0i) = tan(0.5)
     assert_complex_close(

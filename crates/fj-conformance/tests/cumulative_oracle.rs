@@ -512,34 +512,62 @@ fn oracle_cumsum_complex64_1d() {
 
 fn oracle_cumsum_complex64_2d_axis0() {
     // cumsum along axis 0
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ],
+    );
     let result = eval_primitive(Primitive::Cumsum, &[input], &axis_params(0)).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     let vals = extract_complex64_vec(&result);
     // Row 0 stays same, row 1 = row 0 + row 1
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (5.0, 0.0), (7.0, 0.0), (9.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (5.0, 0.0),
+            (7.0, 0.0),
+            (9.0, 0.0),
+        ]
+    );
 }
 
 #[test]
 
 fn oracle_cumsum_complex64_2d_axis1() {
     // cumsum along axis 1 (within each row)
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+        ],
+    );
     let result = eval_primitive(Primitive::Cumsum, &[input], &axis_params(1)).unwrap();
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (3.0, 3.0), (6.0, 6.0),
-        (4.0, 4.0), (9.0, 9.0), (15.0, 15.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 1.0),
+            (3.0, 3.0),
+            (6.0, 6.0),
+            (4.0, 4.0),
+            (9.0, 9.0),
+            (15.0, 15.0),
+        ]
+    );
 }
 
 #[test]
@@ -559,9 +587,9 @@ fn oracle_cumprod_complex64_with_imaginary() {
     let input = make_complex64_tensor(&[2], vec![(0.0, 1.0), (0.0, 1.0)]);
     let result = eval_primitive(Primitive::Cumprod, &[input], &no_params()).unwrap();
     let vals = extract_complex64_vec(&result);
-    assert!((vals[0].0 - 0.0).abs() < 1e-6);  // 0 + i
+    assert!((vals[0].0 - 0.0).abs() < 1e-6); // 0 + i
     assert!((vals[0].1 - 1.0).abs() < 1e-6);
-    assert!((vals[1].0 - (-1.0)).abs() < 1e-6);  // -1 + 0i
+    assert!((vals[1].0 - (-1.0)).abs() < 1e-6); // -1 + 0i
     assert!((vals[1].1 - 0.0).abs() < 1e-6);
 }
 
@@ -615,12 +643,12 @@ fn oracle_cumprod_complex64_preserves_dtype() {
 fn property_cumulative_preserves_complex_dtypes() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = match dtype {
-            DType::Complex64 => make_complex64_tensor(&[4], vec![
-                (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-            ]),
-            DType::Complex128 => make_complex128_tensor(&[4], vec![
-                (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-            ]),
+            DType::Complex64 => {
+                make_complex64_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)])
+            }
+            DType::Complex128 => {
+                make_complex128_tensor(&[4], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)])
+            }
             _ => unreachable!(),
         };
 

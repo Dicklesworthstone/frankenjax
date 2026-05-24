@@ -245,7 +245,9 @@ fn oracle_signbit_f32_dtype() {
 
 #[test]
 fn oracle_signbit_large_tensor() {
-    let data: Vec<f64> = (0..100).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+    let data: Vec<f64> = (0..100)
+        .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+        .collect();
     let input = make_f64_tensor(&[100], data);
     let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
     let vals = extract_bool_vec(&result);
@@ -257,9 +259,8 @@ fn oracle_signbit_large_tensor() {
 
 #[test]
 fn oracle_signbit_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -286,6 +287,10 @@ fn property_signbit_always_returns_bool() {
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
         let result = eval_primitive(Primitive::Signbit, &[input], &no_params()).unwrap();
-        assert_eq!(result.dtype(), DType::Bool, "signbit with {dtype:?} input should return Bool");
+        assert_eq!(
+            result.dtype(),
+            DType::Bool,
+            "signbit with {dtype:?} input should return Bool"
+        );
     }
 }

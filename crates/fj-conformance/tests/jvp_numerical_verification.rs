@@ -3,6 +3,8 @@
 //! Verifies tangent computation via finite differences:
 //!   f'(x) · dx ≈ (f(x + ε·dx) - f(x - ε·dx)) / (2ε)
 
+#![allow(clippy::cloned_ref_to_slice_refs)]
+
 use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_lax::eval_primitive_multi;
 use smallvec::smallvec;
@@ -55,9 +57,7 @@ fn make_complex64_scalar(re: f32, im: f32) -> Value {
 
 fn extract_complex64_scalar(val: &Value) -> (f32, f32) {
     match val {
-        Value::Scalar(Literal::Complex64Bits(re, im)) => {
-            (f32::from_bits(*re), f32::from_bits(*im))
-        }
+        Value::Scalar(Literal::Complex64Bits(re, im)) => (f32::from_bits(*re), f32::from_bits(*im)),
         other => panic!("expected Complex64 scalar, got {other:?}"),
     }
 }
@@ -1111,7 +1111,10 @@ fn complex_mul(a_re: f32, a_im: f32, b_re: f32, b_im: f32) -> (f32, f32) {
 /// Helper: compute complex division (a_re + a_im*i) / (b_re + b_im*i)
 fn complex_div(a_re: f32, a_im: f32, b_re: f32, b_im: f32) -> (f32, f32) {
     let denom = b_re * b_re + b_im * b_im;
-    ((a_re * b_re + a_im * b_im) / denom, (a_im * b_re - a_re * b_im) / denom)
+    (
+        (a_re * b_re + a_im * b_im) / denom,
+        (a_im * b_re - a_re * b_im) / denom,
+    )
 }
 
 /// Helper: compute complex negation
@@ -1500,8 +1503,7 @@ fn fft_jvp_numerical() {
     let jvp_result = fj_ad::jvp(&jaxpr, &[x], &[dx.clone()]).unwrap();
 
     // For linear FFT: tangent = FFT(dx)
-    let expected_tangent =
-        eval_primitive_multi(Primitive::Fft, &[dx], &BTreeMap::new()).unwrap();
+    let expected_tangent = eval_primitive_multi(Primitive::Fft, &[dx], &BTreeMap::new()).unwrap();
 
     let actual = extract_complex_vec(&jvp_result.tangents[0]);
     let expected = extract_complex_vec(&expected_tangent[0]);
@@ -1519,8 +1521,7 @@ fn ifft_jvp_numerical() {
     let jvp_result = fj_ad::jvp(&jaxpr, &[x], &[dx.clone()]).unwrap();
 
     // For linear IFFT: tangent = IFFT(dx)
-    let expected_tangent =
-        eval_primitive_multi(Primitive::Ifft, &[dx], &BTreeMap::new()).unwrap();
+    let expected_tangent = eval_primitive_multi(Primitive::Ifft, &[dx], &BTreeMap::new()).unwrap();
 
     let actual = extract_complex_vec(&jvp_result.tangents[0]);
     let expected = extract_complex_vec(&expected_tangent[0]);

@@ -1,6 +1,8 @@
 //! Oracle tests for Transpose primitive.
 //!
 //! Tests against expected behavior matching JAX/lax.transpose:
+
+#![allow(dead_code, clippy::cloned_ref_to_slice_refs)]
 //! - permutation: axis ordering (if absent, reverses all axes)
 //! - Preserves element count, reorders data layout
 
@@ -384,7 +386,12 @@ fn oracle_transpose_large_2d() {
 fn metamorphic_transpose_2d_involution() {
     // Transpose(Transpose(x)) = x for 2D matrices (default permutation swaps twice = identity)
     let input = make_f64_tensor(&[3, 4], (1..=12).map(|i| i as f64).collect());
-    let once = eval_primitive(Primitive::Transpose, std::slice::from_ref(&input), &no_params()).unwrap();
+    let once = eval_primitive(
+        Primitive::Transpose,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let twice = eval_primitive(Primitive::Transpose, &[once], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&twice), extract_shape(&input));
@@ -397,7 +404,12 @@ fn metamorphic_transpose_2d_involution() {
 fn metamorphic_transpose_preserves_sum() {
     // Sum of elements is invariant under transpose
     let input = make_f64_tensor(&[3, 4], (1..=12).map(|i| i as f64).collect());
-    let transposed = eval_primitive(Primitive::Transpose, std::slice::from_ref(&input), &no_params()).unwrap();
+    let transposed = eval_primitive(
+        Primitive::Transpose,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
 
     let orig_sum: f64 = extract_f64_vec(&input).iter().sum();
     let trans_sum: f64 = extract_f64_vec(&transposed).iter().sum();
@@ -419,8 +431,9 @@ fn metamorphic_transpose_identity_permutation() {
     let result = eval_primitive(
         Primitive::Transpose,
         std::slice::from_ref(&input),
-        &transpose_params(&[0, 1, 2]),  // identity permutation
-    ).unwrap();
+        &transpose_params(&[0, 1, 2]), // identity permutation
+    )
+    .unwrap();
 
     assert_eq!(extract_shape(&result), extract_shape(&input));
     assert_eq!(extract_f64_vec(&result), extract_f64_vec(&input));
@@ -436,7 +449,8 @@ fn metamorphic_transpose_shape_permutation() {
         Primitive::Transpose,
         &[input],
         &transpose_params(&[2, 0, 1]),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Original shape [2, 3, 5] with permutation [2, 0, 1] -> [5, 2, 3]
     assert_eq!(
@@ -467,7 +481,8 @@ fn property_transpose_preserves_all_float_dtypes() {
     let values = [1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
-        let result = eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 0])).unwrap();
+        let result =
+            eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 0])).unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "transpose {dtype:?}: dtype mismatch");
         t.validate_dtype_consistency()
@@ -535,44 +550,62 @@ fn oracle_transpose_complex64_2d_default() {
     let input = make_complex64_tensor(
         &[2, 3],
         vec![
-            (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-            (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
         ],
     );
     let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![3, 2]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (4.0, 0.0),
-        (2.0, 0.0), (5.0, 0.0),
-        (3.0, 0.0), (6.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (4.0, 0.0),
+            (2.0, 0.0),
+            (5.0, 0.0),
+            (3.0, 0.0),
+            (6.0, 0.0),
+        ]
+    );
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
 #[test]
 fn oracle_transpose_complex64_2d_square() {
     // [[1+i, 2-i], [3+2i, 4-2i]]
-    let input = make_complex64_tensor(&[2, 2], vec![
-        (1.0, 1.0), (2.0, -1.0),
-        (3.0, 2.0), (4.0, -2.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 2],
+        vec![(1.0, 1.0), (2.0, -1.0), (3.0, 2.0), (4.0, -2.0)],
+    );
     let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (3.0, 2.0),
-        (2.0, -1.0), (4.0, -2.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![(1.0, 1.0), (3.0, 2.0), (2.0, -1.0), (4.0, -2.0),]
+    );
 }
 
 #[test]
 fn oracle_transpose_complex64_2d_identity() {
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0),
-        (0.0, -1.0), (1.0, 1.0), (-1.0, -1.0),
-    ]);
-    let result = eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0, 1])).unwrap();
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (1.0, 1.0),
+            (-1.0, -1.0),
+        ],
+    );
+    let result =
+        eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[0, 1])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 3]);
     let vals = extract_complex64_vec(&result);
     assert_eq!(vals[0], (1.0, 0.0));
@@ -582,17 +615,40 @@ fn oracle_transpose_complex64_2d_identity() {
 #[test]
 fn oracle_transpose_complex64_3d() {
     // [2, 2, 2] with permutation (2, 1, 0)
-    let input = make_complex64_tensor(&[2, 2, 2], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0),
-        (5.0, 0.0), (6.0, 0.0), (7.0, 0.0), (8.0, 0.0),
-    ]);
-    let result = eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[2, 1, 0])).unwrap();
+    let input = make_complex64_tensor(
+        &[2, 2, 2],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+            (7.0, 0.0),
+            (8.0, 0.0),
+        ],
+    );
+    let result = eval_primitive(
+        Primitive::Transpose,
+        &[input],
+        &transpose_params(&[2, 1, 0]),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_complex64_vec(&result);
-    assert_eq!(vals, vec![
-        (1.0, 0.0), (5.0, 0.0), (3.0, 0.0), (7.0, 0.0),
-        (2.0, 0.0), (6.0, 0.0), (4.0, 0.0), (8.0, 0.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 0.0),
+            (5.0, 0.0),
+            (3.0, 0.0),
+            (7.0, 0.0),
+            (2.0, 0.0),
+            (6.0, 0.0),
+            (4.0, 0.0),
+            (8.0, 0.0),
+        ]
+    );
 }
 
 #[test]
@@ -609,8 +665,12 @@ fn oracle_transpose_complex128_2d() {
     let input = make_complex128_tensor(
         &[2, 3],
         vec![
-            (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-            (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
         ],
     );
     let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
@@ -620,43 +680,74 @@ fn oracle_transpose_complex128_2d() {
 
 #[test]
 fn oracle_transpose_complex128_3d() {
-    let input = make_complex128_tensor(&[2, 3, 4], (1..=24).map(|i| (i as f64, -(i as f64))).collect());
+    let input = make_complex128_tensor(
+        &[2, 3, 4],
+        (1..=24).map(|i| (i as f64, -(i as f64))).collect(),
+    );
     let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![4, 3, 2]);
 }
 
 #[test]
 fn oracle_transpose_complex64_double_is_identity() {
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+        ],
+    );
     let result1 = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
     let result2 = eval_primitive(Primitive::Transpose, &[result1], &no_params()).unwrap();
     assert_eq!(extract_shape(&result2), vec![2, 3]);
     let vals = extract_complex64_vec(&result2);
-    assert_eq!(vals, vec![
-        (1.0, 1.0), (2.0, 2.0), (3.0, 3.0),
-        (4.0, 4.0), (5.0, 5.0), (6.0, 6.0),
-    ]);
+    assert_eq!(
+        vals,
+        vec![
+            (1.0, 1.0),
+            (2.0, 2.0),
+            (3.0, 3.0),
+            (4.0, 4.0),
+            (5.0, 5.0),
+            (6.0, 6.0),
+        ]
+    );
 }
 
 #[test]
 fn oracle_transpose_complex64_preserves_dtype() {
-    let input = make_complex64_tensor(&[2, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-    ]);
+    let input = make_complex64_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ],
+    );
     let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
     assert_eq!(result.dtype(), DType::Complex64);
 }
 
 #[test]
 fn oracle_transpose_complex128_preserves_dtype() {
-    let input = make_complex128_tensor(&[2, 3], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-        (4.0, 0.0), (5.0, 0.0), (6.0, 0.0),
-    ]);
+    let input = make_complex128_tensor(
+        &[2, 3],
+        vec![
+            (1.0, 0.0),
+            (2.0, 0.0),
+            (3.0, 0.0),
+            (4.0, 0.0),
+            (5.0, 0.0),
+            (6.0, 0.0),
+        ],
+    );
     let result = eval_primitive(Primitive::Transpose, &[input], &no_params()).unwrap();
     assert_eq!(result.dtype(), DType::Complex128);
 }
@@ -664,7 +755,12 @@ fn oracle_transpose_complex128_preserves_dtype() {
 #[test]
 fn metamorphic_transpose_complex64_preserves_sum() {
     let input = make_complex64_tensor(&[3, 4], (1..=12).map(|i| (i as f32, -(i as f32))).collect());
-    let transposed = eval_primitive(Primitive::Transpose, std::slice::from_ref(&input), &no_params()).unwrap();
+    let transposed = eval_primitive(
+        Primitive::Transpose,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
 
     let orig_vals = extract_complex64_vec(&input);
     let trans_vals = extract_complex64_vec(&transposed);
@@ -690,8 +786,10 @@ fn property_transpose_preserves_complex_dtypes() {
                 .collect(),
             _ => unreachable!(),
         };
-        let input = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![2, 3] }, lits).unwrap());
-        let result = eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 0])).unwrap();
+        let input =
+            Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![2, 3] }, lits).unwrap());
+        let result =
+            eval_primitive(Primitive::Transpose, &[input], &transpose_params(&[1, 0])).unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "transpose {dtype:?}: dtype mismatch");
         t.validate_dtype_consistency()

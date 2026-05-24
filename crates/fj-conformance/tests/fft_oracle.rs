@@ -529,8 +529,7 @@ fn property_fft_ifft_preserve_complex_dtype() {
             })
             .collect();
         Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![4] }, lits)
-                .expect("valid complex vector"),
+            TensorValue::new(dtype, Shape { dims: vec![4] }, lits).expect("valid complex vector"),
         )
     }
 
@@ -538,23 +537,21 @@ fn property_fft_ifft_preserve_complex_dtype() {
     for dtype in [DType::Complex64, DType::Complex128] {
         let input = make_complex_vec(dtype, &pairs);
 
-        let fft_result =
-            eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &BTreeMap::new())
-                .unwrap_or_else(|e| panic!("FFT failed for {dtype:?}: {e}"));
-        assert_eq!(
-            fft_result.dtype(),
-            dtype,
-            "FFT should preserve {dtype:?}"
-        );
+        let fft_result = eval_primitive(
+            Primitive::Fft,
+            std::slice::from_ref(&input),
+            &BTreeMap::new(),
+        )
+        .unwrap_or_else(|e| panic!("FFT failed for {dtype:?}: {e}"));
+        assert_eq!(fft_result.dtype(), dtype, "FFT should preserve {dtype:?}");
 
-        let ifft_result =
-            eval_primitive(Primitive::Ifft, std::slice::from_ref(&input), &BTreeMap::new())
-                .unwrap_or_else(|e| panic!("IFFT failed for {dtype:?}: {e}"));
-        assert_eq!(
-            ifft_result.dtype(),
-            dtype,
-            "IFFT should preserve {dtype:?}"
-        );
+        let ifft_result = eval_primitive(
+            Primitive::Ifft,
+            std::slice::from_ref(&input),
+            &BTreeMap::new(),
+        )
+        .unwrap_or_else(|e| panic!("IFFT failed for {dtype:?}: {e}"));
+        assert_eq!(ifft_result.dtype(), dtype, "IFFT should preserve {dtype:?}");
     }
 }
 
@@ -570,8 +567,7 @@ fn property_rfft_irfft_dtype_conversion() {
             })
             .collect();
         Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![4] }, lits)
-                .expect("valid real vector"),
+            TensorValue::new(dtype, Shape { dims: vec![4] }, lits).expect("valid real vector"),
         )
     }
 
@@ -587,9 +583,8 @@ fn property_rfft_irfft_dtype_conversion() {
             _ => unreachable!(),
         };
 
-        let rfft_result =
-            eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &params)
-                .unwrap_or_else(|e| panic!("RFFT failed for {real_dtype:?}: {e}"));
+        let rfft_result = eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &params)
+            .unwrap_or_else(|e| panic!("RFFT failed for {real_dtype:?}: {e}"));
         assert_eq!(
             rfft_result.dtype(),
             expected_complex,

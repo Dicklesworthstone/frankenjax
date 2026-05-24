@@ -298,7 +298,10 @@ fn oracle_reduce_precision_nan() {
     )
     .unwrap();
     let vals = extract_f64_vec(&result);
-    assert!(vals[0].is_nan(), "NaN should remain NaN after precision reduction");
+    assert!(
+        vals[0].is_nan(),
+        "NaN should remain NaN after precision reduction"
+    );
 }
 
 #[test]
@@ -311,7 +314,10 @@ fn oracle_reduce_precision_inf() {
     )
     .unwrap();
     let vals = extract_f64_vec(&result);
-    assert!(vals[0].is_infinite() && vals[0] > 0.0, "Inf should remain Inf");
+    assert!(
+        vals[0].is_infinite() && vals[0] > 0.0,
+        "Inf should remain Inf"
+    );
 }
 
 #[test]
@@ -351,7 +357,10 @@ fn oracle_reduce_precision_neg_inf() {
     )
     .unwrap();
     let vals = extract_f64_vec(&result);
-    assert!(vals[0].is_infinite() && vals[0] < 0.0, "-Inf should remain -Inf");
+    assert!(
+        vals[0].is_infinite() && vals[0] < 0.0,
+        "-Inf should remain -Inf"
+    );
 }
 
 #[test]
@@ -403,5 +412,9 @@ fn property_reduce_precision_preserves_dtype() {
         &precision_params(11, 52),
     )
     .unwrap();
-    assert_eq!(result.dtype(), DType::F64, "reduce_precision should preserve F64 dtype");
+    assert_eq!(
+        result.dtype(),
+        DType::F64,
+        "reduce_precision should preserve F64 dtype"
+    );
 }

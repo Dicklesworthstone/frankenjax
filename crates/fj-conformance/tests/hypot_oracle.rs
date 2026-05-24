@@ -245,7 +245,10 @@ fn oracle_hypot_scalar_x_tensor_y_broadcast() {
     let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![4]);
-    assert_eq!(extract_f64_vec(&result), vec![5.0, 3.0, 5.0, (3.0_f64.powi(2) + 12.0_f64.powi(2)).sqrt()]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![5.0, 3.0, 5.0, (3.0_f64.powi(2) + 12.0_f64.powi(2)).sqrt()]
+    );
 }
 
 #[test]
@@ -256,7 +259,10 @@ fn oracle_hypot_tensor_x_scalar_y_broadcast() {
     let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![4]);
-    assert_eq!(extract_f64_vec(&result), vec![5.0, 4.0, 5.0, (25.0_f64 + 16.0).sqrt()]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![5.0, 4.0, 5.0, (25.0_f64 + 16.0).sqrt()]
+    );
 }
 
 #[test]
@@ -267,7 +273,10 @@ fn oracle_hypot_singleton_x_vector_y_broadcast() {
     let result = eval_primitive(Primitive::Hypot, &[x, y], &no_params()).unwrap();
 
     assert_eq!(extract_shape(&result), vec![3]);
-    assert_eq!(extract_f64_vec(&result), vec![5.0, 3.0, (9.0_f64 + 144.0).sqrt()]);
+    assert_eq!(
+        extract_f64_vec(&result),
+        vec![5.0, 3.0, (9.0_f64 + 144.0).sqrt()]
+    );
 }
 
 #[test]
@@ -280,8 +289,14 @@ fn oracle_hypot_vector_x_singleton_y_broadcast() {
     assert_eq!(extract_shape(&result), vec![3]);
     let vals = extract_f64_vec(&result);
     assert!((vals[0] - 5.0).abs() < 1e-14, "hypot(3, 4) = 5");
-    assert!((vals[1] - (25.0_f64 + 16.0).sqrt()).abs() < 1e-14, "hypot(5, 4)");
-    assert!((vals[2] - (64.0_f64 + 16.0).sqrt()).abs() < 1e-14, "hypot(8, 4)");
+    assert!(
+        (vals[1] - (25.0_f64 + 16.0).sqrt()).abs() < 1e-14,
+        "hypot(5, 4)"
+    );
+    assert!(
+        (vals[2] - (64.0_f64 + 16.0).sqrt()).abs() < 1e-14,
+        "hypot(8, 4)"
+    );
 }
 
 #[test]
@@ -399,9 +414,7 @@ fn property_hypot_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let x_values = [3.0_f64, 5.0, 8.0];
@@ -454,14 +467,16 @@ fn metamorphic_hypot_triangle_inequality() {
 
     let h_ab = extract_f64_vec(&eval_primitive(Primitive::Hypot, &[a, b], &no_params()).unwrap());
     let h_cd = extract_f64_vec(&eval_primitive(Primitive::Hypot, &[c, d], &no_params()).unwrap());
-    let h_acbd = extract_f64_vec(&eval_primitive(Primitive::Hypot, &[ac, bd], &no_params()).unwrap());
+    let h_acbd =
+        extract_f64_vec(&eval_primitive(Primitive::Hypot, &[ac, bd], &no_params()).unwrap());
 
     for i in 0..3 {
         let sum = h_ab[i] + h_cd[i];
         assert!(
             h_acbd[i] <= sum + 1e-10,
             "triangle inequality at index {i}: hypot(a+c, b+d)={} > hypot(a,b) + hypot(c,d)={}",
-            h_acbd[i], sum
+            h_acbd[i],
+            sum
         );
     }
 }

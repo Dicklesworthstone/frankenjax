@@ -640,16 +640,19 @@ fn property_reduce_max_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [1.0_f64, 3.0, 2.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
-        let result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
-        assert_eq!(result.dtype(), dtype, "reduce_max {dtype:?}: dtype mismatch");
+        let result =
+            eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0])).unwrap();
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "reduce_max {dtype:?}: dtype mismatch"
+        );
     }
 }
 
@@ -666,16 +669,19 @@ fn property_reduce_min_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [3.0_f64, 1.0, 2.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
-        let result = eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0])).unwrap();
-        assert_eq!(result.dtype(), dtype, "reduce_min {dtype:?}: dtype mismatch");
+        let result =
+            eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0])).unwrap();
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "reduce_min {dtype:?}: dtype mismatch"
+        );
     }
 }
 

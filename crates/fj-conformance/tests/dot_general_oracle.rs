@@ -51,8 +51,14 @@ fn params(
     rhs_batch: &str,
 ) -> BTreeMap<String, String> {
     let mut p = BTreeMap::new();
-    p.insert("lhs_contracting_dims".to_string(), lhs_contracting.to_string());
-    p.insert("rhs_contracting_dims".to_string(), rhs_contracting.to_string());
+    p.insert(
+        "lhs_contracting_dims".to_string(),
+        lhs_contracting.to_string(),
+    );
+    p.insert(
+        "rhs_contracting_dims".to_string(),
+        rhs_contracting.to_string(),
+    );
     p.insert("lhs_batch_dims".to_string(), lhs_batch.to_string());
     p.insert("rhs_batch_dims".to_string(), rhs_batch.to_string());
     p
@@ -98,8 +104,7 @@ fn dot_general_vector_dot_product() {
     // = sum(a * b) = 1*4 + 2*5 + 3*6 = 32
     let a = vector_f64(&[1.0, 2.0, 3.0]);
     let b = vector_f64(&[4.0, 5.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
     let val = extract_f64_scalar(&result);
     assert!((val - 32.0).abs() < 1e-12, "dot product should be 32.0");
 }
@@ -112,8 +117,7 @@ fn dot_general_matmul() {
     // Contract lhs dim 1 with rhs dim 0
     let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let b = matrix_f64(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 2]);
     // C[0,0] = 1*1 + 2*3 + 3*5 = 22
@@ -128,8 +132,12 @@ fn dot_general_identity_matmul() {
     // A @ I = A
     let a = matrix_f64(2, 2, &[1.0, 2.0, 3.0, 4.0]);
     let identity = matrix_f64(2, 2, &[1.0, 0.0, 0.0, 1.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, identity], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(
+        Primitive::DotGeneral,
+        &[a, identity],
+        &params("1", "0", "", ""),
+    )
+    .unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 2]);
     assert_close(&extract_f64_vec(&result), &[1.0, 2.0, 3.0, 4.0], 1e-12);
@@ -143,8 +151,7 @@ fn dot_general_outer_product() {
     // [1, 2] outer [3, 4, 5] = [[3, 4, 5], [6, 8, 10]]
     let a = vector_f64(&[1.0, 2.0]);
     let b = vector_f64(&[3.0, 4.0, 5.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("", "", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("", "", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 3]);
     assert_close(
@@ -165,8 +172,7 @@ fn dot_general_batched_matmul() {
         vec![2, 2, 3],
         &[
             // Batch 0: [[1,2,3], [4,5,6]]
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
-            // Batch 1: [[7,8,9], [10,11,12]]
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // Batch 1: [[7,8,9], [10,11,12]]
             7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
         ],
     );
@@ -174,8 +180,7 @@ fn dot_general_batched_matmul() {
         vec![2, 3, 1],
         &[
             // Batch 0: [[1], [0], [0]]
-            1.0, 0.0, 0.0,
-            // Batch 1: [[0], [1], [0]]
+            1.0, 0.0, 0.0, // Batch 1: [[0], [1], [0]]
             0.0, 1.0, 0.0,
         ],
     );
@@ -198,8 +203,7 @@ fn dot_general_rejects_mismatched_contracting_counts() {
         .expect_err("mismatched contracting dims should fail");
 
     assert!(
-        err.to_string().contains("contracting")
-            || err.to_string().contains("same number"),
+        err.to_string().contains("contracting") || err.to_string().contains("same number"),
         "unexpected error: {err}"
     );
 }
@@ -251,10 +255,12 @@ fn dot_general_rejects_scalar_inputs() {
 fn dot_general_preserves_remaining_dims() {
     // A: [2, 3, 4], B: [4, 5]
     // Contract A dim 2 with B dim 0 => [2, 3, 5]
-    let a = tensor_f64(vec![2, 3, 4], &(0..24).map(|x| x as f64).collect::<Vec<_>>());
+    let a = tensor_f64(
+        vec![2, 3, 4],
+        &(0..24).map(|x| x as f64).collect::<Vec<_>>(),
+    );
     let b = tensor_f64(vec![4, 5], &(0..20).map(|x| x as f64).collect::<Vec<_>>());
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("2", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("2", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 3, 5]);
 }
@@ -265,8 +271,12 @@ fn dot_general_multiple_contracting_dims() {
     // A: [2, 3], B: [2, 3] => scalar (contract dims 0,1)
     let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let b = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("0,1", "0,1", "", "")).unwrap();
+    let result = eval_primitive(
+        Primitive::DotGeneral,
+        &[a, b],
+        &params("0,1", "0,1", "", ""),
+    )
+    .unwrap();
 
     // Sum of squares: 1+4+9+16+25+36 = 91
     let val = extract_f64_scalar(&result);
@@ -277,8 +287,7 @@ fn dot_general_multiple_contracting_dims() {
 fn dot_general_preserves_dtype() {
     let a = vector_f64(&[1.0, 2.0]);
     let b = vector_f64(&[3.0, 4.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
     assert_eq!(result.dtype(), DType::F64);
 }
 
@@ -288,8 +297,7 @@ fn dot_general_transpose_matmul() {
     // A: [2, 3], B: [2, 3] => contract A dim 1 with B dim 1 => [2, 2]
     let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let b = matrix_f64(2, 3, &[1.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "1", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "1", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 2]);
     // A @ B^T where B^T = [[1, 0], [0, 1], [0, 0]]
@@ -302,8 +310,7 @@ fn dot_general_transpose_matmul() {
 fn dot_general_single_element_tensors() {
     let a = tensor_f64(vec![1, 1], &[3.0]);
     let b = tensor_f64(vec![1, 1], &[4.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![1, 1]);
     assert_close(&extract_f64_vec(&result), &[12.0], 1e-12);
@@ -316,8 +323,7 @@ fn dot_general_vector_matrix_product() {
     // Vector [1, 3] @ Matrix [3, 2] => [1, 2]
     let a = vector_f64(&[1.0, 2.0, 3.0]);
     let b = matrix_f64(3, 2, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2]);
     // [1,2,3] . col0 = 1*1 + 2*3 + 3*5 = 22
@@ -330,8 +336,7 @@ fn dot_general_matrix_vector_product() {
     // Matrix [2, 3] @ Vector [3] => [2]
     let a = matrix_f64(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     let b = vector_f64(&[1.0, 0.0, 1.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2]);
     // Row 0: 1*1 + 2*0 + 3*1 = 4
@@ -344,8 +349,7 @@ fn dot_general_empty_contracting_dim() {
     // Contract over empty dimension - should give zeros
     let a = tensor_f64(vec![2, 0], &[]);
     let b = tensor_f64(vec![0, 3], &[]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 3]);
     // All zeros since sum over empty dim is 0
@@ -356,8 +360,7 @@ fn dot_general_empty_contracting_dim() {
 fn dot_general_negative_values() {
     let a = matrix_f64(2, 2, &[-1.0, 2.0, -3.0, 4.0]);
     let b = matrix_f64(2, 2, &[1.0, -1.0, -2.0, 2.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
 
     assert_eq!(extract_shape(&result), vec![2, 2]);
     // C[0,0] = -1*1 + 2*(-2) = -5
@@ -370,19 +373,34 @@ fn dot_general_negative_values() {
 #[test]
 fn dot_general_4d_batched() {
     // 4D batched matmul: [2, 2, 2, 3] @ [2, 2, 3, 1] => [2, 2, 2, 1]
-    let a = tensor_f64(vec![2, 2, 2, 3], &(0..24).map(|x| x as f64).collect::<Vec<_>>());
-    let b = tensor_f64(vec![2, 2, 3, 1], &(0..12).map(|x| x as f64).collect::<Vec<_>>());
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("3", "2", "0,1", "0,1")).unwrap();
+    let a = tensor_f64(
+        vec![2, 2, 2, 3],
+        &(0..24).map(|x| x as f64).collect::<Vec<_>>(),
+    );
+    let b = tensor_f64(
+        vec![2, 2, 3, 1],
+        &(0..12).map(|x| x as f64).collect::<Vec<_>>(),
+    );
+    let result = eval_primitive(
+        Primitive::DotGeneral,
+        &[a, b],
+        &params("3", "2", "0,1", "0,1"),
+    )
+    .unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2, 1]);
 }
 
 #[test]
 fn dot_general_large_matrices() {
-    let a = tensor_f64(vec![10, 20], &(0..200).map(|x| x as f64).collect::<Vec<_>>());
-    let b = tensor_f64(vec![20, 15], &(0..300).map(|x| x as f64).collect::<Vec<_>>());
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let a = tensor_f64(
+        vec![10, 20],
+        &(0..200).map(|x| x as f64).collect::<Vec<_>>(),
+    );
+    let b = tensor_f64(
+        vec![20, 15],
+        &(0..300).map(|x| x as f64).collect::<Vec<_>>(),
+    );
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
     assert_eq!(extract_shape(&result), vec![10, 15]);
 }
 
@@ -401,8 +419,7 @@ fn tensor_i64(shape: Vec<u32>, values: &[i64]) -> Value {
 fn dot_general_i64_dtype() {
     let a = tensor_i64(vec![2, 3], &[1, 2, 3, 4, 5, 6]);
     let b = tensor_i64(vec![3, 2], &[1, 2, 3, 4, 5, 6]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
     assert_eq!(result.dtype(), DType::I64);
     assert_eq!(extract_shape(&result), vec![2, 2]);
 }
@@ -412,8 +429,7 @@ fn dot_general_row_vector_col_vector() {
     // [1, 3] @ [3, 1] => [1, 1] scalar in matrix form
     let a = tensor_f64(vec![1, 3], &[1.0, 2.0, 3.0]);
     let b = tensor_f64(vec![3, 1], &[4.0, 5.0, 6.0]);
-    let result =
-        eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
+    let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
     assert_eq!(extract_shape(&result), vec![1, 1]);
     // 1*4 + 2*5 + 3*6 = 32
     assert_close(&extract_f64_vec(&result), &[32.0], 1e-12);
@@ -440,10 +456,17 @@ fn property_dot_general_preserves_all_float_dtypes() {
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let a = make_vec(dtype, &values);
         let b = make_vec(dtype, &values);
-        let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
-        assert_eq!(result.dtype(), dtype, "dot_general {dtype:?}: dtype mismatch");
+        let result =
+            eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", "")).unwrap();
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "dot_general {dtype:?}: dtype mismatch"
+        );
         match &result {
-            Value::Tensor(t) => t.validate_dtype_consistency().expect("literal/dtype consistency"),
+            Value::Tensor(t) => t
+                .validate_dtype_consistency()
+                .expect("literal/dtype consistency"),
             Value::Scalar(_) => {}
         }
     }
@@ -481,7 +504,9 @@ fn matrix_complex64(rows: u32, cols: u32, data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: vec![rows, cols] },
+            Shape {
+                dims: vec![rows, cols],
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -566,14 +591,8 @@ fn oracle_dot_general_complex64_2x2_matmul() {
     // [[1, i], [0, 1]] * [[1, 0], [i, 1]]
     // Row 0: (1*1 + i*i, 1*0 + i*1) = (1-1, i) = (0, i)
     // Row 1: (0*1 + 1*i, 0*0 + 1*1) = (i, 1)
-    let a = matrix_complex64(2, 2, vec![
-        (1.0, 0.0), (0.0, 1.0),
-        (0.0, 0.0), (1.0, 0.0),
-    ]);
-    let b = matrix_complex64(2, 2, vec![
-        (1.0, 0.0), (0.0, 0.0),
-        (0.0, 1.0), (1.0, 0.0),
-    ]);
+    let a = matrix_complex64(2, 2, vec![(1.0, 0.0), (0.0, 1.0), (0.0, 0.0), (1.0, 0.0)]);
+    let b = matrix_complex64(2, 2, vec![(1.0, 0.0), (0.0, 0.0), (0.0, 1.0), (1.0, 0.0)]);
     let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("1", "0", "", "")).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2]);
     let vals = extract_complex64_vec(&result);
@@ -581,10 +600,22 @@ fn oracle_dot_general_complex64_2x2_matmul() {
     assert!(vals[0].0.abs() < 1e-5, "expected 0, got {}", vals[0].0);
     assert!(vals[0].1.abs() < 1e-5, "expected 0, got {}", vals[0].1);
     assert!(vals[1].0.abs() < 1e-5, "expected 0, got {}", vals[1].0);
-    assert!((vals[1].1 - 1.0).abs() < 1e-5, "expected 1, got {}", vals[1].1);
+    assert!(
+        (vals[1].1 - 1.0).abs() < 1e-5,
+        "expected 1, got {}",
+        vals[1].1
+    );
     assert!(vals[2].0.abs() < 1e-5, "expected 0, got {}", vals[2].0);
-    assert!((vals[2].1 - 1.0).abs() < 1e-5, "expected 1, got {}", vals[2].1);
-    assert!((vals[3].0 - 1.0).abs() < 1e-5, "expected 1, got {}", vals[3].0);
+    assert!(
+        (vals[2].1 - 1.0).abs() < 1e-5,
+        "expected 1, got {}",
+        vals[2].1
+    );
+    assert!(
+        (vals[3].0 - 1.0).abs() < 1e-5,
+        "expected 1, got {}",
+        vals[3].0
+    );
     assert!(vals[3].1.abs() < 1e-5, "expected 0, got {}", vals[3].1);
 }
 
@@ -604,6 +635,10 @@ fn property_dot_general_preserves_complex_dtypes() {
         };
         let result = eval_primitive(Primitive::DotGeneral, &[a, b], &params("0", "0", "", ""))
             .expect("dot_general should succeed for complex dtype");
-        assert_eq!(result.dtype(), dtype, "dot_general {dtype:?}: dtype mismatch");
+        assert_eq!(
+            result.dtype(),
+            dtype,
+            "dot_general {dtype:?}: dtype mismatch"
+        );
     }
 }

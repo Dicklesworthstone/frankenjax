@@ -462,7 +462,10 @@ fn metamorphic_conv_zero_kernel() {
     let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
     let vals = extract_f64_vec(&result);
     for v in vals {
-        assert!(v.abs() < 1e-10, "Conv with zero kernel should be zero, got {v}");
+        assert!(
+            v.abs() < 1e-10,
+            "Conv with zero kernel should be zero, got {v}"
+        );
     }
 }
 
@@ -474,8 +477,18 @@ fn metamorphic_conv_scaling() {
     let lhs_scaled = make_f64_tensor(&[1, 5, 1], vec![3.0, 6.0, 9.0, 12.0, 15.0]);
     let rhs = make_f64_tensor(&[3, 1, 1], vec![1.0, 2.0, 1.0]);
 
-    let result = eval_primitive(Primitive::Conv, &[lhs, rhs.clone()], &conv_params("valid", "1")).unwrap();
-    let result_scaled = eval_primitive(Primitive::Conv, &[lhs_scaled, rhs], &conv_params("valid", "1")).unwrap();
+    let result = eval_primitive(
+        Primitive::Conv,
+        &[lhs, rhs.clone()],
+        &conv_params("valid", "1"),
+    )
+    .unwrap();
+    let result_scaled = eval_primitive(
+        Primitive::Conv,
+        &[lhs_scaled, rhs],
+        &conv_params("valid", "1"),
+    )
+    .unwrap();
 
     let vals = extract_f64_vec(&result);
     let vals_scaled = extract_f64_vec(&result_scaled);
@@ -492,13 +505,20 @@ fn metamorphic_conv_scaling() {
 #[test]
 fn metamorphic_conv_1x1_identity_kernel() {
     // Conv with 1x1 kernel of value 1 preserves input values
-    let lhs = make_f64_tensor(&[1, 3, 3, 2], vec![
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,
-        7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
-        13.0, 14.0, 15.0, 16.0, 17.0, 18.0,
-    ]);
+    let lhs = make_f64_tensor(
+        &[1, 3, 3, 2],
+        vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
+            17.0, 18.0,
+        ],
+    );
     let rhs = make_f64_tensor(&[1, 1, 2, 2], vec![1.0, 0.0, 0.0, 1.0]);
-    let result = eval_primitive(Primitive::Conv, &[lhs.clone(), rhs], &conv_params("same", "1")).unwrap();
+    let result = eval_primitive(
+        Primitive::Conv,
+        &[lhs.clone(), rhs],
+        &conv_params("same", "1"),
+    )
+    .unwrap();
     let input_vals = extract_f64_vec(&lhs);
     let output_vals = extract_f64_vec(&result);
     assert_eq!(input_vals.len(), output_vals.len());
@@ -518,8 +538,18 @@ fn metamorphic_conv_additivity() {
     let k2 = make_f64_tensor(&[3, 1, 1], vec![0.0, 1.0, 1.0]);
     let k_sum = make_f64_tensor(&[3, 1, 1], vec![1.0, 1.0, 1.0]);
 
-    let r1 = eval_primitive(Primitive::Conv, &[lhs.clone(), k1], &conv_params("valid", "1")).unwrap();
-    let r2 = eval_primitive(Primitive::Conv, &[lhs.clone(), k2], &conv_params("valid", "1")).unwrap();
+    let r1 = eval_primitive(
+        Primitive::Conv,
+        &[lhs.clone(), k1],
+        &conv_params("valid", "1"),
+    )
+    .unwrap();
+    let r2 = eval_primitive(
+        Primitive::Conv,
+        &[lhs.clone(), k2],
+        &conv_params("valid", "1"),
+    )
+    .unwrap();
     let r_sum = eval_primitive(Primitive::Conv, &[lhs, k_sum], &conv_params("valid", "1")).unwrap();
 
     let v1 = extract_f64_vec(&r1);
@@ -551,7 +581,16 @@ fn property_conv_preserves_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![1, 3, 1] }, lits).unwrap())
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![1, 3, 1],
+                },
+                lits,
+            )
+            .unwrap(),
+        )
     }
     fn make_rhs(dtype: DType, values: &[f64]) -> Value {
         let lits: Vec<Literal> = values
@@ -564,17 +603,28 @@ fn property_conv_preserves_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![2, 1, 1] }, lits).unwrap())
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape {
+                    dims: vec![2, 1, 1],
+                },
+                lits,
+            )
+            .unwrap(),
+        )
     }
     let lhs_values = [1.0_f64, 2.0, 3.0];
     let rhs_values = [1.0_f64, 1.0];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let lhs = make_lhs(dtype, &lhs_values);
         let rhs = make_rhs(dtype, &rhs_values);
-        let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
+        let result =
+            eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1")).unwrap();
         let t = result.as_tensor().expect("tensor result");
         assert_eq!(t.dtype, dtype, "conv {dtype:?}: dtype mismatch");
-        t.validate_dtype_consistency().expect("literal/dtype consistency");
+        t.validate_dtype_consistency()
+            .expect("literal/dtype consistency");
     }
 }
 
@@ -584,7 +634,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -597,7 +649,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -608,7 +662,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         Value::Scalar(lit) => vec![lit.as_complex64().unwrap()],
     }
 }
@@ -619,12 +677,8 @@ fn oracle_conv_1d_complex64_simple() {
     // input: [1+0i, 2+0i, 3+0i] shape [1, 3, 1] (batch, length, channels)
     // kernel: [1+0i, 1+0i] shape [2, 1, 1] (kernel_size, in_channels, out_channels)
     // result: [3+0i, 5+0i] (valid padding)
-    let lhs = make_complex64_tensor(&[1, 3, 1], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-    ]);
-    let rhs = make_complex64_tensor(&[2, 1, 1], vec![
-        (1.0, 0.0), (1.0, 0.0),
-    ]);
+    let lhs = make_complex64_tensor(&[1, 3, 1], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let rhs = make_complex64_tensor(&[2, 1, 1], vec![(1.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1"))
         .expect("conv complex64 should succeed");
     let vals = extract_complex64_vec(&result);
@@ -636,27 +690,27 @@ fn oracle_conv_1d_complex64_simple() {
 fn oracle_conv_1d_complex64_with_imaginary() {
     // Complex conv: [1+i, 2+2i] * [1+0i, i]
     // Position 0: (1+i)*1 + (2+2i)*i = 1+i + 2i - 2 = -1 + 3i
-    let lhs = make_complex64_tensor(&[1, 2, 1], vec![
-        (1.0, 1.0), (2.0, 2.0),
-    ]);
-    let rhs = make_complex64_tensor(&[2, 1, 1], vec![
-        (1.0, 0.0), (0.0, 1.0),
-    ]);
+    let lhs = make_complex64_tensor(&[1, 2, 1], vec![(1.0, 1.0), (2.0, 2.0)]);
+    let rhs = make_complex64_tensor(&[2, 1, 1], vec![(1.0, 0.0), (0.0, 1.0)]);
     let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1"))
         .expect("conv complex64 with imaginary should succeed");
     let vals = extract_complex64_vec(&result);
-    assert!((vals[0].0 - (-1.0)).abs() < 1e-5, "expected -1, got {}", vals[0].0);
-    assert!((vals[0].1 - 3.0).abs() < 1e-5, "expected 3, got {}", vals[0].1);
+    assert!(
+        (vals[0].0 - (-1.0)).abs() < 1e-5,
+        "expected -1, got {}",
+        vals[0].0
+    );
+    assert!(
+        (vals[0].1 - 3.0).abs() < 1e-5,
+        "expected 3, got {}",
+        vals[0].1
+    );
 }
 
 #[test]
 fn oracle_conv_1d_complex128_simple() {
-    let lhs = make_complex128_tensor(&[1, 3, 1], vec![
-        (1.0, 0.0), (2.0, 0.0), (3.0, 0.0),
-    ]);
-    let rhs = make_complex128_tensor(&[2, 1, 1], vec![
-        (1.0, 0.0), (1.0, 0.0),
-    ]);
+    let lhs = make_complex128_tensor(&[1, 3, 1], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
+    let rhs = make_complex128_tensor(&[2, 1, 1], vec![(1.0, 0.0), (1.0, 0.0)]);
     let result = eval_primitive(Primitive::Conv, &[lhs, rhs], &conv_params("valid", "1"))
         .expect("conv complex128 should succeed");
     assert_eq!(result.dtype(), DType::Complex128);

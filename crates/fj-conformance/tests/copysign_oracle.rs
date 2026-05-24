@@ -353,9 +353,7 @@ fn property_copysign_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let x_values = [1.0_f64, -2.0, 3.0];
@@ -385,7 +383,8 @@ fn metamorphic_copysign_preserves_magnitude() {
         assert!(
             (r.abs() - x_v.abs()).abs() < 1e-10,
             "copysign at index {i}: |result|={} should equal |x|={}",
-            r.abs(), x_v.abs()
+            r.abs(),
+            x_v.abs()
         );
     }
 }
@@ -404,7 +403,8 @@ fn metamorphic_copysign_takes_sign_from_y() {
         assert!(
             (r_sign - y_sign).abs() < 1e-10,
             "copysign at index {i}: result sign {} should match y sign {}",
-            r_sign, y_sign
+            r_sign,
+            y_sign
         );
     }
 }

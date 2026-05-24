@@ -741,8 +741,12 @@ fn property_dot_self_preserves_float_dtype() {
     ];
 
     for (dtype, vec_value) in cases {
-        let result =
-            eval_primitive(Primitive::Dot, &[vec_value.clone(), vec_value], &no_params()).unwrap();
+        let result = eval_primitive(
+            Primitive::Dot,
+            &[vec_value.clone(), vec_value],
+            &no_params(),
+        )
+        .unwrap();
         match result {
             Value::Scalar(lit) => {
                 assert!(

@@ -271,7 +271,10 @@ fn oracle_rad2deg_vector() {
 
 #[test]
 fn oracle_deg2rad_3d() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, 45.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![0.0, 90.0, 180.0, 270.0, 360.0, -90.0, -180.0, 45.0],
+    );
     let result = eval_primitive(Primitive::Deg2Rad, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -281,7 +284,19 @@ fn oracle_deg2rad_3d() {
 
 #[test]
 fn oracle_rad2deg_3d() {
-    let input = make_f64_tensor(&[2, 2, 2], vec![0.0, PI / 2.0, PI, 3.0 * PI / 2.0, 2.0 * PI, -PI / 2.0, -PI, PI / 4.0]);
+    let input = make_f64_tensor(
+        &[2, 2, 2],
+        vec![
+            0.0,
+            PI / 2.0,
+            PI,
+            3.0 * PI / 2.0,
+            2.0 * PI,
+            -PI / 2.0,
+            -PI,
+            PI / 4.0,
+        ],
+    );
     let result = eval_primitive(Primitive::Rad2Deg, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 2, 2]);
     let vals = extract_f64_vec(&result);
@@ -319,9 +334,8 @@ fn oracle_rad2deg_preserves_dtype() {
 
 #[test]
 fn oracle_deg2rad_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Deg2Rad, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -341,9 +355,7 @@ fn property_deg2rad_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [0.0_f64, 90.0, 180.0];
@@ -370,9 +382,7 @@ fn property_rad2deg_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [0.0_f64, std::f64::consts::PI / 2.0, std::f64::consts::PI];

@@ -348,8 +348,7 @@ fn property_concat_same_dtype_preserves_dtype() {
         };
         assert_eq!(t.dtype, dtype, "concat {dtype:?}: declared dtype");
         assert_eq!(t.shape.dims, vec![4]);
-        t.validate_dtype_consistency().unwrap_or_else(|e| {
-            panic!("concat {dtype:?}: validate_dtype_consistency failed: {e}")
-        });
+        t.validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("concat {dtype:?}: validate_dtype_consistency failed: {e}"));
     }
 }

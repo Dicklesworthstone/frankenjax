@@ -395,14 +395,20 @@ fn metamorphic_acos_cos_identity() {
 #[test]
 fn metamorphic_acos_tensor_roundtrip() {
     let input = make_f64_tensor(&[5], vec![-0.9, -0.5, 0.0, 0.5, 0.9]);
-    let acos_result = eval_primitive(Primitive::Acos, std::slice::from_ref(&input), &no_params()).unwrap();
+    let acos_result =
+        eval_primitive(Primitive::Acos, std::slice::from_ref(&input), &no_params()).unwrap();
     let cos_acos = eval_primitive(Primitive::Cos, &[acos_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);
     let round_trip = extract_f64_vec(&cos_acos);
 
     for (orig, rt) in original.iter().zip(round_trip.iter()) {
-        assert_close(*rt, *orig, 1e-12, &format!("cos(acos({})) = {}", orig, orig));
+        assert_close(
+            *rt,
+            *orig,
+            1e-12,
+            &format!("cos(acos({})) = {}", orig, orig),
+        );
     }
 }
 
@@ -443,7 +449,9 @@ fn property_acos_preserves_all_float_dtypes() {
         Value::Tensor(
             TensorValue::new(
                 dtype,
-                Shape { dims: vec![values.len() as u32] },
+                Shape {
+                    dims: vec![values.len() as u32],
+                },
                 values.iter().copied().map(lit_for).collect(),
             )
             .unwrap(),
@@ -460,9 +468,8 @@ fn property_acos_preserves_all_float_dtypes() {
             panic!("acos {dtype:?}: expected tensor");
         };
         assert_eq!(t.dtype, dtype, "acos {dtype:?}: dtype mismatch");
-        t.validate_dtype_consistency().unwrap_or_else(|e| {
-            panic!("acos {dtype:?}: validate_dtype_consistency failed: {e}")
-        });
+        t.validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("acos {dtype:?}: validate_dtype_consistency failed: {e}"));
     }
 }
 
@@ -516,7 +523,11 @@ fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
 
 fn extract_complex128_vec(v: &Value) -> Vec<(f64, f64)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex128().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex128().unwrap())
+            .collect(),
         _ => panic!("expected tensor"),
     }
 }
@@ -594,7 +605,12 @@ fn oracle_acos_complex64_vector() {
     assert_eq!(vec.len(), 3);
 
     // acos(1) = 0
-    assert_complex_close((vec[0].0 as f64, vec[0].1 as f64), (0.0, 0.0), 1e-5, "acos(1)");
+    assert_complex_close(
+        (vec[0].0 as f64, vec[0].1 as f64),
+        (0.0, 0.0),
+        1e-5,
+        "acos(1)",
+    );
 
     // acos(0) = pi/2
     assert_complex_close(
@@ -624,7 +640,12 @@ fn oracle_acos_complex_cos_inverse_identity() {
         let cos_acos = eval_primitive(Primitive::Cos, &[acos_result], &no_params()).unwrap();
 
         let result = extract_complex128_vec(&cos_acos)[0];
-        assert_complex_close(result, (a, b), 1e-9, &format!("cos(acos({a}+{b}i)) = {a}+{b}i"));
+        assert_complex_close(
+            result,
+            (a, b),
+            1e-9,
+            &format!("cos(acos({a}+{b}i)) = {a}+{b}i"),
+        );
     }
 }
 
@@ -646,7 +667,11 @@ fn oracle_acos_complex_dtype_preservation() {
     let c128_result = eval_primitive(Primitive::Acos, &[c128_input], &no_params()).unwrap();
     match &c128_result {
         Value::Tensor(t) => {
-            assert_eq!(t.dtype, DType::Complex128, "acos should preserve Complex128");
+            assert_eq!(
+                t.dtype,
+                DType::Complex128,
+                "acos should preserve Complex128"
+            );
             t.validate_dtype_consistency().unwrap();
         }
         _ => panic!("expected tensor"),

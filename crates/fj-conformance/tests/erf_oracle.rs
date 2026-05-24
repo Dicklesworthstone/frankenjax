@@ -368,14 +368,24 @@ fn metamorphic_erf_erfinv_identity() {
 fn metamorphic_erf_erfinv_tensor_roundtrip() {
     // For a tensor with values in (-1, 1): erf(erfinv(y)) = y
     let input = make_f64_tensor(&[5], vec![-0.8, -0.4, 0.0, 0.4, 0.8]);
-    let erfinv_result = eval_primitive(Primitive::ErfInv, std::slice::from_ref(&input), &no_params()).unwrap();
+    let erfinv_result = eval_primitive(
+        Primitive::ErfInv,
+        std::slice::from_ref(&input),
+        &no_params(),
+    )
+    .unwrap();
     let roundtrip = eval_primitive(Primitive::Erf, &[erfinv_result], &no_params()).unwrap();
 
     let original = extract_f64_vec(&input);
     let recovered = extract_f64_vec(&roundtrip);
 
     for (orig, rec) in original.iter().zip(recovered.iter()) {
-        assert_close(*rec, *orig, 1e-10, &format!("erf(erfinv({})) = {}", orig, orig));
+        assert_close(
+            *rec,
+            *orig,
+            1e-10,
+            &format!("erf(erfinv({})) = {}", orig, orig),
+        );
     }
 }
 
@@ -399,9 +409,8 @@ fn oracle_erf_empty() {
 
 #[test]
 fn oracle_erf_2d_empty() {
-    let input = Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap(),
-    );
+    let input =
+        Value::Tensor(TensorValue::new(DType::F64, Shape { dims: vec![0, 3] }, vec![]).unwrap());
     let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
     assert_eq!(extract_shape(&result), vec![0, 3]);
 }
@@ -420,8 +429,14 @@ fn oracle_erf_subnormal() {
     let result = eval_primitive(Primitive::Erf, &[input], &no_params()).unwrap();
     let vals = extract_f64_vec(&result);
     // For very small x, erf(x) should be very small and have correct sign
-    assert!(vals[0] >= 0.0 && vals[0] < 1e-6, "erf(subnormal) should be small positive");
-    assert!(vals[1] <= 0.0 && vals[1] > -1e-6, "erf(-subnormal) should be small negative");
+    assert!(
+        vals[0] >= 0.0 && vals[0] < 1e-6,
+        "erf(subnormal) should be small positive"
+    );
+    assert!(
+        vals[1] <= 0.0 && vals[1] > -1e-6,
+        "erf(-subnormal) should be small negative"
+    );
 }
 
 // ======================== PROPERTY: dtype preservation ========================
@@ -439,9 +454,7 @@ fn property_erf_preserves_all_float_dtypes() {
                 _ => panic!("not a float dtype"),
             })
             .collect();
-        Value::Tensor(
-            TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap(),
-        )
+        Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, lits).unwrap())
     }
 
     let values = [-1.0_f64, 0.0, 1.0];
@@ -461,7 +474,9 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex64,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex64(re, im))
                 .collect(),
@@ -474,7 +489,9 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
     Value::Tensor(
         TensorValue::new(
             DType::Complex128,
-            Shape { dims: shape.to_vec() },
+            Shape {
+                dims: shape.to_vec(),
+            },
             data.into_iter()
                 .map(|(re, im)| Literal::from_complex128(re, im))
                 .collect(),
@@ -485,7 +502,11 @@ fn make_complex128_tensor(shape: &[u32], data: Vec<(f64, f64)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         _ => unreachable!("expected tensor"),
     }
 }
@@ -511,7 +532,10 @@ fn oracle_erf_complex64_purely_imaginary() {
         .expect("erf complex64 imaginary should succeed");
     let vals = extract_complex64_vec(&result);
     assert!(vals[0].0.abs() < 1e-3, "real part should be ~0");
-    assert!((vals[0].1 - 1.6505).abs() < 1e-2, "imag part should be ~1.6505");
+    assert!(
+        (vals[0].1 - 1.6505).abs() < 1e-2,
+        "imag part should be ~1.6505"
+    );
 }
 
 #[test]

@@ -294,9 +294,18 @@ fn property_isnan_isinf_always_return_bool() {
     let values = [1.0_f64, f64::INFINITY, f64::NAN];
     for dtype in [DType::BF16, DType::F16, DType::F32, DType::F64] {
         let input = make_vec(dtype, &values);
-        let isnan_result = eval_primitive(Primitive::IsNan, &[input.clone()], &no_params()).unwrap();
+        let isnan_result =
+            eval_primitive(Primitive::IsNan, &[input.clone()], &no_params()).unwrap();
         let isinf_result = eval_primitive(Primitive::IsInf, &[input], &no_params()).unwrap();
-        assert_eq!(isnan_result.dtype(), DType::Bool, "is_nan with {dtype:?} input should return Bool");
-        assert_eq!(isinf_result.dtype(), DType::Bool, "is_inf with {dtype:?} input should return Bool");
+        assert_eq!(
+            isnan_result.dtype(),
+            DType::Bool,
+            "is_nan with {dtype:?} input should return Bool"
+        );
+        assert_eq!(
+            isinf_result.dtype(),
+            DType::Bool,
+            "is_inf with {dtype:?} input should return Bool"
+        );
     }
 }
