@@ -354,6 +354,7 @@ impl PyShapeDtypeStruct {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     fn normalize_vma(
         vma: Option<Py<PyAny>>,
     ) -> PyResult<(Option<Py<PyAny>>, isize, usize, Option<String>)> {
@@ -1051,7 +1052,7 @@ impl PyValue {
 
         literal
             .as_f64()
-            .or_else(|| match literal {
+            .or(match literal {
                 Literal::Bool(value) => Some(if value { 1.0 } else { 0.0 }),
                 _ => None,
             })
@@ -3591,9 +3592,7 @@ fn print_environment_info(py: Python<'_>, return_string: bool) -> PyResult<Optio
     if return_string {
         Ok(Some(info))
     } else {
-        py.import_bound("builtins")?
-            .getattr("print")?
-            .call1((info,))?;
+        py.import("builtins")?.getattr("print")?.call1((info,))?;
         Ok(None)
     }
 }
