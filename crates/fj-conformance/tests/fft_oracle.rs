@@ -592,3 +592,30 @@ fn property_rfft_irfft_dtype_conversion() {
         );
     }
 }
+
+// ======================== Edge Cases: NaN Handling ========================
+
+#[test]
+fn oracle_fft_nan_propagation() {
+    // NaN in input should propagate to output
+    let x = make_complex_tensor(&[(1.0, 0.0), (f64::NAN, 2.0), (3.0, 0.0), (4.0, 0.0)]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let result = eval_primitive(Primitive::Fft, std::slice::from_ref(&x), &params).unwrap();
+    let y = extract_complex_vec(&result);
+    // With NaN in input, at least some output elements should be NaN
+    let has_nan = y.iter().any(|(re, im)| re.is_nan() || im.is_nan());
+    assert!(has_nan, "FFT with NaN input should produce NaN in output");
+}
+
+#[test]
+fn oracle_ifft_nan_propagation() {
+    // NaN in input should propagate to output
+    let x = make_complex_tensor(&[(1.0, f64::NAN), (2.0, 0.0), (3.0, 0.0), (4.0, 0.0)]);
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "4".to_owned());
+    let result = eval_primitive(Primitive::Ifft, std::slice::from_ref(&x), &params).unwrap();
+    let y = extract_complex_vec(&result);
+    let has_nan = y.iter().any(|(re, im)| re.is_nan() || im.is_nan());
+    assert!(has_nan, "IFFT with NaN input should produce NaN in output");
+}
