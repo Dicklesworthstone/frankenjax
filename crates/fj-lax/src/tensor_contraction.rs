@@ -2,7 +2,7 @@
 //!
 //! Provides tensordot and related operations.
 
-use fj_core::{DType, Literal, Shape, TensorValue, Value, ValueError};
+#![allow(dead_code)]
 
 /// Compute tensor dot product along specified axes.
 ///
@@ -69,7 +69,7 @@ pub fn tensordot(
 
     // Get non-contracted axes
     let free_axes_a: Vec<usize> = (0..a_shape.len()).filter(|i| !axes_a.contains(i)).collect();
-    let free_axes_b: Vec<usize> = (0..b_shape.len()).filter(|i| !axes_b.contains(i)).collect();
+    let _free_axes_b: Vec<usize> = (0..b_shape.len()).filter(|i| !axes_b.contains(i)).collect();
 
     // Contracted dimension size
     let contracted_size: usize = axes_a.iter().map(|&ax| a_shape[ax]).product();
@@ -154,7 +154,7 @@ fn index_to_coords(mut idx: usize, strides: &[usize], ndim: usize) -> Vec<usize>
     coords
 }
 
-fn index_to_contracted_coords(mut idx: usize, axes: &[usize], shape: &[usize]) -> Vec<usize> {
+fn index_to_contracted_coords(idx: usize, axes: &[usize], shape: &[usize]) -> Vec<usize> {
     let contracted_shape: Vec<usize> = axes.iter().map(|&ax| shape[ax]).collect();
     let contracted_strides = compute_strides(&contracted_shape);
     index_to_coords(idx, &contracted_strides, axes.len())
