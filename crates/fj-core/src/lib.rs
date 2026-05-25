@@ -209,6 +209,7 @@ pub enum Primitive {
     Svd,
     TriangularSolve,
     Eigh,
+    Solve,
     // FFT
     Fft,
     Ifft,
@@ -382,6 +383,7 @@ impl Primitive {
         Self::Svd,
         Self::TriangularSolve,
         Self::Eigh,
+        Self::Solve,
         Self::Fft,
         Self::Ifft,
         Self::Rfft,
@@ -553,6 +555,7 @@ impl Primitive {
             Self::Svd => "svd",
             Self::TriangularSolve => "triangular_solve",
             Self::Eigh => "eigh",
+            Self::Solve => "solve",
             Self::Fft => "fft",
             Self::Ifft => "ifft",
             Self::Rfft => "rfft",

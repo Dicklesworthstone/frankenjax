@@ -1204,6 +1204,125 @@ pub(crate) fn eval_eigh(
     Ok(vec![w_val, v_val])
 }
 
+// ── General Linear Solve ────────────────────────────────────────────
+
+/// Solve the linear system Ax = b using LU decomposition with partial pivoting.
+///
+/// Matches `jnp.linalg.solve(a, b)` / `jax.scipy.linalg.solve(a, b)`.
+///
+/// inputs: [A, b] where A is n×n and b is n or n×m
+/// Returns x such that Ax = b
+pub(crate) fn eval_solve(
+    inputs: &[Value],
+    params: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let _ = params; // unused for now
+    let primitive = Primitive::Solve;
+
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+
+    let (m_a, n_a, a, dtype_a) = extract_complex_matrix(primitive, &inputs[0])?;
+
+    if m_a != n_a {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("A must be square, got {m_a}x{n_a}"),
+        });
+    }
+
+    let n = m_a;
+    let output_dtype = promote_dtype(dtype_a, dtype_a);
+
+    // Handle vector or matrix b
+    let (b_rows, b_cols, b_elements) = match &inputs[1] {
+        Value::Tensor(t) => {
+            if t.rank() == 1 {
+                let len = t.shape.dims[0] as usize;
+                let elems: Vec<f64> = t.elements.iter().filter_map(|l| l.as_f64()).collect();
+                if elems.len() != len {
+                    return Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "b must have numeric elements",
+                    });
+                }
+                (len, 1, elems)
+            } else if t.rank() == 2 {
+                let rows = t.shape.dims[0] as usize;
+                let cols = t.shape.dims[1] as usize;
+                let elems: Vec<f64> = t.elements.iter().filter_map(|l| l.as_f64()).collect();
+                if elems.len() != rows * cols {
+                    return Err(EvalError::TypeMismatch {
+                        primitive,
+                        detail: "b must have numeric elements",
+                    });
+                }
+                (rows, cols, elems)
+            } else {
+                return Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!("b must be rank-1 or rank-2, got rank-{}", t.rank()),
+                });
+            }
+        }
+        Value::Scalar(lit) => {
+            if let Some(v) = lit.as_f64() {
+                (1, 1, vec![v])
+            } else {
+                return Err(EvalError::TypeMismatch {
+                    primitive,
+                    detail: "b must be numeric",
+                });
+            }
+        }
+    };
+
+    if b_rows != n {
+        return Err(EvalError::ShapeMismatch {
+            primitive,
+            left: Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            right: Shape {
+                dims: vec![b_rows as u32, b_cols as u32],
+            },
+        });
+    }
+
+    // Extract A as f64 (ignoring complex for now - use real part)
+    let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
+
+    // Solve using existing solve function
+    let result = if b_cols == 1 {
+        solve(&a_real, &b_elements, n).ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "singular matrix".to_owned(),
+        })?
+    } else {
+        solve_multi_rhs(&a_real, &b_elements, n, b_cols).ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "singular matrix".to_owned(),
+        })?
+    };
+
+    // Build output tensor
+    let elements: Vec<Literal> = result.iter().map(|&v| Literal::F64Bits(v.to_bits())).collect();
+
+    let shape = if b_cols == 1 {
+        Shape { dims: vec![n as u32] }
+    } else {
+        Shape { dims: vec![n as u32, b_cols as u32] }
+    };
+
+    let tensor = TensorValue::new(output_dtype, shape, elements).map_err(EvalError::InvalidTensor)?;
+    Ok(Value::Tensor(tensor))
+}
+
 // ── Determinant ─────────────────────────────────────────────────────
 
 /// Compute the determinant of a square matrix via LU decomposition.

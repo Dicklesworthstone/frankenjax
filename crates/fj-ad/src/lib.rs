@@ -3512,6 +3512,11 @@ pub fn vjp(
         // dA = -(A^{-T} G) X^T  (for lower, left_side)
         // dB = A^{-T} G
         Primitive::TriangularSolve => triangular_solve_vjp(inputs, g, params),
+        // ── Solve VJP ──
+        // A X = B => X = A^{-1} B (general matrix, LU-based)
+        // dA = -g_x @ X^T
+        // dB = A^{-T} g_x
+        Primitive::Solve => solve_vjp(inputs, g, params),
         // ── FFT VJP ──
         // FFT is linear: F. Adjoint F* = n · IFFT.
         // VJP: g_x = n · IFFT(g_y)
@@ -6255,6 +6260,49 @@ fn triangular_solve_vjp(
     Ok(vec![build_matrix_f64(n, n, &da_masked)?, z])
 }
 
+/// Solve VJP: for A X = B (general matrix via LU),
+/// dA = -g_x @ X^T, dB = A^{-T} g_x.
+fn solve_vjp(
+    inputs: &[Value],
+    g: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, AdError> {
+    // Recompute X = A\B
+    let x = eval_primitive(Primitive::Solve, inputs, params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let (n, nx, x_data) = extract_matrix_f64(&x)?;
+    let (gm, gn, g_data) = extract_matrix_f64(g)?;
+    if gm != n || gn != nx {
+        return Err(AdError::EvalFailed(
+            "gradient shape doesn't match solve output".to_owned(),
+        ));
+    }
+
+    // Extract A and transpose it for solving A^T z = g
+    let (na, _, a_data) = extract_matrix_f64(&inputs[0])?;
+    if na != n {
+        return Err(AdError::EvalFailed(
+            "A dimension doesn't match solve output".to_owned(),
+        ));
+    }
+
+    // Transpose A for the adjoint solve
+    let at = transpose_f64(n, n, &a_data);
+    let at_val = build_matrix_f64(n, n, &at)?;
+
+    // Solve A^T z = g for z (this gives dB = z)
+    let z = eval_primitive(Primitive::Solve, &[at_val, g.clone()], params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let (_, _, z_data) = extract_matrix_f64(&z)?;
+
+    // dA = -z @ x^T
+    let xt = transpose_f64(n, nx, &x_data);
+    let neg_z_xt = matmul_f64(n, nx, n, &z_data, &xt);
+    let da: Vec<f64> = neg_z_xt.iter().map(|&v| -v).collect();
+
+    Ok(vec![build_matrix_f64(n, n, &da)?, z])
+}
+
 // ── Cholesky JVP ───────────────────────────────────────────────────
 
 /// Cholesky JVP: given A = L L^T and tangent dA,
@@ -6348,6 +6396,41 @@ fn triangular_solve_jvp(
         params,
     )
     .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+// ── Solve JVP ──────────────────────────────────────────────────────
+
+/// Solve JVP: for X = A\B (general matrix via LU),
+/// dX = A \ (dB - dA @ X)
+fn solve_jvp(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    // X = A\B
+    let x = eval_primitive(Primitive::Solve, primals, params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+    let (_, _, da_data) = extract_matrix_f64(&tangents[0])?;
+    let (_, _, x_data) = extract_matrix_f64(&x)?;
+    let (n, nx, _) = extract_matrix_f64(&primals[1])?;
+    let (_, _, db_data) = extract_matrix_f64(&tangents[1])?;
+
+    // dA @ X
+    let da_x = matmul_f64(n, n, nx, &da_data, &x_data);
+
+    // rhs = dB - dA @ X
+    let rhs: Vec<f64> = db_data
+        .iter()
+        .zip(da_x.iter())
+        .map(|(&db, &dax)| db - dax)
+        .collect();
+
+    let rhs_val = build_matrix_f64(n, nx, &rhs)?;
+
+    // dX = A \ rhs
+    eval_primitive(Primitive::Solve, &[primals[0].clone(), rhs_val], params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
 // ── Forward-mode JVP ───────────────────────────────────────────────
@@ -7397,6 +7480,9 @@ fn jvp_rule(
         // ── TriangularSolve JVP ──
         // d(A\B) = A \ (dB - dA X) where X = A\B
         Primitive::TriangularSolve => triangular_solve_jvp(primals, tangents, params),
+        // ── Solve JVP ──
+        // d(A\B) = A \ (dB - dA X) where X = A\B (general matrix)
+        Primitive::Solve => solve_jvp(primals, tangents, params),
         // ── FFT JVP ──
         // FFT is linear: JVP = FFT(tangent)
         Primitive::Fft => ep(Primitive::Fft, &[tangents[0].clone()]),
