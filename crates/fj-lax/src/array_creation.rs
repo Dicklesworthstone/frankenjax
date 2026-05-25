@@ -107,13 +107,13 @@ pub fn eye(n: u32, m: Option<u32>, k: i32, dtype: DType) -> Result<Value, ValueE
         }
     };
 
-    let mut elements = vec![zero_lit.clone(); size];
+    let mut elements = vec![zero_lit; size];
 
     for i in 0..n as i32 {
         let j = i + k;
         if j >= 0 && j < m as i32 {
             let idx = (i as usize) * (m as usize) + (j as usize);
-            elements[idx] = one_lit.clone();
+            elements[idx] = one_lit;
         }
     }
 
@@ -142,7 +142,13 @@ pub fn linspace(start: f64, stop: f64, num: usize, endpoint: bool) -> Result<Val
         .map(|i| Literal::from_f64(start + step * i as f64))
         .collect();
 
-    let tensor = TensorValue::new(DType::F64, Shape { dims: vec![num as u32] }, elements)?;
+    let tensor = TensorValue::new(
+        DType::F64,
+        Shape {
+            dims: vec![num as u32],
+        },
+        elements,
+    )?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -195,7 +201,7 @@ pub fn logspace(
             if let Some(v) = lit.as_f64() {
                 Literal::from_f64(base.powf(v))
             } else {
-                lit.clone()
+                *lit
             }
         })
         .collect();
@@ -214,7 +220,11 @@ pub fn diag(v: &[f64], k: i32) -> Result<Value, ValueError> {
     let mut elements = vec![Literal::from_f64(0.0); mat_size];
 
     for (i, &val) in v.iter().enumerate() {
-        let row = if k >= 0 { i } else { i + k.unsigned_abs() as usize };
+        let row = if k >= 0 {
+            i
+        } else {
+            i + k.unsigned_abs() as usize
+        };
         let col = if k >= 0 { i + k as usize } else { i };
         if row < size as usize && col < size as usize {
             elements[row * (size as usize) + col] = Literal::from_f64(val);
@@ -409,11 +419,7 @@ mod tests {
 
     fn extract_f64(v: &Value) -> Vec<f64> {
         match v {
-            Value::Tensor(t) => t
-                .elements
-                .iter()
-                .filter_map(|lit| lit.as_f64())
-                .collect(),
+            Value::Tensor(t) => t.elements.iter().filter_map(|lit| lit.as_f64()).collect(),
             Value::Scalar(lit) => lit.as_f64().into_iter().collect(),
         }
     }

@@ -1461,7 +1461,10 @@ pub fn vector_norm(x: &[f64], ord: f64) -> f64 {
         x.iter().map(|&v| v.abs()).fold(f64::INFINITY, f64::min)
     } else {
         // General Lp norm
-        x.iter().map(|&v| v.abs().powf(ord)).sum::<f64>().powf(1.0 / ord)
+        x.iter()
+            .map(|&v| v.abs().powf(ord))
+            .sum::<f64>()
+            .powf(1.0 / ord)
     }
 }
 
@@ -1521,9 +1524,7 @@ pub fn solve(a: &[f64], b: &[f64], n: usize) -> Option<Vec<f64>> {
         if max_idx != k {
             p.swap(k, max_idx);
             for j in 0..n {
-                let tmp = lu[k * n + j];
-                lu[k * n + j] = lu[max_idx * n + j];
-                lu[max_idx * n + j] = tmp;
+                lu.swap(k * n + j, max_idx * n + j);
             }
         }
 
@@ -2393,7 +2394,11 @@ mod tests {
             for j in 0..3 {
                 row_sum += a[i * 3 + j] * x[j];
             }
-            assert!((row_sum - b[i]).abs() < 1e-8, "A*x[{i}] = {row_sum}, expected {}", b[i]);
+            assert!(
+                (row_sum - b[i]).abs() < 1e-8,
+                "A*x[{i}] = {row_sum}, expected {}",
+                b[i]
+            );
         }
     }
 
@@ -2431,7 +2436,11 @@ mod tests {
         let x = lstsq(&a, 3, 2, &b).expect("solvable");
         // x should be [0, 1] for intercept and slope
         assert!((x[0]).abs() < 1e-8, "intercept should be ~0, got {}", x[0]);
-        assert!((x[1] - 1.0).abs() < 1e-8, "slope should be ~1, got {}", x[1]);
+        assert!(
+            (x[1] - 1.0).abs() < 1e-8,
+            "slope should be ~1, got {}",
+            x[1]
+        );
     }
 
     #[test]

@@ -27,7 +27,7 @@ pub fn leaky_relu(x: &[f64], negative_slope: f64) -> Vec<f64> {
 /// Matches `jax.nn.relu6(x)`.
 #[must_use]
 pub fn relu6(x: &[f64]) -> Vec<f64> {
-    x.iter().map(|&v| v.max(0.0).min(6.0)).collect()
+    x.iter().map(|&v| v.clamp(0.0, 6.0)).collect()
 }
 
 /// Sigmoid: 1 / (1 + exp(-x))
@@ -61,9 +61,7 @@ pub fn hard_tanh(x: &[f64]) -> Vec<f64> {
 /// Matches `jax.nn.silu(x)` and `jax.nn.swish(x)`.
 #[must_use]
 pub fn silu(x: &[f64]) -> Vec<f64> {
-    x.iter()
-        .map(|&v| v / (1.0 + (-v).exp()))
-        .collect()
+    x.iter().map(|&v| v / (1.0 + (-v).exp())).collect()
 }
 
 /// Alias for silu
@@ -135,9 +133,7 @@ pub fn selu(x: &[f64]) -> Vec<f64> {
     const ALPHA: f64 = 1.6732632423543772;
     const SCALE: f64 = 1.0507009873554805;
     x.iter()
-        .map(|&v| {
-            SCALE * if v > 0.0 { v } else { ALPHA * (v.exp() - 1.0) }
-        })
+        .map(|&v| SCALE * if v > 0.0 { v } else { ALPHA * (v.exp() - 1.0) })
         .collect()
 }
 

@@ -8,16 +8,30 @@ use std::collections::{HashMap, HashSet};
 #[derive(Debug, Clone, PartialEq)]
 pub enum EinsumError {
     InvalidSubscript(String),
-    ShapeMismatch { index: char, expected: usize, got: usize },
-    MissingOperand { expected: usize, got: usize },
+    ShapeMismatch {
+        index: char,
+        expected: usize,
+        got: usize,
+    },
+    MissingOperand {
+        expected: usize,
+        got: usize,
+    },
 }
 
 impl std::fmt::Display for EinsumError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidSubscript(s) => write!(f, "invalid einsum subscript: {s}"),
-            Self::ShapeMismatch { index, expected, got } => {
-                write!(f, "dimension mismatch for index '{index}': expected {expected}, got {got}")
+            Self::ShapeMismatch {
+                index,
+                expected,
+                got,
+            } => {
+                write!(
+                    f,
+                    "dimension mismatch for index '{index}': expected {expected}, got {got}"
+                )
             }
             Self::MissingOperand { expected, got } => {
                 write!(f, "expected {expected} operands, got {got}")
@@ -53,12 +67,12 @@ fn parse_subscripts(subscripts: &str) -> Result<(Vec<String>, Option<String>), E
         }
     }
 
-    if let Some(out) = output_str {
-        if !out.chars().all(|c| c.is_ascii_lowercase() || c == '.') {
-            return Err(EinsumError::InvalidSubscript(format!(
-                "output subscript '{out}' contains invalid characters"
-            )));
-        }
+    if let Some(out) = output_str
+        && !out.chars().all(|c| c.is_ascii_lowercase() || c == '.')
+    {
+        return Err(EinsumError::InvalidSubscript(format!(
+            "output subscript '{out}' contains invalid characters"
+        )));
     }
 
     Ok((input_subs, output_str.map(|s| s.to_string())))
@@ -341,10 +355,10 @@ fn subscript_to_flat_idx(
 
     let mut idx = 0;
     for (i, &c) in chars.iter().enumerate() {
-        if i < ndim {
-            if let Some(&coord) = assignment.get(&c) {
-                idx += coord * strides[i];
-            }
+        if i < ndim
+            && let Some(&coord) = assignment.get(&c)
+        {
+            idx += coord * strides[i];
         }
     }
     idx

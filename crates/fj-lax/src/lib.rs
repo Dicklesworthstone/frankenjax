@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 
-pub mod array_creation;
 mod arithmetic;
+pub mod array_creation;
 mod comparison;
 pub mod einsum;
 mod fft;
-mod linalg;
+pub mod linalg;
 pub mod nn;
 mod reduction;
 pub mod tensor_contraction;

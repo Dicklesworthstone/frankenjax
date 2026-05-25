@@ -3,6 +3,7 @@
 //! Provides tensordot and related operations.
 
 #![allow(dead_code)]
+#![allow(clippy::needless_range_loop)]
 
 /// Compute tensor dot product along specified axes.
 ///
@@ -143,6 +144,7 @@ fn compute_strides(shape: &[usize]) -> Vec<usize> {
     strides
 }
 
+#[allow(clippy::manual_checked_ops)]
 fn index_to_coords(mut idx: usize, strides: &[usize], ndim: usize) -> Vec<usize> {
     let mut coords = vec![0; ndim];
     for i in 0..ndim {

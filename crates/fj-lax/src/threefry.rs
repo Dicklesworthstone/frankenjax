@@ -297,9 +297,9 @@ pub fn random_permutation(key: PRNGKey, n: usize) -> Vec<usize> {
     // Need n-1 random swaps
     let uniforms = random_uniform(key, n.saturating_sub(1), 0.0, 1.0);
 
-    for i in 0..n.saturating_sub(1) {
+    for (i, &u) in uniforms.iter().enumerate().take(n.saturating_sub(1)) {
         let remaining = n - i;
-        let j = i + (uniforms[i] * remaining as f64).floor() as usize;
+        let j = i + (u * remaining as f64).floor() as usize;
         let j = j.min(n - 1); // Safety clamp
         result.swap(i, j);
     }
@@ -349,8 +349,8 @@ pub fn random_gamma(key: PRNGKey, count: usize, shape_param: f64) -> Vec<f64> {
             let u = uniforms[idx % uniforms.len()];
 
             // Accept/reject
-            let accept = u < 1.0 - 0.0331 * x * x * x * x
-                || u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln());
+            let accept =
+                u < 1.0 - 0.0331 * x * x * x * x || u.ln() < 0.5 * x * x + d * (1.0 - v + v.ln());
 
             if accept {
                 let mut sample = d * v;
@@ -448,12 +448,7 @@ pub fn random_poisson(key: PRNGKey, count: usize, lam: f64) -> Vec<u64> {
 /// Matches `jax.random.truncated_normal(key, lower, upper, shape)`.
 /// Uses rejection sampling.
 #[must_use]
-pub fn random_truncated_normal(
-    key: PRNGKey,
-    count: usize,
-    lower: f64,
-    upper: f64,
-) -> Vec<f64> {
+pub fn random_truncated_normal(key: PRNGKey, count: usize, lower: f64, upper: f64) -> Vec<f64> {
     if lower >= upper {
         return vec![f64::NAN; count];
     }
@@ -1460,10 +1455,7 @@ mod tests {
         let key = random_key(42);
         let vals = random_t(key, 1000, 10.0);
         let mean = vals.iter().sum::<f64>() / vals.len() as f64;
-        assert!(
-            mean.abs() < 0.5,
-            "t(10) should have mean ~0, got {mean}"
-        );
+        assert!(mean.abs() < 0.5, "t(10) should have mean ~0, got {mean}");
     }
 
     #[test]

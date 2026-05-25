@@ -127,9 +127,11 @@ where
         TreeNode::Tuple(children) => {
             TreeNode::Tuple(children.iter().map(|c| tree_map(f, c)).collect())
         }
-        TreeNode::Dict(map) => {
-            TreeNode::Dict(map.iter().map(|(k, v)| (k.clone(), tree_map(f, v))).collect())
-        }
+        TreeNode::Dict(map) => TreeNode::Dict(
+            map.iter()
+                .map(|(k, v)| (k.clone(), tree_map(f, v)))
+                .collect(),
+        ),
         TreeNode::None => TreeNode::None,
     }
 }
