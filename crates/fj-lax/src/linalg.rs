@@ -1323,6 +1323,68 @@ pub(crate) fn eval_solve(
     Ok(Value::Tensor(tensor))
 }
 
+/// Evaluate matrix determinant.
+///
+/// Input: A square matrix [n, n]
+/// Output: Scalar determinant
+pub(crate) fn eval_det(
+    inputs: &[Value],
+    _params: &std::collections::BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    let primitive = Primitive::Det;
+
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let (m, n, a, _dtype) = extract_complex_matrix(primitive, &inputs[0])?;
+    if m != n {
+        return Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "det requires square matrix",
+        });
+    }
+
+    let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
+    let d = det(&a_real, n);
+    Ok(Value::scalar_f64(d))
+}
+
+/// Evaluate sign and log of matrix determinant.
+///
+/// Input: A square matrix [n, n]
+/// Output: Two scalars (sign, logabsdet)
+pub(crate) fn eval_slogdet(
+    inputs: &[Value],
+    _params: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<Value>, EvalError> {
+    let primitive = Primitive::Slogdet;
+
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+
+    let (m, n, a, _dtype) = extract_complex_matrix(primitive, &inputs[0])?;
+    if m != n {
+        return Err(EvalError::TypeMismatch {
+            primitive,
+            detail: "slogdet requires square matrix",
+        });
+    }
+
+    let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
+    let (sign, logabsdet) = slogdet(&a_real, n);
+    Ok(vec![Value::scalar_f64(sign), Value::scalar_f64(logabsdet)])
+}
+
 // ── Determinant ─────────────────────────────────────────────────────
 
 /// Compute the determinant of a square matrix via LU decomposition.

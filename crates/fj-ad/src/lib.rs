@@ -374,6 +374,79 @@ fn zeros_like(v: &Value) -> Value {
     }
 }
 
+/// Compute A^{-T} = (A^{-1})^T for determinant gradient.
+fn matrix_inverse_transpose(a: &Value) -> Result<Value, AdError> {
+    let a_t = eval_primitive(Primitive::Transpose, &[a.clone()], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+    let (n, _) = match &a_t {
+        Value::Tensor(t) if t.shape.rank() == 2 => {
+            (t.shape.dims[0] as usize, t.shape.dims[1] as usize)
+        }
+        _ => return Err(AdError::EvalFailed("det gradient requires 2D matrix".into())),
+    };
+
+    let identity = create_identity_matrix(n)?;
+
+    eval_primitive(Primitive::Solve, &[a_t, identity], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+fn create_identity_matrix(n: usize) -> Result<Value, AdError> {
+    let mut elements = vec![Literal::from_f64(0.0); n * n];
+    for i in 0..n {
+        elements[i * n + i] = Literal::from_f64(1.0);
+    }
+    let shape = Shape { dims: vec![n as u32, n as u32] };
+    TensorValue::new(DType::F64, shape, elements)
+        .map(Value::Tensor)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Solve A X = I to get A^{-1}
+fn solve_for_identity(a: &Value) -> Result<Value, AdError> {
+    let n = match a {
+        Value::Tensor(t) if t.shape.rank() == 2 => t.shape.dims[0] as usize,
+        _ => return Err(AdError::EvalFailed("solve_for_identity requires 2D matrix".into())),
+    };
+    let identity = create_identity_matrix(n)?;
+    eval_primitive(Primitive::Solve, &[a.clone(), identity], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Matrix multiply A @ B using Dot primitive
+fn matrix_multiply(a: &Value, b: &Value) -> Result<Value, AdError> {
+    eval_primitive(Primitive::Dot, &[a.clone(), b.clone()], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Multiply a scalar by a value
+fn scalar_mul(scalar: &Value, value: &Value) -> Result<Value, AdError> {
+    eval_primitive(Primitive::Mul, &[scalar.clone(), value.clone()], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Compute trace of a matrix (sum of diagonal elements)
+fn matrix_trace(a: &Value) -> Result<Value, AdError> {
+    let t = match a {
+        Value::Tensor(t) if t.shape.rank() == 2 => t,
+        _ => return Err(AdError::EvalFailed("matrix_trace requires 2D matrix".into())),
+    };
+
+    let n = t.shape.dims[0] as usize;
+    let m = t.shape.dims[1] as usize;
+    let k = n.min(m);
+
+    let mut sum = 0.0_f64;
+    for i in 0..k {
+        let idx = i * m + i;
+        if let Some(lit) = t.elements.get(idx) {
+            sum += lit.as_f64().unwrap_or(0.0);
+        }
+    }
+    Ok(Value::scalar_f64(sum))
+}
+
 fn parse_pad_i64_param_for_rank(
     params: &BTreeMap<String, String>,
     key: &str,
@@ -3524,6 +3597,34 @@ pub fn vjp(
         // dA = -g_x @ X^T
         // dB = A^{-T} g_x
         Primitive::Solve => solve_vjp(inputs, g, params),
+        // ── Det VJP ──
+        // det(A) is a scalar function
+        // d det / d A = det(A) * A^{-T}
+        // VJP: g_A = g * det(A) * A^{-T}
+        Primitive::Det => {
+            if inputs.is_empty() {
+                return Err(AdError::InputArity { expected: 1, actual: 0 });
+            }
+            let a = &inputs[0];
+            let det_val = eval_primitive(Primitive::Det, &[a.clone()], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let a_inv_t = matrix_inverse_transpose(a)?;
+            let scaled = scalar_mul(g, &det_val)?;
+            let grad_a = scalar_mul(&scaled, &a_inv_t)?;
+            Ok(vec![grad_a])
+        }
+        // ── Slogdet VJP ──
+        // slogdet returns (sign, logabsdet), gradient only flows through logabsdet
+        // d logabsdet / d A = A^{-T}
+        Primitive::Slogdet => {
+            if inputs.is_empty() {
+                return Err(AdError::InputArity { expected: 1, actual: 0 });
+            }
+            let a = &inputs[0];
+            let a_inv_t = matrix_inverse_transpose(a)?;
+            let grad_a = scalar_mul(g, &a_inv_t)?;
+            Ok(vec![grad_a])
+        }
         // ── FFT VJP ──
         // FFT is linear: F. Adjoint F* = n · IFFT.
         // VJP: g_x = n · IFFT(g_y)
@@ -7565,6 +7666,32 @@ fn jvp_rule(
         // ── Solve JVP ──
         // d(A\B) = A \ (dB - dA X) where X = A\B (general matrix)
         Primitive::Solve => solve_jvp(primals, tangents, params),
+        // ── Det JVP ──
+        // d det(A) = det(A) * tr(A^{-1} dA)
+        Primitive::Det => {
+            if primals.is_empty() || tangents.is_empty() {
+                return Err(AdError::InputArity { expected: 1, actual: 0 });
+            }
+            let a = &primals[0];
+            let da = &tangents[0];
+            let det_val = ep(Primitive::Det, &[a.clone()])?;
+            let a_inv = solve_for_identity(a)?;
+            let a_inv_da = matrix_multiply(&a_inv, da)?;
+            let trace_val = matrix_trace(&a_inv_da)?;
+            scalar_mul(&det_val, &trace_val)
+        }
+        // ── Slogdet JVP ──
+        // d logabsdet(A) = tr(A^{-1} dA)
+        Primitive::Slogdet => {
+            if primals.is_empty() || tangents.is_empty() {
+                return Err(AdError::InputArity { expected: 1, actual: 0 });
+            }
+            let a = &primals[0];
+            let da = &tangents[0];
+            let a_inv = solve_for_identity(a)?;
+            let a_inv_da = matrix_multiply(&a_inv, da)?;
+            matrix_trace(&a_inv_da)
+        }
         // ── FFT JVP ──
         // FFT is linear: JVP = FFT(tangent)
         Primitive::Fft => ep(Primitive::Fft, &[tangents[0].clone()]),

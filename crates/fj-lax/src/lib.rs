@@ -32,7 +32,7 @@ use arithmetic::{
 
 use comparison::eval_comparison;
 use fft::{eval_fft, eval_ifft, eval_irfft, eval_rfft};
-use linalg::{eval_cholesky, eval_eigh, eval_lu, eval_qr, eval_solve, eval_svd, eval_triangular_solve};
+use linalg::{eval_cholesky, eval_det, eval_eigh, eval_lu, eval_qr, eval_slogdet, eval_solve, eval_svd, eval_triangular_solve};
 use reduction::{eval_cumulative, eval_reduce_axes, eval_reduce_bitwise_axes};
 use tensor_ops::{
     eval_argmax, eval_argmin, eval_argsort, eval_bitcast_convert_type, eval_broadcast_in_dim,
@@ -574,6 +574,11 @@ pub fn eval_primitive(
             Ok(outputs.remove(0))
         }
         Primitive::Solve => eval_solve(inputs, params),
+        Primitive::Det => eval_det(inputs, params),
+        Primitive::Slogdet => {
+            let outputs = eval_slogdet(inputs, params)?;
+            Ok(outputs.into_iter().next().unwrap_or(Value::scalar_f64(0.0)))
+        }
         Primitive::Fft => eval_fft(inputs, params),
         Primitive::Ifft => eval_ifft(inputs, params),
         Primitive::Rfft => eval_rfft(inputs, params),
