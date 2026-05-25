@@ -530,12 +530,39 @@ fn batch_binary_elementwise(
     let a = &inputs[0];
     let b = &inputs[1];
 
+    // Fast path: both inputs have batch_dim == 0, skip harmonization entirely
+    // This is the common case for vmap with default in_axes=0.
+    if a.batch_dim == Some(0) && b.batch_dim == Some(0) {
+        let result = eval_primitive(primitive, &[a.value.clone(), b.value.clone()], params)
+            .map_err(|e| BatchError::EvalError(e.to_string()))?;
+        return Ok(BatchTracer {
+            value: result,
+            batch_dim: Some(0),
+        });
+    }
+
     // When one operand is a batched tensor and the other is an unbatched scalar,
     // pass the scalar through directly — fj-lax eval_binary_elementwise handles
     // (Tensor, Scalar) and (Scalar, Tensor) pairs natively with full broadcasting.
     // This avoids the shape mismatch that occurs when broadcast_unbatched creates
     // a [batch_size] tensor that doesn't match [batch_size, ...inner_dims].
     match (a.batch_dim, b.batch_dim) {
+        (Some(0), None) if matches!(b.value, Value::Scalar(_)) => {
+            let result = eval_primitive(primitive, &[a.value.clone(), b.value.clone()], params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer {
+                value: result,
+                batch_dim: Some(0),
+            });
+        }
+        (None, Some(0)) if matches!(a.value, Value::Scalar(_)) => {
+            let result = eval_primitive(primitive, &[a.value.clone(), b.value.clone()], params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            return Ok(BatchTracer {
+                value: result,
+                batch_dim: Some(0),
+            });
+        }
         (Some(bd), None) if matches!(b.value, Value::Scalar(_)) => {
             let a_val = move_batch_dim_to_front(&a.value, bd)?;
             let result = eval_primitive(primitive, &[a_val, b.value.clone()], params)
@@ -4856,6 +4883,53 @@ pub fn batch_eval_jaxpr_with_consts(
             jaxpr.invars.len(),
             args.len()
         )));
+    }
+
+    // Fast path for single-equation Jaxprs with no constants and direct input->output mapping.
+    // This avoids HashMap overhead for simple operations like vmap(add_one).
+    if jaxpr.equations.len() == 1 && jaxpr.constvars.is_empty() {
+        let eqn = &jaxpr.equations[0];
+        if eqn.sub_jaxprs.is_empty() {
+            // Resolve inputs directly from args array
+            let inputs: Result<Vec<BatchTracer>, BatchError> = eqn
+                .inputs
+                .iter()
+                .map(|atom| match atom {
+                    Atom::Var(var) => {
+                        jaxpr
+                            .invars
+                            .iter()
+                            .position(|v| v == var)
+                            .map(|idx| args[idx].clone())
+                            .ok_or_else(|| {
+                                BatchError::InterpreterError(format!("missing variable v{}", var.0))
+                            })
+                    }
+                    Atom::Lit(lit) => Ok(BatchTracer::unbatched(Value::Scalar(*lit))),
+                })
+                .collect();
+            let inputs = inputs?;
+
+            let results = apply_batch_rule_multi(eqn.primitive, &inputs, &eqn.params)?;
+
+            // Map outputs to outvars
+            return jaxpr
+                .outvars
+                .iter()
+                .map(|outvar| {
+                    eqn.outputs
+                        .iter()
+                        .position(|v| v == outvar)
+                        .map(|idx| results[idx].clone())
+                        .ok_or_else(|| {
+                            BatchError::InterpreterError(format!(
+                                "missing output variable v{}",
+                                outvar.0
+                            ))
+                        })
+                })
+                .collect();
+        }
     }
 
     let mut env: FxHashMap<VarId, BatchTracer> = FxHashMap::with_capacity_and_hasher(
