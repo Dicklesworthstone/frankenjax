@@ -3259,6 +3259,13 @@ pub fn vjp(
             scan_vjp(inputs, g, params)
         }
 
+        Primitive::AssociativeScan => {
+            // AssociativeScan VJP: gradient flows backward through the prefix chain.
+            // For associative op ⊕: y[i] = x[0] ⊕ x[1] ⊕ ... ⊕ x[i]
+            // Gradient for x[i] accumulates from all y[j] where j >= i.
+            associative_scan_vjp(inputs, g, params)
+        }
+
         Primitive::While => {
             // While VJP: gradient flows through the body iterations.
             // We replay forward to count iterations, then reverse-propagate.
@@ -4869,6 +4876,79 @@ fn scan_jvp(
             xs.shape.dims
         ))),
     }
+}
+
+/// AssociativeScan VJP: reverse-propagate gradient through the prefix chain.
+///
+/// For an associative binary op like add:
+///   y[0] = x[0]
+///   y[1] = x[0] + x[1]
+///   y[2] = x[0] + x[1] + x[2]
+///   ...
+///
+/// The gradient of x[i] accumulates from all y[j] where j >= i.
+/// For addition: dx[i] = sum(dy[j] for j >= i) = cumsum_reverse(dy)
+fn associative_scan_vjp(
+    inputs: &[Value],
+    g: &Value,
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, AdError> {
+    if inputs.is_empty() {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: 0,
+        });
+    }
+
+    let body_op_name = params.get("body_op").map(|s| s.as_str()).unwrap_or("add");
+
+    match body_op_name {
+        "add" => {
+            let mut params_rev = BTreeMap::new();
+            params_rev.insert("body_op".to_owned(), "add".to_owned());
+            params_rev.insert("reverse".to_owned(), "true".to_owned());
+            let dx = eval_primitive(Primitive::AssociativeScan, &[g.clone()], &params_rev)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![dx])
+        }
+        "mul" => {
+            let xs = &inputs[0];
+            let ys = eval_primitive(Primitive::AssociativeScan, &[xs.clone()], params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let mut rev_params = params.clone();
+            rev_params.insert("reverse".to_owned(), "true".to_owned());
+            let g_cumsum = eval_primitive(Primitive::AssociativeScan, &[g.clone()], &rev_params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let div_result = eval_primitive(Primitive::Div, &[ys, xs.clone()], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let dx = eval_primitive(Primitive::Mul, &[g_cumsum, div_result], &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![dx])
+        }
+        _ => {
+            Ok(vec![zeros_like(&inputs[0])])
+        }
+    }
+}
+
+/// AssociativeScan JVP: propagate tangents forward through the prefix chain.
+///
+/// For associative_scan with add: y[i] = sum(x[0..=i])
+/// JVP tangent: dy[i] = sum(dx[0..=i]) = associative_scan(dx)
+fn associative_scan_jvp(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    if primals.is_empty() || tangents.is_empty() {
+        return Err(AdError::InputArity {
+            expected: 1,
+            actual: 0,
+        });
+    }
+
+    eval_primitive(Primitive::AssociativeScan, &[tangents[0].clone()], params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
 fn while_body_op_for_ad(body_op_name: &str) -> Option<Primitive> {
@@ -7404,6 +7484,8 @@ fn jvp_rule(
         }
 
         Primitive::Scan => scan_jvp(primals, tangents, params),
+
+        Primitive::AssociativeScan => associative_scan_jvp(primals, tangents, params),
 
         Primitive::While => while_jvp(primals, tangents, params),
 

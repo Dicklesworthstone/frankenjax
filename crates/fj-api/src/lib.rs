@@ -15,12 +15,12 @@ pub use transforms::{
     PmapWrapped, TransposedLinearFunction, ValueAndGradWrapped, VmapWrapped,
 };
 pub use transforms::{
-    checkpoint, compose, custom_jvp, custom_vjp, grad, hessian, jacobian, jit, linear_transpose,
-    linearize, pmap, value_and_grad, vmap,
+    checkpoint, compose, custom_jvp, custom_vjp, eval_shape, grad, hessian, jacobian, jit,
+    linear_transpose, linearize, pmap, value_and_grad, vmap, ShapedArray,
 };
 
 // Re-export make_jaxpr tracing API from fj-trace
-pub use fj_trace::{ShapedArray, TracerRef, make_jaxpr, make_jaxpr_fallible};
+pub use fj_trace::{TracerRef, make_jaxpr, make_jaxpr_fallible};
 
 #[cfg(test)]
 mod tests {
@@ -228,6 +228,37 @@ mod tests {
             .as_f64_scalar()
             .unwrap();
         assert!((result - (-3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn eval_shape_square() {
+        let jaxpr = build_program(ProgramSpec::Square);
+        let shapes = eval_shape(&jaxpr, &[Value::scalar_f64(0.0)]).expect("eval_shape");
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].shape.dims, Vec::<u32>::new());
+        assert_eq!(shapes[0].dtype, fj_core::DType::F64);
+    }
+
+    #[test]
+    fn eval_shape_add() {
+        let jaxpr = build_program(ProgramSpec::Add2);
+        let shapes =
+            eval_shape(&jaxpr, &[Value::scalar_i64(0), Value::scalar_i64(0)]).expect("eval_shape");
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].dtype, fj_core::DType::I64);
+    }
+
+    #[test]
+    fn eval_shape_vector() {
+        let jaxpr = build_program(ProgramSpec::LaxNeg);
+        let shapes = eval_shape(
+            &jaxpr,
+            &[Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vec")],
+        )
+        .expect("eval_shape");
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(shapes[0].shape.dims, vec![3u32]);
+        assert_eq!(shapes[0].dtype, fj_core::DType::F64);
     }
 
     // --- Transform composition tests ---

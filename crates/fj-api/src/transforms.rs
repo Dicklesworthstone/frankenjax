@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use fj_core::{CompatibilityMode, Jaxpr, TraceTransformLedger, Transform, Value};
 use fj_dispatch::{DispatchRequest, dispatch};
+pub use fj_trace::ShapedArray;
 
 use crate::errors::ApiError;
 
@@ -368,6 +369,202 @@ pub fn checkpoint(jaxpr: Jaxpr) -> CheckpointWrapped {
         backend: "cpu".to_owned(),
         mode: CompatibilityMode::Strict,
         custom_vjp_rule_key: rule_key,
+    }
+}
+
+/// Evaluate the output shapes and dtypes of a function without running it.
+///
+/// Given example inputs (used only for their shapes and dtypes), traces
+/// through the computation graph and returns the output shapes and dtypes.
+///
+/// JAX equivalent: `jax.eval_shape`
+///
+/// # Example
+/// ```ignore
+/// let jaxpr = build_program(ProgramSpec::Square);
+/// let shapes = eval_shape(&jaxpr, &[Value::scalar_f64(0.0)])?;
+/// assert_eq!(shapes[0].shape, Shape::scalar());
+/// assert_eq!(shapes[0].dtype, DType::F64);
+/// ```
+pub fn eval_shape(jaxpr: &Jaxpr, inputs: &[Value]) -> Result<Vec<ShapedArray>, ApiError> {
+    use fj_core::{Atom, VarId};
+
+    if inputs.len() != jaxpr.invars.len() {
+        return Err(ApiError::EvalError {
+            detail: format!(
+                "eval_shape: expected {} inputs, got {}",
+                jaxpr.invars.len(),
+                inputs.len()
+            ),
+        });
+    }
+
+    let mut shape_env: BTreeMap<VarId, ShapedArray> = BTreeMap::new();
+
+    for (var, input) in jaxpr.invars.iter().zip(inputs.iter()) {
+        shape_env.insert(*var, ShapedArray::from_value(input));
+    }
+
+    for eqn in &jaxpr.equations {
+        let input_shapes: Vec<ShapedArray> = eqn
+            .inputs
+            .iter()
+            .map(|atom| match atom {
+                Atom::Var(v) => shape_env
+                    .get(v)
+                    .cloned()
+                    .ok_or_else(|| ApiError::EvalError {
+                        detail: format!("eval_shape: undefined variable {:?}", v),
+                    }),
+                Atom::Lit(lit) => Ok(ShapedArray::from_value(&Value::Scalar(*lit))),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let output_shapes = infer_primitive_shapes(eqn.primitive, &input_shapes, &eqn.params)?;
+
+        if output_shapes.len() != eqn.outputs.len() {
+            return Err(ApiError::EvalError {
+                detail: format!(
+                    "eval_shape: primitive {:?} returned {} shapes, expected {}",
+                    eqn.primitive,
+                    output_shapes.len(),
+                    eqn.outputs.len()
+                ),
+            });
+        }
+
+        for (var, shape) in eqn.outputs.iter().zip(output_shapes.into_iter()) {
+            shape_env.insert(*var, shape);
+        }
+    }
+
+    let output_shapes: Result<Vec<_>, _> = jaxpr
+        .outvars
+        .iter()
+        .map(|v| {
+            shape_env
+                .get(v)
+                .cloned()
+                .ok_or_else(|| ApiError::EvalError {
+                    detail: format!("eval_shape: undefined output variable {:?}", v),
+                })
+        })
+        .collect();
+
+    output_shapes
+}
+
+fn infer_primitive_shapes(
+    primitive: fj_core::Primitive,
+    inputs: &[ShapedArray],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<ShapedArray>, ApiError> {
+    use fj_core::Primitive;
+
+    match primitive {
+        Primitive::Add
+        | Primitive::Sub
+        | Primitive::Mul
+        | Primitive::Div
+        | Primitive::Pow
+        | Primitive::Max
+        | Primitive::Min
+        | Primitive::Eq
+        | Primitive::Ne
+        | Primitive::Lt
+        | Primitive::Le
+        | Primitive::Gt
+        | Primitive::Ge => {
+            if inputs.is_empty() {
+                return Err(ApiError::EvalError {
+                    detail: "binary op requires at least one input".into(),
+                });
+            }
+            Ok(vec![inputs[0].clone()])
+        }
+
+        Primitive::Neg
+        | Primitive::Abs
+        | Primitive::Exp
+        | Primitive::Log
+        | Primitive::Sqrt
+        | Primitive::Rsqrt
+        | Primitive::Sin
+        | Primitive::Cos
+        | Primitive::Tan
+        | Primitive::Tanh
+        | Primitive::Sign
+        | Primitive::Floor
+        | Primitive::Ceil
+        | Primitive::Round
+        | Primitive::Square
+        | Primitive::Reciprocal
+        | Primitive::Erf
+        | Primitive::Erfc => {
+            if inputs.is_empty() {
+                return Err(ApiError::EvalError {
+                    detail: "unary op requires one input".into(),
+                });
+            }
+            Ok(vec![inputs[0].clone()])
+        }
+
+        Primitive::ReduceSum
+        | Primitive::ReduceMax
+        | Primitive::ReduceMin
+        | Primitive::ReduceProd => {
+            if inputs.is_empty() {
+                return Err(ApiError::EvalError {
+                    detail: "reduce op requires one input".into(),
+                });
+            }
+            Ok(vec![ShapedArray {
+                dtype: inputs[0].dtype,
+                shape: fj_core::Shape::scalar(),
+            }])
+        }
+
+        Primitive::Reshape => {
+            if let Some(shape_str) = params.get("shape") {
+                let dims: Vec<u32> = shape_str
+                    .split(',')
+                    .filter_map(|s| s.trim().parse().ok())
+                    .collect();
+                Ok(vec![ShapedArray {
+                    dtype: inputs.first().map(|i| i.dtype).unwrap_or(fj_core::DType::F64),
+                    shape: fj_core::Shape { dims },
+                }])
+            } else {
+                Err(ApiError::EvalError {
+                    detail: "reshape requires 'shape' param".into(),
+                })
+            }
+        }
+
+        Primitive::Transpose => {
+            if inputs.is_empty() {
+                return Err(ApiError::EvalError {
+                    detail: "transpose requires one input".into(),
+                });
+            }
+            let mut new_dims = inputs[0].shape.dims.clone();
+            new_dims.reverse();
+            Ok(vec![ShapedArray {
+                dtype: inputs[0].dtype,
+                shape: fj_core::Shape { dims: new_dims },
+            }])
+        }
+
+        _ => {
+            if inputs.is_empty() {
+                Ok(vec![ShapedArray {
+                    dtype: fj_core::DType::F64,
+                    shape: fj_core::Shape::scalar(),
+                }])
+            } else {
+                Ok(vec![inputs[0].clone()])
+            }
+        }
     }
 }
 

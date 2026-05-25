@@ -50,7 +50,7 @@ FrankenJAX is a **reference implementation of JAX's transform semantics**, NOT a
 | linear_transpose | COVERED | Via fj-api |
 | pmap | EXCLUDED | Requires multi-device |
 | shard_map | EXCLUDED | Requires sharding |
-| eval_shape | GAP | Not implemented |
+| eval_shape | COVERED | Via fj-api |
 | disable_jit | GAP | Not implemented |
 
 ### LAX Primitives Coverage
@@ -134,7 +134,7 @@ These are NOT bugs - they require infrastructure beyond V1:
 |-----|----------|------|
 | ~~linearize~~ | ~~P2~~ | ~~frankenjax-6duf~~ (DONE) |
 | ~~linear_transpose~~ | ~~P2~~ | ~~frankenjax-awjz~~ (DONE) |
-| eval_shape | P3 | frankenjax-jm5s |
+| ~~eval_shape~~ | ~~P3~~ | ~~frankenjax-jm5s~~ (DONE) |
 | ~~associative_scan~~ | ~~P2~~ | ~~frankenjax-xszg~~ (DONE) |
 | solve (general linalg) | P2 | frankenjax-qzwm |
 | det/slogdet | P3 | frankenjax-b08e |
