@@ -279,18 +279,21 @@ fn scenario_namespace_version_material() -> CacheLifecycleScenario {
         namespace: "fjx-v3",
         digest_hex,
     };
+    let current_key = current.as_string();
+    let next_key = next.as_string();
+    let separated = !matches!(current_key.cmp(&next_key), std::cmp::Ordering::Equal);
     scenario!(
         "namespace_version_material",
-        current.as_string() != next.as_string(),
+        separated,
         "strict",
         "namespace changes alter the public cache key string",
-        if current.as_string() != next.as_string() {
+        if separated {
             "namespace version separated".to_owned()
         } else {
             "namespace version aliased".to_owned()
         },
-        Some(current.as_string()),
-        Some(next.as_string()),
+        Some(current_key),
+        Some(next_key),
         &["namespace-version-material"],
     )
 }
@@ -363,13 +366,16 @@ fn scenario_corrupt_read_bypass(temp_root: &Path) -> CacheLifecycleScenario {
     });
     let manager = CacheManager::file_backed(dir);
     let lookup = manager.get(&key);
-    let passed = corrupt_result.is_ok() && matches!(lookup, CacheLookup::Corrupted { .. });
+    let followup_lookup = manager.get(&key);
+    let passed = corrupt_result.is_ok()
+        && matches!(lookup, CacheLookup::Corrupted { .. })
+        && matches!(followup_lookup, CacheLookup::Miss);
     scenario!(
         "corrupt_read_bypass",
         passed,
         "strict",
-        "corrupt file-backed cache artifact is never returned as a hit",
-        format!("{lookup:?}"),
+        "corrupt file-backed cache artifact is reported once and then evicted",
+        format!("first={lookup:?}; followup={followup_lookup:?}"),
         Some(key.as_string()),
         None,
         &["corrupt-read-bypass"],

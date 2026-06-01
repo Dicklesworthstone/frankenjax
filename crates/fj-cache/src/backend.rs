@@ -244,10 +244,19 @@ impl CacheBackend for FileCache {
 
         match crate::persistence::deserialize(&bytes) {
             Ok(artifact) => Some(artifact),
-            Err(_) => Some(CachedArtifact {
-                data: bytes,
-                integrity_sha256_hex: "corrupt-cache-artifact".to_owned(),
-            }),
+            Err(_) => {
+                match std::fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(_) => {
+                        self.evict_failures.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                Some(CachedArtifact {
+                    data: bytes,
+                    integrity_sha256_hex: "corrupt-cache-artifact".to_owned(),
+                })
+            }
         }
     }
 
@@ -467,6 +476,11 @@ mod tests {
             artifact.integrity_sha256_hex,
             "corrupt wire payload must not be reported as integrity-clean"
         );
+        assert!(
+            cache.get(&key).is_none(),
+            "corrupt wire file should be evicted after being surfaced once"
+        );
+        assert_eq!(cache.evict_failure_count(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

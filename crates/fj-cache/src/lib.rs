@@ -1035,6 +1035,11 @@ mod tests {
             matches!(manager.get(&key), CacheLookup::Corrupted { .. }),
             "corrupt serialized file cache entry must not be accepted as a hit"
         );
+        assert_eq!(
+            manager.get(&key),
+            CacheLookup::Miss,
+            "corrupt serialized file cache entry should be evicted after the corrupt read"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
