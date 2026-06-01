@@ -2986,6 +2986,22 @@ fn is_egraph_barrier(equation: &Equation) -> bool {
         || !equation.effects.is_empty()
         || !equation.sub_jaxprs.is_empty()
         || !is_egraph_supported_primitive(equation.primitive)
+        || !equation_params_representable(equation)
+}
+
+/// The algebraic e-graph stores no operation parameters except where a lowering
+/// arm explicitly encodes them (currently only `IntegerPow`, whose exponent
+/// becomes a `Num` child in `jaxpr_to_egraph`). Every other supported primitive
+/// drops `params` on the round-trip through the e-graph, so an equation that
+/// carries semantic params — reduction `axes` (`ReduceSum`/`ReduceMax`/`ReduceMin`/
+/// `ReduceProd`/`ReduceAnd`/`ReduceOr`/`ReduceXor`), `convert_element_type`'s target
+/// dtype, etc. — must NOT enter the e-graph. Otherwise extraction silently
+/// rebuilds it in the param-free form (full reduction / default dtype), changing
+/// the output shape and value even when no rewrite fires. Treat such equations as
+/// barriers so they pass through verbatim while the surrounding param-free
+/// equations still optimize.
+fn equation_params_representable(equation: &Equation) -> bool {
+    equation.params.is_empty() || equation.primitive == Primitive::IntegerPow
 }
 
 fn max_var_id(jaxpr: &Jaxpr) -> u32 {
@@ -6118,6 +6134,110 @@ mod tests {
             opt.equations.len() <= 1,
             "reduce_sum(reduce_sum(x)) should simplify: got {} eqns",
             opt.equations.len()
+        );
+    }
+
+    #[test]
+    fn axis_bearing_reduction_is_not_corrupted_by_optimizer() {
+        // Regression: the e-graph stores no params, so a reduction carrying an
+        // `axes` param was lowered to the param-free `ReduceSum` node and rebuilt
+        // as a FULL reduction — turning `reduce_sum(M, axes=[0])` (a [2,3]→[3]
+        // partial reduction) into a scalar. It must now be treated as a barrier
+        // and pass through verbatim.
+        let mut axes0 = BTreeMap::new();
+        axes0.insert("axes".to_owned(), "0".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::ReduceSum,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: axes0,
+                sub_jaxprs: vec![],
+            }],
+        );
+        let optimized = optimize_jaxpr(&jaxpr);
+
+        // The axis-bearing reduction must survive intact (axes param preserved).
+        assert_eq!(optimized.equations.len(), 1);
+        assert_eq!(optimized.equations[0].primitive, Primitive::ReduceSum);
+        assert_eq!(
+            optimized.equations[0]
+                .params
+                .get("axes")
+                .map(String::as_str),
+            Some("0"),
+            "axes param must be preserved, not dropped"
+        );
+
+        // And it must compute the same result: axis-0 reduction of a [2,3]
+        // matrix yields [1+4, 2+5, 3+6] = [5, 7, 9], NOT the scalar 21.
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    Literal::I64(1),
+                    Literal::I64(2),
+                    Literal::I64(3),
+                    Literal::I64(4),
+                    Literal::I64(5),
+                    Literal::I64(6),
+                ],
+            )
+            .unwrap(),
+        );
+        let original_out = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).unwrap();
+        let optimized_out = eval_jaxpr(&optimized, std::slice::from_ref(&input)).unwrap();
+        assert_eq!(original_out, optimized_out);
+        assert_eq!(
+            original_out,
+            vec![Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape { dims: vec![3] },
+                    vec![Literal::I64(5), Literal::I64(7), Literal::I64(9)],
+                )
+                .unwrap()
+            )]
+        );
+    }
+
+    #[test]
+    fn convert_element_type_dtype_param_is_not_dropped_by_optimizer() {
+        // Same param-drop bug class: `convert_element_type`'s target dtype lives
+        // in params, which the e-graph cannot represent. It must be a barrier.
+        let mut to_f64 = BTreeMap::new();
+        to_f64.insert("new_dtype".to_owned(), "f64".to_owned());
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::ConvertElementType,
+                inputs: smallvec![Atom::Var(VarId(1))],
+                outputs: smallvec![VarId(2)],
+                effects: vec![],
+                params: to_f64,
+                sub_jaxprs: vec![],
+            }],
+        );
+        let optimized = optimize_jaxpr(&jaxpr);
+        assert_eq!(optimized.equations.len(), 1);
+        assert_eq!(
+            optimized.equations[0].primitive,
+            Primitive::ConvertElementType
+        );
+        assert_eq!(
+            optimized.equations[0]
+                .params
+                .get("new_dtype")
+                .map(String::as_str),
+            Some("f64"),
+            "convert dtype param must be preserved"
         );
     }
 
