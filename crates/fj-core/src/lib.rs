@@ -1463,6 +1463,20 @@ impl Jaxpr {
                 if !eqn.effects.is_empty() {
                     write_effect_list(&mut out, "eqn_effects", &eqn.effects);
                 }
+                // Nested sub-jaxprs (cond branches, scan/while/switch bodies)
+                // carry the actual control-flow computation. Without folding
+                // them into the fingerprint, two programs that differ ONLY in a
+                // branch/body body collide to the same cache key — returning a
+                // stale, wrong cached result. Recurse, length-framed by count so
+                // sub-fingerprints cannot run together ambiguously.
+                if !eqn.sub_jaxprs.is_empty() {
+                    let _ = write!(&mut out, "sub[{}", eqn.sub_jaxprs.len());
+                    for sub in &eqn.sub_jaxprs {
+                        out.push(':');
+                        out.push_str(sub.canonical_fingerprint());
+                    }
+                    out.push(']');
+                }
                 out.push('|');
             }
 
@@ -3470,6 +3484,69 @@ mod tests {
                 assert_ne!(
                     base.canonical_fingerprint(),
                     with_eqn_effect.canonical_fingerprint()
+                );
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn canonical_fingerprint_changes_when_sub_jaxpr_body_changes() {
+        run_logged_test(
+            "canonical_fingerprint_changes_when_sub_jaxpr_body_changes",
+            &("sub-jaxpr-fingerprint", 1_u32),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // A single-equation sub-jaxpr computing `prim(v1) -> v2`.
+                fn unary_sub(prim: Primitive) -> Jaxpr {
+                    Jaxpr::new(
+                        vec![VarId(1)],
+                        vec![],
+                        vec![VarId(2)],
+                        vec![Equation {
+                            primitive: prim,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        }],
+                    )
+                }
+                // A parent `switch` whose only varying part is its branch body.
+                fn switch_with_branch(branch: Jaxpr) -> Jaxpr {
+                    Jaxpr::new(
+                        vec![VarId(1), VarId(2)],
+                        vec![],
+                        vec![VarId(3)],
+                        vec![Equation {
+                            primitive: Primitive::Switch,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(3)],
+                            params: BTreeMap::from([("num_branches".to_owned(), "1".to_owned())]),
+                            effects: vec![],
+                            sub_jaxprs: vec![branch],
+                        }],
+                    )
+                }
+
+                let with_neg = switch_with_branch(unary_sub(Primitive::Neg));
+                let with_abs = switch_with_branch(unary_sub(Primitive::Abs));
+
+                // Regression: parents are structurally identical except for the
+                // branch body. Before folding sub_jaxprs into the fingerprint
+                // these collided to the same cache key.
+                assert_ne!(
+                    with_neg.canonical_fingerprint(),
+                    with_abs.canonical_fingerprint(),
+                    "differing branch bodies must yield different fingerprints"
+                );
+
+                // Determinism: identical branch bodies still match.
+                let with_neg_again = switch_with_branch(unary_sub(Primitive::Neg));
+                assert_eq!(
+                    with_neg.canonical_fingerprint(),
+                    with_neg_again.canonical_fingerprint()
                 );
                 Ok(Vec::new())
             },
