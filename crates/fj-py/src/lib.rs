@@ -1009,11 +1009,7 @@ impl PyValue {
         let mut bytes = Vec::with_capacity(capacity);
         match &self.inner {
             Value::Scalar(literal) => literal_to_native_bytes(*literal, &mut bytes),
-            Value::Tensor(tensor) => {
-                for literal in &tensor.elements {
-                    literal_to_native_bytes(*literal, &mut bytes);
-                }
-            }
+            Value::Tensor(tensor) => write_tensor_native_bytes(tensor, order, &mut bytes)?,
         }
 
         Ok(PyBytes::new(py, &bytes).into_any().unbind())
@@ -2730,6 +2726,41 @@ fn validate_tobytes_order(order: &str) -> PyResult<()> {
     }
 }
 
+fn write_tensor_native_bytes(
+    tensor: &TensorValue,
+    order: &str,
+    bytes: &mut Vec<u8>,
+) -> PyResult<()> {
+    match order {
+        "F" => {
+            for column_major_index in 0..tensor.elements.len() {
+                let coord = unravel_column_major(column_major_index, &tensor.shape.dims)?;
+                let row_major_index = row_major_flat_index(&coord, &tensor.shape.dims)?;
+                let literal = tensor
+                    .elements
+                    .get(row_major_index)
+                    .copied()
+                    .ok_or_else(|| {
+                        PyErr::new::<pyo3::exceptions::PyIndexError, _>(
+                            "tobytes computed an out-of-bounds source index",
+                        )
+                    })?;
+                literal_to_native_bytes(literal, bytes);
+            }
+            Ok(())
+        }
+        "C" | "A" | "K" => {
+            for literal in &tensor.elements {
+                literal_to_native_bytes(*literal, bytes);
+            }
+            Ok(())
+        }
+        _ => Err(PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "order must be one of 'C', 'F', 'A', or 'K' (got {order:?})"
+        ))),
+    }
+}
+
 fn literal_to_native_bytes(literal: Literal, bytes: &mut Vec<u8>) {
     match literal {
         Literal::I64(value) => bytes.extend_from_slice(&value.to_ne_bytes()),
@@ -4422,6 +4453,32 @@ mod tests {
             assert_eq!(
                 matrix.ravel(py, "F", None).unwrap().as_i64_list().unwrap(),
                 vec![1, 4, 2, 5, 3, 6]
+            );
+            let fortran_bytes = matrix.tobytes(py, "F").unwrap();
+            let mut expected_fortran_bytes = Vec::new();
+            for value in [1_i64, 4, 2, 5, 3, 6] {
+                expected_fortran_bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            assert_eq!(
+                fortran_bytes
+                    .bind(py)
+                    .downcast::<PyBytes>()
+                    .unwrap()
+                    .as_bytes(),
+                expected_fortran_bytes
+            );
+            let row_major_bytes = matrix.tobytes(py, "K").unwrap();
+            let mut expected_row_major_bytes = Vec::new();
+            for value in [1_i64, 2, 3, 4, 5, 6] {
+                expected_row_major_bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            assert_eq!(
+                row_major_bytes
+                    .bind(py)
+                    .downcast::<PyBytes>()
+                    .unwrap()
+                    .as_bytes(),
+                expected_row_major_bytes
             );
             assert!(matrix.flatten(py, "A", None).is_err());
             assert!(matrix.ravel(py, "K", None).is_err());
