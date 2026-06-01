@@ -1,0 +1,99 @@
+{
+  "schema_version": "frankenjax.optimization_pass_evidence.v1",
+  "bead_id": "frankenjax-4z80",
+  "hotspot_id": "hotspot-egraph-saturation-001",
+  "pass": 2,
+  "captured_at_iso": "2026-06-01T23:56:35Z",
+  "captured_by_agent": "IcyGlacier",
+  "worker": "ts2",
+  "target": "fj-egraph egraph saturation refresh",
+  "baseline_command": "rch exec -- cargo bench -p fj-egraph --bench egraph_baseline -- --sample-size 20 --measurement-time 3 --warm-up-time 1",
+  "baseline_rows": [
+    {
+      "benchmark": "egraph/optimize_add_zero",
+      "lower": "98.372 us",
+      "midpoint": "98.991 us",
+      "upper": "99.780 us"
+    },
+    {
+      "benchmark": "egraph/optimize_mul_one",
+      "lower": "100.12 us",
+      "midpoint": "101.04 us",
+      "upper": "101.97 us"
+    },
+    {
+      "benchmark": "egraph/optimize_double_neg",
+      "lower": "95.319 us",
+      "midpoint": "95.553 us",
+      "upper": "95.945 us"
+    },
+    {
+      "benchmark": "egraph/optimize_exp_log",
+      "lower": "95.819 us",
+      "midpoint": "96.407 us",
+      "upper": "97.133 us"
+    },
+    {
+      "benchmark": "egraph/optimize_complex_poly",
+      "lower": "114.32 us",
+      "midpoint": "115.22 us",
+      "upper": "116.19 us"
+    },
+    {
+      "benchmark": "egraph/optimize_safe_config",
+      "lower": "118.63 us",
+      "midpoint": "120.65 us",
+      "upper": "122.13 us"
+    },
+    {
+      "benchmark": "egraph/optimize_aggressive_config",
+      "lower": "604.45 us",
+      "midpoint": "613.23 us",
+      "upper": "621.81 us"
+    },
+    {
+      "benchmark": "egraph/jaxpr_to_egraph",
+      "lower": "680.22 ns",
+      "midpoint": "688.38 ns",
+      "upper": "701.34 ns"
+    }
+  ],
+  "scoreboard_comparison": {
+    "scoreboard_p50_ns": 3443510,
+    "scoreboard_p95_ns": 5047567,
+    "scoreboard_p99_ns": 5244470,
+    "fresh_safe_midpoint_ns": 120650,
+    "fresh_aggressive_midpoint_ns": 613230,
+    "result": "fresh bench corpus remains sub-millisecond and does not reproduce the 5 ms p95 scoreboard hotspot"
+  },
+  "opportunity_score": {
+    "impact": 0.0,
+    "confidence": 0.86,
+    "effort": 1.0,
+    "score": 0.0,
+    "threshold": 2.0
+  },
+  "decision": "reject_no_code_change",
+  "decision_rationale": [
+    "The highest-latency fresh egraph benchmark is aggressive config at 613.23 us midpoint on the same worker used for pass 1, far below the scoreboard p95 of 5,047,567 ns.",
+    "Prior artifact artifacts/performance/egraph_saturation_profile_2026-05-11.json made the same call: current bench corpus is below the old scoreboard workload and no further generic saturation lever is justified.",
+    "No source code changed, so ordering, tie-breaking, floating-point, RNG, strict/hardened mode behavior, cache keys, and ledger side effects are unchanged."
+  ],
+  "behavior_proof": {
+    "ordering_preserved": "yes - no code change",
+    "tie_breaking_unchanged": "yes - no code change",
+    "floating_point": "unchanged - no code change",
+    "rng": "unchanged - no RNG surface touched",
+    "strict_hardened": "unchanged - no mode behavior touched",
+    "golden_output_sha256": "not applicable for rejected no-code optimization pass",
+    "semantics_command": "rch exec -- cargo test -p fj-conformance --test egraph_preserves_semantics -- --nocapture",
+    "semantics_result": "34 passed; 0 failed"
+  },
+  "validation": [
+    "rch exec -- cargo bench -p fj-egraph --bench egraph_baseline -- --sample-size 20 --measurement-time 3 --warm-up-time 1",
+    "rch exec -- cargo test -p fj-conformance --test egraph_preserves_semantics -- --nocapture"
+  ],
+  "known_blockers": [
+    "fj-ad still emits the pre-existing unused variable warning for g_data tracked as frankenjax-ch8e; no -D warnings gate was run for this no-code pass."
+  ]
+}
