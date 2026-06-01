@@ -13,6 +13,7 @@ use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
 use rayon::prelude::*;
 use rustc_hash::FxHashMap as HashMap;
+use std::collections::BTreeSet;
 
 // The scan scheduler stays faster for medium/wide DAGs; dependency counts win
 // once repeated ready scans dominate long pure segments.
@@ -92,6 +93,63 @@ fn single_output_var(equation: &Equation) -> Result<VarId, InterpreterError> {
             expected: 1,
             actual: 0,
         })
+}
+
+fn malformed_scheduler_jaxpr(detail: String) -> InterpreterError {
+    InterpreterError::InvariantViolation {
+        detail: format!("CPU scheduler received malformed Jaxpr: {detail}"),
+    }
+}
+
+fn validate_scheduler_bindings(jaxpr: &Jaxpr) -> Result<(), InterpreterError> {
+    let mut bindings = BTreeSet::new();
+
+    for var in &jaxpr.invars {
+        if !bindings.insert(*var) {
+            return Err(malformed_scheduler_jaxpr(format!(
+                "duplicate input binding v{}",
+                var.0
+            )));
+        }
+    }
+
+    for var in &jaxpr.constvars {
+        if !bindings.insert(*var) {
+            return Err(malformed_scheduler_jaxpr(format!(
+                "duplicate const binding v{}",
+                var.0
+            )));
+        }
+    }
+
+    for (equation_index, equation) in jaxpr.equations.iter().enumerate() {
+        for out_var in &equation.outputs {
+            if !bindings.insert(*out_var) {
+                return Err(malformed_scheduler_jaxpr(format!(
+                    "duplicate equation output binding v{} at equation {equation_index}",
+                    out_var.0
+                )));
+            }
+        }
+    }
+
+    let mut seen_outvars = BTreeSet::new();
+    for out_var in &jaxpr.outvars {
+        if !seen_outvars.insert(*out_var) {
+            return Err(malformed_scheduler_jaxpr(format!(
+                "duplicate output reference v{}",
+                out_var.0
+            )));
+        }
+        if !bindings.contains(out_var) {
+            return Err(malformed_scheduler_jaxpr(format!(
+                "unknown output reference v{}",
+                out_var.0
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn atom_tensor_element_count(atom: &Atom, env: &HashMap<VarId, Value>) -> Option<usize> {
@@ -360,6 +418,7 @@ fn evaluate_jaxpr_parallel_inner(
             actual: args.len(),
         });
     }
+    validate_scheduler_bindings(jaxpr)?;
 
     let mut env: HashMap<VarId, Value> = HashMap::with_capacity_and_hasher(
         jaxpr.invars.len() + jaxpr.equations.len(),
@@ -862,6 +921,47 @@ mod tests {
         Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
     }
 
+    fn make_long_duplicate_output_binding_jaxpr(length: usize) -> Jaxpr {
+        let mut equations = Vec::with_capacity(length);
+        equations.push(Equation {
+            primitive: Primitive::Add,
+            inputs: vec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(1))].into(),
+            outputs: vec![VarId(2)].into(),
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+        equations.push(Equation {
+            primitive: Primitive::Add,
+            inputs: vec![Atom::Var(VarId(2)), Atom::Lit(Literal::I64(1))].into(),
+            outputs: vec![VarId(3)].into(),
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+        equations.push(Equation {
+            primitive: Primitive::Add,
+            inputs: vec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(100))].into(),
+            outputs: vec![VarId(2)].into(),
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        });
+
+        for next_var in (4_u32..).take(length.saturating_sub(equations.len())) {
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: vec![Atom::Var(VarId(1)), Atom::Lit(Literal::I64(1))].into(),
+                outputs: vec![VarId(next_var)].into(),
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            });
+        }
+
+        Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(3)], equations)
+    }
+
     #[test]
     fn cpu_backend_name() {
         let backend = CpuBackend::new();
@@ -1125,6 +1225,24 @@ mod tests {
             evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(1)], &mut max_ready_wave);
 
         assert_eq!(err, Err(InterpreterError::MissingVariable(VarId(99))));
+    }
+
+    #[test]
+    fn dependency_scheduler_rejects_duplicate_output_bindings_before_reordering() {
+        let jaxpr = make_long_duplicate_output_binding_jaxpr(DEPENDENCY_COUNT_MIN_SEGMENT_LEN);
+        let mut max_ready_wave = 0_usize;
+        let err =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(1)], &mut max_ready_wave)
+                .expect_err("duplicate output binding should fail closed before scheduling");
+
+        let detail = match err {
+            InterpreterError::InvariantViolation { detail } => detail,
+            other => format!("unexpected error variant: {other:?}"),
+        };
+        assert!(
+            detail.contains("duplicate equation output binding v2"),
+            "error should identify the duplicate binding, got {detail}"
+        );
     }
 
     #[test]

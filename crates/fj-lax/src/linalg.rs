@@ -7,6 +7,10 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use crate::EvalError;
 use crate::type_promotion::promote_dtype;
 
+type ComplexScalar = (f64, f64);
+type ComplexVector = Vec<ComplexScalar>;
+type EigQrResult = (ComplexVector, ComplexVector);
+
 // ── Complex Arithmetic Helpers ──────────────────────────────────────
 
 fn complex_abs(z: (f64, f64)) -> f64 {
@@ -1311,15 +1315,23 @@ pub(crate) fn eval_solve(
     };
 
     // Build output tensor
-    let elements: Vec<Literal> = result.iter().map(|&v| Literal::F64Bits(v.to_bits())).collect();
+    let elements: Vec<Literal> = result
+        .iter()
+        .map(|&v| Literal::F64Bits(v.to_bits()))
+        .collect();
 
     let shape = if b_cols == 1 {
-        Shape { dims: vec![n as u32] }
+        Shape {
+            dims: vec![n as u32],
+        }
     } else {
-        Shape { dims: vec![n as u32, b_cols as u32] }
+        Shape {
+            dims: vec![n as u32, b_cols as u32],
+        }
     };
 
-    let tensor = TensorValue::new(output_dtype, shape, elements).map_err(EvalError::InvalidTensor)?;
+    let tensor =
+        TensorValue::new(output_dtype, shape, elements).map_err(EvalError::InvalidTensor)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -1426,7 +1438,9 @@ pub(crate) fn eval_eig(
         .iter()
         .map(|&(re, im)| Literal::from_complex128(re, im))
         .collect();
-    let w_shape = Shape { dims: vec![n as u32] };
+    let w_shape = Shape {
+        dims: vec![n as u32],
+    };
     let w_tensor = TensorValue::new(DType::Complex128, w_shape, w_elements)
         .map_err(EvalError::InvalidTensor)?;
     let w_val = Value::Tensor(w_tensor);
@@ -1436,7 +1450,9 @@ pub(crate) fn eval_eig(
         .iter()
         .map(|&(re, im)| Literal::from_complex128(re, im))
         .collect();
-    let v_shape = Shape { dims: vec![n as u32, n as u32] };
+    let v_shape = Shape {
+        dims: vec![n as u32, n as u32],
+    };
     let v_tensor = TensorValue::new(DType::Complex128, v_shape, v_elements)
         .map_err(EvalError::InvalidTensor)?;
     let v_val = Value::Tensor(v_tensor);
@@ -1448,7 +1464,7 @@ pub(crate) fn eval_eig(
 ///
 /// Simple implementation for V1 correctness. Uses basic QR iteration without
 /// shifts or deflation for small matrices.
-fn eig_qr_iteration(a: &[f64], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
     if n == 0 {
         return (vec![], vec![]);
     }
@@ -1534,7 +1550,11 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
 }
 
 fn normalize_vector(v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
-    let norm: f64 = v.iter().map(|(re, im)| re * re + im * im).sum::<f64>().sqrt();
+    let norm: f64 = v
+        .iter()
+        .map(|(re, im)| re * re + im * im)
+        .sum::<f64>()
+        .sqrt();
     if norm < 1e-15 {
         v
     } else {

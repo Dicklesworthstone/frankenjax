@@ -448,7 +448,7 @@ mod tests {
         let x = vec![-100.0, 0.0, 100.0];
         let y = log_sigmoid(&x);
         assert!(approx_eq(y[0], -100.0, 1.0)); // approximately -100
-        assert!(approx_eq(y[1], -0.693147, 1e-5)); // ln(0.5)
+        assert!(approx_eq(y[1], -std::f64::consts::LN_2, 1e-5)); // ln(0.5)
         assert!(approx_eq(y[2], 0.0, 1e-10));
     }
 

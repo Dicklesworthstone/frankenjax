@@ -1284,10 +1284,7 @@ mod tests {
         let key = random_key(42);
         let vals = random_randint(key, 10_000, 0, 10);
         for i in 0..10 {
-            assert!(
-                vals.iter().any(|&v| v == i),
-                "randint should produce value {i}"
-            );
+            assert!(vals.contains(&i), "randint should produce value {i}");
         }
     }
 
