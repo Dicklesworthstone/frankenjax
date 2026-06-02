@@ -8457,13 +8457,125 @@ fn jvp_rule_multi(
             Ok(vec![dq, dr])
         }
         // ── LU JVP ──
-        // PA = LU. LU JVP is complex; returns zeros for now.
+        // PA = LU  ⟹  L' = L·tril(inv(L)·(P·dA)·inv(U), -1),
+        //              U' = triu(inv(L)·(P·dA)·inv(U))·U   (De Hoog et al.;
+        // matches JAX `_lu_jvp_inner`). The packed-LU tangent is L' + U'.
+        // Pivots/permutation are discrete: zero tangent.
         Primitive::Lu => {
             let lu_val = &primal_outputs[0];
             let pivots_val = &primal_outputs[1];
             let perm_val = &primal_outputs[2];
+
+            let lu_t = lu_val.as_tensor().ok_or_else(|| {
+                AdError::EvalFailed("LU JVP: packed LU output must be a tensor".to_owned())
+            })?;
+            if lu_t.shape.rank() != 2 || lu_t.shape.dims[0] != lu_t.shape.dims[1] {
+                return Err(AdError::EvalFailed(format!(
+                    "LU JVP: only square inputs are supported, got shape {:?}",
+                    lu_t.shape.dims
+                )));
+            }
+            let n = lu_t.shape.dims[0] as usize;
+            let da_t = tangents[0].as_tensor().ok_or_else(|| {
+                AdError::EvalFailed("LU JVP: dA must be a tensor".to_owned())
+            })?;
+            let square = Shape {
+                dims: vec![n as u32, n as u32],
+            };
+            if da_t.shape.dims != square.dims {
+                return Err(AdError::EvalFailed(format!(
+                    "LU JVP: dA shape {:?} does not match LU output {:?}",
+                    da_t.shape.dims, square.dims
+                )));
+            }
+
+            // Reconstruct L (unit lower triangular) and U (upper triangular).
+            let lu_vals: Vec<f64> = lu_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
+            let mut l_elems = vec![0.0_f64; n * n];
+            let mut u_elems = vec![0.0_f64; n * n];
+            for i in 0..n {
+                l_elems[i * n + i] = 1.0;
+                for j in 0..i {
+                    l_elems[i * n + j] = lu_vals[i * n + j];
+                }
+                for j in i..n {
+                    u_elems[i * n + j] = lu_vals[i * n + j];
+                }
+            }
+            let l_mat = TensorValue::new(
+                DType::F64,
+                square.clone(),
+                l_elems.into_iter().map(Literal::from_f64).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let u_mat = TensorValue::new(
+                DType::F64,
+                square.clone(),
+                u_elems.into_iter().map(Literal::from_f64).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+            // P·dA: row i of the result is row perm[i] of dA.
+            let perm_t = perm_val.as_tensor().ok_or_else(|| {
+                AdError::EvalFailed("LU JVP: permutation output must be a tensor".to_owned())
+            })?;
+            let da_vals: Vec<f64> = da_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
+            let mut pda_vals = vec![0.0_f64; n * n];
+            for (i, p) in perm_t.elements.iter().enumerate() {
+                let src = p.as_f64().unwrap_or(0.0) as usize;
+                if src >= n {
+                    return Err(AdError::EvalFailed(format!(
+                        "LU JVP: permutation index {src} out of bounds for size {n}"
+                    )));
+                }
+                pda_vals[i * n..i * n + n].copy_from_slice(&da_vals[src * n..src * n + n]);
+            }
+            let pda = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    square.clone(),
+                    pda_vals.into_iter().map(Literal::from_f64).collect(),
+                )
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+            );
+
+            // la = L⁻¹·(P·dA): solve L·la = P·dA (lower, unit diagonal).
+            let mut lower_solve = BTreeMap::new();
+            lower_solve.insert("lower".to_owned(), "true".to_owned());
+            lower_solve.insert("unit_diagonal".to_owned(), "true".to_owned());
+            let la = eval_primitive(
+                Primitive::TriangularSolve,
+                &[Value::Tensor(l_mat.clone()), pda],
+                &lower_solve,
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+            // lau = la·U⁻¹: lau·U = la  ⟺  Uᵀ·lauᵀ = laᵀ. Solve with transpose_a.
+            let la_t = transpose_2d(tensor_value(&la, "LU JVP la")?)?;
+            let mut upper_solve_t = BTreeMap::new();
+            upper_solve_t.insert("lower".to_owned(), "false".to_owned());
+            upper_solve_t.insert("transpose_a".to_owned(), "true".to_owned());
+            let lau_t_val = eval_primitive(
+                Primitive::TriangularSolve,
+                &[Value::Tensor(u_mat.clone()), la_t],
+                &upper_solve_t,
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let lau = transpose_2d(tensor_value(&lau_t_val, "LU JVP lauᵀ")?)?;
+            let lau_t = tensor_value(&lau, "LU JVP lau")?;
+
+            // lu_dot = L·tril(lau, -1) + triu(lau)·U.
+            let lau_strict = tril_strict(lau_t)?;
+            let l_dot = matmul_2d(&l_mat, &lau_strict)?;
+            let lau_upper = triu(lau_t)?;
+            let u_dot = matmul_2d(&lau_upper, &u_mat)?;
+            let lu_dot = tensor_add(
+                tensor_value(&l_dot, "LU JVP L·tril(lau)")?,
+                tensor_value(&u_dot, "LU JVP triu(lau)·U")?,
+            )?;
+
             Ok(vec![
-                zeros_like(lu_val),
+                lu_dot,
                 zeros_like(pivots_val),
                 zeros_like(perm_val),
             ])
@@ -16181,6 +16293,107 @@ mod tests {
             da_vals.iter().any(|&v| v.abs() > 1e-9),
             "LU VJP must produce a non-zero gradient, got {da_vals:?}",
         );
+    }
+
+    // ── LU JVP test ──
+
+    /// Finite-difference check for the LU forward-mode rule: the analytic
+    /// packed-LU tangent for input direction `da_vals` must match the central
+    /// difference of the packed `lu` output element-by-element.
+    fn check_lu_jvp_numerical(n: usize, a_vals: &[f64], da_vals: &[f64]) {
+        let dims = vec![n as u32, n as u32];
+        let make = |vals: &[f64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: dims.clone() },
+                    vals.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+
+        let a = make(a_vals);
+        let da = make(da_vals);
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Lu, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
+        let jvp_result = jvp_rule_multi(
+            Primitive::Lu,
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&da),
+            &outputs,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let lu_dot: Vec<f64> = jvp_result[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+        // pivots/permutation tangents must be zero (discrete).
+        for k in [1usize, 2] {
+            assert!(
+                jvp_result[k]
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .all(|l| l.as_f64().unwrap() == 0.0),
+                "LU JVP output {k} (pivots/perm) must have zero tangent",
+            );
+        }
+
+        let eps = 1e-6;
+        let a_plus: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a + eps * d).collect();
+        let a_minus: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a - eps * d).collect();
+        let lu_plus =
+            fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_plus)], &BTreeMap::new()).unwrap();
+        let lu_minus =
+            fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_minus)], &BTreeMap::new())
+                .unwrap();
+        let lu_p: Vec<f64> = lu_plus[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+        let lu_m: Vec<f64> = lu_minus[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+
+        for idx in 0..(n * n) {
+            let numerical = (lu_p[idx] - lu_m[idx]) / (2.0 * eps);
+            assert!(
+                (lu_dot[idx] - numerical).abs() < 1e-4,
+                "LU JVP element {idx}: analytic={}, numerical={numerical}",
+                lu_dot[idx],
+            );
+        }
+    }
+
+    #[test]
+    fn test_lu_jvp_numerical_no_pivot() {
+        // Diagonally dominant ⇒ permutation is identity.
+        let a_vals = [4.0, 1.0, 2.0, 1.0, 5.0, 1.0, 2.0, 1.0, 6.0];
+        let da_vals = [0.5, -1.0, 2.0, 1.5, 0.25, -0.5, -2.0, 3.0, 1.0];
+        check_lu_jvp_numerical(3, &a_vals, &da_vals);
+    }
+
+    #[test]
+    fn test_lu_jvp_numerical_with_pivot() {
+        // Partial pivoting permutes rows; pivot order is stable under the
+        // ±1e-6 perturbation, so the packed lu is smooth here.
+        let a_vals = [2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0];
+        let da_vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        check_lu_jvp_numerical(3, &a_vals, &da_vals);
     }
 
     // ── Eigh VJP test ──
