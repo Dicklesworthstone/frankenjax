@@ -1,0 +1,120 @@
+{
+  "bead": "frankenjax-0s1d",
+  "pass": 25,
+  "skill": "extreme-software-optimization",
+  "date": "2026-06-02",
+  "target": {
+    "crate": "fj-api",
+    "bench": "api_overhead",
+    "case": "value_and_grad_runtime/shared/deep_100_nodes",
+    "profile_source": "rch Criterion profile of fj-api API overhead",
+    "profile_worker": "vmi1227854",
+    "profile_mean_us": 147.99,
+    "why_hot": "The deep value_and_grad shared path runs 200 scalar Add/Mul equations through fj-ad forward tape recording and reverse adjoint accumulation."
+  },
+  "change": {
+    "lever_count": 1,
+    "files": [
+      "crates/fj-ad/src/lib.rs"
+    ],
+    "summary": "Replace internal BTreeMap<VarId, Value> storage in fj-ad forward env and reverse adjoints with a dense VarId-indexed store when all Jaxpr VarIds fit under a bounded slot threshold, retaining the prior BTreeMap path for sparse or huge VarIds.",
+    "dense_slot_limit": 1000000,
+    "fallback": "Sparse BTreeMap path is used if max VarId overflows usize+1 or exceeds the dense slot limit."
+  },
+  "benchmarks": {
+    "original_profile": {
+      "worker": "vmi1227854",
+      "mean_us": 147.99,
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-api-profile-pass25 cargo bench -p fj-api --bench api_overhead -- --sample-size 40 --measurement-time 2 --warm-up-time 1"
+    },
+    "same_worker_baseline": {
+      "worker": "vmi1153651",
+      "mean_us": 264.24,
+      "ci_us": [
+        256.68,
+        272.68
+      ],
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-api-baseline-pass25-vmi1149989-attempt cargo bench -p fj-api --bench api_overhead -- value_and_grad_runtime/shared/deep_100_nodes --sample-size 40 --measurement-time 2 --warm-up-time 1",
+      "notes": "Measured with the pass-25 patch temporarily reversed."
+    },
+    "same_worker_after": {
+      "worker": "vmi1153651",
+      "mean_us": 226.19,
+      "ci_us": [
+        217.42,
+        237.48
+      ],
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-api-rebench-pass25-final cargo bench -p fj-api --bench api_overhead -- value_and_grad_runtime/shared/deep_100_nodes --sample-size 40 --measurement-time 2 --warm-up-time 1"
+    },
+    "delta": {
+      "mean_delta_us": -38.05,
+      "percent": -14.4,
+      "speedup": 1.1688
+    },
+    "cross_worker_observations": [
+      {
+        "worker": "vmi1149989",
+        "after_mean_us": 102.4,
+        "note": "Early after run before the final get_mut guard; not used for keep/drop because no same-worker baseline was captured."
+      },
+      {
+        "worker": "vmi1149989",
+        "after_mean_us": 105.84,
+        "note": "Final patch after run; consistent with the earlier vmi1149989 after measurement but not used for keep/drop without a matching baseline."
+      },
+      {
+        "worker": "vmi1227854",
+        "baseline_mean_us": 160.43,
+        "note": "Temporary reversed-patch baseline; not paired because the immediate after run selected a different worker."
+      }
+    ]
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 4,
+    "effort": 2,
+    "value": 6.0,
+    "decision": "keep"
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Forward still iterates equations in source order, tape entries are still replayed in reverse insertion order, and gradients are emitted in jaxpr.invars order.",
+    "tie_breaking_unchanged": "No sort, top-k, or comparator path changes. Cotangent routing remains driven by tape entry input/output order, not map iteration.",
+    "floating_point": "Primitive evaluation, VJP calls, and duplicate-cotangent accumulation order are unchanged; dense add_or_insert still computes value_add(existing, cotangent), matching the previous occupied BTreeMap path.",
+    "rng": "No RNG state or random sampling is involved in this fj-ad path.",
+    "sparse_fallback": "Huge or sparse VarId spaces keep the previous BTreeMap behavior.",
+    "golden_sha256": "19c2fb7a3c1cec134794978ab7dd49b090f5ea8cbc86a686ddc6cd6193638b37"
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-ad --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-ad/src/lib.rs",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-ad/src/lib.rs",
+      "result": "exit 1; pre-existing broad fj-ad panic/index inventories remain, but the new dense-store direct-index finding was removed by using get_mut"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-check-pass25-final cargo check -p fj-ad --all-targets",
+      "worker": "vmi1153651",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-clippy-pass25-final cargo clippy -p fj-ad --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1153651",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-test-pass25-final cargo test -p fj-ad --lib -- --nocapture",
+      "worker": "vmi1153651",
+      "result": "324 passed; 0 failed"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_ad_indexed_value_store_pass25_2026-06-02.golden.sha256",
+      "result": "pass"
+    }
+  ]
+}

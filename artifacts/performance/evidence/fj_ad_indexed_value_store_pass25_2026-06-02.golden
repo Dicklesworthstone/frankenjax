@@ -1,0 +1,1 @@
+frankenjax-0s1d-pass25|fj-ad-indexed-value-store|target=value_and_grad_runtime/shared/deep_100_nodes|same_worker=vmi1153651|baseline_mean_us=264.24|after_mean_us=226.19|speedup=1.1688|delta_pct=-14.40|validation=fj_ad_324_passed|ordering=tape_reverse_preserved|fp=value_add_order_preserved|rng=none

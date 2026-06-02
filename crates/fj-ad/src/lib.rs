@@ -259,7 +259,117 @@ struct Tape {
     entries: Vec<TapeEntry>,
 }
 
-type ForwardResult = (Vec<Value>, Tape, BTreeMap<VarId, Value>);
+const DENSE_AD_VALUE_STORE_MAX_SLOTS: usize = 1_000_000;
+
+#[derive(Debug, Clone)]
+enum AdValueStore {
+    Dense(Vec<Option<Value>>),
+    Sparse(BTreeMap<VarId, Value>),
+}
+
+impl AdValueStore {
+    fn for_jaxpr(jaxpr: &Jaxpr) -> Self {
+        let Some(max_var) = max_var_index(jaxpr) else {
+            return Self::Dense(Vec::new());
+        };
+        let Some(slots) = max_var.checked_add(1) else {
+            return Self::Sparse(BTreeMap::new());
+        };
+        if slots <= DENSE_AD_VALUE_STORE_MAX_SLOTS {
+            Self::Dense(vec![None; slots])
+        } else {
+            Self::Sparse(BTreeMap::new())
+        }
+    }
+
+    fn insert(&mut self, var: VarId, value: Value) {
+        match self {
+            Self::Dense(values) => {
+                let idx = var.0 as usize;
+                if let Some(slot) = values.get_mut(idx) {
+                    *slot = Some(value);
+                }
+            }
+            Self::Sparse(values) => {
+                values.insert(var, value);
+            }
+        }
+    }
+
+    fn get(&self, var: &VarId) -> Option<&Value> {
+        match self {
+            Self::Dense(values) => values.get(var.0 as usize).and_then(Option::as_ref),
+            Self::Sparse(values) => values.get(var),
+        }
+    }
+
+    fn remove(&mut self, var: &VarId) -> Option<Value> {
+        match self {
+            Self::Dense(values) => values.get_mut(var.0 as usize).and_then(Option::take),
+            Self::Sparse(values) => values.remove(var),
+        }
+    }
+
+    fn add_or_insert(&mut self, var: VarId, cotangent: Value) -> Result<(), AdError> {
+        match self {
+            Self::Dense(values) => {
+                let idx = var.0 as usize;
+                if let Some(slot) = values.get_mut(idx) {
+                    match slot {
+                        Some(existing) => {
+                            *existing = value_add(existing, &cotangent)?;
+                        }
+                        None => {
+                            *slot = Some(cotangent);
+                        }
+                    }
+                }
+            }
+            Self::Sparse(values) => {
+                let entry = values.entry(var);
+                match entry {
+                    std::collections::btree_map::Entry::Occupied(mut e) => {
+                        let new_val = value_add(e.get(), &cotangent)?;
+                        e.insert(new_val);
+                    }
+                    std::collections::btree_map::Entry::Vacant(e) => {
+                        e.insert(cotangent);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn max_var_index(jaxpr: &Jaxpr) -> Option<usize> {
+    let mut max_var = None;
+    let mut observe = |var: VarId| {
+        let idx = var.0 as usize;
+        max_var = Some(max_var.map_or(idx, |current: usize| current.max(idx)));
+    };
+    for var in jaxpr
+        .invars
+        .iter()
+        .chain(jaxpr.constvars.iter())
+        .chain(jaxpr.outvars.iter())
+    {
+        observe(*var);
+    }
+    for eqn in &jaxpr.equations {
+        for atom in &eqn.inputs {
+            if let Atom::Var(var) = atom {
+                observe(*var);
+            }
+        }
+        for var in &eqn.outputs {
+            observe(*var);
+        }
+    }
+    max_var
+}
+
+type ForwardResult = (Vec<Value>, Tape, AdValueStore);
 
 fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdError> {
     if args.len() != jaxpr.invars.len() {
@@ -269,7 +379,7 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
         });
     }
 
-    let mut env: BTreeMap<VarId, Value> = BTreeMap::new();
+    let mut env = AdValueStore::for_jaxpr(jaxpr);
     for (idx, var) in jaxpr.invars.iter().enumerate() {
         env.insert(*var, args[idx].clone());
     }
@@ -1428,9 +1538,9 @@ fn backward(
     output_var: VarId,
     output_cotangent: Value,
     jaxpr: &Jaxpr,
-    env: &BTreeMap<VarId, Value>,
+    env: &AdValueStore,
 ) -> Result<Vec<Value>, AdError> {
-    let mut adjoints: BTreeMap<VarId, Value> = BTreeMap::new();
+    let mut adjoints = AdValueStore::for_jaxpr(jaxpr);
     adjoints.insert(output_var, output_cotangent);
 
     for entry in tape.entries.iter().rev() {
@@ -1483,16 +1593,7 @@ fn backward(
             if var_id.0 == u32::MAX {
                 continue; // literal sentinel
             }
-            let entry = adjoints.entry(*var_id);
-            match entry {
-                std::collections::btree_map::Entry::Occupied(mut e) => {
-                    let new_val = value_add(e.get(), &cot)?;
-                    e.insert(new_val);
-                }
-                std::collections::btree_map::Entry::Vacant(e) => {
-                    e.insert(cot);
-                }
-            }
+            adjoints.add_or_insert(*var_id, cot)?;
         }
     }
 
@@ -1500,9 +1601,10 @@ fn backward(
         .invars
         .iter()
         .map(|var| {
-            adjoints
-                .remove(var)
-                .unwrap_or_else(|| zeros_like(env.get(var).unwrap_or(&Value::scalar_f64(0.0))))
+            adjoints.remove(var).unwrap_or_else(|| {
+                env.get(var)
+                    .map_or_else(|| Value::scalar_f64(0.0), zeros_like)
+            })
         })
         .collect();
 
