@@ -483,7 +483,11 @@ fn oracle_sort_complex64_lexicographic() {
     let Value::Tensor(t) = result else {
         panic!("expected tensor output");
     };
-    let got: Vec<(f32, f32)> = t.elements.iter().map(|l| l.as_complex64().unwrap()).collect();
+    let got: Vec<(f32, f32)> = t
+        .elements
+        .iter()
+        .map(|l| l.as_complex64().unwrap())
+        .collect();
     assert_eq!(
         got,
         vec![(1.0, 1.0), (1.0, 2.0), (2.0, 0.0), (3.0, 1.0)],

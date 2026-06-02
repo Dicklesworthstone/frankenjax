@@ -159,14 +159,8 @@ fn reduce_sum_jaxpr() -> Jaxpr {
 }
 
 fn identity_jaxpr() -> Jaxpr {
-    Jaxpr::new(
-        vec![VarId(1)],
-        vec![],
-        vec![VarId(1)],
-        vec![],
-    )
+    Jaxpr::new(vec![VarId(1)], vec![], vec![VarId(1)], vec![])
 }
-
 
 proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(
@@ -823,9 +817,7 @@ mod deterministic_tests {
             .expect("jit_grad")[0]
             .as_f64_scalar()
             .expect("scalar");
-        let grad_only = grad(jaxpr)
-            .call(vec![Value::scalar_f64(x)])
-            .expect("grad")[0]
+        let grad_only = grad(jaxpr).call(vec![Value::scalar_f64(x)]).expect("grad")[0]
             .as_f64_scalar()
             .expect("scalar");
         assert!(
@@ -852,7 +844,8 @@ mod deterministic_tests {
                 Ok((vec![next.clone()], vec![next]))
             },
             false,
-        ).expect("scan");
+        )
+        .expect("scan");
         let scan_val = final_carry[0].as_f64_scalar().expect("scalar");
         let expected: f64 = values.iter().sum();
         assert!(
@@ -874,11 +867,6 @@ mod deterministic_tests {
         let r2 = t2.call(Value::scalar_f64(1.0)).expect("r2");
         let v1 = r1[0].as_f64_scalar().expect("s1");
         let v2 = r2[0].as_f64_scalar().expect("s2");
-        assert!(
-            approx_eq_f64(v1, v2, 1e-10),
-            "v1={}, v2={}",
-            v1,
-            v2
-        );
+        assert!(approx_eq_f64(v1, v2, 1e-10), "v1={}, v2={}", v1, v2);
     }
 }

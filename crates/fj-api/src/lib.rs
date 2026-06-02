@@ -11,12 +11,12 @@ pub use fj_ad::{
 pub use fj_core::{DType, Shape, Value};
 pub use transforms::{
     CheckpointWrapped, ComposedTransform, CustomJvpWrapped, CustomVjpWrapped, GradWrapped,
-    HessianWrapped, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction,
-    PmapWrapped, TransposedLinearFunction, ValueAndGradWrapped, VmapWrapped,
+    HessianWrapped, JacobianWrapped, JitWrapped, LinearizeResult, LinearizedFunction, PmapWrapped,
+    TransposedLinearFunction, ValueAndGradWrapped, VmapWrapped,
 };
 pub use transforms::{
-    checkpoint, compose, custom_jvp, custom_vjp, eval_shape, grad, hessian, jacobian, jit,
-    linear_transpose, linearize, pmap, value_and_grad, vmap, ShapedArray,
+    ShapedArray, checkpoint, compose, custom_jvp, custom_vjp, eval_shape, grad, hessian, jacobian,
+    jit, linear_transpose, linearize, pmap, value_and_grad, vmap,
 };
 
 // Re-export make_jaxpr tracing API from fj-trace
@@ -165,7 +165,8 @@ mod tests {
     #[test]
     fn linearize_square() {
         let jaxpr = build_program(ProgramSpec::Square);
-        let result = linearize(jaxpr, vec![Value::scalar_f64(3.0)]).expect("linearize should succeed");
+        let result =
+            linearize(jaxpr, vec![Value::scalar_f64(3.0)]).expect("linearize should succeed");
 
         let primal_out = result.primal_outputs[0]
             .as_f64_scalar()
@@ -209,9 +210,7 @@ mod tests {
         let jaxpr = build_program(ProgramSpec::Identity);
         let transposed =
             linear_transpose(jaxpr, vec![Value::scalar_f64(1.0)]).expect("linear_transpose");
-        let result = transposed
-            .call(Value::scalar_f64(5.0))
-            .expect("call")[0]
+        let result = transposed.call(Value::scalar_f64(5.0)).expect("call")[0]
             .as_f64_scalar()
             .unwrap();
         assert!((result - 5.0).abs() < 1e-6);
@@ -222,9 +221,7 @@ mod tests {
         let jaxpr = build_program(ProgramSpec::LaxNeg);
         let transposed =
             linear_transpose(jaxpr, vec![Value::scalar_f64(1.0)]).expect("linear_transpose");
-        let result = transposed
-            .call(Value::scalar_f64(3.0))
-            .expect("call")[0]
+        let result = transposed.call(Value::scalar_f64(3.0)).expect("call")[0]
             .as_f64_scalar()
             .unwrap();
         assert!((result - (-3.0)).abs() < 1e-6);
@@ -251,11 +248,8 @@ mod tests {
     #[test]
     fn eval_shape_vector() {
         let jaxpr = build_program(ProgramSpec::LaxNeg);
-        let shapes = eval_shape(
-            &jaxpr,
-            &[Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vec")],
-        )
-        .expect("eval_shape");
+        let shapes = eval_shape(&jaxpr, &[Value::vector_f64(&[1.0, 2.0, 3.0]).expect("vec")])
+            .expect("eval_shape");
         assert_eq!(shapes.len(), 1);
         assert_eq!(shapes[0].shape.dims, vec![3u32]);
         assert_eq!(shapes[0].dtype, fj_core::DType::F64);

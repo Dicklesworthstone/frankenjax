@@ -706,7 +706,11 @@ fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
     match v {
         Value::Scalar(l) => l.as_complex64().unwrap(),
         Value::Tensor(t) => {
-            assert_eq!(t.elements.len(), 1, "expected single-element reduction result");
+            assert_eq!(
+                t.elements.len(),
+                1,
+                "expected single-element reduction result"
+            );
             t.elements[0].as_complex64().unwrap()
         }
     }

@@ -366,6 +366,10 @@ fn oracle_topk_complex64_lexicographic() {
     let Value::Tensor(indices) = &result[1] else {
         panic!("expected tensor indices");
     };
-    let got_idx: Vec<i64> = indices.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+    let got_idx: Vec<i64> = indices
+        .elements
+        .iter()
+        .map(|l| l.as_i64().unwrap())
+        .collect();
     assert_eq!(got_idx, vec![1, 3]);
 }

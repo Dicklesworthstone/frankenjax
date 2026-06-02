@@ -436,19 +436,32 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
     }
 
     // Walk equations in reverse, marking inputs of needed equations.
-    let mut retained_eqns = Vec::with_capacity(jaxpr.equations.len());
-    for eqn in jaxpr.equations.iter().rev() {
+    let mut retain_eqn = vec![false; jaxpr.equations.len()];
+    let mut retained_count = 0;
+    for (eqn_index, eqn) in jaxpr.equations.iter().enumerate().rev() {
         let outputs_needed = eqn.outputs.iter().any(|v| needed[v.0 as usize]);
         if outputs_needed {
+            retain_eqn[eqn_index] = true;
+            retained_count += 1;
             for atom in &eqn.inputs {
                 if let Atom::Var(v) = atom {
                     needed[v.0 as usize] = true;
                 }
             }
-            retained_eqns.push(eqn.clone());
         }
     }
-    retained_eqns.reverse();
+
+    let retained_eqns = if retained_count == jaxpr.equations.len() {
+        jaxpr.equations.clone()
+    } else {
+        jaxpr
+            .equations
+            .iter()
+            .zip(retain_eqn.iter())
+            .filter(|(_, retained)| **retained)
+            .map(|(eqn, _)| eqn.clone())
+            .collect()
+    };
 
     let used_inputs: Vec<bool> = jaxpr.invars.iter().map(|v| needed[v.0 as usize]).collect();
 

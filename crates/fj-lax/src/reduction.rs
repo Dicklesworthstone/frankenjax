@@ -33,7 +33,9 @@ fn complex_literal_from_parts(dtype: DType, re: f64, im: f64) -> Literal {
 /// (real, imaginary) pairs") and NumPy. Uses `total_cmp` so the order is total
 /// and consistent with fj-lax's complex sort key (`SortKey::Complex`).
 fn complex_lex_cmp(lhs: (f64, f64), rhs: (f64, f64)) -> std::cmp::Ordering {
-    lhs.0.total_cmp(&rhs.0).then_with(|| lhs.1.total_cmp(&rhs.1))
+    lhs.0
+        .total_cmp(&rhs.0)
+        .then_with(|| lhs.1.total_cmp(&rhs.1))
 }
 
 /// Output dtype for a real (non-complex, non-integral) reduction: preserve

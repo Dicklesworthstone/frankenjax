@@ -388,7 +388,11 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
 
 fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
     match v {
-        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Tensor(t) => t
+            .elements
+            .iter()
+            .map(|l| l.as_complex64().unwrap())
+            .collect(),
         Value::Scalar(l) => vec![l.as_complex64().unwrap()],
     }
 }

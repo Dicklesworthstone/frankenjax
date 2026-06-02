@@ -4612,9 +4612,10 @@ fn vjp_reduce_window(
                 .elements
                 .iter()
                 .map(|l| match l {
-                    Literal::Complex64Bits(re, im) => {
-                        (f64::from(f32::from_bits(*re)), f64::from(f32::from_bits(*im)))
-                    }
+                    Literal::Complex64Bits(re, im) => (
+                        f64::from(f32::from_bits(*re)),
+                        f64::from(f32::from_bits(*im)),
+                    ),
                     Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
                     _ => (0.0, 0.0),
                 })
@@ -8504,9 +8505,9 @@ fn jvp_rule_multi(
                 )));
             }
             let n = lu_t.shape.dims[0] as usize;
-            let da_t = tangents[0].as_tensor().ok_or_else(|| {
-                AdError::EvalFailed("LU JVP: dA must be a tensor".to_owned())
-            })?;
+            let da_t = tangents[0]
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("LU JVP: dA must be a tensor".to_owned()))?;
             let square = Shape {
                 dims: vec![n as u32, n as u32],
             };
@@ -8518,7 +8519,11 @@ fn jvp_rule_multi(
             }
 
             // Reconstruct L (unit lower triangular) and U (upper triangular).
-            let lu_vals: Vec<f64> = lu_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
+            let lu_vals: Vec<f64> = lu_t
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
             let mut l_elems = vec![0.0_f64; n * n];
             let mut u_elems = vec![0.0_f64; n * n];
             for i in 0..n {
@@ -8547,7 +8552,11 @@ fn jvp_rule_multi(
             let perm_t = perm_val.as_tensor().ok_or_else(|| {
                 AdError::EvalFailed("LU JVP: permutation output must be a tensor".to_owned())
             })?;
-            let da_vals: Vec<f64> = da_t.elements.iter().map(|l| l.as_f64().unwrap_or(0.0)).collect();
+            let da_vals: Vec<f64> = da_t
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
             let mut pda_vals = vec![0.0_f64; n * n];
             for (i, p) in perm_t.elements.iter().enumerate() {
                 let src = p.as_f64().unwrap_or(0.0) as usize;
@@ -8602,11 +8611,7 @@ fn jvp_rule_multi(
                 tensor_value(&u_dot, "LU JVP triu(lau)·U")?,
             )?;
 
-            Ok(vec![
-                lu_dot,
-                zeros_like(pivots_val),
-                zeros_like(perm_val),
-            ])
+            Ok(vec![lu_dot, zeros_like(pivots_val), zeros_like(perm_val)])
         }
         // ── SVD JVP ──
         // A = U Σ V^T.  dA → (dU, ds, dVt)
@@ -16448,10 +16453,19 @@ mod tests {
         }
 
         let eps = 1e-6;
-        let a_plus: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a + eps * d).collect();
-        let a_minus: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a - eps * d).collect();
+        let a_plus: Vec<f64> = a_vals
+            .iter()
+            .zip(da_vals)
+            .map(|(a, d)| a + eps * d)
+            .collect();
+        let a_minus: Vec<f64> = a_vals
+            .iter()
+            .zip(da_vals)
+            .map(|(a, d)| a - eps * d)
+            .collect();
         let lu_plus =
-            fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_plus)], &BTreeMap::new()).unwrap();
+            fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_plus)], &BTreeMap::new())
+                .unwrap();
         let lu_minus =
             fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_minus)], &BTreeMap::new())
                 .unwrap();
@@ -16509,8 +16523,12 @@ mod tests {
     }
 
     fn slogdet_logabsdet(a: &Value) -> f64 {
-        fj_lax::eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(a), &BTreeMap::new())
-            .unwrap()[1]
+        fj_lax::eval_primitive_multi(
+            Primitive::Slogdet,
+            std::slice::from_ref(a),
+            &BTreeMap::new(),
+        )
+        .unwrap()[1]
             .as_f64_scalar()
             .unwrap()
     }
@@ -16523,9 +16541,12 @@ mod tests {
         // value to prove it is not used.
         let a_vals = [4.0, 1.0, 2.0, 1.0, 5.0, 1.0, 2.0, 1.0, 6.0];
         let a = slogdet_make_3x3(&a_vals);
-        let outputs =
-            fj_lax::eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &BTreeMap::new())
-                .unwrap();
+        let outputs = fj_lax::eval_primitive_multi(
+            Primitive::Slogdet,
+            std::slice::from_ref(&a),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         // gs = [sign cotangent = poison 99.0, logabsdet cotangent = 1.0]
         let gs = [Value::scalar_f64(99.0), Value::scalar_f64(1.0)];
         let grads = vjp(
@@ -16550,9 +16571,9 @@ mod tests {
             ap[idx] += eps;
             let mut am = a_vals;
             am[idx] -= eps;
-            let num =
-                (slogdet_logabsdet(&slogdet_make_3x3(&ap)) - slogdet_logabsdet(&slogdet_make_3x3(&am)))
-                    / (2.0 * eps);
+            let num = (slogdet_logabsdet(&slogdet_make_3x3(&ap))
+                - slogdet_logabsdet(&slogdet_make_3x3(&am)))
+                / (2.0 * eps);
             assert!(
                 (grad[idx] - num).abs() < 1e-5,
                 "slogdet VJP elem {idx}: analytic={}, fd={num} (poison sign cotangent must be ignored)",
@@ -16568,9 +16589,12 @@ mod tests {
         let da_vals = [0.5, -1.0, 2.0, 1.5, 0.25, -0.5, -2.0, 3.0, 1.0];
         let a = slogdet_make_3x3(&a_vals);
         let da = slogdet_make_3x3(&da_vals);
-        let outputs =
-            fj_lax::eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &BTreeMap::new())
-                .unwrap();
+        let outputs = fj_lax::eval_primitive_multi(
+            Primitive::Slogdet,
+            std::slice::from_ref(&a),
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let tangents = jvp_rule_multi(
             Primitive::Slogdet,
             std::slice::from_ref(&a),
@@ -16579,7 +16603,11 @@ mod tests {
             &BTreeMap::new(),
         )
         .expect("slogdet jvp");
-        assert_eq!(tangents.len(), 2, "slogdet JVP must yield (d_sign, d_logabsdet)");
+        assert_eq!(
+            tangents.len(),
+            2,
+            "slogdet JVP must yield (d_sign, d_logabsdet)"
+        );
         assert!(
             tangents[0].as_f64_scalar().unwrap().abs() < 1e-12,
             "d_sign must be zero"
@@ -16587,8 +16615,16 @@ mod tests {
         let d_logabsdet = tangents[1].as_f64_scalar().unwrap();
 
         let eps = 1e-6;
-        let ap: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a + eps * d).collect();
-        let am: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a - eps * d).collect();
+        let ap: Vec<f64> = a_vals
+            .iter()
+            .zip(da_vals)
+            .map(|(a, d)| a + eps * d)
+            .collect();
+        let am: Vec<f64> = a_vals
+            .iter()
+            .zip(da_vals)
+            .map(|(a, d)| a - eps * d)
+            .collect();
         let num = (slogdet_logabsdet(&slogdet_make_3x3(&ap))
             - slogdet_logabsdet(&slogdet_make_3x3(&am)))
             / (2.0 * eps);
