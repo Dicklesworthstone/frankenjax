@@ -1987,8 +1987,14 @@ pub fn vjp(
             Ok(vec![zeros_like(a), zeros_like(b), value_mul(g, &dx)?])
         }
         Primitive::Zeta => {
-            // d/ds ζ(s) = -Σ ln(n)/n^s (complex, return zeros for now)
-            Ok(vec![zeros_like(&inputs[0])])
+            // Hurwitz zeta ζ(x, q) has two inputs but no differentiation rule
+            // in JAX (zeta_p registers no JVP/VJP — grad raises "differentiation
+            // rule not implemented"). The previous code returned a single
+            // zero cotangent, which (a) diverged from JAX by silently
+            // succeeding and (b) was an arity bug: the caller zips cotangents
+            // with the two inputs, so the `q` adjoint was silently dropped.
+            // Fail closed to match the oracle.
+            Err(AdError::UnsupportedPrimitive(Primitive::Zeta))
         }
         Primitive::BesselI0e => {
             // d/dx I0e(x) = I1e(x) - sign(x) * I0e(x)
@@ -7666,8 +7672,10 @@ fn jvp_rule(
             ep(Primitive::Mul, &[deriv, dx.clone()])
         }
         Primitive::Zeta => {
-            // d/ds ζ(s) complex, return zeros
-            Ok(zeros_like(&primals[0]))
+            // JAX defines no differentiation rule for zeta (see VJP arm); the
+            // previous zero tangent silently diverged from the oracle, which
+            // raises. Fail closed.
+            Err(AdError::UnsupportedPrimitive(primitive))
         }
         Primitive::BesselI0e => {
             // d/dx I0e(x) = I1e(x) - sign(x) * I0e(x)
@@ -10753,6 +10761,36 @@ mod tests {
         let num = (plus - minus) / (2.0 * eps);
 
         assert!((sym - num).abs() < 1e-4, "sym={sym}, num={num}");
+    }
+
+    #[test]
+    fn test_zeta_vjp_fails_closed() {
+        // JAX defines no differentiation rule for zeta, so grad must fail
+        // closed rather than silently returning zeros (and the previous
+        // single-cotangent return dropped the `q` adjoint entirely).
+        let x = Value::scalar_f64(2.0);
+        let q = Value::scalar_f64(1.5);
+        let g = Value::scalar_f64(1.0);
+        let err = vjp_single(Primitive::Zeta, &[x, q], &g, &BTreeMap::new())
+            .expect_err("zeta VJP must fail closed");
+        assert!(
+            matches!(err, AdError::UnsupportedPrimitive(Primitive::Zeta)),
+            "expected UnsupportedPrimitive(Zeta), got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_zeta_jvp_fails_closed() {
+        let x = Value::scalar_f64(2.0);
+        let q = Value::scalar_f64(1.5);
+        let dx = Value::scalar_f64(1.0);
+        let dq = Value::scalar_f64(1.0);
+        let err = jvp_rule(Primitive::Zeta, &[x, q], &[dx, dq], &BTreeMap::new())
+            .expect_err("zeta JVP must fail closed");
+        assert!(
+            matches!(err, AdError::UnsupportedPrimitive(Primitive::Zeta)),
+            "expected UnsupportedPrimitive(Zeta), got {err:?}"
+        );
     }
 
     #[test]
