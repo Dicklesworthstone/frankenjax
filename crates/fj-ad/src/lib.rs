@@ -383,7 +383,11 @@ fn matrix_inverse_transpose(a: &Value) -> Result<Value, AdError> {
         Value::Tensor(t) if t.shape.rank() == 2 => {
             (t.shape.dims[0] as usize, t.shape.dims[1] as usize)
         }
-        _ => return Err(AdError::EvalFailed("det gradient requires 2D matrix".into())),
+        _ => {
+            return Err(AdError::EvalFailed(
+                "det gradient requires 2D matrix".into(),
+            ));
+        }
     };
 
     let identity = create_identity_matrix(n)?;
@@ -397,7 +401,9 @@ fn create_identity_matrix(n: usize) -> Result<Value, AdError> {
     for i in 0..n {
         elements[i * n + i] = Literal::from_f64(1.0);
     }
-    let shape = Shape { dims: vec![n as u32, n as u32] };
+    let shape = Shape {
+        dims: vec![n as u32, n as u32],
+    };
     TensorValue::new(DType::F64, shape, elements)
         .map(Value::Tensor)
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -407,7 +413,11 @@ fn create_identity_matrix(n: usize) -> Result<Value, AdError> {
 fn solve_for_identity(a: &Value) -> Result<Value, AdError> {
     let n = match a {
         Value::Tensor(t) if t.shape.rank() == 2 => t.shape.dims[0] as usize,
-        _ => return Err(AdError::EvalFailed("solve_for_identity requires 2D matrix".into())),
+        _ => {
+            return Err(AdError::EvalFailed(
+                "solve_for_identity requires 2D matrix".into(),
+            ));
+        }
     };
     let identity = create_identity_matrix(n)?;
     eval_primitive(Primitive::Solve, &[a.clone(), identity], &BTreeMap::new())
@@ -422,15 +432,23 @@ fn matrix_multiply(a: &Value, b: &Value) -> Result<Value, AdError> {
 
 /// Multiply a scalar by a value
 fn scalar_mul(scalar: &Value, value: &Value) -> Result<Value, AdError> {
-    eval_primitive(Primitive::Mul, &[scalar.clone(), value.clone()], &BTreeMap::new())
-        .map_err(|e| AdError::EvalFailed(e.to_string()))
+    eval_primitive(
+        Primitive::Mul,
+        &[scalar.clone(), value.clone()],
+        &BTreeMap::new(),
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
 /// Compute trace of a matrix (sum of diagonal elements)
 fn matrix_trace(a: &Value) -> Result<Value, AdError> {
     let t = match a {
         Value::Tensor(t) if t.shape.rank() == 2 => t,
-        _ => return Err(AdError::EvalFailed("matrix_trace requires 2D matrix".into())),
+        _ => {
+            return Err(AdError::EvalFailed(
+                "matrix_trace requires 2D matrix".into(),
+            ));
+        }
     };
 
     let n = t.shape.dims[0] as usize;
@@ -3707,7 +3725,10 @@ pub fn vjp(
         // VJP: g_A = g * det(A) * A^{-T}
         Primitive::Det => {
             if inputs.is_empty() {
-                return Err(AdError::InputArity { expected: 1, actual: 0 });
+                return Err(AdError::InputArity {
+                    expected: 1,
+                    actual: 0,
+                });
             }
             let a = &inputs[0];
             let det_val = eval_primitive(Primitive::Det, &[a.clone()], params)
@@ -3722,7 +3743,10 @@ pub fn vjp(
         // d logabsdet / d A = A^{-T}
         Primitive::Slogdet => {
             if inputs.is_empty() {
-                return Err(AdError::InputArity { expected: 1, actual: 0 });
+                return Err(AdError::InputArity {
+                    expected: 1,
+                    actual: 0,
+                });
             }
             let a = &inputs[0];
             let a_inv_t = matrix_inverse_transpose(a)?;
@@ -4004,9 +4028,9 @@ pub fn vjp(
             )
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
-            let g = gs[0]
-                .as_tensor()
-                .ok_or_else(|| AdError::EvalFailed("LU VJP: cotangent must be a tensor".to_owned()))?;
+            let g = gs[0].as_tensor().ok_or_else(|| {
+                AdError::EvalFailed("LU VJP: cotangent must be a tensor".to_owned())
+            })?;
             if g.shape.dims != square.dims {
                 return Err(AdError::EvalFailed(format!(
                     "LU VJP: cotangent shape {:?} does not match LU output {:?}",
@@ -5267,9 +5291,7 @@ fn associative_scan_vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![dx])
         }
-        _ => {
-            Ok(vec![zeros_like(&inputs[0])])
-        }
+        _ => Ok(vec![zeros_like(&inputs[0])]),
     }
 }
 
@@ -5492,8 +5514,39 @@ fn tile_vjp(
             if reps.len() != 1 {
                 return Ok(vec![zeros_like(input)]);
             }
-            let sum: f64 = g_tensor.elements.iter().filter_map(|l| l.as_f64()).sum();
-            Ok(vec![Value::Scalar(Literal::from_f64(sum))])
+            // Sum every cotangent back into the scalar source, preserving the
+            // upstream dtype. The old `Literal::from_f64(sum)` widened F32/
+            // BF16/F16 grads to F64 and zeroed complex ones (as_f64 returns
+            // None for complex literals).
+            let g_dtype = g_tensor.dtype;
+            let lit = match g_dtype {
+                DType::Complex64 | DType::Complex128 => {
+                    let (mut re, mut im) = (0.0_f64, 0.0_f64);
+                    for l in &g_tensor.elements {
+                        match l {
+                            Literal::Complex64Bits(r, i) => {
+                                re += f64::from(f32::from_bits(*r));
+                                im += f64::from(f32::from_bits(*i));
+                            }
+                            Literal::Complex128Bits(r, i) => {
+                                re += f64::from_bits(*r);
+                                im += f64::from_bits(*i);
+                            }
+                            _ => {}
+                        }
+                    }
+                    if g_dtype == DType::Complex64 {
+                        Literal::from_complex64(re as f32, im as f32)
+                    } else {
+                        Literal::from_complex128(re, im)
+                    }
+                }
+                _ => {
+                    let sum: f64 = g_tensor.elements.iter().filter_map(|l| l.as_f64()).sum();
+                    literal_from_f64_for_dtype(g_dtype, sum)
+                }
+            };
+            Ok(vec![Value::Scalar(lit)])
         }
         (Value::Scalar(_), Value::Scalar(_)) => Ok(vec![g.clone()]),
         (Value::Tensor(input_tensor), Value::Tensor(g_tensor)) => {
@@ -5509,45 +5562,77 @@ fn tile_vjp(
             }
 
             let input_count = input_tensor.elements.len();
-            let mut grad_elements = vec![0.0_f64; input_count];
+            let g_dtype = g_tensor.dtype;
 
             let input_strides: Vec<usize> = (0..rank)
                 .map(|i| input_shape[i + 1..].iter().map(|&d| d as usize).product())
                 .collect();
 
-            for (g_flat, g_lit) in g_tensor.elements.iter().enumerate() {
-                let g_val = g_lit.as_f64().unwrap_or(0.0);
-                let mut g_coords = Vec::with_capacity(rank);
+            // Map a flat cotangent index back to its source input element
+            // (tile copies fold together under modulo). Accumulating across
+            // repetitions must preserve the upstream dtype: the old
+            // `as_f64()`/`from_f64` round-trip with a hard-coded `DType::F64`
+            // output widened F32/BF16/F16 grads and zeroed complex ones.
+            let map_to_input = |g_flat: usize| -> Option<usize> {
                 let mut remaining = g_flat;
+                let mut input_flat = 0_usize;
                 for i in 0..rank {
                     let g_stride: usize = (i + 1..rank)
                         .map(|j| (input_shape[j] as usize) * reps[j])
                         .product();
                     let g_stride = if g_stride == 0 { 1 } else { g_stride };
-                    g_coords.push(remaining / g_stride);
+                    let gc = remaining / g_stride;
                     remaining %= g_stride;
+                    let ic = gc % (input_shape[i] as usize);
+                    input_flat += ic * input_strides[i];
                 }
+                (input_flat < input_count).then_some(input_flat)
+            };
 
-                let input_coords: Vec<usize> = g_coords
-                    .iter()
-                    .zip(input_shape.iter())
-                    .map(|(&gc, &dim)| gc % (dim as usize))
-                    .collect();
-
-                let input_flat: usize = input_coords
-                    .iter()
-                    .zip(input_strides.iter())
-                    .map(|(&c, &s)| c * s)
-                    .sum();
-
-                if input_flat < input_count {
-                    grad_elements[input_flat] += g_val;
+            let elements: Vec<Literal> = match g_dtype {
+                DType::Complex64 | DType::Complex128 => {
+                    let mut acc = vec![(0.0_f64, 0.0_f64); input_count];
+                    for (g_flat, g_lit) in g_tensor.elements.iter().enumerate() {
+                        let (re, im) = match g_lit {
+                            Literal::Complex64Bits(r, i) => {
+                                (f64::from(f32::from_bits(*r)), f64::from(f32::from_bits(*i)))
+                            }
+                            Literal::Complex128Bits(r, i) => {
+                                (f64::from_bits(*r), f64::from_bits(*i))
+                            }
+                            _ => (0.0, 0.0),
+                        };
+                        if let Some(idx) = map_to_input(g_flat) {
+                            acc[idx].0 += re;
+                            acc[idx].1 += im;
+                        }
+                    }
+                    acc.into_iter()
+                        .map(|(re, im)| {
+                            if g_dtype == DType::Complex64 {
+                                Literal::from_complex64(re as f32, im as f32)
+                            } else {
+                                Literal::from_complex128(re, im)
+                            }
+                        })
+                        .collect()
                 }
-            }
+                _ => {
+                    let mut acc = vec![0.0_f64; input_count];
+                    for (g_flat, g_lit) in g_tensor.elements.iter().enumerate() {
+                        let g_val = g_lit.as_f64().unwrap_or(0.0);
+                        if let Some(idx) = map_to_input(g_flat) {
+                            acc[idx] += g_val;
+                        }
+                    }
+                    acc.into_iter()
+                        .map(|v| literal_from_f64_for_dtype(g_dtype, v))
+                        .collect()
+                }
+            };
 
-            let elements: Vec<Literal> = grad_elements.into_iter().map(Literal::from_f64).collect();
             Ok(vec![Value::Tensor(
-                TensorValue::new(DType::F64, input_tensor.shape.clone(), elements)
+                TensorValue::new(g_dtype, input_tensor.shape.clone(), elements)
                     .map_err(|e| AdError::EvalFailed(e.to_string()))?,
             )])
         }
@@ -7908,7 +7993,10 @@ fn jvp_rule(
                         for j in 0..k {
                             let orig_idx = idx_vals[idx_base + j] as usize;
                             elements.push(
-                                dx_t.elements.get(dx_base + orig_idx).copied().unwrap_or(zero),
+                                dx_t.elements
+                                    .get(dx_base + orig_idx)
+                                    .copied()
+                                    .unwrap_or(zero),
                             );
                         }
                     }
@@ -8033,7 +8121,10 @@ fn jvp_rule(
         // d det(A) = det(A) * tr(A^{-1} dA)
         Primitive::Det => {
             if primals.is_empty() || tangents.is_empty() {
-                return Err(AdError::InputArity { expected: 1, actual: 0 });
+                return Err(AdError::InputArity {
+                    expected: 1,
+                    actual: 0,
+                });
             }
             let a = &primals[0];
             let da = &tangents[0];
@@ -8047,7 +8138,10 @@ fn jvp_rule(
         // d logabsdet(A) = tr(A^{-1} dA)
         Primitive::Slogdet => {
             if primals.is_empty() || tangents.is_empty() {
-                return Err(AdError::InputArity { expected: 1, actual: 0 });
+                return Err(AdError::InputArity {
+                    expected: 1,
+                    actual: 0,
+                });
             }
             let a = &primals[0];
             let da = &tangents[0];
@@ -15581,11 +15675,7 @@ mod tests {
             fj_lax::eval_primitive_multi(Primitive::Lu, std::slice::from_ref(&a), &BTreeMap::new())
                 .unwrap();
         let g = make(g_vals);
-        let gs = [
-            g,
-            zeros_like(&outputs[1]),
-            zeros_like(&outputs[2]),
-        ];
+        let gs = [g, zeros_like(&outputs[1]), zeros_like(&outputs[2])];
 
         let vjp_result = vjp(
             Primitive::Lu,
@@ -15605,18 +15695,12 @@ mod tests {
             let mut a_minus = a_vals.to_vec();
             a_minus[idx] -= eps;
 
-            let lu_plus = fj_lax::eval_primitive_multi(
-                Primitive::Lu,
-                &[make(&a_plus)],
-                &BTreeMap::new(),
-            )
-            .unwrap();
-            let lu_minus = fj_lax::eval_primitive_multi(
-                Primitive::Lu,
-                &[make(&a_minus)],
-                &BTreeMap::new(),
-            )
-            .unwrap();
+            let lu_plus =
+                fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_plus)], &BTreeMap::new())
+                    .unwrap();
+            let lu_minus =
+                fj_lax::eval_primitive_multi(Primitive::Lu, &[make(&a_minus)], &BTreeMap::new())
+                    .unwrap();
 
             let lu_p: Vec<f64> = lu_plus[0]
                 .as_tensor()
@@ -15689,7 +15773,11 @@ mod tests {
         let outputs =
             fj_lax::eval_primitive_multi(Primitive::Lu, std::slice::from_ref(&a), &BTreeMap::new())
                 .unwrap();
-        let gs = [make(&g_vals), zeros_like(&outputs[1]), zeros_like(&outputs[2])];
+        let gs = [
+            make(&g_vals),
+            zeros_like(&outputs[1]),
+            zeros_like(&outputs[2]),
+        ];
         let da = vjp(
             Primitive::Lu,
             std::slice::from_ref(&a),
@@ -16686,6 +16774,115 @@ mod tests {
                 assert_eq!(vals, vec![0.5, 0.7]);
             }
             other => panic!("expected tensor JVP, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tile_vjp_preserves_f32_dtype_and_accumulates() {
+        // tile_vjp previously routed every cotangent through
+        // `Literal::from_f64(as_f64().unwrap_or(0.0))` and emitted a
+        // hard-coded `DType::F64` tensor, silently widening F32 gradients.
+        // tile([1,2], reps=[2]) -> [1,2,1,2]; the gradient must fold the two
+        // copies back and stay F32.
+        use fj_core::{DType, Literal, Shape, TensorValue};
+        use std::collections::BTreeMap;
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f32(1.0), Literal::from_f32(2.0)],
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::from_f32(10.0),
+                    Literal::from_f32(20.0),
+                    Literal::from_f32(30.0),
+                    Literal::from_f32(40.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("reps".to_owned(), "2".to_owned());
+
+        let out = super::tile_vjp(&input, &g, &params).expect("tile vjp");
+        match &out[0] {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::F32, "must keep F32, not widen to F64");
+                let vals: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => f32::from_bits(*b),
+                        other => panic!("element not F32: {other:?}"),
+                    })
+                    .collect();
+                // input[0] += g[0]+g[2]=40; input[1] += g[1]+g[3]=60
+                assert_eq!(vals, vec![40.0, 60.0]);
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tile_vjp_preserves_complex64_and_does_not_zero() {
+        // For complex inputs the old as_f64() round-trip returned None and
+        // `.unwrap_or(0.0)` silently zeroed the entire gradient. Pin that the
+        // complex cotangent folds correctly and stays Complex64.
+        use fj_core::{DType, Literal, Shape, TensorValue};
+        use std::collections::BTreeMap;
+
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(1.0, 1.0),
+                    Literal::from_complex64(2.0, 2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::from_complex64(10.0, 1.0),
+                    Literal::from_complex64(20.0, 2.0),
+                    Literal::from_complex64(30.0, 3.0),
+                    Literal::from_complex64(40.0, 4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("reps".to_owned(), "2".to_owned());
+
+        let out = super::tile_vjp(&input, &g, &params).expect("tile vjp");
+        match &out[0] {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::Complex64, "must keep Complex64");
+                let vals: Vec<(f32, f32)> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::Complex64Bits(re, im) => {
+                            (f32::from_bits(*re), f32::from_bits(*im))
+                        }
+                        other => panic!("element not Complex64: {other:?}"),
+                    })
+                    .collect();
+                // input[0] = g[0]+g[2] = (40,4); input[1] = g[1]+g[3] = (60,6)
+                assert_eq!(vals, vec![(40.0, 4.0), (60.0, 6.0)]);
+            }
+            other => panic!("expected tensor, got {other:?}"),
         }
     }
 
