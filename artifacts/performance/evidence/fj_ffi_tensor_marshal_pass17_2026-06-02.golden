@@ -1,0 +1,6 @@
+fj-ffi tensor marshal pass17 golden v1
+value=Tensor(dtype=F64, shape=[3], elements=[F64Bits(0x8000000000000000), F64Bits(0x7ff8000000000001), F64Bits(0x400c000000000000)])
+native_endian_bytes_hex=0000000000000080010000000000f87f0000000000000c40
+ordering=element order preserved exactly
+floating_point=bit payloads preserved; no numeric conversion or canonicalization
+rng=not applicable

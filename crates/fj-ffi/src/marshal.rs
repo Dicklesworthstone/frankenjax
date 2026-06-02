@@ -53,9 +53,7 @@ fn tensor_to_buffer(tv: &TensorValue) -> Result<FfiBuffer, FfiError> {
             actual_bytes: 0,
         })?;
     let mut data = Vec::with_capacity(capacity);
-    for lit in &tv.elements {
-        append_literal_as_dtype(&mut data, *lit, tv.dtype)?;
-    }
+    append_tensor_literals_as_dtype(&mut data, &tv.elements, tv.dtype)?;
     let shape: Vec<usize> = tv.shape.dims.iter().map(|&d| d as usize).collect();
     FfiBuffer::new(data, shape, tv.dtype)
 }
@@ -201,6 +199,112 @@ fn append_literal_as_dtype(data: &mut Vec<u8>, lit: Literal, dtype: DType) -> Re
         (dtype, literal) => return Err(FfiError::UnrepresentableLiteral { dtype, literal }),
     }
     Ok(())
+}
+
+fn append_tensor_literals_as_dtype(
+    data: &mut Vec<u8>,
+    elements: &[Literal],
+    dtype: DType,
+) -> Result<(), FfiError> {
+    match dtype {
+        DType::BF16 => {
+            for &lit in elements {
+                let Literal::BF16Bits(bits) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&bits.to_ne_bytes());
+            }
+        }
+        DType::F16 => {
+            for &lit in elements {
+                let Literal::F16Bits(bits) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&bits.to_ne_bytes());
+            }
+        }
+        DType::F32 => {
+            for &lit in elements {
+                let Literal::F32Bits(bits) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&bits.to_ne_bytes());
+            }
+        }
+        DType::F64 => {
+            for &lit in elements {
+                let Literal::F64Bits(bits) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&bits.to_ne_bytes());
+            }
+        }
+        DType::I32 => {
+            for &lit in elements {
+                let Literal::I64(value) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                let value =
+                    i32::try_from(value).map_err(|_| unrepresentable_literal(dtype, lit))?;
+                data.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+        DType::I64 => {
+            for &lit in elements {
+                let Literal::I64(value) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+        DType::U32 => {
+            for &lit in elements {
+                let Literal::U32(value) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+        DType::U64 => {
+            for &lit in elements {
+                let Literal::U64(value) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+        DType::Bool => {
+            for &lit in elements {
+                let Literal::Bool(value) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.push(u8::from(value));
+            }
+        }
+        DType::Complex64 => {
+            for &lit in elements {
+                let Literal::Complex64Bits(re, im) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&re.to_ne_bytes());
+                data.extend_from_slice(&im.to_ne_bytes());
+            }
+        }
+        DType::Complex128 => {
+            for &lit in elements {
+                let Literal::Complex128Bits(re, im) = lit else {
+                    return Err(unrepresentable_literal(dtype, lit));
+                };
+                data.extend_from_slice(&re.to_ne_bytes());
+                data.extend_from_slice(&im.to_ne_bytes());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn unrepresentable_literal(dtype: DType, literal: Literal) -> FfiError {
+    FfiError::UnrepresentableLiteral { dtype, literal }
 }
 
 fn bytes_to_literal(bytes: &[u8], dtype: DType) -> Result<Literal, FfiError> {
@@ -396,6 +500,25 @@ mod tests {
         assert_eq!(buf.shape(), &[3]);
         let restored = buffer_to_value(&buf).unwrap();
         assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn tensor_to_buffer_tensor_f64_preserves_bit_order() {
+        let expected_bits = [(-0.0f64).to_bits(), 0x7ff8_0000_0000_0001, 3.5f64.to_bits()];
+        let val = Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![3] },
+            elements: expected_bits.into_iter().map(Literal::F64Bits).collect(),
+        });
+
+        let buf = value_to_buffer(&val).unwrap();
+        let expected_bytes: Vec<u8> = expected_bits
+            .into_iter()
+            .flat_map(u64::to_ne_bytes)
+            .collect();
+
+        assert_eq!(buf.as_bytes(), expected_bytes.as_slice());
+        assert_eq!(buf.shape(), &[3]);
     }
 
     #[test]

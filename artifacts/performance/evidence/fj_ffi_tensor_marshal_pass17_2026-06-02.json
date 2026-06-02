@@ -1,0 +1,66 @@
+{
+  "bead": "frankenjax-9uov",
+  "date": "2026-06-02",
+  "crate": "fj-ffi",
+  "profile_target": {
+    "benchmark": "marshal/1k_tensor_to_buffer",
+    "source": "post-pass rch Criterion reprofile after frankenjax-26ao",
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-profile-after-pass16 cargo bench -p fj-ffi --bench ffi_baseline -- --sample-size 40 --warm-up-time 1 --measurement-time 2"
+  },
+  "baseline": {
+    "worker": "vmi1149989",
+    "samples": 40,
+    "warm_up_seconds": 1,
+    "measurement_seconds": 2,
+    "mean_us": 4.4347,
+    "confidence_interval_us": [4.3368, 4.5112]
+  },
+  "change": {
+    "lever_count": 1,
+    "lever": "Specialize tensor Value -> FfiBuffer encoding by dtype, moving the DType dispatch out of the per-element loop while preserving per-element literal validation.",
+    "files": ["crates/fj-ffi/src/marshal.rs"]
+  },
+  "after": {
+    "worker": "vmi1227854",
+    "samples": 60,
+    "warm_up_seconds": 1,
+    "measurement_seconds": 3,
+    "mean_ns": 971.32,
+    "confidence_interval_ns": [927.69, 1013.6],
+    "outliers": "1 high mild outlier among 60 measurements"
+  },
+  "delta": {
+    "baseline_ns": 4434.7,
+    "after_ns": 971.32,
+    "speedup": 4.5656,
+    "mean_reduction_percent": 78.1
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 3,
+    "effort": 1,
+    "impact_times_confidence_div_effort": 15.0,
+    "keep": true,
+    "confidence_note": "After benchmark used a different rch worker, but the measured 4.57x mean speedup is large relative to expected worker variance and all behavior proofs passed."
+  },
+  "isomorphism_proof": {
+    "ordering": "The new tensor encoder iterates the same TensorValue.elements slice in the same order and writes each element immediately to the same Vec buffer.",
+    "tie_breaking": "No ordering comparisons, maps, sets, sorting, or tie-breaking logic are touched.",
+    "floating_point": "Floating-point literals remain bit-pattern variants; F16/BF16/F32/F64 and complex components are written with the same to_ne_bytes calls. No arithmetic, normalization, NaN canonicalization, or signed-zero conversion is introduced.",
+    "rng": "No RNG state or sampling code exists in this path.",
+    "error_semantics": "The encoder still returns the first UnrepresentableLiteral encountered in element order. I32 still performs i32::try_from on Literal::I64 and returns UnrepresentableLiteral for out-of-range values.",
+    "golden_output": "artifacts/performance/evidence/fj_ffi_tensor_marshal_pass17_2026-06-02.golden",
+    "golden_sha256": "b01f5568d30780b08b17898a662906037ce667b7a7bd25099453fabead7c6921"
+  },
+  "validation": [
+    "cargo fmt -p fj-ffi",
+    "cargo fmt -p fj-ffi -- --check",
+    "git diff --check -- crates/fj-ffi/src/marshal.rs",
+    "ubs crates/fj-ffi/src/marshal.rs (exit 0; no critical findings)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-check-pass17 cargo check -p fj-ffi --all-targets",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-test-pass17 cargo test -p fj-ffi --all-targets (88 passed)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-clippy-pass17 cargo clippy -p fj-ffi --all-targets --no-deps -- -D warnings",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-rebench-pass17 cargo bench -p fj-ffi --bench ffi_baseline -- marshal/1k_tensor_to_buffer --sample-size 60 --warm-up-time 1 --measurement-time 3",
+    "sha256sum -c artifacts/performance/evidence/fj_ffi_tensor_marshal_pass17_2026-06-02.golden.sha256"
+  ]
+}
