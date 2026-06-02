@@ -9300,18 +9300,36 @@ mod tests {
     }
 
     #[test]
-    fn test_split_unequal() {
-        // split [1,2,3,4,5] with sizes [2,3] — first section = [1,2]
+    fn test_split_uneven_sizes_fails_closed() {
+        // Uneven split sizes [2,3] cannot be packed into the single-output
+        // rectangular tensor model, so Split must fail closed rather than
+        // silently returning only the first section (the prior behaviour,
+        // which corrupted any transform flowing through the dropped sections).
         let input = Value::vector_i64(&[1, 2, 3, 4, 5]).unwrap();
         let mut params = BTreeMap::new();
         params.insert("axis".into(), "0".into());
         params.insert("sizes".into(), "2,3".into());
+        let err = eval_primitive(Primitive::Split, &[input], &params)
+            .expect_err("uneven split must be rejected, not silently truncated");
+        assert!(
+            matches!(err, EvalError::Unsupported { primitive: Primitive::Split, .. }),
+            "expected Unsupported for uneven split, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn test_split_all_equal_explicit_sizes_packs() {
+        // Explicit `sizes` that happen to be all equal still take the packed
+        // equal-split path: [1,2,3,4] with sizes [2,2] -> shape [2, 2].
+        let input = Value::vector_i64(&[1, 2, 3, 4]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "0".into());
+        params.insert("sizes".into(), "2,2".into());
         let out = eval_primitive(Primitive::Split, &[input], &params).unwrap();
         let t = out.as_tensor().unwrap();
-        // Unequal split returns first section: shape [2]
-        assert_eq!(t.shape.dims, vec![2]);
+        assert_eq!(t.shape.dims, vec![2, 2]);
         let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
-        assert_eq!(vals, vec![1, 2]);
+        assert_eq!(vals, vec![1, 2, 3, 4]);
     }
 
     #[test]

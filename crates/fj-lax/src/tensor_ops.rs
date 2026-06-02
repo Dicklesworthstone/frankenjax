@@ -4352,70 +4352,22 @@ pub(crate) fn eval_split(
                     })?,
                 ))
             } else {
-                // Unequal split — extract the sections using slicing
-                // For simplicity, return the first section
-                let section_size = sizes[0];
-                let mut new_dims = dims.to_vec();
-                new_dims[axis] = section_size as u32;
-
-                let strides = checked_row_major_strides(primitive, "split", dims)?;
-                let elements_per_slice: usize = strides[axis]
-                    .checked_mul(section_size)
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: "split section size overflows usize".to_owned(),
-                    })?;
-                let outer_size: usize = if axis == 0 {
-                    1
-                } else {
-                    checked_shape_element_count(primitive, "split outer", &dims[..axis])?
-                };
-                let axis_stride_span =
-                    strides[axis]
-                        .checked_mul(axis_size)
-                        .ok_or_else(|| EvalError::Unsupported {
-                            primitive,
-                            detail: "split axis span overflows usize".to_owned(),
-                        })?;
-
-                let total_elements =
-                    outer_size.checked_mul(elements_per_slice).ok_or_else(|| {
-                        EvalError::Unsupported {
-                            primitive,
-                            detail: "split total element count overflows usize".to_owned(),
-                        }
-                    })?;
-                let mut result = Vec::with_capacity(total_elements);
-                for outer in 0..outer_size {
-                    let base = outer.checked_mul(axis_stride_span).ok_or_else(|| {
-                        EvalError::Unsupported {
-                            primitive,
-                            detail: "split base offset overflows usize".to_owned(),
-                        }
-                    })?;
-                    for i in 0..elements_per_slice {
-                        let index = base.checked_add(i).ok_or_else(|| EvalError::Unsupported {
-                            primitive,
-                            detail: "split element index overflows usize".to_owned(),
-                        })?;
-                        result.push(*tensor.elements.get(index).ok_or_else(|| {
-                            EvalError::Unsupported {
-                                primitive,
-                                detail: "split element index exceeds input element count"
-                                    .to_owned(),
-                            }
-                        })?);
-                    }
-                }
-
-                Ok(Value::Tensor(
-                    TensorValue::new(tensor.dtype, Shape { dims: new_dims }, result).map_err(
-                        |e| EvalError::Unsupported {
-                            primitive,
-                            detail: e.to_string(),
-                        },
-                    )?,
-                ))
+                // Uneven split (explicit per-section `sizes` that are not all
+                // equal) cannot be represented in V1's single-output packed
+                // tensor model: the sections differ in extent along the split
+                // axis, so they do not fit a single rectangular tensor with a
+                // leading `num_sections` dimension. Fail closed rather than
+                // silently returning only the first section — that diverged
+                // from JAX's multi-array result and corrupted any transform
+                // (grad/jit/vmap) flowing through the dropped sections.
+                Err(EvalError::Unsupported {
+                    primitive,
+                    detail: format!(
+                        "uneven split with explicit sizes {sizes:?} is unsupported in V1; \
+                         only equal-size splits (num_sections, or all-equal explicit sizes) \
+                         are representable in the single-output packed-tensor model"
+                    ),
+                })
             }
         }
     }
