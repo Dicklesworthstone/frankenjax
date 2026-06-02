@@ -285,7 +285,7 @@ fn primitive_inventory_comes_from_core_source_of_truth() {
 
     assert_eq!(
         all_primitives().len(),
-        157,
+        162,
         "update Primitive::ALL and this audit count when the core enum changes"
     );
     assert_eq!(
@@ -294,7 +294,7 @@ fn primitive_inventory_comes_from_core_source_of_truth() {
         "pmap collective inventory should stay explicit while V1 fails closed"
     );
     assert_eq!(
-        local_primitive_count, 152,
+        local_primitive_count, 157,
         "V1 local eval/AD docs should track non-pmap primitive scope"
     );
 

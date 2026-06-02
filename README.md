@@ -26,8 +26,8 @@
 
 | Feature | Status |
 |---------|--------|
-| 157 canonical primitive variants: 152 V1 local primitives plus 5 pmap collectives | V1 local eval green; pmap collectives fail closed |
-| Reverse-mode (VJP) + Forward-mode (JVP) AD for all 152 V1 local primitives | All green |
+| 162 canonical primitive variants: 157 V1 local primitives plus 5 pmap collectives | V1 local eval green; pmap collectives fail closed |
+| Reverse-mode (VJP) + Forward-mode (JVP) AD for all 157 V1 local primitives | All green |
 | Transform composition: `jit(grad(f))`, `vmap(grad(f))`, `grad(grad(f))` | V1 matrix gated; unsupported rows fail closed |
 | Linear algebra: Cholesky, QR, SVD, Eigh, TriangularSolve (eval + AD) | All green |
 | FFT: Fft, Ifft, Rfft, Irfft (eval + AD) | All green |
@@ -165,7 +165,7 @@ Transform Stack (fj-dispatch)
   |    \      |      /
   v     v     v     v
   +-- E-graph optimizer (fj-egraph: 86 rewrite rules)
-  +-- AD engine (fj-ad: VJP + JVP for all 152 V1 local primitives)
+  +-- AD engine (fj-ad: VJP + JVP for all 157 V1 local primitives)
   +-- Batch trace (fj-dispatch/batching: per-primitive vmap rules)
   +-- Evidence ledger (fj-ledger: transform composition proofs)
   |
@@ -198,7 +198,7 @@ advanced transform/control-flow parity and public API example replay are green.
 |-------|---------|-------|
 | `fj-core` | Canonical IR (Jaxpr), 118 primitive variants, 11 dtypes, shapes, value model | Extensive |
 | `fj-lax` | Primitive evaluation: arithmetic, linalg, FFT, reductions, tensor ops | 479 |
-| `fj-ad` | Automatic differentiation: VJP + JVP for all 152 V1 local primitives | 179 |
+| `fj-ad` | Automatic differentiation: VJP + JVP for all 157 V1 local primitives | 179 |
 | `fj-dispatch` | Transform dispatch, order-sensitive composition, batching | 55+ |
 | `fj-trace` | `make_jaxpr` tracing from Rust closures, nested trace contexts | 50 |
 | `fj-egraph` | E-graph equality saturation: 86 algebraic rewrite rules | 47 |
@@ -217,9 +217,9 @@ advanced transform/control-flow parity and public API example replay are green.
 
 **162,733 lines of Rust** across 15 crates with end-to-end trace -> dispatch -> runtime pipeline:
 
-- **157 canonical primitive variants**: 152 V1 local primitives covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions, plus 5 pmap collectives that fail closed without multi-device context
+- **162 canonical primitive variants**: 157 V1 local primitives covering arithmetic, trigonometric, hyperbolic, comparison, reduction, shape manipulation, linear algebra, FFT, bitwise, control flow, sorting, convolution, and special math functions, plus 5 pmap collectives that fail closed without multi-device context
 - **11 DTypes** (BF16, F16, F32, F64, I32, I64, U32, U64, Bool, Complex64, Complex128) with JAX-verified type promotion rules
-- **Full V1 local AD coverage**: all 152 non-pmap primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT; pmap collectives are typed unsupported until the multi-device backend lands
+- **Full V1 local AD coverage**: all 157 non-pmap primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including multi-output decompositions (Cholesky, QR, SVD, Eigh) and FFT; pmap collectives are typed unsupported until the multi-device backend lands
 - **Jacobian and Hessian** matrix computation via composable AD
 - **`vmap`** with per-primitive batching rules, `in_axes`/`out_axes`, BatchTrace interpreter, and a 21-row transform/control-flow matrix gate
 - **E-graph optimizer**: 86 algebraic rewrite rules with equality saturation, verified to preserve program semantics
@@ -982,7 +982,7 @@ cargo fuzz run ir_deserializer corpus/seed/ir_deserializer
 
 ## Primitive Coverage
 
-The `Primitive` enum currently has 157 canonical primitive variants. The V1 local execution and AD scope covers 113 non-pmap primitives; the 5 pmap collectives (`psum`, `pmean`, `all_gather`, `all_to_all`, `axis_index`) are represented in the IR but fail closed until multi-device pmap context exists.
+The `Primitive` enum currently has 162 canonical primitive variants. The V1 local execution and AD scope covers 157 non-pmap primitives; the 5 pmap collectives (`psum`, `pmean`, `all_gather`, `all_to_all`, `axis_index`) are represented in the IR but fail closed until multi-device pmap context exists.
 
 | Category | Primitives | Count |
 |----------|-----------|-------|
@@ -1169,7 +1169,7 @@ A: JAX requires Python + XLA + CUDA/TPU. FrankenJAX gives you the mathematical t
 A: We capture oracle fixtures from real JAX 0.9.2 (861 cases), then run our Rust implementation against those fixtures in CI. The V1 local primitive scope, transform matrix, and dtype combinations are covered; pmap collectives are explicit fail-closed rows until multi-device execution is implemented.
 
 **Q: Is the AD (automatic differentiation) complete?**
-A: Yes for the V1 local scope. All 113 non-pmap primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Pmap collectives fail closed until multi-device semantics are implemented. Numerical verification tests confirm correctness via finite-difference comparison.
+A: Yes for the V1 local scope. All 157 non-pmap primitives have both VJP (reverse-mode) and JVP (forward-mode) rules, including complex operations like Cholesky, QR, SVD, Eigh decompositions and FFT. Pmap collectives fail closed until multi-device semantics are implemented. Numerical verification tests confirm correctness via finite-difference comparison.
 
 **Q: What's the Trace Transform Ledger?**
 A: Every transform composition (`jit(grad(f))`, `vmap(grad(f))`, etc.) produces an auditable evidence artifact that records the input IR, applied transforms, and output IR. Verification binds evidence entries to their transforms, includes evidence content in the stack signature, and the TTL semantic gate replays representative stacks with canonical fingerprints, output shape/dtype metadata, fixture links, and deterministic rejection reasons for invalid proof chains.
