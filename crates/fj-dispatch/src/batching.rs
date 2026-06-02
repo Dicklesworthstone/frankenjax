@@ -511,10 +511,12 @@ fn apply_batch_rule_multi(
         Primitive::TopK => batch_passthrough_leading_multi(primitive, inputs, params),
         // Slogdet → (sign, logabsdet) scalars. Per-slice eval + stack along
         // axis 0 is the correct vmap; scalar outputs stack into rank-1
-        // [batch] vectors. (Eig is left fail-closed: it returns complex
-        // eigenvalues/vectors whose ordering is implementation-defined, so a
-        // batched rule needs a complex-aware conformance check first.)
+        // [batch] vectors.
         Primitive::Slogdet => batch_passthrough_leading_multi(primitive, inputs, params),
+        // Eig → (eigenvalues, eigenvectors), both Complex128. The per-slice
+        // batcher stacks the complex outputs; eval_eig is deterministic, so
+        // each lane's eigenvalue ordering matches the per-slice oracle.
+        Primitive::Eig => batch_passthrough_leading_multi(primitive, inputs, params),
         _ => apply_batch_rule(primitive, inputs, params).map(|result| vec![result]),
     }
 }
@@ -6505,6 +6507,78 @@ mod tests {
         assert_multi_matches_slice_oracle(Primitive::Slogdet, &outputs, &[m0, m1], &BTreeMap::new());
         assert_eq!(outputs[0].value.as_tensor().unwrap().shape.dims, vec![2]);
         assert_eq!(outputs[1].value.as_tensor().unwrap().shape.dims, vec![2]);
+    }
+
+    /// Complex-aware multi-output oracle: vmap over `matrices` must equal the
+    /// per-slice eval stacked along axis 0, output-by-output. eval_eig is
+    /// deterministic so each lane's eigenvalue ordering matches exactly.
+    fn assert_eig_matches_slice_oracle(outputs: &[BatchTracer], matrices: &[Value]) {
+        assert_eq!(outputs.len(), 2, "eig yields (eigenvalues, eigenvectors)");
+        for out in outputs {
+            assert_eq!(out.batch_dim, Some(0));
+        }
+        let mut expected: Vec<Vec<Value>> = vec![Vec::new(), Vec::new()];
+        for matrix in matrices {
+            let slice =
+                eval_primitive_multi(Primitive::Eig, std::slice::from_ref(matrix), &BTreeMap::new())
+                    .unwrap();
+            assert_eq!(slice.len(), 2);
+            for (bucket, value) in expected.iter_mut().zip(slice) {
+                bucket.push(value);
+            }
+        }
+        for (actual, slices) in outputs.iter().zip(expected) {
+            let stacked = Value::Tensor(TensorValue::stack_axis0(&slices).unwrap());
+            assert_eq!(
+                actual.value.as_tensor().unwrap().dtype,
+                DType::Complex128,
+                "eig outputs must stay Complex128"
+            );
+            assert_eq!(
+                actual.value.as_tensor().unwrap().shape.dims,
+                stacked.as_tensor().unwrap().shape.dims
+            );
+            assert_complex_close(
+                &extract_complex128_vec(&actual.value),
+                &extract_complex128_vec(&stacked),
+            );
+        }
+    }
+
+    #[test]
+    fn test_batch_trace_eig_multi_leading_batch_dim() {
+        // vmap over eig() must batch both Complex128 outputs (eigenvalues,
+        // eigenvectors) and match the per-slice oracle.
+        let m0 = make_f64_matrix(2, 2, &[2.0, 0.0, 0.0, 3.0]);
+        let m1 = make_f64_matrix(2, 2, &[4.0, 1.0, 2.0, 3.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(&[2, 2, 2], &[2.0, 0.0, 0.0, 3.0, 4.0, 1.0, 2.0, 3.0]),
+            0,
+        );
+        let outputs = apply_batch_rule_multi(Primitive::Eig, &[input], &BTreeMap::new()).unwrap();
+        assert_eig_matches_slice_oracle(&outputs, &[m0, m1]);
+        assert_eq!(outputs[0].value.as_tensor().unwrap().shape.dims, vec![2, 2]);
+        assert_eq!(outputs[1].value.as_tensor().unwrap().shape.dims, vec![2, 2, 2]);
+    }
+
+    #[test]
+    fn test_batch_trace_eig_multi_nonleading_batch_dim() {
+        // Batch dim at axis 1 — exercises move_batch_dim_to_front before the
+        // per-slice eig.
+        let m0 = make_f64_matrix(2, 2, &[2.0, 0.0, 0.0, 3.0]);
+        let m1 = make_f64_matrix(2, 2, &[4.0, 1.0, 2.0, 3.0]);
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 2],
+                &[
+                    2.0, 0.0, 4.0, 1.0, // row 0, both lanes
+                    0.0, 3.0, 2.0, 3.0, // row 1, both lanes
+                ],
+            ),
+            1,
+        );
+        let outputs = apply_batch_rule_multi(Primitive::Eig, &[input], &BTreeMap::new()).unwrap();
+        assert_eig_matches_slice_oracle(&outputs, &[m0, m1]);
     }
 
     fn assert_eigh_matches_slice_oracle(outputs: &[BatchTracer], matrices: &[Value]) {
