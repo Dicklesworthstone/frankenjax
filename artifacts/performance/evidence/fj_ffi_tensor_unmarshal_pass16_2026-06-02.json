@@ -1,0 +1,92 @@
+{
+  "bead": "frankenjax-26ao",
+  "date": "2026-06-02",
+  "crate": "fj-ffi",
+  "subsystem": "FFI value unmarshalling",
+  "lever": "decode tensor buffers through dtype-specialized fixed-width paths instead of re-entering the scalar byte decoder for every element",
+  "profile_target": "marshal/1k_buffer_to_tensor",
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-profile-pass16 cargo bench -p fj-ffi --bench ffi_baseline -- --sample-size 40 --warm-up-time 1 --measurement-time 2",
+    "worker": "vmi1149989",
+    "mean_us": 5.4424,
+    "confidence_interval_us": [5.3803, 5.5065],
+    "nearby_profile_points_us": {
+      "marshal/1k_tensor_to_buffer": 2.4695,
+      "ffi_roundtrip/1k_f64_vec": 1.0201,
+      "ffi_roundtrip/scalar_f64": 0.10207,
+      "ffi_roundtrip/noop": 0.076255,
+      "registry/lookup": 0.032807
+    }
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-rebench-pass16-final cargo bench -p fj-ffi --bench ffi_baseline -- marshal/1k_buffer_to_tensor --sample-size 60 --warm-up-time 1 --measurement-time 3",
+    "worker": "vmi1227854",
+    "mean_us": 0.91168,
+    "confidence_interval_us": [0.85623, 0.97613],
+    "note": "A prior post-change run on the same worker measured 0.78026 us mean before the UBS-directed direct-index cleanup; final kept number is the conservative 0.91168 us mean."
+  },
+  "delta": {
+    "absolute_us": -4.53072,
+    "percent": -83.247,
+    "speedup": 5.97,
+    "comparison_note": "Baseline and final re-bench used different rch workers; the delta is large enough to score despite cross-worker noise."
+  },
+  "opportunity_score": {
+    "impact": 5,
+    "confidence": 3,
+    "effort": 1,
+    "score": 15.0
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_ffi_tensor_unmarshal_pass16_2026-06-02.golden",
+    "sha256": "e6767b8edab90d708df47c0a2b708c6b99ab339136817934ec95fd14e94ef868",
+    "case": "F64 tensor bytes for [-0.0 bits, quiet NaN payload bits, 3.5 bits] restore to matching Literal::F64Bits in input order."
+  },
+  "isomorphism_proof": {
+    "ordering": "The tensor branch still iterates chunks_exact over the input byte slice from left to right; output element order is input chunk order.",
+    "tie_breaking": "No lookup, sorting, registry, or dispatch tie-breaking paths are changed.",
+    "floating_point": "Unmarshalling still performs native-endian bit reconstruction only; no arithmetic, normalization, NaN canonicalization, or signed-zero change is introduced.",
+    "rng": "No RNG state or stochastic primitive paths are touched.",
+    "bool_validation": "buffer_to_value still calls validate_buffer_contents before dtype-specialized decoding, so noncanonical bool bytes fail with the same public error before any bool element construction.",
+    "unsafe": "No unsafe code added."
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-ffi -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-ffi/src/marshal.rs",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-ffi/src/marshal.rs",
+      "result": "pass",
+      "note": "exit 0; no critical findings, existing test unwrap/assert warning inventory remains"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-check-pass16 cargo check -p fj-ffi --all-targets",
+      "worker": "vmi1153651",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-test-pass16 cargo test -p fj-ffi --all-targets",
+      "worker": "vmi1227854",
+      "result": "pass",
+      "test_summary": "87 tests passed; bench smoke entries passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ffi-clippy-pass16 cargo clippy -p fj-ffi --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1227854",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_ffi_tensor_unmarshal_pass16_2026-06-02.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "jq empty artifacts/performance/evidence/fj_ffi_tensor_unmarshal_pass16_2026-06-02.json",
+      "result": "pass"
+    }
+  ]
+}

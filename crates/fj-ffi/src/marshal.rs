@@ -27,20 +27,7 @@ pub fn buffer_to_value(buffer: &FfiBuffer) -> Result<Value, FfiError> {
     } else {
         // Tensor
         let shape = ffi_shape_to_core_shape(buffer.shape())?;
-        let elem_size = dtype_size_bytes(buffer.dtype())?;
-        let chunks = buffer.as_bytes().chunks_exact(elem_size);
-        if !chunks.remainder().is_empty() {
-            return Err(FfiError::BufferMismatch {
-                buffer_index: 0,
-                expected_bytes: buffer.as_bytes().len() - chunks.remainder().len(),
-                actual_bytes: buffer.as_bytes().len(),
-            });
-        }
-        let mut elements = Vec::with_capacity(chunks.len());
-        for chunk in chunks {
-            let lit = bytes_to_literal(chunk, buffer.dtype())?;
-            elements.push(lit);
-        }
+        let elements = bytes_to_tensor_literals(buffer.as_bytes(), buffer.dtype())?;
         Ok(Value::Tensor(TensorValue {
             dtype: buffer.dtype(),
             shape,
@@ -75,6 +62,87 @@ fn tensor_to_buffer(tv: &TensorValue) -> Result<FfiBuffer, FfiError> {
 
 fn checked_data_capacity(element_count: usize, elem_size: usize) -> Option<usize> {
     element_count.checked_mul(elem_size)
+}
+
+fn bytes_to_tensor_literals(bytes: &[u8], dtype: DType) -> Result<Vec<Literal>, FfiError> {
+    match dtype {
+        DType::BF16 => decode_tensor_chunks(bytes, 2, |chunk| Literal::BF16Bits(read_u16(chunk))),
+        DType::F16 => decode_tensor_chunks(bytes, 2, |chunk| Literal::F16Bits(read_u16(chunk))),
+        DType::F32 => decode_tensor_chunks(bytes, 4, |chunk| Literal::F32Bits(read_u32(chunk))),
+        DType::F64 => decode_tensor_chunks(bytes, 8, |chunk| Literal::F64Bits(read_u64(chunk))),
+        DType::I32 => decode_tensor_chunks(bytes, 4, |chunk| {
+            Literal::I64(i64::from(i32::from_ne_bytes(read_array4(chunk))))
+        }),
+        DType::I64 => decode_tensor_chunks(bytes, 8, |chunk| {
+            Literal::I64(i64::from_ne_bytes(read_array8(chunk)))
+        }),
+        DType::U32 => decode_tensor_chunks(bytes, 4, |chunk| Literal::U32(read_u32(chunk))),
+        DType::U64 => decode_tensor_chunks(bytes, 8, |chunk| Literal::U64(read_u64(chunk))),
+        DType::Complex64 => decode_tensor_chunks(bytes, 8, |chunk| {
+            let (re, im) = chunk.split_at(4);
+            Literal::Complex64Bits(
+                u32::from_ne_bytes(read_array4(re)),
+                u32::from_ne_bytes(read_array4(im)),
+            )
+        }),
+        DType::Complex128 => decode_tensor_chunks(bytes, 16, |chunk| {
+            let (re, im) = chunk.split_at(8);
+            Literal::Complex128Bits(
+                u64::from_ne_bytes(read_array8(re)),
+                u64::from_ne_bytes(read_array8(im)),
+            )
+        }),
+        DType::Bool => decode_tensor_chunks(bytes, 1, |chunk| {
+            Literal::Bool(chunk.first().copied() == Some(1))
+        }),
+    }
+}
+
+fn decode_tensor_chunks(
+    bytes: &[u8],
+    elem_size: usize,
+    mut literal_from_chunk: impl FnMut(&[u8]) -> Literal,
+) -> Result<Vec<Literal>, FfiError> {
+    let chunks = bytes.chunks_exact(elem_size);
+    if !chunks.remainder().is_empty() {
+        return Err(FfiError::BufferMismatch {
+            buffer_index: 0,
+            expected_bytes: bytes.len() - chunks.remainder().len(),
+            actual_bytes: bytes.len(),
+        });
+    }
+
+    let mut elements = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        elements.push(literal_from_chunk(chunk));
+    }
+    Ok(elements)
+}
+
+fn read_array4(bytes: &[u8]) -> [u8; 4] {
+    let mut arr = [0; 4];
+    arr.copy_from_slice(bytes);
+    arr
+}
+
+fn read_array8(bytes: &[u8]) -> [u8; 8] {
+    let mut arr = [0; 8];
+    arr.copy_from_slice(bytes);
+    arr
+}
+
+fn read_u16(bytes: &[u8]) -> u16 {
+    let mut arr = [0; 2];
+    arr.copy_from_slice(bytes);
+    u16::from_ne_bytes(arr)
+}
+
+fn read_u32(bytes: &[u8]) -> u32 {
+    u32::from_ne_bytes(read_array4(bytes))
+}
+
+fn read_u64(bytes: &[u8]) -> u64 {
+    u64::from_ne_bytes(read_array8(bytes))
 }
 
 fn ffi_shape_to_core_shape(shape: &[usize]) -> Result<Shape, FfiError> {
@@ -328,6 +396,27 @@ mod tests {
         assert_eq!(buf.shape(), &[3]);
         let restored = buffer_to_value(&buf).unwrap();
         assert_eq!(val, restored);
+    }
+
+    #[test]
+    fn buffer_to_value_tensor_f64_preserves_bit_order() {
+        let expected_bits = [(-0.0f64).to_bits(), 0x7ff8_0000_0000_0001, 3.5f64.to_bits()];
+        let mut bytes = Vec::with_capacity(expected_bits.len() * 8);
+        for &bits in &expected_bits {
+            bytes.extend_from_slice(&bits.to_ne_bytes());
+        }
+
+        let buf = FfiBuffer::new(bytes, vec![3], DType::F64).unwrap();
+        let restored = buffer_to_value(&buf).unwrap();
+
+        assert_eq!(
+            restored,
+            Value::Tensor(TensorValue {
+                dtype: DType::F64,
+                shape: Shape { dims: vec![3] },
+                elements: expected_bits.into_iter().map(Literal::F64Bits).collect(),
+            })
+        );
     }
 
     #[test]

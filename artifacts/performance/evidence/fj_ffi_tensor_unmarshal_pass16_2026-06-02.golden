@@ -1,0 +1,11 @@
+bead=frankenjax-26ao
+crate=fj-ffi
+profile_target=marshal/1k_buffer_to_tensor
+golden_case=buffer_to_value_tensor_f64_preserves_bit_order
+dtype=F64
+shape=[3]
+input_native_bits=[0x8000000000000000,0x7ff8000000000001,0x400c000000000000]
+restored_value=Tensor(dtype=F64,shape=[3],elements=[F64Bits(0x8000000000000000),F64Bits(0x7ff8000000000001),F64Bits(0x400c000000000000)])
+ordering=input chunk order is output element order
+floating_point=value bits preserved without arithmetic
+rng=none
