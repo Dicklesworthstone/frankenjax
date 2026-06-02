@@ -1,0 +1,1 @@
+{"scenario":"fj-ad/poly_x3_plus_x2_plus_x","input":[2.0],"value":[14.0],"grad":[17.0],"ordering":"single-output tape reverse order unchanged","tie_breaking":"not applicable","floating_point":"same primitive evaluation and accumulation order","rng":"not applicable"}

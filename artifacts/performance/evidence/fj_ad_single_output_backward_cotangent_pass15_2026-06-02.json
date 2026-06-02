@@ -1,0 +1,136 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-xzuo",
+  "crate": "fj-ad",
+  "date": "2026-06-02",
+  "code_commit": "f2bcc448",
+  "skill_order": [
+    "profiling-software-performance",
+    "extreme-software-optimization"
+  ],
+  "scenario": {
+    "name": "reverse-mode AD polynomial",
+    "benchmark": "crates/fj-ad/benches/ad_baseline.rs",
+    "workload": "x^3 + x^2 + x at x=2.0",
+    "profile_command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-profile-baseline cargo bench -p fj-ad --bench ad_baseline -- --sample-size 40 --measurement-time 2 --warm-up-time 1"
+  },
+  "profile": {
+    "worker": "vmi1227854",
+    "ranked_hotspots": [
+      {
+        "rank": 1,
+        "criterion_id": "ad/grad_poly_x3+x2+x",
+        "mean_us": 1.8119,
+        "ci_low_us": 1.6817,
+        "ci_high_us": 1.9843,
+        "category": "CPU/allocation",
+        "evidence": "rch Criterion stdout"
+      },
+      {
+        "rank": 2,
+        "criterion_id": "ad/value_and_grad_poly",
+        "mean_us": 1.8041,
+        "ci_low_us": 1.7302,
+        "ci_high_us": 1.8964,
+        "category": "CPU/allocation",
+        "evidence": "rch Criterion stdout"
+      },
+      {
+        "rank": 3,
+        "criterion_id": "ad/grad_sin_cos_mul",
+        "mean_us": 1.3047,
+        "ci_low_us": 1.2479,
+        "ci_high_us": 1.3773,
+        "category": "CPU/allocation",
+        "evidence": "rch Criterion stdout"
+      },
+      {
+        "rank": 4,
+        "criterion_id": "ad/jvp_poly_x3+x2+x",
+        "mean_us": 1.0723,
+        "ci_low_us": 1.0429,
+        "ci_high_us": 1.1023,
+        "category": "CPU",
+        "evidence": "rch Criterion stdout"
+      }
+    ],
+    "hypothesis_ledger": [
+      {
+        "hypothesis": "reverse-mode backward allocates a Vec<Value> for every tape entry's output cotangents even when the primitive has one output",
+        "verdict": "supports",
+        "evidence": "top profiled rows are reverse-mode polynomial paths; code inspection of backward() showed per-entry Vec collection before every vjp() call"
+      },
+      {
+        "hypothesis": "JVP path is the optimization target",
+        "verdict": "rejects",
+        "evidence": "top reverse-mode rows were slower than JVP rows in the initial fj-ad Criterion profile"
+      }
+    ]
+  },
+  "optimization": {
+    "lever": "special-case single-output tape entries in backward() and pass std::slice::from_ref(&g) to vjp(), preserving the existing Vec<Value> path for multi-output equations",
+    "opportunity_score": {
+      "impact": 2,
+      "confidence": 4,
+      "effort": 1,
+      "score": 8.0
+    },
+    "one_lever_only": true
+  },
+  "paired_benchmark": {
+    "worker": "vmi1149989",
+    "baseline_command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-xzuo-baseline-warm cargo bench -p fj-ad --bench ad_baseline -- --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "after_command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-xzuo-after cargo bench -p fj-ad --bench ad_baseline -- --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "rows": [
+      {
+        "criterion_id": "ad/grad_poly_x3+x2+x",
+        "baseline_mean_us": 1.5482,
+        "after_mean_us": 1.4565,
+        "delta_percent": -5.92
+      },
+      {
+        "criterion_id": "ad/value_and_grad_poly",
+        "baseline_mean_us": 1.4870,
+        "after_mean_us": 1.3807,
+        "delta_percent": -7.15
+      },
+      {
+        "criterion_id": "ad/grad_square",
+        "baseline_mean_ns": 532.67,
+        "after_mean_ns": 506.58,
+        "delta_percent": -4.90
+      },
+      {
+        "criterion_id": "ad/grad_sin_cos_mul",
+        "baseline_mean_us": 1.1538,
+        "after_mean_us": 1.0296,
+        "delta_percent": -10.76
+      }
+    ]
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "yes; tape traversal remains reverse iteration over tape.entries and input cotangents are accumulated in the same entry.inputs order",
+    "tie_breaking_unchanged": "yes; no sorting, selection, or winner policy changed",
+    "floating_point": "identical for the profiled single-output path; vjp() receives the same one cotangent Value and value_add accumulation order is unchanged",
+    "rng": "unchanged; fj-ad backward path has no RNG surface",
+    "multi_output_preserved": "yes; non-single-output equations still build the Vec<Value> of output cotangents and call vjp() exactly as before",
+    "golden": {
+      "path": "artifacts/performance/evidence/fj_ad_single_output_backward_cotangent_pass15_2026-06-02.golden",
+      "sha256": "3d9d98165d6bde73ac90d5e066a414db1ca0475249fa1be5d998986b90e2a0a4",
+      "verification_command": "sha256sum -c artifacts/performance/evidence/fj_ad_single_output_backward_cotangent_pass15_2026-06-02.golden.sha256"
+    }
+  },
+  "validation": {
+    "focused_test": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-xzuo-test cargo test -p fj-ad grad_profiled_polynomial_single_output_path_matches_expected -- --nocapture",
+    "focused_test_result": "passed on vmi1149989: 1 passed, 0 failed",
+    "crate_check": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-xzuo-check cargo check -p fj-ad --all-targets",
+    "crate_check_result": "passed on vmi1153651",
+    "crate_tests": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-xzuo-test-all cargo test -p fj-ad --all-targets",
+    "crate_tests_result": "passed on vmi1149989: 324 unit tests passed plus ad_baseline bench smoke rows",
+    "crate_clippy": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-ad-xzuo-clippy cargo clippy -p fj-ad --all-targets --no-deps -- -D warnings",
+    "crate_clippy_result": "passed on vmi1153651",
+    "ubs": "ubs crates/fj-ad/src/lib.rs",
+    "ubs_result": "nonzero from existing fj-ad monolith inventory: 21 critical panic surfaces, 4531 warnings, 829 info; no new fast-path-specific finding",
+    "format_check": "cargo fmt -p fj-ad --check currently fails on pre-existing dirty fj-ad Slogdet/LU hunks outside this perf lever; those lines were not formatted or staged by this bead"
+  }
+}
