@@ -35,7 +35,11 @@ pub struct CacheKey {
 impl CacheKey {
     #[must_use]
     pub fn as_string(&self) -> String {
-        format!("{}-{}", self.namespace, self.digest_hex)
+        let mut key = String::with_capacity(self.namespace.len() + 1 + self.digest_hex.len());
+        key.push_str(self.namespace);
+        key.push('-');
+        key.push_str(&self.digest_hex);
+        key
     }
 }
 
@@ -405,7 +409,7 @@ pub(crate) fn sha256_bytes(data: &[u8]) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{CacheKeyError, CacheKeyInput, build_cache_key};
+    use super::{CacheKey, CacheKeyError, CacheKeyInput, build_cache_key};
     use fj_core::{CompatibilityMode, Jaxpr, Transform};
     use proptest::prelude::*;
     use std::collections::BTreeMap;
@@ -466,6 +470,16 @@ mod tests {
         let key_a = build_cache_key(&input).expect("key generation should succeed");
         let key_b = build_cache_key(&input).expect("key generation should succeed");
         assert_eq!(key_a, key_b);
+    }
+
+    #[test]
+    fn cache_key_as_string_preserves_namespace_digest_join() {
+        let key = CacheKey {
+            namespace: "fjx-test",
+            digest_hex: "aa-bb".to_owned(),
+        };
+
+        assert_eq!(key.as_string(), "fjx-test-aa-bb");
     }
 
     #[test]

@@ -1,0 +1,83 @@
+{
+  "bead": "frankenjax-fqr8",
+  "subsystem": "fj-cache",
+  "date": "2026-06-02",
+  "skill": "extreme-software-optimization",
+  "profile": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-cache-profile-baseline cargo bench -p fj-cache --bench cache_baseline -- --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "worker": "vmi1153651",
+    "top_relevant_hotspots_ns": {
+      "cache_key_owned_10eqn_program": {
+        "slope": 849.4061404165108,
+        "ci95": [810.9118392605648, 894.2447777839252]
+      },
+      "cache_lookup_hit_in_memory": {
+        "slope": 556.5026147350371,
+        "ci95": [502.3344318015766, 614.9660196027189]
+      },
+      "cache_lookup_miss_in_memory": {
+        "slope": 121.85394569733974,
+        "ci95": [118.50475507045049, 126.03932718649064]
+      }
+    }
+  },
+  "change": {
+    "lever": "replace CacheKey::as_string format! call with pre-sized String and push operations",
+    "files": ["crates/fj-cache/src/lib.rs"],
+    "score": {
+      "impact": 3,
+      "confidence": 4,
+      "effort": 1,
+      "value": 12.0
+    }
+  },
+  "rebench": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-cache-as-string-after-vmi1153651 cargo bench -p fj-cache --bench cache_baseline -- --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "worker": "vmi1153651",
+    "results_ns": {
+      "cache_key_owned_10eqn_program": {
+        "before_slope": 849.4061404165108,
+        "after_slope": 755.2979379123287,
+        "delta_percent": -11.079294332590546,
+        "speedup": 1.1245961464417764,
+        "before_ci95": [810.9118392605648, 894.2447777839252],
+        "after_ci95": [744.6144660551788, 767.5451630714583]
+      },
+      "cache_lookup_hit_in_memory": {
+        "before_slope": 556.5026147350371,
+        "after_slope": 423.60438684599825,
+        "delta_percent": -23.881861225046925,
+        "speedup": 1.3137324180626855,
+        "before_ci95": [502.3344318015766, 614.9660196027189],
+        "after_ci95": [344.68451119417375, 540.6368496837638]
+      },
+      "cache_lookup_miss_in_memory": {
+        "before_slope": 121.85394569733974,
+        "after_slope": 45.84211496201967,
+        "delta_percent": -62.37940534859097,
+        "speedup": 2.658130406423654,
+        "before_ci95": [118.50475507045049, 126.03932718649064],
+        "after_ci95": [44.94738959363685, 46.99728591336317]
+      }
+    }
+  },
+  "isomorphism": {
+    "ordering_preserved": "yes: only the construction of the same namespace '-' digest string changed; map iteration/order is untouched",
+    "tie_breaking_unchanged": "yes: no comparator or key equality logic changed",
+    "floating_point": "N/A: no floating-point arithmetic changed",
+    "rng": "N/A: no RNG state or seed handling changed",
+    "golden_outputs": "sha256sum -c artifacts/performance/evidence/fj_cache_in_memory_key_storage_pass14_2026-06-02.golden.sha256"
+  },
+  "validation": [
+    "cargo fmt -p fj-cache --check",
+    "git diff --check -- crates/fj-cache/src/lib.rs .beads/issues.jsonl",
+    "ubs crates/fj-cache/src/lib.rs: exit 0, 0 critical; warnings are existing fj-cache test/assert inventory",
+    "RCH_FORCE_REMOTE=1 rch exec -- cargo check -p fj-cache --all-targets: remote vmi1153651, pass",
+    "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-cache --all-targets: remote vmi1149989, 95 passed plus bench smoke success",
+    "RCH_FORCE_REMOTE=1 rch exec -- cargo clippy -p fj-cache --all-targets --no-deps -- -D warnings: remote vmi1149989, pass"
+  ],
+  "notes": [
+    "An initial rch test retry failed open locally because no worker was admissible; that local pass is not counted as campaign evidence.",
+    "A cross-worker after benchmark on vmi1149989 was faster but is excluded from the primary before/after comparison."
+  ]
+}

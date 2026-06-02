@@ -1,0 +1,5 @@
+frankenjax-fqr8 fj-cache as_string optimization golden output
+CacheKey { namespace: "fjx-test", digest_hex: "aa-bb" }.as_string() = fjx-test-aa-bb
+CacheKey formatting contract: exact namespace, one hyphen separator, exact digest; no normalization and no key equality changes.
+Remote fj-cache test proof: RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-cache --all-targets on vmi1149989 passed 95 tests and cache_baseline bench smoke.
+Pinned tests include tests::cache_key_as_string_preserves_namespace_digest_join and stability::golden_refs_match_hardcoded_digests.
