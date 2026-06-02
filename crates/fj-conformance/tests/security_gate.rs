@@ -211,12 +211,12 @@ fn security_validation_rejects_duplicate_ids_and_unbound_hashes() {
         .push(report.adversarial_rows[0].clone());
     report.fuzz_families[0].artifact_hashes.clear();
     report.fuzz_families[1].artifact_hashes.insert(
-        "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder/seed_strict_unknown_feature.json"
+        "crates/fj-conformance/fuzz/corpus/cache_key_builder/seed_strict_unknown_feature.json"
             .to_owned(),
         "0".repeat(64),
     );
     report.fuzz_families[2].artifact_hashes.insert(
-        "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder/seed_strict_unknown_feature.json"
+        "crates/fj-conformance/fuzz/corpus/cache_key_builder/seed_strict_unknown_feature.json"
             .to_owned(),
         "not-a-sha256".to_owned(),
     );

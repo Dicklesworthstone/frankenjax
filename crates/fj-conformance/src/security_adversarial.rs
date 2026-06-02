@@ -1393,12 +1393,12 @@ fn fuzz_specs() -> Vec<FuzzSpec> {
             family_id: "ff_cache_key_builder",
             target: "cache_key_builder",
             target_source: "crates/fj-conformance/fuzz/fuzz_targets/cache_key_builder.rs",
-            corpus_path: "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder",
-            corpus_suffix: "seed/cache_key_builder",
+            corpus_path: "crates/fj-conformance/fuzz/corpus/cache_key_builder",
+            corpus_suffix: "cache_key_builder",
             seed_floor: 2,
             expected_error_class: "typed_cache_key_result",
             hash_paths: &[
-                "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder/seed_strict_unknown_feature.json",
+                "crates/fj-conformance/fuzz/corpus/cache_key_builder/seed_strict_unknown_feature.json",
             ],
         },
         FuzzSpec {
