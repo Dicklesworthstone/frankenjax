@@ -21,7 +21,7 @@
 
 | Fuzz Family | Seeds | Replay | Status |
 |---|---:|---|---|
-| `ff_cache_key_builder` | `3` | `cd crates/fj-conformance/fuzz && cargo fuzz run cache_key_builder corpus/seed/cache_key_builder -runs=3` | `no_panic/no_crash/no_timeout` |
+| `ff_cache_key_builder` | `3` | `cd crates/fj-conformance/fuzz && cargo fuzz run cache_key_builder corpus/cache_key_builder -runs=3` | `no_panic/no_crash/no_timeout` |
 | `ff_transform_composition_verifier` | `12` | `cd crates/fj-conformance/fuzz && cargo fuzz run transform_composition_verifier corpus/transform_composition_verifier -runs=12` | `no_panic/no_crash/no_timeout` |
 | `ff_ir_deserializer` | `3` | `cd crates/fj-conformance/fuzz && cargo fuzz run ir_deserializer corpus/seed/ir_deserializer -runs=3` | `no_panic/no_crash/no_timeout` |
 | `ff_shape_inference_engine` | `55` | `cd crates/fj-conformance/fuzz && cargo fuzz run shape_inference_engine corpus/shape_inference_engine -runs=55` | `no_panic/no_crash/no_timeout` |

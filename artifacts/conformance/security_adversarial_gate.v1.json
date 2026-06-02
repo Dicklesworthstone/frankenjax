@@ -286,7 +286,7 @@
     {
       "family_id": "ff_cache_key_builder",
       "target": "cache_key_builder",
-      "corpus_path": "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder",
+      "corpus_path": "crates/fj-conformance/fuzz/corpus/cache_key_builder",
       "target_source": "crates/fj-conformance/fuzz/fuzz_targets/cache_key_builder.rs",
       "seed_floor": 2,
       "observed_seed_count": 3,
@@ -298,9 +298,9 @@
       "timeout_status": "no_timeout",
       "minimized_repro_path": null,
       "artifact_hashes": {
-        "crates/fj-conformance/fuzz/corpus/seed/cache_key_builder/seed_strict_unknown_feature.json": "4acf9e9934c44a38a88e159bc479155da02d8dbcc5c765db7321fa870fbdbacd"
+        "crates/fj-conformance/fuzz/corpus/cache_key_builder/seed_strict_unknown_feature.json": "4acf9e9934c44a38a88e159bc479155da02d8dbcc5c765db7321fa870fbdbacd"
       },
-      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run cache_key_builder corpus/seed/cache_key_builder -runs=3"
+      "replay_command": "cd crates/fj-conformance/fuzz && cargo fuzz run cache_key_builder corpus/cache_key_builder -runs=3"
     },
     {
       "family_id": "ff_transform_composition_verifier",
