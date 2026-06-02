@@ -1,0 +1,109 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-v0dv",
+  "pass": 19,
+  "date": "2026-06-02",
+  "crate": "fj-lax",
+  "target": "eval/reduce_window_64x64_3x3_same_f64",
+  "profile_backed_target": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile-pass19 cargo bench -p fj-lax --bench lax_baseline -- --sample-size 30 --warm-up-time 1 --measurement-time 2",
+    "worker": "vmi1149989",
+    "rank": 1,
+    "mean_us": 138.35,
+    "ci_us": [131.09, 147.59],
+    "next_highest_mean_us": 30.09,
+    "next_highest_target": "eval/mul_1k_f64_vec"
+  },
+  "optimization": {
+    "lever": "Exact rank-2 F64 sum fast path for 3x3 stride-1 SAME reduce_window geometry, with unrolled interior cells and order-preserving border cells.",
+    "files_changed": [
+      "crates/fj-lax/src/lib.rs",
+      "crates/fj-lax/src/linalg.rs (rustfmt-only)"
+    ],
+    "guard": "window_dimensions=3,3; window_strides=1,1; pad_lows=1,1; output dims equal input dims; tensor element count equals rows*cols"
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1149989",
+      "mean_us": 138.35,
+      "ci_us": [131.09, 147.59],
+      "sample_size": 30,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 2
+    },
+    "after": {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-rebench-pass19b cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_window_64x64_3x3_same_f64 --sample-size 60 --warm-up-time 1 --measurement-time 3",
+      "worker": "vmi1149989",
+      "mean_us": 84.355,
+      "ci_us": [77.091, 93.428],
+      "sample_size": 60,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "speedup": 1.6400924663623968,
+    "delta_percent": -39.02782797253342
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 3,
+    "effort": 1,
+    "impact_x_confidence_over_effort": 15
+  },
+  "isomorphism_proof": {
+    "output_order": "Unchanged row-major output order: top row, interior rows left-to-right, bottom row.",
+    "window_order": "Border path uses increasing input rows and increasing input cols. Interior path emits the same top-left, top, top-right, middle-left, center, middle-right, bottom-left, bottom, bottom-right addition sequence.",
+    "floating_point": "Each output cell performs the same ordered f64 += sequence as the previous rank-2 F64 sum specialization; no reduction reassociation is introduced in source.",
+    "literal_semantics": "Input extraction still uses Literal::as_f64().unwrap_or(0.0), preserving numeric malformed-literal conversion and complex/bool zeroing behavior from the previous specialization.",
+    "tie_breaking": "Not applicable; sum has no tie-breaking.",
+    "rng": "Not applicable; reduce_window is deterministic and consumes no RNG.",
+    "scope": "Non-3x3, non-stride-1, non-SAME-pad-low, non-rank-2, non-F64, max, and min paths are unchanged."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_reduce_window_3x3_same_pass19_2026-06-02.golden",
+    "sha256": "91d75d87b714db2d40582e0585da9c92466a886f02b32e58f66d36837d47ea85",
+    "description": "3x3 F64 input, 3x3 stride-1 SAME sum, exact row-major output [12,21,16,27,45,33,24,39,28]."
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-lax",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt -p fj-lax -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/lib.rs",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-check-pass19b cargo check -p fj-lax --all-targets",
+      "worker": "vmi1153651",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-test-pass19b cargo test -p fj-lax --all-targets",
+      "worker": "vmi1153651",
+      "result": "pass; 988 tests"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-clippy-pass19b cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1149989",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_reduce_window_3x3_same_pass19_2026-06-02.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/lib.rs",
+      "result": "exit 1; file-wide inventory reports 5 existing panic criticals, 4336 warnings, and 243 info items; UBS internal formatting, clippy, cargo check, cargo test build, cargo audit, and cargo deny checks are clean"
+    }
+  ],
+  "notes": [
+    "An earlier range-loop-only 3x3 SAME specialization measured 133.45 us mean on vmi1227854, which was too weak and cross-worker, so it was refined before commit.",
+    "Build-slot leasing was unavailable; rch commands were run sequentially.",
+    "UBS direct-index warnings include the intentional hot-path indexing guarded by the exact rows*cols element-count precondition.",
+    "cargo fmt -p fj-lax also normalized one test assert in crates/fj-lax/src/linalg.rs; no behavior or optimization logic changed there."
+  ]
+}

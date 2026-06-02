@@ -2361,6 +2361,118 @@ fn reduce_window_unsupported(primitive: Primitive, detail: &'static str) -> Eval
     }
 }
 
+#[inline]
+fn reduce_window_f64_sum_value(literal: Literal) -> f64 {
+    literal.as_f64().unwrap_or(0.0)
+}
+
+#[inline]
+fn reduce_window_rank2_f64_sum_3x3_border(
+    tensor: &TensorValue,
+    input_rows: usize,
+    input_cols: usize,
+    out_row: usize,
+    out_col: usize,
+) -> f64 {
+    let row_start = out_row.saturating_sub(1);
+    let row_end = out_row.saturating_add(2).min(input_rows);
+    let col_start = out_col.saturating_sub(1);
+    let col_end = out_col.saturating_add(2).min(input_cols);
+    let mut accum = 0.0;
+
+    for input_row in row_start..row_end {
+        let row_offset = input_row * input_cols;
+        for input_col in col_start..col_end {
+            accum += reduce_window_f64_sum_value(tensor.elements[row_offset + input_col]);
+        }
+    }
+
+    accum
+}
+
+fn eval_reduce_window_rank2_f64_sum_3x3_same(
+    tensor: &TensorValue,
+    out_dims: &[u32],
+    total_output: usize,
+) -> Result<Value, EvalError> {
+    let input_rows = tensor.shape.dims[0] as usize;
+    let input_cols = tensor.shape.dims[1] as usize;
+    let elements = &tensor.elements;
+
+    let mut output_elements = Vec::with_capacity(total_output);
+    if input_rows <= 2 || input_cols <= 2 {
+        for out_row in 0..input_rows {
+            for out_col in 0..input_cols {
+                output_elements.push(Literal::from_f64(reduce_window_rank2_f64_sum_3x3_border(
+                    tensor, input_rows, input_cols, out_row, out_col,
+                )));
+            }
+        }
+    } else {
+        for out_col in 0..input_cols {
+            output_elements.push(Literal::from_f64(reduce_window_rank2_f64_sum_3x3_border(
+                tensor, input_rows, input_cols, 0, out_col,
+            )));
+        }
+
+        for out_row in 1..(input_rows - 1) {
+            output_elements.push(Literal::from_f64(reduce_window_rank2_f64_sum_3x3_border(
+                tensor, input_rows, input_cols, out_row, 0,
+            )));
+
+            let top_row_offset = (out_row - 1) * input_cols;
+            let center_row_offset = out_row * input_cols;
+            let bottom_row_offset = (out_row + 1) * input_cols;
+            for out_col in 1..(input_cols - 1) {
+                let left_col = out_col - 1;
+                let top_left = top_row_offset + left_col;
+                let center_left = center_row_offset + left_col;
+                let bottom_left = bottom_row_offset + left_col;
+                let mut accum = 0.0;
+                accum += reduce_window_f64_sum_value(elements[top_left]);
+                accum += reduce_window_f64_sum_value(elements[top_left + 1]);
+                accum += reduce_window_f64_sum_value(elements[top_left + 2]);
+                accum += reduce_window_f64_sum_value(elements[center_left]);
+                accum += reduce_window_f64_sum_value(elements[center_left + 1]);
+                accum += reduce_window_f64_sum_value(elements[center_left + 2]);
+                accum += reduce_window_f64_sum_value(elements[bottom_left]);
+                accum += reduce_window_f64_sum_value(elements[bottom_left + 1]);
+                accum += reduce_window_f64_sum_value(elements[bottom_left + 2]);
+                output_elements.push(Literal::from_f64(accum));
+            }
+
+            output_elements.push(Literal::from_f64(reduce_window_rank2_f64_sum_3x3_border(
+                tensor,
+                input_rows,
+                input_cols,
+                out_row,
+                input_cols - 1,
+            )));
+        }
+
+        for out_col in 0..input_cols {
+            output_elements.push(Literal::from_f64(reduce_window_rank2_f64_sum_3x3_border(
+                tensor,
+                input_rows,
+                input_cols,
+                input_rows - 1,
+                out_col,
+            )));
+        }
+    }
+
+    Ok(Value::Tensor(
+        TensorValue::new(
+            tensor.dtype,
+            Shape {
+                dims: out_dims.to_vec(),
+            },
+            output_elements,
+        )
+        .map_err(EvalError::InvalidTensor)?,
+    ))
+}
+
 fn eval_reduce_window_rank2_f64_sum(
     primitive: Primitive,
     tensor: &TensorValue,
@@ -2380,6 +2492,19 @@ fn eval_reduce_window_rank2_f64_sum(
     let stride_cols = strides[1];
     let pad_rows = pad_lows[0];
     let pad_cols = pad_lows[1];
+
+    if window_rows == 3
+        && window_cols == 3
+        && stride_rows == 1
+        && stride_cols == 1
+        && pad_rows == 1
+        && pad_cols == 1
+        && out_rows == input_rows
+        && out_cols == input_cols
+        && input_rows.checked_mul(input_cols) == Some(tensor.elements.len())
+    {
+        return eval_reduce_window_rank2_f64_sum_3x3_same(tensor, out_dims, total_output);
+    }
 
     let mut output_elements = Vec::with_capacity(total_output);
     for out_row in 0..out_rows {
@@ -2698,8 +2823,7 @@ mod tests {
         // Previously eval_primitive_multi fell through to the single-output
         // path and silently dropped logabsdet, returning only [sign].
         let a = square_2x2([2.0, 0.0, 0.0, 3.0]); // det = 6
-        let outputs =
-            super::eval_primitive_multi(Primitive::Slogdet, &[a], &no_params()).unwrap();
+        let outputs = super::eval_primitive_multi(Primitive::Slogdet, &[a], &no_params()).unwrap();
         assert_eq!(outputs.len(), 2, "slogdet must yield (sign, logabsdet)");
         let sign = outputs[0].as_f64_scalar().unwrap();
         let logabsdet = outputs[1].as_f64_scalar().unwrap();
@@ -2715,7 +2839,11 @@ mod tests {
         // Eig must yield (eigenvalues, eigenvectors), not just eigenvalues.
         let a = square_2x2([2.0, 0.0, 0.0, 3.0]);
         let outputs = super::eval_primitive_multi(Primitive::Eig, &[a], &no_params()).unwrap();
-        assert_eq!(outputs.len(), 2, "eig must yield (eigenvalues, eigenvectors)");
+        assert_eq!(
+            outputs.len(),
+            2,
+            "eig must yield (eigenvalues, eigenvectors)"
+        );
         // eigenvalues: length-2 vector; eigenvectors: 2x2 matrix.
         assert_eq!(
             outputs[0].as_tensor().unwrap().shape.dims,
@@ -9012,6 +9140,37 @@ mod tests {
     }
 
     #[test]
+    fn reduce_window_rank2_f64_3x3_same_sum_row_major_golden() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3, 3] },
+                (1..=9).map(|v| Literal::from_f64(v as f64)).collect(),
+            )
+            .unwrap(),
+        );
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "3,3", "1,1", "SAME"),
+        )
+        .unwrap();
+
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, vec![3, 3]);
+        let vals: Vec<f64> = tensor
+            .elements
+            .iter()
+            .map(|literal| literal.as_f64().expect("F64 output"))
+            .collect();
+        assert_eq!(
+            vals,
+            vec![12.0, 21.0, 16.0, 27.0, 45.0, 33.0, 24.0, 39.0, 28.0]
+        );
+    }
+
+    #[test]
     fn reduce_window_rank2_f64_same_sum_golden_hash() {
         let elements: Vec<Literal> = (0..64 * 64)
             .map(|i| {
@@ -9370,7 +9529,13 @@ mod tests {
         let err = eval_primitive(Primitive::Split, &[input], &params)
             .expect_err("uneven split must be rejected, not silently truncated");
         assert!(
-            matches!(err, EvalError::Unsupported { primitive: Primitive::Split, .. }),
+            matches!(
+                err,
+                EvalError::Unsupported {
+                    primitive: Primitive::Split,
+                    ..
+                }
+            ),
             "expected Unsupported for uneven split, got {err:?}"
         );
     }

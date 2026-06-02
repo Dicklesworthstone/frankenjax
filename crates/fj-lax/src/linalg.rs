@@ -2926,7 +2926,13 @@ mod tests {
         let err = eval_solve(&[a, b], &BTreeMap::new())
             .expect_err("complex solve must be rejected, not silently real-dropped");
         assert!(
-            matches!(err, EvalError::Unsupported { primitive: Primitive::Solve, .. }),
+            matches!(
+                err,
+                EvalError::Unsupported {
+                    primitive: Primitive::Solve,
+                    ..
+                }
+            ),
             "expected Unsupported for complex solve, got {err:?}"
         );
     }

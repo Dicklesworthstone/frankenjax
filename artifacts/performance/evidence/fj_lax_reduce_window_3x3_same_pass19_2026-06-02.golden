@@ -1,0 +1,12 @@
+fj-lax reduce_window pass19 golden v1
+primitive=ReduceWindow
+dtype=F64
+input_shape=[3,3]
+input_f64=[1,2,3,4,5,6,7,8,9]
+params=reduce_op=sum;window_dimensions=3,3;window_strides=1,1;padding=SAME
+output_shape=[3,3]
+output_f64=[12,21,16,27,45,33,24,39,28]
+ordering=row-major output; row-major window accumulation
+tie_breaking=not applicable
+floating_point=accumulation order preserved for every output cell; Literal::from_f64 output bits
+rng=not applicable
