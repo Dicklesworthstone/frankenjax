@@ -369,7 +369,19 @@ pub fn apply_batch_rule(
         | Primitive::Copy
         | Primitive::ConvertElementType
         | Primitive::BitcastConvertType
-        | Primitive::ReducePrecision => batch_unary_elementwise(primitive, inputs, params),
+        | Primitive::ReducePrecision
+        | Primitive::Trunc
+        | Primitive::Deg2Rad
+        | Primitive::Rad2Deg
+        | Primitive::Log2
+        | Primitive::Exp2
+        | Primitive::Sinc
+        | Primitive::BesselI0e
+        | Primitive::BesselI1e
+        | Primitive::IsNan
+        | Primitive::IsInf
+        | Primitive::Signbit
+        | Primitive::StopGradient => batch_unary_elementwise(primitive, inputs, params),
 
         // ── Binary elementwise ─────────────────────────────────
         Primitive::Add
@@ -382,7 +394,21 @@ pub fn apply_batch_rule(
         | Primitive::Rem
         | Primitive::Atan2
         | Primitive::Complex
-        | Primitive::Nextafter => batch_binary_elementwise(primitive, inputs, params),
+        | Primitive::Nextafter
+        | Primitive::Hypot
+        | Primitive::LogAddExp
+        | Primitive::LogAddExp2
+        | Primitive::Gcd
+        | Primitive::Lcm
+        | Primitive::Polygamma
+        | Primitive::Igamma
+        | Primitive::Igammac
+        | Primitive::Zeta
+        | Primitive::Heaviside
+        | Primitive::CopySign
+        | Primitive::Ldexp
+        | Primitive::XLogY
+        | Primitive::XLog1PY => batch_binary_elementwise(primitive, inputs, params),
 
         // ── Comparison ─────────────────────────────────────────
         Primitive::Eq
@@ -414,6 +440,14 @@ pub fn apply_batch_rule(
         // ── Clamp (ternary elementwise) ────────────────────────
         Primitive::Clamp => batch_clamp(inputs, params),
 
+        // ── Other ternary elementwise (per-slice eval = vmap) ──
+        // Fma(a,b,c)=a*b+c and Betainc(a,b,x) are elementwise but ternary;
+        // batch_passthrough_leading evaluates each batch slice and stacks,
+        // broadcasting any unbatched operand.
+        Primitive::Fma | Primitive::Betainc => {
+            batch_passthrough_leading(primitive, inputs, params)
+        }
+
         // ── Reduction ops ──────────────────────────────────────
         Primitive::ReduceSum
         | Primitive::ReduceMax
@@ -425,6 +459,9 @@ pub fn apply_batch_rule(
 
         // ── Dot product ────────────────────────────────────────
         Primitive::Dot => batch_dot(inputs, params),
+        // dot_general's dimension_numbers index the unbatched operand ranks,
+        // so per-slice eval (which drops the batch dim) applies them correctly.
+        Primitive::DotGeneral => batch_passthrough_leading(primitive, inputs, params),
 
         // ── Shape manipulation ─────────────────────────────────
         Primitive::Reshape => batch_reshape(inputs, params),
@@ -465,7 +502,9 @@ pub fn apply_batch_rule(
         Primitive::OneHot => batch_one_hot(inputs, params),
 
         // ── Cumulative ─────────────────────────────────────────
-        Primitive::Cumsum | Primitive::Cumprod => batch_cumulative(primitive, inputs, params),
+        Primitive::Cumsum | Primitive::Cumprod | Primitive::Cummax | Primitive::Cummin => {
+            batch_cumulative(primitive, inputs, params)
+        }
 
         // ── Sorting ────────────────────────────────────────────
         Primitive::Sort | Primitive::Argsort => batch_sort(primitive, inputs, params),
@@ -5743,6 +5782,49 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         let vals = extract_f64_vec(&result.value);
         assert_eq!(vals, vec![11.0, 22.0, 33.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_elementwise_trunc() {
+        // Unary elementwise: vmap(trunc) preserves the batch dim.
+        let input = BatchTracer::batched(make_f64_vector(&[1.7, -2.3, 3.9]), 0);
+        let result = apply_batch_rule(Primitive::Trunc, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_f64_close(&extract_f64_vec(&result.value), &[1.0, -2.0, 3.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_elementwise_hypot() {
+        // Binary elementwise: vmap(hypot) over two batched vectors.
+        let a = BatchTracer::batched(make_f64_vector(&[3.0, 5.0]), 0);
+        let b = BatchTracer::batched(make_f64_vector(&[4.0, 12.0]), 0);
+        let result = apply_batch_rule(Primitive::Hypot, &[a, b], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_f64_close(&extract_f64_vec(&result.value), &[5.0, 13.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_cummax_leading_batch_dim() {
+        // vmap(cummax) over [2,3]: running max along each row independently.
+        let input = BatchTracer::batched(make_f64_tensor(&[2, 3], &[1.0, 3.0, 2.0, 5.0, 4.0, 6.0]), 0);
+        let result = apply_batch_rule(Primitive::Cummax, &[input], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_f64_close(&extract_f64_vec(&result.value), &[1.0, 3.0, 3.0, 5.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_fma_ternary() {
+        // Ternary elementwise Fma(a,b,c)=a*b+c via per-slice passthrough.
+        let a = BatchTracer::batched(make_f64_tensor(&[2, 2], &[2.0, 3.0, 1.0, 1.0]), 0);
+        let b = BatchTracer::batched(make_f64_tensor(&[2, 2], &[4.0, 5.0, 10.0, 10.0]), 0);
+        let c = BatchTracer::batched(make_f64_tensor(&[2, 2], &[1.0, 1.0, 0.0, 0.0]), 0);
+        let result = apply_batch_rule(Primitive::Fma, &[a, b, c], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_f64_close(&extract_f64_vec(&result.value), &[9.0, 16.0, 10.0, 10.0]);
     }
 
     #[test]
