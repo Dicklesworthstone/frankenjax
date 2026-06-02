@@ -344,17 +344,20 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
 }
 
 #[test]
-#[ignore = "PARITY GAP: Argmin not supported for complex - no natural ordering"]
-fn oracle_argmin_complex64_not_supported() {
-    let input = make_complex64_tensor(&[3], vec![(3.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Argmin, &[input], &axis_params(0))
+fn oracle_argmin_complex64_lexicographic() {
+    // Complex argmin orders lexicographically by (real, imag), like JAX/NumPy.
+    // (1,2) and (1,1) tie on real=1; imag 1 < 2 picks index 1.
+    let input = make_complex64_tensor(&[3], vec![(1.0, 2.0), (1.0, 1.0), (2.0, 0.0)]);
+    let result = eval_primitive(Primitive::Argmin, &[input], &axis_params(0))
         .expect("argmin should work on complex64");
+    assert_eq!(extract_i64_scalar(&result), 1);
 }
 
 #[test]
-#[ignore = "PARITY GAP: Argmax not supported for complex - no natural ordering"]
-fn oracle_argmax_complex64_not_supported() {
-    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (3.0, 0.0), (2.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Argmax, &[input], &axis_params(0))
+fn oracle_argmax_complex64_lexicographic() {
+    // (2,1) and (2,3) tie on real=2; imag 3 > 1 picks index 2.
+    let input = make_complex64_tensor(&[3], vec![(1.0, 5.0), (2.0, 1.0), (2.0, 3.0)]);
+    let result = eval_primitive(Primitive::Argmax, &[input], &axis_params(0))
         .expect("argmax should work on complex64");
+    assert_eq!(extract_i64_scalar(&result), 2);
 }
