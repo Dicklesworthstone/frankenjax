@@ -3,6 +3,8 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive;
 use std::collections::BTreeMap;
 
+const LARGE_ELEMENTWISE_LEN: usize = 65_536;
+
 fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
@@ -140,11 +142,33 @@ fn bench_sin_1k(c: &mut Criterion) {
     });
 }
 
+fn bench_sin_64k(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| i as f64 * 0.001)
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let p = no_params();
+    c.bench_function("eval/sin_64k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sin, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_exp_1k(c: &mut Criterion) {
     let data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.001).collect();
     let input = Value::vector_f64(&data).unwrap();
     let p = no_params();
     c.bench_function("eval/exp_1k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Exp, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_exp_64k(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| i as f64 * 0.001)
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let p = no_params();
+    c.bench_function("eval/exp_64k_f64", |bencher| {
         bencher.iter(|| eval_primitive(Primitive::Exp, std::slice::from_ref(&input), &p))
     });
 }
@@ -504,7 +528,9 @@ criterion_group!(
     bench_reduce_sum_1k,
     bench_reduce_window_64x64,
     bench_sin_1k,
+    bench_sin_64k,
     bench_exp_1k,
+    bench_exp_64k,
     bench_square_1k,
     bench_integer_pow_1k,
     bench_clamp_1k,

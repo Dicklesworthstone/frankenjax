@@ -34,6 +34,14 @@ pub(crate) fn eval_binary_elementwise(
         )?)),
         (Value::Tensor(lhs), Value::Tensor(rhs)) => {
             if lhs.shape == rhs.shape {
+                if primitive == Primitive::Mul
+                    && lhs.dtype == DType::F64
+                    && rhs.dtype == DType::F64
+                    && let Some(value) = eval_same_shape_f64_mul(lhs, rhs)?
+                {
+                    return Ok(value);
+                }
+
                 let mut elements = Vec::with_capacity(lhs.elements.len());
                 for (left, right) in lhs
                     .elements
@@ -90,6 +98,27 @@ pub(crate) fn eval_binary_elementwise(
             )?))
         }
     }
+}
+
+#[inline]
+fn eval_same_shape_f64_mul(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+) -> Result<Option<Value>, EvalError> {
+    let mut elements = Vec::with_capacity(lhs.elements.len());
+    for (left, right) in lhs.elements.iter().zip(&rhs.elements) {
+        let (Literal::F64Bits(left_bits), Literal::F64Bits(right_bits)) = (*left, *right) else {
+            return Ok(None);
+        };
+        let product = f64::from_bits(left_bits) * f64::from_bits(right_bits);
+        elements.push(Literal::from_f64(product));
+    }
+
+    Ok(Some(Value::Tensor(TensorValue::new(
+        DType::F64,
+        lhs.shape.clone(),
+        elements,
+    )?)))
 }
 
 fn value_contains_complex(value: &Value) -> bool {
@@ -1474,6 +1503,10 @@ pub(crate) fn eval_unary_elementwise(
                 _ => DType::F64,
             };
 
+            if let Some(result) = eval_unary_f64_tensor_fast_path(tensor, &op) {
+                return result;
+            }
+
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in tensor.elements.iter().copied() {
                 let mapped = literal.as_f64().map(&op).ok_or(EvalError::TypeMismatch {
@@ -1496,6 +1529,29 @@ pub(crate) fn eval_unary_elementwise(
             )?))
         }
     }
+}
+
+fn eval_unary_f64_tensor_fast_path(
+    tensor: &TensorValue,
+    op: &impl Fn(f64) -> f64,
+) -> Option<Result<Value, EvalError>> {
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+
+    let mut elements = Vec::with_capacity(tensor.elements.len());
+    for literal in tensor.elements.iter().copied() {
+        let Literal::F64Bits(bits) = literal else {
+            return None;
+        };
+        elements.push(Literal::F64Bits(op(f64::from_bits(bits)).to_bits()));
+    }
+
+    Some(
+        TensorValue::new(DType::F64, tensor.shape.clone(), elements)
+            .map(Value::Tensor)
+            .map_err(EvalError::from),
+    )
 }
 
 /// Round with JAX's `rounding_method` parameter.
@@ -4353,6 +4409,7 @@ pub(crate) fn eval_nextafter(primitive: Primitive, inputs: &[Value]) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fj_test_utils::fixture_id_from_json;
     use std::f64::consts::PI;
 
     fn s_f64(v: f64) -> Value {
@@ -4485,6 +4542,19 @@ mod tests {
             .map(|l| l.as_f64().unwrap())
             .collect()
     }
+    fn extract_f64_bits_vec(val: &Value) -> Vec<u64> {
+        let tensor = val.as_tensor().unwrap();
+        let bits = tensor
+            .elements
+            .iter()
+            .filter_map(|literal| match *literal {
+                Literal::F64Bits(bits) => Some(bits),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(bits.len(), tensor.elements.len());
+        bits
+    }
     fn extract_i64_vec(val: &Value) -> Vec<i64> {
         val.as_tensor()
             .unwrap()
@@ -4566,6 +4636,27 @@ mod tests {
             eval_binary_elementwise(Primitive::Add, &[a, b], |a, b| a + b, |a, b| a + b).unwrap();
         let vals = extract_f64_vec(&result);
         assert_eq!(vals, vec![5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn binary_mul_f64_tensors_same_shape_preserves_bits() {
+        let a = v_f64(&[1.5, -0.0, -2.0]);
+        let b = v_f64(&[2.0, 3.0, -4.0]);
+        let result =
+            eval_binary_elementwise(Primitive::Mul, &[a, b], |a, b| a * b, |a, b| a * b).unwrap();
+        let Value::Tensor(tensor) = result else {
+            panic!("expected tensor result");
+        };
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(
+            tensor.elements,
+            vec![
+                Literal::from_f64(3.0),
+                Literal::from_f64(-0.0),
+                Literal::from_f64(8.0)
+            ]
+        );
     }
 
     // ── Binary elementwise: scalar-tensor broadcasting ──
@@ -4680,6 +4771,65 @@ mod tests {
         assert_eq!(t.dtype, DType::F32);
         t.validate_dtype_consistency()
             .expect("F32 tensor must contain only F32Bits elements");
+    }
+
+    #[test]
+    fn unary_f64_tensor_fast_path_preserves_output_bits_and_golden() {
+        let data = [
+            -0.0,
+            0.0,
+            0.125,
+            -1.5,
+            PI,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ];
+        let input = v_f64(&data);
+
+        let sin_result = eval_sin(Primitive::Sin, std::slice::from_ref(&input)).unwrap();
+        let exp_result = eval_exp(Primitive::Exp, std::slice::from_ref(&input)).unwrap();
+
+        let sin_bits = extract_f64_bits_vec(&sin_result);
+        let exp_bits = extract_f64_bits_vec(&exp_result);
+        let expected_sin_bits = data
+            .iter()
+            .copied()
+            .map(|value| value.sin().to_bits())
+            .collect::<Vec<_>>();
+        let expected_exp_bits = data
+            .iter()
+            .copied()
+            .map(|value| value.exp().to_bits())
+            .collect::<Vec<_>>();
+
+        assert_eq!(sin_bits, expected_sin_bits);
+        assert_eq!(exp_bits, expected_exp_bits);
+
+        let mut golden_bits = sin_bits;
+        golden_bits.extend(exp_bits);
+        assert_eq!(
+            fixture_id_from_json(&golden_bits).unwrap(),
+            "05f74679299f58d4736eaa85fee8265afdc992a428f9cf4e260fd36b1297e2c7"
+        );
+    }
+
+    #[test]
+    fn unary_f64_tensor_fast_path_falls_through_for_malformed_literals() {
+        let input = Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape: Shape { dims: vec![2] },
+            elements: vec![Literal::from_f64(0.0), Literal::Bool(true)],
+        });
+
+        let err = eval_exp(Primitive::Exp, &[input]).unwrap_err();
+        assert_eq!(
+            err,
+            EvalError::TypeMismatch {
+                primitive: Primitive::Exp,
+                detail: "expected numeric tensor elements",
+            }
+        );
     }
 
     // ── Complex operations ──
