@@ -4482,43 +4482,40 @@ fn vjp_reduce_window(
         .collect();
     let out_dims: Vec<usize> = g_tensor.shape.dims.iter().map(|d| *d as usize).collect();
 
-    // Build input gradient tensor (same shape as input, initially zeros)
     let total_input = ad_checked_usize_product("reduce_window input", &input_dims)?;
-    let mut grad_elements = vec![0.0_f64; total_input];
 
     let total_output = ad_checked_usize_product("reduce_window output", &out_dims)?;
     if total_output == 0 {
         return Ok(vec![zeros_like(&inputs[0])]);
     }
 
-    // Get input and gradient values as f64
+    // Real magnitudes used only for max/min window selection (complex
+    // max/min pooling is undefined). Gradient values are accumulated below in
+    // a dtype-preserving regime — the previous code rebuilt every element via
+    // `Literal::from_f64` while declaring `input_tensor.dtype`, so a non-F64
+    // input produced a tensor whose declared dtype disagreed with its F64Bits
+    // literals (and complex grads were zeroed by `as_f64().unwrap_or(0.0)`).
     let input_vals: Vec<f64> = input_tensor
         .elements
         .iter()
         .map(|e| e.as_f64().unwrap_or(0.0))
         .collect();
-    let g_vals: Vec<f64> = g_tensor
-        .elements
-        .iter()
-        .map(|e| e.as_f64().unwrap_or(0.0))
-        .collect();
 
-    // Iterate over all output positions
+    // Collect (input_flat, output_flat) scatter pairs: the cotangent at each
+    // output position flows back to these input positions.
+    let mut scatter: Vec<(usize, usize)> = Vec::new();
+    let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
     let mut out_idx = vec![0usize; rank];
-    for &g_val in g_vals.iter().take(total_output) {
+    for out_flat in 0..total_output {
         match reduce_op {
             "max" | "min" => {
-                // Find the position of the max/min value in this window
                 let mut best_flat: Option<usize> = None;
                 let mut best_val = if reduce_op == "max" {
                     f64::NEG_INFINITY
                 } else {
                     f64::INFINITY
                 };
-
-                let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
                 let mut win_idx = vec![0usize; rank];
-
                 for _ in 0..win_total {
                     let flat = compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank)?;
                     if let Some(flat_idx) = flat {
@@ -4535,31 +4532,71 @@ fn vjp_reduce_window(
                     }
                     increment_nd_index(&mut win_idx, &window_dims);
                 }
-
                 if let Some(idx) = best_flat {
-                    grad_elements[idx] += g_val;
+                    scatter.push((idx, out_flat));
                 }
             }
             _ => {
-                // Sum reduction: gradient is scattered to all positions in the window
-                let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
+                // Sum reduction: gradient scatters to every window position.
                 let mut win_idx = vec![0usize; rank];
-
                 for _ in 0..win_total {
                     let flat = compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank)?;
                     if let Some(flat_idx) = flat {
-                        grad_elements[flat_idx] += g_val;
+                        scatter.push((flat_idx, out_flat));
                     }
                     increment_nd_index(&mut win_idx, &window_dims);
                 }
             }
         }
-
         increment_nd_index(&mut out_idx, &out_dims);
     }
 
-    // Build the gradient tensor
-    let elements: Vec<Literal> = grad_elements.into_iter().map(Literal::from_f64).collect();
+    // Accumulate in the upstream dtype's regime, then rebuild literals at
+    // `input_tensor.dtype` so the AD chain neither widens F32/BF16/F16 nor
+    // zeros complex gradients.
+    let elements: Vec<Literal> = match input_tensor.dtype {
+        DType::Complex64 | DType::Complex128 => {
+            let g_pairs: Vec<(f64, f64)> = g_tensor
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Complex64Bits(re, im) => {
+                        (f64::from(f32::from_bits(*re)), f64::from(f32::from_bits(*im)))
+                    }
+                    Literal::Complex128Bits(re, im) => (f64::from_bits(*re), f64::from_bits(*im)),
+                    _ => (0.0, 0.0),
+                })
+                .collect();
+            let mut acc = vec![(0.0_f64, 0.0_f64); total_input];
+            for (in_flat, out_flat) in scatter {
+                acc[in_flat].0 += g_pairs[out_flat].0;
+                acc[in_flat].1 += g_pairs[out_flat].1;
+            }
+            acc.into_iter()
+                .map(|(re, im)| {
+                    if input_tensor.dtype == DType::Complex64 {
+                        Literal::from_complex64(re as f32, im as f32)
+                    } else {
+                        Literal::from_complex128(re, im)
+                    }
+                })
+                .collect()
+        }
+        _ => {
+            let g_vals: Vec<f64> = g_tensor
+                .elements
+                .iter()
+                .map(|e| e.as_f64().unwrap_or(0.0))
+                .collect();
+            let mut acc = vec![0.0_f64; total_input];
+            for (in_flat, out_flat) in scatter {
+                acc[in_flat] += g_vals[out_flat];
+            }
+            acc.into_iter()
+                .map(|v| literal_from_f64_for_dtype(input_tensor.dtype, v))
+                .collect()
+        }
+    };
     let grad_tensor = TensorValue::new(input_tensor.dtype, input_tensor.shape.clone(), elements)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
     Ok(vec![Value::Tensor(grad_tensor)])
@@ -14192,6 +14229,114 @@ mod tests {
         let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
         let vals = tensor_f64_values(&grads[0]);
         assert_eq!(vals, vec![0.0, 30.0, 30.0, 0.0]);
+    }
+
+    #[test]
+    fn reduce_window_sum_vjp_preserves_f32_dtype() {
+        // vjp_reduce_window previously rebuilt every gradient element via
+        // `Literal::from_f64` while declaring `input_tensor.dtype`, so an F32
+        // input produced a tensor whose declared dtype (F32) disagreed with
+        // its F64Bits literals. Pin dtype-consistent F32 output.
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![5] },
+                (1..=5).map(|v| Literal::from_f32(v as f32)).collect(),
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_f32(1.0),
+                    Literal::from_f32(1.0),
+                    Literal::from_f32(1.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "3".into());
+        params.insert("window_strides".into(), "1".into());
+        params.insert("reduce_op".into(), "sum".into());
+
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        match &grads[0] {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::F32, "must keep F32, not widen to F64");
+                t.validate_dtype_consistency()
+                    .expect("declared dtype must match every element's literal kind");
+                let vals: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => f32::from_bits(*b),
+                        other => panic!("element not F32: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(vals, vec![1.0, 2.0, 3.0, 2.0, 1.0]);
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reduce_window_sum_vjp_preserves_complex64_and_does_not_zero() {
+        // For complex inputs the old `as_f64().unwrap_or(0.0)` returned None
+        // and zeroed the entire gradient. Pin that complex sum-pooling grads
+        // fold correctly and stay Complex64.
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_complex64(1.0, 0.0),
+                    Literal::from_complex64(2.0, 0.0),
+                    Literal::from_complex64(3.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(10.0, 1.0),
+                    Literal::from_complex64(20.0, 2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "2".into());
+        params.insert("window_strides".into(), "1".into());
+        params.insert("reduce_op".into(), "sum".into());
+
+        // window=2,stride=1 over 3 elems -> 2 windows:
+        //   in[0] in w0; in[1] in w0,w1; in[2] in w1
+        //   grad[0]=g0=(10,1); grad[1]=g0+g1=(30,3); grad[2]=g1=(20,2)
+        let grads = vjp_single(Primitive::ReduceWindow, &[input], &g, &params).unwrap();
+        match &grads[0] {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::Complex64);
+                t.validate_dtype_consistency().expect("dtype-consistent");
+                let vals: Vec<(f32, f32)> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::Complex64Bits(re, im) => {
+                            (f32::from_bits(*re), f32::from_bits(*im))
+                        }
+                        other => panic!("element not Complex64: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(vals, vec![(10.0, 1.0), (30.0, 3.0), (20.0, 2.0)]);
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        }
     }
 
     #[test]
