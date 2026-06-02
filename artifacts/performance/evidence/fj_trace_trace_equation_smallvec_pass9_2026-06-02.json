@@ -1,0 +1,77 @@
+{
+  "bead": "frankenjax-pvep",
+  "subsystem": "fj-trace",
+  "skill_pass": "profiling-software-performance -> extreme-software-optimization",
+  "scenario": "Criterion trace_baseline make_jaxpr workloads",
+  "baseline_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-trace-criterion-baseline rch exec -- cargo bench -p fj-trace --bench trace_baseline -- --sample-size 60 --warm-up-time 1 --measurement-time 3",
+  "after_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-trace-criterion-after rch exec -- cargo bench -p fj-trace --bench trace_baseline -- --sample-size 60 --warm-up-time 1 --measurement-time 3",
+  "baseline_worker": "vmi1156319",
+  "after_worker": "vmi1149989",
+  "worker_caveat": "RCH worker affinity changed after the focused proof test. The evidence keeps the worker IDs explicit; deltas exceed the profiling skill's >20% escalation/noise envelope.",
+  "target_hotspot": {
+    "benchmark": "trace/make_jaxpr_chain_5ops",
+    "baseline_mean_ns": 4235.633802660652,
+    "after_mean_ns": 2205.326510207333,
+    "delta_percent": -47.93487853583375,
+    "profile_reason": "Top measured fj-trace benchmark. Each primitive record in this chain stored one/two input tracer ids and one output tracer id in heap Vec buffers inside TraceEquation."
+  },
+  "criterion_mean_ns": {
+    "trace_make_jaxpr_identity": {
+      "before": 495.50702696655026,
+      "after": 291.8359465672319,
+      "delta_percent": -41.10357007358152
+    },
+    "trace_make_jaxpr_add": {
+      "before": 1259.9318048503505,
+      "after": 916.8778629358195,
+      "delta_percent": -27.22797684217677
+    },
+    "trace_make_jaxpr_mul": {
+      "before": 1305.5107796946472,
+      "after": 729.419779431082,
+      "delta_percent": -44.12762291347574
+    },
+    "trace_make_jaxpr_poly_x2+x": {
+      "before": 1830.1970329313008,
+      "after": 962.2095521332594,
+      "delta_percent": -47.42590786528502
+    },
+    "trace_make_jaxpr_chain_5ops": {
+      "before": 4235.633802660652,
+      "after": 2205.326510207333,
+      "delta_percent": -47.93487853583375
+    },
+    "trace_make_jaxpr_vector_add": {
+      "before": 1631.3454605634477,
+      "after": 995.4101614138413,
+      "delta_percent": -38.982260064313455
+    }
+  },
+  "lever": "Store TraceEquation input/output tracer id lists in SmallVec inline buffers instead of Vec heap buffers.",
+  "opportunity_score": {
+    "impact": 5,
+    "confidence": 4,
+    "effort": 1,
+    "score": 20.0
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Yes. SmallVec iteration preserves insertion order; construction still copies input_ids and output_ids in the same order.",
+    "tie_breaking_unchanged": "Yes. No comparisons or tie-breaking were changed.",
+    "floating_point": "N/A. Storage type for tracer ids only; no numeric evaluation or shape dtype logic changed.",
+    "rng_seeds": "N/A. Trace construction has no RNG path.",
+    "golden_output_sha256": "85c174eb7675b1128100a33993c3ae237b01410ee4ce3b5ba84d2cb40d96a6dc",
+    "golden_output": "in=[v1,]const=[]out=[v3,]eqn:neg(v1,)->v2,{}|eqn:exp(v2,)->v3,{}|"
+  },
+  "validation": {
+    "rustfmt": "rustfmt --edition 2024 --check crates/fj-trace/src/lib.rs",
+    "whitespace": "git diff --check -- crates/fj-trace/src/lib.rs",
+    "focused_golden_test": "CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-trace-proof rch exec -- cargo test -p fj-trace test_make_jaxpr_chain_preserves_data_flow -- --nocapture",
+    "remote_check": "CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-trace-check-pvep rch exec -- cargo check -p fj-trace --all-targets",
+    "remote_full_tests": "CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-trace-test-pvep-remote rch exec -- cargo test -p fj-trace --all-targets",
+    "remote_clippy": "CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-trace-clippy-pvep rch exec -- cargo clippy -p fj-trace --all-targets --no-deps -- -D warnings",
+    "ubs": "ubs crates/fj-trace/src/lib.rs: exit 0, 0 critical findings, existing warning inventory reported",
+    "json": "jq empty artifacts/performance/evidence/fj_trace_trace_equation_smallvec_pass9_2026-06-02.json",
+    "sha256": "cd artifacts/performance/evidence && sha256sum -c fj_trace_trace_equation_smallvec_pass9_2026-06-02.golden.sha256",
+    "invalid_zero_test_note": "An earlier --exact invocation filtered to 0 tests and is not counted as proof. A non-exact focused test and a remote full test both executed successfully."
+  }
+}

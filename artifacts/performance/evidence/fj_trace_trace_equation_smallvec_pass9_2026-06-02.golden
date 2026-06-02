@@ -1,0 +1,1 @@
+in=[v1,]const=[]out=[v3,]eqn:neg(v1,)->v2,{}|eqn:exp(v2,)->v3,{}|

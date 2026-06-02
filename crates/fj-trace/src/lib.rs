@@ -278,8 +278,8 @@ pub trait TraceToJaxpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TraceEquation {
     primitive: Primitive,
-    inputs: Vec<TracerId>,
-    outputs: Vec<TracerId>,
+    inputs: SmallVec<[TracerId; 4]>,
+    outputs: SmallVec<[TracerId; 2]>,
     params: BTreeMap<String, String>,
     sub_jaxprs: Vec<Jaxpr>,
 }
@@ -473,8 +473,8 @@ impl SimpleTraceContext {
         let frame = self.active_frame_mut()?;
         frame.equations.push(TraceEquation {
             primitive,
-            inputs: input_ids.to_vec(),
-            outputs: output_ids.clone(),
+            inputs: input_ids.iter().copied().collect(),
+            outputs: output_ids.iter().copied().collect(),
             params,
             sub_jaxprs,
         });
@@ -2292,8 +2292,8 @@ impl TraceContext for SimpleTraceContext {
         let frame = self.active_frame_mut()?;
         frame.equations.push(TraceEquation {
             primitive,
-            inputs: input_ids.to_vec(),
-            outputs: output_ids.clone(),
+            inputs: input_ids.iter().copied().collect(),
+            outputs: output_ids.iter().copied().collect(),
             params,
             sub_jaxprs: vec![],
         });
@@ -8124,6 +8124,10 @@ mod tests {
             }
         };
         assert_eq!(neg_output, exp_input, "data flow should be connected");
+        assert_eq!(
+            closed.jaxpr.canonical_fingerprint(),
+            "in=[v1,]const=[]out=[v3,]eqn:neg(v1,)->v2,{}|eqn:exp(v2,)->v3,{}|"
+        );
     }
 
     #[test]
