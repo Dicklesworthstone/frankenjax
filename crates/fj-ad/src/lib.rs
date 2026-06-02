@@ -6234,12 +6234,14 @@ fn reduce_prod_vjp_tensor(
                 1 if value.abs() < f64::EPSILON => upstream[out_idx] * product_nonzero[out_idx],
                 _ => 0.0,
             };
-            Ok(Literal::from_f64(cotangent))
+            Ok(literal_from_f64_for_dtype(tensor.dtype, cotangent))
         })
         .collect::<Result<Vec<_>, AdError>>()?;
 
+    // Rebuild at the input's dtype so a grad through reduce_prod on an
+    // F32/BF16/F16 array does not silently widen to F64 in the AD chain.
     Ok(Value::Tensor(
-        TensorValue::new(DType::F64, tensor.shape.clone(), elements)
+        TensorValue::new(tensor.dtype, tensor.shape.clone(), elements)
             .map_err(|err| AdError::EvalFailed(err.to_string()))?,
     ))
 }
@@ -6252,10 +6254,13 @@ fn reduce_prod_jvp_value(
     match (primal, tangent) {
         (Value::Scalar(_), Value::Scalar(tangent_literal)) => {
             let _axes = parse_reduce_axes(params, 0, Primitive::ReduceProd)?;
-            let tangent = tangent_literal.as_f64().ok_or_else(|| {
+            // reduce_prod over a scalar is the identity, so its JVP is the
+            // tangent itself — preserve the tangent's dtype instead of
+            // widening to F64 through scalar_f64.
+            tangent_literal.as_f64().ok_or_else(|| {
                 AdError::EvalFailed("reduce_prod tangent must be numeric".to_owned())
             })?;
-            Ok(Value::scalar_f64(tangent))
+            Ok(Value::Scalar(*tangent_literal))
         }
         (Value::Tensor(primal_tensor), Value::Tensor(tangent_tensor)) => {
             reduce_prod_jvp_tensor(primal_tensor, tangent_tensor, params)
@@ -6341,12 +6346,19 @@ fn reduce_prod_jvp_tensor(
     }
 
     if out_dims.is_empty() {
-        return Ok(Value::scalar_f64(output[0]));
+        return Ok(Value::Scalar(literal_from_f64_for_dtype(
+            primal.dtype,
+            output[0],
+        )));
     }
 
-    let elements = output.into_iter().map(Literal::from_f64).collect();
+    // Preserve the primal dtype rather than widening to F64.
+    let elements = output
+        .into_iter()
+        .map(|v| literal_from_f64_for_dtype(primal.dtype, v))
+        .collect();
     Ok(Value::Tensor(
-        TensorValue::new(DType::F64, Shape { dims: out_dims }, elements)
+        TensorValue::new(primal.dtype, Shape { dims: out_dims }, elements)
             .map_err(|err| AdError::EvalFailed(err.to_string()))?,
     ))
 }
@@ -6589,10 +6601,12 @@ fn cumprod_jvp_value(
 ) -> Result<Value, AdError> {
     match (primal, tangent) {
         (Value::Scalar(_), Value::Scalar(tangent_literal)) => {
-            let tangent = tangent_literal
+            // cumprod over a scalar is the identity; its JVP is the tangent
+            // itself — preserve dtype instead of widening to F64.
+            tangent_literal
                 .as_f64()
                 .ok_or_else(|| AdError::EvalFailed("cumprod tangent must be numeric".to_owned()))?;
-            Ok(Value::scalar_f64(tangent))
+            Ok(Value::Scalar(*tangent_literal))
         }
         (Value::Tensor(primal_tensor), Value::Tensor(tangent_tensor)) => {
             cumprod_jvp_tensor(primal_tensor, tangent_tensor, params)
@@ -6669,11 +6683,15 @@ fn cumprod_jvp_tensor(
         }
     }
 
+    // Preserve the primal dtype rather than widening to F64.
     Ok(Value::Tensor(
         TensorValue::new(
-            DType::F64,
+            primal.dtype,
             primal.shape.clone(),
-            output.into_iter().map(Literal::from_f64).collect(),
+            output
+                .into_iter()
+                .map(|v| literal_from_f64_for_dtype(primal.dtype, v))
+                .collect(),
         )
         .map_err(|err| AdError::EvalFailed(err.to_string()))?,
     ))
@@ -14890,6 +14908,62 @@ mod tests {
             .as_f64_scalar()
             .expect("full reduction should produce a scalar");
         assert!((val - 23.0).abs() < 1e-10, "got {val}");
+    }
+
+    fn f32_vec(dtype: DType, dims: Vec<u32>, vals: &[f32]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                dtype,
+                Shape { dims },
+                vals.iter().map(|&v| Literal::from_f32(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn assert_f32_tensor(v: &Value, expected: &[f32]) {
+        match v {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::F32, "must keep F32, not widen to F64");
+                t.validate_dtype_consistency()
+                    .expect("declared dtype must match element literal kinds");
+                let got: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => f32::from_bits(*b),
+                        other => panic!("element not F32: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(got, expected);
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reduce_prod_vjp_preserves_f32_dtype() {
+        // reduce_prod_vjp_tensor previously rebuilt cotangents via
+        // Literal::from_f64 and declared DType::F64, widening F32 grads.
+        let x = f32_vec(DType::F32, vec![3], &[2.0, 3.0, 4.0]);
+        let g = Value::Scalar(Literal::from_f32(1.0));
+        let params = BTreeMap::new();
+        let grads = vjp_single(Primitive::ReduceProd, &[x], &g, &params).expect("vjp");
+        // d(prod)/dx_i = prod/x_i: [24/2, 24/3, 24/4] = [12, 8, 6]
+        assert_f32_tensor(&grads[0], &[12.0, 8.0, 6.0]);
+    }
+
+    #[test]
+    fn cumprod_jvp_preserves_f32_dtype() {
+        // cumprod_jvp_tensor previously declared DType::F64 with from_f64
+        // literals, widening F32 tangents in the AD chain.
+        let x = f32_vec(DType::F32, vec![3], &[2.0, 3.0, 4.0]);
+        let dx = f32_vec(DType::F32, vec![3], &[1.0, 1.0, 1.0]);
+        let mut params = BTreeMap::new();
+        params.insert("axis".to_owned(), "0".to_owned());
+        let out = jvp_rule(Primitive::Cumprod, &[x], &[dx], &params).expect("jvp");
+        // running tangent: [1, 1*3+2*1, 5*4+6*1] = [1, 5, 26]
+        assert_f32_tensor(&out, &[1.0, 5.0, 26.0]);
     }
 
     #[test]
