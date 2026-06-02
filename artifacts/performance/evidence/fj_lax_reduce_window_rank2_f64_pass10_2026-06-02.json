@@ -6,7 +6,7 @@
   "skill_pass": "profiling-software-performance -> extreme-software-optimization",
   "profile_backed_target": {
     "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo bench -p fj-lax --bench lax_baseline -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
-    "after_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_window_64x64_3x3_same_f64 --sample-size 10 --measurement-time 1 --warm-up-time 1",
+    "after_command": "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-bench-after-37i9 cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_window_64x64_3x3_same_f64 --sample-size 60 --warm-up-time 1 --measurement-time 3",
     "measurement_backend": "criterion_via_rch",
     "baseline_worker": "vmi1156319",
     "after_worker": "vmi1153651",
@@ -35,18 +35,15 @@
       {
         "benchmark": "eval/reduce_window_64x64_3x3_same_f64",
         "before_mean_us": 762.67,
-        "after_mean_us": 268.15,
-        "after_ci_low_us": 256.57,
-        "after_ci_high_us": 283.93,
-        "delta_percent": -64.84,
-        "speedup": 2.844
+        "after_mean_us": 246.55,
+        "after_ci_low_us": 239.38,
+        "after_ci_high_us": 253.88,
+        "delta_percent": -67.67,
+        "speedup": 3.093
       }
     ],
     "supplemental_local_after": {
-      "mean_us": 112.99,
-      "ci_low_us": 111.83,
-      "ci_high_us": 115.59,
-      "note": "A preliminary after run failed open locally due active_project_exclusion; it is not counted as primary rch proof."
+      "note": "A cargo test retry failed open locally due no admissible rch worker and hit local crate-resolution errors; it is explicitly excluded from validation proof. The counted test/clippy gates used RCH_FORCE_REMOTE=1 and ran on vmi1149989."
     }
   },
   "change": {
@@ -75,14 +72,14 @@
     "golden_artifact": "artifacts/performance/evidence/fj_lax_reduce_window_rank2_f64_pass10_2026-06-02.golden"
   },
   "validation": [
-    "rustfmt --edition 2024 --check crates/fj-lax/src/lib.rs",
-    "git diff --check -- crates/fj-lax/src/lib.rs artifacts/performance/evidence/fj_lax_reduce_window_rank2_f64_pass10_2026-06-02.golden artifacts/performance/evidence/fj_lax_reduce_window_rank2_f64_pass10_2026-06-02.json artifacts/performance/evidence/fj_lax_reduce_window_rank2_f64_pass10_2026-06-02.golden.sha256",
+    "rustfmt --edition 2024 --check crates/fj-lax/src/lib.rs passed for the original 05c5a974 source change; a later rerun after upstream linalg/split edits reported unrelated formatting drift in crates/fj-lax/src/lib.rs test_split_uneven_sizes_fails_closed and crates/fj-lax/src/linalg.rs eval_solve_rejects_complex_input",
+    "git diff --check -- crates/fj-lax/src/lib.rs",
     "ubs crates/fj-lax/src/lib.rs (nonzero from existing test panic/unwrap inventory in the touched monolithic file; no new production unsafe/resource findings accepted)",
-    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo test -p fj-lax reduce_window_rank2_f64_same_sum_golden_hash -- --nocapture (remote vmi1149989, exit 0)",
-    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo test -p fj-lax reduce_window (remote vmi1293453, 26 tests passed)",
-    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo check -p fj-lax --all-targets (remote vmi1153651, exit 0)",
-    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings (remote vmi1153651, exit 0)",
-    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile rch exec -- cargo test -p fj-lax (rch local fail-open from active_project_exclusion, 980 tests passed; supplemental only)",
+    "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-golden-37i9 cargo test -p fj-lax reduce_window_rank2_f64_same_sum_golden_hash -- --nocapture (remote vmi1153651, exit 0)",
+    "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-bench-after-37i9 cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_window_64x64_3x3_same_f64 --sample-size 60 --warm-up-time 1 --measurement-time 3 (remote vmi1153651, exit 0)",
+    "rch exec -- cargo check -p fj-lax --all-targets (remote vmi1149989, exit 0)",
+    "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax --all-targets (remote vmi1149989, 981 tests plus bench target smoke passed)",
+    "RCH_FORCE_REMOTE=1 rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings (remote vmi1149989, exit 0)",
     "sha256sum -c artifacts/performance/evidence/fj_lax_reduce_window_rank2_f64_pass10_2026-06-02.golden.sha256",
     "jq . artifacts/performance/evidence/fj_lax_reduce_window_rank2_f64_pass10_2026-06-02.json"
   ]
