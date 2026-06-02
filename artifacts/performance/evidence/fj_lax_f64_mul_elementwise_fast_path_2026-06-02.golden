@@ -1,0 +1,8 @@
+frankenjax-mcqr.2 fj-lax F64 same-shape multiply fast path golden
+
+primitive_set: mul
+input_order: lhs [1.5, -0.0, -2.0], rhs [2.0, 3.0, -4.0]
+output_contract: output F64Bits in input order
+serde_json_bits: [4613937818241073152,9223372036854775808,4620693217682128896]
+serde_json_sha256: 7c04cb9c4017b6432810210634ee4d5f9a31e26325eddd3e46770499a08d2ca0
+proof: each output bit is produced by the same scalar f64 multiplication expression used by the generic path; malformed F64 tensors fall through to the existing generic path
