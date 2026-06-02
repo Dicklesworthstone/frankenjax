@@ -394,6 +394,61 @@ fn cached_algebraic_rules_with_config(
     }
 }
 
+fn cached_rules_for_segment(
+    jaxpr: &Jaxpr,
+    config: &OptimizationConfig,
+) -> &'static [egg::Rewrite<FjLang, ()>] {
+    if is_add_mul_only_segment(jaxpr) {
+        return cached_add_mul_rules_with_config(config);
+    }
+    cached_algebraic_rules_with_config(config)
+}
+
+fn cached_add_mul_rules_with_config(
+    config: &OptimizationConfig,
+) -> &'static [egg::Rewrite<FjLang, ()>] {
+    static ADD_MUL_SAFE_RULES: OnceLock<Vec<egg::Rewrite<FjLang, ()>>> = OnceLock::new();
+    static ADD_MUL_AGGRESSIVE_RULES: OnceLock<Vec<egg::Rewrite<FjLang, ()>>> = OnceLock::new();
+
+    if config.numerical_safety_mode {
+        ADD_MUL_SAFE_RULES
+            .get_or_init(add_mul_safe_rules)
+            .as_slice()
+    } else {
+        ADD_MUL_AGGRESSIVE_RULES
+            .get_or_init(add_mul_aggressive_rules)
+            .as_slice()
+    }
+}
+
+fn add_mul_safe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
+    vec![
+        rewrite!("add-comm"; "(add ?a ?b)" => "(add ?b ?a)"),
+        rewrite!("mul-comm"; "(mul ?a ?b)" => "(mul ?b ?a)"),
+    ]
+}
+
+fn add_mul_aggressive_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
+    let mut rules = add_mul_safe_rules();
+    rules.extend(vec![
+        rewrite!("add-assoc"; "(add (add ?a ?b) ?c)" => "(add ?a (add ?b ?c))"),
+        rewrite!("mul-assoc"; "(mul (mul ?a ?b) ?c)" => "(mul ?a (mul ?b ?c))"),
+        rewrite!("add-zero"; "(add ?a 0)" => "?a"),
+        rewrite!("mul-one"; "(mul ?a 1)" => "?a"),
+        rewrite!("factor"; "(add (mul ?a ?b) (mul ?a ?c))" => "(mul ?a (add ?b ?c))"),
+        rewrite!("mul-zero"; "(mul ?a 0)" => "0"),
+    ]);
+    rules
+}
+
+fn is_add_mul_only_segment(jaxpr: &Jaxpr) -> bool {
+    !jaxpr.equations.is_empty()
+        && jaxpr
+            .equations
+            .iter()
+            .all(|equation| matches!(equation.primitive, Primitive::Add | Primitive::Mul))
+}
+
 /// Rules that are always safe regardless of input domain.
 fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
     vec![
@@ -2759,7 +2814,7 @@ fn optimize_supported_segment(
     if let Some(root) = rec_id_to_egraph_id.last().copied() {
         runner.roots.push(root);
     }
-    let runner = runner.run(cached_algebraic_rules_with_config(config));
+    let runner = runner.run(cached_rules_for_segment(jaxpr, config));
     let extractor = egg::Extractor::new(&runner.egraph, OpCount);
 
     let mut merged_equations = Vec::new();
@@ -3281,6 +3336,30 @@ mod tests {
         let jaxpr = aggressive_benchmark_polynomial_jaxpr();
         let optimized = optimize_jaxpr_with_config(&jaxpr, &OptimizationConfig::aggressive());
 
+        assert_eq!(
+            optimized.canonical_fingerprint(),
+            "in=[v0,]const=[]out=[v11,]eqn:add(v0,f64bits:4607182418800017408,)->v7,{}|eqn:mul(v0,v0,)->v8,{}|eqn:mul(v8,v7,)->v9,{}|eqn:add(f64bits:0,v9,)->v10,{}|eqn:add(v0,v10,)->v11,{}|"
+        );
+
+        for x in [-2.0, 0.0, 2.0, 7.5] {
+            let args = [Value::scalar_f64(x)];
+            assert_eq!(eval_jaxpr(&jaxpr, &args)?, eval_jaxpr(&optimized, &args)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn add_mul_only_segments_use_subset_rules_without_changing_golden()
+    -> Result<(), fj_interpreters::InterpreterError> {
+        let jaxpr = aggressive_benchmark_polynomial_jaxpr();
+        let config = OptimizationConfig::aggressive();
+
+        let add_mul_rules = cached_rules_for_segment(&jaxpr, &config);
+        let full_rules = cached_algebraic_rules_with_config(&config);
+        assert_eq!(add_mul_rules.len(), 8);
+        assert!(add_mul_rules.len() < full_rules.len());
+
+        let optimized = optimize_jaxpr_with_config(&jaxpr, &config);
         assert_eq!(
             optimized.canonical_fingerprint(),
             "in=[v0,]const=[]out=[v11,]eqn:add(v0,f64bits:4607182418800017408,)->v7,{}|eqn:mul(v0,v0,)->v8,{}|eqn:mul(v8,v7,)->v9,{}|eqn:add(f64bits:0,v9,)->v10,{}|eqn:add(v0,v10,)->v11,{}|"

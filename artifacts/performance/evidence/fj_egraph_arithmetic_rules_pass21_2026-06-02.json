@@ -1,0 +1,66 @@
+{
+  "bead": "frankenjax-qx0f",
+  "pass": 21,
+  "date": "2026-06-02",
+  "subsystem": "fj-egraph",
+  "profile_target": "egraph/optimize_aggressive_config",
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-profile-pass21 cargo bench -p fj-egraph --bench egraph_baseline -- --sample-size 30 --warm-up-time 1 --measurement-time 2",
+    "worker": "vmi1149989",
+    "mean_us": 203.90,
+    "ci_us": [195.58, 213.25],
+    "profile_rank": 1,
+    "next_highest_mean_us": 21.020
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-qx0f-bench-after cargo bench -p fj-egraph --bench egraph_baseline -- egraph/optimize_aggressive_config --sample-size 60 --warm-up-time 1 --measurement-time 3",
+    "worker": "vmi1149989",
+    "mean_us": 111.64,
+    "ci_us": [109.20, 114.31]
+  },
+  "delta": {
+    "speedup": 1.826,
+    "mean_reduction_pct": 45.25,
+    "score": 20.0,
+    "score_formula": "Impact 5 x Confidence 4 / Effort 1"
+  },
+  "lever": {
+    "type": "rule-set specialization",
+    "description": "For supported segments whose primitives are only Add/Mul, run a cached Add/Mul-only rewrite slice containing the same applicable Add/Mul rules in their original relative order; all other segments continue using the full cached rule set.",
+    "applicable_rules": 8,
+    "fallback": "Non-Add/Mul segments use cached_algebraic_rules_with_config unchanged."
+  },
+  "isomorphism": {
+    "optimized_fingerprint": "in=[v0,]const=[]out=[v11,]eqn:add(v0,f64bits:4607182418800017408,)->v7,{}|eqn:mul(v0,v0,)->v8,{}|eqn:mul(v8,v7,)->v9,{}|eqn:add(f64bits:0,v9,)->v10,{}|eqn:add(v0,v10,)->v11,{}|",
+    "proof": [
+      "Rule membership is restricted only when the segment language contains Add, Mul, literals, and variables; excluded full-rule entries cannot match because their LHS roots are absent and the retained Add/Mul rules do not introduce those roots.",
+      "Retained Add/Mul rule order matches the full aggressive rule relative order: add-comm, mul-comm, add-assoc, mul-assoc, add-zero, mul-one, factor, mul-zero.",
+      "The existing aggressive benchmark golden fingerprint is unchanged.",
+      "Eval samples x=-2.0, 0.0, 2.0, 7.5 match original and optimized outputs.",
+      "No operand ordering, tie-breaking, RNG, or additional floating-point reassociation surface is introduced beyond the existing aggressive Add/Mul rules."
+    ],
+    "golden_artifact": "artifacts/performance/evidence/fj_egraph_arithmetic_rules_pass21_2026-06-02.golden",
+    "golden_sha256": "5610b99922f1b609b51cf5c8a249ea98229a9ac69d85ee027b3ad88c4aa98779"
+  },
+  "validation": [
+    "cargo fmt -p fj-egraph",
+    "cargo fmt -p fj-egraph -- --check",
+    "git diff --check",
+    "ubs crates/fj-egraph/src/lib.rs (exit 0, 0 critical; existing warning inventory)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-qx0f-test-focused cargo test -p fj-egraph add_mul_only_segments_use_subset_rules_without_changing_golden -- --nocapture (remote vmi1227854, exit 0)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-qx0f-bench-after cargo bench -p fj-egraph --bench egraph_baseline -- egraph/optimize_aggressive_config --sample-size 60 --warm-up-time 1 --measurement-time 3 (remote vmi1149989, exit 0)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-qx0f-check cargo check -p fj-egraph --all-targets (remote vmi1156319, exit 0)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-qx0f-test cargo test -p fj-egraph --all-targets (remote vmi1156319, 141 tests passed, exit 0)",
+    "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-egraph-qx0f-clippy cargo clippy -p fj-egraph --all-targets --no-deps -- -D warnings (remote vmi1153651, exit 0)"
+  ],
+  "skipped_profiles": [
+    {
+      "subsystem": "fj-cache",
+      "reason": "Fresh profile top path was sub-microsecond: cache_key/owned/10eqn_program mean 672.51 ns; no meaningful optimization bead filed."
+    },
+    {
+      "subsystem": "fj-ad",
+      "reason": "Fresh profile top path was low-microsecond: ad/value_and_grad_poly mean 3.0741 us; no meaningful optimization bead filed."
+    }
+  ]
+}
