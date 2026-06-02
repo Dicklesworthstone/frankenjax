@@ -1,0 +1,57 @@
+{
+  "bead": "frankenjax-sbks",
+  "pass": 4,
+  "target": "fj-dispatch fixed per-call dispatch overhead",
+  "accepted_lever": "borrow root_jaxpr on the non-egraph dispatch path instead of cloning it",
+  "benchmark": {
+    "crate": "fj-api",
+    "bench": "api_overhead",
+    "command": "rch exec -- cargo bench -p fj-api --bench api_overhead -- 'api_overhead/jit/scalar_add|api_vs_dispatch/(dispatch_jit_add|api_jit_add)' --sample-size 20 --measurement-time 3 --warm-up-time 1",
+    "worker": "ts2"
+  },
+  "baseline": {
+    "api_overhead/jit/scalar_add_us": [5.1797, 5.2122, 5.2424],
+    "api_vs_dispatch/api_jit_add_us": [5.2464, 5.2806, 5.3123],
+    "api_vs_dispatch/dispatch_jit_add_us": [4.8372, 4.8641, 4.9008]
+  },
+  "after": {
+    "api_overhead/jit/scalar_add_us": [5.0737, 5.1081, 5.1364],
+    "api_vs_dispatch/api_jit_add_us": [5.0666, 5.1010, 5.1436],
+    "api_vs_dispatch/dispatch_jit_add_us": [4.7231, 4.7862, 4.8497]
+  },
+  "delta": {
+    "api_overhead/jit/scalar_add_midpoint_percent": 2.00,
+    "api_vs_dispatch/api_jit_add_midpoint_percent": 3.40,
+    "api_vs_dispatch/dispatch_jit_add_midpoint_percent": 1.60,
+    "score": 2.25,
+    "score_formula": "Impact x Confidence / Effort",
+    "score_rationale": "Small but consistent fixed-overhead improvement on API-visible jit paths; low-effort one-line lifetime lever; direct dispatch also improves."
+  },
+  "rejected_candidate": {
+    "lever": "reuse a static CPU backend registry with OnceLock",
+    "after_midpoints_us": {
+      "api_overhead/jit/scalar_add": 5.1523,
+      "api_vs_dispatch/api_jit_add": 5.1557,
+      "api_vs_dispatch/dispatch_jit_add": 4.8939
+    },
+    "decision": "rejected",
+    "reason": "direct dispatch regressed from 4.8641 us to 4.8939 us and API-level changes were too close to noise"
+  },
+  "behavior_proof": {
+    "ordering": "Non-egraph dispatch now borrows the same immutable root_jaxpr in the same sequence; egraph-enabled dispatch still owns the optimized Jaxpr before execution.",
+    "tie_breaking": "No ordering, sorting, or backend selection logic changed.",
+    "floating_point": "No primitive evaluation or AD arithmetic changed.",
+    "rng": "No RNG code or seed handling changed.",
+    "strict_hardened": "Compatibility mode, unknown-feature handling, cache-key construction, and backend fallback logic are unchanged.",
+    "golden_output_payload": "dispatch_jit_add_scalar:outputs=[i64:6];effects=0;transforms=[jit];backend=cpu;mode=strict\n",
+    "golden_output_sha256": "0237e7c9a1cc52fe37627036064be8585c2b2910d71afaf1662a1d927bfe7b46"
+  },
+  "validation": {
+    "check": "rch exec -- cargo check -p fj-dispatch --all-targets passed; pre-existing fj-ad g_data warning emitted as warning only",
+    "tests": "rch exec -- cargo test -p fj-dispatch -- --nocapture passed: 223 unit tests, 55 integration tests, doc-tests",
+    "format_touched_file": "rustfmt --edition 2024 --check crates/fj-dispatch/src/lib.rs passed",
+    "workspace_format": "rch exec -- cargo fmt --check blocked by pre-existing formatting drift in fj-ad, fj-api, fj-conformance, and fj-lax",
+    "clippy": "rch exec -- cargo clippy -p fj-dispatch --all-targets -- -D warnings blocked by pre-existing frankenjax-ch8e fj-ad unused g_data warning",
+    "diff_check": "git diff --check -- crates/fj-dispatch/src/lib.rs passed"
+  }
+}

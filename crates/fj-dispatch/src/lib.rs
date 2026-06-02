@@ -433,13 +433,15 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
     thread_jaxpr_effect_tokens(&mut effect_ctx, &request.ledger.root_jaxpr);
 
     // Optionally run e-graph equality saturation to simplify the Jaxpr.
+    let optimized_jaxpr;
     let exec_jaxpr = if wants_egraph_optimize(&request.compile_options) {
-        fj_egraph::optimize_jaxpr_with_config(
+        optimized_jaxpr = fj_egraph::optimize_jaxpr_with_config(
             &request.ledger.root_jaxpr,
             &fj_egraph::OptimizationConfig::safe(),
-        )
+        );
+        &optimized_jaxpr
     } else {
-        request.ledger.root_jaxpr.clone()
+        &request.ledger.root_jaxpr
     };
 
     let backend_registry = BackendRegistry::new(vec![Box::new(fj_backend_cpu::CpuBackend::new())]);
@@ -447,7 +449,7 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
     let (backend, device, _fell_back) =
         backend_registry.resolve_with_fallback(&DevicePlacement::Default, requested_backend)?;
     let outputs = execute_with_transforms(
-        &exec_jaxpr,
+        exec_jaxpr,
         &request.ledger.transform_stack,
         &request.args,
         backend,
