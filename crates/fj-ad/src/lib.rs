@@ -1297,6 +1297,54 @@ fn tril(a: &TensorValue) -> Result<TensorValue, AdError> {
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
+/// Strictly-lower-triangular part (below the main diagonal) of a square matrix.
+fn tril_strict(a: &TensorValue) -> Result<TensorValue, AdError> {
+    if a.shape.rank() != 2 || a.shape.dims[0] != a.shape.dims[1] {
+        return Err(AdError::EvalFailed(
+            "tril_strict: input must be square rank-2".to_owned(),
+        ));
+    }
+    let n = a.shape.dims[0] as usize;
+    let a_vals: Vec<f64> = a
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect();
+    let mut result = vec![0.0; n * n];
+    for i in 0..n {
+        for j in 0..i {
+            result[i * n + j] = a_vals[i * n + j];
+        }
+    }
+    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+    TensorValue::new(DType::F64, a.shape.clone(), elements)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Upper-triangular part (on and above the main diagonal) of a square matrix.
+fn triu(a: &TensorValue) -> Result<TensorValue, AdError> {
+    if a.shape.rank() != 2 || a.shape.dims[0] != a.shape.dims[1] {
+        return Err(AdError::EvalFailed(
+            "triu: input must be square rank-2".to_owned(),
+        ));
+    }
+    let n = a.shape.dims[0] as usize;
+    let a_vals: Vec<f64> = a
+        .elements
+        .iter()
+        .map(|l| l.as_f64().unwrap_or(0.0))
+        .collect();
+    let mut result = vec![0.0; n * n];
+    for i in 0..n {
+        for j in i..n {
+            result[i * n + j] = a_vals[i * n + j];
+        }
+    }
+    let elements: Vec<Literal> = result.into_iter().map(Literal::from_f64).collect();
+    TensorValue::new(DType::F64, a.shape.clone(), elements)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 /// Add two tensors element-wise.
 fn tensor_add(a: &TensorValue, b: &TensorValue) -> Result<Value, AdError> {
     value_add(&Value::Tensor(a.clone()), &Value::Tensor(b.clone()))
@@ -3896,9 +3944,142 @@ pub fn vjp(
             Ok(vec![da])
         }
         // ── LU VJP ──
-        // PA = LU. LU VJP is complex; returns zeros for now.
-        // Full gradient: dA = P^T @ (L^{-T} tril(dLU, -1) U^T + L triu(dLU) U^{-T})
-        Primitive::Lu => Ok(vec![zeros_like(&inputs[0])]),
+        // PA = LU with packed output `lu` (strict-lower = L below the unit
+        // diagonal, upper+diagonal = U). The forward JVP (De Hoog, Anderssen &
+        // Lukas; cf. JAX `_lu_jvp_inner`) is
+        //     LAU   = inv(L) · P · Ȧ · inv(U)
+        //     lu̇    = L · tril(LAU, -1) + triu(LAU) · U
+        // Transposing that linear map gives the reverse-mode rule below. With
+        //     gl = tril(ḡ, -1),  gu = triu(ḡ):
+        //     LAU_bar = tril(Lᵀ · gl, -1) + triu(gu · Uᵀ)
+        //     La_bar  solves   La_bar · Uᵀ = LAU_bar      (right triangular solve)
+        //     PA_bar  solves   Lᵀ · PA_bar = La_bar       (left triangular solve)
+        //     Ā       = Pᵀ · PA_bar                        (inverse row permutation)
+        // Square inputs only (m == n); the forward decomposition is exercised on
+        // square matrices, and a clear error beats the previous silent zeros for
+        // the rectangular case.
+        Primitive::Lu => {
+            let lu_t = output_values[0].as_tensor().ok_or_else(|| {
+                AdError::EvalFailed("LU VJP: packed LU output must be a tensor".to_owned())
+            })?;
+            if lu_t.shape.rank() != 2 || lu_t.shape.dims[0] != lu_t.shape.dims[1] {
+                return Err(AdError::EvalFailed(format!(
+                    "LU VJP: only square inputs are supported, got shape {:?}",
+                    lu_t.shape.dims
+                )));
+            }
+            let n = lu_t.shape.dims[0] as usize;
+            let lu_vals: Vec<f64> = lu_t
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            // Reconstruct L (unit lower triangular) and U (upper triangular).
+            let mut l_elems = vec![0.0_f64; n * n];
+            let mut u_elems = vec![0.0_f64; n * n];
+            for i in 0..n {
+                l_elems[i * n + i] = 1.0;
+                for j in 0..i {
+                    l_elems[i * n + j] = lu_vals[i * n + j];
+                }
+                for j in i..n {
+                    u_elems[i * n + j] = lu_vals[i * n + j];
+                }
+            }
+            let square = Shape {
+                dims: vec![n as u32, n as u32],
+            };
+            let l_mat = TensorValue::new(
+                DType::F64,
+                square.clone(),
+                l_elems.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let u_mat = TensorValue::new(
+                DType::F64,
+                square.clone(),
+                u_elems.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+
+            let g = gs[0]
+                .as_tensor()
+                .ok_or_else(|| AdError::EvalFailed("LU VJP: cotangent must be a tensor".to_owned()))?;
+            if g.shape.dims != square.dims {
+                return Err(AdError::EvalFailed(format!(
+                    "LU VJP: cotangent shape {:?} does not match LU output {:?}",
+                    g.shape.dims, square.dims
+                )));
+            }
+
+            // LAU_bar = tril(Lᵀ · gl, -1) + triu(gu · Uᵀ)
+            let gl = tril_strict(g)?;
+            let gu = triu(g)?;
+            let l_t = tensor_value(&transpose_2d(&l_mat)?, "LU VJP transpose(L)")?.clone();
+            let u_t = tensor_value(&transpose_2d(&u_mat)?, "LU VJP transpose(U)")?.clone();
+            let lt_gl = tensor_value(&matmul_2d(&l_t, &gl)?, "LU VJP Lᵀ·gl")?.clone();
+            let gu_ut = tensor_value(&matmul_2d(&gu, &u_t)?, "LU VJP gu·Uᵀ")?.clone();
+            let lau_bar = tensor_value(
+                &tensor_add(&tril_strict(&lt_gl)?, &triu(&gu_ut)?)?,
+                "LU VJP LAU_bar",
+            )?
+            .clone();
+
+            // La_bar solves La_bar · Uᵀ = LAU_bar  ⟺  U · La_barᵀ = LAU_barᵀ.
+            let lau_bar_t = transpose_2d(&lau_bar)?;
+            let mut upper_solve = BTreeMap::new();
+            upper_solve.insert("lower".to_owned(), "false".to_owned());
+            let la_bar_t = eval_primitive(
+                Primitive::TriangularSolve,
+                &[Value::Tensor(u_mat.clone()), lau_bar_t],
+                &upper_solve,
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let la_bar = transpose_2d(tensor_value(&la_bar_t, "LU VJP La_barᵀ")?)?;
+
+            // PA_bar solves Lᵀ · PA_bar = La_bar  (L unit lower triangular).
+            let mut lower_solve = BTreeMap::new();
+            lower_solve.insert("lower".to_owned(), "true".to_owned());
+            lower_solve.insert("transpose_a".to_owned(), "true".to_owned());
+            lower_solve.insert("unit_diagonal".to_owned(), "true".to_owned());
+            let pa_bar_val = eval_primitive(
+                Primitive::TriangularSolve,
+                &[Value::Tensor(l_mat.clone()), la_bar],
+                &lower_solve,
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let pa_bar = tensor_value(&pa_bar_val, "LU VJP PA_bar")?;
+            let pa_bar_vals: Vec<f64> = pa_bar
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap_or(0.0))
+                .collect();
+
+            // Ā = Pᵀ · PA_bar:  row perm[i] of Ā receives row i of PA_bar.
+            let perm_t = output_values[2].as_tensor().ok_or_else(|| {
+                AdError::EvalFailed("LU VJP: permutation output must be a tensor".to_owned())
+            })?;
+            let mut a_bar = vec![0.0_f64; n * n];
+            for (i, p) in perm_t.elements.iter().enumerate() {
+                let dest = p.as_f64().unwrap_or(0.0) as usize;
+                if dest >= n {
+                    return Err(AdError::EvalFailed(format!(
+                        "LU VJP: permutation index {dest} out of bounds for size {n}"
+                    )));
+                }
+                for j in 0..n {
+                    a_bar[dest * n + j] = pa_bar_vals[i * n + j];
+                }
+            }
+            let a_bar_tensor = TensorValue::new(
+                DType::F64,
+                square,
+                a_bar.into_iter().map(Literal::from_f64).collect(),
+            )
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![Value::Tensor(a_bar_tensor)])
+        }
         // ── Eig VJP ──
         // Non-symmetric eigenvalue differentiation is complex.
         // V1: return zero gradient (eig not differentiable in V1).
@@ -15373,6 +15554,160 @@ mod tests {
                 numerical,
             );
         }
+    }
+
+    // ── LU VJP test ──
+
+    /// Finite-difference gradient check for the LU decomposition VJP against the
+    /// packed `lu` output. `a_vals` is the row-major n×n input; `g_vals` is an
+    /// arbitrary cotangent against the packed LU matrix (exercising both the
+    /// strict-lower L̇ path and the upper+diagonal U̇ path simultaneously).
+    fn check_lu_vjp_numerical(n: usize, a_vals: &[f64], g_vals: &[f64]) {
+        let dims = vec![n as u32, n as u32];
+        let make = |vals: &[f64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: dims.clone() },
+                    vals.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+
+        let a = make(a_vals);
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Lu, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
+        let g = make(g_vals);
+        let gs = [
+            g,
+            zeros_like(&outputs[1]),
+            zeros_like(&outputs[2]),
+        ];
+
+        let vjp_result = vjp(
+            Primitive::Lu,
+            std::slice::from_ref(&a),
+            &gs,
+            &outputs,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let da = vjp_result[0].as_tensor().unwrap();
+        let da_vals: Vec<f64> = da.elements.iter().map(|l| l.as_f64().unwrap()).collect();
+
+        let eps = 1e-6;
+        for idx in 0..(n * n) {
+            let mut a_plus = a_vals.to_vec();
+            a_plus[idx] += eps;
+            let mut a_minus = a_vals.to_vec();
+            a_minus[idx] -= eps;
+
+            let lu_plus = fj_lax::eval_primitive_multi(
+                Primitive::Lu,
+                &[make(&a_plus)],
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            let lu_minus = fj_lax::eval_primitive_multi(
+                Primitive::Lu,
+                &[make(&a_minus)],
+                &BTreeMap::new(),
+            )
+            .unwrap();
+
+            let lu_p: Vec<f64> = lu_plus[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap())
+                .collect();
+            let lu_m: Vec<f64> = lu_minus[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap())
+                .collect();
+
+            // Directional derivative ⟨g, ∂(lu)/∂a[idx]⟩ via central differences.
+            let numerical: f64 = g_vals
+                .iter()
+                .zip(lu_p.iter().zip(lu_m.iter()))
+                .map(|(gk, (p, m))| gk * (p - m) / (2.0 * eps))
+                .sum();
+
+            assert!(
+                (da_vals[idx] - numerical).abs() < 1e-4,
+                "LU VJP element {idx}: analytical={}, numerical={}",
+                da_vals[idx],
+                numerical,
+            );
+        }
+    }
+
+    #[test]
+    fn test_lu_vjp_numerical_no_pivot() {
+        // Diagonally dominant ⇒ no row pivoting (permutation is identity), so
+        // this isolates the core L̇/U̇ adjoint from the permutation scatter.
+        let a_vals = [4.0, 1.0, 2.0, 1.0, 5.0, 1.0, 2.0, 1.0, 6.0];
+        let g_vals = [0.5, -1.0, 2.0, 1.5, 0.25, -0.5, -2.0, 3.0, 1.0];
+        check_lu_vjp_numerical(3, &a_vals, &g_vals);
+    }
+
+    #[test]
+    fn test_lu_vjp_numerical_with_pivot() {
+        // Column 0 maximum is in the last row ⇒ partial pivoting permutes rows,
+        // exercising the Pᵀ scatter in the VJP. Pivot order is stable under the
+        // ±1e-6 finite-difference perturbation.
+        let a_vals = [2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0];
+        let g_vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        check_lu_vjp_numerical(3, &a_vals, &g_vals);
+    }
+
+    #[test]
+    fn test_lu_vjp_nonzero_gradient() {
+        // Regression guard: the previous placeholder returned all-zeros, which
+        // silently corrupted any grad() flowing through an LU decomposition.
+        let a_vals = [4.0, 1.0, 2.0, 1.0, 5.0, 1.0, 2.0, 1.0, 6.0];
+        let g_vals = [1.0; 9];
+        let dims = vec![3, 3];
+        let make = |vals: &[f64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: dims.clone() },
+                    vals.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let a = make(&a_vals);
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Lu, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
+        let gs = [make(&g_vals), zeros_like(&outputs[1]), zeros_like(&outputs[2])];
+        let da = vjp(
+            Primitive::Lu,
+            std::slice::from_ref(&a),
+            &gs,
+            &outputs,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let da_vals: Vec<f64> = da[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+        assert!(
+            da_vals.iter().any(|&v| v.abs() > 1e-9),
+            "LU VJP must produce a non-zero gradient, got {da_vals:?}",
+        );
     }
 
     // ── Eigh VJP test ──
