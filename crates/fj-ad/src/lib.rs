@@ -3381,32 +3381,33 @@ pub fn vjp(
                     let axis_size = input_t.shape.dims[input_rank - 1] as usize;
                     let k = g_t.shape.dims[g_t.shape.rank() - 1] as usize;
                     let n_slices = input_t.elements.len() / axis_size;
-                    let g_vals: Vec<f64> = g_t
-                        .elements
-                        .iter()
-                        .map(|l| l.as_f64().unwrap_or(0.0))
-                        .collect();
                     let idx_vals: Vec<i64> = idx_t
                         .elements
                         .iter()
                         .map(|l| l.as_i64().unwrap_or(0))
                         .collect();
 
-                    let mut result = vec![0.0_f64; input_t.elements.len()];
+                    // Scatter the cotangent literals back to their original
+                    // positions, preserving the upstream dtype. TopK returns
+                    // distinct indices per slice, so this is a placement (never
+                    // an accumulation). Routing through as_f64() here would
+                    // silently zero complex cotangents and widen F32/BF16/F16
+                    // gradients to F64 in the AD chain.
+                    let zero = zero_literal_for_dtype(g_t.dtype);
+                    let mut elements = vec![zero; input_t.elements.len()];
                     for slice_idx in 0..n_slices {
                         let g_base = slice_idx * k;
                         let out_base = slice_idx * axis_size;
                         for j in 0..k {
                             let orig_idx = idx_vals[g_base + j] as usize;
                             if orig_idx < axis_size {
-                                result[out_base + orig_idx] += g_vals[g_base + j];
+                                elements[out_base + orig_idx] =
+                                    g_t.elements.get(g_base + j).copied().unwrap_or(zero);
                             }
                         }
                     }
 
-                    let elements: Vec<Literal> =
-                        result.into_iter().map(Literal::from_f64).collect();
-                    let tensor = TensorValue::new(DType::F64, input_t.shape.clone(), elements)
+                    let tensor = TensorValue::new(g_t.dtype, input_t.shape.clone(), elements)
                         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
                     Ok(vec![Value::Tensor(tensor)])
                 }
@@ -7889,32 +7890,32 @@ fn jvp_rule(
                     let axis_size = p_t.shape.dims[rank - 1] as usize;
                     let k = idx_t.shape.dims[idx_t.shape.rank() - 1] as usize;
                     let n_slices = p_t.elements.len() / axis_size;
-                    let dx_vals: Vec<f64> = dx_t
-                        .elements
-                        .iter()
-                        .map(|l| l.as_f64().unwrap_or(0.0))
-                        .collect();
                     let idx_vals: Vec<i64> = idx_t
                         .elements
                         .iter()
                         .map(|l| l.as_i64().unwrap_or(0))
                         .collect();
 
-                    let mut result = Vec::with_capacity(n_slices * k);
+                    // Gather the tangent literals at the top-k positions,
+                    // preserving the upstream dtype. Routing through as_f64()
+                    // here would silently zero complex tangents and widen
+                    // F32/BF16/F16 tangents to F64 in the AD chain.
+                    let zero = zero_literal_for_dtype(dx_t.dtype);
+                    let mut elements = Vec::with_capacity(n_slices * k);
                     for slice_idx in 0..n_slices {
                         let dx_base = slice_idx * axis_size;
                         let idx_base = slice_idx * k;
                         for j in 0..k {
                             let orig_idx = idx_vals[idx_base + j] as usize;
-                            result.push(dx_vals.get(dx_base + orig_idx).copied().unwrap_or(0.0));
+                            elements.push(
+                                dx_t.elements.get(dx_base + orig_idx).copied().unwrap_or(zero),
+                            );
                         }
                     }
 
-                    let elements: Vec<Literal> =
-                        result.into_iter().map(Literal::from_f64).collect();
                     let mut out_dims = p_t.shape.dims.clone();
                     out_dims[rank - 1] = k as u32;
-                    let tensor = TensorValue::new(DType::F64, Shape { dims: out_dims }, elements)
+                    let tensor = TensorValue::new(dx_t.dtype, Shape { dims: out_dims }, elements)
                         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
                     Ok(Value::Tensor(tensor))
                 }
@@ -16584,6 +16585,107 @@ mod tests {
                 );
             }
             other => panic!("expected tensor xs gradient, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topk_vjp_and_jvp_preserve_f32_dtype() {
+        // Both TopK gradient directions previously routed values through
+        // `Literal::from_f64(as_f64().unwrap_or(0.0))` and emitted a
+        // hard-coded `DType::F64` tensor. For an F32 input that silently
+        // widened the gradient to F64 in the AD chain (and would have zeroed
+        // any non-`as_f64`-representable element). TopK selection is a pure
+        // gather/scatter over distinct positions, so the cotangent/tangent
+        // literals should pass through unchanged at F32.
+        use fj_core::{DType, Literal, Shape, TensorValue};
+        use std::collections::BTreeMap;
+
+        // input = [3.0, 1.0, 2.0] f32, k=2 -> values [3.0, 2.0], indices [0, 2]
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_f32(3.0),
+                    Literal::from_f32(1.0),
+                    Literal::from_f32(2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("k".to_owned(), "2".to_owned());
+
+        let outputs = eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&input), &params)
+            .expect("topk eval");
+
+        // ── VJP: scatter cotangent [10, 20] f32 back to positions [0, 2] ──
+        let cot = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f32(10.0), Literal::from_f32(20.0)],
+            )
+            .unwrap(),
+        );
+        let vjp_out = super::vjp(
+            Primitive::TopK,
+            std::slice::from_ref(&input),
+            std::slice::from_ref(&cot),
+            &outputs,
+            &params,
+        )
+        .expect("topk vjp");
+        match &vjp_out[0] {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::F32, "VJP must keep F32, not widen to F64");
+                let vals: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => f32::from_bits(*b),
+                        other => panic!("VJP element not F32: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(vals, vec![10.0, 0.0, 20.0]);
+            }
+            other => panic!("expected tensor VJP, got {other:?}"),
+        }
+
+        // ── JVP: gather tangent [0.5, 0.6, 0.7] f32 at positions [0, 2] ──
+        let tangent = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![3] },
+                vec![
+                    Literal::from_f32(0.5),
+                    Literal::from_f32(0.6),
+                    Literal::from_f32(0.7),
+                ],
+            )
+            .unwrap(),
+        );
+        let jvp_out = super::jvp_rule(
+            Primitive::TopK,
+            std::slice::from_ref(&input),
+            std::slice::from_ref(&tangent),
+            &params,
+        )
+        .expect("topk jvp");
+        match &jvp_out {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::F32, "JVP must keep F32, not widen to F64");
+                let vals: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => f32::from_bits(*b),
+                        other => panic!("JVP element not F32: {other:?}"),
+                    })
+                    .collect();
+                assert_eq!(vals, vec![0.5, 0.7]);
+            }
+            other => panic!("expected tensor JVP, got {other:?}"),
         }
     }
 
