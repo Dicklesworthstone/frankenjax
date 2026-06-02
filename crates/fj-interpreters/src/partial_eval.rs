@@ -435,32 +435,50 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
         }
     }
 
-    // Walk equations in reverse, marking inputs of needed equations.
-    let mut retain_eqn = vec![false; jaxpr.equations.len()];
-    let mut retained_count = 0;
-    for (eqn_index, eqn) in jaxpr.equations.iter().enumerate().rev() {
-        let outputs_needed = eqn.outputs.iter().any(|v| needed[v.0 as usize]);
-        if outputs_needed {
-            retain_eqn[eqn_index] = true;
-            retained_count += 1;
-            for atom in &eqn.inputs {
-                if let Atom::Var(v) = atom {
-                    needed[v.0 as usize] = true;
+    const DCE_FORWARD_CLONE_MIN_EQNS: usize = 256;
+
+    let retained_eqns = if jaxpr.equations.len() < DCE_FORWARD_CLONE_MIN_EQNS {
+        let mut retained_eqns = Vec::with_capacity(jaxpr.equations.len());
+        for eqn in jaxpr.equations.iter().rev() {
+            let outputs_needed = eqn.outputs.iter().any(|v| needed[v.0 as usize]);
+            if outputs_needed {
+                for atom in &eqn.inputs {
+                    if let Atom::Var(v) = atom {
+                        needed[v.0 as usize] = true;
+                    }
+                }
+                retained_eqns.push(eqn.clone());
+            }
+        }
+        retained_eqns.reverse();
+        retained_eqns
+    } else {
+        let mut retain_eqn = vec![false; jaxpr.equations.len()];
+        let mut retained_count = 0;
+        for (eqn_index, eqn) in jaxpr.equations.iter().enumerate().rev() {
+            let outputs_needed = eqn.outputs.iter().any(|v| needed[v.0 as usize]);
+            if outputs_needed {
+                retain_eqn[eqn_index] = true;
+                retained_count += 1;
+                for atom in &eqn.inputs {
+                    if let Atom::Var(v) = atom {
+                        needed[v.0 as usize] = true;
+                    }
                 }
             }
         }
-    }
 
-    let retained_eqns = if retained_count == jaxpr.equations.len() {
-        jaxpr.equations.clone()
-    } else {
-        jaxpr
-            .equations
-            .iter()
-            .zip(retain_eqn.iter())
-            .filter(|(_, retained)| **retained)
-            .map(|(eqn, _)| eqn.clone())
-            .collect()
+        if retained_count == jaxpr.equations.len() {
+            jaxpr.equations.clone()
+        } else {
+            jaxpr
+                .equations
+                .iter()
+                .zip(retain_eqn.iter())
+                .filter(|(_, retained)| **retained)
+                .map(|(eqn, _)| eqn.clone())
+                .collect()
+        }
     };
 
     let used_inputs: Vec<bool> = jaxpr.invars.iter().map(|v| needed[v.0 as usize]).collect();
@@ -502,6 +520,10 @@ fn infer_equation_output_avals(
         Qr => Ok(infer_qr_output_avals(first_input, eqn)),
         Svd => Ok(infer_svd_output_avals(first_input, eqn)),
         Eigh => Ok(infer_eigh_output_avals(first_input)),
+        Slogdet => Ok(infer_slogdet_output_avals()),
+        Eig => Ok(infer_eig_output_avals(first_input)),
+        TopK => Ok(infer_topk_output_avals(first_input, eqn)),
+        Solve => Ok(infer_solve_output_avals(input_avals)),
         _ => {
             let out_aval = infer_equation_output_aval(eqn, first_input)?;
             Ok(vec![out_aval; eqn.outputs.len()])
@@ -539,6 +561,13 @@ fn infer_equation_output_aval(
             dtype: first_input.dtype,
             shape: Shape::scalar(),
         },
+        // Det produces an F64 scalar (eval_det computes on the real part).
+        Det => AbstractValue {
+            dtype: DType::F64,
+            shape: Shape::scalar(),
+        },
+        // associative_scan is a prefix scan in place: same shape and dtype.
+        AssociativeScan => first_input.clone(),
         // Reshape: parse "new_shape" param
         Reshape => {
             let shape = eqn
@@ -837,6 +866,75 @@ fn infer_eigh_output_avals(input: &AbstractValue) -> Vec<AbstractValue> {
             shape: Shape { dims: vec![n, n] },
         },
     ]
+}
+
+fn infer_slogdet_output_avals() -> Vec<AbstractValue> {
+    // eval_slogdet returns (sign, logabsdet) as F64 scalars.
+    let scalar = AbstractValue {
+        dtype: DType::F64,
+        shape: Shape::scalar(),
+    };
+    vec![scalar.clone(), scalar]
+}
+
+fn infer_eig_output_avals(input: &AbstractValue) -> Vec<AbstractValue> {
+    // eval_eig returns (eigenvalues [n], eigenvectors [n, n]) as Complex128.
+    let Some(&n) = input.shape.dims.first() else {
+        return vec![input.clone(), input.clone()];
+    };
+    vec![
+        AbstractValue {
+            dtype: DType::Complex128,
+            shape: Shape { dims: vec![n] },
+        },
+        AbstractValue {
+            dtype: DType::Complex128,
+            shape: Shape { dims: vec![n, n] },
+        },
+    ]
+}
+
+fn infer_topk_output_avals(input: &AbstractValue, eqn: &Equation) -> Vec<AbstractValue> {
+    // eval_top_k returns (values: same dtype, indices: I64), both with the last
+    // axis replaced by k.
+    let rank = input.shape.dims.len();
+    if rank == 0 {
+        return vec![input.clone(); eqn.outputs.len()];
+    }
+    let k = eqn
+        .params
+        .get("k")
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(input.shape.dims[rank - 1]);
+    let mut out_dims = input.shape.dims.clone();
+    out_dims[rank - 1] = k;
+    vec![
+        AbstractValue {
+            dtype: input.dtype,
+            shape: Shape {
+                dims: out_dims.clone(),
+            },
+        },
+        AbstractValue {
+            dtype: DType::I64,
+            shape: Shape { dims: out_dims },
+        },
+    ]
+}
+
+fn infer_solve_output_avals(input_avals: &[AbstractValue]) -> Vec<AbstractValue> {
+    // eval_solve(A, b) -> x with the shape of b and a float-promoted dtype.
+    let (Some(a), Some(b)) = (input_avals.first(), input_avals.get(1)) else {
+        return input_avals.first().cloned().into_iter().collect();
+    };
+    let dtype = match fj_lax::promote_dtype_public(a.dtype, b.dtype) {
+        dt @ (DType::F16 | DType::BF16 | DType::F32 | DType::F64) => dt,
+        _ => DType::F64,
+    };
+    vec![AbstractValue {
+        dtype,
+        shape: b.shape.clone(),
+    }]
 }
 
 fn abstract_value_of_literal(lit: &fj_core::Literal) -> AbstractValue {
