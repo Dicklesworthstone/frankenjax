@@ -4,6 +4,7 @@
 pub mod proptest_strategies;
 
 use half::{bf16, f16};
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 use smallvec::{SmallVec, smallvec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -1485,7 +1486,15 @@ impl Jaxpr {
     }
 
     pub fn validate_well_formed(&self) -> Result<(), JaxprValidationError> {
-        let mut bindings = BTreeSet::new();
+        let binding_capacity = self.invars.len()
+            + self.constvars.len()
+            + self
+                .equations
+                .iter()
+                .map(|eqn| eqn.outputs.len())
+                .sum::<usize>();
+        let mut bindings =
+            FxHashSet::with_capacity_and_hasher(binding_capacity, Default::default());
 
         for var in &self.invars {
             if !bindings.insert(*var) {
@@ -1532,7 +1541,8 @@ impl Jaxpr {
             }
         }
 
-        let mut seen_outvars = BTreeSet::new();
+        let mut seen_outvars =
+            FxHashSet::with_capacity_and_hasher(self.outvars.len(), Default::default());
         for outvar in &self.outvars {
             if !seen_outvars.insert(*outvar) {
                 return Err(JaxprValidationError::DuplicateBinding {

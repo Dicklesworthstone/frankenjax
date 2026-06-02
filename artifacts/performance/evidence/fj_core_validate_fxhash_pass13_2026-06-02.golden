@@ -1,0 +1,1 @@
+frankenjax-d5dw-pass13|fj-core|validate_fxhash_membership|baseline_mean_ns=2231.4|after_mean_ns=617.27|speedup=3.615|valid_large=ok|dup_const=DuplicateBinding:constvars:v1|unbound=UnboundInputVar:eq0:v99|output_shadow=OutputShadowsBinding:eq0:v1|unknown_out=UnknownOutvar:v9|fingerprint_cache_unchanged|ordering=tie_breaking_fp_rng_preserved

@@ -1,0 +1,91 @@
+{
+  "bead": "frankenjax-d5dw",
+  "date": "2026-06-02",
+  "crate": "fj-core",
+  "subsystem": "Jaxpr validation",
+  "lever": "replace BTreeSet membership in Jaxpr::validate_well_formed with deterministic rustc_hash FxHashSet membership",
+  "profile_target": "core/jaxpr_validate_large",
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-profile-pass13 cargo bench -p fj-core --bench core_baseline -- --sample-size 40 --warm-up-time 1 --measurement-time 3",
+    "worker": "vmi1153651",
+    "mean_ns": 2231.4,
+    "confidence_interval_ns": [2171.5, 2292.3],
+    "nearby_profile_points": {
+      "core/jaxpr_clone_large_ns": 3815.6,
+      "core/tensor_value_new_1k_ns": 905.09,
+      "core/value_vector_f64_100_ns": 306.27
+    }
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-bench-after-d5dw cargo bench -p fj-core --bench core_baseline -- core/jaxpr_validate_large --sample-size 40 --warm-up-time 1 --measurement-time 3",
+    "worker": "vmi1149989",
+    "mean_ns": 617.27,
+    "confidence_interval_ns": [596.53, 641.11],
+    "comparison_note": "rch did not expose a worker selector and scheduled the after run on a different worker; confidence is lowered, but the measured margin is large enough to keep the lever."
+  },
+  "delta": {
+    "absolute_ns": -1614.13,
+    "percent": -72.34,
+    "speedup": 3.615
+  },
+  "opportunity_score": {
+    "impact": 4,
+    "confidence": 3,
+    "effort": 1,
+    "score": 12.0
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_core_validate_fxhash_pass13_2026-06-02.golden",
+    "sha256": "ed38c1b750190cdd912625951a808155270cd09045954e490c578b53d2262b41",
+    "semantic_summary": "valid large Jaxpr remains ok; duplicate constvar, unbound input, output shadow, and unknown outvar error precedence preserved; canonical fingerprint cache is untouched"
+  },
+  "isomorphism_proof": {
+    "ordering": "validate_well_formed still traverses invars, constvars, equations, equation inputs, equation outputs, sub-jaxprs, and outvars in the same order and returns at the same checkpoints.",
+    "tie_breaking": "No ordering-dependent collection iteration is observed; FxHashSet is used only for membership and duplicate detection.",
+    "floating_point": "The validation path does not inspect floating-point values beyond Atom shape and VarId bindings.",
+    "rng": "RandomState is not used; rustc_hash FxHashSet has deterministic hashing and no RNG seeding.",
+    "unsafe": "No unsafe code added.",
+    "fingerprint": "canonical_fingerprint code and cache semantics are untouched."
+  },
+  "validation": [
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-core/src/lib.rs",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-core/Cargo.toml crates/fj-core/src/lib.rs",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-check-d5dw cargo check -p fj-core --all-targets",
+      "worker": "vmi1149989",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-test-d5dw cargo test -p fj-core --all-targets",
+      "worker": "vmi1149989",
+      "result": "pass",
+      "note": "121 unit tests plus core_baseline bench harness smoke tests passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-clippy-d5dw cargo clippy -p fj-core --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1153651",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-core/src/lib.rs crates/fj-core/Cargo.toml",
+      "result": "non_clean_existing_inventory",
+      "note": "UBS exited nonzero for pre-existing fj-core findings outside this diff; formatter, clippy, check, and test sections were clean."
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-profile-pass13 cargo bench -p fj-core --bench core_baseline -- --sample-size 40 --warm-up-time 1 --measurement-time 3",
+      "worker": "vmi1153651",
+      "result": "profile baseline"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-bench-after-d5dw cargo bench -p fj-core --bench core_baseline -- core/jaxpr_validate_large --sample-size 40 --warm-up-time 1 --measurement-time 3",
+      "worker": "vmi1149989",
+      "result": "bench after"
+    }
+  ]
+}
