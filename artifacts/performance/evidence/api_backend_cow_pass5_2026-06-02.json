@@ -1,0 +1,82 @@
+{
+  "schema_version": "frankenjax.optimization-pass-evidence.v1",
+  "bead_ids": ["frankenjax-hmna", "frankenjax-xi0w"],
+  "pass": 5,
+  "captured_at_iso": "2026-06-02T01:00:23Z",
+  "target": "fj-api default wrapper backend allocation overhead",
+  "one_lever": "Store default API wrapper backend names as borrowed Cow<'static, str> values while preserving owned custom backend overrides.",
+  "benchmark": {
+    "crate": "fj-api",
+    "bench": "api_overhead",
+    "command": "rch exec -- cargo bench -p fj-api --bench api_overhead -- 'api_composition|api_vs_dispatch|api_overhead' --sample-size 20 --measurement-time 3 --warm-up-time 1"
+  },
+  "baseline": {
+    "api_overhead/jit/scalar_add_us_mid": 5.1753,
+    "api_overhead/grad/scalar_square_us_mid": 5.7499,
+    "api_overhead/vmap/vector_add_one_us_mid": 5.4013,
+    "api_overhead/value_and_grad/scalar_square_us_mid": 5.7851,
+    "api_composition/jit_vmap/builder_us_mid": 6.0272,
+    "api_composition/vmap_grad/builder_us_mid": 9.1380,
+    "api_composition/jit_vmap_grad/compose_helper_us_mid": 10.144
+  },
+  "candidate": {
+    "api_overhead/jit/scalar_add_us_mid": 5.1017,
+    "api_overhead/grad/scalar_square_us_mid": 5.5581,
+    "api_overhead/vmap/vector_add_one_us_mid": 5.1022,
+    "api_overhead/value_and_grad/scalar_square_us_mid": 5.6874,
+    "api_composition/jit_vmap/builder_us_mid": 5.7188,
+    "api_composition/vmap_grad/builder_us_mid": 8.6677,
+    "api_composition/jit_vmap_grad/compose_helper_us_mid": 9.6290
+  },
+  "score": {
+    "impact": 3.0,
+    "confidence": 3.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 4.5,
+    "decision": "keep",
+    "rationale": "Default API wrappers avoid one small heap allocation per construction on benchmark-visible strict CPU paths; multiple jit, grad, vmap, and composition midpoints improved."
+  },
+  "behavior_proof": {
+    "ordering": "Transform order, ledger evidence IDs, dispatch call order, and backend resolution order are unchanged.",
+    "tie_breaking": "No comparator, map iteration, or extraction tie-breaker changed.",
+    "floating_point": "No primitive evaluation, AD arithmetic, or tolerance path changed.",
+    "rng": "No RNG primitive, seed, or state handling changed.",
+    "strict_hardened": "Compatibility mode and unknown-feature handling are unchanged.",
+    "custom_backend": "with_backend still stores an owned custom backend string and dispatch receives the same string content.",
+    "golden_output_payload": "api_backend_cow_pass5\njit_add_scalar=[i64:7]\ngrad_square=[f64:6]\nvmap_add_one=[i64:11,21,31]\ncustom_backend=owned_string_preserved\n",
+    "golden_output_sha256": "0e9a88c23ceca6462a6370f59f563a6e389bed0646fdb0bc8ac5df755359d05c"
+  },
+  "validation": [
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-api/src/transforms.rs",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-api/src/transforms.rs",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-api/src/transforms.rs",
+      "result": "pass",
+      "notes": "Exit 0; warning inventory remains in existing tests and known heuristic surfaces, with no critical findings."
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-api --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-api --all-targets",
+      "result": "pass",
+      "notes": "88 unit tests, 45 api_transform_suite tests, bench harness smoke tests, and readme example test target passed."
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-api --all-targets --no-deps -- -D warnings",
+      "result": "pass"
+    }
+  ],
+  "rejected_alternatives": [
+    "Static ledger evidence IDs: rejected because it touches audit/hash semantics.",
+    "Fixed-size transform stack storage: rejected as too much churn for a one-lever pass.",
+    "Benchmark-only hoisting: rejected because it does not optimize the API path."
+  ]
+}

@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,18 +12,20 @@ use crate::errors::ApiError;
 
 static CUSTOM_DERIVATIVE_WRAPPER_ID: AtomicU64 = AtomicU64::new(1);
 const CUSTOM_VJP_RULE_KEY_OPTION: &str = "custom_vjp_rule_key";
+const DEFAULT_BACKEND: &str = "cpu";
+type BackendName = Cow<'static, str>;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct JitWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GradWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     custom_vjp_rule_key: Option<String>,
 }
@@ -30,7 +33,7 @@ pub struct GradWrapped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VmapWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     in_axes: Option<String>,
     out_axes: Option<String>,
@@ -39,7 +42,7 @@ pub struct VmapWrapped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ValueAndGradWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     custom_vjp_rule_key: Option<String>,
 }
@@ -47,7 +50,7 @@ pub struct ValueAndGradWrapped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomVjpWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     rule_key: String,
 }
@@ -55,7 +58,7 @@ pub struct CustomVjpWrapped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomJvpWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     rule_key: String,
 }
@@ -106,7 +109,7 @@ pub struct TransposedLinearFunction {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CheckpointWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     custom_vjp_rule_key: String,
 }
@@ -118,7 +121,7 @@ pub struct CheckpointWrapped {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PmapWrapped {
     jaxpr: Jaxpr,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     axis_name: Option<String>,
 }
@@ -127,7 +130,7 @@ pub struct PmapWrapped {
 pub struct ComposedTransform {
     jaxpr: Jaxpr,
     transforms: Vec<Transform>,
-    backend: String,
+    backend: BackendName,
     mode: CompatibilityMode,
     compile_options: BTreeMap<String, String>,
     custom_vjp_rule_key: Option<String>,
@@ -137,7 +140,7 @@ pub struct ComposedTransform {
 pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
     JitWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
     }
 }
@@ -146,7 +149,7 @@ pub fn jit(jaxpr: Jaxpr) -> JitWrapped {
 pub fn grad(jaxpr: Jaxpr) -> GradWrapped {
     GradWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         custom_vjp_rule_key: None,
     }
@@ -156,7 +159,7 @@ pub fn grad(jaxpr: Jaxpr) -> GradWrapped {
 pub fn vmap(jaxpr: Jaxpr) -> VmapWrapped {
     VmapWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         in_axes: None,
         out_axes: None,
@@ -167,7 +170,7 @@ pub fn vmap(jaxpr: Jaxpr) -> VmapWrapped {
 pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
     ValueAndGradWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         custom_vjp_rule_key: None,
     }
@@ -181,7 +184,7 @@ pub fn value_and_grad(jaxpr: Jaxpr) -> ValueAndGradWrapped {
 pub fn pmap(jaxpr: Jaxpr) -> PmapWrapped {
     PmapWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         axis_name: None,
     }
@@ -223,7 +226,7 @@ where
 
     CustomVjpWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         rule_key,
     }
@@ -266,7 +269,7 @@ where
 
     CustomJvpWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         rule_key,
     }
@@ -330,7 +333,10 @@ impl LinearizedFunction {
 /// let transposed = linear_transpose(jaxpr, primals)?;
 /// let result = transposed.call(cotangent)?;
 /// ```
-pub fn linear_transpose(jaxpr: Jaxpr, primals: Vec<Value>) -> Result<TransposedLinearFunction, ApiError> {
+pub fn linear_transpose(
+    jaxpr: Jaxpr,
+    primals: Vec<Value>,
+) -> Result<TransposedLinearFunction, ApiError> {
     let _ = fj_interpreters::eval_jaxpr(&jaxpr, &primals)?;
     Ok(TransposedLinearFunction { jaxpr, primals })
 }
@@ -366,7 +372,7 @@ pub fn checkpoint(jaxpr: Jaxpr) -> CheckpointWrapped {
 
     CheckpointWrapped {
         jaxpr,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         custom_vjp_rule_key: rule_key,
     }
@@ -433,7 +439,7 @@ pub fn eval_shape(jaxpr: &Jaxpr, inputs: &[Value]) -> Result<Vec<ShapedArray>, A
             });
         }
 
-        for (var, shape) in eqn.outputs.iter().zip(output_shapes.into_iter()) {
+        for (var, shape) in eqn.outputs.iter().zip(output_shapes) {
             shape_env.insert(*var, shape);
         }
     }
@@ -531,7 +537,10 @@ fn infer_primitive_shapes(
                     .filter_map(|s| s.trim().parse().ok())
                     .collect();
                 Ok(vec![ShapedArray {
-                    dtype: inputs.first().map(|i| i.dtype).unwrap_or(fj_core::DType::F64),
+                    dtype: inputs
+                        .first()
+                        .map(|i| i.dtype)
+                        .unwrap_or(fj_core::DType::F64),
                     shape: fj_core::Shape { dims },
                 }])
             } else {
@@ -617,7 +626,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
     ComposedTransform {
         jaxpr,
         transforms,
-        backend: "cpu".to_owned(),
+        backend: Cow::Borrowed(DEFAULT_BACKEND),
         mode: CompatibilityMode::Strict,
         compile_options: BTreeMap::new(),
         custom_vjp_rule_key: None,
@@ -627,7 +636,7 @@ pub fn compose(jaxpr: Jaxpr, transforms: Vec<Transform>) -> ComposedTransform {
 impl JitWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -642,7 +651,7 @@ impl JitWrapped {
             self.jaxpr.clone(),
             &[Transform::Jit],
             args,
-            &self.backend,
+            self.backend.as_ref(),
             self.mode,
         )
     }
@@ -677,7 +686,7 @@ impl JitWrapped {
 impl GradWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -696,7 +705,7 @@ impl GradWrapped {
             self.jaxpr.clone(),
             &[Transform::Grad],
             args,
-            &self.backend,
+            self.backend.as_ref(),
             self.mode,
             compile_options,
         )
@@ -706,7 +715,7 @@ impl GradWrapped {
 impl VmapWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -747,7 +756,7 @@ impl VmapWrapped {
             mode: self.mode,
             ledger: build_ledger(self.jaxpr.clone(), &[Transform::Vmap]),
             args,
-            backend: self.backend.clone(),
+            backend: self.backend.to_string(),
             compile_options,
             custom_hook: None,
             unknown_incompatible_features: vec![],
@@ -779,7 +788,7 @@ impl VmapWrapped {
 impl ComposedTransform {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -833,7 +842,7 @@ impl ComposedTransform {
             self.jaxpr.clone(),
             &self.transforms,
             args,
-            &self.backend,
+            self.backend.as_ref(),
             self.mode,
             compile_options,
         )
@@ -843,7 +852,7 @@ impl ComposedTransform {
 impl ValueAndGradWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -863,7 +872,7 @@ impl ValueAndGradWrapped {
             self.jaxpr.clone(),
             &[Transform::Grad],
             args,
-            &self.backend,
+            self.backend.as_ref(),
             self.mode,
             compile_options,
         )?;
@@ -887,7 +896,7 @@ impl ValueAndGradWrapped {
 impl CustomVjpWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -898,7 +907,13 @@ impl CustomVjpWrapped {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(self.jaxpr.clone(), &[], args, &self.backend, self.mode)
+        dispatch_with(
+            self.jaxpr.clone(),
+            &[],
+            args,
+            self.backend.as_ref(),
+            self.mode,
+        )
     }
 
     #[must_use]
@@ -938,7 +953,7 @@ impl CustomVjpWrapped {
 impl CustomJvpWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -949,7 +964,13 @@ impl CustomJvpWrapped {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(self.jaxpr.clone(), &[], args, &self.backend, self.mode)
+        dispatch_with(
+            self.jaxpr.clone(),
+            &[],
+            args,
+            self.backend.as_ref(),
+            self.mode,
+        )
     }
 
     pub fn jvp_call(
@@ -990,7 +1011,7 @@ impl HessianWrapped {
 impl CheckpointWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
@@ -1002,7 +1023,13 @@ impl CheckpointWrapped {
 
     /// Execute the checkpointed function (forward pass only).
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(self.jaxpr.clone(), &[], args, &self.backend, self.mode)
+        dispatch_with(
+            self.jaxpr.clone(),
+            &[],
+            args,
+            self.backend.as_ref(),
+            self.mode,
+        )
     }
 
     /// Compute gradients of the checkpointed function.
@@ -1041,7 +1068,7 @@ impl CheckpointWrapped {
 impl PmapWrapped {
     #[must_use]
     pub fn with_backend(mut self, backend: &str) -> Self {
-        self.backend = backend.to_owned();
+        self.backend = Cow::Owned(backend.to_owned());
         self
     }
 
