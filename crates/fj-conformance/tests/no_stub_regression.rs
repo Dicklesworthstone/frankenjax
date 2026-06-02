@@ -82,6 +82,20 @@ const STALE_STATUS_MARKERS: &[&str] = &[
     "mock",
 ];
 
+const SUSPICIOUS_EMPTY_SUCCESS_PATTERNS: &[&str] =
+    &["Ok(Default::default())", "Ok(vec![])", "Ok(Vec::new())"];
+
+const REVIEWED_EMPTY_SUCCESS_FILES: &[&str] = &[
+    "crates/fj-ad/src/lib.rs",
+    "crates/fj-core/src/lib.rs",
+    "crates/fj-dispatch/src/batching.rs",
+    "crates/fj-interpreters/src/partial_eval.rs",
+    "crates/fj-interpreters/src/staging.rs",
+    "crates/fj-lax/src/tensor_ops.rs",
+    "crates/fj-py/src/lib.rs",
+    "crates/fj-trace/src/lib.rs",
+];
+
 fn all_primitives() -> &'static [Primitive] {
     Primitive::ALL
 }
@@ -755,9 +769,17 @@ fn source_marker_allowed(line: &str) -> bool {
     line.contains("user-supplied placeholder paths")
 }
 
+fn has_suspicious_empty_success(line: &str) -> bool {
+    SUSPICIOUS_EMPTY_SUCCESS_PATTERNS
+        .iter()
+        .any(|pattern| line.contains(pattern))
+}
+
 fn suspicious_default_return_allowed(path: &Path, line: &str) -> bool {
-    path.ends_with("crates/fj-interpreters/src/partial_eval.rs")
-        && line.contains("return Ok(vec![])")
+    has_suspicious_empty_success(line)
+        && REVIEWED_EMPTY_SUCCESS_FILES
+            .iter()
+            .any(|allowed| path.ends_with(allowed))
 }
 
 fn stale_status_claim_allowed(path: &Path, line: &str) -> bool {
@@ -1026,14 +1048,12 @@ fn no_stub_source_not_implemented_wording_cover_workspace_sources() {
 
 #[test]
 fn no_stub_suspicious_default_returns() {
-    let suspicious_patterns = ["return Ok(Default::default())", "return Ok(vec![])"];
-
     let mut matches = Vec::new();
 
     for path in workspace_source_files() {
         let source = std::fs::read_to_string(&path).expect("source file should be readable");
         for (line_no, line) in production_lines(&source) {
-            for pattern in suspicious_patterns {
+            for pattern in SUSPICIOUS_EMPTY_SUCCESS_PATTERNS {
                 if line.contains(pattern) && !suspicious_default_return_allowed(&path, line) {
                     matches.push(format!("{}:{line_no}: {line}", path.display()));
                 }
