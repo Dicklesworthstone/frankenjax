@@ -122,7 +122,7 @@ fn test_beta_range() {
     let samples = random_beta(key, SAMPLE_SIZE, 2.0, 5.0);
 
     assert!(
-        samples.iter().all(|&x| x >= 0.0 && x <= 1.0),
+        samples.iter().all(|&x| (0.0..=1.0).contains(&x)),
         "beta samples should be in [0, 1]"
     );
 }
@@ -308,7 +308,7 @@ fn test_dirichlet_simplex() {
             sum
         );
         assert!(
-            row.iter().all(|&x| x >= 0.0 && x <= 1.0),
+            row.iter().all(|&x| (0.0..=1.0).contains(&x)),
             "dirichlet components should be in [0, 1]"
         );
     }

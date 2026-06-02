@@ -52,10 +52,11 @@ fn test_ones_2x3() {
 // JAX reference: jnp.full((2, 2), 3.14)
 #[test]
 fn test_full_pi() {
-    let result = full(&[2, 2], 3.14, DType::F64).unwrap();
+    let fill_value = f64::from(314_u16) / f64::from(100_u16);
+    let result = full(&[2, 2], fill_value, DType::F64).unwrap();
     let values = extract_f64_values(&result);
     assert_eq!(values.len(), 4);
-    assert!(values.iter().all(|&v| approx_eq(v, 3.14, 1e-10)));
+    assert!(values.iter().all(|&v| approx_eq(v, fill_value, 1e-10)));
 }
 
 // JAX reference: jnp.eye(3)
