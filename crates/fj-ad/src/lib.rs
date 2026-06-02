@@ -4126,9 +4126,12 @@ pub fn vjp(
             Ok(vec![Value::Tensor(a_bar_tensor)])
         }
         // ── Eig VJP ──
-        // Non-symmetric eigenvalue differentiation is complex.
-        // V1: return zero gradient (eig not differentiable in V1).
-        Primitive::Eig => Ok(vec![zeros_like(&inputs[0])]),
+        // JAX registers only a forward-mode rule for eig (eig_jvp_rule) and no
+        // transpose/VJP, so reverse-mode AD through a non-symmetric
+        // eigendecomposition raises there. Returning a zero cotangent here
+        // silently diverged from the oracle (a grad() through eig would
+        // succeed with a wrong zero gradient). Fail closed to match JAX.
+        Primitive::Eig => Err(AdError::UnsupportedPrimitive(Primitive::Eig)),
         // ── SVD VJP ──
         // A = U diag(s) V^T. Given cotangents g_U, g_s, g_Vt:
         // G[i,j] = [s_j(D_U[i,j]-D_U[j,i]) + s_i(D_V[i,j]-D_V[j,i])] / (s_j²-s_i²)
@@ -16394,6 +16397,38 @@ mod tests {
         let a_vals = [2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0];
         let da_vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         check_lu_jvp_numerical(3, &a_vals, &da_vals);
+    }
+
+    #[test]
+    fn test_eig_vjp_fails_closed() {
+        // JAX registers no reverse-mode (transpose/VJP) rule for eig, so
+        // grad() through it raises. fj-ad must fail closed rather than
+        // silently returning a zero gradient.
+        let a = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(0.0),
+                    Literal::from_f64(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let err = vjp(
+            Primitive::Eig,
+            std::slice::from_ref(&a),
+            &[zeros_like(&a)],
+            std::slice::from_ref(&a),
+            &BTreeMap::new(),
+        )
+        .expect_err("eig VJP must fail closed");
+        assert!(
+            matches!(err, AdError::UnsupportedPrimitive(Primitive::Eig)),
+            "expected UnsupportedPrimitive(Eig), got {err:?}"
+        );
     }
 
     // ── Eigh VJP test ──
