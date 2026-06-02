@@ -2,7 +2,7 @@
 #![allow(clippy::cloned_ref_to_slice_refs)]
 
 use fj_core::{Atom, DType, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
-use fj_lax::{eval_primitive, eval_primitive_multi};
+use fj_lax::{eval_igamma_grad_a, eval_primitive, eval_primitive_multi};
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -704,6 +704,12 @@ fn value_reduce_sum_all(value: &Value) -> Result<Value, AdError> {
         &BTreeMap::new(),
     )
     .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Elementwise ∂/∂a of the regularized lower incomplete gamma P(a, x),
+/// used by the igamma/igammac gradient rules (JAX `igamma_grad_a`).
+fn igamma_grad_a_value(a: &Value, x: &Value) -> Result<Value, AdError> {
+    eval_igamma_grad_a(&[a.clone(), x.clone()]).map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
 fn value_neg(a: &Value) -> Result<Value, AdError> {
@@ -1922,7 +1928,7 @@ pub fn vjp(
         }
         Primitive::Igamma => {
             // d/dx igamma(a, x) = x^(a-1) * exp(-x) / Gamma(a)
-            // d/da is complex; use zeros for now
+            // d/da igamma(a, x) = igamma_grad_a(a, x) (JAX's dedicated series)
             let a = &inputs[0];
             let x = &inputs[1];
             let a_minus_1 = value_sub(a, &scalar_constant_matching_dtype(1.0, a))?;
@@ -1937,10 +1943,12 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let numer = value_mul(&x_pow_am1, &exp_neg_x)?;
             let dx = value_div(&numer, &gamma_a)?;
-            Ok(vec![zeros_like(a), value_mul(g, &dx)?])
+            let da = igamma_grad_a_value(a, x)?;
+            Ok(vec![value_mul(g, &da)?, value_mul(g, &dx)?])
         }
         Primitive::Igammac => {
             // d/dx igammac(a, x) = -d/dx igamma(a, x)
+            // d/da igammac(a, x) = -igamma_grad_a(a, x)  (Q = 1 - P)
             let a = &inputs[0];
             let x = &inputs[1];
             let a_minus_1 = value_sub(a, &scalar_constant_matching_dtype(1.0, a))?;
@@ -1956,7 +1964,8 @@ pub fn vjp(
             let numer = value_mul(&x_pow_am1, &exp_neg_x)?;
             let dx = value_div(&numer, &gamma_a)?;
             let neg_dx = value_neg(&dx)?;
-            Ok(vec![zeros_like(a), value_mul(g, &neg_dx)?])
+            let neg_da = value_neg(&igamma_grad_a_value(a, x)?)?;
+            Ok(vec![value_mul(g, &neg_da)?, value_mul(g, &neg_dx)?])
         }
         Primitive::Betainc => {
             // d/da, d/db: complex, return zeros
@@ -7616,9 +7625,11 @@ fn jvp_rule(
             ep(Primitive::Mul, &[factor, tangents[0].clone()])
         }
         Primitive::Igamma => {
-            // d/dx igamma(a, x) = x^(a-1) * exp(-x) / Gamma(a)
+            // JVP = (∂/∂a) da + (∂/∂x) dx, with
+            //   ∂/∂x = x^(a-1) exp(-x) / Γ(a),  ∂/∂a = igamma_grad_a(a, x).
             let a = &primals[0];
             let x = &primals[1];
+            let da = &tangents[0];
             let dx = &tangents[1];
             let one = scalar_constant_matching_dtype(1.0, a);
             let a_m1 = ep(Primitive::Sub, &[a.clone(), one])?;
@@ -7628,13 +7639,17 @@ fn jvp_rule(
             let lgamma_a = ep(Primitive::Lgamma, &[a.clone()])?;
             let gamma_a = ep(Primitive::Exp, &[lgamma_a])?;
             let numer = ep(Primitive::Mul, &[x_pow, exp_neg_x])?;
-            let deriv = ep(Primitive::Div, &[numer, gamma_a])?;
-            ep(Primitive::Mul, &[deriv, dx.clone()])
+            let deriv_x = ep(Primitive::Div, &[numer, gamma_a])?;
+            let term_x = ep(Primitive::Mul, &[deriv_x, dx.clone()])?;
+            let deriv_a = igamma_grad_a_value(a, x)?;
+            let term_a = ep(Primitive::Mul, &[deriv_a, da.clone()])?;
+            ep(Primitive::Add, &[term_a, term_x])
         }
         Primitive::Igammac => {
-            // d/dx igammac(a, x) = -d/dx igamma(a, x)
+            // JVP = -(∂P/∂a · da + ∂P/∂x · dx), since Q = 1 - P.
             let a = &primals[0];
             let x = &primals[1];
+            let da = &tangents[0];
             let dx = &tangents[1];
             let one = scalar_constant_matching_dtype(1.0, a);
             let a_m1 = ep(Primitive::Sub, &[a.clone(), one])?;
@@ -7644,9 +7659,12 @@ fn jvp_rule(
             let lgamma_a = ep(Primitive::Lgamma, &[a.clone()])?;
             let gamma_a = ep(Primitive::Exp, &[lgamma_a])?;
             let numer = ep(Primitive::Mul, &[x_pow, exp_neg_x])?;
-            let deriv = ep(Primitive::Div, &[numer, gamma_a])?;
-            let neg_deriv = ep(Primitive::Neg, &[deriv])?;
-            ep(Primitive::Mul, &[neg_deriv, dx.clone()])
+            let deriv_x = ep(Primitive::Div, &[numer, gamma_a])?;
+            let term_x = ep(Primitive::Mul, &[deriv_x, dx.clone()])?;
+            let deriv_a = igamma_grad_a_value(a, x)?;
+            let term_a = ep(Primitive::Mul, &[deriv_a, da.clone()])?;
+            let sum = ep(Primitive::Add, &[term_a, term_x])?;
+            ep(Primitive::Neg, &[sum])
         }
         Primitive::Betainc => {
             // d/dx I_x(a,b) = x^{a-1} * (1-x)^{b-1} / B(a,b)
@@ -10761,6 +10779,75 @@ mod tests {
         let num = (plus - minus) / (2.0 * eps);
 
         assert!((sym - num).abs() < 1e-4, "sym={sym}, num={num}");
+    }
+
+    #[test]
+    fn test_igamma_vjp_grad_a_finite_diff() {
+        // d/da igamma(a,x) is now implemented (JAX igamma_grad_a). Verify the
+        // VJP's first cotangent against a central finite difference of the
+        // value function, across both the series and continued-fraction
+        // regimes. The VJP returns [d/da, d/dx]; check d/da.
+        let eps = 1e-6_f64;
+        for (a, x) in [(2.0, 1.0), (3.0, 2.0), (1.0, 3.0), (2.5, 8.0)] {
+            let grads = vjp_single(
+                Primitive::Igamma,
+                &[Value::scalar_f64(a), Value::scalar_f64(x)],
+                &Value::scalar_f64(1.0),
+                &BTreeMap::new(),
+            )
+            .expect("igamma vjp");
+            let sym = grads[0].as_f64_scalar().expect("scalar d/da");
+            let plus = eval_primitive(
+                Primitive::Igamma,
+                &[Value::scalar_f64(a + eps), Value::scalar_f64(x)],
+                &BTreeMap::new(),
+            )
+            .unwrap()
+            .as_f64_scalar()
+            .unwrap();
+            let minus = eval_primitive(
+                Primitive::Igamma,
+                &[Value::scalar_f64(a - eps), Value::scalar_f64(x)],
+                &BTreeMap::new(),
+            )
+            .unwrap()
+            .as_f64_scalar()
+            .unwrap();
+            let num = (plus - minus) / (2.0 * eps);
+            // fj-lax igamma is less precise in the CF regime, so allow a
+            // modest tolerance; the analytic value itself is golden-tested
+            // tightly in fj-lax.
+            assert!(
+                (sym - num).abs() < 3e-3 * (1.0 + num.abs()),
+                "igamma d/da({a},{x}): sym={sym}, fd={num}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_igammac_vjp_grad_a_is_negation_of_igamma() {
+        // d/da igammac = -d/da igamma (Q = 1 - P).
+        for (a, x) in [(2.0, 1.5), (1.0, 3.0)] {
+            let ig = vjp_single(
+                Primitive::Igamma,
+                &[Value::scalar_f64(a), Value::scalar_f64(x)],
+                &Value::scalar_f64(1.0),
+                &BTreeMap::new(),
+            )
+            .unwrap()[0]
+                .as_f64_scalar()
+                .unwrap();
+            let igc = vjp_single(
+                Primitive::Igammac,
+                &[Value::scalar_f64(a), Value::scalar_f64(x)],
+                &Value::scalar_f64(1.0),
+                &BTreeMap::new(),
+            )
+            .unwrap()[0]
+                .as_f64_scalar()
+                .unwrap();
+            assert!((ig + igc).abs() < 1e-12, "d/da igamma+igammac={}", ig + igc);
+        }
     }
 
     #[test]

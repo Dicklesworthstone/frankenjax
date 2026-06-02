@@ -2766,6 +2766,128 @@ fn igammac_cf(a: f64, x: f64) -> f64 {
     f * (-x + a * x.ln() - lgamma_approx(a)).exp()
 }
 
+/// ∂/∂a of the regularized lower incomplete gamma P(a, x) = igamma(a, x).
+///
+/// Translated from JAX's `igamma_grad_a_impl` (lax/special.py): a power
+/// series for the small-x regime and a continued fraction for the large-x
+/// regime, each carrying the derivative recurrence alongside the value. The
+/// branch split (`x > 1 && x > a` → continued fraction) matches JAX exactly.
+pub(crate) fn igamma_grad_a_approx(a: f64, x: f64) -> f64 {
+    if a.is_nan() || x.is_nan() {
+        return f64::NAN;
+    }
+    // domain error: x < 0 or a <= 0 → NaN (matches JAX)
+    if x < 0.0 || a <= 0.0 {
+        return f64::NAN;
+    }
+    if x == 0.0 {
+        return 0.0;
+    }
+    let ax_exponent = a * x.ln() - x - lgamma_approx(a);
+    // underflow: ax ≈ 0 makes the whole derivative ≈ 0
+    if ax_exponent < -f64::MAX.ln() {
+        return 0.0;
+    }
+    let ax = ax_exponent.exp();
+    if x > 1.0 && x > a {
+        -igammac_cf_grad_a(ax, x, a)
+    } else {
+        igamma_series_grad_a(ax, x, a)
+    }
+}
+
+/// Power-series branch of [`igamma_grad_a_approx`] (JAX `_igamma_series`,
+/// DERIVATIVE mode).
+fn igamma_series_grad_a(ax: f64, x: f64, a: f64) -> f64 {
+    let eps = f64::EPSILON;
+    let mut r = a;
+    let mut c = 1.0_f64;
+    let mut ans = 1.0_f64;
+    let mut dc_da = 0.0_f64;
+    let mut dans_da = 0.0_f64;
+    for _ in 0..2000 {
+        r += 1.0;
+        dc_da = dc_da * (x / r) - (c * x) / (r * r);
+        dans_da += dc_da;
+        c *= x / r;
+        ans += c;
+        if dans_da != 0.0 && (dc_da / dans_da).abs() <= eps {
+            break;
+        }
+    }
+    let dlogax_da = x.ln() - digamma_approx(a + 1.0);
+    ax * (ans * dlogax_da + dans_da) / a
+}
+
+/// Continued-fraction branch of [`igamma_grad_a_approx`] (JAX
+/// `_igammac_continued_fraction`, DERIVATIVE mode). Returns ∂/∂a of the
+/// *upper* regularized incomplete gamma; the caller negates it.
+fn igammac_cf_grad_a(ax: f64, x: f64, a: f64) -> f64 {
+    let eps = f64::EPSILON;
+    let mut y = 1.0 - a;
+    let mut z = x + y + 1.0;
+    let mut c = 0.0_f64;
+    let mut pkm2 = 1.0_f64;
+    let mut qkm2 = x;
+    let mut pkm1 = x + 1.0;
+    let mut qkm1 = z * x;
+    let mut ans = pkm1 / qkm1;
+    let mut dpkm2_da = 0.0_f64;
+    let mut dqkm2_da = 0.0_f64;
+    let mut dpkm1_da = 0.0_f64;
+    let mut dqkm1_da = -x;
+    let mut dans_da = (dpkm1_da - ans * dqkm1_da) / qkm1;
+    while c < 2000.0 {
+        c += 1.0;
+        y += 1.0;
+        z += 2.0;
+        let yc = y * c;
+        let pk = pkm1 * z - pkm2 * yc;
+        let qk = qkm1 * z - qkm2 * yc;
+
+        let dpk_da = dpkm1_da * z - pkm1 - dpkm2_da * yc + pkm2 * c;
+        let dqk_da = dqkm1_da * z - qkm1 - dqkm2_da * yc + qkm2 * c;
+
+        let grad_conditional;
+        if qk != 0.0 {
+            let r = pk / qk;
+            ans = r;
+            let new_dans_da = (dpk_da - ans * dqk_da) / qk;
+            grad_conditional = (new_dans_da - dans_da).abs();
+            dans_da = new_dans_da;
+        } else {
+            grad_conditional = 1.0;
+        }
+
+        pkm2 = pkm1;
+        pkm1 = pk;
+        qkm2 = qkm1;
+        qkm1 = qk;
+        dpkm2_da = dpkm1_da;
+        dqkm2_da = dqkm1_da;
+        dpkm1_da = dpk_da;
+        dqkm1_da = dqk_da;
+
+        // Rescale to avoid overflow once the numerator grows large.
+        if pk.abs() > 1.0 / eps {
+            pkm2 *= eps;
+            pkm1 *= eps;
+            qkm2 *= eps;
+            qkm1 *= eps;
+            dpkm2_da *= eps;
+            dqkm2_da *= eps;
+            dpkm1_da *= eps;
+            dqkm1_da *= eps;
+        }
+
+        if grad_conditional <= eps {
+            break;
+        }
+    }
+    let dlogax_da = x.ln() - digamma_approx(a);
+    ax * (ans * dlogax_da + dans_da)
+}
+
 pub(crate) fn igamma_approx(a: f64, x: f64) -> f64 {
     if a.is_nan() || x.is_nan() || a <= 0.0 || x < 0.0 {
         return f64::NAN;
@@ -2829,6 +2951,26 @@ pub(crate) fn eval_igammac(primitive: Primitive, inputs: &[Value]) -> Result<Val
         inputs,
         |a, x| igammac_approx(a as f64, x as f64) as i64,
         igammac_approx,
+    )
+}
+
+/// Elementwise ∂/∂a of the regularized lower incomplete gamma P(a, x).
+/// Exposed for the AD layer's igamma/igammac VJP and JVP rules (JAX's
+/// `igamma_grad_a` primitive). `Q(a,x) = 1 - P(a,x)`, so igammac's
+/// derivative wrt `a` is the negation of this.
+pub fn eval_igamma_grad_a(inputs: &[Value]) -> Result<Value, EvalError> {
+    if inputs.len() != 2 {
+        return Err(EvalError::ArityMismatch {
+            primitive: Primitive::Igamma,
+            expected: 2,
+            actual: inputs.len(),
+        });
+    }
+    eval_binary_elementwise(
+        Primitive::Igamma,
+        inputs,
+        |a, x| igamma_grad_a_approx(a as f64, x as f64) as i64,
+        igamma_grad_a_approx,
     )
 }
 
@@ -5257,6 +5399,44 @@ mod tests {
             extract_f64(&eval_igamma(Primitive::Igamma, &[a.clone(), x.clone()]).unwrap());
         let igammac_val = extract_f64(&eval_igammac(Primitive::Igammac, &[a, x]).unwrap());
         assert!((igamma_val + igammac_val - 1.0).abs() < 1e-10, "P + Q = 1");
+    }
+
+    #[test]
+    fn igamma_grad_a_matches_scipy_golden_both_regimes() {
+        // Golden ∂P(a,x)/∂a values from scipy.special.gammainc (central
+        // finite difference, h=1e-7), covering both the series regime
+        // (x <= 1 or x <= a) and the continued-fraction regime (x > 1 && x > a).
+        // Validating against an external reference rather than a finite
+        // difference of fj-lax's own igamma_approx — the latter is slightly
+        // imprecise in the CF regime and would bias the check.
+        let golden = [
+            // (a, x, dP/da) — series regime
+            (2.0, 1.0, -0.2761960455),
+            (3.0, 2.0, -0.2318486705),
+            (4.0, 0.5, -0.0038892172),
+            (1.5, 1.2, -0.3702955070),
+            // continued-fraction regime: x > 1 && x > a
+            (1.0, 3.0, -0.0964829422),
+            (2.0, 5.0, -0.0558598962),
+            (0.7, 4.0, -0.0245665260),
+            (2.5, 8.0, -0.0103088638),
+        ];
+        for (a, x, expected) in golden {
+            let analytic = igamma_grad_a_approx(a, x);
+            assert!(
+                (analytic - expected).abs() < 1e-7,
+                "igamma_grad_a({a},{x}): analytic={analytic}, scipy={expected}, diff={}",
+                (analytic - expected).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn igamma_grad_a_domain_and_edges() {
+        assert!(igamma_grad_a_approx(f64::NAN, 1.0).is_nan());
+        assert!(igamma_grad_a_approx(2.0, -1.0).is_nan(), "x<0 → NaN");
+        assert!(igamma_grad_a_approx(-1.0, 1.0).is_nan(), "a<=0 → NaN");
+        assert_eq!(igamma_grad_a_approx(2.0, 0.0), 0.0, "x==0 → 0");
     }
 
     // ── Betainc ──

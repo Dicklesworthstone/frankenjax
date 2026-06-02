@@ -17,6 +17,9 @@ mod type_promotion;
 /// Public access to `promote_dtype` for conformance tests.
 pub use type_promotion::promote_dtype as promote_dtype_public;
 
+/// Public access to ∂/∂a of igamma for the AD layer's igamma/igammac rules.
+pub use arithmetic::eval_igamma_grad_a;
+
 use fj_core::{Literal, Primitive, Shape, TensorValue, Value, ValueError};
 use std::collections::BTreeMap;
 
