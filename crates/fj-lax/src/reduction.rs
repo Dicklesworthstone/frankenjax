@@ -28,6 +28,14 @@ fn complex_literal_from_parts(dtype: DType, re: f64, im: f64) -> Literal {
     }
 }
 
+/// Lexicographic ordering on complex `(real, imaginary)` pairs, matching JAX's
+/// complex max/min (the docstrings specify "a lexicographic comparison on the
+/// (real, imaginary) pairs") and NumPy. Uses `total_cmp` so the order is total
+/// and consistent with fj-lax's complex sort key (`SortKey::Complex`).
+fn complex_lex_cmp(lhs: (f64, f64), rhs: (f64, f64)) -> std::cmp::Ordering {
+    lhs.0.total_cmp(&rhs.0).then_with(|| lhs.1.total_cmp(&rhs.1))
+}
+
 /// Output dtype for a real (non-complex, non-integral) reduction: preserve
 /// the input's float precision so an F32/BF16/F16 reduction doesn't widen
 /// to F64. Non-float inputs (U32/U64/Bool reaching the float arm via as_f64)
@@ -137,29 +145,52 @@ pub(crate) fn eval_reduce(
             }
 
             if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
-                if primitive != Primitive::ReduceSum && primitive != Primitive::ReduceProd {
+                if !matches!(
+                    primitive,
+                    Primitive::ReduceSum
+                        | Primitive::ReduceProd
+                        | Primitive::ReduceMax
+                        | Primitive::ReduceMin
+                ) {
                     return Err(EvalError::Unsupported {
                         primitive,
-                        detail: "complex reduction is currently supported only for reduce_sum and reduce_prod"
+                        detail: "complex reduction is supported only for reduce_sum, reduce_prod, reduce_max, and reduce_min"
                             .to_owned(),
                     });
                 }
 
-                let (mut re_acc, mut im_acc) = if primitive == Primitive::ReduceProd {
-                    (1.0_f64, 0.0_f64)
-                } else {
-                    (0.0_f64, 0.0_f64)
+                // For max/min, `float_init` is ∓∞ (the lexicographic sentinel),
+                // so seeding both components with it makes the first element win.
+                let (mut re_acc, mut im_acc) = match primitive {
+                    Primitive::ReduceProd => (1.0_f64, 0.0_f64),
+                    Primitive::ReduceMax | Primitive::ReduceMin => (float_init, float_init),
+                    _ => (0.0_f64, 0.0_f64),
                 };
                 for literal in &tensor.elements {
                     let (re, im) = literal_to_complex_parts(primitive, *literal)?;
-                    if primitive == Primitive::ReduceProd {
-                        let new_re = re_acc * re - im_acc * im;
-                        let new_im = re_acc * im + im_acc * re;
-                        re_acc = new_re;
-                        im_acc = new_im;
-                    } else {
-                        re_acc += re;
-                        im_acc += im;
+                    match primitive {
+                        Primitive::ReduceProd => {
+                            let new_re = re_acc * re - im_acc * im;
+                            let new_im = re_acc * im + im_acc * re;
+                            re_acc = new_re;
+                            im_acc = new_im;
+                        }
+                        Primitive::ReduceMax => {
+                            if complex_lex_cmp((re, im), (re_acc, im_acc)).is_gt() {
+                                re_acc = re;
+                                im_acc = im;
+                            }
+                        }
+                        Primitive::ReduceMin => {
+                            if complex_lex_cmp((re, im), (re_acc, im_acc)).is_lt() {
+                                re_acc = re;
+                                im_acc = im;
+                            }
+                        }
+                        _ => {
+                            re_acc += re;
+                            im_acc += im;
+                        }
                     }
                 }
                 return Ok(Value::Scalar(complex_literal_from_parts(
@@ -265,14 +296,23 @@ pub(crate) fn eval_reduce_axes(
             let strides = checked_strides(primitive, "reduction input", &tensor.shape.dims)?;
 
             if is_complex {
-                if primitive != Primitive::ReduceSum && primitive != Primitive::ReduceProd {
+                if !matches!(
+                    primitive,
+                    Primitive::ReduceSum
+                        | Primitive::ReduceProd
+                        | Primitive::ReduceMax
+                        | Primitive::ReduceMin
+                ) {
                     return Err(EvalError::Unsupported {
                         primitive,
-                        detail: "complex reduction is currently supported only for reduce_sum and reduce_prod"
+                        detail: "complex reduction is supported only for reduce_sum, reduce_prod, reduce_max, and reduce_min"
                             .to_owned(),
                     });
                 }
 
+                // ReduceSum seeds (0,0); ReduceProd (1,0); ReduceMax/ReduceMin
+                // seed (float_init, float_init) where float_init is ∓∞, the
+                // lexicographic sentinel that the first element always beats.
                 let (init_re, init_im) = if primitive == Primitive::ReduceProd {
                     (1.0, 0.0)
                 } else {
@@ -298,14 +338,34 @@ pub(crate) fn eval_reduce_axes(
                         &out_dims,
                     )?;
                     let (re, im) = literal_to_complex_parts(primitive, tensor.elements[flat_idx])?;
-                    if primitive == Primitive::ReduceProd {
-                        let acc_re = result_re[out_idx];
-                        let acc_im = result_im[out_idx];
-                        result_re[out_idx] = acc_re * re - acc_im * im;
-                        result_im[out_idx] = acc_re * im + acc_im * re;
-                    } else {
-                        result_re[out_idx] = float_op(result_re[out_idx], re);
-                        result_im[out_idx] = float_op(result_im[out_idx], im);
+                    match primitive {
+                        Primitive::ReduceProd => {
+                            let acc_re = result_re[out_idx];
+                            let acc_im = result_im[out_idx];
+                            result_re[out_idx] = acc_re * re - acc_im * im;
+                            result_im[out_idx] = acc_re * im + acc_im * re;
+                        }
+                        Primitive::ReduceMax => {
+                            if complex_lex_cmp((re, im), (result_re[out_idx], result_im[out_idx]))
+                                .is_gt()
+                            {
+                                result_re[out_idx] = re;
+                                result_im[out_idx] = im;
+                            }
+                        }
+                        Primitive::ReduceMin => {
+                            if complex_lex_cmp((re, im), (result_re[out_idx], result_im[out_idx]))
+                                .is_lt()
+                            {
+                                result_re[out_idx] = re;
+                                result_im[out_idx] = im;
+                            }
+                        }
+                        _ => {
+                            // ReduceSum: component-wise float_op (addition).
+                            result_re[out_idx] = float_op(result_re[out_idx], re);
+                            result_im[out_idx] = float_op(result_im[out_idx], im);
+                        }
                     }
                 }
 
@@ -783,17 +843,25 @@ pub(crate) fn eval_cumulative(
                 };
 
                 if is_complex {
-                    if primitive != Primitive::Cumsum && primitive != Primitive::Cumprod {
+                    if !matches!(
+                        primitive,
+                        Primitive::Cumsum
+                            | Primitive::Cumprod
+                            | Primitive::Cummax
+                            | Primitive::Cummin
+                    ) {
                         return Err(EvalError::Unsupported {
                             primitive,
-                            detail: "complex cumulative is supported only for cumsum and cumprod"
+                            detail: "complex cumulative is supported only for cumsum, cumprod, cummax, and cummin"
                                 .to_owned(),
                         });
                     }
-                    let (mut acc_re, mut acc_im) = if primitive == Primitive::Cumprod {
-                        (1.0_f64, 0.0_f64)
-                    } else {
-                        (0.0_f64, 0.0_f64)
+                    // Cummax/Cummin seed (float_init, float_init) = ∓∞, the
+                    // lexicographic sentinel the first element always beats.
+                    let (mut acc_re, mut acc_im) = match primitive {
+                        Primitive::Cumprod => (1.0_f64, 0.0_f64),
+                        Primitive::Cummax | Primitive::Cummin => (float_init, float_init),
+                        _ => (0.0_f64, 0.0_f64),
                     };
                     let iter: Box<dyn Iterator<Item = usize>> = if reverse {
                         Box::new((0..axis_dim).rev())
@@ -803,14 +871,29 @@ pub(crate) fn eval_cumulative(
                     for i in iter {
                         let flat_idx = base + i * axis_stride;
                         let (re, im) = literal_to_complex_parts(primitive, elements[flat_idx])?;
-                        if primitive == Primitive::Cumprod {
-                            let new_re = acc_re * re - acc_im * im;
-                            let new_im = acc_re * im + acc_im * re;
-                            acc_re = new_re;
-                            acc_im = new_im;
-                        } else {
-                            acc_re += re;
-                            acc_im += im;
+                        match primitive {
+                            Primitive::Cumprod => {
+                                let new_re = acc_re * re - acc_im * im;
+                                let new_im = acc_re * im + acc_im * re;
+                                acc_re = new_re;
+                                acc_im = new_im;
+                            }
+                            Primitive::Cummax => {
+                                if complex_lex_cmp((re, im), (acc_re, acc_im)).is_gt() {
+                                    acc_re = re;
+                                    acc_im = im;
+                                }
+                            }
+                            Primitive::Cummin => {
+                                if complex_lex_cmp((re, im), (acc_re, acc_im)).is_lt() {
+                                    acc_re = re;
+                                    acc_im = im;
+                                }
+                            }
+                            _ => {
+                                acc_re += re;
+                                acc_im += im;
+                            }
                         }
                         elements[flat_idx] =
                             complex_literal_from_parts(tensor.dtype, acc_re, acc_im);

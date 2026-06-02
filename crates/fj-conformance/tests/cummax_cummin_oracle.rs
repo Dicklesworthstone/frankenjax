@@ -386,18 +386,35 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     )
 }
 
-#[test]
-#[ignore = "PARITY GAP: Cummax not supported for complex - no natural ordering"]
-fn oracle_cummax_complex64_not_supported() {
-    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Cummax, &[input], &no_params())
-        .expect("cummax should work on complex64");
+fn extract_complex64_vec(v: &Value) -> Vec<(f32, f32)> {
+    match v {
+        Value::Tensor(t) => t.elements.iter().map(|l| l.as_complex64().unwrap()).collect(),
+        Value::Scalar(l) => vec![l.as_complex64().unwrap()],
+    }
 }
 
 #[test]
-#[ignore = "PARITY GAP: Cummin not supported for complex - no natural ordering"]
-fn oracle_cummin_complex64_not_supported() {
-    let input = make_complex64_tensor(&[3], vec![(3.0, 0.0), (2.0, 0.0), (1.0, 0.0)]);
-    let _result = eval_primitive(Primitive::Cummin, &[input], &no_params())
+fn oracle_cummax_complex64_lexicographic() {
+    // Running lexicographic (real, imag) max. (1,5) beats (1,0) on the imag
+    // tiebreak; (0,9) loses on real; (2,0) wins on real.
+    let input = make_complex64_tensor(&[4], vec![(1.0, 0.0), (1.0, 5.0), (0.0, 9.0), (2.0, 0.0)]);
+    let result = eval_primitive(Primitive::Cummax, &[input], &no_params())
+        .expect("cummax should work on complex64");
+    assert_eq!(
+        extract_complex64_vec(&result),
+        vec![(1.0, 0.0), (1.0, 5.0), (1.0, 5.0), (2.0, 0.0)]
+    );
+}
+
+#[test]
+fn oracle_cummin_complex64_lexicographic() {
+    // Running lexicographic (real, imag) min. (3,1) loses to (3,0) on imag;
+    // (4,0) loses on real; (1,9) wins on real.
+    let input = make_complex64_tensor(&[4], vec![(3.0, 0.0), (3.0, 1.0), (4.0, 0.0), (1.0, 9.0)]);
+    let result = eval_primitive(Primitive::Cummin, &[input], &no_params())
         .expect("cummin should work on complex64");
+    assert_eq!(
+        extract_complex64_vec(&result),
+        vec![(3.0, 0.0), (3.0, 0.0), (3.0, 0.0), (1.0, 9.0)]
+    );
 }

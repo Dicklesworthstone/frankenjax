@@ -702,18 +702,31 @@ fn make_complex64_tensor(shape: &[u32], data: Vec<(f32, f32)>) -> Value {
     )
 }
 
-#[test]
-#[ignore = "PARITY GAP: ReduceMin not supported for complex - no natural ordering"]
-fn oracle_reduce_min_complex64_not_supported() {
-    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
-    let _result = eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0]))
-        .expect("reduce_min should work on complex64");
+fn extract_complex64_scalar(v: &Value) -> (f32, f32) {
+    match v {
+        Value::Scalar(l) => l.as_complex64().unwrap(),
+        Value::Tensor(t) => {
+            assert_eq!(t.elements.len(), 1, "expected single-element reduction result");
+            t.elements[0].as_complex64().unwrap()
+        }
+    }
 }
 
 #[test]
-#[ignore = "PARITY GAP: ReduceMax not supported for complex - no natural ordering"]
-fn oracle_reduce_max_complex64_not_supported() {
-    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]);
-    let _result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0]))
+fn oracle_reduce_min_complex64_lexicographic() {
+    // JAX complex min uses lexicographic (real, imag) order. real min is 2:
+    // (2,5) and (2,1) tie; imag 1 < 5 selects (2,1).
+    let input = make_complex64_tensor(&[3], vec![(2.0, 5.0), (2.0, 1.0), (3.0, 0.0)]);
+    let result = eval_primitive(Primitive::ReduceMin, &[input], &params_with_axes(&[0]))
+        .expect("reduce_min should work on complex64");
+    assert_eq!(extract_complex64_scalar(&result), (2.0, 1.0));
+}
+
+#[test]
+fn oracle_reduce_max_complex64_lexicographic() {
+    // real max is 3: (3,2) and (3,7) tie; imag 7 > 2 selects (3,7).
+    let input = make_complex64_tensor(&[3], vec![(1.0, 0.0), (3.0, 2.0), (3.0, 7.0)]);
+    let result = eval_primitive(Primitive::ReduceMax, &[input], &params_with_axes(&[0]))
         .expect("reduce_max should work on complex64");
+    assert_eq!(extract_complex64_scalar(&result), (3.0, 7.0));
 }
