@@ -6476,7 +6476,10 @@ fn solve_vjp(
     let x = eval_primitive(Primitive::Solve, inputs, params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
     let (n, nx, x_data) = extract_matrix_f64(&x)?;
-    let (gm, gn, g_data) = extract_matrix_f64(g)?;
+    // Only the cotangent's dimensions are needed for the shape check; the data
+    // itself is fed to the adjoint solve via `g.clone()` below, so the matrix
+    // payload is intentionally dropped here.
+    let (gm, gn, _) = extract_matrix_f64(g)?;
     if gm != n || gn != nx {
         return Err(AdError::EvalFailed(
             "gradient shape doesn't match solve output".to_owned(),
