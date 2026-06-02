@@ -1241,7 +1241,25 @@ pub(crate) fn eval_solve(
     }
 
     let n = m_a;
-    let output_dtype = promote_dtype(dtype_a, dtype_a);
+
+    // Complex linear solve is not implemented in V1 — fail closed instead of
+    // silently solving the real part only (the previous code did
+    // `a.iter().map(|(re, _im)| re)`, corrupting any complex input). The
+    // result of a solve is inexact, so integer/bool inputs promote to a
+    // floating dtype.
+    let dtype_b = inputs[1].dtype();
+    if matches!(dtype_a, DType::Complex64 | DType::Complex128)
+        || matches!(dtype_b, DType::Complex64 | DType::Complex128)
+    {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "complex linear solve is not implemented in V1".to_owned(),
+        });
+    }
+    let output_dtype = match promote_dtype(dtype_a, dtype_b) {
+        dt @ (DType::F16 | DType::BF16 | DType::F32 | DType::F64) => dt,
+        _ => DType::F64,
+    };
 
     // Handle vector or matrix b
     let (b_rows, b_cols, b_elements) = match &inputs[1] {
@@ -1298,7 +1316,8 @@ pub(crate) fn eval_solve(
         });
     }
 
-    // Extract A as f64 (ignoring complex for now - use real part)
+    // A is guaranteed real here (complex was rejected above), so the
+    // imaginary parts are all zero.
     let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
 
     // Solve using existing solve function
@@ -1314,10 +1333,12 @@ pub(crate) fn eval_solve(
         })?
     };
 
-    // Build output tensor
+    // Build output tensor at the promoted dtype. The previous code emitted
+    // F64Bits literals under the declared `output_dtype`, so an F32 input
+    // produced a tensor whose declared dtype disagreed with its literals.
     let elements: Vec<Literal> = result
         .iter()
-        .map(|&v| Literal::F64Bits(v.to_bits()))
+        .map(|&v| linalg_literal_from_f64(output_dtype, v))
         .collect();
 
     let shape = if b_cols == 1 {
@@ -2824,6 +2845,90 @@ mod tests {
                 b[i]
             );
         }
+    }
+
+    #[test]
+    fn eval_solve_preserves_f32_dtype() {
+        // eval_solve previously emitted F64Bits literals under the declared
+        // output_dtype, so an F32 system produced a tensor whose declared
+        // dtype (F32) disagreed with its literals. Pin dtype-consistent F32.
+        let a = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f32(2.0),
+                    Literal::from_f32(1.0),
+                    Literal::from_f32(1.0),
+                    Literal::from_f32(3.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f32(5.0), Literal::from_f32(7.0)],
+            )
+            .unwrap(),
+        );
+        let out = eval_solve(&[a, b], &BTreeMap::new()).expect("solve");
+        match out {
+            Value::Tensor(t) => {
+                assert_eq!(t.dtype, DType::F32, "must preserve F32, not widen to F64");
+                t.validate_dtype_consistency()
+                    .expect("declared dtype must match element literal kinds");
+                let x: Vec<f32> = t
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(bits) => f32::from_bits(*bits),
+                        other => panic!("element not F32: {other:?}"),
+                    })
+                    .collect();
+                // A x = b -> x = [1.6, 1.8]
+                assert!((x[0] - 1.6).abs() < 1e-5, "x0 = {}", x[0]);
+                assert!((x[1] - 1.8).abs() < 1e-5, "x1 = {}", x[1]);
+            }
+            other => panic!("expected tensor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn eval_solve_rejects_complex_input() {
+        // Complex solve is not implemented; it must fail closed rather than
+        // silently solving the real part only.
+        let a = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_complex64(1.0, 1.0),
+                    Literal::from_complex64(0.0, 0.0),
+                    Literal::from_complex64(0.0, 0.0),
+                    Literal::from_complex64(1.0, 1.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new(
+                DType::Complex64,
+                Shape { dims: vec![2] },
+                vec![
+                    Literal::from_complex64(2.0, 0.0),
+                    Literal::from_complex64(4.0, 0.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let err = eval_solve(&[a, b], &BTreeMap::new())
+            .expect_err("complex solve must be rejected, not silently real-dropped");
+        assert!(
+            matches!(err, EvalError::Unsupported { primitive: Primitive::Solve, .. }),
+            "expected Unsupported for complex solve, got {err:?}"
+        );
     }
 
     #[test]
