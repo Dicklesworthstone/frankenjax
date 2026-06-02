@@ -7988,6 +7988,60 @@ mod tests {
                 prop_assert_eq!(once_out, twice_out, "optimizer not idempotent at x={}", x);
             }
 
+            // Mixed pipeline: param-free arithmetic interleaved with a
+            // PARAM-BEARING axis reduction (the case the param-drop miscompile —
+            // fixed in is_egraph_barrier — used to corrupt). The existing
+            // metamorphic tests only cover param-free scalar programs, so they
+            // could not have caught that class. Here `mul` (optimizable) feeds
+            // `reduce_sum{axes=0}` (must barrier through verbatim) feeds `add`
+            // (optimizable); optimized eval must equal unoptimized: sum(x_i^2)+1.
+            #[test]
+            fn metamorphic_optimize_preserves_mixed_reduction_pipeline(
+                xs in prop::collection::vec(-1.0e3f64..1.0e3, 4..=4)
+            ) {
+                let mut axes = BTreeMap::new();
+                axes.insert("axes".to_owned(), "0".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Mul,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(2)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::ReduceSum,
+                            inputs: smallvec![Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(3)],
+                            effects: vec![],
+                            params: axes,
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![
+                                Atom::Var(VarId(3)),
+                                Atom::Lit(Literal::from_f64(1.0))
+                            ],
+                            outputs: smallvec![VarId(4)],
+                            effects: vec![],
+                            params: BTreeMap::new(),
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let optimized = optimize_jaxpr(&jaxpr);
+                let input = Value::vector_f64(&xs).expect("vector input");
+                let orig = eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("orig eval");
+                let opt = eval_jaxpr(&optimized, std::slice::from_ref(&input)).expect("opt eval");
+                prop_assert_eq!(orig, opt, "optimize changed semantics for xs={:?}", xs);
+            }
+
             // Stress the shape-chain prepass with random Reshape chains of
             // length 2..=5 on small tensors and verify optimized eval
             // matches unoptimized eval. Reshape preserves element count by
