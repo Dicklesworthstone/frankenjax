@@ -1434,30 +1434,50 @@ fn backward(
     adjoints.insert(output_var, output_cotangent);
 
     for entry in tape.entries.iter().rev() {
-        // Gather gradients for all outputs of this equation.
-        let gs: Vec<Value> = entry
-            .outputs
-            .iter()
-            .enumerate()
-            .map(|(i, var)| {
-                adjoints
-                    .get(var)
+        let cotangents = match entry.outputs.as_slice() {
+            [output_var] => {
+                let g = adjoints
+                    .get(output_var)
                     .cloned()
-                    .unwrap_or_else(|| zeros_like(&entry.output_values[i]))
-            })
-            .collect();
-        // Skip if all output gradients are zero.
-        if gs.iter().all(is_zero_value) {
-            continue;
-        }
+                    .unwrap_or_else(|| zeros_like(&entry.output_values[0]));
+                if is_zero_value(&g) {
+                    continue;
+                }
+                vjp(
+                    entry.primitive,
+                    &entry.input_values,
+                    std::slice::from_ref(&g),
+                    &entry.output_values,
+                    &entry.params,
+                )?
+            }
+            _ => {
+                // Gather gradients for all outputs of this equation.
+                let gs: Vec<Value> = entry
+                    .outputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, var)| {
+                        adjoints
+                            .get(var)
+                            .cloned()
+                            .unwrap_or_else(|| zeros_like(&entry.output_values[i]))
+                    })
+                    .collect();
+                // Skip if all output gradients are zero.
+                if gs.iter().all(is_zero_value) {
+                    continue;
+                }
 
-        let cotangents = vjp(
-            entry.primitive,
-            &entry.input_values,
-            &gs,
-            &entry.output_values,
-            &entry.params,
-        )?;
+                vjp(
+                    entry.primitive,
+                    &entry.input_values,
+                    &gs,
+                    &entry.output_values,
+                    &entry.params,
+                )?
+            }
+        };
 
         for (var_id, cot) in entry.inputs.iter().zip(cotangents) {
             if var_id.0 == u32::MAX {
@@ -3759,8 +3779,12 @@ pub fn vjp(
             Ok(vec![grad_a])
         }
         // ── Slogdet VJP ──
-        // slogdet returns (sign, logabsdet), gradient only flows through logabsdet
-        // d logabsdet / d A = A^{-T}
+        // slogdet returns (sign, logabsdet); the gradient flows only through
+        // logabsdet (output 1) — sign is piecewise-constant. So scale A^{-T}
+        // by the logabsdet cotangent gs[1], NOT gs[0] (the sign cotangent).
+        // Using gs[0] silently zeroed the gradient: differentiating a function
+        // of logabsdet puts the nonzero cotangent in gs[1], so A^{-T}·gs[0]
+        // was A^{-T}·0.
         Primitive::Slogdet => {
             if inputs.is_empty() {
                 return Err(AdError::InputArity {
@@ -3768,9 +3792,14 @@ pub fn vjp(
                     actual: 0,
                 });
             }
+            let g_logabsdet = gs.get(1).ok_or(AdError::CotangentArity {
+                primitive: Primitive::Slogdet,
+                expected_at_least: 2,
+                actual: gs.len(),
+            })?;
             let a = &inputs[0];
             let a_inv_t = matrix_inverse_transpose(a)?;
-            let grad_a = scalar_mul(g, &a_inv_t)?;
+            let grad_a = scalar_mul(g_logabsdet, &a_inv_t)?;
             Ok(vec![grad_a])
         }
         // ── FFT VJP ──
@@ -8225,19 +8254,8 @@ fn jvp_rule(
         }
         // ── Slogdet JVP ──
         // d logabsdet(A) = tr(A^{-1} dA)
-        Primitive::Slogdet => {
-            if primals.is_empty() || tangents.is_empty() {
-                return Err(AdError::InputArity {
-                    expected: 1,
-                    actual: 0,
-                });
-            }
-            let a = &primals[0];
-            let da = &tangents[0];
-            let a_inv = solve_for_identity(a)?;
-            let a_inv_da = matrix_multiply(&a_inv, da)?;
-            matrix_trace(&a_inv_da)
-        }
+        // Slogdet is multi-output (sign, logabsdet); its JVP lives in
+        // jvp_rule_multi so both output tangents are produced.
         // ── FFT JVP ──
         // FFT is linear: JVP = FFT(tangent)
         Primitive::Fft => ep(Primitive::Fft, &[tangents[0].clone()]),
@@ -8250,9 +8268,16 @@ fn jvp_rule(
         // ── IRFFT JVP ──
         // IRFFT is linear: JVP = IRFFT(tangent)
         Primitive::Irfft => ep(Primitive::Irfft, &[tangents[0].clone()]),
-        Primitive::Qr | Primitive::Lu | Primitive::Svd | Primitive::Eigh | Primitive::Eig => {
-            Err(AdError::UnsupportedPrimitive(primitive))
-        }
+        // Multi-output decompositions are handled by jvp_rule_multi; reaching
+        // here means a single-output equation for a multi-output primitive,
+        // which is invalid. (Slogdet is 2-output — its JVP is in
+        // jvp_rule_multi.)
+        Primitive::Qr
+        | Primitive::Lu
+        | Primitive::Svd
+        | Primitive::Eigh
+        | Primitive::Eig
+        | Primitive::Slogdet => Err(AdError::UnsupportedPrimitive(primitive)),
     }
 }
 
@@ -8794,6 +8819,24 @@ fn jvp_rule_multi(
             }
 
             Ok(vec![du, ds_val, dvt])
+        }
+        // ── Slogdet JVP ──
+        // slogdet(A) = (sign, logabsdet). d sign = 0 (piecewise-constant);
+        // d logabsdet = tr(A^{-1} dA). Returns both output tangents.
+        Primitive::Slogdet => {
+            if _primals.is_empty() || tangents.is_empty() {
+                return Err(AdError::InputArity {
+                    expected: 1,
+                    actual: 0,
+                });
+            }
+            let a = &_primals[0];
+            let da = &tangents[0];
+            let a_inv = solve_for_identity(a)?;
+            let a_inv_da = matrix_multiply(&a_inv, da)?;
+            let d_logabsdet = matrix_trace(&a_inv_da)?;
+            let d_sign = zeros_like(&primal_outputs[0]);
+            Ok(vec![d_sign, d_logabsdet])
         }
         _ => {
             // Single-output primitives should not reach here
@@ -9518,6 +9561,61 @@ mod tests {
             "value = {value_scalar}"
         );
         assert_eq!(grad, separate_grad);
+    }
+
+    #[test]
+    fn grad_profiled_polynomial_single_output_path_matches_expected() {
+        use smallvec::smallvec;
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(4)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    params: BTreeMap::new(),
+                    effects: Vec::new(),
+                    sub_jaxprs: Vec::new(),
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    effects: Vec::new(),
+                    sub_jaxprs: Vec::new(),
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    effects: Vec::new(),
+                    sub_jaxprs: Vec::new(),
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    effects: Vec::new(),
+                    sub_jaxprs: Vec::new(),
+                },
+            ],
+        );
+        let args = vec![Value::scalar_f64(2.0)];
+
+        let separate_grad = grad_jaxpr(&jaxpr, &args).expect("grad should succeed");
+        let (value, shared_grad) =
+            value_and_grad_jaxpr(&jaxpr, &args).expect("value_and_grad should succeed");
+
+        assert_eq!(value.len(), 1);
+        assert_eq!(shared_grad, separate_grad);
+        assert!((to_f64(&value[0]).unwrap() - 14.0).abs() < 1e-10);
+        assert!((to_f64(&shared_grad[0]).unwrap() - 17.0).abs() < 1e-10);
     }
 
     #[test]
@@ -16397,6 +16495,107 @@ mod tests {
         let a_vals = [2.0, 1.0, 1.0, 4.0, 3.0, 3.0, 8.0, 7.0, 9.0];
         let da_vals = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
         check_lu_jvp_numerical(3, &a_vals, &da_vals);
+    }
+
+    fn slogdet_make_3x3(vals: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3, 3] },
+                vals.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    fn slogdet_logabsdet(a: &Value) -> f64 {
+        fj_lax::eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(a), &BTreeMap::new())
+            .unwrap()[1]
+            .as_f64_scalar()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_slogdet_vjp_uses_logabsdet_cotangent() {
+        // The cotangent flows through logabsdet (gs[1]); gs[0] (sign) must be
+        // ignored. Verify grad_A = A^{-T} against a finite difference of
+        // logabsdet, with the sign cotangent deliberately set to a poison
+        // value to prove it is not used.
+        let a_vals = [4.0, 1.0, 2.0, 1.0, 5.0, 1.0, 2.0, 1.0, 6.0];
+        let a = slogdet_make_3x3(&a_vals);
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
+        // gs = [sign cotangent = poison 99.0, logabsdet cotangent = 1.0]
+        let gs = [Value::scalar_f64(99.0), Value::scalar_f64(1.0)];
+        let grads = vjp(
+            Primitive::Slogdet,
+            std::slice::from_ref(&a),
+            &gs,
+            &outputs,
+            &BTreeMap::new(),
+        )
+        .expect("slogdet vjp");
+        let grad: Vec<f64> = grads[0]
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap())
+            .collect();
+
+        let eps = 1e-6;
+        for idx in 0..9 {
+            let mut ap = a_vals;
+            ap[idx] += eps;
+            let mut am = a_vals;
+            am[idx] -= eps;
+            let num =
+                (slogdet_logabsdet(&slogdet_make_3x3(&ap)) - slogdet_logabsdet(&slogdet_make_3x3(&am)))
+                    / (2.0 * eps);
+            assert!(
+                (grad[idx] - num).abs() < 1e-5,
+                "slogdet VJP elem {idx}: analytic={}, fd={num} (poison sign cotangent must be ignored)",
+                grad[idx]
+            );
+        }
+    }
+
+    #[test]
+    fn test_slogdet_jvp_returns_both_tangents() {
+        // jvp_rule_multi(Slogdet) must yield [d_sign = 0, d_logabsdet].
+        let a_vals = [4.0, 1.0, 2.0, 1.0, 5.0, 1.0, 2.0, 1.0, 6.0];
+        let da_vals = [0.5, -1.0, 2.0, 1.5, 0.25, -0.5, -2.0, 3.0, 1.0];
+        let a = slogdet_make_3x3(&a_vals);
+        let da = slogdet_make_3x3(&da_vals);
+        let outputs =
+            fj_lax::eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &BTreeMap::new())
+                .unwrap();
+        let tangents = jvp_rule_multi(
+            Primitive::Slogdet,
+            std::slice::from_ref(&a),
+            std::slice::from_ref(&da),
+            &outputs,
+            &BTreeMap::new(),
+        )
+        .expect("slogdet jvp");
+        assert_eq!(tangents.len(), 2, "slogdet JVP must yield (d_sign, d_logabsdet)");
+        assert!(
+            tangents[0].as_f64_scalar().unwrap().abs() < 1e-12,
+            "d_sign must be zero"
+        );
+        let d_logabsdet = tangents[1].as_f64_scalar().unwrap();
+
+        let eps = 1e-6;
+        let ap: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a + eps * d).collect();
+        let am: Vec<f64> = a_vals.iter().zip(da_vals).map(|(a, d)| a - eps * d).collect();
+        let num = (slogdet_logabsdet(&slogdet_make_3x3(&ap))
+            - slogdet_logabsdet(&slogdet_make_3x3(&am)))
+            / (2.0 * eps);
+        assert!(
+            (d_logabsdet - num).abs() < 1e-5,
+            "slogdet JVP d_logabsdet: analytic={d_logabsdet}, fd={num}"
+        );
     }
 
     #[test]
