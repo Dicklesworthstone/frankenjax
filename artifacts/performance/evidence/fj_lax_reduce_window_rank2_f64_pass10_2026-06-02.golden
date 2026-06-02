@@ -1,0 +1,1 @@
+frankenjax-37i9-pass10|fj-lax|reduce_window_rank2_f64_sum_fast_path|shape=64x64|window=3x3|stride=1x1|padding=SAME|reduce_op=sum|output_bits_digest=693388d434dacc2e3367b7853eb9c5da6ea1e03db144ef64138087dc971e3aee|ordering=tie_breaking_fp_rng_outputs_preserved

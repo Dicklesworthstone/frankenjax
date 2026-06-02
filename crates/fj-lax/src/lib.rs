@@ -32,7 +32,10 @@ use arithmetic::{
 
 use comparison::eval_comparison;
 use fft::{eval_fft, eval_ifft, eval_irfft, eval_rfft};
-use linalg::{eval_cholesky, eval_det, eval_eig, eval_eigh, eval_lu, eval_qr, eval_slogdet, eval_solve, eval_svd, eval_triangular_solve};
+use linalg::{
+    eval_cholesky, eval_det, eval_eig, eval_eigh, eval_lu, eval_qr, eval_slogdet, eval_solve,
+    eval_svd, eval_triangular_solve,
+};
 use reduction::{eval_cumulative, eval_reduce_axes, eval_reduce_bitwise_axes};
 use tensor_ops::{
     eval_argmax, eval_argmin, eval_argsort, eval_bitcast_convert_type, eval_broadcast_in_dim,
@@ -863,9 +866,7 @@ fn eval_associative_scan(
     let reverse = params.get("reverse").map(|s| s == "true").unwrap_or(false);
 
     match xs {
-        Value::Scalar(lit) => {
-            Ok(Value::Scalar(*lit))
-        }
+        Value::Scalar(lit) => Ok(Value::Scalar(*lit)),
         Value::Tensor(t) => {
             let leading_dim = scan_leading_dim(t)?;
             if leading_dim == 0 {
@@ -878,7 +879,9 @@ fn eval_associative_scan(
             let mut results: Vec<Value> = Vec::with_capacity(leading_dim);
 
             if reverse {
-                let mut acc = t.slice_axis0(leading_dim - 1).map_err(EvalError::InvalidTensor)?;
+                let mut acc = t
+                    .slice_axis0(leading_dim - 1)
+                    .map_err(EvalError::InvalidTensor)?;
                 results.push(acc.clone());
                 for i in (0..leading_dim - 1).rev() {
                     let x_slice = t.slice_axis0(i).map_err(EvalError::InvalidTensor)?;
@@ -2336,6 +2339,97 @@ fn reduce_window_accumulator_literal(
     }
 }
 
+fn reduce_window_sum_like(reduce_op: &str) -> bool {
+    !matches!(reduce_op, "max" | "min")
+}
+
+fn reduce_window_unsupported(primitive: Primitive, detail: &'static str) -> EvalError {
+    EvalError::Unsupported {
+        primitive,
+        detail: detail.to_owned(),
+    }
+}
+
+fn eval_reduce_window_rank2_f64_sum(
+    primitive: Primitive,
+    tensor: &TensorValue,
+    window_dims: &[usize],
+    strides: &[usize],
+    out_dims: &[u32],
+    pad_lows: &[usize],
+    total_output: usize,
+) -> Result<Value, EvalError> {
+    let input_rows = tensor.shape.dims[0] as usize;
+    let input_cols = tensor.shape.dims[1] as usize;
+    let out_rows = out_dims[0] as usize;
+    let out_cols = out_dims[1] as usize;
+    let window_rows = window_dims[0];
+    let window_cols = window_dims[1];
+    let stride_rows = strides[0];
+    let stride_cols = strides[1];
+    let pad_rows = pad_lows[0];
+    let pad_cols = pad_lows[1];
+
+    let mut output_elements = Vec::with_capacity(total_output);
+    for out_row in 0..out_rows {
+        let row_base = out_row.checked_mul(stride_rows).ok_or_else(|| {
+            reduce_window_unsupported(primitive, "reduce_window window index overflow")
+        })?;
+        for out_col in 0..out_cols {
+            let col_base = out_col.checked_mul(stride_cols).ok_or_else(|| {
+                reduce_window_unsupported(primitive, "reduce_window window index overflow")
+            })?;
+            let mut accum = 0.0;
+
+            for window_row in 0..window_rows {
+                let padded_row = row_base.checked_add(window_row).ok_or_else(|| {
+                    reduce_window_unsupported(primitive, "reduce_window window index overflow")
+                })?;
+                if padded_row < pad_rows {
+                    continue;
+                }
+                let input_row = padded_row - pad_rows;
+                if input_row >= input_rows {
+                    continue;
+                }
+                let row_offset = input_row.checked_mul(input_cols).ok_or_else(|| {
+                    reduce_window_unsupported(primitive, "reduce_window flat index overflow")
+                })?;
+
+                for window_col in 0..window_cols {
+                    let padded_col = col_base.checked_add(window_col).ok_or_else(|| {
+                        reduce_window_unsupported(primitive, "reduce_window window index overflow")
+                    })?;
+                    if padded_col < pad_cols {
+                        continue;
+                    }
+                    let input_col = padded_col - pad_cols;
+                    if input_col >= input_cols {
+                        continue;
+                    }
+                    let flat_input_idx = row_offset.checked_add(input_col).ok_or_else(|| {
+                        reduce_window_unsupported(primitive, "reduce_window flat index overflow")
+                    })?;
+                    accum += tensor.elements[flat_input_idx].as_f64().unwrap_or(0.0);
+                }
+            }
+
+            output_elements.push(Literal::from_f64(accum));
+        }
+    }
+
+    Ok(Value::Tensor(
+        TensorValue::new(
+            tensor.dtype,
+            Shape {
+                dims: out_dims.to_vec(),
+            },
+            output_elements,
+        )
+        .map_err(EvalError::InvalidTensor)?,
+    ))
+}
+
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
 ///
 /// inputs: [tensor]
@@ -2424,6 +2518,18 @@ fn eval_reduce_window(
             )
             .map_err(EvalError::InvalidTensor)?,
         ));
+    }
+
+    if tensor.dtype == fj_core::DType::F64 && rank == 2 && reduce_window_sum_like(reduce_op) {
+        return eval_reduce_window_rank2_f64_sum(
+            primitive,
+            tensor,
+            &window_dims,
+            &strides,
+            &out_dims,
+            &pad_lows,
+            total_output,
+        );
     }
 
     // For 1D case: straightforward sliding window
@@ -8845,6 +8951,40 @@ mod tests {
         } else {
             assert!(matches!(out, Value::Tensor(_)), "expected tensor");
         }
+    }
+
+    #[test]
+    fn reduce_window_rank2_f64_same_sum_golden_hash() {
+        let elements: Vec<Literal> = (0..64 * 64)
+            .map(|i| {
+                let x = i as f64;
+                Literal::from_f64((x * 0.125).sin() + (x * 0.03125).cos())
+            })
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new(DType::F64, Shape { dims: vec![64, 64] }, elements).unwrap(),
+        );
+
+        let out = eval_primitive(
+            Primitive::ReduceWindow,
+            &[input],
+            &rw_params_with_padding("sum", "3,3", "1,1", "SAME"),
+        )
+        .unwrap();
+        let tensor = out.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, vec![64, 64]);
+        let output_bits: Vec<u64> = tensor
+            .elements
+            .iter()
+            .map(|literal| literal.as_f64().expect("F64 output").to_bits())
+            .collect();
+        let digest =
+            fj_test_utils::fixture_id_from_json(&output_bits).expect("output digest should build");
+        assert_eq!(
+            digest,
+            "693388d434dacc2e3367b7853eb9c5da6ea1e03db144ef64138087dc971e3aee"
+        );
     }
 
     #[test]
