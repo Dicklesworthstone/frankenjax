@@ -1,0 +1,119 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-mcqr.23",
+  "pass": 34,
+  "date": "2026-06-03",
+  "crate": "fj-lax",
+  "target": "eval/dot_256x256x256_f64",
+  "skill_pass": "repeatedly-apply-skill pass 34 -> extreme-software-optimization",
+  "no_gaps_directive": {
+    "external_blas_lapack_xla": false,
+    "safe_rust": true,
+    "primitive": "Reuse the existing safe-Rust cache-friendly matmul_2d kernel for production Dot/DotGeneral rank-2 F64 matmul.",
+    "alien_graveyard_lineage": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md references dense linear algebra, cache locality, tiled/SIMD kernels, and communication-avoiding linear algebra as high-leverage numeric-kernel primitives."
+    ]
+  },
+  "profile_backed_target": {
+    "bead_source": "frankenjax-mcqr.23 was ready and labelled [perf][no-gaps]. It cites mcqr.22's profile-proven matmul_2d kernel and the production Dot/DotGeneral caller gap.",
+    "baseline_command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-lax-dot-baseline-pass34-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/dot_256x256x256_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "baseline_worker": "vmi1264463",
+    "baseline_mean_ms": 493.61,
+    "baseline_ci_ms": [429.38, 563.62],
+    "note": "A production-path Criterion bench for eval_primitive(Primitive::Dot) on 256x256 @ 256x256 F64 matrices was added before the production source lever so the baseline measured the old generic Dot path."
+  },
+  "optimization": {
+    "lever": "Route plain rank-2 F64 matrix multiplication in eval_dot and the equivalent no-batch DotGeneral signature through matmul_2d.",
+    "files_changed": [
+      "crates/fj-lax/src/arithmetic.rs",
+      "crates/fj-lax/benches/lax_baseline.rs",
+      "artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.golden",
+      "artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.golden.sha256",
+      "artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.json"
+    ],
+    "guard": "lhs.dtype == F64; rhs.dtype == F64; lhs.rank == 2; rhs.rank == 2; Dot uses lhs last dim and rhs penultimate dim; DotGeneral additionally requires lhs_contracting=[1], rhs_contracting=[0], no batch dims, lhs_free=[0], rhs_free=[1].",
+    "single_lever": true,
+    "unsafe": false
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1264463",
+      "mean_ms": 493.61,
+      "ci_ms": [429.38, 563.62],
+      "sample_size": 30,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "after": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-lax-dot-after-pass34-final-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/dot_256x256x256_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+      "worker": "vmi1149989",
+      "mean_ms": 7.234,
+      "ci_ms": [6.9111, 7.5771],
+      "sample_size": 30,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "speedup": 68.23472491014653,
+    "delta_percent": -98.53447053341708,
+    "worker_caveat": "Baseline and final-source after measurements were both remote RCH measurements but on different workers. The observed 68.23x speedup is large enough that cross-worker variance does not affect the keep decision."
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 5,
+    "effort": 1,
+    "impact_x_confidence_over_effort": 25,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Yes. Outputs remain row-major: for each lhs row i, rhs column j is emitted in ascending j order before the next i.",
+    "floating_point": "Identical for the guarded path. matmul_2d uses i-k-j loop order, but every output cell c[i,j] receives contributions for k=0..K-1 in the same ascending order as the old i-j-k dot_accumulate loop.",
+    "dtype_and_shape": "Yes. The guard only accepts declared F64 x F64 rank-2 tensors, emits DType::F64, and passes the same output_dims through dot_output_value.",
+    "malformed_tensor_behavior": "Preserved. The fast path extracts each literal via as_f64 and returns the same TypeMismatch detail for non-numeric lhs/rhs elements; non-F64/rank/batch/signature cases fall through to the generic path.",
+    "dot_general_scope": "Only the standard rank-2 matmul signature lhs_contracting=[1], rhs_contracting=[0], no batch dims is routed. Batched, transposed, outer, vector, higher-rank, and non-F64 DotGeneral paths are unchanged.",
+    "tie_breaking": "N/A. Dot has no comparisons or ties.",
+    "rng": "N/A. Dot is deterministic and consumes no random state.",
+    "golden_output": "artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.golden",
+    "golden_sha256": "70016b5338f01d8404fa76a7d5d0c5ad673cc2eed54775283aa1559861e04fb5"
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-lax",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt -p fj-lax --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/arithmetic.rs crates/fj-lax/benches/lax_baseline.rs artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.golden artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_dot_matmul_2d_pass34_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-lax-dot-tests-pass34c-20260603 rch exec -- cargo test -p fj-lax rank2_matmul_f64 -- --nocapture",
+      "worker": "vmi1227854",
+      "result": "pass; 2 passed, 1007 filtered out"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-lax-dot-check-pass34-20260603 rch exec -- cargo check -p fj-lax --all-targets",
+      "worker": "vmi1149989",
+      "result": "pass with unrelated warning: crates/fj-lax/src/linalg.rs:1661 matrix_mul_complex is never used"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-lax-dot-clippy-pass34b-20260603 rch exec -- cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1153651",
+      "result": "blocked by unrelated dirty-lane warning in crates/fj-lax/src/linalg.rs:1661 matrix_mul_complex is never used. Source-side clippy findings from this pass were fixed and no remaining diagnostics point to crates/fj-lax/src/arithmetic.rs or crates/fj-lax/benches/lax_baseline.rs."
+    },
+    {
+      "command": "ubs crates/fj-lax/src/arithmetic.rs crates/fj-lax/benches/lax_baseline.rs",
+      "result": "exit 1 due existing monolithic test/bench panic/unwrap/assert inventory; unsafe/security checks were clean and UBS's internal fmt/clippy/check/test-build gates were clean for the shadow scan"
+    }
+  ],
+  "notes": [
+    "No files were deleted. No stash, reset, clean, or revert was performed.",
+    "The unrelated dirty crates/fj-lax/src/linalg.rs change was not edited or staged."
+  ]
+}

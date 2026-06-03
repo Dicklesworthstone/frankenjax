@@ -4,6 +4,7 @@ use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use std::collections::BTreeMap;
 
 use crate::EvalError;
+use crate::tensor_contraction::matmul_2d;
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Binary elementwise operation dispatching on int/float paths.
@@ -3851,6 +3852,50 @@ fn dot_output_value(
     }
 }
 
+fn rank2_f64_matmul(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    if lhs.dtype != DType::F64 || rhs.dtype != DType::F64 || lhs.rank() != 2 || rhs.rank() != 2 {
+        return Ok(None);
+    }
+
+    let m = lhs.shape.dims[0] as usize;
+    let k = lhs.shape.dims[1] as usize;
+    let n = rhs.shape.dims[1] as usize;
+    let lhs_values = dot_f64_elements(primitive, lhs, "lhs")?;
+    let rhs_values = dot_f64_elements(primitive, rhs, "rhs")?;
+    let elements = matmul_2d(&lhs_values, m, k, &rhs_values, n)
+        .into_iter()
+        .map(Literal::from_f64)
+        .collect();
+
+    dot_output_value(DType::F64, output_dims.to_vec(), elements).map(Some)
+}
+
+fn dot_f64_elements(
+    primitive: Primitive,
+    tensor: &TensorValue,
+    side: &str,
+) -> Result<Vec<f64>, EvalError> {
+    let detail = match side {
+        "lhs" => "expected numeric lhs tensor",
+        "rhs" => "expected numeric rhs tensor",
+        _ => "expected numeric tensor",
+    };
+    tensor
+        .elements
+        .iter()
+        .map(|literal| {
+            literal
+                .as_f64()
+                .ok_or(EvalError::TypeMismatch { primitive, detail })
+        })
+        .collect()
+}
+
 fn eval_tensor_dot(
     primitive: Primitive,
     lhs: &TensorValue,
@@ -3914,6 +3959,10 @@ fn eval_tensor_dot(
     output_dims.extend_from_slice(lhs_prefix_dims);
     output_dims.extend_from_slice(rhs_prefix_dims);
     output_dims.push(columns as u32);
+
+    if let Some(value) = rank2_f64_matmul(primitive, lhs, rhs, &output_dims)? {
+        return Ok(value);
+    }
 
     let mut elements = Vec::with_capacity(lhs_prefix_count * rhs_prefix_count * columns);
     for lhs_prefix in 0..lhs_prefix_count {
@@ -4153,6 +4202,21 @@ pub(crate) fn eval_dot_general(
     let output_kind = dot_output_kind(lhs, rhs);
     let dtype = output_kind.tensor_dtype();
     let output_count = batch_size.max(1) * lhs_free_size.max(1) * rhs_free_size.max(1);
+
+    let standard_rank2_matmul = lhs_rank == 2
+        && rhs_rank == 2
+        && lhs_batch.is_empty()
+        && rhs_batch.is_empty()
+        && lhs_contracting.as_slice() == [1usize]
+        && rhs_contracting.as_slice() == [0usize]
+        && lhs_free_dims.as_slice() == [0usize]
+        && rhs_free_dims.as_slice() == [1usize];
+    if standard_rank2_matmul
+        && let Some(value) = rank2_f64_matmul(primitive, lhs, rhs, &output_dims)?
+    {
+        return Ok(value);
+    }
+
     let mut elements = Vec::with_capacity(output_count);
 
     let lhs_strides = compute_strides(&lhs.shape.dims);
@@ -4882,6 +4946,19 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(bits.len(), tensor.elements.len());
+        bits
+    }
+    fn reference_matmul_bits(lhs: &[f64], m: usize, k: usize, rhs: &[f64], n: usize) -> Vec<u64> {
+        let mut bits = Vec::with_capacity(m * n);
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0_f64;
+                for l in 0..k {
+                    sum += lhs[i * k + l] * rhs[l * n + j];
+                }
+                bits.push(sum.to_bits());
+            }
+        }
         bits
     }
     fn extract_i64_vec(val: &Value) -> Vec<i64> {
@@ -5803,6 +5880,31 @@ mod tests {
     }
 
     #[test]
+    fn dot_rank2_matmul_f64_matches_row_major_ijk_bits() {
+        let lhs = [
+            0.125,
+            -3.5,
+            f64::from_bits(0x8000_0000_0000_0000),
+            7.25,
+            11.0,
+            -13.75,
+            17.5,
+            -19.25,
+            23.0,
+            29.125,
+            -31.5,
+            37.75,
+        ];
+        let rhs = [2.0, -5.5, 7.0, 11.25, -13.0, 17.5, 19.0, -23.25];
+        let result = eval_dot(&[matrix_f64(3, 4, &lhs), matrix_f64(4, 2, &rhs)]).unwrap();
+        assert_eq!(result.as_tensor().unwrap().shape.dims, vec![3, 2]);
+        assert_eq!(
+            extract_f64_bits_vec(&result),
+            reference_matmul_bits(&lhs, 3, 4, &rhs, 2)
+        );
+    }
+
+    #[test]
     fn dot_matrix_matrix_i64_preserves_integral_output() {
         let result = eval_dot(&[
             matrix_i64(2, 3, &[1, 2, 3, 4, 5, 6]),
@@ -6142,6 +6244,26 @@ mod tests {
         assert_eq!(t.shape.dims, vec![2, 2]);
         let vals = extract_f64_vec(&Value::Tensor(t));
         assert_eq!(vals, vec![22.0, 28.0, 49.0, 64.0]);
+    }
+
+    #[test]
+    fn dot_general_rank2_matmul_f64_matches_row_major_ijk_bits() {
+        let lhs = [
+            1.25, -2.5, 3.75, -4.0, 5.5, 6.25, -7.75, 8.125, -9.5, 10.25, 11.75, -12.5,
+        ];
+        let rhs = [-0.5, 2.0, 3.5, -4.25, 5.75, 6.5, -7.25, 8.0];
+        let mut params = BTreeMap::new();
+        params.insert("lhs_contracting_dims".to_string(), "1".to_string());
+        params.insert("rhs_contracting_dims".to_string(), "0".to_string());
+        params.insert("lhs_batch_dims".to_string(), "".to_string());
+        params.insert("rhs_batch_dims".to_string(), "".to_string());
+        let result =
+            eval_dot_general(&[matrix_f64(3, 4, &lhs), matrix_f64(4, 2, &rhs)], &params).unwrap();
+        assert_eq!(result.as_tensor().unwrap().shape.dims, vec![3, 2]);
+        assert_eq!(
+            extract_f64_bits_vec(&result),
+            reference_matmul_bits(&lhs, 3, 4, &rhs, 2)
+        );
     }
 
     #[test]

@@ -184,6 +184,16 @@ fn bench_dot_100(c: &mut Criterion) {
     });
 }
 
+fn bench_dot_256_matrix_f64(c: &mut Criterion) {
+    let lhs = real_matrix(256, 256);
+    let rhs = real_matrix(256, 256);
+    let inputs = [lhs, rhs];
+    let p = no_params();
+    c.bench_function("eval/dot_256x256x256_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Dot, &inputs, &p))
+    });
+}
+
 fn bench_concat_axis1_3x_f64(c: &mut Criterion) {
     // Concatenate three [256, 128] matrices along axis 1 -> [256, 384].
     let mk = |base: f64| {
@@ -762,6 +772,7 @@ criterion_group!(
     bench_add_broadcast_bias_1k_f64,
     bench_nextafter_1k,
     bench_dot_100,
+    bench_dot_256_matrix_f64,
     bench_eig_48,
     bench_matmul_2d_256,
     bench_solve_24x24_24rhs,
