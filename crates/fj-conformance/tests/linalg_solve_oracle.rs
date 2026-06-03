@@ -72,12 +72,17 @@ fn test_solve_verifies_solution() {
     }
 }
 
-// Singular matrix should return None
+// Singular matrix: JAX's solve divides through the zero pivot and returns
+// inf/NaN (NumPy raises LinAlgError); it does not fail.
 #[test]
-fn test_solve_singular_fails() {
+fn test_solve_singular_returns_non_finite() {
     let a = [1.0, 2.0, 2.0, 4.0]; // rank 1
     let b = [3.0, 6.0];
-    assert!(solve(&a, &b, 2).is_none(), "singular matrix should fail");
+    let x = solve(&a, &b, 2).expect("singular solve must not fail (matches JAX, not NumPy)");
+    assert!(
+        x.iter().any(|v| !v.is_finite()),
+        "singular solve must be non-finite, got {x:?}"
+    );
 }
 
 // Test solve_multi_rhs

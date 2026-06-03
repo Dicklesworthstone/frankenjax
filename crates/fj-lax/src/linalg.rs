@@ -2049,10 +2049,12 @@ pub fn matrix_norm_inf(a: &[f64], m: usize, n: usize) -> f64 {
 ///
 /// Returns `(lu, p)` where `lu` packs the unit-lower `L` (strictly below the
 /// diagonal) and `U` (on/above the diagonal), and `p` is the row permutation.
-/// Returns `None` for a singular matrix (pivot magnitude `< 1e-14`). The
-/// elimination order and pivot rule depend only on `A`, so a single factor can
-/// drive any number of right-hand sides with results bit-identical to factoring
-/// per RHS.
+/// Returns `None` only for a shape mismatch — a singular or near-singular `A`
+/// is NOT rejected. Elimination divides through the (tiny or zero) pivot,
+/// giving a finite large factor for near-singular `A` and inf/NaN for an
+/// exactly-singular one, matching JAX's lu/solve (which never raise; NumPy
+/// raises LinAlgError). The elimination order and pivot rule depend only on
+/// `A`, so a single factor can drive any number of right-hand sides bit-identically.
 fn lu_factor(a: &[f64], n: usize) -> Option<(Vec<f64>, Vec<usize>)> {
     if a.len() != n * n {
         return None;
@@ -2072,9 +2074,10 @@ fn lu_factor(a: &[f64], n: usize) -> Option<(Vec<f64>, Vec<usize>)> {
             }
         }
 
-        if max_val < 1e-14 {
-            return None;
-        }
+        // No singularity bail-out: JAX's solve divides through a zero/near-zero
+        // pivot (inf/NaN or finite-large) rather than raising. `max_val` is used
+        // only to pick the partial-pivot row.
+        let _ = max_val;
 
         if max_idx != k {
             p.swap(k, max_idx);
@@ -3142,10 +3145,16 @@ mod tests {
     }
 
     #[test]
-    fn solve_singular_returns_none() {
-        let a = [1.0, 2.0, 2.0, 4.0]; // singular
+    fn solve_singular_returns_non_finite_not_none() {
+        // JAX's solve does not raise/fail for a singular A — its LU divides
+        // through the zero pivot and yields inf/NaN (NumPy raises LinAlgError).
+        let a = [1.0, 2.0, 2.0, 4.0]; // singular (row2 = 2*row1)
         let b = [3.0, 6.0];
-        assert!(solve(&a, &b, 2).is_none());
+        let x = solve(&a, &b, 2).expect("solve must not fail for a singular matrix");
+        assert!(
+            x.iter().any(|v| !v.is_finite()),
+            "singular solve must be non-finite, got {x:?}"
+        );
     }
 
     #[test]
@@ -3254,6 +3263,43 @@ mod tests {
                 }
             ),
             "expected Unsupported for complex solve, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn eval_solve_singular_returns_non_finite_tensor_not_error() {
+        // The dispatched Solve primitive must not raise for a singular A — JAX
+        // returns inf/NaN (NumPy raises). Previously eval_solve mapped the
+        // lu_factor None to EvalError::Unsupported "singular matrix".
+        let a = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2] },
+                vec![Literal::from_f64(3.0), Literal::from_f64(6.0)],
+            )
+            .unwrap(),
+        );
+        let result = eval_solve(&[a, b], &BTreeMap::new()).expect("singular solve must not raise");
+        let Value::Tensor(t) = result else {
+            panic!("expected tensor");
+        };
+        let vals: Vec<f64> = t.elements.iter().map(|e| e.as_f64().unwrap()).collect();
+        assert!(
+            vals.iter().any(|v| !v.is_finite()),
+            "singular solve output must be non-finite, got {vals:?}"
         );
     }
 
