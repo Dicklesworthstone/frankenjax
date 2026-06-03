@@ -249,7 +249,8 @@ struct TapeEntry {
     /// All output VarIds (single-output primitives have exactly one).
     outputs: Vec<VarId>,
     input_values: Vec<Value>,
-    /// Primal output values — needed by multi-output VJP rules (QR, SVD, Eigh).
+    /// Primal output values — needed by output-dependent and multi-output VJP rules.
+    /// Empty for selected single-output primitives whose VJP ignores primal outputs.
     output_values: Vec<Value>,
     params: BTreeMap<String, String>,
 }
@@ -369,6 +370,13 @@ fn max_var_index(jaxpr: &Jaxpr) -> Option<usize> {
     max_var
 }
 
+fn single_output_vjp_ignores_outputs(primitive: Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Add | Primitive::Mul | Primitive::ReduceSum
+    )
+}
+
 type ForwardResult = (Vec<Value>, Tape, AdValueStore);
 
 fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdError> {
@@ -410,7 +418,7 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
             }
         }
 
-        let output_values = fj_lax::eval_primitive_multi(eqn.primitive, &resolved, &eqn.params)
+        let mut output_values = fj_lax::eval_primitive_multi(eqn.primitive, &resolved, &eqn.params)
             .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
         let out_var_ids: Vec<VarId> = eqn.outputs.iter().copied().collect();
@@ -421,14 +429,25 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
                 actual: output_values.len(),
             });
         }
-        for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
-            env.insert(*var, val.clone());
-        }
-
-        // `output_values` is no longer needed after this point (env already has
-        // its own clones), so move it into the tape instead of cloning the whole
-        // Vec a second time. For tensor-valued intermediates this elides an O(n)
-        // copy per equation; the stored values are identical.
+        let output_values =
+            if out_var_ids.len() == 1 && single_output_vjp_ignores_outputs(eqn.primitive) {
+                let output_value = output_values.pop().ok_or(AdError::PrimitiveOutputArity {
+                    primitive: eqn.primitive,
+                    expected: 1,
+                    actual: 0,
+                })?;
+                env.insert(out_var_ids[0], output_value);
+                Vec::new()
+            } else {
+                for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
+                    env.insert(*var, val.clone());
+                }
+                // `output_values` is no longer needed after this point (env already has
+                // its own clones), so move it into the tape instead of cloning the whole
+                // Vec a second time. For tensor-valued intermediates this elides an O(n)
+                // copy per equation; the stored values are identical.
+                output_values
+            };
         tape.entries.push(TapeEntry {
             primitive: eqn.primitive,
             inputs: input_var_ids,
@@ -1550,10 +1569,9 @@ fn backward(
     for entry in tape.entries.iter().rev() {
         let cotangents = match entry.outputs.as_slice() {
             [output_var] => {
-                let g = adjoints
-                    .get(output_var)
-                    .cloned()
-                    .unwrap_or_else(|| zeros_like(&entry.output_values[0]));
+                let Some(g) = adjoints.get(output_var).cloned() else {
+                    continue;
+                };
                 if is_zero_value(&g) {
                     continue;
                 }
@@ -15750,6 +15768,63 @@ mod tests {
         assert!(
             (tangent_val - 12.0).abs() < 1e-10,
             "tangent = {tangent_val}"
+        );
+    }
+
+    #[test]
+    fn grad_sum_x2_plus_x_1k_golden_sha256() {
+        use fj_core::{Equation, Jaxpr, VarId};
+        use smallvec::smallvec;
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::ReduceSum,
+                    inputs: smallvec![Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let data: Vec<f64> = (0..1024).map(|i| i as f64 * 0.001).collect();
+        let grads = grad_jaxpr(
+            &jaxpr,
+            &[Value::vector_f64(&data).expect("vector argument")],
+        )
+        .expect("grad should succeed");
+        let tensor = grads[0].as_tensor().expect("gradient should be tensor");
+        assert_eq!(tensor.shape.dims, vec![1024]);
+        let bits_hex: Vec<String> = tensor
+            .to_f64_vec()
+            .expect("f64 gradient elements")
+            .iter()
+            .map(|value| format!("{:016x}", value.to_bits()))
+            .collect();
+        let digest = fj_test_utils::fixture_id_from_json(&bits_hex).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "5282853e2bd187c1c1bfdfa612bd74776fb403e6b767eb0a8bf0c8bcd2fe2a19"
         );
     }
 
