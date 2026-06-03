@@ -31,7 +31,7 @@ pub fn buffer_to_value(buffer: &FfiBuffer) -> Result<Value, FfiError> {
         Ok(Value::Tensor(TensorValue {
             dtype: buffer.dtype(),
             shape,
-            elements,
+            elements: elements.into(),
         }))
     }
 }
@@ -493,7 +493,8 @@ mod tests {
                 Literal::F64Bits(1.0f64.to_bits()),
                 Literal::F64Bits(2.0f64.to_bits()),
                 Literal::F64Bits(3.0f64.to_bits()),
-            ],
+            ]
+            .into(),
         });
         let buf = value_to_buffer(&val).unwrap();
         assert_eq!(buf.size(), 24);
@@ -552,7 +553,8 @@ mod tests {
                 Literal::I64(20),
                 Literal::I64(30),
                 Literal::I64(40),
-            ],
+            ]
+            .into(),
         });
         let buf = value_to_buffer(&val).unwrap();
         assert_eq!(buf.size(), 32);
@@ -570,7 +572,8 @@ mod tests {
                 Literal::I64(i64::from(i32::MIN)),
                 Literal::I64(0),
                 Literal::I64(i64::from(i32::MAX)),
-            ],
+            ]
+            .into(),
         });
         let buf = value_to_buffer(&val).unwrap();
         assert_eq!(buf.size(), 12);
@@ -589,7 +592,8 @@ mod tests {
                 Literal::Bool(false),
                 Literal::Bool(true),
                 Literal::Bool(false),
-            ],
+            ]
+            .into(),
         });
         let buf = value_to_buffer(&val).unwrap();
         assert_eq!(buf.size(), 4);
@@ -602,7 +606,7 @@ mod tests {
         let val = Value::Tensor(TensorValue {
             dtype: DType::U32,
             shape: Shape { dims: vec![3] },
-            elements: vec![Literal::U32(0), Literal::U32(7), Literal::U32(u32::MAX)],
+            elements: vec![Literal::U32(0), Literal::U32(7), Literal::U32(u32::MAX)].into(),
         });
         let buf = value_to_buffer(&val).unwrap();
         assert_eq!(buf.size(), 12);
@@ -669,7 +673,7 @@ mod tests {
         let val = Value::Tensor(TensorValue {
             dtype: DType::I32,
             shape: Shape { dims: vec![1] },
-            elements: vec![Literal::I64(i64::from(i32::MAX) + 1)],
+            elements: vec![Literal::I64(i64::from(i32::MAX) + 1)].into(),
         });
         let err = value_to_buffer(&val).unwrap_err();
         assert!(matches!(
@@ -686,7 +690,7 @@ mod tests {
         let val = Value::Tensor(TensorValue {
             dtype: DType::F32,
             shape: Shape { dims: vec![1] },
-            elements: vec![Literal::U32(1)],
+            elements: vec![Literal::U32(1)].into(),
         });
         let err = value_to_buffer(&val).unwrap_err();
         assert!(matches!(

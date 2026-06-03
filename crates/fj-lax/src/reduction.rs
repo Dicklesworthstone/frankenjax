@@ -811,7 +811,7 @@ pub(crate) fn eval_cumulative(
             let axis_dim = tensor.shape.dims[axis] as usize;
 
             let total = tensor.elements.len();
-            let mut elements = tensor.elements.clone();
+            let mut elements = tensor.elements.to_vec();
             if axis_dim == 0 || total == 0 {
                 return Ok(Value::Tensor(TensorValue::new(
                     tensor.dtype,

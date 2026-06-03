@@ -2021,7 +2021,7 @@ fn reshape_value_with_order(value: &Value, dims: Vec<u32>, order: ReshapeOrder) 
     let elements = match value {
         Value::Scalar(literal) => vec![*literal],
         Value::Tensor(tensor) => match order {
-            ReshapeOrder::C => tensor.elements.clone(),
+            ReshapeOrder::C => tensor.elements.to_vec(),
             ReshapeOrder::F => {
                 fortran_reshape_elements(&tensor.elements, &tensor.shape.dims, &dims)?
             }

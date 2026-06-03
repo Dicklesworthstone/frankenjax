@@ -1794,7 +1794,7 @@ fn batch_scatter_unbatched_operand_direct(
     let output = TensorValue::new(
         operand_tensor.dtype,
         Shape { dims: output_dims },
-        flat_tensor.elements,
+        flat_tensor.elements.to_vec(),
     )
     .map_err(|e| BatchError::TensorError(e.to_string()))?;
     Ok(Some(BatchTracer::batched(Value::Tensor(output), 0)))
@@ -3532,7 +3532,7 @@ fn scan_scalar_initial_values(
                 return Ok(Vec::new());
             };
             if tensor.rank() == 1 && tensor.elements.len() == batch_size {
-                Ok(tensor.elements.clone())
+                Ok(tensor.elements.to_vec())
             } else {
                 Ok(Vec::new())
             }
@@ -3752,7 +3752,7 @@ fn while_scalar_values(
                 return Ok(None);
             };
             if tensor.rank() == 1 && tensor.elements.len() == batch_size {
-                Ok(Some(tensor.elements.clone()))
+                Ok(Some(tensor.elements.to_vec()))
             } else {
                 Ok(None)
             }

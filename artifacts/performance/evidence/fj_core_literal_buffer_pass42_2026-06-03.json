@@ -1,0 +1,137 @@
+{
+  "artifact": "fj_core_literal_buffer_pass42_2026-06-03",
+  "date": "2026-06-03",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-mcqr.30",
+  "pass": 42,
+  "target": {
+    "profile_backing": "criterion target eval/add_64k_f64_vec from fj-lax lax_baseline; hot path cloned large TensorValue inputs before arithmetic evaluation",
+    "bench": "cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3"
+  },
+  "one_lever": {
+    "name": "LiteralBuffer copy-on-write tensor element storage",
+    "files": [
+      "crates/fj-core/src/lib.rs"
+    ],
+    "description": "TensorValue.elements now stores Literal values in an Arc-backed LiteralBuffer. Cloning TensorValue shares the immutable element buffer; mutation APIs and mutable indexing call Arc::make_mut before changing elements."
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1149989",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-literal-buffer-pass42-baseline-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "eval_add_64k_f64_vec_mean_us": 905.07,
+      "eval_add_64k_f64_vec_ci_us": [
+        853.35,
+        975.11
+      ],
+      "eval_add_64k_f64_dense_ref_mean_us": 32.959,
+      "eval_add_64k_f64_dense_ref_ci_us": [
+        32.718,
+        33.267
+      ]
+    },
+    "after": {
+      "worker": "vmi1156319",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-core-literal-buffer-pass42-after-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "eval_add_64k_f64_vec_mean_us": 160.15,
+      "eval_add_64k_f64_vec_ci_us": [
+        155.17,
+        164.86
+      ],
+      "eval_add_64k_f64_dense_ref_mean_us": 58.058,
+      "eval_add_64k_f64_dense_ref_ci_us": [
+        57.330,
+        58.691
+      ]
+    },
+    "delta": {
+      "eval_add_64k_f64_vec_speedup_x": 5.6514,
+      "target_mean_delta_us": -744.92,
+      "baseline_vec_over_dense_ref_ratio": 27.4605,
+      "after_vec_over_dense_ref_ratio": 2.7584,
+      "normalized_ratio_improvement_x": 9.9552
+    },
+    "score": {
+      "impact": 3.0,
+      "confidence": 3.0,
+      "effort": 1.0,
+      "impact_x_confidence_over_effort": 9.0,
+      "decision": "keep"
+    }
+  },
+  "isomorphism_proof": {
+    "ordering": "LiteralBuffer derefs to [Literal], implements slice iteration, indexing, and IntoIterator in Vec order; all existing loops still traverse elements in the same order.",
+    "tie_breaking": "No comparison, sorting key, or dispatch selection logic changed. Existing sort_by behavior delegates to Vec::sort_by on the same Literal sequence after copy-on-write.",
+    "floating_point": "Literal payloads, F64Bits/F32Bits encodings, NaN payloads, and signed-zero bit patterns are unchanged; the golden includes -0.0 and NaN payload preservation.",
+    "rng": "No RNG sources, seeds, or random ordering paths touched.",
+    "serialization": "LiteralBuffer serializes and deserializes as the same JSON array shape previously produced by Vec<Literal>.",
+    "mutation_aliasing": "Mutable operations call Arc::make_mut first, so mutating a cloned TensorValue preserves previous clone-by-value semantics."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_core_literal_buffer_pass42_2026-06-03.golden",
+    "sha256": "b75c7a61cd77b65165546ff418de2280f0915e6f3a96b2c010d46a71903fe9cb",
+    "check_command": "sha256sum -c artifacts/performance/evidence/fj_core_literal_buffer_pass42_2026-06-03.golden.sha256"
+  },
+  "validation": [
+    {
+      "command": "cargo fmt --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- <touched files>",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_core_literal_buffer_pass42_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-core --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo test -p fj-core literal_buffer_semantic_golden -- --nocapture",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-ad --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-dispatch --all-targets",
+      "result": "pass after one downstream to_vec adaptation"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-ffi --all-targets",
+      "result": "pass after one marshal into adaptation"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-py --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-conformance --tests",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo clippy -p fj-core --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "result": "pass, target speedup 5.6514x"
+    }
+  ],
+  "notes": [
+    "The dense_ref row is retained as a run-local noise indicator. It moved from 32.959 us baseline on vmi1149989 to 58.058 us after on vmi1156319, so the raw target speedup is conservative relative to the normalized vec/ref ratio.",
+    "No BLAS, MKL, XLA, or unsafe code introduced."
+  ]
+}

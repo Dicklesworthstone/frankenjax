@@ -233,7 +233,8 @@ fn oracle_ffi_negate_vec_matches_rust() {
             Literal::F64Bits(1.0f64.to_bits()),
             Literal::F64Bits(2.0f64.to_bits()),
             Literal::F64Bits(3.0f64.to_bits()),
-        ],
+        ]
+        .into(),
     });
 
     let input_buf = value_to_buffer(&input_val).unwrap();
@@ -248,7 +249,8 @@ fn oracle_ffi_negate_vec_matches_rust() {
             Literal::F64Bits((-1.0f64).to_bits()),
             Literal::F64Bits((-2.0f64).to_bits()),
             Literal::F64Bits((-3.0f64).to_bits()),
-        ],
+        ]
+        .into(),
     });
     assert_eq!(output_val, expected);
 }
@@ -290,7 +292,8 @@ fn metamorphic_marshal_roundtrip_is_identity() {
                 Literal::F64Bits(2.0f64.to_bits()),
                 Literal::F64Bits(3.0f64.to_bits()),
                 Literal::F64Bits(4.0f64.to_bits()),
-            ],
+            ]
+            .into(),
         }),
     ];
 

@@ -128,7 +128,7 @@ fn bench_marshal_tensor_1k(c: &mut Criterion) {
     let val = Value::Tensor(TensorValue {
         dtype: DType::F64,
         shape: Shape { dims: vec![1000] },
-        elements,
+        elements: elements.into(),
     });
 
     c.bench_function("marshal/1k_tensor_to_buffer", |b| {

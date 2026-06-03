@@ -302,12 +302,13 @@ mod tests {
                 elements: vec![
                     Literal::F64Bits(0.0f64.to_bits()),
                     Literal::F64Bits(f64::NEG_INFINITY.to_bits()),
-                ],
+                ]
+                .into(),
             }),
             Value::Tensor(TensorValue {
                 dtype: DType::I64,
                 shape: Shape { dims: vec![1, 1] },
-                elements: vec![Literal::I64(42)],
+                elements: vec![Literal::I64(42)].into(),
             }),
         ];
 

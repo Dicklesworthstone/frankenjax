@@ -5,10 +5,13 @@ pub mod proptest_strategies;
 
 use half::{bf16, f16};
 use rustc_hash::FxHashSet;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use smallvec::{SmallVec, smallvec};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
+use std::ops::{Deref, Index, IndexMut};
+use std::slice::SliceIndex;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompatibilityMode {
@@ -946,11 +949,162 @@ impl Value {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct LiteralBuffer(Arc<Vec<Literal>>);
+
+impl LiteralBuffer {
+    #[must_use]
+    pub fn new(elements: Vec<Literal>) -> Self {
+        Self(Arc::new(elements))
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[Literal] {
+        self.0.as_slice()
+    }
+
+    #[must_use]
+    pub fn to_vec(&self) -> Vec<Literal> {
+        self.as_slice().to_vec()
+    }
+
+    fn make_mut(&mut self) -> &mut Vec<Literal> {
+        Arc::make_mut(&mut self.0)
+    }
+
+    pub fn push(&mut self, value: Literal) {
+        self.make_mut().push(value);
+    }
+
+    pub fn extend_from_slice(&mut self, values: &[Literal]) {
+        self.make_mut().extend_from_slice(values);
+    }
+
+    pub fn copy_from_slice(&mut self, values: &[Literal]) {
+        self.make_mut().as_mut_slice().copy_from_slice(values);
+    }
+
+    pub fn sort_by<F>(&mut self, compare: F)
+    where
+        F: FnMut(&Literal, &Literal) -> std::cmp::Ordering,
+    {
+        self.make_mut().sort_by(compare);
+    }
+}
+
+impl Default for LiteralBuffer {
+    fn default() -> Self {
+        Self::new(Vec::new())
+    }
+}
+
+impl std::fmt::Debug for LiteralBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.as_slice()).finish()
+    }
+}
+
+impl From<Vec<Literal>> for LiteralBuffer {
+    fn from(elements: Vec<Literal>) -> Self {
+        Self::new(elements)
+    }
+}
+
+impl FromIterator<Literal> for LiteralBuffer {
+    fn from_iter<T: IntoIterator<Item = Literal>>(iter: T) -> Self {
+        Self::new(iter.into_iter().collect())
+    }
+}
+
+impl Serialize for LiteralBuffer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.as_slice().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for LiteralBuffer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Vec::<Literal>::deserialize(deserializer).map(Self::new)
+    }
+}
+
+impl Deref for LiteralBuffer {
+    type Target = [Literal];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl AsRef<[Literal]> for LiteralBuffer {
+    fn as_ref(&self) -> &[Literal] {
+        self.as_slice()
+    }
+}
+
+impl<'a> IntoIterator for &'a LiteralBuffer {
+    type Item = &'a Literal;
+    type IntoIter = std::slice::Iter<'a, Literal>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+impl IntoIterator for LiteralBuffer {
+    type Item = Literal;
+    type IntoIter = std::vec::IntoIter<Literal>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        Arc::try_unwrap(self.0)
+            .unwrap_or_else(|elements| (*elements).clone())
+            .into_iter()
+    }
+}
+
+impl<I> Index<I> for LiteralBuffer
+where
+    I: SliceIndex<[Literal]>,
+{
+    type Output = I::Output;
+
+    fn index(&self, index: I) -> &Self::Output {
+        &self.as_slice()[index]
+    }
+}
+
+impl<I> IndexMut<I> for LiteralBuffer
+where
+    I: SliceIndex<[Literal]>,
+{
+    fn index_mut(&mut self, index: I) -> &mut Self::Output {
+        &mut Arc::make_mut(&mut self.0)[index]
+    }
+}
+
+impl PartialEq<Vec<Literal>> for LiteralBuffer {
+    fn eq(&self, other: &Vec<Literal>) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl PartialEq<LiteralBuffer> for Vec<Literal> {
+    fn eq(&self, other: &LiteralBuffer) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorValue {
     pub dtype: DType,
     pub shape: Shape,
-    pub elements: Vec<Literal>,
+    pub elements: LiteralBuffer,
 }
 
 impl TensorValue {
@@ -970,7 +1124,7 @@ impl TensorValue {
         Ok(Self {
             dtype,
             shape,
-            elements,
+            elements: elements.into(),
         })
     }
 
@@ -2843,6 +2997,7 @@ mod tests {
     use smallvec::smallvec;
     use std::any::Any;
     use std::collections::BTreeMap;
+    use std::fmt::Write;
     use std::fs;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::{Path, PathBuf};
@@ -5180,6 +5335,61 @@ mod tests {
         let t = v.as_tensor().unwrap();
         assert_eq!(t.shape.dims, vec![2]);
         assert_eq!(t.dtype, DType::F64);
+    }
+
+    #[test]
+    fn literal_buffer_semantic_golden() -> Result<(), String> {
+        let value = Value::vector_f64(&[1.25, -0.0, f64::from_bits(0x7ff8_0000_0000_0001)])
+            .map_err(|err| err.to_string())?;
+        let tensor = value
+            .as_tensor()
+            .ok_or_else(|| "vector_f64 did not produce a tensor".to_string())?;
+        let cloned = value.clone();
+        let clone_tensor = cloned
+            .as_tensor()
+            .ok_or_else(|| "cloned vector_f64 value did not produce a tensor".to_string())?;
+        let slice = tensor.slice_axis0(1).map_err(|err| err.to_string())?;
+        let Value::Scalar(Literal::F64Bits(slice_bits)) = slice else {
+            return Err("rank-1 axis slice should produce an f64 scalar".to_string());
+        };
+
+        let bits = tensor
+            .elements
+            .iter()
+            .map(|literal| match literal {
+                Literal::F64Bits(bits) => Ok(*bits),
+                other => Err(format!("expected f64 literal, got {other:?}")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let clone_bits = clone_tensor
+            .elements
+            .iter()
+            .map(|literal| match literal {
+                Literal::F64Bits(bits) => Ok(*bits),
+                other => Err(format!("expected f64 literal, got {other:?}")),
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut actual = String::new();
+        writeln!(&mut actual, "dtype={:?}", tensor.dtype).map_err(|err| err.to_string())?;
+        writeln!(&mut actual, "shape={:?}", tensor.shape.dims).map_err(|err| err.to_string())?;
+        writeln!(&mut actual, "bits={bits:?}").map_err(|err| err.to_string())?;
+        writeln!(&mut actual, "clone_bits={clone_bits:?}").map_err(|err| err.to_string())?;
+        writeln!(&mut actual, "slice_axis0_1_bits={slice_bits}").map_err(|err| err.to_string())?;
+        writeln!(
+            &mut actual,
+            "json={}",
+            serde_json::to_string(&value).map_err(|err| err.to_string())?
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            actual,
+            include_str!(
+                "../../../artifacts/performance/evidence/fj_core_literal_buffer_pass42_2026-06-03.golden"
+            )
+        );
+        Ok(())
     }
 
     // ── Jaxpr construction ───────────────────────────────────

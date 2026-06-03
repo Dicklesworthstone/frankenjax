@@ -5582,7 +5582,7 @@ mod tests {
         let input = Value::Tensor(TensorValue {
             dtype: DType::F64,
             shape: Shape { dims: vec![2] },
-            elements: vec![Literal::from_f64(0.0), Literal::Bool(true)],
+            elements: vec![Literal::from_f64(0.0), Literal::Bool(true)].into(),
         });
 
         let err = eval_exp(Primitive::Exp, &[input]).unwrap_err();

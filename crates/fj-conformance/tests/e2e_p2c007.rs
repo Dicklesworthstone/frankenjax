@@ -156,7 +156,8 @@ fn e2e_ffi_custom_op_dispatch() {
             Literal::F64Bits(3.0f64.to_bits()),
             Literal::F64Bits(4.0f64.to_bits()),
             Literal::F64Bits(5.0f64.to_bits()),
-        ],
+        ]
+        .into(),
     });
 
     let input_buf = value_to_buffer(&input_val).unwrap();
@@ -174,7 +175,8 @@ fn e2e_ffi_custom_op_dispatch() {
             Literal::F64Bits(9.0f64.to_bits()),
             Literal::F64Bits(16.0f64.to_bits()),
             Literal::F64Bits(25.0f64.to_bits()),
-        ],
+        ]
+        .into(),
     });
     assert_eq!(result, expected);
 }

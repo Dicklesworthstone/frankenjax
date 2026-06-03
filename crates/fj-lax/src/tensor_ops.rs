@@ -526,7 +526,7 @@ pub(crate) fn eval_reshape(
             Ok(Value::Tensor(TensorValue::new(
                 tensor.dtype,
                 Shape { dims },
-                tensor.elements.clone(),
+                tensor.elements.to_vec(),
             )?))
         }
     }
@@ -1749,7 +1749,7 @@ pub(crate) fn eval_scatter(
         return Ok(Value::Tensor(operand.clone()));
     }
 
-    let mut result_elements = operand.elements.clone();
+    let mut result_elements = operand.elements.to_vec();
 
     for (i, &idx) in index_vals.iter().enumerate() {
         let base_offset = idx
@@ -2206,7 +2206,7 @@ pub(crate) fn eval_dynamic_update_slice(
     }
 
     // Copy operand elements, overwriting the update region
-    let mut elements = operand.elements.clone();
+    let mut elements = operand.elements.to_vec();
 
     let upd_total = update.elements.len();
     if upd_total == 0 {
@@ -3410,7 +3410,7 @@ fn sort_along_axis(
     let mut result_elements = if return_indices {
         vec![Literal::I64(0); total]
     } else {
-        tensor.elements.clone()
+        tensor.elements.to_vec()
     };
 
     let mut indexed = Vec::with_capacity(axis_dim);
@@ -4253,7 +4253,7 @@ pub(crate) fn eval_squeeze(
                     TensorValue::new(
                         tensor.dtype,
                         Shape { dims: new_dims },
-                        tensor.elements.clone(),
+                        tensor.elements.to_vec(),
                     )
                     .map_err(|e| EvalError::Unsupported {
                         primitive,
@@ -4374,7 +4374,7 @@ pub(crate) fn eval_split(
                     TensorValue::new(
                         tensor.dtype,
                         Shape { dims: new_dims },
-                        tensor.elements.clone(),
+                        tensor.elements.to_vec(),
                     )
                     .map_err(|e| EvalError::Unsupported {
                         primitive,
@@ -4463,7 +4463,7 @@ pub(crate) fn eval_expand_dims(
                 TensorValue::new(
                     tensor.dtype,
                     Shape { dims: new_dims },
-                    tensor.elements.clone(),
+                    tensor.elements.to_vec(),
                 )
                 .map_err(|e| EvalError::Unsupported {
                     primitive,
@@ -5087,7 +5087,7 @@ mod tests {
             shape: Shape {
                 dims: vec![u32::MAX, u32::MAX, u32::MAX, u32::MAX],
             },
-            elements: vec![Literal::from_f64(1.0)],
+            elements: vec![Literal::from_f64(1.0)].into(),
         });
         let p = params(&[("dimension", "3")]);
 
@@ -5114,7 +5114,7 @@ mod tests {
             shape: Shape {
                 dims: vec![u32::MAX],
             },
-            elements: vec![Literal::from_f64(1.0)],
+            elements: vec![Literal::from_f64(1.0)].into(),
         });
         let mismatch_err = eval_sort(
             Primitive::Sort,

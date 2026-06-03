@@ -685,7 +685,7 @@ fn tensor_with_existing_shape(
     TensorValue {
         dtype,
         shape: source.shape.clone(),
-        elements,
+        elements: elements.into(),
     }
 }
 
@@ -1078,7 +1078,7 @@ fn scale_hermitian_adjoint(tensor: &TensorValue, fft_length: usize) -> Result<Va
         )));
     }
     let batch_size = tensor.elements.len() / cur_len;
-    let mut elements = tensor.elements.clone();
+    let mut elements = tensor.elements.to_vec();
     for batch in 0..batch_size {
         let start = batch * cur_len;
         // Interior bins: everything except DC (index 0) and Nyquist (index n/2, even n only).
@@ -2573,7 +2573,7 @@ pub fn vjp(
 
                     let g_literals: Vec<Literal> = match g {
                         Value::Scalar(lit) => vec![*lit],
-                        Value::Tensor(gt) => gt.elements.clone(),
+                        Value::Tensor(gt) => gt.elements.to_vec(),
                     };
 
                     let rank = t.shape.rank();
@@ -4953,7 +4953,7 @@ fn dynamic_update_slice_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, A
     // elements and widened every real type to F64.
     let g_dtype = g_tensor.dtype;
     let zero_lit = zero_literal_for_dtype(g_dtype);
-    let mut g_op_literals: Vec<Literal> = g_tensor.elements.clone();
+    let mut g_op_literals: Vec<Literal> = g_tensor.elements.to_vec();
 
     // g_update: slice of g at the start positions
     let upd_dims: Vec<usize> = update.shape.dims.iter().map(|&d| d as usize).collect();
@@ -5296,7 +5296,7 @@ fn scan_vjp(
 
         let (slice_literals, slice_dtype) = match &step_grads[1] {
             Value::Scalar(lit) => (vec![*lit], dtype_for_literal(lit)),
-            Value::Tensor(t) => (t.elements.clone(), t.dtype),
+            Value::Tensor(t) => (t.elements.to_vec(), t.dtype),
         };
         if let Some(existing) = observed_grad_dtype {
             if existing != slice_dtype {
@@ -6122,7 +6122,7 @@ fn zero_scattered_positions(g: &Value, indices: &Value) -> Result<Value, AdError
     let tail_dims = dims[1..].iter().map(|d| *d as usize).collect::<Vec<_>>();
     let slice_elems = ad_checked_usize_product("scatter VJP slice", &tail_dims)?.max(1);
 
-    let mut elements = g_tensor.elements.clone();
+    let mut elements = g_tensor.elements.to_vec();
     for &idx in &index_vals {
         if idx < dims[0] as usize {
             let base = idx.checked_mul(slice_elems).ok_or_else(|| {

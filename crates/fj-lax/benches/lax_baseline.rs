@@ -21,7 +21,7 @@ fn complex_vector(len: usize) -> Value {
         shape: Shape {
             dims: vec![len as u32],
         },
-        elements,
+        elements: elements.into(),
     })
 }
 
@@ -37,7 +37,7 @@ fn real_vector(len: usize) -> Value {
         shape: Shape {
             dims: vec![len as u32],
         },
-        elements,
+        elements: elements.into(),
     })
 }
 
@@ -53,7 +53,7 @@ fn real_matrix(rows: usize, cols: usize) -> Value {
         shape: Shape {
             dims: vec![rows as u32, cols as u32],
         },
-        elements,
+        elements: elements.into(),
     })
 }
 
@@ -397,7 +397,7 @@ fn bench_solve_24x24_24rhs(c: &mut Criterion) {
         shape: Shape {
             dims: vec![n as u32, n as u32],
         },
-        elements: a_elems,
+        elements: a_elems.into(),
     });
     let b_data: Vec<f64> = (0..n * m)
         .map(|i| ((i * 13 + 1) % 19) as f64 * 0.5 - 4.0)
@@ -516,7 +516,7 @@ fn bench_select_1k(c: &mut Criterion) {
     let cond = Value::Tensor(TensorValue {
         dtype: DType::Bool,
         shape: Shape { dims: vec![1000] },
-        elements: cond_elements,
+        elements: cond_elements.into(),
     });
     let true_data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.001).collect();
     let false_data: Vec<f64> = (0..1000).map(|i| -(i as f64) * 0.001).collect();
