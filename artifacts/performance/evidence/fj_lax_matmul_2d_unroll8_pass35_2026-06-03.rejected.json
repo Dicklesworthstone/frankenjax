@@ -1,0 +1,100 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-mcqr.27",
+  "pass": 35,
+  "date": "2026-06-03",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_256x256x256_f64",
+  "skill_pass": "repeatedly-apply-skill pass 35 -> extreme-software-optimization",
+  "status": "rejected",
+  "no_gaps_directive": {
+    "external_blas_lapack_xla": false,
+    "safe_rust": true,
+    "primitive": "Manual register-local unroll of the contiguous row update inside the existing safe-Rust matmul_2d i-k-j kernel.",
+    "alien_graveyard_lineage": [
+      "/data/projects/.scratch/no_gaps_directive.txt calls for pure safe-Rust BLAS-class kernels and one-lever profile-backed optimization.",
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md identifies dense numerical kernels, cache locality, SIMD/tiled kernels, and communication-avoiding linear algebra as relevant high-leverage primitives."
+    ]
+  },
+  "profile_backed_target": {
+    "bead_source": "frankenjax-mcqr.27 was in_progress and assigned to IcyGlacier. It cited fresh rch Criterion re-profile evidence that matmul_2d bounded the production Dot path after pass 34.",
+    "raw_kernel_baseline_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-matmul-pass35-baseline-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_256x256x256_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "raw_kernel_baseline_worker": "vmi1293453",
+    "raw_kernel_baseline_mean_ms": 2.9222,
+    "raw_kernel_baseline_ci_ms": [2.8733, 2.9764],
+    "dot_baseline_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dot-pass35-baseline-retry-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/dot_256x256x256_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "dot_baseline_worker": "vmi1293453",
+    "dot_baseline_mean_ms": 4.6342,
+    "dot_baseline_ci_ms": [4.5549, 4.7210]
+  },
+  "optimization_candidate": {
+    "lever": "Unroll the inner contiguous j-loop in matmul_2d by 8 scalar updates plus a scalar tail.",
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "single_lever": true,
+    "unsafe": false,
+    "kept_in_source": false,
+    "restore_note": "The source hunk was manually restored after the rebench failed the score threshold; git diff for crates/fj-lax/src/tensor_contraction.rs is empty in the final state."
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1293453",
+      "mean_ms": 2.9222,
+      "ci_ms": [2.8733, 2.9764],
+      "sample_size": 30,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "candidate_after": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-matmul-pass35-after-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_256x256x256_f64 --sample-size 60 --measurement-time 3 --warm-up-time 1",
+      "worker": "vmi1149989",
+      "mean_ms": 6.0492,
+      "ci_ms": [5.8913, 6.2034],
+      "sample_size": 60,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "candidate_speedup_vs_baseline": 0.4830614218873104,
+    "delta_percent": 107.00568065156388,
+    "worker_caveat": "Baseline and candidate were both remote RCH Criterion measurements but landed on different workers. The candidate was slower than the already tight pre-edit baseline and produced no same-worker proof of a real win, so the source lever was rejected."
+  },
+  "score": {
+    "impact": 0,
+    "confidence": 5,
+    "effort": 1,
+    "impact_x_confidence_over_effort": 0,
+    "kept": false
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Candidate intended to preserve row-major output and the same per-cell ascending l contribution order; no source change was kept.",
+    "tie_breaking": "N/A. matmul_2d has no comparisons or ties.",
+    "floating_point": "Candidate used the same scalar multiplication and addition expression for each cell and passed the bit-identity unit test, but it was rejected for performance and restored.",
+    "rng": "N/A. matmul_2d is deterministic and consumes no random state.",
+    "golden_output": "artifacts/performance/evidence/fj_lax_matmul_2d_unroll8_pass35_2026-06-03.golden",
+    "golden_sha256": "09eb2cddcb075ee7b8140664156c4888ed202a4a14369d26e03fed512a1efae3"
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-lax --check",
+      "result": "blocked by unrelated pre-existing rustfmt diff in crates/fj-lax/src/linalg.rs; target file diff was empty after restore"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-matmul-pass35-test-20260603 rch exec -- cargo test -p fj-lax matmul_2d_ikj_bit_identical_to_ijk -- --nocapture",
+      "worker": "vmi1149989",
+      "result": "pass for candidate before restore; 1 passed, 1008 filtered out"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/tensor_contraction.rs",
+      "result": "empty after restore"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_matmul_2d_unroll8_pass35_2026-06-03.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "notes": [
+    "No file was deleted. No stash, reset, clean, checkout, or destructive cleanup was used.",
+    "A delegated worker attempt for this pass failed before editing due API 429 rate limiting; the orchestrator used the skill fallback and applied the pass locally."
+  ]
+}
