@@ -1,0 +1,127 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-mcqr.36",
+  "pass": 41,
+  "date": "2026-06-03",
+  "crate": "fj-lax",
+  "target": "eval/dot_256x256x256_f64",
+  "skill_pass": "repeatedly-apply-skill pass 41 -> extreme-software-optimization",
+  "no_gaps_directive": {
+    "external_blas_lapack_xla": false,
+    "safe_rust": true,
+    "primitive": "Keep the safe-Rust rank-2 F64 Dot/DotGeneral path on the existing matmul_2d kernel while reducing caller-side literal extraction overhead.",
+    "alien_graveyard_lineage": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md highlights dense linear algebra, cache locality, and communication-avoiding numeric kernels as high-leverage primitives."
+    ]
+  },
+  "profile_backed_target": {
+    "bead_source": "frankenjax-mcqr.36 was created from pass41 rch Criterion evidence after pass40 matmul re-profile.",
+    "fresh_baseline_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dot-pass41-baseline-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/dot_256x256x256_f64|linalg/matmul_2d_256x256x256_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+    "baseline_worker": "vmi1149989",
+    "baseline_dot_mean_ms": 8.629,
+    "baseline_dot_ci_ms": [8.0032, 9.2981],
+    "baseline_matmul_mean_ms": 4.9679,
+    "baseline_matmul_ci_ms": [4.779, 5.1729],
+    "target_gap": "Dot was 1.736951x slower than the raw linalg/matmul_2d kernel in the same baseline run, leaving 3.6611 ms of production Dot caller overhead."
+  },
+  "optimization": {
+    "lever": "In the already-guarded rank-2 F64 Dot/DotGeneral fast path, extract elements by matching Literal::F64Bits directly instead of calling Literal::as_f64 per element.",
+    "files_changed": [
+      "crates/fj-lax/src/arithmetic.rs",
+      "artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.golden",
+      "artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.golden.sha256",
+      "artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.json"
+    ],
+    "guard": "lhs.dtype == F64; rhs.dtype == F64; lhs.rank == 2; rhs.rank == 2; Dot uses lhs last dim and rhs penultimate dim; DotGeneral requires lhs_contracting=[1], rhs_contracting=[0], no batch dims, lhs_free=[0], rhs_free=[1].",
+    "fallback": "Declared-F64 tensors containing any non-F64Bits literal now return None from the extraction helper and fall through to the generic Dot path, preserving legacy mixed-literal behavior.",
+    "single_lever": true,
+    "unsafe": false
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1149989",
+      "dot_mean_ms": 8.629,
+      "dot_ci_ms": [8.0032, 9.2981],
+      "matmul_mean_ms": 4.9679,
+      "matmul_ci_ms": [4.779, 5.1729],
+      "dot_over_matmul_ratio": 1.736951226877,
+      "dot_overhead_ms": 3.6611,
+      "sample_size": 30,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "after": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dot-pass41-after2-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/dot_256x256x256_f64|linalg/matmul_2d_256x256x256_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "worker": "vmi1227854",
+      "dot_mean_ms": 4.6336,
+      "dot_ci_ms": [4.4306, 4.8035],
+      "matmul_mean_ms": 3.302,
+      "matmul_ci_ms": [3.1973, 3.4241],
+      "dot_over_matmul_ratio": 1.403270745003,
+      "dot_overhead_ms": 1.3316,
+      "sample_size": 30,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "absolute_speedup": 1.86226691989,
+    "absolute_delta_percent": -46.302004867308,
+    "normalized_dot_overhead_reduction": 2.749399218985,
+    "worker_caveat": "Baseline and after are both remote RCH Criterion runs but landed on different workers. RCH exec exposes no worker pin flag. The paired matmul row was measured in both runs to normalize worker speed; Dot/raw-matmul ratio improved from 1.736951 to 1.403271, and Dot overhead over the same kernel dropped from 3.6611 ms to 1.3316 ms."
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 3,
+    "effort": 1,
+    "impact_x_confidence_over_effort": 12,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Yes. Outputs still come from matmul_2d and are emitted row-major, with each output cell accumulated over k=0..K-1 in ascending order.",
+    "floating_point": "Identical for the guarded path. Literal::F64Bits(bits) plus f64::from_bits(bits) yields the same f64 as as_f64() for F64Bits. matmul_2d accumulation order is unchanged.",
+    "dtype_and_shape": "Yes. The fast path still emits DType::F64 and passes the same output_dims through dot_output_value.",
+    "malformed_tensor_behavior": "Preserved by fallback. Non-F64Bits literals in declared-F64 tensors no longer take the specialized extraction path and are evaluated by the generic Dot path; the new regression test pins the mixed I64/F64Bits case.",
+    "dot_general_scope": "Only the standard rank-2 matmul signature lhs_contracting=[1], rhs_contracting=[0], no batch dims is routed. Batched, transposed, outer, vector, higher-rank, and non-F64 DotGeneral paths are unchanged.",
+    "tie_breaking": "N/A. Dot has no comparisons or ties.",
+    "rng": "N/A. Dot is deterministic and consumes no random state.",
+    "golden_output": "artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.golden",
+    "golden_sha256": "4e50d6f21c34f9081b73312f2a925bcd7b930186e361d1bfcc7b8182b2d95c41"
+  },
+  "validation": [
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/arithmetic.rs artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.golden artifacts/performance/evidence/fj_lax_dot_f64_extract_pass41_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt -p fj-lax -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dot-pass41-test-final-20260603 rch exec -- cargo test -p fj-lax dot_rank2 -- --nocapture",
+      "worker": "vmi1227854",
+      "result": "pass; 3 passed, 1014 filtered out"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dot-pass41-check-20260603 rch exec -- cargo check -p fj-lax --all-targets",
+      "worker": "vmi1227854",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dot-pass41-clippy-20260603 rch exec -- cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1167313",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/arithmetic.rs",
+      "result": "exit 1 due existing monolithic test panic/unwrap/assert/indexing inventory; UBS fmt, clippy, cargo check, test-build, unsafe, and security checks were clean"
+    }
+  ],
+  "notes": [
+    "No stash, reset, destructive cleanup, or file deletion was performed.",
+    "No C BLAS, MKL, XLA, unsafe code, or foreign numeric kernel linkage was introduced.",
+    "Unrelated peer edits in crates/fj-lax/src/arithmetic.rs were left unstaged."
+  ]
+}

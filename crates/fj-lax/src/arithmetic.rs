@@ -3859,7 +3859,6 @@ fn dot_output_value(
 }
 
 fn rank2_f64_matmul(
-    primitive: Primitive,
     lhs: &TensorValue,
     rhs: &TensorValue,
     output_dims: &[u32],
@@ -3871,8 +3870,10 @@ fn rank2_f64_matmul(
     let m = lhs.shape.dims[0] as usize;
     let k = lhs.shape.dims[1] as usize;
     let n = rhs.shape.dims[1] as usize;
-    let lhs_values = dot_f64_elements(primitive, lhs, "lhs")?;
-    let rhs_values = dot_f64_elements(primitive, rhs, "rhs")?;
+    let (Some(lhs_values), Some(rhs_values)) = (dot_f64_elements(lhs), dot_f64_elements(rhs))
+    else {
+        return Ok(None);
+    };
     let elements = matmul_2d(&lhs_values, m, k, &rhs_values, n)
         .into_iter()
         .map(Literal::from_f64)
@@ -3881,25 +3882,15 @@ fn rank2_f64_matmul(
     dot_output_value(DType::F64, output_dims.to_vec(), elements).map(Some)
 }
 
-fn dot_f64_elements(
-    primitive: Primitive,
-    tensor: &TensorValue,
-    side: &str,
-) -> Result<Vec<f64>, EvalError> {
-    let detail = match side {
-        "lhs" => "expected numeric lhs tensor",
-        "rhs" => "expected numeric rhs tensor",
-        _ => "expected numeric tensor",
-    };
-    tensor
-        .elements
-        .iter()
-        .map(|literal| {
-            literal
-                .as_f64()
-                .ok_or(EvalError::TypeMismatch { primitive, detail })
-        })
-        .collect()
+fn dot_f64_elements(tensor: &TensorValue) -> Option<Vec<f64>> {
+    let mut values = Vec::with_capacity(tensor.elements.len());
+    for &literal in &tensor.elements {
+        let Literal::F64Bits(bits) = literal else {
+            return None;
+        };
+        values.push(f64::from_bits(bits));
+    }
+    Some(values)
 }
 
 fn eval_tensor_dot(
@@ -3966,7 +3957,7 @@ fn eval_tensor_dot(
     output_dims.extend_from_slice(rhs_prefix_dims);
     output_dims.push(columns as u32);
 
-    if let Some(value) = rank2_f64_matmul(primitive, lhs, rhs, &output_dims)? {
+    if let Some(value) = rank2_f64_matmul(lhs, rhs, &output_dims)? {
         return Ok(value);
     }
 
@@ -4217,9 +4208,7 @@ pub(crate) fn eval_dot_general(
         && rhs_contracting.as_slice() == [0usize]
         && lhs_free_dims.as_slice() == [0usize]
         && rhs_free_dims.as_slice() == [1usize];
-    if standard_rank2_matmul
-        && let Some(value) = rank2_f64_matmul(primitive, lhs, rhs, &output_dims)?
-    {
+    if standard_rank2_matmul && let Some(value) = rank2_f64_matmul(lhs, rhs, &output_dims)? {
         return Ok(value);
     }
 
@@ -5988,6 +5977,41 @@ mod tests {
             extract_f64_bits_vec(&result),
             reference_matmul_bits(&lhs, 3, 4, &rhs, 2)
         );
+    }
+
+    #[test]
+    fn dot_rank2_f64_fast_path_falls_back_for_malformed_literals() -> Result<(), String> {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::I64(1),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(3.0),
+                    Literal::from_f64(4.0),
+                ],
+            )
+            .map_err(|err| format!("{err:?}"))?,
+        );
+        let rhs = matrix_f64(2, 2, &[5.0, 6.0, 7.0, 8.0]);
+
+        let result = eval_dot(&[lhs, rhs]).map_err(|err| format!("{err:?}"))?;
+        let Some(tensor) = result.as_tensor() else {
+            return Err("expected tensor".to_owned());
+        };
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(
+            tensor.elements,
+            vec![
+                Literal::from_f64(19.0),
+                Literal::from_f64(22.0),
+                Literal::from_f64(43.0),
+                Literal::from_f64(50.0),
+            ]
+        );
+        Ok(())
     }
 
     #[test]
