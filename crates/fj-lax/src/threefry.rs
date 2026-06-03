@@ -275,17 +275,55 @@ pub fn random_laplace(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f
 
 /// Generate random integers uniformly in [minval, maxval).
 ///
-/// Matches JAX's `jax.random.randint(key, shape, minval, maxval)`.
+/// Matches JAX's `jax.random.randint(key, shape, minval, maxval)` with the
+/// default `int32` dtype (x64 disabled), bit-for-bit.
+///
+/// JAX deliberately avoids the "uniform float, cast to int" approach (which
+/// biases large ranges because many integers are never sampled). Instead it
+/// samples `2 * nbits` random bits per value (two `nbits`-wide words from a
+/// split key) and reduces them modulo `span = maxval - minval`, which only
+/// leaves an `O(span^2 / 2^(2·nbits))` bias. For `int32`, `nbits = 32`:
+///
+/// ```text
+/// k1, k2          = split(key)
+/// higher, lower   = random_bits(k1), random_bits(k2)      // u32 words
+/// span            = (maxval - minval) as u32
+/// multiplier      = (2^16 mod span)^2 mod span            // == 2^32 mod span
+/// offset          = ((higher mod span) * multiplier + (lower mod span)) mod span
+/// result          = minval + offset
+/// ```
+///
+/// The `*`/`+` are u32 operations that wrap at 2^32 (matching XLA's unsigned
+/// integer arithmetic), using the identity `(a·b) mod N = ((a mod N)·(b mod N))
+/// mod N` to fold the high word in without a 64-bit intermediate. The previous
+/// implementation used `minval + (u * range).floor()` over an f64 uniform,
+/// which is exactly the biased float-cast approach JAX rejects and diverged
+/// from JAX per-sample. `random_split` and `random_bits` are both oracle-pinned
+/// to JAX (see `random_determinism` fixtures), so this is bit-exact for int32.
 #[must_use]
 pub fn random_randint(key: PRNGKey, count: usize, minval: i64, maxval: i64) -> Vec<i64> {
+    // JAX: span = 1 when maxval <= minval, so every sample reduces to minval.
     if maxval <= minval {
         return vec![minval; count];
     }
-    let range = (maxval - minval) as f64;
-    let uniforms = random_uniform(key, count, 0.0, 1.0);
-    uniforms
+    let (k1, k2) = random_split(key);
+    let higher = generate_u32_bits(k1, count);
+    let lower = generate_u32_bits(k2, count);
+
+    // span fits u32: maxval/minval are int32-range, so 0 < maxval - minval < 2^32.
+    let span = (maxval - minval) as u32;
+    // multiplier = 2^32 mod span, computed as (2^16 mod span)^2 mod span with a
+    // wrapping u32 multiply (the square overflows u32 for span > 2^16).
+    let half = (1u32 << 16) % span;
+    let multiplier = half.wrapping_mul(half) % span;
+
+    higher
         .into_iter()
-        .map(|u| minval + (u * range).floor() as i64)
+        .zip(lower)
+        .map(|(hi, lo)| {
+            let offset = (hi % span).wrapping_mul(multiplier).wrapping_add(lo % span) % span;
+            minval + i64::from(offset)
+        })
         .collect()
 }
 
@@ -1347,6 +1385,42 @@ mod tests {
         for i in 0..10 {
             assert!(vals.contains(&i), "randint should produce value {i}");
         }
+    }
+
+    #[test]
+    fn test_randint_matches_two_word_modular_reduction() {
+        // Independently verify JAX's multiplier trick against the value it is an
+        // identity for: for span <= 2^16 the u32 multiply does not overflow, so
+        // `((hi % span)*multiplier + (lo % span)) % span` must equal the full
+        // 64-bit `(hi*2^32 + lo) % span`. This pins the reduction math separately
+        // from the (oracle-validated) bit source, without needing a live JAX.
+        for &(minval, maxval) in &[(0i64, 10i64), (-5, 5), (3, 1000), (100, 165)] {
+            let span = (maxval - minval) as u64; // <= 2^16 for these cases
+            let key = random_key(7);
+            let count = 256;
+            let (k1, k2) = random_split(key);
+            let higher = generate_u32_bits(k1, count);
+            let lower = generate_u32_bits(k2, count);
+            let got = random_randint(key, count, minval, maxval);
+            for i in 0..count {
+                let full = (u64::from(higher[i]) << 32 | u64::from(lower[i])) % span;
+                assert_eq!(
+                    got[i],
+                    minval + full as i64,
+                    "randint must equal (hi*2^32+lo) mod span for [{minval},{maxval}) at {i}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_randint_deterministic() {
+        // Same key/args reproduce; different keys differ.
+        let a = random_randint(random_key(1), 64, 0, 1000);
+        let b = random_randint(random_key(1), 64, 0, 1000);
+        let c = random_randint(random_key(2), 64, 0, 1000);
+        assert_eq!(a, b, "randint must be deterministic per key");
+        assert_ne!(a, c, "different keys should produce different draws");
     }
 
     #[test]
