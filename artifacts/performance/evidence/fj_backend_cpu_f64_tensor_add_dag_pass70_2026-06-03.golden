@@ -1,0 +1,30 @@
+bead: frankenjax-vfogq
+pass: 70
+lever: terminal F64 tensor Add DAG dense-slot replay in fj-backend-cpu dependency scheduler
+target: backend_scheduler_tensor_shapes/tensor_branched_fanin/32x4x64
+
+profile:
+  backend_scheduler_tensor_shapes/tensor_branched_fanin/32x4x64:
+    baseline: 107.631075 us [107.158095, 108.107316] on ts2
+    rebench: 34.835610 us [34.313234, 35.376128] on ts2
+    speedup_midpoint: 3.089674
+    speedup_conservative_interval: 3.029022
+  guard_rows:
+    16x4x4: baseline 33.603290 us [33.439176, 33.806503], rebench 33.098460 us [32.757758, 33.466962]
+    16x4x64: baseline 44.412860 us [44.240781, 44.599801], rebench 43.283114 us [42.606901, 44.044824]
+    16x4x1024: baseline 2453.971002 us [2428.147960, 2481.635824], rebench 2580.492547 us [2538.801614, 2622.394660]
+    16x4x4096: baseline 2749.654712 us [2718.157961, 2779.626424], rebench 2615.482587 us [2583.038739, 2647.386428]
+    note: 16-branch tensor rows have 79 equations, below the dependency-count scheduler cutover and below the F64 direct-DAG minimum, so they exercise the unchanged scan path and are recorded as guard/no-acceptance rows only.
+
+golden_outputs:
+  terminal_dag_32x4_input_0_1_2_3: [F64(128.0), F64(160.0), F64(192.0), F64(224.0)]
+  terminal_dag_32x4_bits: [0x4060000000000000, 0x4064000000000000, 0x4068000000000000, 0x406c000000000000]
+  visible_intermediate_fallback_4x2_input_0_1_outvars_2_12: [[F64(1.0), F64(2.0)], [F64(8.0), F64(12.0)]]
+
+isomorphism:
+  order: accepted DAGs replay equations in source order for every tensor element
+  tie_breaking: ready-wave metadata is reconstructed by dependency level; visible intermediates, multi-output programs, and nonterminal segments fall back
+  floating_point: F64 additions are applied in exactly the original per-equation order; no reassociation, reduction tree rewrite, or element reordering is introduced
+  rng: no RNG surface
+  storage: dense F64 sources return dense F64 outputs; literal-backed F64 sources return literal-backed outputs, preserving the visible storage shape used by existing tests
+  errors: sparse VarIds, missing inputs, non-Add primitives, params, effects, sub-jaxprs, mismatched tensor shapes, mismatched tensor lengths, non-F64 tensors, segments under 128 equations, and tensors over 128 elements keep the existing scheduler/evaluator path

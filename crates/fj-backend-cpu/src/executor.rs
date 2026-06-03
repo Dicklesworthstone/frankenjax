@@ -6,7 +6,7 @@
 //!
 //! Contract: p2c006.strict.inv001 (CPU always available).
 
-use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Value, VarId};
+use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_interpreters::{InterpreterError, eval_equation_outputs, eval_equation_single};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
@@ -21,6 +21,8 @@ const DEPENDENCY_COUNT_MIN_SEGMENT_LEN: usize = 128;
 const SCALAR_PARALLEL_READY_WAVE_MIN_LEN: usize = 256;
 const TENSOR_PARALLEL_READY_WAVE_MIN_ELEMENTS: usize = 4_096;
 const TENSOR_PARALLEL_INPUT_MIN_ELEMENTS: usize = 1_024;
+const F64_TENSOR_DAG_MIN_SEGMENT_LEN: usize = 128;
+const F64_TENSOR_DAG_MAX_DIRECT_ELEMENTS: usize = 128;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ReadyWaveCost {
@@ -433,6 +435,16 @@ fn execute_linear_topological_segment(
     )? {
         return Ok(true);
     }
+    if execute_terminal_f64_tensor_add_dag_segment(
+        jaxpr,
+        segment_start,
+        segment_end,
+        env,
+        remaining,
+        max_ready_wave,
+    )? {
+        return Ok(true);
+    }
 
     let mut previous_output = None;
     for equation in &jaxpr.equations[segment_start..segment_end] {
@@ -458,23 +470,114 @@ fn execute_linear_topological_segment(
     Ok(true)
 }
 
+#[derive(Clone, Copy)]
+enum F64TensorSource<'a> {
+    Dense(&'a [f64]),
+    Literals(&'a [Literal]),
+}
+
+impl F64TensorSource<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Dense(values) => values.len(),
+            Self::Literals(values) => values.len(),
+        }
+    }
+
+    fn is_dense(self) -> bool {
+        matches!(self, Self::Dense(_))
+    }
+
+    fn value_at(self, idx: usize) -> Option<f64> {
+        match self {
+            Self::Dense(values) => Some(values[idx]),
+            Self::Literals(values) => values[idx].as_f64(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum F64TensorDagAtom {
+    Lit(f64),
+    Slot(usize),
+}
+
+impl F64TensorDagAtom {
+    fn value(self, slots: &[f64]) -> f64 {
+        match self {
+            Self::Lit(value) => value,
+            Self::Slot(idx) => slots[idx],
+        }
+    }
+}
+
+struct F64TensorAddStep {
+    left: F64TensorDagAtom,
+    right: F64TensorDagAtom,
+    out_idx: usize,
+}
+
+struct F64TensorDagOutputInfo {
+    shape: Option<Shape>,
+    len: Option<usize>,
+    all_source_tensors_dense: bool,
+}
+
 fn var_slot_index(var: VarId, slot_count: usize) -> Option<usize> {
     let idx = usize::try_from(var.0).ok()?;
     (idx < slot_count).then_some(idx)
 }
 
-fn i64_atom_slot_value(atom: &Atom, values: &[i64], present: &[bool]) -> Option<(i64, usize)> {
+fn f64_tensor_source(tensor: &TensorValue) -> Option<F64TensorSource<'_>> {
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        return Some(F64TensorSource::Dense(values));
+    }
+
+    let literals = tensor.elements.as_slice();
+    literals
+        .iter()
+        .all(|literal| matches!(literal, Literal::F64Bits(_)))
+        .then_some(F64TensorSource::Literals(literals))
+}
+
+fn f64_tensor_atom_source(
+    atom: &Atom,
+    source_slots: &[Option<F64TensorSource<'_>>],
+    source_shapes: &[Option<&Shape>],
+    present: &[bool],
+    levels: &[usize],
+    output_info: &mut F64TensorDagOutputInfo,
+) -> Option<(F64TensorDagAtom, usize)> {
     match atom {
-        Atom::Lit(Literal::I64(value)) => Some((*value, 0)),
-        Atom::Lit(_) => None,
+        Atom::Lit(literal) => Some((F64TensorDagAtom::Lit(literal.as_f64()?), 0)),
         Atom::Var(var) => {
-            let idx = var_slot_index(*var, values.len())?;
-            present[idx].then_some((values[idx], idx))
+            let idx = var_slot_index(*var, present.len())?;
+            if !present[idx] {
+                return None;
+            }
+            if let Some(source) = source_slots[idx] {
+                let shape = source_shapes[idx]?;
+                match &mut output_info.shape {
+                    Some(existing) if existing != shape => return None,
+                    Some(_) => {}
+                    None => output_info.shape = Some(shape.clone()),
+                }
+                match &mut output_info.len {
+                    Some(existing) if *existing != source.len() => return None,
+                    Some(_) => {}
+                    None => output_info.len = Some(source.len()),
+                }
+                output_info.all_source_tensors_dense &= source.is_dense();
+            }
+            Some((F64TensorDagAtom::Slot(idx), levels[idx]))
         }
     }
 }
 
-fn max_slot_index_for_i64_add_dag(
+fn max_slot_index_for_add_dag(
     jaxpr: &Jaxpr,
     segment_start: usize,
     segment_end: usize,
@@ -496,6 +599,25 @@ fn max_slot_index_for_i64_add_dag(
     }
 
     Some(max_slot)
+}
+
+fn i64_atom_slot_value(atom: &Atom, values: &[i64], present: &[bool]) -> Option<(i64, usize)> {
+    match atom {
+        Atom::Lit(Literal::I64(value)) => Some((*value, 0)),
+        Atom::Lit(_) => None,
+        Atom::Var(var) => {
+            let idx = var_slot_index(*var, values.len())?;
+            present[idx].then_some((values[idx], idx))
+        }
+    }
+}
+
+fn max_slot_index_for_i64_add_dag(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+) -> Option<usize> {
+    max_slot_index_for_add_dag(jaxpr, segment_start, segment_end)
 }
 
 fn execute_terminal_i64_add_dag_segment(
@@ -578,6 +700,181 @@ fn execute_terminal_i64_add_dag_segment(
     }
 
     env.insert(jaxpr.outvars[0], Value::scalar_i64(values[out_idx]));
+    *remaining -= segment_len;
+    *max_ready_wave = (*max_ready_wave).max(observed_max_ready_wave);
+    Ok(true)
+}
+
+fn execute_terminal_f64_tensor_add_dag_segment(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+    env: &mut HashMap<VarId, Value>,
+    remaining: &mut usize,
+    max_ready_wave: &mut usize,
+) -> Result<bool, InterpreterError> {
+    let segment_len = segment_end - segment_start;
+    if segment_len < F64_TENSOR_DAG_MIN_SEGMENT_LEN
+        || segment_end != jaxpr.equations.len()
+        || jaxpr.outvars.len() != 1
+    {
+        return Ok(false);
+    }
+
+    let Some(max_slot) = max_slot_index_for_add_dag(jaxpr, segment_start, segment_end) else {
+        return Ok(false);
+    };
+    let Some(slot_count) = max_slot.checked_add(1) else {
+        return Ok(false);
+    };
+    let dense_slot_limit = (jaxpr.invars.len() + segment_len + jaxpr.outvars.len() + 8) * 4;
+    if slot_count > dense_slot_limit {
+        return Ok(false);
+    }
+
+    let compiled = {
+        let mut source_slots = vec![None; slot_count];
+        let mut source_shapes = vec![None; slot_count];
+        let mut present = vec![false; slot_count];
+        let mut levels = vec![0_usize; slot_count];
+        for (var, value) in env.iter() {
+            let Some(idx) = var_slot_index(*var, slot_count) else {
+                continue;
+            };
+            let Value::Tensor(tensor) = value else {
+                continue;
+            };
+            let Some(source) = f64_tensor_source(tensor) else {
+                continue;
+            };
+            source_slots[idx] = Some(source);
+            source_shapes[idx] = Some(&tensor.shape);
+            present[idx] = true;
+        }
+
+        let mut steps = Vec::with_capacity(segment_len);
+        let mut level_counts = vec![0_usize; segment_len + 1];
+        let mut observed_max_ready_wave = 0_usize;
+        let mut output_info = F64TensorDagOutputInfo {
+            shape: None,
+            len: None,
+            all_source_tensors_dense: true,
+        };
+
+        for equation in &jaxpr.equations[segment_start..segment_end] {
+            if equation.primitive != Primitive::Add
+                || !equation.params.is_empty()
+                || !equation.effects.is_empty()
+                || !equation.sub_jaxprs.is_empty()
+                || equation.inputs.len() != 2
+                || equation.outputs.len() != 1
+            {
+                return Ok(false);
+            }
+
+            let Some((left, left_level)) = f64_tensor_atom_source(
+                &equation.inputs[0],
+                &source_slots,
+                &source_shapes,
+                &present,
+                &levels,
+                &mut output_info,
+            ) else {
+                return Ok(false);
+            };
+            let Some((right, right_level)) = f64_tensor_atom_source(
+                &equation.inputs[1],
+                &source_slots,
+                &source_shapes,
+                &present,
+                &levels,
+                &mut output_info,
+            ) else {
+                return Ok(false);
+            };
+            let Some(out_idx) = var_slot_index(equation.outputs[0], slot_count) else {
+                return Ok(false);
+            };
+            if output_info
+                .len
+                .is_some_and(|len| len > F64_TENSOR_DAG_MAX_DIRECT_ELEMENTS)
+            {
+                return Ok(false);
+            }
+
+            let level = left_level.max(right_level) + 1;
+            present[out_idx] = true;
+            levels[out_idx] = level;
+            level_counts[level] += 1;
+            observed_max_ready_wave = observed_max_ready_wave.max(level_counts[level]);
+            steps.push(F64TensorAddStep {
+                left,
+                right,
+                out_idx,
+            });
+        }
+
+        let Some(out_idx) = var_slot_index(jaxpr.outvars[0], slot_count) else {
+            return Ok(false);
+        };
+        if !present[out_idx] {
+            return Ok(false);
+        }
+        let Some(out_shape) = output_info.shape else {
+            return Ok(false);
+        };
+        let Some(tensor_len) = output_info.len else {
+            return Ok(false);
+        };
+        if tensor_len > F64_TENSOR_DAG_MAX_DIRECT_ELEMENTS {
+            return Ok(false);
+        }
+
+        let input_sources = source_slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, source)| source.map(|source| (slot, source)))
+            .collect::<Vec<_>>();
+        let mut slot_values = vec![0.0_f64; slot_count];
+        let mut output_values = Vec::with_capacity(tensor_len);
+        for elem_idx in 0..tensor_len {
+            for (slot, source) in &input_sources {
+                let Some(value) = source.value_at(elem_idx) else {
+                    return Ok(false);
+                };
+                slot_values[*slot] = value;
+            }
+            for step in &steps {
+                slot_values[step.out_idx] =
+                    step.left.value(&slot_values) + step.right.value(&slot_values);
+            }
+            output_values.push(slot_values[out_idx]);
+        }
+
+        Some((
+            out_shape,
+            output_values,
+            observed_max_ready_wave,
+            output_info.all_source_tensors_dense,
+        ))
+    };
+
+    let Some((out_shape, output_values, observed_max_ready_wave, output_dense)) = compiled else {
+        return Ok(false);
+    };
+    let output = if output_dense {
+        TensorValue::new_f64_values(out_shape, output_values)
+            .map_err(|err| InterpreterError::Primitive(fj_lax::EvalError::InvalidTensor(err)))?
+    } else {
+        let elements = output_values
+            .into_iter()
+            .map(Literal::from_f64)
+            .collect::<Vec<_>>();
+        TensorValue::new(DType::F64, out_shape, elements)
+            .map_err(|err| InterpreterError::Primitive(fj_lax::EvalError::InvalidTensor(err)))?
+    };
+
+    env.insert(jaxpr.outvars[0], Value::Tensor(output));
     *remaining -= segment_len;
     *max_ready_wave = (*max_ready_wave).max(observed_max_ready_wave);
     Ok(true)
@@ -1130,6 +1427,53 @@ mod tests {
         Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
     }
 
+    fn make_f64_tensor_branched_fanin_jaxpr(branches: usize, depth: usize) -> Jaxpr {
+        let input = VarId(1);
+        let mut next_var = 2_u32;
+        let mut equations = Vec::with_capacity(branches * depth + branches - 1);
+        let mut active = vec![input; branches];
+
+        for _ in 0..depth {
+            for var in &mut active {
+                let out = VarId(next_var);
+                next_var += 1;
+                equations.push(Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(*var), Atom::Lit(Literal::from_f64(1.0))].into(),
+                    outputs: vec![out].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                });
+                *var = out;
+            }
+        }
+
+        while active.len() > 1 {
+            let mut next_level = Vec::with_capacity(active.len().div_ceil(2));
+            for chunk in active.chunks(2) {
+                if chunk.len() == 1 {
+                    next_level.push(chunk[0]);
+                    continue;
+                }
+                let out = VarId(next_var);
+                next_var += 1;
+                equations.push(Equation {
+                    primitive: Primitive::Add,
+                    inputs: vec![Atom::Var(chunk[0]), Atom::Var(chunk[1])].into(),
+                    outputs: vec![out].into(),
+                    params: BTreeMap::new(),
+                    effects: vec![],
+                    sub_jaxprs: vec![],
+                });
+                next_level.push(out);
+            }
+            active = next_level;
+        }
+
+        Jaxpr::new(vec![input], vec![], vec![active[0]], equations)
+    }
+
     fn make_tensor_ready_wave_jaxpr(width: usize) -> Jaxpr {
         let input = VarId(1);
         let mut equations = Vec::with_capacity(width);
@@ -1159,6 +1503,18 @@ mod tests {
             TensorValue::new(DType::F64, Shape::vector(len as u32), elements)
                 .expect("test tensor should be valid"),
         )
+    }
+
+    fn tensor_f64_bits(value: &Value) -> Vec<u64> {
+        let tensor = value.as_tensor().expect("expected tensor");
+        if let Some(values) = tensor.elements.as_f64_slice() {
+            return values.iter().map(|value| value.to_bits()).collect();
+        }
+        tensor
+            .elements
+            .iter()
+            .map(|literal| literal.as_f64().expect("expected f64").to_bits())
+            .collect()
     }
 
     fn make_long_missing_dependency_jaxpr(length: usize) -> Jaxpr {
@@ -1492,6 +1848,67 @@ mod tests {
         assert_eq!(
             result,
             Ok(vec![Value::scalar_i64(8), Value::scalar_i64(36)])
+        );
+        assert_eq!(max_ready_wave, 4);
+    }
+
+    #[test]
+    fn dependency_scheduler_direct_f64_tensor_add_dag_matches_interpreter_bits() {
+        let jaxpr = make_f64_tensor_branched_fanin_jaxpr(32, 4);
+        let input = vector_f64_arg(4);
+        let expected =
+            fj_interpreters::eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("interpreter");
+        let mut max_ready_wave = 0_usize;
+        let result = evaluate_jaxpr_parallel_inner(&jaxpr, &[input], &mut max_ready_wave)
+            .expect("backend scheduler");
+
+        assert_eq!(tensor_f64_bits(&result[0]), tensor_f64_bits(&expected[0]));
+        assert_eq!(
+            tensor_f64_bits(&result[0]),
+            vec![128.0, 160.0, 192.0, 224.0]
+                .into_iter()
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            result[0]
+                .as_tensor()
+                .expect("tensor")
+                .elements
+                .as_f64_slice()
+                .is_none()
+        );
+        assert_eq!(max_ready_wave, 32);
+    }
+
+    #[test]
+    fn dependency_scheduler_direct_f64_tensor_add_dag_preserves_visible_intermediates() {
+        let mut jaxpr = make_f64_tensor_branched_fanin_jaxpr(4, 2);
+        jaxpr.outvars = vec![VarId(2), VarId(12)];
+        let input = vector_f64_arg(2);
+        let expected =
+            fj_interpreters::eval_jaxpr(&jaxpr, std::slice::from_ref(&input)).expect("interpreter");
+        let mut max_ready_wave = 0_usize;
+        let result = evaluate_jaxpr_parallel_inner(&jaxpr, &[input], &mut max_ready_wave)
+            .expect("backend scheduler");
+
+        assert_eq!(result.len(), expected.len());
+        for (actual, expected) in result.iter().zip(&expected) {
+            assert_eq!(tensor_f64_bits(actual), tensor_f64_bits(expected));
+        }
+        assert_eq!(
+            tensor_f64_bits(&result[0]),
+            vec![1.0, 2.0]
+                .into_iter()
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            tensor_f64_bits(&result[1]),
+            vec![8.0, 12.0]
+                .into_iter()
+                .map(f64::to_bits)
+                .collect::<Vec<_>>()
         );
         assert_eq!(max_ready_wave, 4);
     }

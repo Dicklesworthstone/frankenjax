@@ -1,0 +1,160 @@
+{
+  "artifact": "fj_backend_cpu_f64_tensor_add_dag_pass70_2026-06-03",
+  "bead": "frankenjax-vfogq",
+  "pass": 70,
+  "status": "kept",
+  "score": {
+    "impact": 3.0,
+    "confidence": 4.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 6.0,
+    "keeper_threshold": 2.0
+  },
+  "target": {
+    "crate": "fj-backend-cpu",
+    "bench_filters": [
+      "backend_scheduler_tensor_shapes/tensor_branched_fanin"
+    ],
+    "profile_backed": true,
+    "baseline_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass69-backend-profile cargo bench -p fj-backend-cpu --bench backend_baseline -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
+    "rebench_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass70-backend-bench cargo bench -p fj-backend-cpu --bench backend_baseline -- backend_scheduler_tensor_shapes --sample-size 10 --measurement-time 1 --warm-up-time 1"
+  },
+  "benchmarks": [
+    {
+      "name": "backend_scheduler_tensor_shapes/tensor_branched_fanin/32x4x64",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "low": 107.15809499042146,
+        "mean": 107.63107473978292,
+        "high": 108.1073160967433
+      },
+      "rebench_worker": "ts2",
+      "rebench_us": {
+        "low": 34.31323411040598,
+        "mean": 34.83561046756384,
+        "high": 35.37612758686651
+      },
+      "speedup_midpoint": 3.089674,
+      "speedup_conservative_interval": 3.029022
+    }
+  ],
+  "guard_rows": [
+    {
+      "name": "backend_scheduler_tensor_shapes/tensor_branched_fanin/16x4x4",
+      "accepted_by_new_path": false,
+      "reason": "79 equations, below F64 direct-DAG minimum and dependency-count scheduler cutover",
+      "baseline_us": {
+        "low": 33.439176009635105,
+        "mean": 33.603290148333635,
+        "high": 33.806503193053366
+      },
+      "rebench_us": {
+        "low": 32.75775787825834,
+        "mean": 33.09845984309014,
+        "high": 33.46696207441386
+      }
+    },
+    {
+      "name": "backend_scheduler_tensor_shapes/tensor_branched_fanin/16x4x64",
+      "accepted_by_new_path": false,
+      "reason": "79 equations, below F64 direct-DAG minimum and dependency-count scheduler cutover",
+      "baseline_us": {
+        "low": 44.2407806863645,
+        "mean": 44.41286014419583,
+        "high": 44.599800688085686
+      },
+      "rebench_us": {
+        "low": 42.60690086487526,
+        "mean": 43.28311449817727,
+        "high": 44.04482403907495
+      }
+    },
+    {
+      "name": "backend_scheduler_tensor_shapes/tensor_branched_fanin/16x4x1024",
+      "accepted_by_new_path": false,
+      "reason": "79 equations, below F64 direct-DAG minimum and dependency-count scheduler cutover",
+      "baseline_us": {
+        "low": 2428.1479596598642,
+        "mean": 2453.9710018027213,
+        "high": 2481.635823945578
+      },
+      "rebench_us": {
+        "low": 2538.801613541667,
+        "mean": 2580.4925467013895,
+        "high": 2622.394660043403
+      }
+    },
+    {
+      "name": "backend_scheduler_tensor_shapes/tensor_branched_fanin/16x4x4096",
+      "accepted_by_new_path": false,
+      "reason": "79 equations, below F64 direct-DAG minimum and dependency-count scheduler cutover",
+      "baseline_us": {
+        "low": 2718.157961312925,
+        "mean": 2749.6547117006803,
+        "high": 2779.626423578231
+      },
+      "rebench_us": {
+        "low": 2583.0387385218255,
+        "mean": 2615.4825866780047,
+        "high": 2647.386427551021
+      }
+    }
+  ],
+  "lever": {
+    "summary": "Detect terminal single-output F64 tensor Add DAGs with small tensors and replay the source-order DAG per element using dense VarId-indexed scalar slots, materializing only the final tensor.",
+    "changed_files": [
+      "crates/fj-backend-cpu/src/executor.rs"
+    ],
+    "one_lever": true,
+    "unsafe": false,
+    "alien_primitive": "DAG deforestation plus dense-slot replay"
+  },
+  "proof": {
+    "golden_file": "artifacts/performance/evidence/fj_backend_cpu_f64_tensor_add_dag_pass70_2026-06-03.golden",
+    "golden_sha256": "7862558dc09366616a169c32348b54ea04c078ab99b5fd2ad995487e7f340289",
+    "isomorphism": {
+      "ordering": "Accepted DAGs process equations in source order for each tensor element.",
+      "tie_breaking": "Ready-wave metadata is reconstructed by dependency level; visible intermediates, multi-output programs, nonterminal segments, params, effects, and sub-jaxprs fall back.",
+      "floating_point": "F64 Add evaluation uses the original source order exactly, with no reassociation or element reordering.",
+      "rng": "No RNG surface exists.",
+      "storage": "Dense F64 sources return dense F64 output; literal-backed sources return literal-backed output, preserving the visible storage class tested in the scheduler proof.",
+      "errors": "Sparse VarIds, missing inputs, non-Add primitives, mismatched shapes or lengths, non-F64 tensors, short segments, and oversized tensors keep the existing path."
+    },
+    "focused_tests": [
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass70-backend-focused2 cargo test -p fj-backend-cpu dependency_scheduler_direct -- --nocapture",
+        "result": "pass: 6 direct scheduler tests"
+      }
+    ],
+    "quality_gates": [
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass70-backend-fulltest cargo test -p fj-backend-cpu -- --nocapture",
+        "result": "pass: 67 tests plus doc tests"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass70-backend-check cargo check -p fj-backend-cpu --all-targets",
+        "result": "pass"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass70-backend-clippy cargo clippy -p fj-backend-cpu --all-targets -- -D warnings",
+        "result": "pass"
+      },
+      {
+        "command": "cargo fmt --check -p fj-backend-cpu",
+        "result": "pass"
+      },
+      {
+        "command": "ubs crates/fj-backend-cpu/src/executor.rs",
+        "result": "pass: exit 0, critical 0; existing warning inventory remains"
+      },
+      {
+        "command": "sha256sum -c artifacts/performance/evidence/fj_backend_cpu_f64_tensor_add_dag_pass70_2026-06-03.golden.sha256",
+        "result": "pass"
+      },
+      {
+        "command": "jq . artifacts/performance/evidence/fj_backend_cpu_f64_tensor_add_dag_pass70_2026-06-03.json",
+        "result": "pass"
+      }
+    ]
+  }
+}
