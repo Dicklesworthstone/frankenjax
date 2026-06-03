@@ -1,0 +1,83 @@
+{
+  "bead": "frankenjax-mcqr.16",
+  "skill_pass": 32,
+  "crate": "fj-dispatch",
+  "date_utc": "2026-06-03",
+  "target": {
+    "kind": "criterion_hotspot",
+    "benchmark": "dispatch_latency/vmap/constant_scalar_out_axes_none",
+    "reason": "Fresh dispatch_latency profile showed out_axes=none constant vmap at 33.515 us while nearby BatchTrace constant_scalar_output was 2.7639 us, indicating loop-and-stack overhead for a batch-independent output."
+  },
+  "lever": {
+    "name": "single_eval_batch_independent_out_axes_none",
+    "description": "When vmap_out_axes is all none and a static dataflow walk proves every output is independent of batched inputs, evaluate vmap(jit(f)) once at index 0 and allow tail-free BatchTrace to return unbatched outputs directly.",
+    "safe_rust": true,
+    "external_blas_or_xla": false
+  },
+  "benchmark": {
+    "baseline": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-dispatch-latency-profile-pass30-20260603 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency --sample-size 100 --measurement-time 3 --warm-up-time 1",
+      "worker": "vmi1293453",
+      "mean_us": 33.515,
+      "ci_low_us": 33.055,
+      "ci_high_us": 34.005
+    },
+    "after": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-outaxes-none-bench-pass32b rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency/vmap/constant_scalar_out_axes_none --sample-size 100 --measurement-time 3 --warm-up-time 1",
+      "worker": "vmi1153651",
+      "mean_us": 8.3851,
+      "ci_low_us": 8.0932,
+      "ci_high_us": 8.7446
+    },
+    "speedup": 3.996,
+    "kept": true
+  },
+  "score": {
+    "impact": 4.0,
+    "confidence": 3.0,
+    "effort": 1.0,
+    "impact_x_confidence_div_effort": 12.0
+  },
+  "isomorphism_proof": {
+    "output_arity": "preserved: the fast path returns the same result vector from execute_with_transforms or the same unbatched BatchTrace outputs.",
+    "output_order": "preserved: outputs are emitted in root_jaxpr.outvars/result order without sorting or reordering.",
+    "dataflow_guard": "fast path is enabled only when every outvar is proven independent of batched invars by a conservative equation-order walk; unknown vars, effects, sub-jaxprs, and unsupported primitives fall back.",
+    "tie_breaking": "none in target; no ordering-sensitive comparisons are introduced.",
+    "floating_point": "target golden uses integer literals; for supported elementwise floating-point graphs the guard does not reorder equations, and vmap(jit) single-eval is only used for batch-independent outputs.",
+    "rng": "none; effects or sub-jaxprs disable the fast path.",
+    "fallbacks": "batched or mixed out_axes, varying outputs, composed non-jit tails, non-elementwise primitives, effects, sub-jaxprs, and unsupported axes retain existing loop-and-stack or error behavior."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_out_axes_none_pass32_2026-06-03.golden",
+    "sha256": "36c646dfdb923a92352fa78f0fe22d1326c207ecda58bdc4869e164c716e07d6",
+    "verification": "sha256sum -c artifacts/performance/evidence/fj_dispatch_out_axes_none_pass32_2026-06-03.golden.sha256"
+  },
+  "validation": [
+    {
+      "status": "passed",
+      "command": "cargo fmt -p fj-dispatch --check",
+      "runner": "rch exec wrapper; non-compilation command warning only"
+    },
+    {
+      "status": "ignored",
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-outaxes-none-check-pass32 rch exec -- cargo check -p fj-dispatch --all-targets",
+      "runner": "local fallback after vmi1156319 SSH reset; not counted as proof"
+    },
+    {
+      "status": "passed",
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-outaxes-none-check-pass32-remote2 rch exec -- cargo check -p fj-dispatch --all-targets",
+      "runner": "remote vmi1149989"
+    },
+    {
+      "status": "passed",
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-outaxes-none-test-pass32c rch exec -- cargo test -p fj-dispatch out_axes_none -- --nocapture",
+      "runner": "remote vmi1293453",
+      "result": "4 passed; 0 failed; 237 filtered out; integration row 0 tests, 55 filtered"
+    },
+    {
+      "status": "passed",
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-outaxes-none-clippy-pass32 rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "runner": "remote vmi1153651"
+    }
+  ]
+}

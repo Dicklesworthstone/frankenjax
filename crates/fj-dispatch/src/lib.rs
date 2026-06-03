@@ -4,7 +4,7 @@ pub mod batching;
 
 use fj_cache::{CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
-    CompatibilityMode, Jaxpr, Primitive, Shape, TensorValue, TraceTransformLedger, Transform,
+    Atom, CompatibilityMode, Jaxpr, Primitive, Shape, TensorValue, TraceTransformLedger, Transform,
     TransformCompositionError, Value, verify_transform_composition,
 };
 use fj_interpreters::InterpreterError;
@@ -768,11 +768,39 @@ fn execute_vmap(
     let all_axis_zero = in_axes
         .iter()
         .all(|spec| matches!(spec, AxisSpec::Batched(0) | AxisSpec::NotBatched));
+    let out_axes = if compile_options.contains_key("vmap_out_axes") {
+        Some(parse_vmap_out_axes(
+            compile_options,
+            root_jaxpr.outvars.len(),
+        )?)
+    } else {
+        None
+    };
+    let out_axes_none_batch_independent = match out_axes.as_deref() {
+        None => false,
+        Some(specs) => can_use_out_axes_none_batch_trace(root_jaxpr, &in_axes, specs)?,
+    };
+
+    if matches!(tail, [Transform::Jit]) && out_axes_none_batch_independent {
+        let mapped_args = map_vmap_args_at_index(args, &in_axes, 0)?;
+        let tail_compile_options = compile_options_for_transform_tail(compile_options);
+        return execute_with_transforms(
+            root_jaxpr,
+            tail,
+            &mapped_args,
+            backend,
+            device,
+            &tail_compile_options,
+        );
+    }
+
+    let can_use_batch_trace_out_axes =
+        out_axes.is_none() || (tail.is_empty() && out_axes_none_batch_independent);
     if tail.is_empty()
-        && !compile_options.contains_key("vmap_out_axes")
+        && can_use_batch_trace_out_axes
         && (all_axis_zero || can_use_nonzero_axis_batch_trace(root_jaxpr))
     {
-        return execute_vmap_batch_trace(root_jaxpr, args, &in_axes, lead_len);
+        return execute_vmap_batch_trace(root_jaxpr, args, &in_axes, lead_len, out_axes.is_some());
     }
 
     // Fall back to loop-and-stack for non-trivial axes or composed transforms
@@ -786,6 +814,62 @@ fn execute_vmap(
         &in_axes,
         compile_options,
     )
+}
+
+fn can_use_out_axes_none_batch_trace(
+    root_jaxpr: &Jaxpr,
+    in_axes: &[AxisSpec],
+    out_axes: &[AxisSpec],
+) -> Result<bool, DispatchError> {
+    if out_axes.len() != root_jaxpr.outvars.len() {
+        return Err(TransformExecutionError::VmapAxesCountMismatch {
+            expected: root_jaxpr.outvars.len(),
+            actual: out_axes.len(),
+        }
+        .into());
+    }
+    if !out_axes
+        .iter()
+        .all(|spec| matches!(spec, AxisSpec::NotBatched))
+    {
+        return Ok(false);
+    }
+    Ok(jaxpr_outputs_are_batch_independent(root_jaxpr, in_axes))
+}
+
+fn jaxpr_outputs_are_batch_independent(root_jaxpr: &Jaxpr, in_axes: &[AxisSpec]) -> bool {
+    if !root_jaxpr.effects.is_empty() {
+        return false;
+    }
+
+    let mut batched_vars = BTreeMap::new();
+    for (var, axis) in root_jaxpr.invars.iter().zip(in_axes.iter()) {
+        batched_vars.insert(*var, matches!(axis, AxisSpec::Batched(_)));
+    }
+    for var in &root_jaxpr.constvars {
+        batched_vars.insert(*var, false);
+    }
+
+    for equation in &root_jaxpr.equations {
+        if !equation.effects.is_empty()
+            || !equation.sub_jaxprs.is_empty()
+            || !is_elementwise_batch_trace_primitive(equation.primitive)
+        {
+            return false;
+        }
+        let output_is_batched = equation.inputs.iter().any(|atom| match atom {
+            Atom::Var(var) => *batched_vars.get(var).unwrap_or(&true),
+            Atom::Lit(_) => false,
+        });
+        for output in &equation.outputs {
+            batched_vars.insert(*output, output_is_batched);
+        }
+    }
+
+    root_jaxpr
+        .outvars
+        .iter()
+        .all(|var| !*batched_vars.get(var).unwrap_or(&true))
 }
 
 fn can_use_nonzero_axis_batch_trace(root_jaxpr: &Jaxpr) -> bool {
@@ -908,6 +992,7 @@ fn execute_vmap_batch_trace(
     args: &[Value],
     in_axes: &[AxisSpec],
     lead_len: usize,
+    out_axes_none: bool,
 ) -> Result<Vec<Value>, DispatchError> {
     use batching::{BatchTracer, batch_eval_jaxpr};
 
@@ -932,6 +1017,17 @@ fn execute_vmap_batch_trace(
 
     let results = batch_eval_jaxpr(root_jaxpr, &batch_inputs)
         .map_err(|e| TransformExecutionError::TensorBuild(format!("BatchTrace error: {e}")))?;
+
+    if out_axes_none {
+        let mut outputs = Vec::with_capacity(results.len());
+        for tracer in results {
+            if tracer.batch_dim.is_some() {
+                return Err(TransformExecutionError::VmapUnmappedOutputMismatch.into());
+            }
+            outputs.push(tracer.value);
+        }
+        return Ok(outputs);
+    }
 
     // Extract output values, ensuring batch dim is at position 0
     let mut outputs = Vec::with_capacity(results.len());
@@ -958,6 +1054,37 @@ fn execute_vmap_batch_trace(
     Ok(outputs)
 }
 
+fn map_vmap_args_at_index(
+    args: &[Value],
+    in_axes: &[AxisSpec],
+    index: usize,
+) -> Result<Vec<Value>, DispatchError> {
+    let mut mapped_args = Vec::with_capacity(args.len());
+    for (arg, axis_spec) in args.iter().zip(in_axes.iter()) {
+        match axis_spec {
+            AxisSpec::NotBatched => {
+                mapped_args.push(arg.clone());
+            }
+            AxisSpec::Batched(_) => match arg {
+                Value::Scalar(lit) => mapped_args.push(Value::Scalar(*lit)),
+                Value::Tensor(tensor) => {
+                    let resolved_axis = axis_spec.resolve(tensor.rank()).unwrap_or(0);
+                    if resolved_axis == 0 {
+                        mapped_args.push(tensor.slice_axis0(index).map_err(|err| {
+                            TransformExecutionError::TensorBuild(err.to_string())
+                        })?);
+                    } else {
+                        let sliced = slice_along_axis(tensor, resolved_axis, index)
+                            .map_err(TransformExecutionError::TensorBuild)?;
+                        mapped_args.push(sliced);
+                    }
+                }
+            },
+        }
+    }
+    Ok(mapped_args)
+}
+
 /// Loop-and-stack vmap fallback for composed transforms (e.g., vmap(grad(f))).
 #[allow(clippy::too_many_arguments)]
 fn execute_vmap_loop_and_stack(
@@ -974,35 +1101,7 @@ fn execute_vmap_loop_and_stack(
     let tail_compile_options = compile_options_for_transform_tail(compile_options);
 
     for index in 0..lead_len {
-        let mut mapped_args = Vec::with_capacity(args.len());
-        for (arg, axis_spec) in args.iter().zip(in_axes.iter()) {
-            match axis_spec {
-                AxisSpec::NotBatched => {
-                    // Broadcast: pass the arg unchanged to every iteration
-                    mapped_args.push(arg.clone());
-                }
-                AxisSpec::Batched(_) => {
-                    match arg {
-                        Value::Scalar(lit) => mapped_args.push(Value::Scalar(*lit)),
-                        Value::Tensor(tensor) => {
-                            let resolved_axis = axis_spec.resolve(tensor.rank()).unwrap_or(0);
-                            if resolved_axis == 0 {
-                                mapped_args.push(tensor.slice_axis0(index).map_err(|err| {
-                                    TransformExecutionError::TensorBuild(err.to_string())
-                                })?);
-                            } else {
-                                // For non-zero axes, we need to slice along that axis
-                                let sliced = slice_along_axis(tensor, resolved_axis, index)
-                                    .map_err(|err| {
-                                        TransformExecutionError::TensorBuild(err.to_string())
-                                    })?;
-                                mapped_args.push(sliced);
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let mapped_args = map_vmap_args_at_index(args, in_axes, index)?;
 
         let mapped_output = execute_with_transforms(
             root_jaxpr,
@@ -3023,6 +3122,43 @@ mod tests {
     }
 
     #[test]
+    fn test_out_axes_none_tail_free_constant_uses_batch_trace() {
+        let jaxpr = Jaxpr::new(
+            vec![VarId(1)],
+            vec![],
+            vec![VarId(2)],
+            vec![Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![
+                    Atom::Lit(fj_core::Literal::I64(3)),
+                    Atom::Lit(fj_core::Literal::I64(4))
+                ],
+                outputs: smallvec![VarId(2)],
+                params: BTreeMap::new(),
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }],
+        );
+        let mut ledger = TraceTransformLedger::new(jaxpr);
+        ledger.push_transform(Transform::Vmap, "test-vmap".to_owned());
+
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "none".to_owned());
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger,
+            args: vec![Value::vector_i64(&[10, 20, 30]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("tail-free constant unmapped output should succeed");
+
+        assert_eq!(response.outputs, vec![Value::scalar_i64(7)]);
+    }
+
+    #[test]
     fn test_out_axes_none_rejects_varying_outputs() {
         let mut opts = BTreeMap::new();
         opts.insert("vmap_out_axes".to_owned(), "none".to_owned());
@@ -3036,6 +3172,32 @@ mod tests {
             unknown_incompatible_features: vec![],
         })
         .expect_err("varying unmapped output should fail");
+
+        let msg = err.to_string();
+        assert!(
+            msg.contains("out_axes=none"),
+            "error should mention unmapped out_axes"
+        );
+        assert!(
+            msg.contains("identical"),
+            "error should explain equality requirement"
+        );
+    }
+
+    #[test]
+    fn test_out_axes_none_tail_free_rejects_varying_outputs() {
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_out_axes".to_owned(), "none".to_owned());
+        let err = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap]),
+            args: vec![Value::vector_i64(&[1, 2, 3]).expect("vector")],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect_err("tail-free varying unmapped output should fail");
 
         let msg = err.to_string();
         assert!(

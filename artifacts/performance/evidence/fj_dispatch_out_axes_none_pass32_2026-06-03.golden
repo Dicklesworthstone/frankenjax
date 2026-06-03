@@ -1,0 +1,24 @@
+scenario: fj-dispatch vmap(jit(constant_scalar), out_axes=none)
+mode: Strict
+backend: cpu
+transforms:
+  - Vmap
+  - Jit
+compile_options:
+  vmap_out_axes: none
+input_0: i64[128] = 0..127
+root_jaxpr:
+  invars: [v1]
+  constvars: []
+  equations:
+    - v2 = Add(I64(3), I64(4))
+  outvars: [v2]
+output_0: scalar_i64 = 7
+isomorphism:
+  output_arity: 1 -> 1
+  output_order: [v2] -> [v2]
+  dataflow: v2 is literal-only and independent of batched input v1
+  fp_order: unchanged; integer Add only
+  rng: none
+  ordering_ties: none
+  varying_outputs: fall back to loop-and-stack and reject out_axes=none mismatches
