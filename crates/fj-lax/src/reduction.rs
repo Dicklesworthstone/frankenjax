@@ -58,6 +58,24 @@ fn reduce_real_literal(dtype: DType, value: f64) -> Literal {
     }
 }
 
+#[inline]
+fn eval_dense_f64_full_reduce_sum(
+    primitive: Primitive,
+    tensor: &TensorValue,
+    float_init: f64,
+    float_op: &impl Fn(f64, f64) -> f64,
+) -> Option<Value> {
+    if primitive != Primitive::ReduceSum || tensor.dtype != DType::F64 {
+        return None;
+    }
+    let values = tensor.elements.as_f64_slice()?;
+    let mut acc = float_init;
+    for &value in values {
+        acc = float_op(acc, value);
+    }
+    Some(Value::Scalar(reduce_real_literal(DType::F64, acc)))
+}
+
 fn parse_reduction_axes(
     primitive: Primitive,
     raw_axes: &str,
@@ -144,6 +162,12 @@ pub(crate) fn eval_reduce(
             // Full reduction (all elements to scalar)
             if rank == 0 {
                 return Ok(Value::Scalar(tensor.elements[0]));
+            }
+
+            if let Some(value) =
+                eval_dense_f64_full_reduce_sum(primitive, tensor, float_init, &float_op)
+            {
+                return Ok(value);
             }
 
             if matches!(tensor.dtype, DType::Complex64 | DType::Complex128) {
@@ -1022,6 +1046,9 @@ mod tests {
     fn extract_i64(val: &Value) -> i64 {
         val.as_i64_scalar().expect("expected i64 scalar")
     }
+    fn extract_f64_bits(val: &Value) -> u64 {
+        val.as_f64_scalar().expect("expected f64 scalar").to_bits()
+    }
     fn extract_f64_vec(val: &Value) -> Vec<f64> {
         val.as_tensor()
             .unwrap()
@@ -1059,6 +1086,78 @@ mod tests {
         )
         .unwrap();
         assert!((extract_f64(&result) - 10.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn dense_f64_reduce_sum_full_fast_path_bit_identical_to_literal_path() {
+        let data = std::hint::black_box([
+            1.5,
+            -0.0,
+            f64::from_bits(0x7ff8_0000_0000_0001),
+            -3.25,
+            f64::INFINITY,
+            0.0,
+        ]);
+        let dense = Value::vector_f64(&data).unwrap();
+        assert!(dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        let literal = v_f64(&data);
+        assert!(
+            literal
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .is_none()
+        );
+
+        let dense_result = eval_reduce(
+            Primitive::ReduceSum,
+            &[dense],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let literal_result = eval_reduce(
+            Primitive::ReduceSum,
+            &[literal],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_f64_bits(&dense_result),
+            extract_f64_bits(&literal_result)
+        );
+    }
+
+    #[test]
+    fn dense_f64_reduce_sum_full_malformed_declared_f64_falls_back() {
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![3] },
+                vec![Literal::I64(2), Literal::from_f64(3.5), Literal::U32(4)],
+            )
+            .unwrap(),
+        );
+        assert!(input.as_tensor().unwrap().elements.as_f64_slice().is_none());
+
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[input],
+            0,
+            0.0,
+            |a, b| a + b,
+            |a, b| a + b,
+        )
+        .unwrap();
+
+        assert_eq!(extract_f64_bits(&result), 9.5_f64.to_bits());
     }
 
     #[test]

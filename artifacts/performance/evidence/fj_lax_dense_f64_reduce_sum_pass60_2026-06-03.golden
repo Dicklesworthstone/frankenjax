@@ -1,0 +1,14 @@
+frankenjax-mcqr.30.9 pass60 golden
+target=eval/reduce_sum_64k_f64
+baseline_worker=vmi1149989
+baseline_criterion=259.73us..304.46us midpoint=286.68us
+final_worker=vmi1153651
+final_criterion=74.171us..82.568us midpoint=77.698us
+speedup_midpoint=3.69x
+speedup_conservative=3.15x
+score=8.0
+alien_primitive=vectorized execution / dense SoA layout, alien_cs_graveyard section 8.2
+source_change=Primitive::ReduceSum full dense DType::F64 tensors fold LiteralBuffer::as_f64_slice directly
+golden_edge_case_output_bits=0x7ff8000000000001
+isomorphism=rank-0 shortcut remains before the fast path; dense F64 full reductions keep the same left-to-right fold from +0.0 through the caller float_op; output is the same F64 scalar; axes, complex, integral, malformed declared-F64, ordering, tie-breaking, RNG, and error semantics are unchanged
+validation=RCH focused tests passed on vmi1153651; RCH cargo check -p fj-lax --all-targets passed on vmi1227854; RCH cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings passed on vmi1153651; rustfmt touched files passed; cargo fmt -p fj-lax -- --check is blocked only by pre-existing crates/fj-lax/src/lib.rs line 5375 drift

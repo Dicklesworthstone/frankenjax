@@ -1,4 +1,4 @@
-use criterion::{criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, criterion_group, criterion_main};
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::{eval_primitive, eval_primitive_multi};
 use std::collections::BTreeMap;

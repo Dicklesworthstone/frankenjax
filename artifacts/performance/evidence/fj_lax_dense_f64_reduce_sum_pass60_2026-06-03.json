@@ -1,0 +1,92 @@
+{
+  "bead": "frankenjax-mcqr.30.9",
+  "pass": 60,
+  "date": "2026-06-03",
+  "crate": "fj-lax",
+  "target": "eval/reduce_sum_64k_f64",
+  "baseline": {
+    "source": "frankenjax-mcqr.30.8 pass58 benchmark coverage",
+    "worker": "vmi1149989",
+    "low_us": 259.73,
+    "mid_us": 286.68,
+    "high_us": 304.46,
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum64k-bench cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_sum_64k_f64 --sample-size 20 --measurement-time 2 --warm-up-time 1"
+  },
+  "final_benchmark": {
+    "worker": "vmi1153651",
+    "low_us": 74.171,
+    "mid_us": 77.698,
+    "high_us": 82.568,
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum-pass59-bench-final cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_sum_64k_f64 --sample-size 20 --measurement-time 2 --warm-up-time 1"
+  },
+  "speedup": {
+    "midpoint_x": 3.689552,
+    "conservative_x": 3.145936
+  },
+  "score": {
+    "impact": 4.0,
+    "confidence": 4.0,
+    "effort": 2.0,
+    "impact_times_confidence_over_effort": 8.0,
+    "kept": true
+  },
+  "alien_graveyard": {
+    "primitive": "vectorized execution / dense SoA layout",
+    "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 8.2",
+    "mapping": "avoid tuple/object-at-a-time Literal materialization by folding contiguous F64 storage directly"
+  },
+  "change": {
+    "files": [
+      "crates/fj-lax/src/reduction.rs",
+      "crates/fj-lax/benches/lax_baseline.rs"
+    ],
+    "lever": "For Primitive::ReduceSum full dense DType::F64 tensors, use LiteralBuffer::as_f64_slice() and fold the borrowed f64 slice directly. The benchmark file change is format-only import ordering from pass58."
+  },
+  "isomorphism": {
+    "ordering": "unchanged: same left-to-right element order and same +0.0 seed",
+    "floating_point": "unchanged: caller float_op is applied sequentially; no reassociation, pairwise reduction, SIMD reduction tree, or fast-math",
+    "tie_breaking": "not applicable for sum",
+    "rng": "not applicable",
+    "errors": "unchanged: rank-0 shortcut remains before fast path; axes, complex, integral, and malformed declared-F64 inputs fall through existing paths",
+    "golden_edge_case_output_bits": "0x7ff8000000000001"
+  },
+  "validation": [
+    {
+      "name": "focused_tests_final",
+      "worker": "vmi1153651",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum-pass59-test-final cargo test -p fj-lax reduction::tests::dense_f64_reduce_sum_full -- --nocapture",
+      "result": "passed: 2 tests"
+    },
+    {
+      "name": "check",
+      "worker": "vmi1227854",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum-pass59-check cargo check -p fj-lax --all-targets",
+      "result": "passed"
+    },
+    {
+      "name": "clippy",
+      "worker": "vmi1153651",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum-pass59-clippy2 cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "name": "rustfmt_touched_files",
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/reduction.rs crates/fj-lax/benches/lax_baseline.rs",
+      "result": "passed"
+    },
+    {
+      "name": "cargo_fmt_crate",
+      "command": "cargo fmt -p fj-lax -- --check",
+      "result": "blocked by pre-existing crates/fj-lax/src/lib.rs line 5375 formatting drift outside this bead"
+    }
+  ],
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_dense_f64_reduce_sum_pass60_2026-06-03.golden",
+    "sha256": "4203c231009813c279d4f8f18debd546f355555dc0ff7f6d20e8f3d5edb3f0ad"
+  },
+  "coordination": {
+    "ready_queue": "br ready --json returned [] before this fallback bead",
+    "claim": "created and claimed frankenjax-mcqr.30.9 as SilverForge",
+    "reservation": "Agent Mail reservation attempted for crates/fj-lax/src/reduction.rs and pass60 evidence files but failed because mailbox activity lock was busy"
+  }
+}
