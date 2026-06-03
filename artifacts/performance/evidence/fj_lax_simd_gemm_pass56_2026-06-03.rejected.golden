@@ -1,0 +1,9 @@
+frankenjax-p1vbf.7 pass56 rejected golden
+target=linalg/matmul_2d_512x512x512_f64
+profile=vmi1167313 midpoint=50.035ms range=[48.412,51.773]
+candidate=vmi1153651 midpoint=68.923ms range=[65.679,72.506]
+candidate_status=rejected_regression
+source_diff_retained=false
+isomorphism_attempt=portable-simd f64x4 column lanes; each lane represented one output column, each cell accumulated k=0..K-1 in the same order, scalar tail handled non-multiple-of-four columns, row-major output unchanged, no arithmetic reassociation, no rng, no tie-breaking
+tests=rch cargo test -p fj-lax matmul_2d passed on vmi1149989 in candidate state; rustfmt --check crates/fj-lax/src/tensor_contraction.rs passed
+next_primitive=recursive/cache-oblivious GEMM or cache-size KC blocking with single-thread locality improvements; lane-level SIMD and coarse row parallelism both regressed

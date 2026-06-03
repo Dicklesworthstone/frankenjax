@@ -1,0 +1,74 @@
+{
+  "artifact": "fj_lax_simd_gemm_pass56_2026-06-03",
+  "status": "rejected",
+  "bead": "frankenjax-p1vbf.7",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_512x512x512_f64",
+  "profile_backing": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-linalg-profile-pass56-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "worker": "vmi1167313",
+    "matmul_512_ms_low": 48.412,
+    "matmul_512_ms_mid": 50.035,
+    "matmul_512_ms_high": 51.773,
+    "eig_48_ms_mid": 27.616,
+    "matmul_256_ms_mid": 6.4784
+  },
+  "lever": {
+    "name": "portable SIMD f64x4 GEMM lanes",
+    "description": "Attempted safe std::simd f64x4 updates across contiguous output columns inside the existing i-k-j matmul_2d kernel, with scalar tail handling.",
+    "source_diff_retained": false
+  },
+  "alien_primitive": {
+    "class": "SWAR/portable SIMD dense linear algebra",
+    "source": "/alien-graveyard vectorized execution notes",
+    "reason": "Prior row-block, register-only, transposed-RHS, and row-parallel attempts failed; pass56 tested a lane-level arithmetic primitive while preserving per-cell k order."
+  },
+  "isomorphism_proof": {
+    "ordering": "Output rows and columns remained in row-major order.",
+    "per_cell_order": "Each SIMD lane represented a distinct output column; for each cell, the candidate still applied l=0..k-1 in ascending order.",
+    "floating_point": "No reductions across lanes, partial-sum merges, reassociation, mixed precision, or unsafe intrinsics were introduced.",
+    "rng": "not used",
+    "tie_breaking": "not applicable",
+    "errors": "No public error path changed in candidate state; slice indexing stayed in the same loop nest."
+  },
+  "validation": [
+    {
+      "command": "rustfmt --check crates/fj-lax/src/tensor_contraction.rs",
+      "worker": "local",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-simd-pass56-test-20260603 rch exec -- cargo test -p fj-lax matmul_2d -- --nocapture",
+      "worker": "vmi1149989",
+      "result": "pass",
+      "details": "3 tests passed in candidate state, including matmul_2d_simd_lane_and_tail_bit_identical_to_ijk"
+    }
+  ],
+  "rebench": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-simd-pass56-after-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "worker": "vmi1153651",
+    "time_ms_low": 65.679,
+    "time_ms_mid": 68.923,
+    "time_ms_high": 72.506,
+    "speedup_vs_profile_mid": 0.7259543642723258,
+    "outliers": "1/30 high mild"
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_simd_gemm_pass56_2026-06-03.rejected.golden",
+    "sha256": "6c9849d7bd9ea60054c3e16998ac0de9119118bc36da13cdd60c4dc9f0838f10",
+    "sha256_check": "sha256sum -c artifacts/performance/evidence/fj_lax_simd_gemm_pass56_2026-06-03.rejected.golden.sha256"
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 0.85,
+    "effort": 2.0,
+    "score": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject and restore source"
+  },
+  "next_primitive": {
+    "target": "recursive/cache-oblivious GEMM or cache-size KC blocking",
+    "reason": "Lane-level SIMD and coarse row parallelism both regressed. The next deeper primitive should change cache traversal and recursive locality while preserving per-cell ascending-k order.",
+    "target_ratio": ">=2.0x on linalg/matmul_2d_512x512x512_f64"
+  }
+}
