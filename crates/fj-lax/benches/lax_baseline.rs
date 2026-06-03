@@ -145,6 +145,42 @@ fn bench_add_64k_f64_dense_reference(c: &mut Criterion) {
     });
 }
 
+// Large-array i64 elementwise add: the dense-i64-storage analog of the
+// add_64k_f64 benches. `vector_i64` now builds dense i64 storage, so the
+// same-shape add folds two contiguous i64 slices; the literal-ref input forces
+// the Vec<Literal> path. Both run in one process for a same-worker ratio.
+fn bench_add_64k_i64_vec(c: &mut Criterion) {
+    let data: Vec<i64> = (0..LARGE_ELEMENTWISE_LEN as i64).collect();
+    let lhs = Value::vector_i64(&data).unwrap();
+    let rhs = Value::vector_i64(&data).unwrap();
+    let p = no_params();
+    c.bench_function("eval/add_64k_i64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_add_64k_i64_literal_reference(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN as i64)
+        .map(Literal::I64)
+        .collect();
+    let make = || {
+        Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape::vector(LARGE_ELEMENTWISE_LEN as u32),
+                elements.clone(),
+            )
+            .unwrap(),
+        )
+    };
+    let lhs = make();
+    let rhs = make();
+    let p = no_params();
+    c.bench_function("eval/add_64k_i64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_scalar_mul_1k_f64_vector(c: &mut Criterion) {
     let data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.001).collect();
     let scalar = Value::scalar_f64(3.5);
@@ -1073,6 +1109,8 @@ criterion_group!(
     bench_div_1k_f64_vector,
     bench_add_64k_f64_vec,
     bench_add_64k_f64_dense_reference,
+    bench_add_64k_i64_vec,
+    bench_add_64k_i64_literal_reference,
     bench_scalar_mul_1k_f64_vector,
     bench_tensor_sub_scalar_1k_f64_vector,
     bench_eq_1k_f64_vector,

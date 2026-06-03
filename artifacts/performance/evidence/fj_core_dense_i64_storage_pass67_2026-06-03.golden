@@ -1,0 +1,12 @@
+frankenjax-mcqr.30.13 pass67 golden
+target=eval/add_64k_i64_vec
+lever=dense i64 tensor storage (LiteralBuffer::I64 variant) + dense same-shape i64 Add fast path
+method=same-worker dense vs Vec<Literal> reference bench, run in one process on ts2
+worker=ts2
+add_64k_i64=dense 24.165us [24.086, 24.254] vs literal 135.404us [134.580, 136.469] = 5.60x mid, 5.55x conservative
+score=10.0
+alien_primitive=dense SoA / typed columnar storage, alien_cs_graveyard section 8.2
+source_change=LiteralBufferStorage::I64 { values: Arc<Vec<i64>>, lazy literals } with from_i64_values/as_i64_slice/as_slice/len/make_mut/Clone/IntoIterator; TensorValue::new_i64_values; Value::vector_i64 dense; eval_same_shape_i64_add folds two as_i64_slice and emits new_i64_values
+isomorphism=same element order; same int_op (i64::wrapping_add) per element with wrapping at i64::MIN/MAX preserved (no saturation/panic); as_slice() lazily materializes identical Literal::I64 vec so Debug/PartialEq/serde/Deref/indexing/consumers are byte-identical; make_mut COW-materializes to Literals like the F64 variant; Literal-backed/malformed declared-I64 inputs fall back to the unchanged generic loop; output dtype I64
+golden_edge_values=i64::MIN, i64::MAX (wrapping_add wrap), -1, 0 all add bit-identically between dense and Literal storage
+validation=RCH cargo test -p fj-core --lib dense_i64_literal_buffer passed; RCH cargo test -p fj-lax --lib dense_i64_same_shape_add passed; RCH full lib suites fj-core 129 + fj-lax 1047 passed; RCH cargo clippy -p fj-core -p fj-lax --all-targets --no-deps -- -D warnings passed

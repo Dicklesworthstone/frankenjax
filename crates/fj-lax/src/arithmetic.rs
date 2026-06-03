@@ -194,6 +194,26 @@ fn eval_same_shape_i64_add(
     rhs: &TensorValue,
     int_op: &impl Fn(i64, i64) -> i64,
 ) -> Result<Option<Value>, EvalError> {
+    // Dense i64 fast path: fold the two contiguous `i64` backing slices directly
+    // and emit a dense `i64` output. Bit-for-bit identical to the generic
+    // `Vec<Literal>` loop below — same `int_op` (the dispatcher's
+    // `i64::wrapping_add`), same element order, same I64 output — but skips the
+    // per-element `Literal::I64` match and the 24-byte enum stride (8 vs 24
+    // bytes/element). `as_i64_slice()` is `Some` only for I64 dense storage.
+    if let (Some(left_values), Some(right_values)) =
+        (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
+    {
+        let values: Vec<i64> = left_values
+            .iter()
+            .zip(right_values)
+            .map(|(&left, &right)| int_op(left, right))
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+            lhs.shape.clone(),
+            values,
+        )?)));
+    }
+
     let mut elements = Vec::with_capacity(lhs.elements.len());
     for (left, right) in lhs.elements.iter().zip(&rhs.elements) {
         let (Literal::I64(left), Literal::I64(right)) = (*left, *right) else {
@@ -5082,6 +5102,71 @@ mod tests {
     use super::*;
     use fj_test_utils::fixture_id_from_json;
     use std::f64::consts::PI;
+
+    /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
+    /// `vector_i64` input (folds two i64 slices) must produce element-for-element
+    /// identical results to the `Vec<Literal>`-backed tensor (generic loop),
+    /// including wrapping at i64::MIN/MAX, which the dispatcher's
+    /// `i64::wrapping_add` must reproduce on both paths.
+    #[test]
+    fn dense_i64_same_shape_add_bit_identical_to_literal_path() {
+        let data: Vec<i64> = vec![7, -3, i64::MAX, i64::MIN, 0, -1, 123456789];
+        let n = data.len() as u32;
+
+        let dense_lhs = Value::vector_i64(&data).unwrap();
+        let dense_rhs = Value::vector_i64(&data).unwrap();
+        assert!(
+            dense_lhs
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_some()
+        );
+
+        let lit = |d: &[i64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape { dims: vec![n] },
+                    d.iter().copied().map(Literal::I64).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let literal_lhs = lit(&data);
+        let literal_rhs = lit(&data);
+        assert!(
+            literal_lhs
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_none()
+        );
+
+        let p = std::collections::BTreeMap::new();
+        let dense_out = crate::eval_primitive(Primitive::Add, &[dense_lhs, dense_rhs], &p).unwrap();
+        let literal_out =
+            crate::eval_primitive(Primitive::Add, &[literal_lhs, literal_rhs], &p).unwrap();
+
+        let dense_t = dense_out.as_tensor().unwrap();
+        let literal_t = literal_out.as_tensor().unwrap();
+        let dense_vals: Vec<i64> = dense_t
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect();
+        let literal_vals: Vec<i64> = literal_t
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect();
+        assert_eq!(dense_vals, literal_vals);
+        // Spot-check the wrapping semantics are preserved (not saturated/panicked).
+        assert_eq!(dense_vals[2], i64::MAX.wrapping_add(i64::MAX));
+        assert_eq!(dense_vals[3], i64::MIN.wrapping_add(i64::MIN));
+    }
 
     fn s_f64(v: f64) -> Value {
         Value::Scalar(Literal::from_f64(v))

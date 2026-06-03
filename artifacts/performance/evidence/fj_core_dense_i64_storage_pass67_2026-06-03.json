@@ -1,0 +1,71 @@
+{
+    "bead": "frankenjax-mcqr.30.13",
+    "pass": 67,
+    "date": "2026-06-03",
+    "crate": "fj-core, fj-lax",
+    "target": "eval/add_64k_i64_vec",
+    "lever_summary": "Dense i64 tensor storage. Added a LiteralBuffer::I64 { values: Arc<Vec<i64>>, lazy literals } variant mirroring the existing F64 variant, so i64 tensors carry 8 native bytes/element instead of the 24-byte Literal enum (and skip the per-element Literal::I64 match). TensorValue::new_i64_values + Value::vector_i64 now build dense i64; the same-shape i64 Add fast path folds two as_i64_slice() slices directly and emits dense i64.",
+    "alien_graveyard": {
+        "primitive": "dense SoA / typed columnar storage (data-model replacement)",
+        "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 8.2",
+        "mapping": "store i64 tensors as contiguous native i64 rather than a 24-byte tagged-union Vec<Literal>; the integral analog of the F64 dense-storage work (mcqr.30 foundation)"
+    },
+    "method": "Same-worker comparison on ts2: dense (vector_i64) input vs a Vec<Literal>-backed reference (eval/add_64k_i64_literal_ref) run in the same process, isolating the data-model win from cross-worker CPU variance.",
+    "results": {
+        "add_64k_i64": {
+            "dense_ns": 24165.4,
+            "dense_ci_ns": [24085.7, 24254.2],
+            "literal_ns": 135404.2,
+            "literal_ci_ns": [134580.4, 136469.4],
+            "speedup_midpoint_x": 5.60,
+            "speedup_conservative_x": 5.55
+        }
+    },
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- add_64k_i64 --save-baseline i64add",
+    "score": {
+        "impact": 5.0,
+        "confidence": 4.0,
+        "effort": 2.0,
+        "impact_times_confidence_over_effort": 10.0,
+        "kept": true
+    },
+    "change": {
+        "files": [
+            "crates/fj-core/src/lib.rs",
+            "crates/fj-lax/src/arithmetic.rs",
+            "crates/fj-lax/benches/lax_baseline.rs"
+        ],
+        "lever": "fj-core: LiteralBufferStorage::I64 variant + from_i64_values / as_i64_slice / as_slice lazy-materialize / len / make_mut COW / Clone / owned IntoIterator arms; TensorValue::new_i64_values; Value::vector_i64 routes through it. fj-lax: eval_same_shape_i64_add gains a dense as_i64_slice fast path emitting new_i64_values, falling back to the unchanged Vec<Literal> loop."
+    },
+    "isomorphism": {
+        "ordering": "unchanged: the two i64 slices are folded in the same element order as the Vec<Literal> loop",
+        "integer_op": "unchanged: same int_op (the dispatcher's i64::wrapping_add) applied per element; wrapping at i64::MIN/MAX preserved (verified by test), no saturation/panic",
+        "storage_observability": "as_slice() lazily materializes the identical Vec<Literal> (Literal::I64(v)) on demand, so Debug/PartialEq/serde/Deref/indexing and every existing consumer see byte-identical Literals; mutation via make_mut COW-materializes to Literals exactly like the F64 variant",
+        "tie_breaking": "not applicable",
+        "rng": "not applicable",
+        "errors": "as_i64_slice() is Some only for I64 dense storage (element count matches shape); mixed/malformed declared-I64 tensors are Literal-backed -> None -> unchanged generic loop (which still returns Ok(None) on a non-I64 element, preserving fallthrough)",
+        "output_dtype": "unchanged: dense path emits DType::I64 via new_i64_values"
+    },
+    "validation": [
+        {
+            "name": "fj_core_dense_i64_buffer_parity",
+            "command": "rch exec -- cargo test -p fj-core --lib dense_i64_literal_buffer",
+            "result": "passed: dense_i64_literal_buffer_preserves_slice_api_and_cow (slice API, materialization, serde, COW, i64::MIN/MAX)"
+        },
+        {
+            "name": "fj_lax_dense_i64_add_parity",
+            "command": "rch exec -- cargo test -p fj-lax --lib dense_i64_same_shape_add",
+            "result": "passed: dense_i64_same_shape_add_bit_identical_to_literal_path (incl. wrapping at i64::MIN/MAX)"
+        },
+        {
+            "name": "full_lib_suites",
+            "command": "rch exec -- cargo test -p fj-core --lib && cargo test -p fj-lax --lib",
+            "result": "passed: fj-core 129, fj-lax 1047 (vector_i64 now dense, no regressions)"
+        },
+        {
+            "name": "clippy_deny_warnings",
+            "command": "rch exec -- cargo clippy -p fj-core -p fj-lax --all-targets --no-deps -- -D warnings",
+            "result": "passed"
+        }
+    ]
+}
