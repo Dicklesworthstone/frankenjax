@@ -1,0 +1,1 @@
+frankenjax-mcqr.40|fj-backend-cpu|linear_bookkeeping_elision|dependency_chain_len=1000|input_i64=7|output_i64=1007|max_ready_wave=1|remaining_accounted_once|completed_linear_segment_executed_flags_not_observable|ordering=tie_breaking_fp_rng_preserved|fallbacks=out_of_order_barrier_branched_missing_duplicate_preserved

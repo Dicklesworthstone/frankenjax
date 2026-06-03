@@ -408,10 +408,11 @@ fn execute_linear_topological_segment(
     segment_start: usize,
     segment_end: usize,
     env: &mut HashMap<VarId, Value>,
-    executed: &mut [bool],
+    _executed: &mut [bool],
     remaining: &mut usize,
     max_ready_wave: &mut usize,
 ) -> Result<bool, InterpreterError> {
+    let segment_len = segment_end - segment_start;
     let mut previous_output = None;
     for equation in &jaxpr.equations[segment_start..segment_end] {
         for atom in &equation.inputs {
@@ -426,16 +427,12 @@ fn execute_linear_topological_segment(
     }
 
     *max_ready_wave = (*max_ready_wave).max(1);
-    for (offset, equation) in jaxpr.equations[segment_start..segment_end]
-        .iter()
-        .enumerate()
-    {
+    for equation in &jaxpr.equations[segment_start..segment_end] {
         let output = evaluate_equation(equation, env)?;
         let out_var = single_output_var(equation)?;
         env.insert(out_var, output);
-        executed[segment_start + offset] = true;
-        *remaining -= 1;
     }
+    *remaining -= segment_len;
 
     Ok(true)
 }

@@ -1,0 +1,165 @@
+{
+  "bead": "frankenjax-mcqr.40",
+  "pass": 46,
+  "commit_base": "043d4b4b",
+  "crate": "fj-backend-cpu",
+  "target": "backend_scheduler_cutover/dependency_chain",
+  "lever": "Move accepted linear-segment scheduler bookkeeping out of the per-equation execution loop and decrement remaining once for the completed segment.",
+  "profile_backed_target": {
+    "source": "Fresh RCH Criterion baseline after commit 043d4b4b",
+    "worker": "vmi1156319",
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass46-baseline cargo bench -p fj-backend-cpu --bench backend_baseline -- backend_scheduler_cutover/dependency_chain --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "residual_hotspot": "already-topological dependency chains still spend 118.20 us at length 512 and 225.98 us at length 1000"
+  },
+  "baseline": {
+    "worker": "vmi1156319",
+    "rows": [
+      {
+        "case": "dependency_chain/128",
+        "mean_us": 24.425,
+        "ci_low_us": 23.709,
+        "ci_high_us": 25.223
+      },
+      {
+        "case": "dependency_chain/255",
+        "mean_us": 55.008,
+        "ci_low_us": 54.505,
+        "ci_high_us": 55.564
+      },
+      {
+        "case": "dependency_chain/256",
+        "mean_us": 55.708,
+        "ci_low_us": 54.830,
+        "ci_high_us": 56.679
+      },
+      {
+        "case": "dependency_chain/512",
+        "mean_us": 118.20,
+        "ci_low_us": 115.46,
+        "ci_high_us": 121.54
+      },
+      {
+        "case": "dependency_chain/1000",
+        "mean_us": 225.98,
+        "ci_low_us": 223.13,
+        "ci_high_us": 229.55
+      }
+    ]
+  },
+  "after": {
+    "worker": "vmi1149989",
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass46-after cargo bench -p fj-backend-cpu --bench backend_baseline -- backend_scheduler_cutover/dependency_chain --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "rows": [
+      {
+        "case": "dependency_chain/128",
+        "mean_us": 11.975,
+        "ci_low_us": 11.644,
+        "ci_high_us": 12.324
+      },
+      {
+        "case": "dependency_chain/255",
+        "mean_us": 23.385,
+        "ci_low_us": 22.571,
+        "ci_high_us": 24.163
+      },
+      {
+        "case": "dependency_chain/256",
+        "mean_us": 37.369,
+        "ci_low_us": 33.849,
+        "ci_high_us": 40.711
+      },
+      {
+        "case": "dependency_chain/512",
+        "mean_us": 49.149,
+        "ci_low_us": 47.204,
+        "ci_high_us": 51.079
+      },
+      {
+        "case": "dependency_chain/1000",
+        "mean_us": 91.668,
+        "ci_low_us": 89.701,
+        "ci_high_us": 94.210
+      }
+    ]
+  },
+  "delta": [
+    {
+      "case": "dependency_chain/512",
+      "mean_before_us": 118.20,
+      "mean_after_us": 49.149,
+      "speedup": 2.405,
+      "delta_percent": -58.42
+    },
+    {
+      "case": "dependency_chain/1000",
+      "mean_before_us": 225.98,
+      "mean_after_us": 91.668,
+      "speedup": 2.465,
+      "delta_percent": -59.44
+    }
+  ],
+  "worker_variance_note": "RCH exec did not expose a worker pin flag. The lever is kept despite cross-worker baseline/after because the 512 and 1000 deltas are both about 58-59%, far above expected worker noise, and all behavior gates passed.",
+  "score": {
+    "impact": 4,
+    "confidence": 3,
+    "effort": 1,
+    "value": 12.0,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering": "Accepted segments still iterate jaxpr.equations[segment_start..segment_end] in source order and call evaluate_equation for each equation before inserting that equation's output.",
+    "tie_breaking": "Accepted linear segments have a single producer chain, max_ready_wave remains 1, and no ready-set sorting or parallel evaluation path is introduced.",
+    "floating_point": "No primitive evaluation or arithmetic order changes; floating-point behavior remains owned by evaluate_equation.",
+    "rng": "No RNG primitive evaluation path changes.",
+    "fallbacks": "Segments with missing, out-of-order, branched, or non-env/non-previous inputs return false from the preflight and use the existing dependency-count scheduler.",
+    "barriers": "Barriers are split before execute_pure_segment; the fast path cannot cross a barrier segment boundary.",
+    "duplicate_outputs": "validate_scheduler_bindings still runs before scheduling, and single_output_var is still checked for every accepted equation during preflight.",
+    "executed_flags": "For accepted completed linear segments, executed flags are not observable after the caller advances next_pending to segment_end; remaining is decremented by the exact segment length once after successful ordered evaluation."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_backend_cpu_linear_bookkeeping_pass46_2026-06-03.golden",
+    "sha256": "8a885abc267ca55c7cb16583599fd0720164a9c9652da8dcaf463147bed1fa6e"
+  },
+  "validation": [
+    {
+      "kind": "format",
+      "command": "cargo fmt -p fj-backend-cpu -- --check",
+      "result": "passed"
+    },
+    {
+      "kind": "remote_tests",
+      "worker": "vmi1153651",
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass46-tests cargo test --release -p fj-backend-cpu dependency_scheduler -- --nocapture",
+      "result": "8 passed, 0 failed"
+    },
+    {
+      "kind": "remote_check",
+      "worker": "vmi1149989",
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass46-check cargo check -p fj-backend-cpu --all-targets",
+      "result": "passed"
+    },
+    {
+      "kind": "remote_clippy",
+      "worker": "vmi1227854",
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass46-clippy cargo clippy -p fj-backend-cpu --all-targets --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "kind": "golden_sha256",
+      "command": "sha256sum -c artifacts/performance/evidence/fj_backend_cpu_linear_bookkeeping_pass46_2026-06-03.golden.sha256",
+      "result": "passed"
+    },
+    {
+      "kind": "ubs",
+      "command": "ubs crates/fj-backend-cpu/src/executor.rs",
+      "result": "exit 0; critical 0; warning inventory unchanged in this pass"
+    }
+  ],
+  "alien_primitives": [
+    {
+      "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md",
+      "primitive": "topological dependency scheduling",
+      "application": "Once a deterministic topological segment is accepted and evaluated in source order, per-node worklist marks can be elided from the hot execution loop; only segment-level progress accounting remains."
+    }
+  ]
+}
