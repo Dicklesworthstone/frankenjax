@@ -343,12 +343,9 @@ pub(crate) fn eval_triangular_solve(
                     b_col[i] = complex_sub(b_col[i], complex_mul(a[i * n + k], x[k * n_b + col]));
                 }
                 let diag = if unit_diagonal { one } else { a[i * n + i] };
-                if complex_abs(diag) < f64::EPSILON * 1e4 {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: "singular or near-singular triangular matrix".to_owned(),
-                    });
-                }
+                // JAX's triangular_solve does not raise for a zero/near-zero
+                // diagonal — complex_div yields inf/nan (singular) or a finite
+                // large value (near-singular), matching jnp (NumPy raises).
                 x[i * n_b + col] = complex_div(b_col[i], diag);
             }
         } else if !lower && !transpose_a {
@@ -357,12 +354,9 @@ pub(crate) fn eval_triangular_solve(
                     b_col[i] = complex_sub(b_col[i], complex_mul(a[i * n + k], x[k * n_b + col]));
                 }
                 let diag = if unit_diagonal { one } else { a[i * n + i] };
-                if complex_abs(diag) < f64::EPSILON * 1e4 {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: "singular or near-singular triangular matrix".to_owned(),
-                    });
-                }
+                // JAX's triangular_solve does not raise for a zero/near-zero
+                // diagonal — complex_div yields inf/nan (singular) or a finite
+                // large value (near-singular), matching jnp (NumPy raises).
                 x[i * n_b + col] = complex_div(b_col[i], diag);
             }
         } else if lower && transpose_a {
@@ -371,12 +365,9 @@ pub(crate) fn eval_triangular_solve(
                     b_col[i] = complex_sub(b_col[i], complex_mul(a[k * n + i], x[k * n_b + col]));
                 }
                 let diag = if unit_diagonal { one } else { a[i * n + i] };
-                if complex_abs(diag) < f64::EPSILON * 1e4 {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: "singular or near-singular triangular matrix".to_owned(),
-                    });
-                }
+                // JAX's triangular_solve does not raise for a zero/near-zero
+                // diagonal — complex_div yields inf/nan (singular) or a finite
+                // large value (near-singular), matching jnp (NumPy raises).
                 x[i * n_b + col] = complex_div(b_col[i], diag);
             }
         } else {
@@ -385,12 +376,9 @@ pub(crate) fn eval_triangular_solve(
                     b_col[i] = complex_sub(b_col[i], complex_mul(a[k * n + i], x[k * n_b + col]));
                 }
                 let diag = if unit_diagonal { one } else { a[i * n + i] };
-                if complex_abs(diag) < f64::EPSILON * 1e4 {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: "singular or near-singular triangular matrix".to_owned(),
-                    });
-                }
+                // JAX's triangular_solve does not raise for a zero/near-zero
+                // diagonal — complex_div yields inf/nan (singular) or a finite
+                // large value (near-singular), matching jnp (NumPy raises).
                 x[i * n_b + col] = complex_div(b_col[i], diag);
             }
         }
@@ -2383,6 +2371,35 @@ mod tests {
         let elems = extract_f64_elements(&result);
         assert!((elems[0] - 2.0).abs() < 1e-10, "x[0]");
         assert!((elems[1] - 5.0 / 3.0).abs() < 1e-10, "x[1]");
+    }
+
+    #[test]
+    fn triangular_solve_singular_diagonal_returns_non_finite_not_error() {
+        // jnp.linalg-style triangular solve does NOT raise for a zero/near-zero
+        // diagonal (NumPy raises). Zero diagonal => non-finite (division by
+        // zero); near-zero diagonal => finite large value.
+        let l = make_matrix(2, 2, &[0.0, 0.0, 1.0, 3.0]); // L[0][0] = 0 (singular)
+        let b = make_matrix(2, 1, &[4.0, 7.0]);
+        let result = eval_triangular_solve(&[l, b], &BTreeMap::new())
+            .expect("triangular_solve must not raise for a singular diagonal");
+        let elems = extract_f64_elements(&result);
+        assert!(
+            elems.iter().any(|v| !v.is_finite()),
+            "singular triangular solve must be non-finite, got {elems:?}"
+        );
+
+        // Near-singular: L[0][0] = 1e-13 => x0 = 1/1e-13 = 1e13 (finite), matching
+        // JAX's divide-through behavior rather than the old < ~2e-12 error.
+        let l2 = make_matrix(2, 2, &[1e-13, 0.0, 1.0, 3.0]);
+        let b2 = make_matrix(2, 1, &[1.0, 7.0]);
+        let r2 = eval_triangular_solve(&[l2, b2], &BTreeMap::new())
+            .expect("triangular_solve must not raise for a near-singular diagonal");
+        let e2 = extract_f64_elements(&r2);
+        assert!(
+            e2.iter().all(|v| v.is_finite()),
+            "near-singular triangular solve must stay finite, got {e2:?}"
+        );
+        assert!((e2[0] - 1e13).abs() < 1e3, "x[0] ~ 1e13, got {}", e2[0]);
     }
 
     #[test]

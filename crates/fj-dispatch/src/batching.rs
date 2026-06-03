@@ -3098,13 +3098,9 @@ fn triangular_solve_diag(
         a[row_major_index(i, i, cols)]
     };
 
-    if diag.abs() < f64::EPSILON * 1e4 {
-        return Err(BatchError::EvalError(
-            "unsupported triangular_solve behavior: singular or near-singular triangular matrix"
-                .to_owned(),
-        ));
-    }
-
+    // JAX's triangular_solve does not raise for a zero/near-zero diagonal; the
+    // caller's division yields inf/nan (singular) or a finite large value
+    // (near-singular), matching jnp (NumPy raises).
     Ok(diag)
 }
 
