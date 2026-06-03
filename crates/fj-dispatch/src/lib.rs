@@ -4,7 +4,7 @@ pub mod batching;
 
 use fj_cache::{CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
-    CompatibilityMode, Jaxpr, Shape, TensorValue, TraceTransformLedger, Transform,
+    CompatibilityMode, Jaxpr, Primitive, Shape, TensorValue, TraceTransformLedger, Transform,
     TransformCompositionError, Value, verify_transform_composition,
 };
 use fj_interpreters::InterpreterError;
@@ -762,12 +762,16 @@ fn execute_vmap(
         return Err(TransformExecutionError::EmptyVmapOutput.into());
     }
 
-    // Use BatchTrace interpreter when no tail transforms exist and all batched
-    // args use axis 0 (the default case).
+    // Use BatchTrace interpreter when no tail transforms exist. Axis-0 remains
+    // the broad default path; non-zero axes are currently limited to effect-free
+    // elementwise Jaxprs whose batching rules preserve the mapped axis.
     let all_axis_zero = in_axes
         .iter()
         .all(|spec| matches!(spec, AxisSpec::Batched(0) | AxisSpec::NotBatched));
-    if tail.is_empty() && all_axis_zero && !compile_options.contains_key("vmap_out_axes") {
+    if tail.is_empty()
+        && !compile_options.contains_key("vmap_out_axes")
+        && (all_axis_zero || can_use_nonzero_axis_batch_trace(root_jaxpr))
+    {
         return execute_vmap_batch_trace(root_jaxpr, args, &in_axes, lead_len);
     }
 
@@ -781,6 +785,118 @@ fn execute_vmap(
         lead_len,
         &in_axes,
         compile_options,
+    )
+}
+
+fn can_use_nonzero_axis_batch_trace(root_jaxpr: &Jaxpr) -> bool {
+    root_jaxpr.effects.is_empty()
+        && root_jaxpr.equations.iter().all(|equation| {
+            equation.effects.is_empty()
+                && equation.sub_jaxprs.is_empty()
+                && is_elementwise_batch_trace_primitive(equation.primitive)
+        })
+}
+
+fn is_elementwise_batch_trace_primitive(primitive: Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Neg
+            | Primitive::Abs
+            | Primitive::Exp
+            | Primitive::Log
+            | Primitive::Sqrt
+            | Primitive::Rsqrt
+            | Primitive::Floor
+            | Primitive::Ceil
+            | Primitive::Round
+            | Primitive::Sin
+            | Primitive::Cos
+            | Primitive::Tan
+            | Primitive::Asin
+            | Primitive::Acos
+            | Primitive::Atan
+            | Primitive::Sinh
+            | Primitive::Cosh
+            | Primitive::Tanh
+            | Primitive::Asinh
+            | Primitive::Acosh
+            | Primitive::Atanh
+            | Primitive::Expm1
+            | Primitive::Log1p
+            | Primitive::Sign
+            | Primitive::Square
+            | Primitive::Reciprocal
+            | Primitive::Logistic
+            | Primitive::Erf
+            | Primitive::Erfc
+            | Primitive::Lgamma
+            | Primitive::Digamma
+            | Primitive::ErfInv
+            | Primitive::Conj
+            | Primitive::Real
+            | Primitive::Imag
+            | Primitive::Cbrt
+            | Primitive::IsFinite
+            | Primitive::IntegerPow
+            | Primitive::Copy
+            | Primitive::ConvertElementType
+            | Primitive::BitcastConvertType
+            | Primitive::ReducePrecision
+            | Primitive::Trunc
+            | Primitive::Deg2Rad
+            | Primitive::Rad2Deg
+            | Primitive::Log2
+            | Primitive::Exp2
+            | Primitive::Sinc
+            | Primitive::BesselI0e
+            | Primitive::BesselI1e
+            | Primitive::IsNan
+            | Primitive::IsInf
+            | Primitive::Signbit
+            | Primitive::StopGradient
+            | Primitive::Add
+            | Primitive::Sub
+            | Primitive::Mul
+            | Primitive::Max
+            | Primitive::Min
+            | Primitive::Pow
+            | Primitive::Div
+            | Primitive::Rem
+            | Primitive::Atan2
+            | Primitive::Complex
+            | Primitive::Nextafter
+            | Primitive::Hypot
+            | Primitive::LogAddExp
+            | Primitive::LogAddExp2
+            | Primitive::Gcd
+            | Primitive::Lcm
+            | Primitive::Polygamma
+            | Primitive::Igamma
+            | Primitive::Igammac
+            | Primitive::Zeta
+            | Primitive::Heaviside
+            | Primitive::CopySign
+            | Primitive::Ldexp
+            | Primitive::XLogY
+            | Primitive::XLog1PY
+            | Primitive::Eq
+            | Primitive::Ne
+            | Primitive::Lt
+            | Primitive::Le
+            | Primitive::Gt
+            | Primitive::Ge
+            | Primitive::BitwiseAnd
+            | Primitive::BitwiseOr
+            | Primitive::BitwiseXor
+            | Primitive::ShiftLeft
+            | Primitive::ShiftRightArithmetic
+            | Primitive::ShiftRightLogical
+            | Primitive::BitwiseNot
+            | Primitive::PopulationCount
+            | Primitive::CountLeadingZeros
+            | Primitive::CountTrailingZeros
+            | Primitive::Select
+            | Primitive::Clamp
     )
 }
 
@@ -2401,6 +2517,46 @@ mod tests {
             .map(|l| l.as_i64().unwrap())
             .collect();
         assert_eq!(vals, vec![101, 102, 103]);
+    }
+
+    #[test]
+    fn test_in_axes_1_second_dim_batch_trace() {
+        let matrix = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 3] },
+                vec![
+                    fj_core::Literal::I64(1),
+                    fj_core::Literal::I64(2),
+                    fj_core::Literal::I64(3),
+                    fj_core::Literal::I64(4),
+                    fj_core::Literal::I64(5),
+                    fj_core::Literal::I64(6),
+                ],
+            )
+            .expect("matrix"),
+        );
+        let mut opts = BTreeMap::new();
+        opts.insert("vmap_in_axes".to_owned(), "1".to_owned());
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::AddOne, &[Transform::Vmap]),
+            args: vec![matrix],
+            backend: "cpu".to_owned(),
+            compile_options: opts,
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("vmap in_axes=1 should succeed through BatchTrace");
+
+        let output = response.outputs[0].as_tensor().expect("tensor");
+        assert_eq!(output.shape, Shape { dims: vec![3, 2] });
+        let vals: Vec<i64> = output
+            .elements
+            .iter()
+            .map(|l| l.as_i64().unwrap())
+            .collect();
+        assert_eq!(vals, vec![2, 5, 3, 6, 4, 7]);
     }
 
     #[test]

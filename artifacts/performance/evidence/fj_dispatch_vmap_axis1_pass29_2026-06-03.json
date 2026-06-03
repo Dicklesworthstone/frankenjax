@@ -1,0 +1,127 @@
+{
+  "schema_version": "frankenjax.performance_evidence.v1",
+  "pass": 29,
+  "bead": "frankenjax-mcqr.7",
+  "crate": "fj-dispatch",
+  "target": "dispatch_latency/vmap/rank2_add_one_in_axes_1",
+  "profile_backed_target": {
+    "worker": "vmi1153651",
+    "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-dispatch-latency-profile-20260603 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency --sample-size 100 --measurement-time 3 --warm-up-time 1",
+    "baseline_us": {
+      "low": 492.05,
+      "mean": 499.94,
+      "high": 508.28
+    },
+    "nearby_rows_us": {
+      "dispatch_latency/vmap/vector_add_one": {
+        "low": 5.9194,
+        "mean": 6.0086,
+        "high": 6.1082
+      },
+      "dispatch_latency/vmap/rank2_add_one": {
+        "low": 6.0522,
+        "mean": 6.2711,
+        "high": 6.5057
+      },
+      "dispatch_latency/vmap/constant_scalar_out_axes_none": {
+        "low": 70.942,
+        "mean": 72.317,
+        "high": 73.702
+      }
+    }
+  },
+  "lever": {
+    "description": "Route tail-free, explicit-out-axes-free nonzero-axis vmap through BatchTrace only when the root Jaxpr is effect-free and all equations are elementwise primitives with existing axis-aware batching rules.",
+    "alien_primitives": [
+      "nested data-parallel flattening",
+      "loop interchange",
+      "vectorized cache-local execution"
+    ],
+    "safe_rust_only": true,
+    "external_blas_or_xla": false
+  },
+  "after": {
+    "worker": "vmi1227854",
+    "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-axis1-bench-pass29 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency/vmap/rank2_add_one_in_axes_1 --sample-size 100 --measurement-time 3 --warm-up-time 1",
+    "after_us": {
+      "low": 272.19,
+      "mean": 277.88,
+      "high": 283.73
+    },
+    "speedup_mean": 1.799,
+    "improvement_percent": 44.42
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 3,
+    "effort": 1,
+    "value": 9.0,
+    "keep": true
+  },
+  "isomorphism_proof": {
+    "mapped_axis_order": "Preserved: BatchTrace carries resolved batch_dim=1, then moves that dimension to axis 0, matching loop-and-stack index order over source axis 1.",
+    "row_major_element_order": "Preserved by the existing transpose/move_batch_dim_to_front path; golden output remains [2,5,3,6,4,7] for input shape [2,3].",
+    "tie_breaking": "Not applicable.",
+    "floating_point": "No new arithmetic implementation is introduced; elementwise primitives still execute through existing fj-lax evaluation, and FP operand order is unchanged.",
+    "rng": "Not applicable.",
+    "error_behavior": "Composed transforms, explicit vmap_out_axes, effects, sub-jaxprs, and non-elementwise primitives remain on the existing loop-and-stack fallback."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_vmap_axis1_pass29_2026-06-03.golden",
+    "sha256": "eab4983d401c391b6ea9dfe120c3f5b9e5c09af2f4bbe5879fd8829bbe7534d4"
+  },
+  "validation": {
+    "completed": [
+      {
+        "command": "sha256sum -c artifacts/performance/evidence/fj_dispatch_vmap_axis1_pass29_2026-06-03.golden.sha256",
+        "worker": "local",
+        "result": "OK"
+      },
+      {
+        "command": "jq . artifacts/performance/evidence/fj_dispatch_vmap_axis1_pass29_2026-06-03.json",
+        "worker": "local",
+        "result": "valid JSON"
+      },
+      {
+        "command": "git diff --check -- changed files",
+        "worker": "local",
+        "result": "clean"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-fmt-pass29 rch exec -- cargo fmt -p fj-dispatch --check",
+        "worker": "local via rch non-compilation passthrough",
+        "result": "passed"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-check-pass29 rch exec -- cargo check -p fj-dispatch --all-targets",
+        "worker": "vmi1153651",
+        "result": "passed; unrelated fj-lax dependency dead_code warning observed"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-axis1-test-pass29 rch exec -- cargo test -p fj-dispatch test_in_axes_1_second_dim -- --nocapture",
+        "worker": "vmi1156319",
+        "result": "2 tests passed"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-libtest-pass29 rch exec -- cargo test -p fj-dispatch --lib -- --nocapture",
+        "worker": "local fallback; no admissible rch worker",
+        "result": "239 tests passed"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-clippy-pass29 rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+        "worker": "vmi1153651",
+        "result": "passed; --no-deps used to keep lint to touched crate while unrelated fj-lax dependency warning exists"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-dispatch-axis1-bench-pass29 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency/vmap/rank2_add_one_in_axes_1 --sample-size 100 --measurement-time 3 --warm-up-time 1",
+        "worker": "vmi1227854",
+        "result": "mean 277.88 us"
+      },
+      {
+        "command": "ubs crates/fj-dispatch/src/lib.rs .beads/issues.jsonl .skill-loop-progress.md artifacts/performance/evidence/fj_dispatch_vmap_axis1_pass29_2026-06-03.json artifacts/performance/evidence/fj_dispatch_vmap_axis1_pass29_2026-06-03.golden artifacts/performance/evidence/fj_dispatch_vmap_axis1_pass29_2026-06-03.golden.sha256",
+        "worker": "local",
+        "result": "exit 0; no criticals; broad existing fj-dispatch inventories only"
+      }
+    ]
+  }
+}

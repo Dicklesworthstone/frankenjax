@@ -1,0 +1,21 @@
+scenario: fj-dispatch vmap in_axes=1 BatchTrace elementwise AddOne
+bead: frankenjax-mcqr.7
+input_dtype: I64
+input_shape: [2, 3]
+input_row_major: [1, 2, 3, 4, 5, 6]
+transforms: [Vmap]
+compile_options:
+  vmap_in_axes: "1"
+output_shape: [3, 2]
+output_row_major: [2, 5, 3, 6, 4, 7]
+fallback_control:
+  transforms: [Vmap, Jit]
+  output_shape: [3, 2]
+  output_row_major: [2, 5, 3, 6, 4, 7]
+isomorphism:
+  mapped_axis_order: preserved as source axis-1 order 0, 1, 2
+  row_major_element_order: preserved by BatchTrace batch_dim move-to-front
+  tie_breaking: not applicable
+  floating_point: not applicable for I64 AddOne golden; FP operation order unchanged by gate
+  rng: not applicable
+  error_behavior: composed transforms and explicit vmap_out_axes remain on loop-and-stack fallback
