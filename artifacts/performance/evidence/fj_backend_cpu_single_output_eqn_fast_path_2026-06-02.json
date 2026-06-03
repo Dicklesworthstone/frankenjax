@@ -1,0 +1,48 @@
+{
+  "bead": "frankenjax-mcqr.18",
+  "date": "2026-06-02",
+  "subsystem": "fj-backend-cpu + fj-interpreters",
+  "target": "Per-equation Vec<Value> allocation in the CPU executor's single-output path",
+  "lever": {
+    "description": "Add fj-interpreters::eval_equation_single: for a sub-jaxpr-free, single-output equation it resolves inputs and calls eval_primitive directly, returning the lone Value. Previously the executor's evaluate_equation called eval_equation_outputs -> eval_primitive_multi, which for every non-multi-output primitive returns vec![eval_primitive(..)] (a one-element heap Vec) that evaluate_equation immediately pops. Multi-output primitives (Qr/Lu/Svd/Eigh/TopK/Slogdet/Eig) and sub-jaxpr (cond/scan/while/switch) equations delegate to the unchanged multi path."
+  },
+  "benchmarks": {
+    "method": "rch Criterion, same worker back-to-back (baseline = evaluate_equation reverted to multi+pop, optimized = eval_equation_single)",
+    "baseline": {
+      "backend_execute/add2_ns": 247.01,
+      "backend_execute/square_ns": 242.90,
+      "backend_execute/dot3_10eqn_ns": 251.89,
+      "backend_execute/wide_parallel_64_us": 16.450,
+      "backend_execute/dependency_chain_512_us": 92.136
+    },
+    "after": {
+      "backend_execute/add2_ns": 236.93,
+      "backend_execute/square_ns": 227.52,
+      "backend_execute/dot3_10eqn_ns": 236.94,
+      "backend_execute/wide_parallel_64_us": 14.636,
+      "backend_execute/dependency_chain_512_us": 89.563
+    },
+    "speedup": {
+      "add2": 1.043,
+      "square": 1.068,
+      "dot3_10eqn": 1.063,
+      "wide_parallel_64": 1.124,
+      "dependency_chain_512": 1.029
+    },
+    "honesty_note": "An initial cross-worker comparison spuriously suggested ~2.2x; the figures above are the honest same-worker back-to-back result (~3-12%). Modest but real, broad (every jaxpr equation), and zero-risk."
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 5,
+    "effort": 1,
+    "impact_times_confidence_over_effort": 15.0,
+    "note": "Opportunity-matrix score (Impact x Confidence / Effort), not a speedup multiple. Speedup is ~3-12%."
+  },
+  "isomorphism_proof": {
+    "structural": "For single-output, sub-jaxpr-free equations eval_primitive_multi(p, inputs) == vec![eval_primitive(p, inputs)] (see fj-lax::eval_primitive_multi `_` arm). eval_equation_single returns eval_primitive(p, inputs) directly; the previous path returned vec![..] then popped it. Identical Value, identical errors (resolve_equation_inputs + eval_primitive unchanged).",
+    "multi_output": "Qr/Lu/Svd/Eigh/TopK/Slogdet/Eig and sub-jaxpr equations delegate to eval_equation_outputs, byte-for-byte the prior behavior.",
+    "ordering": "Execution/scheduling order unchanged; only the per-equation result wrapping is elided.",
+    "rng": "No RNG state is read or written.",
+    "behavioral_proof": "No synthetic golden-bits file: this is an allocation-elision refactor, not a new numeric kernel, so output values are structurally unchanged and verified by the full test suites — 60 fj-interpreters + 130 fj-backend-cpu unit tests (which execute jaxprs through CpuBackend and assert outputs) all pass."
+  }
+}

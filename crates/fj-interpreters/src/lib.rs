@@ -6,7 +6,7 @@ pub mod staging;
 use fj_core::{
     Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, ValueError, VarId,
 };
-use fj_lax::{EvalError, eval_primitive_multi};
+use fj_lax::{EvalError, eval_primitive, eval_primitive_multi};
 use rustc_hash::FxHashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -660,6 +660,55 @@ pub fn eval_equation_outputs(
         });
     }
     Ok(outputs)
+}
+
+/// Single-output fast path for [`eval_equation_outputs`].
+///
+/// For an equation with no sub-jaxprs whose primitive is single-output, this
+/// resolves inputs and calls [`eval_primitive`] directly, returning the lone
+/// `Value` without the intermediate one-element `Vec<Value>` that
+/// `eval_primitive_multi` allocates (it returns `vec![eval_primitive(..)]` for
+/// every non-multi-output primitive). The result is bit-for-bit identical to
+/// `eval_equation_outputs(equation, env)?` followed by taking its single
+/// element. Multi-output primitives (Qr/Lu/Svd/Eigh/TopK/Slogdet/Eig) and any
+/// equation carrying sub-jaxprs delegate to the multi path so semantics and
+/// arity validation are unchanged.
+pub fn eval_equation_single(
+    equation: &Equation,
+    env: &FxHashMap<VarId, Value>,
+) -> Result<Value, InterpreterError> {
+    let is_multi_output = matches!(
+        equation.primitive,
+        Primitive::Qr
+            | Primitive::Lu
+            | Primitive::Svd
+            | Primitive::Eigh
+            | Primitive::TopK
+            | Primitive::Slogdet
+            | Primitive::Eig
+    );
+    if !equation.sub_jaxprs.is_empty() || is_multi_output {
+        let outputs = eval_equation_outputs(equation, env)?;
+        if outputs.len() != 1 {
+            return Err(InterpreterError::UnexpectedOutputArity {
+                primitive: equation.primitive,
+                expected: 1,
+                actual: outputs.len(),
+            });
+        }
+        return Ok(outputs.into_iter().next().expect("len checked == 1"));
+    }
+
+    if equation.outputs.len() != 1 {
+        return Err(InterpreterError::UnexpectedOutputArity {
+            primitive: equation.primitive,
+            expected: 1,
+            actual: equation.outputs.len(),
+        });
+    }
+    let resolved = resolve_equation_inputs(equation, env)?;
+    eval_primitive(equation.primitive, &resolved, &equation.params)
+        .map_err(InterpreterError::Primitive)
 }
 
 pub fn eval_jaxpr_with_consts(

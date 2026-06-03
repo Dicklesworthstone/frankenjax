@@ -7,7 +7,7 @@
 //! Contract: p2c006.strict.inv001 (CPU always available).
 
 use fj_core::{Atom, DType, Equation, Jaxpr, Value, VarId};
-use fj_interpreters::{InterpreterError, eval_equation_outputs};
+use fj_interpreters::{InterpreterError, eval_equation_outputs, eval_equation_single};
 use fj_runtime::backend::{Backend, BackendCapabilities, BackendError};
 use fj_runtime::buffer::Buffer;
 use fj_runtime::device::{DeviceId, DeviceInfo, Platform};
@@ -57,30 +57,10 @@ fn evaluate_equation(
     equation: &Equation,
     env: &HashMap<VarId, Value>,
 ) -> Result<Value, InterpreterError> {
-    if equation.outputs.len() != 1 {
-        return Err(InterpreterError::UnexpectedOutputArity {
-            primitive: equation.primitive,
-            expected: 1,
-            actual: equation.outputs.len(),
-        });
-    }
-    let mut outputs = evaluate_equation_multi(equation, env)?;
-    if outputs.len() != 1 {
-        return Err(InterpreterError::UnexpectedOutputArity {
-            primitive: equation.primitive,
-            expected: 1,
-            actual: outputs.len(),
-        });
-    }
-    match outputs.pop() {
-        Some(output) => Ok(output),
-        None => Err(InterpreterError::InvariantViolation {
-            detail: format!(
-                "single-output equation {} produced no values after arity validation",
-                equation.primitive.as_str()
-            ),
-        }),
-    }
+    // Single-output fast path: avoids the one-element Vec<Value> that
+    // eval_primitive_multi allocates per equation. Bit-for-bit identical to
+    // the previous evaluate_equation_multi + arity-check + pop.
+    eval_equation_single(equation, env)
 }
 
 fn single_output_var(equation: &Equation) -> Result<VarId, InterpreterError> {
