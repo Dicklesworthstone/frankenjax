@@ -4815,15 +4815,20 @@ mod tests {
     }
 
     #[test]
-    fn gather_out_of_bounds_rejected() {
+    fn gather_out_of_bounds_clips_by_default() {
+        // JAX parity: gather never raises on OOB; the default mode (CLIP) clamps the
+        // index into [0, dim-1], so index 5 against dim 3 clamps to 2 -> element 3.
         let operand = Value::vector_i64(&[1, 2, 3]).unwrap();
         let indices = Value::Tensor(
             TensorValue::new(DType::I64, Shape::vector(1), vec![Literal::I64(5)]).unwrap(),
         );
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".into(), "1".into());
-        let err = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap_err();
-        assert!(matches!(err, EvalError::Unsupported { .. }));
+        let result = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
+        match result {
+            Value::Tensor(t) => assert_eq!(t.elements, vec![Literal::I64(3)]),
+            Value::Scalar(_) => panic!("expected tensor"),
+        }
     }
 
     #[test]
@@ -5355,7 +5360,10 @@ mod tests {
     }
 
     #[test]
-    fn gather_empty_slice_still_checks_index_bounds() {
+    fn gather_empty_slice_out_of_bounds_returns_empty() {
+        // JAX parity: gather never raises on OOB. With a zero-size trailing slice the
+        // output is empty regardless of the index, so an OOB index yields an empty
+        // tensor rather than an error.
         let operand = Value::Tensor(
             fj_core::TensorValue::new(
                 fj_core::DType::I64,
@@ -5367,14 +5375,11 @@ mod tests {
         let mut params = BTreeMap::new();
         params.insert("slice_sizes".into(), "1,0".into());
 
-        let err = eval_primitive(Primitive::Gather, &[operand, Value::scalar_i64(2)], &params)
-            .unwrap_err()
-            .to_string();
-
-        assert!(
-            err.contains("gather index 2 out of bounds"),
-            "unexpected error: {err}"
-        );
+        let result = eval_primitive(Primitive::Gather, &[operand, Value::scalar_i64(2)], &params)
+            .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![0]);
+        assert!(tensor.elements.is_empty());
     }
 
     // ===================================================================
@@ -5440,7 +5445,10 @@ mod tests {
     }
 
     #[test]
-    fn scatter_empty_slice_still_checks_index_bounds() {
+    fn scatter_empty_slice_out_of_bounds_returns_operand() {
+        // JAX parity: scatter never raises on OOB. With a zero-size update slice there
+        // is nothing to write, so an OOB index leaves the operand unchanged rather than
+        // raising.
         let operand = Value::Tensor(
             TensorValue::new(DType::I64, Shape { dims: vec![1, 0] }, Vec::new()).unwrap(),
         );
@@ -5448,18 +5456,15 @@ mod tests {
             TensorValue::new(DType::I64, Shape { dims: vec![0] }, Vec::new()).unwrap(),
         );
 
-        let err = eval_primitive(
+        let result = eval_primitive(
             Primitive::Scatter,
             &[operand, Value::scalar_i64(2), updates],
             &no_params(),
         )
-        .unwrap_err()
-        .to_string();
-
-        assert!(
-            err.contains("scatter index 2 out of bounds"),
-            "unexpected error: {err}"
-        );
+        .unwrap();
+        let tensor = result.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![1, 0]);
+        assert!(tensor.elements.is_empty());
     }
 
     #[test]

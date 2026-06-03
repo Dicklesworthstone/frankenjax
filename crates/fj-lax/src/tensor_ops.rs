@@ -1386,6 +1386,79 @@ pub(crate) fn eval_slice(
 /// Constraint: `slice_sizes[0]` must be 1 (axis-0 indexing only).
 /// Output shape: `indices.shape ++ slice_sizes[1..]` (the leading axis is replaced by
 /// the indices tensor shape, remaining axes keep their slice sizes).
+///
+/// Out-of-bounds indices follow JAX's `GatherScatterMode` (`index_mode` param), which
+/// NEVER raises: `clip` clamps into range (the default, matching `jnp` integer
+/// indexing), `fill_or_drop` substitutes a fill value for the affected gathered slice,
+/// and `promise_in_bounds` assumes validity but clamps defensively rather than panic.
+///
+/// JAX reference: `jax/_src/lax/slicing.py` `GatherScatterMode`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IndexMode {
+    /// Clamp out-of-bounds indices into `[0, dim-1]` (JAX `CLIP`).
+    Clip,
+    /// Out-of-bounds gather slices are filled / scatter updates are dropped
+    /// (JAX `FILL_OR_DROP`).
+    FillOrDrop,
+    /// Caller promises indices are in bounds; out-of-bounds is undefined behavior in
+    /// JAX, so we clamp defensively to stay panic-free (JAX `PROMISE_IN_BOUNDS`).
+    PromiseInBounds,
+}
+
+/// Parse the JAX-style `index_mode` (out-of-bounds policy) param. Distinct from the
+/// scatter combiner `mode` ("overwrite"/"add"). Defaults to `default` when absent.
+fn parse_index_mode(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    default: IndexMode,
+) -> Result<IndexMode, EvalError> {
+    match params.get("index_mode").map(String::as_str) {
+        None => Ok(default),
+        Some("clip") => Ok(IndexMode::Clip),
+        Some("fill" | "drop" | "fill_or_drop") => Ok(IndexMode::FillOrDrop),
+        Some("promise_in_bounds" | "promise") => Ok(IndexMode::PromiseInBounds),
+        Some(other) => Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "unknown index_mode \"{other}\", expected \"clip\", \"fill_or_drop\", or \"promise_in_bounds\""
+            ),
+        }),
+    }
+}
+
+/// Resolve a flat axis-0 index against `dim` under an [`IndexMode`]. Returns
+/// `Some(in_bounds_index)` to read/write, or `None` to fill (gather) / drop (scatter).
+/// `dim` is guaranteed `>= 1` by the slice-size checks in the callers.
+fn resolve_axis0_index(idx: usize, dim: usize, mode: IndexMode) -> Option<usize> {
+    if idx < dim {
+        Some(idx)
+    } else {
+        match mode {
+            IndexMode::FillOrDrop => None,
+            IndexMode::Clip | IndexMode::PromiseInBounds => Some(dim - 1),
+        }
+    }
+}
+
+/// JAX's default `FILL_OR_DROP` gather fill value for `dtype`
+/// (`jax/_src/lax/slicing.py`): NaN for inexact, `iinfo.min` for signed integers,
+/// `iinfo.max`/`true` for unsigned/bool, NaN real component for complex.
+fn gather_fill_literal(dtype: DType) -> Literal {
+    match dtype {
+        DType::F64 => Literal::F64Bits(f64::NAN.to_bits()),
+        DType::F32 => Literal::F32Bits(f32::NAN.to_bits()),
+        DType::F16 => Literal::from_f16_f64(f64::NAN),
+        DType::BF16 => Literal::from_bf16_f64(f64::NAN),
+        DType::I32 => Literal::I64(i64::from(i32::MIN)),
+        DType::I64 => Literal::I64(i64::MIN),
+        DType::U32 => Literal::U32(u32::MAX),
+        DType::U64 => Literal::U64(u64::MAX),
+        DType::Bool => Literal::Bool(true),
+        DType::Complex64 => Literal::Complex64Bits(f32::NAN.to_bits(), 0),
+        DType::Complex128 => Literal::Complex128Bits(f64::NAN.to_bits(), 0),
+    }
+}
+
 pub(crate) fn eval_gather(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -1482,17 +1555,16 @@ pub(crate) fn eval_gather(
     let slice_elems = checked_shape_element_count(primitive, "gather slice", &trailing_slice_dims)?;
 
     let total = checked_shape_element_count(primitive, "gather output", &out_dims)?;
-    for &idx in &index_vals {
-        if idx >= op_dims[0] as usize {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!(
-                    "gather index {} out of bounds for axis 0 dim {}",
-                    idx, op_dims[0]
-                ),
-            });
-        }
-    }
+
+    // Resolve out-of-bounds indices per JAX GatherScatterMode (never raises).
+    // `Some(idx)` reads operand[idx, ..]; `None` fills the slice with `fill_lit`.
+    let index_mode = parse_index_mode(primitive, params, IndexMode::Clip)?;
+    let dim0 = op_dims[0] as usize;
+    let fill_lit = gather_fill_literal(operand.dtype);
+    let resolved: Vec<Option<usize>> = index_vals
+        .iter()
+        .map(|&idx| resolve_axis0_index(idx, dim0, index_mode))
+        .collect();
 
     if total == 0 {
         return Ok(Value::Tensor(TensorValue::new(
@@ -1510,7 +1582,12 @@ pub(crate) fn eval_gather(
         .all(|(&slice_size, &dim)| slice_size == dim as usize);
 
     if trailing_slice_is_contiguous {
-        for &idx in &index_vals {
+        for &resolved_idx in &resolved {
+            let Some(idx) = resolved_idx else {
+                // FILL_OR_DROP out-of-bounds slice: emit the fill value.
+                elements.extend(std::iter::repeat_n(fill_lit, slice_elems));
+                continue;
+            };
             let base_offset =
                 idx.checked_mul(slice_elems)
                     .ok_or_else(|| EvalError::Unsupported {
@@ -1542,7 +1619,12 @@ pub(crate) fn eval_gather(
 
     let op_strides = checked_row_major_strides(primitive, "gather", op_dims)?;
 
-    for &idx in &index_vals {
+    for &resolved_idx in &resolved {
+        let Some(idx) = resolved_idx else {
+            // FILL_OR_DROP out-of-bounds slice: emit the fill value.
+            elements.extend(std::iter::repeat_n(fill_lit, slice_elems));
+            continue;
+        };
         // Base offset for this index along axis 0
         let base_offset = idx
             .checked_mul(op_strides[0])
@@ -1733,17 +1815,12 @@ pub(crate) fn eval_scatter(
         });
     }
 
-    for &idx in &index_vals {
-        if idx >= op_dims[0] as usize {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!(
-                    "scatter index {} out of bounds for axis 0 dim {}",
-                    idx, op_dims[0]
-                ),
-            });
-        }
-    }
+    // Out-of-bounds indices follow JAX GatherScatterMode (`index_mode` param; distinct
+    // from the combiner `mode` above) and NEVER raise: `fill_or_drop` (the default,
+    // matching `jnp` `.at[].set()`) silently drops out-of-bounds updates, `clip` clamps
+    // them into range, `promise_in_bounds` clamps defensively.
+    let index_mode = parse_index_mode(primitive, params, IndexMode::FillOrDrop)?;
+    let dim0 = op_dims[0] as usize;
 
     if expected_update_elems == 0 {
         return Ok(Value::Tensor(operand.clone()));
@@ -1751,7 +1828,11 @@ pub(crate) fn eval_scatter(
 
     let mut result_elements = operand.elements.to_vec();
 
-    for (i, &idx) in index_vals.iter().enumerate() {
+    for (i, &raw_idx) in index_vals.iter().enumerate() {
+        let Some(idx) = resolve_axis0_index(raw_idx, dim0, index_mode) else {
+            // FILL_OR_DROP: drop the out-of-bounds update slice.
+            continue;
+        };
         let base_offset = idx
             .checked_mul(slice_elems)
             .ok_or_else(|| EvalError::Unsupported {

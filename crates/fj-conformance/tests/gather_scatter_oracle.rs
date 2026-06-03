@@ -231,10 +231,49 @@ fn oracle_gather_preserves_dtype() {
 // ======================== Gather Error Cases ========================
 
 #[test]
-fn oracle_gather_out_of_bounds() {
+fn oracle_gather_out_of_bounds_clips_by_default() {
+    // JAX parity: gather NEVER raises on out-of-bounds. The default GatherScatterMode
+    // for integer indexing is CLIP, which clamps the index into [0, dim-1]. Here index
+    // 5 against dim 4 clamps to 3 -> element 40.
     let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
-    let indices = make_i64_tensor(&[1], vec![5]); // out of bounds
-    let result = eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1]));
+    let indices = make_i64_tensor(&[1], vec![5]); // out of bounds -> clamps to 3
+    let result =
+        eval_primitive(Primitive::Gather, &[operand, indices], &gather_params(&[1])).unwrap();
+    assert_eq!(extract_shape(&result), vec![1]);
+    assert_eq!(extract_i64_vec(&result), vec![40]);
+}
+
+#[test]
+fn oracle_gather_out_of_bounds_fill_or_drop() {
+    // FILL_OR_DROP substitutes the default fill value (iinfo.min for signed ints) for
+    // the out-of-bounds gathered slice.
+    let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let indices = make_i64_tensor(&[2], vec![1, 9]); // second index OOB -> fill
+    let mut params = gather_params(&[1]);
+    params.insert("index_mode".to_string(), "fill_or_drop".to_string());
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
+    assert_eq!(extract_shape(&result), vec![2]);
+    assert_eq!(extract_i64_vec(&result), vec![20, i64::MIN]);
+}
+
+#[test]
+fn oracle_gather_out_of_bounds_promise_clamps_defensively() {
+    // PROMISE_IN_BOUNDS is UB in JAX for OOB; we clamp defensively to stay panic-free.
+    let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let indices = make_i64_tensor(&[1], vec![100]);
+    let mut params = gather_params(&[1]);
+    params.insert("index_mode".to_string(), "promise_in_bounds".to_string());
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &params).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![40]);
+}
+
+#[test]
+fn oracle_gather_unknown_index_mode_errors() {
+    let operand = make_i64_tensor(&[4], vec![10, 20, 30, 40]);
+    let indices = make_i64_tensor(&[1], vec![0]);
+    let mut params = gather_params(&[1]);
+    params.insert("index_mode".to_string(), "bogus".to_string());
+    let result = eval_primitive(Primitive::Gather, &[operand, indices], &params);
     assert!(result.is_err());
 }
 
@@ -487,16 +526,49 @@ fn oracle_scatter_output_matches_operand_shape() {
 // ======================== Scatter Error Cases ========================
 
 #[test]
-fn oracle_scatter_out_of_bounds() {
+fn oracle_scatter_out_of_bounds_drops_by_default() {
+    // JAX parity: scatter NEVER raises on out-of-bounds. The default GatherScatterMode
+    // for `.at[].set()` is FILL_OR_DROP, which silently drops the out-of-bounds update,
+    // leaving the operand unchanged.
     let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
-    let indices = make_i64_tensor(&[1], vec![5]); // out of bounds
+    let indices = make_i64_tensor(&[1], vec![5]); // out of bounds -> dropped
     let updates = make_i64_tensor(&[1], vec![99]);
     let result = eval_primitive(
         Primitive::Scatter,
         &[operand, indices, updates],
         &scatter_params(),
-    );
-    assert!(result.is_err());
+    )
+    .unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![0, 0, 0, 0]);
+}
+
+#[test]
+fn oracle_scatter_out_of_bounds_drops_only_oob() {
+    // A mix of in-bounds and out-of-bounds indices: the in-bounds update lands, the
+    // out-of-bounds one is dropped.
+    let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
+    let indices = make_i64_tensor(&[2], vec![1, 7]);
+    let updates = make_i64_tensor(&[2], vec![11, 99]);
+    let result = eval_primitive(
+        Primitive::Scatter,
+        &[operand, indices, updates],
+        &scatter_params(),
+    )
+    .unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![0, 11, 0, 0]);
+}
+
+#[test]
+fn oracle_scatter_out_of_bounds_clip_mode() {
+    // CLIP clamps the out-of-bounds index into range, so update 99 lands at index 3.
+    let operand = make_i64_tensor(&[4], vec![0, 0, 0, 0]);
+    let indices = make_i64_tensor(&[1], vec![5]);
+    let updates = make_i64_tensor(&[1], vec![99]);
+    let mut params = scatter_params();
+    params.insert("index_mode".to_string(), "clip".to_string());
+    let result =
+        eval_primitive(Primitive::Scatter, &[operand, indices, updates], &params).unwrap();
+    assert_eq!(extract_i64_vec(&result), vec![0, 0, 0, 99]);
 }
 
 #[test]
