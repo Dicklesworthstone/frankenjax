@@ -1,0 +1,43 @@
+fj-dispatch I64 paired-vector dot golden outputs
+
+bead: frankenjax-mcqr.42
+recorded: 2026-06-03
+profile target:
+- source: rch Criterion full fj-dispatch profile after functional scan pass
+- command: rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --quiet
+- row: vmap_dot_i64/paired_vectors
+- mean: 141.64 us [138.94, 144.19] on ts2
+
+focused baseline:
+- command: rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --quiet
+- mean: 127.83 us [126.08, 129.31] on ts2
+
+candidate rebench:
+- command: rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --quiet
+- mean: 77.658 us [76.458, 79.132] on ts2
+- mean speedup: 1.65x
+- conservative interval speedup: 1.59x
+- score: 10.0 (Impact 4 * Confidence 5 / Effort 2)
+
+benchmark golden output:
+- rows: 128
+- row width: 64
+- lhs row-major formula: idx % 17
+- rhs row-major formula: (idx * 3) % 19
+- output row-major vector sha256: c5080b2e020b9780bec59f195d465ef326e16ab2b61e732ed355589484363cfc
+- output row-major vector:
+[4665,4421,4427,4968,4184,4755,4711,4594,4710,4336,4755,4759,4571,4361,4426,5007,4869,4298,4560,4426,5055,4506,4340,4650,4564,4714,4773,4368,4783,4561,4453,4815,4458,4921,4216,4509,5033,4553,4714,4210,4551,5123,4300,4526,4513,4731,4893,4431,4520,4555,4821,4419,4515,4785,4659,4561,4631,4509,4827,4494,4393,4715,4641,4788,4485,4415,4861,4683,4470,4521,4499,4993,4351,4520,4752,4607,4916,4203,4556,4836,4569,4501,4519,4749,4906,4407,4489,4555,4833,4426,4485,4767,4653,4654,4583,4473,4803,4635,4327,4661,4599,5015,4401,4343,4820,4635,4691,4431,4421,4946,4316,4735,4675,4542,4948,4077,4765,4753,4668,4357,4406,4971,4817,4519,4339,4436,5049,4586]
+
+wrapping parity golden:
+- lhs rows: [[i64::MAX, 2], [3, 4]]
+- rhs rows: [[2, 2], [5, 6]]
+- output row-major vector: [2, 39]
+
+isomorphism proof:
+- one lever: exact DType::I64 rank-2 paired-vector dot bypass before generic numeric dot classification.
+- ordering preserved: output is emitted in ascending batch row order; each row accumulates kk from 0..width.
+- tie-breaking unchanged: no ties, sorting, comparisons, or conflict-resolution surface exists.
+- floating-point unchanged: only DType::I64 rank-2 operands enter the direct path; real and complex operands fall back unchanged.
+- integer overflow unchanged: accumulation uses wrapping_mul followed by wrapping_add, matching fj-lax signed integer dot semantics.
+- RNG unchanged: no RNG primitive or seed state is read or written.
+- fallback preserved: non-tensor, non-I64, non-rank2, unequal-shape, unexpected-length, or non-I64-literal cases return None and use the existing generic path.

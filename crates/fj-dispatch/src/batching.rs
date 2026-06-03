@@ -895,6 +895,9 @@ fn batch_dot(
             // Both batched: move both to front, loop
             let a_val = move_batch_dim_to_front(&a.value, bd_a)?;
             let b_val = move_batch_dim_to_front(&b.value, bd_b)?;
+            if let Some(result) = batch_paired_i64_vector_dot(&a_val, &b_val)? {
+                return Ok(result);
+            }
             if let Some(result) = batch_paired_numeric_dot(&a_val, &b_val)? {
                 return Ok(result);
             }
@@ -999,6 +1002,52 @@ fn coerce_real_dot_result_dtype(
                 .map_err(|e| BatchError::TensorError(e.to_string()))
         }
     }
+}
+
+fn batch_paired_i64_vector_dot(
+    lhs_value: &Value,
+    rhs_value: &Value,
+) -> Result<Option<BatchTracer>, BatchError> {
+    let (Value::Tensor(lhs), Value::Tensor(rhs)) = (lhs_value, rhs_value) else {
+        return Ok(None);
+    };
+    if lhs.dtype != DType::I64
+        || rhs.dtype != DType::I64
+        || lhs.rank() != 2
+        || rhs.rank() != 2
+        || lhs.shape.dims != rhs.shape.dims
+    {
+        return Ok(None);
+    }
+
+    let batch = lhs.shape.dims[0] as usize;
+    let width = lhs.shape.dims[1] as usize;
+    let expected_len = batch
+        .checked_mul(width)
+        .ok_or_else(|| BatchError::TensorError("paired dot size overflowed".to_owned()))?;
+    if lhs.elements.len() != expected_len || rhs.elements.len() != expected_len {
+        return Ok(None);
+    }
+
+    let mut elements = Vec::with_capacity(batch);
+    for batch_idx in 0..batch {
+        let offset = batch_idx * width;
+        let mut sum = 0_i64;
+        for kk in 0..width {
+            let Literal::I64(left) = lhs.elements[offset + kk] else {
+                return Ok(None);
+            };
+            let Literal::I64(right) = rhs.elements[offset + kk] else {
+                return Ok(None);
+            };
+            sum = sum.wrapping_add(left.wrapping_mul(right));
+        }
+        elements.push(Literal::I64(sum));
+    }
+
+    let output = TensorValue::new(DType::I64, Shape::vector(lhs.shape.dims[0]), elements)
+        .map_err(|error| BatchError::TensorError(error.to_string()))?;
+    Ok(Some(BatchTracer::batched(Value::Tensor(output), 0)))
 }
 
 fn batch_paired_numeric_dot(
@@ -6560,6 +6609,19 @@ mod tests {
         assert_eq!(result.value.as_tensor().unwrap().dtype, DType::I64);
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2]);
         assert_eq!(extract_i64_vec(&result.value), vec![50, 16]);
+    }
+
+    #[test]
+    fn test_batch_trace_dot_paired_batched_i64_vectors_wrap_like_lax() {
+        let lhs = BatchTracer::batched(make_i64_matrix(2, 2, &[i64::MAX, 2, 3, 4]), 0);
+        let rhs = BatchTracer::batched(make_i64_matrix(2, 2, &[2, 2, 5, 6]), 0);
+
+        let result = apply_batch_rule(Primitive::Dot, &[lhs, rhs], &BTreeMap::new()).unwrap();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().dtype, DType::I64);
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2]);
+        assert_eq!(extract_i64_vec(&result.value), vec![2, 39]);
     }
 
     #[test]

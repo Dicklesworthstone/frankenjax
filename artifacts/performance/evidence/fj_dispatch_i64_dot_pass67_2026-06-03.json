@@ -1,0 +1,90 @@
+{
+  "bead": "frankenjax-mcqr.42",
+  "recorded_at": "2026-06-03T18:40:55-04:00",
+  "crate": "fj-dispatch",
+  "target": "vmap_dot_i64/paired_vectors",
+  "profile_backed_target": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --quiet",
+    "worker": "ts2",
+    "mean_us": 141.64,
+    "ci_low_us": 138.94,
+    "ci_high_us": 144.19,
+    "rank_after_qi3g1": 3,
+    "higher_rows_reserved_by_peer_linalg": [
+      "vmap_eigh/batched_matrix_3x3",
+      "vmap_svd/batched_matrix_3x2"
+    ]
+  },
+  "focused_baseline": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --quiet",
+    "worker": "ts2",
+    "mean_us": 127.83,
+    "ci_low_us": 126.08,
+    "ci_high_us": 129.31
+  },
+  "candidate_rebench": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --quiet",
+    "worker": "ts2",
+    "mean_us": 77.658,
+    "ci_low_us": 76.458,
+    "ci_high_us": 79.132,
+    "speedup_mean": 1.65,
+    "speedup_conservative": 1.59
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 5,
+    "effort": 2,
+    "value": 10.0,
+    "kept": true
+  },
+  "one_lever": "Specialize exact DType::I64 rank-2 paired-vector dot into a direct row-major wrapping accumulator before the generic numeric dot classifier.",
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_i64_dot_pass67_2026-06-03.golden",
+    "sha256": "5f9c2bd15104b5b7c394253dcc5bd92470ee562679976561682b5eb44887d7ae",
+    "benchmark_output_vector_sha256": "c5080b2e020b9780bec59f195d465ef326e16ab2b61e732ed355589484363cfc",
+    "wrapping_output": [2, 39]
+  },
+  "isomorphism": {
+    "ordering": "Rows are emitted in ascending batch index order; each row accumulates kk from 0 to width-1, matching the previous paired-vector loop order.",
+    "tie_breaking": "Not applicable: dot has no ties, sorting, comparisons, or conflict resolution.",
+    "floating_point": "Identical by exclusion: the direct path accepts only DType::I64 rank-2 tensors; all real and complex dot cases fall back unchanged.",
+    "integer_overflow": "Uses wrapping_mul followed by wrapping_add, matching fj-lax signed integer dot semantics and removing the debug-overflow mismatch in the old dispatch helper.",
+    "rng": "Unchanged: no RNG primitive, seed, or state is read or written.",
+    "fallback": "Non-tensor, non-I64, non-rank2, unequal-shape, unexpected-length, or non-I64-literal cases return None and use the existing generic path."
+  },
+  "validation": [
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch dot_paired -- --nocapture",
+      "result": "passed 7 focused paired-dot tests including I64 wrapping parity"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch",
+      "result": "passed 246 unit tests, 55 integration tests, and doctests"
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-dispatch --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --check -p fj-dispatch",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check -- crates/fj-dispatch/src/batching.rs",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/batching.rs",
+      "result": "exit 0; critical issues 0; warning inventory remains file scope"
+    }
+  ],
+  "notes": [
+    "RCH validation ran crate-scoped only.",
+    "Higher post-reprofile linalg rows were not claimed because frankenjax-p1vbf is already in progress."
+  ]
+}
