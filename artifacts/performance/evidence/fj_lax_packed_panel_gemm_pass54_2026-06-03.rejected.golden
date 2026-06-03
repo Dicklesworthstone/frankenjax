@@ -1,0 +1,9 @@
+frankenjax-p1vbf.5 pass54 rejected golden
+target=linalg/matmul_2d_512x512x512_f64
+fresh_profile=vmi1227854 matmul512=26.507ms[26.158,26.871] eig48=12.512ms[12.270,12.757] matmul256=3.0753ms[3.0394,3.1117]
+candidate=vmi1153651 52.716ms..59.423ms midpoint=55.889ms
+candidate_status=rejected_regression
+source_diff_retained=false
+isomorphism_attempt=four-row register microkernel; each cell accumulated k=0..K-1 in the same order; row-major output; no arithmetic reassociation, rng, or tie-breaking
+tests=rch cargo test -p fj-lax matmul_2d passed on vmi1149989 in candidate state
+next_primitive=actual packed B panels or cache-size KC blocking with per-cell k-order preserved; four-row register-only blocking reloads A across column work and regressed
