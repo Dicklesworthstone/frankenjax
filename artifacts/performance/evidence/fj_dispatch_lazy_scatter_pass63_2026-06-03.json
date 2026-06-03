@@ -1,0 +1,126 @@
+{
+  "artifact": "fj_dispatch_lazy_scatter_pass63_2026-06-03",
+  "bead": "frankenjax-y160i",
+  "agent": "BlackThrush",
+  "date": "2026-06-03",
+  "skill_loop_pass": 63,
+  "skill": "repeatedly-apply-skill -> extreme-software-optimization",
+  "optimization": {
+    "crate": "fj-dispatch",
+    "lever": "lazy repeated-patch LiteralBuffer output for rank-1 overwrite scatter with batched indices and updates",
+    "single_lever": true,
+    "profile_backed_target": "vmap_scatter/batched_indices_updates",
+    "alien_graveyard_primitive": "nested data parallel segmented arrays with deferred row-major patch materialization"
+  },
+  "baseline": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --quiet",
+    "worker": "vmi1293453",
+    "benchmark": "vmap_scatter/batched_indices_updates",
+    "mean_us": 328.28,
+    "confidence_interval_us": [315.71, 344.53]
+  },
+  "rebench": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_scatter --quiet",
+    "worker": "ts2",
+    "benchmark": "vmap_scatter/batched_indices_updates",
+    "mean_us": 23.507,
+    "confidence_interval_us": [23.412, 23.616],
+    "speedup_mean": 13.97
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 5,
+    "effort": 2,
+    "impact_x_confidence_div_effort": 12.5,
+    "kept": true
+  },
+  "isomorphism": {
+    "ordering_preserved": "patches are appended by the original flat scatter update traversal and materialized in row-major output order",
+    "tie_breaking_unchanged": "duplicate indices replay patches in insertion order, preserving overwrite last-write wins",
+    "floating_point_preserved": "updates are copied as Literal values; F64Bits -0.0 and NaN payloads are not decoded or recomputed",
+    "rng_preserved": "not applicable; no random state is read or written",
+    "fallback_preserved": "lazy path only handles valid rank-1 overwrite scatter with matching shapes; other modes and malformed shapes fall back"
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.golden",
+    "sha256": "71718e90b90c6f95379a180c70711cf8fe3c2ed178bf6c398df0cd7b2d129001",
+    "checksum_command": "sha256sum -c artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.golden.sha256"
+  },
+  "proof_tests": [
+    {
+      "command": "rch exec -- cargo test -p fj-core repeated_patches_pass60_literal_buffer_materializes_in_update_order -- --nocapture",
+      "result": "pass",
+      "worker": "vmi1227854"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch scatter -- --nocapture",
+      "result": "pass",
+      "worker": "vmi1227854",
+      "tests": [
+        "test_batch_trace_scatter_batched_indices_updates_direct",
+        "test_batch_trace_scatter_overwrite_duplicates_keep_last_update_direct",
+        "test_batch_trace_scatter_overwrite_preserves_f64_bits_direct",
+        "test_batch_trace_scatter_unbatched_index_batched_updates_direct",
+        "test_batch_trace_scatter_add_mode_keeps_batches_independent",
+        "dispatch_p2c004_suite scatter tests"
+      ]
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch test_batch_trace_scatter_overwrite_preserves_f64_bits_direct -- --nocapture",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-core",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-core --all-targets",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-dispatch --all-targets",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-core --all-targets --no-deps -- -D warnings",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "result": "pass",
+      "worker": "ts2"
+    },
+    {
+      "command": "cargo fmt --check -p fj-core -p fj-dispatch",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "jq . artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.json",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-core/src/lib.rs crates/fj-dispatch/src/batching.rs artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.golden artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.golden.sha256 artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.json",
+      "result": "pass"
+    }
+  ],
+  "ubs": {
+    "command": "ubs crates/fj-core/src/lib.rs crates/fj-dispatch/src/batching.rs artifacts/performance/evidence/fj_dispatch_lazy_scatter_pass63_2026-06-03.json",
+    "result": "exit 1",
+    "new_findings_resolved": "removed the new panic finding in the f64 scatter bit-preservation test",
+    "remaining_findings": "pre-existing fj-core test panic findings at lib.rs:4376 and lib.rs:5665 plus false-positive Instant::now security warning at lib.rs:3340"
+  }
+}

@@ -989,6 +989,12 @@ enum LiteralBufferStorage {
         values: Arc<Vec<f64>>,
         literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
     },
+    RepeatedPatches {
+        base: Arc<Vec<Literal>>,
+        repeats: usize,
+        patches: Arc<Vec<(usize, Literal)>>,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
 }
 
 impl LiteralBuffer {
@@ -1010,11 +1016,46 @@ impl LiteralBuffer {
     }
 
     #[must_use]
+    pub fn from_repeated_with_patches(
+        base: Vec<Literal>,
+        repeats: usize,
+        patches: Vec<(usize, Literal)>,
+    ) -> Option<Self> {
+        let len = base.len().checked_mul(repeats)?;
+        if patches.iter().any(|(index, _)| *index >= len) {
+            return None;
+        }
+
+        Some(Self {
+            storage: LiteralBufferStorage::RepeatedPatches {
+                base: Arc::new(base),
+                repeats,
+                patches: Arc::new(patches),
+                literals: Arc::new(OnceLock::new()),
+            },
+        })
+    }
+
+    #[must_use]
     pub fn as_slice(&self) -> &[Literal] {
         match &self.storage {
             LiteralBufferStorage::Literals(elements) => elements.as_slice(),
             LiteralBufferStorage::F64 { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::from_f64).collect()))
+                .as_slice(),
+            LiteralBufferStorage::RepeatedPatches {
+                base,
+                repeats,
+                patches,
+                literals,
+            } => literals
+                .get_or_init(|| {
+                    Arc::new(materialize_repeated_patches(
+                        base,
+                        *repeats,
+                        patches.as_slice(),
+                    ))
+                })
                 .as_slice(),
         }
     }
@@ -1024,6 +1065,7 @@ impl LiteralBuffer {
         match &self.storage {
             LiteralBufferStorage::Literals(_) => None,
             LiteralBufferStorage::F64 { values, .. } => Some(values.as_slice()),
+            LiteralBufferStorage::RepeatedPatches { .. } => None,
         }
     }
 
@@ -1032,6 +1074,7 @@ impl LiteralBuffer {
         match &self.storage {
             LiteralBufferStorage::Literals(elements) => elements.len(),
             LiteralBufferStorage::F64 { values, .. } => values.len(),
+            LiteralBufferStorage::RepeatedPatches { base, repeats, .. } => base.len() * repeats,
         }
     }
 
@@ -1046,14 +1089,19 @@ impl LiteralBuffer {
     }
 
     fn make_mut(&mut self) -> &mut Vec<Literal> {
-        if matches!(self.storage, LiteralBufferStorage::F64 { .. }) {
+        if matches!(
+            self.storage,
+            LiteralBufferStorage::F64 { .. } | LiteralBufferStorage::RepeatedPatches { .. }
+        ) {
             let elements = self.as_slice().to_vec();
             self.storage = LiteralBufferStorage::Literals(Arc::new(elements));
         }
 
         match &mut self.storage {
             LiteralBufferStorage::Literals(elements) => Arc::make_mut(elements),
-            LiteralBufferStorage::F64 { .. } => unreachable!("dense buffer was materialized"),
+            LiteralBufferStorage::F64 { .. } | LiteralBufferStorage::RepeatedPatches { .. } => {
+                unreachable!("lazy buffer was materialized")
+            }
         }
     }
 
@@ -1092,6 +1140,19 @@ impl Clone for LiteralBuffer {
             LiteralBufferStorage::F64 { values, literals } => Self {
                 storage: LiteralBufferStorage::F64 {
                     values: Arc::clone(values),
+                    literals: Arc::clone(literals),
+                },
+            },
+            LiteralBufferStorage::RepeatedPatches {
+                base,
+                repeats,
+                patches,
+                literals,
+            } => Self {
+                storage: LiteralBufferStorage::RepeatedPatches {
+                    base: Arc::clone(base),
+                    repeats: *repeats,
+                    patches: Arc::clone(patches),
                     literals: Arc::clone(literals),
                 },
             },
@@ -1189,6 +1250,20 @@ impl IntoIterator for LiteralBuffer {
                     .collect::<Vec<_>>()
                     .into_iter()
             }
+            LiteralBufferStorage::RepeatedPatches {
+                base,
+                repeats,
+                patches,
+                literals,
+            } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                materialize_repeated_patches(&base, repeats, &patches).into_iter()
+            }
         }
     }
 }
@@ -1225,6 +1300,23 @@ impl PartialEq<LiteralBuffer> for Vec<Literal> {
     }
 }
 
+fn materialize_repeated_patches(
+    base: &[Literal],
+    repeats: usize,
+    patches: &[(usize, Literal)],
+) -> Vec<Literal> {
+    let mut elements = Vec::with_capacity(base.len() * repeats);
+    for _ in 0..repeats {
+        elements.extend_from_slice(base);
+    }
+    for &(index, literal) in patches {
+        if let Some(slot) = elements.get_mut(index) {
+            *slot = literal;
+        }
+    }
+    elements
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TensorValue {
     pub dtype: DType,
@@ -1250,6 +1342,30 @@ impl TensorValue {
             dtype,
             shape,
             elements: elements.into(),
+        })
+    }
+
+    pub fn new_with_literal_buffer(
+        dtype: DType,
+        shape: Shape,
+        elements: LiteralBuffer,
+    ) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != elements.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: elements.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype,
+            shape,
+            elements,
         })
     }
 
@@ -5396,6 +5512,46 @@ mod tests {
             buffer.as_f64_slice().is_none(),
             "mutating dense storage should materialize to literal storage"
         );
+    }
+
+    #[test]
+    fn repeated_patches_pass60_literal_buffer_materializes_in_update_order() {
+        let mut buffer = LiteralBuffer::from_repeated_with_patches(
+            vec![Literal::I64(0), Literal::I64(1)],
+            3,
+            vec![
+                (1, Literal::I64(9)),
+                (1, Literal::I64(10)),
+                (4, Literal::I64(8)),
+            ],
+        )
+        .expect("valid repeated-patch buffer");
+        let expected = vec![
+            Literal::I64(0),
+            Literal::I64(10),
+            Literal::I64(0),
+            Literal::I64(1),
+            Literal::I64(8),
+            Literal::I64(1),
+        ];
+
+        assert_eq!(buffer.len(), 6);
+        assert!(!buffer.is_empty());
+        assert!(buffer.as_f64_slice().is_none());
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.to_vec(), expected);
+        assert_eq!(buffer[1], Literal::I64(10));
+        assert_eq!(buffer.clone().into_iter().collect::<Vec<_>>(), expected);
+        assert_eq!(
+            serde_json::to_string(&buffer).expect("serialize repeated-patch buffer"),
+            serde_json::to_string(&expected).expect("serialize literal vec")
+        );
+
+        let original = buffer.clone();
+        buffer[0] = Literal::I64(7);
+        assert_eq!(original.as_slice(), expected.as_slice());
+        assert_eq!(buffer[0], Literal::I64(7));
+        assert_eq!(buffer[1], Literal::I64(10));
     }
 
     #[test]

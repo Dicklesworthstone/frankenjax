@@ -4,7 +4,10 @@
 //! dimension metadata through primitives via per-primitive batching rules,
 //! achieving O(1) vectorized execution matching JAX's `BatchTrace` semantics.
 
-use fj_core::{Atom, DType, Equation, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
+use fj_core::{
+    Atom, DType, Equation, Jaxpr, Literal, LiteralBuffer, Primitive, Shape, TensorValue, Value,
+    VarId,
+};
 use fj_interpreters::{eval_equation_outputs, eval_jaxpr_with_consts};
 use fj_lax::{eval_primitive, eval_primitive_multi, promote_dtype_public};
 use rustc_hash::FxHashMap;
@@ -2202,6 +2205,9 @@ fn batch_scatter_unbatched_operand_rank1_overwrite(
     {
         return Ok(None);
     }
+    if operand_tensor.elements.len() != shape.operand_axis0 {
+        return Ok(None);
+    }
     let Some(indices_per_batch) = indices_tensor.elements.len().checked_div(shape.batch_size)
     else {
         return Ok(None);
@@ -2218,10 +2224,7 @@ fn batch_scatter_unbatched_operand_rank1_overwrite(
         .batch_size
         .checked_mul(shape.operand_axis0)
         .ok_or_else(|| BatchError::TensorError("scatter output size overflowed".to_owned()))?;
-    let mut output_elements = Vec::with_capacity(output_len);
-    for _ in 0..shape.batch_size {
-        output_elements.extend_from_slice(&operand_tensor.elements);
-    }
+    let mut patches = Vec::with_capacity(indices_tensor.elements.len());
 
     for (flat_pos, &literal) in indices_tensor.elements.iter().enumerate() {
         let Some(raw_index) = scatter_index_literal_to_usize(literal)? else {
@@ -2240,12 +2243,23 @@ fn batch_scatter_unbatched_operand_rank1_overwrite(
         let update = *updates_tensor.elements.get(flat_pos).ok_or_else(|| {
             BatchError::TensorError("scatter update index out of range".to_owned())
         })?;
-        *output_elements.get_mut(output_index).ok_or_else(|| {
-            BatchError::TensorError("scatter output index out of range".to_owned())
-        })? = update;
+        if output_index >= output_len {
+            return Err(BatchError::TensorError(
+                "scatter output index out of range".to_owned(),
+            ));
+        }
+        patches.push((output_index, update));
     }
 
-    let output = TensorValue::new(
+    let output_elements = LiteralBuffer::from_repeated_with_patches(
+        operand_tensor.elements.to_vec(),
+        shape.batch_size,
+        patches,
+    )
+    .ok_or_else(|| {
+        BatchError::TensorError("scatter repeated-patch buffer overflowed".to_owned())
+    })?;
+    let output = TensorValue::new_with_literal_buffer(
         operand_tensor.dtype,
         Shape {
             dims: vec![shape.batch_size_u32, shape.operand_axis0_dim],
@@ -8569,6 +8583,74 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
         assert_eq!(extract_i64_vec(&result.value), vec![0, 20, 30, 50, 0, 60]);
+    }
+
+    #[test]
+    fn test_batch_trace_scatter_overwrite_preserves_f64_bits_direct() {
+        let nan_a = 0x7ff8_0000_0000_1234_u64;
+        let nan_b = 0x7ff8_0000_0000_5678_u64;
+        let neg_zero = (-0.0_f64).to_bits();
+        let operand = BatchTracer::unbatched(Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape::vector(3),
+                vec![
+                    Literal::F64Bits(1.0_f64.to_bits()),
+                    Literal::F64Bits(2.0_f64.to_bits()),
+                    Literal::F64Bits(3.0_f64.to_bits()),
+                ],
+            )
+            .unwrap(),
+        ));
+        let indices = BatchTracer::batched(make_i64_matrix(2, 3, &[1, 1, 2, 0, 0, 2]), 0);
+        let updates = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: vec![2, 3] },
+                    vec![
+                        Literal::F64Bits(neg_zero),
+                        Literal::F64Bits(nan_a),
+                        Literal::F64Bits(4.0_f64.to_bits()),
+                        Literal::F64Bits(5.0_f64.to_bits()),
+                        Literal::F64Bits(neg_zero),
+                        Literal::F64Bits(nan_b),
+                    ],
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+
+        let result = apply_batch_rule(
+            Primitive::Scatter,
+            &[operand, indices, updates],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let tensor = result.value.as_tensor().unwrap();
+        let bits = tensor
+            .elements
+            .iter()
+            .map(|literal| match literal {
+                Literal::F64Bits(bits) => Some(*bits),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        assert_eq!(
+            bits,
+            Some(vec![
+                1.0_f64.to_bits(),
+                nan_a,
+                4.0_f64.to_bits(),
+                neg_zero,
+                2.0_f64.to_bits(),
+                nan_b,
+            ])
+        );
     }
 
     #[test]

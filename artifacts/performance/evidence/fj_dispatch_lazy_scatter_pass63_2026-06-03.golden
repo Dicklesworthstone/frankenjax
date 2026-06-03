@@ -1,0 +1,33 @@
+fj-dispatch lazy scatter pass63 golden outputs
+
+profile_target:
+  benchmark: vmap_scatter/batched_indices_updates
+  baseline_mean_us: 328.28
+  baseline_interval_us: [315.71, 344.53]
+  baseline_worker: vmi1293453
+  baseline_date: 2026-06-03
+
+rebench:
+  benchmark: vmap_scatter/batched_indices_updates
+  rebench_mean_us: 23.507
+  rebench_interval_us: [23.412, 23.616]
+  rebench_worker: ts2
+  speedup_mean: 13.97
+
+golden_outputs:
+  i64_duplicate_scatter_row_major: [0, 20, 30, 50, 0, 60]
+  f64_bits_duplicate_scatter_row_major:
+    - 0x3ff0000000000000
+    - 0x7ff8000000001234
+    - 0x4010000000000000
+    - 0x8000000000000000
+    - 0x4000000000000000
+    - 0x7ff8000000005678
+  literal_buffer_duplicate_patch_materialization: [0, 10, 0, 1, 8, 1]
+
+isomorphism:
+  ordering_preserved: patches are appended by the original flat scatter update traversal and materialized row-major.
+  tie_breaking_unchanged: duplicate indices replay patches in insertion order, so later updates overwrite earlier updates.
+  floating_point_preserved: scatter updates are copied as Literal values; F64Bits -0.0 and NaN payload bits are not decoded or recomputed.
+  rng_preserved: not applicable; scatter and LiteralBuffer materialization use no random state.
+  fallback_preserved: non-overwrite mode, out-of-bounds indices, non-rank1 operands, malformed rank1 tensors, and shape/dtype mismatches bypass the lazy path.
