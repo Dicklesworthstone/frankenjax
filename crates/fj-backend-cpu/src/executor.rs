@@ -423,6 +423,16 @@ fn execute_linear_topological_segment(
     )? {
         return Ok(true);
     }
+    if execute_terminal_i64_add_dag_segment(
+        jaxpr,
+        segment_start,
+        segment_end,
+        env,
+        remaining,
+        max_ready_wave,
+    )? {
+        return Ok(true);
+    }
 
     let mut previous_output = None;
     for equation in &jaxpr.equations[segment_start..segment_end] {
@@ -445,6 +455,131 @@ fn execute_linear_topological_segment(
     }
     *remaining -= segment_len;
 
+    Ok(true)
+}
+
+fn var_slot_index(var: VarId, slot_count: usize) -> Option<usize> {
+    let idx = usize::try_from(var.0).ok()?;
+    (idx < slot_count).then_some(idx)
+}
+
+fn i64_atom_slot_value(atom: &Atom, values: &[i64], present: &[bool]) -> Option<(i64, usize)> {
+    match atom {
+        Atom::Lit(Literal::I64(value)) => Some((*value, 0)),
+        Atom::Lit(_) => None,
+        Atom::Var(var) => {
+            let idx = var_slot_index(*var, values.len())?;
+            present[idx].then_some((values[idx], idx))
+        }
+    }
+}
+
+fn max_slot_index_for_i64_add_dag(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+) -> Option<usize> {
+    let mut max_slot = 0_usize;
+    for var in jaxpr.invars.iter().chain(jaxpr.outvars.iter()) {
+        max_slot = max_slot.max(usize::try_from(var.0).ok()?);
+    }
+
+    for equation in &jaxpr.equations[segment_start..segment_end] {
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom {
+                max_slot = max_slot.max(usize::try_from(var.0).ok()?);
+            }
+        }
+        for var in &equation.outputs {
+            max_slot = max_slot.max(usize::try_from(var.0).ok()?);
+        }
+    }
+
+    Some(max_slot)
+}
+
+fn execute_terminal_i64_add_dag_segment(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+    env: &mut HashMap<VarId, Value>,
+    remaining: &mut usize,
+    max_ready_wave: &mut usize,
+) -> Result<bool, InterpreterError> {
+    let segment_len = segment_end - segment_start;
+    if segment_len == 0 || segment_end != jaxpr.equations.len() || jaxpr.outvars.len() != 1 {
+        return Ok(false);
+    }
+
+    let Some(max_slot) = max_slot_index_for_i64_add_dag(jaxpr, segment_start, segment_end) else {
+        return Ok(false);
+    };
+    let Some(slot_count) = max_slot.checked_add(1) else {
+        return Ok(false);
+    };
+    let dense_slot_limit = (jaxpr.invars.len() + segment_len + jaxpr.outvars.len() + 8) * 4;
+    if slot_count > dense_slot_limit {
+        return Ok(false);
+    }
+
+    let mut values = vec![0_i64; slot_count];
+    let mut levels = vec![0_usize; slot_count];
+    let mut present = vec![false; slot_count];
+    for (var, value) in env.iter() {
+        let Some(idx) = var_slot_index(*var, slot_count) else {
+            continue;
+        };
+        let Value::Scalar(Literal::I64(value)) = value else {
+            continue;
+        };
+        values[idx] = *value;
+        present[idx] = true;
+    }
+
+    let mut level_counts = vec![0_usize; segment_len + 1];
+    let mut observed_max_ready_wave = 0_usize;
+
+    for equation in &jaxpr.equations[segment_start..segment_end] {
+        if equation.primitive != Primitive::Add
+            || !equation.params.is_empty()
+            || !equation.effects.is_empty()
+            || !equation.sub_jaxprs.is_empty()
+            || equation.inputs.len() != 2
+            || equation.outputs.len() != 1
+        {
+            return Ok(false);
+        }
+
+        let Some((left, left_idx)) = i64_atom_slot_value(&equation.inputs[0], &values, &present)
+        else {
+            return Ok(false);
+        };
+        let Some((right, right_idx)) = i64_atom_slot_value(&equation.inputs[1], &values, &present)
+        else {
+            return Ok(false);
+        };
+        let Some(out_idx) = var_slot_index(equation.outputs[0], slot_count) else {
+            return Ok(false);
+        };
+
+        let level = levels[left_idx].max(levels[right_idx]) + 1;
+        values[out_idx] = left.wrapping_add(right);
+        levels[out_idx] = level;
+        present[out_idx] = true;
+        level_counts[level] += 1;
+        observed_max_ready_wave = observed_max_ready_wave.max(level_counts[level]);
+    }
+
+    let Some(out_idx) = var_slot_index(jaxpr.outvars[0], slot_count) else {
+        return Ok(false);
+    };
+    if !present[out_idx] {
+        return Ok(false);
+    }
+
+    env.insert(jaxpr.outvars[0], Value::scalar_i64(values[out_idx]));
+    *remaining -= segment_len;
+    *max_ready_wave = (*max_ready_wave).max(observed_max_ready_wave);
     Ok(true)
 }
 
@@ -1326,6 +1461,39 @@ mod tests {
         );
         assert_eq!(jaxpr.equations.len(), branches * depth + branches - 1);
         assert_eq!(max_ready_wave, branches);
+    }
+
+    #[test]
+    fn dependency_scheduler_direct_i64_add_dag_preserves_wrapping_and_wave() {
+        let branches = 4_usize;
+        let depth = 2_usize;
+        let jaxpr = make_branched_fanin_jaxpr(branches, depth);
+        let mut max_ready_wave = 0_usize;
+        let result = evaluate_jaxpr_parallel_inner(
+            &jaxpr,
+            &[Value::scalar_i64(i64::MAX)],
+            &mut max_ready_wave,
+        );
+        let branch_value = i64::MAX.wrapping_add(depth as i64);
+        let expected = (0..branches).fold(0_i64, |acc, _| acc.wrapping_add(branch_value));
+
+        assert_eq!(result, Ok(vec![Value::scalar_i64(expected)]));
+        assert_eq!(max_ready_wave, branches);
+    }
+
+    #[test]
+    fn dependency_scheduler_direct_i64_add_dag_preserves_visible_intermediates() {
+        let mut jaxpr = make_branched_fanin_jaxpr(4, 2);
+        jaxpr.outvars = vec![VarId(2), VarId(12)];
+        let mut max_ready_wave = 0_usize;
+        let result =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(7)], &mut max_ready_wave);
+
+        assert_eq!(
+            result,
+            Ok(vec![Value::scalar_i64(8), Value::scalar_i64(36)])
+        );
+        assert_eq!(max_ready_wave, 4);
     }
 
     #[test]

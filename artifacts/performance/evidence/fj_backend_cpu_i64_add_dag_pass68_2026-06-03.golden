@@ -1,0 +1,42 @@
+bead: frankenjax-wu1qx
+pass: 68
+lever: direct threaded terminal scalar I64 Add DAG evaluator in fj-backend-cpu dependency scheduler
+target: backend_scheduler_shapes/branched_fanin
+
+profile:
+  backend_scheduler_shapes/branched_fanin/16x8:
+    baseline: 39.108 us [38.994, 39.239] on ts2
+    rebench: 4.8633 us [4.5064, 5.3106] on vmi1152480
+    speedup_midpoint: 8.0415
+    speedup_conservative_interval: 7.3427
+  backend_scheduler_shapes/branched_fanin/32x8:
+    baseline: 75.979 us [75.735, 76.311] on ts2
+    rebench: 10.076 us [9.3878, 10.583] on vmi1152480
+    speedup_midpoint: 7.5406
+    speedup_conservative_interval: 7.1563
+  backend_scheduler_shapes/branched_fanin/64x4:
+    baseline: 84.953 us [84.697, 85.285] on ts2
+    rebench: 12.108 us [10.802, 14.596] on vmi1152480
+    speedup_midpoint: 7.0163
+    speedup_conservative_interval: 5.8028
+  backend_scheduler_shapes/branched_fanin/128x2:
+    baseline: 105.48 us [105.38, 105.58] on ts2
+    rebench: 15.297 us [14.486, 15.877] on vmi1152480
+    speedup_midpoint: 6.8955
+    speedup_conservative_interval: 6.6373
+
+golden_outputs:
+  terminal_dag_4x2_input_i64_max: I64(4)
+  visible_intermediate_fallback_4x2_input7_outvars_2_12: [I64(8), I64(36)]
+  terminal_dag_16x8_input7: I64(240)
+  terminal_dag_32x8_input7: I64(480)
+  terminal_dag_64x4_input7: I64(704)
+  terminal_dag_128x2_input7: I64(1152)
+
+isomorphism:
+  order: accepted DAGs evaluate source equations in source order and require every input var to be present before use
+  tie_breaking: ready-wave metadata is reconstructed by dependency level; multi-output and visible-intermediate programs fall back
+  floating_point: no floating-point equations are accepted by this fast path
+  rng: no RNG surface
+  integer_semantics: I64 addition uses wrapping_add, matching the existing runtime overflow behavior
+  errors: missing inputs, sparse VarIds, non-Add primitives, params, effects, sub-jaxprs, and malformed equations keep the existing scheduler path

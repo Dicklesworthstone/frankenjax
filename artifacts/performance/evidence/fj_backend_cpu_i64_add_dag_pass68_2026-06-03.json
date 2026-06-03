@@ -1,0 +1,149 @@
+{
+  "artifact": "fj_backend_cpu_i64_add_dag_pass68_2026-06-03",
+  "bead": "frankenjax-wu1qx",
+  "pass": 68,
+  "status": "kept",
+  "score": {
+    "impact": 4.0,
+    "confidence": 3.5,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 7.0,
+    "keeper_threshold": 2.0
+  },
+  "target": {
+    "crate": "fj-backend-cpu",
+    "bench_filters": [
+      "backend_scheduler_shapes/branched_fanin"
+    ],
+    "profile_backed": true,
+    "baseline_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-profile2 cargo bench -p fj-backend-cpu --bench backend_baseline -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
+    "rebench_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass68-backend-bench cargo bench -p fj-backend-cpu --bench backend_baseline -- backend_scheduler_shapes/branched_fanin --sample-size 10 --measurement-time 1 --warm-up-time 1"
+  },
+  "benchmarks": [
+    {
+      "name": "backend_scheduler_shapes/branched_fanin/16x8",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "low": 38.994,
+        "mean": 39.108,
+        "high": 39.239
+      },
+      "rebench_worker": "vmi1152480",
+      "rebench_us": {
+        "low": 4.5064,
+        "mean": 4.8633,
+        "high": 5.3106
+      },
+      "speedup_midpoint": 8.0415,
+      "speedup_conservative_interval": 7.3427
+    },
+    {
+      "name": "backend_scheduler_shapes/branched_fanin/32x8",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "low": 75.735,
+        "mean": 75.979,
+        "high": 76.311
+      },
+      "rebench_worker": "vmi1152480",
+      "rebench_us": {
+        "low": 9.3878,
+        "mean": 10.076,
+        "high": 10.583
+      },
+      "speedup_midpoint": 7.5406,
+      "speedup_conservative_interval": 7.1563
+    },
+    {
+      "name": "backend_scheduler_shapes/branched_fanin/64x4",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "low": 84.697,
+        "mean": 84.953,
+        "high": 85.285
+      },
+      "rebench_worker": "vmi1152480",
+      "rebench_us": {
+        "low": 10.802,
+        "mean": 12.108,
+        "high": 14.596
+      },
+      "speedup_midpoint": 7.0163,
+      "speedup_conservative_interval": 5.8028
+    },
+    {
+      "name": "backend_scheduler_shapes/branched_fanin/128x2",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "low": 105.38,
+        "mean": 105.48,
+        "high": 105.58
+      },
+      "rebench_worker": "vmi1152480",
+      "rebench_us": {
+        "low": 14.486,
+        "mean": 15.297,
+        "high": 15.877
+      },
+      "speedup_midpoint": 6.8955,
+      "speedup_conservative_interval": 6.6373
+    }
+  ],
+  "lever": {
+    "summary": "Detect terminal single-output scalar I64 Add DAGs and evaluate them with dense VarId-indexed slots instead of per-equation HashMap<Value> lookups plus generic primitive evaluation.",
+    "changed_files": [
+      "crates/fj-backend-cpu/src/executor.rs"
+    ],
+    "one_lever": true,
+    "unsafe": false,
+    "alien_primitive": "direct-threaded dense-slot DAG evaluator"
+  },
+  "proof": {
+    "golden_file": "artifacts/performance/evidence/fj_backend_cpu_i64_add_dag_pass68_2026-06-03.golden",
+    "golden_sha256": "ffa44e1fc122fa2c95d20fe782ef579e9a7c46ac81970d52151aaf90480b4c98",
+    "isomorphism": {
+      "ordering": "Accepted DAGs process equations in source order and only use a VarId after it is present in the dense slot table.",
+      "tie_breaking": "Ready-wave metadata is reconstructed by dependency level; multi-output and visible-intermediate programs fall back to the existing scheduler.",
+      "floating_point": "No floating-point equations are accepted by the fast path.",
+      "rng": "No RNG surface exists.",
+      "integer_semantics": "I64 addition uses wrapping_add, matching the existing runtime overflow behavior and verified with i64::MAX fan-in.",
+      "errors": "Sparse VarIds, missing inputs, non-Add primitives, params, effects, sub-jaxprs, malformed equations, nonterminal segments, and multi-output programs keep the existing scheduler/evaluator path."
+    },
+    "focused_tests": [
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass68-backend-tests3 cargo test -p fj-backend-cpu dependency_scheduler -- --nocapture",
+        "result": "pass: 12 dependency_scheduler tests"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass68-backend-fulltest cargo test -p fj-backend-cpu -- --nocapture",
+        "result": "pass: 65 tests plus doc tests"
+      }
+    ],
+    "quality_gates": [
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass68-backend-check cargo check -p fj-backend-cpu --all-targets",
+        "result": "pass"
+      },
+      {
+        "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-pass68-backend-clippy cargo clippy -p fj-backend-cpu --all-targets -- -D warnings",
+        "result": "pass"
+      },
+      {
+        "command": "cargo fmt --check -p fj-backend-cpu",
+        "result": "pass"
+      },
+      {
+        "command": "ubs crates/fj-backend-cpu/src/executor.rs",
+        "result": "pass: exit 0, critical 0; existing warning inventory remains"
+      },
+      {
+        "command": "sha256sum -c artifacts/performance/evidence/fj_backend_cpu_i64_add_dag_pass68_2026-06-03.golden.sha256",
+        "result": "pass"
+      },
+      {
+        "command": "jq . artifacts/performance/evidence/fj_backend_cpu_i64_add_dag_pass68_2026-06-03.json",
+        "result": "pass"
+      }
+    ]
+  }
+}
