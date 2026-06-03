@@ -252,16 +252,20 @@ pub fn random_gumbel(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f6
 /// Uses inverse transform on U ~ Uniform(-0.5, 0.5).
 #[must_use]
 pub fn random_laplace(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f64> {
-    let uniforms = random_uniform(key, count, 0.0, 1.0);
+    // JAX's `_laplace`: u ~ uniform(finfo.eps - 1, 1); laplace = sign(u)·log1p(-|u|),
+    // generalized here with loc/scale (loc + scale·standard_laplace). The RNG core
+    // is JAX-f32-mode bit-exact, so use the f32 eps for the lower bound.
+    //
+    // The previous form drew uniform(0,1), shifted to (-0.5, 0.5), and computed
+    // `-sign(·)·ln(1 - 2|·|)` with a 1e-10 clamp — that FLIPPED the sign versus
+    // JAX on every sample, used a different uniform domain, and added a clamp JAX
+    // does not have. (Both are valid Laplace, so the statistical tests passed, but
+    // it diverged per-sample.)
+    let minval = f64::from(f32::EPSILON - 1.0);
+    let uniforms = random_uniform(key, count, minval, 1.0);
     uniforms
         .into_iter()
-        .map(|u| {
-            // Shift to (-0.5, 0.5)
-            let shifted = u - 0.5;
-            // Inverse CDF: loc - scale * sign(u) * ln(1 - 2|u|)
-            let abs_shifted = shifted.abs().min(0.5 - 1e-10);
-            loc - scale * shifted.signum() * (1.0 - 2.0 * abs_shifted).ln()
-        })
+        .map(|u| loc + scale * u.signum() * (-u.abs()).ln_1p())
         .collect()
 }
 
@@ -1292,6 +1296,34 @@ mod tests {
             mean.abs() < 0.1,
             "laplace(0,1) should have mean ~0, got {mean:.4}"
         );
+    }
+
+    #[test]
+    fn test_laplace_matches_jax_sign_log1p_transform() {
+        // JAX: u ~ uniform(finfo.eps - 1, 1); laplace = sign(u)*log1p(-|u|).
+        // Pin the exact transform (and the loc/scale generalization) over the same
+        // key, guarding against the old sign-flipped -sign(u-0.5)*ln(1-2|u-0.5|).
+        let key = random_key(11);
+        let n = 256;
+        let minval = f64::from(f32::EPSILON - 1.0);
+        let u = random_uniform(key, n, minval, 1.0);
+        let l = random_laplace(key, n, 0.0, 1.0);
+        let l2 = random_laplace(key, n, 3.0, 2.0);
+        assert_eq!(l.len(), n);
+        for i in 0..n {
+            let base = u[i].signum() * (-u[i].abs()).ln_1p();
+            assert_eq!(
+                l[i].to_bits(),
+                base.to_bits(),
+                "standard laplace must equal sign(u)*log1p(-|u|) at {i}"
+            );
+            assert_eq!(
+                l2[i].to_bits(),
+                (3.0 + 2.0 * base).to_bits(),
+                "loc/scale generalization mismatch at {i}"
+            );
+            assert!(l[i].is_finite(), "laplace sample must be finite at {i}");
+        }
     }
 
     #[test]
