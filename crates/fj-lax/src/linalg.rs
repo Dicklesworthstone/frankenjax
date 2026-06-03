@@ -257,15 +257,12 @@ pub(crate) fn eval_cholesky(
 
             if i == j {
                 let diag_val = complex_sub(a[i * m + i], sum);
-                if diag_val.0 <= 0.0 || diag_val.1.abs() > 1e-10 {
-                    return Err(EvalError::Unsupported {
-                        primitive,
-                        detail: format!(
-                            "matrix is not positive definite (diagonal element {i} = {:?})",
-                            diag_val
-                        ),
-                    });
-                }
+                // JAX's lax.linalg.cholesky does NOT raise for non-positive-
+                // definite input (it must be jittable) — it returns NaN where
+                // the factorization fails. sqrt of a non-positive diagonal
+                // yields NaN/0 that then propagates through the divisions below,
+                // matching jnp.linalg.cholesky. (This is a deliberate
+                // JAX-vs-NumPy difference: NumPy raises LinAlgError instead.)
                 l[i * m + j] = (diag_val.0.sqrt(), 0.0);
             } else {
                 let numer = complex_sub(a[i * m + j], sum);
@@ -2329,9 +2326,21 @@ mod tests {
     }
 
     #[test]
-    fn cholesky_not_positive_definite() {
+    fn cholesky_not_positive_definite_returns_nan() {
+        // jnp.linalg.cholesky returns NaN (not an error) for non-PD input,
+        // unlike NumPy which raises LinAlgError. A = [[1,2],[2,1]] has
+        // eigenvalues 3 and -1, so L[1][1] = sqrt(1 - 2^2) = sqrt(-3) = NaN.
         let a = make_matrix(2, 2, &[1.0, 2.0, 2.0, 1.0]);
-        assert!(eval_cholesky(&[a], &BTreeMap::new()).is_err());
+        let result =
+            eval_cholesky(&[a], &BTreeMap::new()).expect("cholesky must not raise for non-PD");
+        let Value::Tensor(t) = result else {
+            panic!("expected tensor");
+        };
+        let vals: Vec<f64> = t.elements.iter().map(|e| e.as_f64().unwrap()).collect();
+        assert!(
+            vals.iter().any(|v| v.is_nan()),
+            "non-PD cholesky must contain NaN, got {vals:?}"
+        );
     }
 
     #[test]

@@ -2373,12 +2373,10 @@ fn batch_cholesky(
                             )
                         })?
                         - sum;
-                    if diag <= 0.0 {
-                        return Err(BatchError::EvalError(format!(
-                            "unsupported cholesky behavior: matrix is not positive definite \
-                             (diagonal element {i} = {diag})"
-                        )));
-                    }
+                    // jnp.linalg.cholesky returns NaN (not an error) for non-PD
+                    // input; sqrt of a non-positive diagonal yields NaN/0 that
+                    // propagates, matching the per-element fj-lax cholesky and
+                    // JAX (NumPy raises LinAlgError, JAX does not).
                     l[i * cols + j] = diag.sqrt();
                 } else {
                     let a_ij = tensor.elements[base + i * cols + j]
