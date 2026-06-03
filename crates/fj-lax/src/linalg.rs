@@ -1717,8 +1717,13 @@ pub fn det(a: &[f64], n: usize) -> f64 {
             }
         }
 
-        if max_val < 1e-15 {
-            return 0.0; // Singular matrix
+        // Only an exactly-zero pivot column is structurally singular -> det 0
+        // (and short-circuiting here avoids a 0/0 = NaN in the elimination
+        // below). A merely tiny pivot is NOT zeroed: jnp.linalg.det divides
+        // through it, so e.g. det(diag(1e-16, 2, 3)) is 6e-16, not 0. The old
+        // `< 1e-15` threshold wrongly collapsed such small determinants to 0.
+        if max_val == 0.0 {
+            return 0.0; // structurally singular (zero pivot column)
         }
 
         // Swap rows if needed
@@ -2879,6 +2884,28 @@ mod tests {
         let a = [1.0, 2.0, 2.0, 4.0]; // Rows are linearly dependent
         let d = det(&a, 2);
         assert!(d.abs() < 1e-10, "det of singular matrix should be ~0");
+    }
+
+    #[test]
+    fn det_small_pivot_not_collapsed_to_zero() {
+        // diag(1e-16, 2, 3): a small but nonzero pivot -> small nonzero det.
+        // jnp.linalg.det returns 6e-16; the old `< 1e-15` pivot threshold wrongly
+        // collapsed it to 0.
+        let a = [1e-16, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 3.0];
+        let d = det(&a, 3);
+        assert!(d != 0.0, "small-pivot determinant must not collapse to 0");
+        assert!(
+            (d / 6e-16 - 1.0).abs() < 1e-9,
+            "det should be ~6e-16, got {d}"
+        );
+
+        // An exactly-zero pivot column is structurally singular -> det 0 (no NaN).
+        let z = [0.0, 1.0, 0.0, 1.0]; // column 0 is all-zero
+        let dz = det(&z, 2);
+        assert_eq!(
+            dz, 0.0,
+            "structurally singular det must be exactly 0, got {dz}"
+        );
     }
 
     #[test]
