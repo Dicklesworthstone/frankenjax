@@ -325,6 +325,18 @@ fn execute_pure_segment(
     max_ready_wave: &mut usize,
 ) -> Result<(), InterpreterError> {
     let segment_len = segment_end - segment_start;
+    if execute_linear_topological_segment(
+        jaxpr,
+        segment_start,
+        segment_end,
+        env,
+        executed,
+        remaining,
+        max_ready_wave,
+    )? {
+        return Ok(());
+    }
+
     let mut producer_local_by_var: HashMap<VarId, usize> =
         HashMap::with_capacity_and_hasher(segment_len, Default::default());
     for idx in segment_start..segment_end {
@@ -389,6 +401,43 @@ fn execute_pure_segment(
     }
 
     Ok(())
+}
+
+fn execute_linear_topological_segment(
+    jaxpr: &Jaxpr,
+    segment_start: usize,
+    segment_end: usize,
+    env: &mut HashMap<VarId, Value>,
+    executed: &mut [bool],
+    remaining: &mut usize,
+    max_ready_wave: &mut usize,
+) -> Result<bool, InterpreterError> {
+    let mut previous_output = None;
+    for equation in &jaxpr.equations[segment_start..segment_end] {
+        for atom in &equation.inputs {
+            if let Atom::Var(var) = atom
+                && !env.contains_key(var)
+                && Some(*var) != previous_output
+            {
+                return Ok(false);
+            }
+        }
+        previous_output = Some(single_output_var(equation)?);
+    }
+
+    *max_ready_wave = (*max_ready_wave).max(1);
+    for (offset, equation) in jaxpr.equations[segment_start..segment_end]
+        .iter()
+        .enumerate()
+    {
+        let output = evaluate_equation(equation, env)?;
+        let out_var = single_output_var(equation)?;
+        env.insert(out_var, output);
+        executed[segment_start + offset] = true;
+        *remaining -= 1;
+    }
+
+    Ok(true)
 }
 
 fn evaluate_jaxpr_parallel_inner(
@@ -1124,6 +1173,18 @@ mod tests {
     #[test]
     fn dependency_scheduler_executes_long_chain_with_dependency_counts() {
         let length = DEPENDENCY_COUNT_MIN_SEGMENT_LEN;
+        let jaxpr = make_dependency_chain_jaxpr(length);
+        let mut max_ready_wave = 0_usize;
+        let result =
+            evaluate_jaxpr_parallel_inner(&jaxpr, &[Value::scalar_i64(7)], &mut max_ready_wave);
+
+        assert_eq!(result, Ok(vec![Value::scalar_i64(7 + length as i64)]));
+        assert_eq!(max_ready_wave, 1);
+    }
+
+    #[test]
+    fn dependency_scheduler_executes_very_long_topological_chain() {
+        let length = 1000_usize;
         let jaxpr = make_dependency_chain_jaxpr(length);
         let mut max_ready_wave = 0_usize;
         let result =

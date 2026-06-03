@@ -1,0 +1,86 @@
+{
+  "pass": 45,
+  "bead": "frankenjax-mcqr.39",
+  "crate": "fj-backend-cpu",
+  "target": "backend_scheduler_topological_dependency_chain",
+  "profile_backed_target": {
+    "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass46-baseline-remote cargo bench -p fj-backend-cpu --bench backend_baseline -- backend_scheduler_cutover/dependency_chain --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "after_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass44-after cargo bench -p fj-backend-cpu --bench backend_baseline -- backend_scheduler_cutover/dependency_chain --sample-size 40 --measurement-time 2 --warm-up-time 1",
+    "measurement_backend": "criterion_via_rch",
+    "baseline_worker": "vmi1149989",
+    "after_worker": "vmi1227854",
+    "local_fallback_discarded": true,
+    "benchmark_results": [
+      {
+        "benchmark": "backend_scheduler_cutover/dependency_chain/128",
+        "before_mean_us": 28.262,
+        "after_mean_us": 12.848,
+        "delta_percent": -54.54
+      },
+      {
+        "benchmark": "backend_scheduler_cutover/dependency_chain/255",
+        "before_mean_us": 64.649,
+        "after_mean_us": 27.511,
+        "delta_percent": -57.45
+      },
+      {
+        "benchmark": "backend_scheduler_cutover/dependency_chain/256",
+        "before_mean_us": 48.515,
+        "after_mean_us": 28.289,
+        "delta_percent": -41.69
+      },
+      {
+        "benchmark": "backend_scheduler_cutover/dependency_chain/512",
+        "before_mean_us": 107.76,
+        "after_mean_us": 52.595,
+        "delta_percent": -51.19
+      },
+      {
+        "benchmark": "backend_scheduler_cutover/dependency_chain/1000",
+        "before_mean_us": 198.36,
+        "after_mean_us": 111.72,
+        "delta_percent": -43.68
+      }
+    ]
+  },
+  "alien_graveyard_match": {
+    "primitive": "topological DAG scheduling",
+    "application": "Avoid rebuilding the dependency graph for pure segments that are already a single topological chain; execute the chain directly and keep the dependency-count scheduler for non-linear DAGs.",
+    "fallback": "If the preflight sees a missing non-env input or any dependency other than the previous output, return to the existing producer/consumer dependency-count scheduler."
+  },
+  "change": {
+    "lever": "Detect already-topological single-output pure chains before constructing producer/consumer maps, then evaluate them in equation order using the same single-output evaluator.",
+    "files": [
+      "crates/fj-backend-cpu/src/executor.rs"
+    ],
+    "single_lever": true,
+    "unsafe": false
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 4,
+    "effort": 1,
+    "score": 16.0,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "yes; the fast path only accepts chains whose non-env inputs are the immediately previous equation output, so it evaluates exactly in source equation order with max_ready_wave=1.",
+    "fallback_ordering": "yes; out-of-order, branched, missing-input, duplicate-output, and barrier cases use the existing scheduler/error path, verified by focused dependency_scheduler tests.",
+    "tie_breaking_unchanged": "yes; accepted chains have no competing ready equations, and rejected DAGs retain existing index-sorted ready-wave execution.",
+    "floating_point": "identical; primitive evaluation function and equation order are unchanged.",
+    "rng": "N/A; CPU scheduler path has no RNG inputs or seeds.",
+    "outputs": "unchanged; 1000-equation chain output remains 1007 for input 7 and max_ready_wave remains 1.",
+    "golden_outputs": "sha256sum -c artifacts/performance/evidence/fj_backend_cpu_topological_chain_pass45_2026-06-03.golden.sha256 passed",
+    "golden_sha256": "00ac5ccc22910cc5fb0fce229dc5d3febe3a53171b482d398ca0fed289ddd681"
+  },
+  "validation": [
+    "cargo fmt -p fj-backend-cpu -- --check",
+    "git diff --check -- crates/fj-backend-cpu/src/executor.rs",
+    "ubs crates/fj-backend-cpu/src/executor.rs (exit 0; critical 0; existing warning inventory only)",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass44-tests cargo test --release -p fj-backend-cpu dependency_scheduler -- --nocapture (remote vmi1149989, 8 passed)",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass44-check cargo check -p fj-backend-cpu --all-targets (remote vmi1153651, exit 0)",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_FORCE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-backend-cpu-pass44-clippy cargo clippy -p fj-backend-cpu --all-targets --no-deps -- -D warnings (remote vmi1153651, exit 0)",
+    "sha256sum -c artifacts/performance/evidence/fj_backend_cpu_topological_chain_pass45_2026-06-03.golden.sha256",
+    "jq . artifacts/performance/evidence/fj_backend_cpu_topological_chain_pass45_2026-06-03.json"
+  ]
+}
