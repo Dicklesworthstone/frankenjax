@@ -1,0 +1,38 @@
+{
+  "bead": "frankenjax-mcqr.20",
+  "date": "2026-06-02",
+  "subsystem": "fj-lax (tensor_ops)",
+  "target": "eval_transpose (Primitive::Transpose) — pure data movement, no arithmetic",
+  "lever": {
+    "description": "Two-part transpose rewrite. (1) Rank-2 [1,0] permutation: cache-blocked 64x64 tile walk so strided source reads and contiguous destination writes stay local instead of striding the whole matrix per element. (2) General rank: replaced the per-element multi-index recompute (division + checked mul/add per axis) with an incremental 'odometer' walk maintaining the source flat index. Both are pure data movement (no FP arithmetic), so any visitation order that yields the correct permutation is bit-for-bit identical."
+  },
+  "benchmarks": {
+    "method": "rch Criterion; baseline = original per-element div/mod multi-index loop, optimized = cache-blocked rank-2 path",
+    "baseline": {
+      "eval/transpose_256x256_f64_us": 1037.7,
+      "eval/transpose_256x256_f64_ci_us": [980.15, 1103.5]
+    },
+    "after": {
+      "tool": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/transpose_256x256_f64'",
+      "eval/transpose_256x256_f64_us": 236.04,
+      "eval/transpose_256x256_f64_ci_us": [234.53, 237.41]
+    },
+    "speedup": {
+      "transpose_256x256_f64": 4.40
+    },
+    "note": "The odometer-only version (no tiling) measured ~1.75x and was cache-miss bound; adding the 64x64 tile blocking fixed the access pattern and reached 4.40x with a tight CI."
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 5,
+    "effort": 1,
+    "impact_times_confidence_over_effort": 20.0
+  },
+  "isomorphism_proof": {
+    "data_movement_only": "Transpose copies input Literals to permuted positions; no arithmetic is performed, so output bits equal the (reordered) input bits regardless of visitation order.",
+    "ordering": "Output element at each destination index equals the prior implementation's mapping (out[j,i] = in[i,j] for rank-2; odometer reproduces the textbook new->old flat mapping for general rank).",
+    "rng": "No RNG state is read or written.",
+    "errors": "Empty tensors and scalar/invalid-permutation paths unchanged; shape validation unchanged.",
+    "bit_identity_proof": "Existing transpose_2x3 / transpose_identity tests plus new tests transpose_rank3_matches_naive_reference (rank-3 perm [2,0,1] vs textbook multi-index reference) and transpose_rank2_tiled_non_block_aligned (70x130, crosses the 64-tile boundary, asserts out[j,i]==in[i,j]) pass; full fj-lax suite 1003/1003 passes. No synthetic golden-bits file: transpose is a pure permutation and the parity tests pin the element mapping."
+  }
+}

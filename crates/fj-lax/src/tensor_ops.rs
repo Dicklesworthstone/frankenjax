@@ -593,32 +593,72 @@ pub(crate) fn eval_transpose(
             }
 
             let old_strides = checked_row_major_strides(primitive, "transpose", old_dims)?;
-            let new_strides = checked_row_major_strides(primitive, "transpose", &new_dims)?;
+            // `new_strides` is validated (product == total fits usize); the
+            // walks below stay within [0, total), so the prior per-element
+            // checked div/mul/add are unnecessary.
+            let _ = checked_row_major_strides(primitive, "transpose", &new_dims)?;
+
+            // Rank-2 transpose (permutation [1,0]) is pure data movement; a
+            // cache-blocked tile walk keeps both the strided source reads and
+            // the contiguous destination writes local, instead of striding the
+            // whole matrix per element. Output is identical (same permutation),
+            // so it is bit-for-bit equivalent.
+            if rank == 2 && permutation[0] == 1 && permutation[1] == 0 {
+                let rows = old_dims[0] as usize; // source rows (M)
+                let cols = old_dims[1] as usize; // source cols (N); output is N x M
+                let mut new_elements = vec![tensor.elements[0]; total];
+                const BLOCK: usize = 64;
+                let mut bi = 0;
+                while bi < rows {
+                    let i_end = (bi + BLOCK).min(rows);
+                    let mut bj = 0;
+                    while bj < cols {
+                        let j_end = (bj + BLOCK).min(cols);
+                        for i in bi..i_end {
+                            let src_row = i * cols;
+                            for j in bj..j_end {
+                                // out[j, i] = in[i, j]  (output is cols x rows)
+                                new_elements[j * rows + i] = tensor.elements[src_row + j];
+                            }
+                        }
+                        bj += BLOCK;
+                    }
+                    bi += BLOCK;
+                }
+                return Ok(Value::Tensor(TensorValue::new(
+                    tensor.dtype,
+                    Shape { dims: new_dims },
+                    new_elements,
+                )?));
+            }
+
             let mut new_elements = Vec::with_capacity(total);
 
-            for flat_idx in 0..total {
-                // Convert flat index to multi-index in new layout.
-                let mut remaining = flat_idx;
-                let mut old_flat = 0_usize;
-                for (new_axis, &perm_axis) in permutation.iter().enumerate() {
-                    let stride = new_strides[new_axis];
-                    let coord = remaining / stride;
-                    remaining %= stride;
-                    let offset = coord.checked_mul(old_strides[perm_axis]).ok_or_else(|| {
-                        EvalError::Unsupported {
-                            primitive,
-                            detail: format!("transpose offset overflows usize on axis {new_axis}"),
-                        }
-                    })?;
-                    old_flat =
-                        old_flat
-                            .checked_add(offset)
-                            .ok_or_else(|| EvalError::Unsupported {
-                                primitive,
-                                detail: "transpose flat offset overflows usize".to_owned(),
-                            })?;
-                }
+            // Per-axis source stride for the new layout: stepping new-axis k by
+            // one moves the source index by `old_strides[permutation[k]]`.
+            let step: Vec<usize> = permutation.iter().map(|&p| old_strides[p]).collect();
+            let new_extent: Vec<usize> = new_dims.iter().map(|&d| d as usize).collect();
+
+            // Odometer walk over the new layout in row-major order, maintaining
+            // the source flat index incrementally instead of recomputing a full
+            // multi-index (with division) for every element. Produces exactly
+            // the same permutation as the prior code, so output bits are
+            // identical (transpose is pure data movement, no arithmetic).
+            let mut coord = vec![0_usize; rank];
+            let mut old_flat = 0_usize;
+            for _ in 0..total {
                 new_elements.push(tensor.elements[old_flat]);
+                let mut axis = rank;
+                while axis > 0 {
+                    axis -= 1;
+                    coord[axis] += 1;
+                    old_flat += step[axis];
+                    if coord[axis] < new_extent[axis] {
+                        break;
+                    }
+                    coord[axis] = 0;
+                    old_flat -= step[axis] * new_extent[axis];
+                }
             }
 
             Ok(Value::Tensor(TensorValue::new(
@@ -4731,6 +4771,82 @@ mod tests {
         let p = params(&[("permutation", "0,1")]);
         let result = eval_transpose(std::slice::from_ref(&x), &p).unwrap();
         assert_eq!(extract_f64_vec(&result), extract_f64_vec(&x));
+    }
+
+    #[test]
+    fn transpose_rank3_matches_naive_reference() {
+        // Rank-3 tensor 2x3x4 with a non-trivial permutation [2,0,1]; the
+        // incremental ("odometer") walk must reproduce the textbook
+        // multi-index mapping exactly (transpose is pure data movement).
+        let (d0, d1, d2) = (2usize, 3usize, 4usize);
+        let total = d0 * d1 * d2;
+        let data: Vec<f64> = (0..total).map(|i| i as f64 * 0.5 - 3.0).collect();
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![d0 as u32, d1 as u32, d2 as u32],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let perm = [2usize, 0, 1];
+        let p = params(&[("permutation", "2,0,1")]);
+        let got = extract_f64_vec(&eval_transpose(std::slice::from_ref(&x), &p).unwrap());
+
+        // Naive reference: new layout row-major over permuted dims.
+        let old_dims = [d0, d1, d2];
+        let new_dims: Vec<usize> = perm.iter().map(|&a| old_dims[a]).collect();
+        let old_strides = [d1 * d2, d2, 1usize];
+        let mut new_strides = [0usize; 3];
+        new_strides[2] = 1;
+        new_strides[1] = new_dims[2];
+        new_strides[0] = new_dims[1] * new_dims[2];
+        let mut want = Vec::with_capacity(total);
+        for flat in 0..total {
+            let mut rem = flat;
+            let mut old_flat = 0usize;
+            for new_axis in 0..3 {
+                let coord = rem / new_strides[new_axis];
+                rem %= new_strides[new_axis];
+                old_flat += coord * old_strides[perm[new_axis]];
+            }
+            want.push(data[old_flat]);
+        }
+        assert_eq!(got, want);
+        assert_eq!(
+            extract_shape(&eval_transpose(&[x], &p).unwrap()),
+            vec![4, 2, 3]
+        );
+    }
+
+    #[test]
+    fn transpose_rank2_tiled_non_block_aligned() {
+        // Non-square dims that cross the 64-element tile boundary, exercising
+        // the cache-blocked rank-2 path's partial tiles.
+        let (rows, cols) = (70usize, 130usize);
+        let data: Vec<f64> = (0..rows * cols).map(|i| i as f64).collect();
+        let x = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("permutation", "1,0")]);
+        let result = eval_transpose(std::slice::from_ref(&x), &p).unwrap();
+        assert_eq!(extract_shape(&result), vec![cols as u32, rows as u32]);
+        let got = extract_f64_vec(&result);
+        // out[j, i] == in[i, j]
+        for i in 0..rows {
+            for j in 0..cols {
+                assert_eq!(got[j * rows + i], data[i * cols + j], "({i},{j})");
+            }
+        }
     }
 
     // ── Slice ──

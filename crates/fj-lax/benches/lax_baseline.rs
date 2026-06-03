@@ -184,6 +184,23 @@ fn bench_dot_100(c: &mut Criterion) {
     });
 }
 
+fn bench_transpose_256x256_f64(c: &mut Criterion) {
+    let m = Value::Tensor(TensorValue {
+        dtype: DType::F64,
+        shape: Shape {
+            dims: vec![256, 256],
+        },
+        elements: (0..256 * 256)
+            .map(|i| Literal::from_f64(i as f64 * 0.001))
+            .collect(),
+    });
+    let mut p = no_params();
+    p.insert("permutation".to_owned(), "1,0".to_owned());
+    c.bench_function("eval/transpose_256x256_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Transpose, std::slice::from_ref(&m), &p))
+    });
+}
+
 fn bench_solve_24x24_24rhs(c: &mut Criterion) {
     // Multi-RHS linear solve: A (24x24, diagonally dominant => non-singular)
     // and B (24x24). Exercises solve_multi_rhs, which factorizes A once.
@@ -650,6 +667,7 @@ criterion_group!(
     bench_nextafter_1k,
     bench_dot_100,
     bench_solve_24x24_24rhs,
+    bench_transpose_256x256_f64,
     bench_reduce_sum_1k,
     bench_reduce_window_64x64,
     bench_sin_1k,
