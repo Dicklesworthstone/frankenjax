@@ -184,6 +184,64 @@ fn bench_dot_100(c: &mut Criterion) {
     });
 }
 
+fn bench_concat_axis1_3x_f64(c: &mut Criterion) {
+    // Concatenate three [256, 128] matrices along axis 1 -> [256, 384].
+    let mk = |base: f64| {
+        Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape: Shape {
+                dims: vec![256, 128],
+            },
+            elements: (0..256 * 128)
+                .map(|i| Literal::from_f64(base + i as f64))
+                .collect(),
+        })
+    };
+    let a = mk(0.0);
+    let b = mk(100_000.0);
+    let d = mk(200_000.0);
+    let mut p = no_params();
+    p.insert("dimension".to_owned(), "1".to_owned());
+    c.bench_function("eval/concat_axis1_3x256x128_f64", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::Concatenate,
+                &[a.clone(), b.clone(), d.clone()],
+                &p,
+            )
+        })
+    });
+}
+
+fn bench_concat_axis0_3x_f64(c: &mut Criterion) {
+    // Stack three [128, 256] matrices along axis 0 -> [384, 256] (common case).
+    let mk = |base: f64| {
+        Value::Tensor(TensorValue {
+            dtype: DType::F64,
+            shape: Shape {
+                dims: vec![128, 256],
+            },
+            elements: (0..128 * 256)
+                .map(|i| Literal::from_f64(base + i as f64))
+                .collect(),
+        })
+    };
+    let a = mk(0.0);
+    let b = mk(100_000.0);
+    let d = mk(200_000.0);
+    let mut p = no_params();
+    p.insert("dimension".to_owned(), "0".to_owned());
+    c.bench_function("eval/concat_axis0_3x128x256_f64", |bencher| {
+        bencher.iter(|| {
+            eval_primitive(
+                Primitive::Concatenate,
+                &[a.clone(), b.clone(), d.clone()],
+                &p,
+            )
+        })
+    });
+}
+
 fn bench_transpose_256x256_f64(c: &mut Criterion) {
     let m = Value::Tensor(TensorValue {
         dtype: DType::F64,
@@ -667,6 +725,8 @@ criterion_group!(
     bench_nextafter_1k,
     bench_dot_100,
     bench_solve_24x24_24rhs,
+    bench_concat_axis1_3x_f64,
+    bench_concat_axis0_3x_f64,
     bench_transpose_256x256_f64,
     bench_reduce_sum_1k,
     bench_reduce_window_64x64,

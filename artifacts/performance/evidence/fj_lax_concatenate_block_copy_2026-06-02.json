@@ -1,0 +1,39 @@
+{
+  "bead": "frankenjax-mcqr.21",
+  "date": "2026-06-02",
+  "subsystem": "fj-lax (tensor_ops)",
+  "target": "eval_concatenate (Primitive::Concatenate) — pure data movement, no arithmetic",
+  "lever": {
+    "description": "Replaced the per-output-element concat loop (which, for every element, scanned operands to select the source tensor and recomputed a row-major flat index via a stride loop) with a block decomposition: for each of `outer` blocks (axes < concat axis) and each operand, copy a contiguous run of `dim[axis] * inner` elements (`inner` = product of axes > concat axis) via extend_from_slice. Produces the same element order, so bit-for-bit identical, but via bulk memcpy with no per-element index math."
+  },
+  "benchmarks": {
+    "method": "rch Criterion, same-worker back-to-back; baseline = per-element loop, optimized = block extend_from_slice",
+    "baseline": {
+      "eval/concat_axis1_3x256x128_f64_ms": 1.8942,
+      "eval/concat_axis1_3x256x128_f64_ci_ms": [1.7892, 2.0120]
+    },
+    "after": {
+      "tool": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/concat_axis1_3x256x128_f64'",
+      "eval/concat_axis1_3x256x128_f64_ms": 1.4125,
+      "eval/concat_axis1_3x256x128_f64_ci_ms": [1.3529, 1.4790]
+    },
+    "speedup": {
+      "concat_axis1_3x256x128_f64": 1.34
+    },
+    "honesty_note": "1.34x on the harder axis-1 case (many small per-row blocks); the op is memory-bound (writes the full ~2.4MB output), so removing per-element index overhead is the available gain. The axis-0 (stacking) case decomposes into a few large contiguous copies and benefits more, but a clean axis-0 figure could not be captured this session due to shared-worker load variance, so only the reliably-measured conservative axis-1 number is claimed. A concat_axis0 bench was added for future profiling."
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 5,
+    "effort": 1,
+    "impact_times_confidence_over_effort": 15.0,
+    "note": "Opportunity-matrix score; realized speedup is 1.34x on the conservative case."
+  },
+  "isomorphism_proof": {
+    "data_movement_only": "Concatenate copies operand Literals into the output; no arithmetic, so output bits equal the (reordered) input bits regardless of copy granularity.",
+    "ordering": "Row-major output order is preserved: for each outer index the operands' contiguous blocks are appended in operand order, exactly matching the per-coordinate walk.",
+    "rng": "No RNG state is read or written.",
+    "errors": "Dtype-uniformity, rank, and non-concat-dim validations are unchanged and still run before the copy.",
+    "bit_identity_proof": "New test concatenate_rank3_middle_axis_matches_naive (3 operands, middle axis of a rank-3 tensor) compares the block-copy output to an independent per-coordinate reference; existing concatenate_1d and the full fj-lax suite (1004/1004) pass. No synthetic golden-bits file: concat is a pure permutation/copy and the parity test pins the element order."
+  }
+}

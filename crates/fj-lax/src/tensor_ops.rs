@@ -979,46 +979,23 @@ pub(crate) fn eval_concatenate(
     })?;
     out_dims[axis] = concat_size;
 
-    // For concatenation, iterate over all output coordinates.
     let total = checked_shape_element_count(primitive, "concatenate", &out_dims)?;
+
+    // Concatenation is pure data movement: along `axis`, the layout splits into
+    // `outer` independent blocks (axes < axis) and, within each, a contiguous
+    // run of `dim[axis] * inner` elements per operand (`inner` = product of axes
+    // > axis, identical across operands). So the whole result is a sequence of
+    // contiguous slice copies — same element order as the per-coordinate walk,
+    // hence bit-for-bit identical, but via bulk `extend_from_slice`.
+    let inner = checked_shape_element_count(primitive, "concatenate inner", &out_dims[axis + 1..])?;
+    let outer = checked_shape_element_count(primitive, "concatenate outer", &out_dims[..axis])?;
+
     let mut elements = Vec::with_capacity(total);
-    let mut out_coords = vec![0_usize; rank];
-
-    for _ in 0..total {
-        // Determine which input tensor and its local coord on the concat axis.
-        let mut concat_coord = out_coords[axis];
-        let mut tensor_idx = 0;
-        for (i, t) in tensors.iter().enumerate() {
-            let dim = t.shape.dims[axis] as usize;
-            if concat_coord < dim {
-                tensor_idx = i;
-                break;
-            }
-            concat_coord -= dim;
-        }
-
-        // Compute flat index into the selected tensor.
-        let t = tensors[tensor_idx];
-        let mut flat = 0_usize;
-        let mut stride = 1_usize;
-        for ax in (0..rank).rev() {
-            let coord = if ax == axis {
-                concat_coord
-            } else {
-                out_coords[ax]
-            };
-            flat += coord * stride;
-            stride *= t.shape.dims[ax] as usize;
-        }
-        elements.push(t.elements[flat]);
-
-        // Increment output coordinates.
-        for ax in (0..rank).rev() {
-            out_coords[ax] += 1;
-            if out_coords[ax] < out_dims[ax] as usize {
-                break;
-            }
-            out_coords[ax] = 0;
+    for o in 0..outer {
+        for t in &tensors {
+            let block = t.shape.dims[axis] as usize * inner;
+            let start = o * block;
+            elements.extend_from_slice(&t.elements[start..start + block]);
         }
     }
 
@@ -4903,6 +4880,63 @@ mod tests {
         let p = params(&[("dimension", "0")]);
         let result = eval_concatenate(&[a, b], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn concatenate_rank3_middle_axis_matches_naive() {
+        // Three operands concatenated on the middle axis of a rank-3 tensor;
+        // the block-copy result must equal the per-coordinate reference.
+        let outer = 2usize;
+        let inner = 4usize;
+        let dims_axis = [3usize, 1usize, 2usize]; // concat-axis size per operand
+        let axis = 1usize;
+        let mk = |d1: usize, base: f64| -> (Value, Vec<f64>) {
+            let data: Vec<f64> = (0..outer * d1 * inner).map(|i| base + i as f64).collect();
+            (
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape {
+                            dims: vec![outer as u32, d1 as u32, inner as u32],
+                        },
+                        data.iter().map(|&v| Literal::from_f64(v)).collect(),
+                    )
+                    .unwrap(),
+                ),
+                data,
+            )
+        };
+        let (t0, d0) = mk(dims_axis[0], 0.0);
+        let (t1, d1) = mk(dims_axis[1], 1000.0);
+        let (t2, d2) = mk(dims_axis[2], 2000.0);
+        let p = params(&[("dimension", "1")]);
+        let got = extract_f64_vec(&eval_concatenate(&[t0, t1, t2], &p).unwrap());
+
+        // Naive per-coordinate reference.
+        let total_axis: usize = dims_axis.iter().sum();
+        let srcs = [
+            (&d0, dims_axis[0]),
+            (&d1, dims_axis[1]),
+            (&d2, dims_axis[2]),
+        ];
+        let mut want = Vec::with_capacity(outer * total_axis * inner);
+        for o in 0..outer {
+            for a in 0..total_axis {
+                // find operand + local axis coord
+                let mut rem = a;
+                let mut sel = 0;
+                while rem >= srcs[sel].1 {
+                    rem -= srcs[sel].1;
+                    sel += 1;
+                }
+                let (data, d_axis) = srcs[sel];
+                for k in 0..inner {
+                    want.push(data[(o * d_axis + rem) * inner + k]);
+                }
+            }
+        }
+        let _ = axis;
+        assert_eq!(got, want);
     }
 
     // ── Reverse ──
