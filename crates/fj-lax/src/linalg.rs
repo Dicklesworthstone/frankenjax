@@ -1536,9 +1536,17 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
 
     // For larger matrices, use simple QR iteration (V1: limited to real eigenvalues)
     let mut t = a.to_vec();
-    let mut q_total = vec![(0.0, 0.0); n * n];
+    // q_total stays purely real: it starts as the identity and is only ever
+    // multiplied by the real orthogonal factor Q from qr_decomposition (whose
+    // imaginary parts are exactly zero). Accumulate it as f64 via the real
+    // `matrix_mul` (2 flops/element) instead of `matrix_mul_complex` (6
+    // flops/element computing guaranteed-zero imaginary parts). The real-part
+    // accumulation is identical (`matrix_mul_complex`'s re = sum(ar*br - ai*bi)
+    // collapses to sum(ar*br) when ai = bi = 0), so the eigenvectors are
+    // bit-for-bit identical.
+    let mut q_total = vec![0.0_f64; n * n];
     for i in 0..n {
-        q_total[i * n + i] = (1.0, 0.0);
+        q_total[i * n + i] = 1.0;
     }
 
     for _iter in 0..100 {
@@ -1547,8 +1555,8 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
         // T = R * Q
         t = matrix_mul(&r, &q, n);
 
-        // Accumulate Q
-        q_total = matrix_mul_complex(&q_total, &q, n);
+        // Accumulate Q (real * real -> real).
+        q_total = matrix_mul(&q_total, &q, n);
 
         // Check convergence (off-diagonal elements)
         let mut max_off_diag = 0.0f64;
@@ -1566,8 +1574,9 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
 
     // Extract eigenvalues from diagonal
     let eigenvalues: Vec<(f64, f64)> = (0..n).map(|i| (t[i * n + i], 0.0)).collect();
+    let eigenvectors: Vec<(f64, f64)> = q_total.into_iter().map(|v| (v, 0.0)).collect();
 
-    (eigenvalues, q_total)
+    (eigenvalues, eigenvectors)
 }
 
 fn normalize_vector(v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
@@ -1649,6 +1658,10 @@ fn matrix_mul(a: &[f64], b: &[(f64, f64)], n: usize) -> Vec<f64> {
     c
 }
 
+/// Complex i-k-j GEMM. Retained (and unit-tested) for the future
+/// complex-eigenvalue path; eval_eig's V1 real path accumulates q_total with
+/// the cheaper real `matrix_mul`, so this currently has no production caller.
+#[allow(dead_code)]
 fn matrix_mul_complex(a: &[(f64, f64)], b: &[(f64, f64)], n: usize) -> Vec<(f64, f64)> {
     // i-k-j order (see matrix_mul). Real and imaginary parts each accumulate
     // ascending-k exactly as before, so the result is bit-for-bit identical.

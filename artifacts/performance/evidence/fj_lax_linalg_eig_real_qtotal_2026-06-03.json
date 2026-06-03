@@ -1,0 +1,40 @@
+{
+  "bead": "frankenjax-mcqr.26",
+  "date": "2026-06-03",
+  "subsystem": "fj-lax (linalg)",
+  "target": "eval_eig q_total (eigenvector) accumulation",
+  "lever": {
+    "description": "eval_eig accumulated q_total via matrix_mul_complex (6 flops/element: re = ar*br - ai*bi, im = ar*bi + ai*br) even though q_total is provably purely real: it is initialized to the identity and only ever multiplied by qr_decomposition's Q, whose imaginary parts are exactly 0.0. Switched q_total to a Vec<f64> accumulated with the real matrix_mul (2 flops/element), wrapping to (re, 0.0) at the end. For zero-imaginary operands matrix_mul_complex's re = sum(ar*br - 0) equals matrix_mul's sum(ar*br) and its im = sum(0) = 0.0, so the eigenvectors are bit-for-bit identical. matrix_mul_complex is retained (allow(dead_code)) and unit-tested for the documented future complex-eigenvalue path."
+  },
+  "benchmarks": {
+    "method": "rch Criterion, eval_primitive_multi(Eig, 48x48 f64); same-worker back-to-back; baseline = complex q_total (matrix_mul_complex), optimized = real q_total (matrix_mul). HEAD already includes the matmul-ikj (mcqr.24) and contiguous Gram-Schmidt (mcqr.25) eig wins.",
+    "baseline": {
+      "linalg/eig_48x48_f64_ms": 19.395,
+      "ci_ms": [18.828, 19.949]
+    },
+    "after": {
+      "tool": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'linalg/eig_48x48_f64'",
+      "linalg/eig_48x48_f64_ms": 13.846,
+      "ci_ms": [13.469, 14.234]
+    },
+    "speedup": {
+      "eig_48x48_f64_this_lever": 1.40,
+      "eig_48x48_f64_cumulative_vs_original": 4.4
+    },
+    "note": "1.40x this lever (non-overlapping CIs). Cumulative across mcqr.24 (matmul ikj) + mcqr.25 (contiguous Gram-Schmidt) + this: the original eig (~61.5 ms two sessions ago) is now ~13.8 ms, ~4.4x. Worker was also less loaded this session, but the 1.40x is a same-worker back-to-back delta."
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 5,
+    "effort": 1,
+    "impact_times_confidence_over_effort": 15.0,
+    "note": "Algorithmic flop reduction (not just cache): eliminates guaranteed-zero complex arithmetic. Real, production (Eig primitive), bit-exact."
+  },
+  "isomorphism_proof": {
+    "floating_point": "q_total and Q have imaginary parts identically 0.0. matrix_mul_complex computes re += ar*br - ai*bi = ar*br - 0.0 = ar*br (x - 0.0 == x in IEEE-754) and im += ar*bi + ai*br = 0.0; the real matrix_mul accumulates the same sum(ar*br) in the same ascending-k order and the final imaginary part is 0.0. Bit-for-bit identical eigenvectors.",
+    "ordering": "Accumulation order over k unchanged; eigenvalues come from t (untouched).",
+    "rng": "No RNG state is read or written.",
+    "errors": "No new error paths.",
+    "bit_identity_proof": "Existing eig unit tests and the tensor_contraction/linalg oracle conformance tests (validated vs jnp) plus 1009/1009 fj-lax tests pass; eigenvectors are unchanged. No synthetic golden-bits file: the change is a provable no-op on the imaginary parts and the eig tests pin eigenvector correctness."
+  }
+}
