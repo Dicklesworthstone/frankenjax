@@ -234,10 +234,34 @@ fn eval_f64_scalar_broadcast_binop(
     }
     let scalar = f64::from_bits(scalar_bits);
     match primitive {
-        Primitive::Add => f64_scalar_broadcast_map(scalar, tensor, scalar_on_left, |a, b| a + b),
-        Primitive::Sub => f64_scalar_broadcast_map(scalar, tensor, scalar_on_left, |a, b| a - b),
-        Primitive::Mul => f64_scalar_broadcast_map(scalar, tensor, scalar_on_left, |a, b| a * b),
-        Primitive::Div => f64_scalar_broadcast_map(scalar, tensor, scalar_on_left, |a, b| a / b),
+        Primitive::Add => f64_scalar_broadcast_map(
+            scalar,
+            tensor,
+            scalar_on_left,
+            crate::dense::ArithOp::Add,
+            |a, b| a + b,
+        ),
+        Primitive::Sub => f64_scalar_broadcast_map(
+            scalar,
+            tensor,
+            scalar_on_left,
+            crate::dense::ArithOp::Sub,
+            |a, b| a - b,
+        ),
+        Primitive::Mul => f64_scalar_broadcast_map(
+            scalar,
+            tensor,
+            scalar_on_left,
+            crate::dense::ArithOp::Mul,
+            |a, b| a * b,
+        ),
+        Primitive::Div => f64_scalar_broadcast_map(
+            scalar,
+            tensor,
+            scalar_on_left,
+            crate::dense::ArithOp::Div,
+            |a, b| a / b,
+        ),
         _ => Ok(None),
     }
 }
@@ -247,8 +271,16 @@ fn f64_scalar_broadcast_map(
     scalar: f64,
     tensor: &TensorValue,
     scalar_on_left: bool,
+    dense_op: crate::dense::ArithOp,
     op: impl Fn(f64, f64) -> f64,
 ) -> Result<Option<Value>, EvalError> {
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+            tensor.shape.clone(),
+            crate::dense::scalar_op(values, scalar, dense_op, scalar_on_left),
+        )?)));
+    }
+
     let mut elements = Vec::with_capacity(tensor.elements.len());
     for &elem in &tensor.elements {
         let Literal::F64Bits(bits) = elem else {
@@ -5628,7 +5660,7 @@ mod tests {
             };
             for scalar_on_left in [true, false] {
                 let scalar_val = Value::Scalar(Literal::from_f64(scalar));
-                let tensor_val = v_f64(&tensor_data);
+                let tensor_val = Value::vector_f64(&tensor_data).unwrap();
                 let inputs = if scalar_on_left {
                     [scalar_val, tensor_val]
                 } else {
@@ -5636,9 +5668,14 @@ mod tests {
                 };
                 let result = eval_binary_elementwise(primitive, &inputs, |x, y| x + y, op).unwrap();
                 let Value::Tensor(tensor) = result else {
-                    panic!("expected tensor for {primitive:?}");
+                    assert!(matches!(result, Value::Tensor(_)));
+                    return;
                 };
                 assert_eq!(tensor.dtype, DType::F64);
+                assert!(
+                    tensor.elements.as_f64_slice().is_some(),
+                    "dense F64 scalar broadcast output should remain dense"
+                );
                 let expected: Vec<Literal> = tensor_data
                     .iter()
                     .map(|&e| {
@@ -5656,6 +5693,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn f64_scalar_broadcast_fast_path_preserves_literal_backed_fallback() {
+        let tensor_data = [1.5, -0.0, f64::NAN, f64::INFINITY];
+        let tensor_val = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![4] },
+                tensor_data.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        let scalar_val = Value::Scalar(Literal::from_f64(2.5));
+
+        let result = eval_binary_elementwise(
+            Primitive::Sub,
+            &[tensor_val, scalar_val],
+            |x, y| x - y,
+            |x, y| x - y,
+        )
+        .unwrap();
+        let Value::Tensor(tensor) = result else {
+            assert!(matches!(result, Value::Tensor(_)));
+            return;
+        };
+        assert!(
+            tensor.elements.as_f64_slice().is_none(),
+            "literal-backed fallback should remain literal-backed"
+        );
+        let expected = tensor_data
+            .iter()
+            .copied()
+            .map(|value| Literal::from_f64(value - 2.5))
+            .collect::<Vec<_>>();
+        assert_eq!(tensor.elements, expected);
     }
 
     #[test]

@@ -1,0 +1,116 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_dense_f64_scalar_broadcast_pass46_2026-06-03",
+  "date": "2026-06-03",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-mcqr.30.5",
+  "parent_bead": "frankenjax-mcqr.30",
+  "pass": 46,
+  "crate": "fj-lax",
+  "skill_pass": "repeatedly-apply-skill pass 46 -> extreme-software-optimization",
+  "target": {
+    "profile_backing": "After pass44 introduced dense F64 LiteralBuffer storage, scalar-tensor F64 broadcast still iterated Literal values instead of the existing dense contiguous F64 kernel.",
+    "baseline_command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-scalar-baseline rch exec -- cargo bench -p fj-lax --bench lax_baseline -- scalar",
+    "bench_rows": [
+      "eval/scalar_mul_1k_f64_vec",
+      "eval/tensor_sub_scalar_1k_f64_vec"
+    ]
+  },
+  "one_lever": {
+    "name": "dense F64 scalar broadcast route",
+    "files": [
+      "crates/fj-lax/src/arithmetic.rs"
+    ],
+    "description": "F64 scalar-tensor and tensor-scalar Add/Sub/Mul/Div now use LiteralBuffer::as_f64_slice plus fj_lax::dense::scalar_op when the tensor is already dense-backed. Literal-backed and malformed declared-F64 tensors continue through the previous per-Literal fallback path."
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1293453",
+      "eval_scalar_mul_1k_f64_vec_midpoint_ns": 1219.4,
+      "eval_scalar_mul_1k_f64_vec_ci_ns": [
+        1205.7,
+        1233.9
+      ],
+      "eval_tensor_sub_scalar_1k_f64_vec_midpoint_ns": 1130.5,
+      "eval_tensor_sub_scalar_1k_f64_vec_ci_ns": [
+        1122.5,
+        1138.6
+      ],
+      "eval_lt_scalar_1k_f64_vec_midpoint_ns": 1405.9
+    },
+    "after": {
+      "worker": "vmi1293453",
+      "command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-scalar-rebench rch exec -- cargo bench -p fj-lax --bench lax_baseline -- scalar",
+      "eval_scalar_mul_1k_f64_vec_midpoint_ns": 299.66,
+      "eval_scalar_mul_1k_f64_vec_ci_ns": [
+        294.73,
+        304.55
+      ],
+      "eval_tensor_sub_scalar_1k_f64_vec_midpoint_ns": 361.29,
+      "eval_tensor_sub_scalar_1k_f64_vec_ci_ns": [
+        354.60,
+        368.02
+      ],
+      "eval_lt_scalar_1k_f64_vec_midpoint_ns": 1424.7
+    },
+    "delta": {
+      "eval_scalar_mul_1k_f64_vec_speedup_x": 4.068,
+      "eval_tensor_sub_scalar_1k_f64_vec_speedup_x": 3.130,
+      "comparison_row": "eval/lt_scalar_1k_f64_vec unchanged within noise and not routed through this arithmetic fast path"
+    },
+    "score": {
+      "impact": 4.0,
+      "confidence": 5.0,
+      "effort": 2.0,
+      "impact_x_confidence_over_effort": 10.0,
+      "decision": "keep"
+    }
+  },
+  "isomorphism_proof": {
+    "ordering": "Dense scalar broadcast maps the tensor's dense F64 slice in the same row-major order as the previous Literal loop and collects one output per input element in that order.",
+    "tie_breaking": "No comparisons, sorting, dispatch priority, or tie-breaking policy changed. The fast path only handles Add/Sub/Mul/Div.",
+    "floating_point": "Each lane uses the same scalar IEEE-754 f64 operation as the previous float_op closure. There is no reduction, reassociation, fused multiply-add, approximate math, unsafe code, C BLAS, LAPACK, MKL, XLA, or cross-lane reordering.",
+    "rng": "No random state, seed, sampling order, or nondeterministic iteration path changed.",
+    "operand_order": "scalar_on_left is forwarded into dense::scalar_op, preserving Sub and Div operand order for Scalar x Tensor and Tensor x Scalar separately.",
+    "malformed_tensors": "The dense route is only entered when LiteralBuffer::as_f64_slice is present. Declared-F64 tensors constructed with malformed Literal payloads keep the previous per-Literal fallback behavior and remain literal-backed."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_dense_f64_scalar_broadcast_pass46_2026-06-03.golden",
+    "sha256": "be873886d0b6b1a31e3d440a8c26919804112abc167fb27ecd1c407d40a8ef28",
+    "check_command": "sha256sum -c artifacts/performance/evidence/fj_lax_dense_f64_scalar_broadcast_pass46_2026-06-03.golden.sha256"
+  },
+  "validation": [
+    {
+      "command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-tests-remote rch exec -- cargo test -p fj-lax f64_scalar_broadcast_fast_path -- --nocapture",
+      "result": "pass on vmi1149989; 2 passed"
+    },
+    {
+      "command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-scalar-rebench rch exec -- cargo bench -p fj-lax --bench lax_baseline -- scalar",
+      "result": "pass on vmi1293453; scalar_mul 1219.4 ns -> 299.66 ns, tensor_sub_scalar 1130.5 ns -> 361.29 ns"
+    },
+    {
+      "command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-check rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "pass on vmi1153651"
+    },
+    {
+      "command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-clippy rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "pass on vmi1153651"
+    },
+    {
+      "command": "cargo fmt --check -p fj-lax",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_dense_f64_scalar_broadcast_pass46_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "CARGO_TARGET_DIR=/data/tmp/frankenjax-pass46-tests rch exec -- cargo test -p fj-lax f64_scalar_broadcast_fast_path -- --nocapture",
+      "result": "local fallback due active-project exclusion; not counted as proof"
+    }
+  ],
+  "notes": [
+    "This is the next dense-storage lever under frankenjax-mcqr.30 after pass44. It is structural, not another rejected residual same-shape F64 Add micro-tune.",
+    "No C BLAS, MKL, LAPACK, XLA, unsafe code, stash, reset, clean, file deletion, or behavior-changing floating-point rewrite was used."
+  ]
+}
