@@ -1,0 +1,76 @@
+{
+  "bead": "frankenjax-mcqr.30",
+  "pass": 38,
+  "status": "rejected",
+  "date": "2026-06-03",
+  "crate": "fj-lax",
+  "hotspot": "eval/add_64k_f64_vec",
+  "profile_backed_target": {
+    "source": "ready bead frankenjax-mcqr.30 plus fresh rch baseline",
+    "root_cause": "F64 tensors still store 24-byte Literal enum elements; dense contiguous f64 reference shows the achievable storage-model ceiling."
+  },
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dense-f64-pass38-baseline-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+    "worker": "vmi1149989",
+    "eval_add_64k_f64_vec": {
+      "mean_ms": 1.5259,
+      "ci_ms": [1.4182, 1.6194]
+    },
+    "eval_add_64k_f64_dense_ref": {
+      "mean_us": 35.638,
+      "ci_us": [33.802, 38.317]
+    },
+    "samples": 30,
+    "warm_up_seconds": 1,
+    "measurement_seconds": 3
+  },
+  "lever": {
+    "description": "Specialize same-shape F64 Add to an indexed loop that removes the generic closure and zip iterator from eval_same_shape_f64_map while preserving f64 from_bits, add, and to_bits order.",
+    "storage_layout_changed": false,
+    "source_diff_retained": false
+  },
+  "proof": {
+    "format": {
+      "command": "cargo fmt -p fj-lax --check",
+      "result": "pass before unrelated peer dense.rs formatting drift appeared"
+    },
+    "tests": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dense-f64-pass38-test-20260603 rch exec -- cargo test -p fj-lax same_shape_f64_add_sub_div_fast_path_bit_identical_to_scalar -- --nocapture",
+      "worker": "vmi1153651",
+      "result": "pass",
+      "tests": 1
+    },
+    "golden_output_sha256": "5bd0cce1ce702a13dd93acf5757df84f37ea5c86fb369678846330f2e0d8a39d",
+    "isomorphism": {
+      "ordering": "same row-major index order as eval_same_shape_f64_map",
+      "tie_breaking": "not applicable",
+      "floating_point": "per-lane f64 from_bits, IEEE add, to_bits preserved",
+      "rng": "not applicable"
+    }
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-dense-f64-pass38-after-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+    "worker": "vmi1153651",
+    "eval_add_64k_f64_vec": {
+      "mean_ms": 3.6207,
+      "ci_ms": [3.5077, 3.7282]
+    },
+    "eval_add_64k_f64_dense_ref": {
+      "mean_us": 66.478,
+      "ci_us": [63.964, 69.841]
+    },
+    "samples": 30,
+    "warm_up_seconds": 1,
+    "measurement_seconds": 3
+  },
+  "decision": {
+    "score": 0.0,
+    "threshold": 2.0,
+    "reason": "The indexed Add loop regressed the large F64 row and did not address the storage-model bottleneck.",
+    "source_restored": true
+  },
+  "coordination": {
+    "bench_reservation": "initially conflicted with BlackGlen, later granted to IcyGlacier",
+    "peer_work_seen": "uncommitted crates/fj-lax/src/lib.rs and crates/fj-lax/src/dense.rs changes were present after this pass; they were not modified or staged by IcyGlacier"
+  }
+}

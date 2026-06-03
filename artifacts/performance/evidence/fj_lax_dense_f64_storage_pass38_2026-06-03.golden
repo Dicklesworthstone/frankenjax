@@ -1,0 +1,33 @@
+frankenjax-mcqr.30 pass38 rejected large-F64 behavior golden
+
+target:
+  crate: fj-lax
+  primitive: Add
+  benchmark: eval/add_64k_f64_vec
+  baseline_worker: vmi1149989
+
+adversarial_same_shape_f64_cases:
+  lhs:
+    - 0x3ff8000000000000  # 1.5
+    - 0x8000000000000000  # -0.0
+    - 0x7ff0000000000000  # +inf
+    - 0x7ff8000000000000  # canonical NaN
+    - 0x401c000000000000  # 7.0
+    - 0xc00a000000000000  # -3.25
+    - 0x0000000000000000  # +0.0
+    - 0x4000000000000000  # 2.0
+  rhs:
+    - 0x4000000000000000  # 2.0
+    - 0x4008000000000000  # 3.0
+    - 0xc010000000000000  # -4.0
+    - 0x4014000000000000  # 5.0
+    - 0x0000000000000000  # +0.0
+    - 0xfff0000000000000  # -inf
+    - 0x0000000000000000  # +0.0
+    - 0xc021000000000000  # -8.5
+
+isomorphism:
+  ordering: same row-major index order as eval_same_shape_f64_map
+  tie_breaking: not applicable
+  floating_point: per-lane f64 from_bits, IEEE add, to_bits preserved
+  rng: not applicable
