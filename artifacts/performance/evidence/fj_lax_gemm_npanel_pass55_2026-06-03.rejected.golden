@@ -1,0 +1,9 @@
+frankenjax-p1vbf.6 pass55 rejected golden
+target=linalg/matmul_2d_512x512x512_f64
+baseline=vmi1149989 midpoint=24.876ms range=[24.337,25.411]
+candidate=vmi1149989 midpoint=26.633ms range=[24.015,29.514]
+candidate_status=rejected_regression
+source_diff_retained=false
+isomorphism_attempt=rayon row-parallel GEMM; each output row kept the existing i-k-j loop, each cell accumulated k=0..K-1 in the same order, row-major output indices unchanged, no arithmetic reassociation, no rng, no tie-breaking
+tests=rch cargo test -p fj-lax matmul_2d passed on vmi1149989 in candidate state; rustfmt --check crates/fj-lax/src/tensor_contraction.rs passed
+next_primitive=per-worker threadpool evidence shows coarse row parallelism regresses/noisy on 512x512; next attack should be cache-size KC blocking or recursive/cache-oblivious GEMM that improves single-thread locality while preserving per-cell k-order

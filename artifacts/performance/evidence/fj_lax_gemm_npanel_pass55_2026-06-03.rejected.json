@@ -1,0 +1,79 @@
+{
+  "artifact": "fj_lax_gemm_npanel_pass55_2026-06-03",
+  "status": "rejected",
+  "bead": "frankenjax-p1vbf.6",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_512x512x512_f64",
+  "profile_backing": {
+    "source": "br ready --json was empty; continued from the fresh profiler-evident fj-lax linalg row after pass54",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-gemm-pass55-baseline-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "worker": "vmi1149989",
+    "time_ms_low": 24.337,
+    "time_ms_mid": 24.876,
+    "time_ms_high": 25.411
+  },
+  "lever": {
+    "name": "rayon row-parallel GEMM",
+    "description": "For large valid dense GEMM inputs, attempted to split result rows across Rayon workers while each row retained the existing i-k-j loop and each output cell retained ascending-k accumulation.",
+    "source_diff_retained": false
+  },
+  "alien_primitive": {
+    "class": "parallelization model",
+    "source": "/alien-graveyard communication-avoiding/parallel dense linear algebra",
+    "reason": "Prior row-block/register-only/transposed-RHS micro-levers failed, triggering a structurally different row-parallel scheduling attempt."
+  },
+  "isomorphism_proof": {
+    "ordering": "Output storage remained row-major; rows are independent and written to disjoint result chunks.",
+    "per_cell_order": "Inside each row, the candidate used the same l=0..k-1 loop as the current i-k-j kernel, so every cell saw the same multiplication/addition sequence.",
+    "floating_point": "No per-cell reassociation, partial-sum merge, vector reduction, or mixed precision was introduced.",
+    "rng": "not used",
+    "tie_breaking": "not applicable",
+    "errors": "Candidate guarded parallel execution to valid dense slice lengths; malformed slice behavior stayed on the existing sequential indexing path."
+  },
+  "validation": [
+    {
+      "command": "rustfmt --check crates/fj-lax/src/tensor_contraction.rs",
+      "worker": "local",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-gemm-pass55-test-20260603 rch exec -- cargo test -p fj-lax matmul_2d -- --nocapture",
+      "worker": "vmi1149989",
+      "result": "pass",
+      "details": "3 tests passed in candidate state, including matmul_2d_parallel_threshold_bit_identical_to_ijk"
+    },
+    {
+      "command": "cargo fmt -p fj-lax -- --check",
+      "worker": "local",
+      "result": "blocked_by_unrelated_existing_format_drift",
+      "details": "Reported pre-existing formatting diffs in crates/fj-lax/src/lib.rs and crates/fj-lax/src/linalg.rs; not touched for this pass."
+    }
+  ],
+  "rebench": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-gemm-pass55-after-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --sample-size 30 --measurement-time 3 --warm-up-time 1",
+    "worker": "vmi1149989",
+    "time_ms_low": 24.015,
+    "time_ms_mid": 26.633,
+    "time_ms_high": 29.514,
+    "speedup_vs_baseline_mid": 0.9340217023992783,
+    "outliers": "6/30; 2 low mild, 1 high mild, 3 high severe"
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_gemm_npanel_pass55_2026-06-03.rejected.golden",
+    "sha256": "32a842c6a1b71ca2e7c37e0bc5975d82b5ed5fd8badc3fc1d35c74b060fdd928",
+    "sha256_check": "sha256sum -c artifacts/performance/evidence/fj_lax_gemm_npanel_pass55_2026-06-03.rejected.golden.sha256"
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 0.9,
+    "effort": 2.0,
+    "score": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject and restore source"
+  },
+  "next_primitive": {
+    "target": "cache-size KC blocking or recursive/cache-oblivious GEMM",
+    "reason": "Coarse row parallelism did not improve the same-worker Criterion row and introduced high variance. The next deeper primitive should improve single-thread locality and instruction scheduling before adding parallelism, while preserving per-cell ascending-k order.",
+    "target_ratio": ">=2.0x on linalg/matmul_2d_512x512x512_f64"
+  }
+}
