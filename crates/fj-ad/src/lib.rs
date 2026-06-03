@@ -1556,6 +1556,27 @@ fn is_zero_value(v: &Value) -> bool {
 
 // ── Backward pass (tensor-aware) ───────────────────────────────────
 
+fn try_accumulate_repeated_mul_vjp(
+    adjoints: &mut AdValueStore,
+    entry: &TapeEntry,
+    g: &Value,
+) -> Result<bool, AdError> {
+    if entry.primitive != Primitive::Mul || entry.inputs.len() != 2 || entry.input_values.len() != 2
+    {
+        return Ok(false);
+    }
+    let lhs_var = entry.inputs[0];
+    let rhs_var = entry.inputs[1];
+    if lhs_var.0 == u32::MAX || lhs_var != rhs_var {
+        return Ok(false);
+    }
+
+    let cotangent = value_mul(g, &entry.input_values[0])?;
+    adjoints.add_or_insert(lhs_var, cotangent.clone())?;
+    adjoints.add_or_insert(rhs_var, cotangent)?;
+    Ok(true)
+}
+
 fn backward(
     tape: &Tape,
     output_var: VarId,
@@ -1573,6 +1594,9 @@ fn backward(
                     continue;
                 };
                 if is_zero_value(&g) {
+                    continue;
+                }
+                if try_accumulate_repeated_mul_vjp(&mut adjoints, entry, &g)? {
                     continue;
                 }
                 vjp(
