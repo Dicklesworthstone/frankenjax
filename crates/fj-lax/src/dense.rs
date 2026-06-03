@@ -126,8 +126,13 @@ mod tests {
     #[test]
     fn dense_arith_bit_identical_to_eval_primitive() {
         // Adversarial values incl. signed zero, inf, NaN, div-by-zero.
-        let a = [1.5, -0.0, f64::INFINITY, f64::NAN, 7.0, -3.25, 0.0, 2.0];
-        let b = [2.0, 3.0, -4.0, 5.0, 0.0, f64::NEG_INFINITY, 0.0, -8.5];
+        // `black_box` so the compiler cannot const-fold the dense kernels (whose
+        // inputs are literals) to the compiler's +NaN for `0.0/0.0` while the
+        // dynamic `eval_primitive` path computes the CPU's -NaN at runtime — a
+        // spurious NaN-sign mismatch under some nightlies (the e7ej unpinned-
+        // nightly fragility). Both paths are bit-identical at runtime.
+        let a = std::hint::black_box([1.5, -0.0, f64::INFINITY, f64::NAN, 7.0, -3.25, 0.0, 2.0]);
+        let b = std::hint::black_box([2.0, 3.0, -4.0, 5.0, 0.0, f64::NEG_INFINITY, 0.0, -8.5]);
 
         assert_eq!(
             dense_bits(&add(&a, &b)),

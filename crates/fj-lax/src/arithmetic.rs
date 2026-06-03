@@ -115,16 +115,17 @@ pub(crate) fn eval_binary_elementwise(
     }
 }
 
-/// Same-shape F64⊗F64 elementwise fast path for the arithmetic binops whose
-/// per-lane operation is plain IEEE-754 f64 arithmetic (`+`, `-`, `*`, `/`).
+/// Same-shape F64⊗F64 elementwise fast path for the binops whose per-lane
+/// operation is a plain `f64 -> f64` function (`+`, `-`, `*`, `/`, `max`, `min`).
 ///
 /// This is bit-for-bit identical to the generic `binary_literal_op` path: for
 /// `DType::F64` operands that path computes `Literal::from_f64(float_op(a, b))`
-/// with the same closures used here (see `lib.rs`: Add `|a,b| a+b`, Sub
-/// `|a,b| a-b`, Mul `|a,b| a*b`, Div `|a,b| a/b`). It only skips the per-element
-/// enum/promotion dispatch, so output bits, ordering, NaN/inf behavior and
-/// errors are unchanged. Returns `Ok(None)` for any primitive or element that
-/// is not the F64 fast case, letting the caller fall through to the generic path.
+/// with the same closures/fns used here (see `lib.rs`: Add `|a,b| a+b`, Sub
+/// `|a,b| a-b`, Mul `|a,b| a*b`, Div `|a,b| a/b`, Max `jax_max_f64`, Min
+/// `jax_min_f64`). It only skips the per-element enum/promotion dispatch, so
+/// output bits, ordering, NaN/inf behavior and errors are unchanged. Returns
+/// `Ok(None)` for any primitive or element that is not the F64 fast case,
+/// letting the caller fall through to the generic path.
 #[inline]
 fn eval_same_shape_f64_binop(
     primitive: Primitive,
@@ -136,6 +137,11 @@ fn eval_same_shape_f64_binop(
         Primitive::Sub => eval_same_shape_f64_map(lhs, rhs, |a, b| a - b),
         Primitive::Mul => eval_same_shape_f64_map(lhs, rhs, |a, b| a * b),
         Primitive::Div => eval_same_shape_f64_map(lhs, rhs, |a, b| a / b),
+        // Max/Min must reuse the exact NaN-propagating helpers the generic path
+        // passes to `eval_binary_elementwise` (NOT `f64::max`/`min`, which drop
+        // NaN), so the fast path stays bit-for-bit identical.
+        Primitive::Max => eval_same_shape_f64_map(lhs, rhs, crate::jax_max_f64),
+        Primitive::Min => eval_same_shape_f64_map(lhs, rhs, crate::jax_min_f64),
         _ => Ok(None),
     }
 }
@@ -5107,6 +5113,43 @@ mod tests {
     }
 
     #[test]
+    fn same_shape_f64_max_min_fast_path_bit_identical_to_scalar() {
+        // Max/Min route through the same-shape F64 fast path using the crate's
+        // NaN-propagating `jax_max_f64`/`jax_min_f64`. The result must be bit-
+        // identical to the per-element scalar op, including NaN propagation
+        // (where `f64::max`/`min` would wrongly drop the NaN) and signed zero.
+        let lhs_data = [1.5, -0.0, f64::INFINITY, f64::NAN, 7.0, -3.25, 0.0, -2.0];
+        let rhs_data = [2.0, 0.0, -4.0, 5.0, f64::NAN, f64::NEG_INFINITY, 0.0, -2.0];
+        for (primitive, scalar) in [
+            (Primitive::Max, crate::jax_max_f64 as fn(f64, f64) -> f64),
+            (Primitive::Min, crate::jax_min_f64 as fn(f64, f64) -> f64),
+        ] {
+            let a = v_f64(&lhs_data);
+            let b = v_f64(&rhs_data);
+            // Pass the real dispatch ops so the generic fallback (if hit) would
+            // match too; the fast path is what actually runs here.
+            let int_op = |x: i64, y: i64| {
+                if primitive == Primitive::Max {
+                    x.max(y)
+                } else {
+                    x.min(y)
+                }
+            };
+            let result = eval_binary_elementwise(primitive, &[a, b], int_op, scalar).unwrap();
+            let Value::Tensor(tensor) = result else {
+                panic!("expected tensor for {primitive:?}");
+            };
+            assert_eq!(tensor.dtype, DType::F64);
+            let expected: Vec<Literal> = lhs_data
+                .iter()
+                .zip(rhs_data.iter())
+                .map(|(&x, &y)| Literal::from_f64(scalar(x, y)))
+                .collect();
+            assert_eq!(tensor.elements, expected, "{primitive:?} bit mismatch");
+        }
+    }
+
+    #[test]
     fn same_shape_i64_add_fast_path_matches_generic_edge_values() -> Result<(), String> {
         let lhs_data = [0, 1, -1, i64::MAX, i64::MIN, 1_234_567_890_123_456_789];
         let rhs_data = [0, -1, i64::MAX, 1, -1, -987_654_321_098_765_432];
@@ -5213,12 +5256,24 @@ mod tests {
             (f64::INFINITY, -4.0),
             (f64::from_bits(0x7ff8_0000_0000_1234), 5.0),
         ];
+        // Note rhs[3] is finite: multiplying it against lhs[3]'s NaN payload
+        // exercises deterministic single-NaN × finite propagation. A NaN × NaN
+        // product (two distinct payloads) is intentionally avoided — IEEE-754
+        // leaves which input payload survives implementation-defined, and LLVM
+        // may commute the multiply, so its result bits are not a stable contract.
         let rhs = [
             (2.0, 0.5),
             (f64::NEG_INFINITY, -0.0),
             (-1.25, f64::INFINITY),
-            (6.0, f64::from_bits(0x7ff8_0000_0000_5678)),
+            (6.0, 7.0),
         ];
+        // `black_box` the constant operands so the compiler cannot const-fold the
+        // `expected` reference arithmetic. Under some nightlies LLVM folds the
+        // literal `ar*br - ai*bi` to the compiler's +NaN while the runtime fast
+        // path yields the CPU's -NaN, a spurious NaN-sign mismatch (the e7ej
+        // unpinned-nightly fragility). Both paths are bit-identical at runtime.
+        let lhs = std::hint::black_box(lhs);
+        let rhs = std::hint::black_box(rhs);
         let params = BTreeMap::new();
         let result = crate::eval_primitive(
             Primitive::Mul,
