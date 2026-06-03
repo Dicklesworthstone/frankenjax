@@ -1,0 +1,83 @@
+{
+  "bead": "frankenjax-mcqr.30.8",
+  "pass": 58,
+  "status": "benchmark_coverage",
+  "date": "2026-06-03",
+  "agent": "SilverForge",
+  "skill_loop": {
+    "driver": "repeatedly-apply-skill",
+    "skill": "extreme-software-optimization",
+    "deepening": "finished the in-flight dense-storage benchmark slice before starting the next production optimization pass"
+  },
+  "target": {
+    "crate": "fj-lax",
+    "benchmark": "eval/reduce_sum_64k_f64",
+    "hotspot_basis": "frankenjax-mcqr.30 identifies large F64 tensor reduction as still paying the Vec<Literal> data-model cost; the benchmark mirrors add_64k for the reduction side."
+  },
+  "lever": {
+    "name": "large F64 reduce-sum benchmark coverage",
+    "description": "Add a Criterion row that evaluates ReduceSum over a 64k F64 vector so future dense-storage reduction work has a reproducible profile target.",
+    "single_lever": true,
+    "production_behavior_changed": false,
+    "affected_file": "crates/fj-lax/benches/lax_baseline.rs"
+  },
+  "baseline": {
+    "worker": "vmi1149989",
+    "criterion_range_us": [259.73, 304.46],
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum64k-bench cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_sum_64k_f64 --sample-size 20 --measurement-time 2 --warm-up-time 1"
+  },
+  "score": {
+    "impact": null,
+    "confidence": null,
+    "effort": null,
+    "value": null,
+    "keep_threshold": 2.0,
+    "note": "Benchmark-only bead; no production optimization score claimed."
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Yes. The production ReduceSum evaluator and row-major fold order are unchanged.",
+    "tie_breaking_unchanged": "Yes. The benchmark introduces no tie-breaking logic.",
+    "floating_point": "Identical production path. The benchmark only calls the existing eval_primitive ReduceSum path.",
+    "rng_preserved": "No RNG used or introduced.",
+    "errors_preserved": "Function arity, dtype, shape, and error behavior are unchanged because only the benchmark harness changed."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_reduce_sum_64k_bench_pass58_2026-06-03.golden",
+    "sha256": "6eb8e1b85fd40444b137856e293b108189cedc5bac2e3664e6b6ab7ce1f38b91",
+    "checksum_path": "artifacts/performance/evidence/fj_lax_reduce_sum_64k_bench_pass58_2026-06-03.golden.sha256"
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum64k-bench cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_sum_64k_f64 --sample-size 20 --measurement-time 2 --warm-up-time 1",
+      "worker": "vmi1149989",
+      "result": "passed; eval/reduce_sum_64k_f64 time [259.73 us, 286.68 us, 304.46 us]"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum64k-check cargo check -p fj-lax --benches",
+      "worker": "vmi1149989",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-reduce-sum64k-clippy cargo clippy -p fj-lax --benches --no-deps -- -D warnings",
+      "worker": "vmi1149989",
+      "result": "passed"
+    },
+    {
+      "command": "rustfmt --check crates/fj-lax/benches/lax_baseline.rs",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt -p fj-lax -- --check",
+      "result": "blocked by pre-existing unrelated crates/fj-lax/src/lib.rs:5375 formatting drift; touched benchmark file passes rustfmt --check"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_reduce_sum_64k_bench_pass58_2026-06-03.golden.sha256",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-lax/benches/lax_baseline.rs .skill-loop-progress.md artifacts/performance/evidence/fj_lax_reduce_sum_64k_bench_pass58_2026-06-03.golden artifacts/performance/evidence/fj_lax_reduce_sum_64k_bench_pass58_2026-06-03.golden.sha256 artifacts/performance/evidence/fj_lax_reduce_sum_64k_bench_pass58_2026-06-03.json",
+      "result": "exit 0; warning inventory is pre-existing benchmark unwrap/direct-index/cast usage, no critical findings"
+    }
+  ],
+  "next_profile_target": "Profile the dense F64 reduction storage path from this benchmark and keep only a single production lever with Score >= 2.0."
+}

@@ -1,4 +1,4 @@
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{criterion_group, criterion_main, Criterion};
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::{eval_primitive, eval_primitive_multi};
 use std::collections::BTreeMap;
@@ -478,6 +478,21 @@ fn bench_reduce_sum_1k(c: &mut Criterion) {
     });
 }
 
+// Large-array F64 full reduction: quantifies the mcqr.30 data-model gap on the
+// reduction path. A dense F64 tensor materializes a 24-byte `Vec<Literal>` and
+// the per-element `as_f64()` match blocks the fold, moving ~3x the bytes of a
+// contiguous f64 fold. Mirrors `add_64k` for the reduce side.
+fn bench_reduce_sum_64k_f64(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| i as f64 * 0.001)
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let p = no_params();
+    c.bench_function("eval/reduce_sum_64k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_reduce_window_64x64(c: &mut Criterion) {
     let input = real_matrix(64, 64);
     let mut params = BTreeMap::new();
@@ -910,6 +925,7 @@ criterion_group!(
     bench_concat_axis0_3x_f64,
     bench_transpose_256x256_f64,
     bench_reduce_sum_1k,
+    bench_reduce_sum_64k_f64,
     bench_reduce_window_64x64,
     bench_sin_1k,
     bench_sin_64k,

@@ -1,0 +1,12 @@
+frankenjax-mcqr.30.8 pass58 benchmark golden
+target=eval/reduce_sum_64k_f64
+worker=vmi1149989
+criterion_time=259.73us..304.46us
+source_diff_retained=benchmark_only
+production_behavior_changed=false
+isomorphism=bench harness only; eval_primitive ReduceSum call path unchanged; ordering/tie-breaking/floating-point/RNG/error semantics unchanged
+bench=rch cargo bench -p fj-lax --bench lax_baseline -- eval/reduce_sum_64k_f64 passed
+check=rch cargo check -p fj-lax --benches passed on vmi1149989
+clippy=rch cargo clippy -p fj-lax --benches --no-deps -- -D warnings passed on vmi1149989
+fmt=rustfmt --check crates/fj-lax/benches/lax_baseline.rs passed; cargo fmt -p fj-lax -- --check blocked by pre-existing crates/fj-lax/src/lib.rs line 5375 drift outside this bead
+next_primitive=profile dense F64 reduction storage path; optimize only after a profile-backed single lever scores >=2.0
