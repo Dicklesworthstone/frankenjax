@@ -1,0 +1,22 @@
+artifact=fj_lax_matmul_cache_block_pass52_2026-06-03
+bead=frankenjax-2wewi
+crate=fj-lax
+kernel=tensor_contraction::matmul_2d
+target=linalg/matmul_2d_512x512x512_f64
+
+baseline=vmi1227854 25.393 ms [25.140,25.650]
+candidate_row_block_8=vmi1149989 24.732 ms [24.454,25.014] rejected marginal cross-worker signal
+candidate_row_block_16=vmi1149989 25.309 ms [24.901,25.719] rejected worse than row_block_8
+candidate_row_block_4=vmi1293453 26.866 ms [26.547,27.222] rejected regression
+candidate_transposed_rhs=vmi1227854 67.890 ms [67.501,68.314] rejected same-worker regression
+
+golden_kind=rejected_optimization_no_production_source_kept
+production_source_status=git diff -- crates/fj-lax/src/tensor_contraction.rs is empty
+measurement_harness=added linalg/matmul_2d_512x512x512_f64 Criterion row for future profile-backed GEMM passes
+
+ordering=row-block and transposed-RHS candidates were designed to preserve ascending-l accumulation per c[i][j]
+tie_breaking=no pivoting, sorting, dispatch priority, comparison threshold, or output ordering changes kept
+floating_point=no candidate source retained; existing i-k-j kernel remains bit-identical to i-j-k reference test
+rng=no random state, seed, or nondeterministic iteration path involved
+
+next_primitive=packed-panel/register-blocked safe-Rust GEMM microkernel with per-output ascending-l order and no partial-sum reassociation

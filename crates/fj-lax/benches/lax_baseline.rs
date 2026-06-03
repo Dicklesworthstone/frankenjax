@@ -420,6 +420,16 @@ fn bench_matmul_2d_256(c: &mut Criterion) {
     });
 }
 
+fn bench_matmul_2d_512(c: &mut Criterion) {
+    // Public conformance-tested GEMM kernel: 512x512 @ 512x512.
+    let (m, k, n) = (512usize, 512usize, 512usize);
+    let a: Vec<f64> = (0..m * k).map(|i| (i as f64) * 1e-4).collect();
+    let b: Vec<f64> = (0..k * n).map(|i| (i as f64) * 2e-4).collect();
+    c.bench_function("linalg/matmul_2d_512x512x512_f64", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::matmul_2d(&a, m, k, &b, n))
+    });
+}
+
 fn bench_solve_24x24_24rhs(c: &mut Criterion) {
     // Multi-RHS linear solve: A (24x24, diagonally dominant => non-singular)
     // and B (24x24). Exercises solve_multi_rhs, which factorizes A once.
@@ -894,6 +904,7 @@ criterion_group!(
     bench_lu_128_f64,
     bench_svd_48_f64,
     bench_matmul_2d_256,
+    bench_matmul_2d_512,
     bench_solve_24x24_24rhs,
     bench_concat_axis1_3x_f64,
     bench_concat_axis0_3x_f64,

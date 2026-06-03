@@ -1,0 +1,164 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_matmul_cache_block_pass52_2026-06-03",
+  "date": "2026-06-03",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-2wewi",
+  "pass": 52,
+  "crate": "fj-lax",
+  "skill_pass": "repeatedly-apply-skill pass 52 -> extreme-software-optimization",
+  "alien_source": {
+    "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.6",
+    "primitive": "communication-avoiding / cache-aware dense-linear-algebra kernels",
+    "applied_slice": "Profile-backed GEMM memory-layout attempts: row-panel reuse and RHS transpose. Both failed the keep threshold, so no production source was retained."
+  },
+  "target": {
+    "profile_backing": "Post-pass fj-lax linalg profiling kept matmul_2d as an explicit GEMM row: linalg/matmul_2d_512x512x512_f64. The bead targeted dense f64 GEMM cache blocking at tensor_contraction.rs::matmul_2d.",
+    "baseline_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+    "bench_rows": [
+      "linalg/matmul_2d_512x512x512_f64"
+    ]
+  },
+  "one_lever": {
+    "name": "matmul_2d cache-block/data-layout candidates",
+    "files": [
+      "crates/fj-lax/src/tensor_contraction.rs",
+      "crates/fj-lax/benches/lax_baseline.rs"
+    ],
+    "description": "Measured row-blocking and transposed-RHS data-layout variants against the profile-backed 512x512x512 GEMM row. Production source was restored because no candidate met the keep threshold."
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1227854",
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+      "linalg_matmul_2d_512x512x512_f64_midpoint_ms": 25.393,
+      "linalg_matmul_2d_512x512x512_f64_ci_ms": [
+        25.14,
+        25.65
+      ]
+    },
+    "candidates": [
+      {
+        "name": "row_block_8",
+        "worker": "vmi1149989",
+        "midpoint_ms": 24.732,
+        "ci_ms": [
+          24.454,
+          25.014
+        ],
+        "decision": "reject",
+        "reason": "Only a marginal cross-worker signal and far below the bead's target; not enough confidence for a kept source change."
+      },
+      {
+        "name": "row_block_16",
+        "worker": "vmi1149989",
+        "midpoint_ms": 25.309,
+        "ci_ms": [
+          24.901,
+          25.719
+        ],
+        "decision": "reject",
+        "reason": "Same-worker regression versus row_block_8 and no clear win versus baseline."
+      },
+      {
+        "name": "row_block_4",
+        "worker": "vmi1293453",
+        "midpoint_ms": 26.866,
+        "ci_ms": [
+          26.547,
+          27.222
+        ],
+        "decision": "reject",
+        "reason": "Regression on the selected worker and no useful signal."
+      },
+      {
+        "name": "transposed_rhs_large_matrix_path",
+        "worker": "vmi1227854",
+        "midpoint_ms": 67.89,
+        "ci_ms": [
+          67.501,
+          68.314
+        ],
+        "decision": "reject",
+        "reason": "Same-worker regression versus baseline: 25.393 ms -> 67.890 ms."
+      }
+    ],
+    "score": {
+      "impact": 0.0,
+      "confidence": 5.0,
+      "effort": 2.0,
+      "impact_x_confidence_over_effort": 0.0,
+      "decision": "reject"
+    }
+  },
+  "isomorphism_proof": {
+    "ordering": "The tested row-block and transposed-RHS candidates were designed to preserve ascending-l accumulation for each c[i][j]. No candidate source is retained.",
+    "tie_breaking": "No pivoting, sorting, dispatch priority, comparison threshold, or output ordering change is retained.",
+    "floating_point": "No candidate source is retained. The existing i-k-j kernel remains covered by matmul_2d_ikj_bit_identical_to_ijk, which compares f64 bit patterns against the textbook i-j-k reference.",
+    "rng": "No random state, seed, sampling order, or nondeterministic iteration path is involved.",
+    "shape_and_dtype": "No production behavior change is retained; matmul_2d output shape and f64 dtype behavior are unchanged."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.golden",
+    "sha256": "360e573dfafd46a11b8bdb0029d7e265ecc38098d8018724f04d1096764505d6",
+    "check_command": "sha256sum -c artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.golden.sha256"
+  },
+  "validation": [
+    {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+      "result": "baseline pass on vmi1227854; midpoint 25.393 ms"
+    },
+    {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+      "result": "row_block_8 candidate on vmi1149989; midpoint 24.732 ms; rejected"
+    },
+    {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+      "result": "row_block_16 candidate on vmi1149989; midpoint 25.309 ms; rejected"
+    },
+    {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+      "result": "row_block_4 candidate on vmi1293453; midpoint 26.866 ms; rejected"
+    },
+    {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline linalg/matmul_2d_512x512x512_f64",
+      "result": "transposed-RHS candidate on vmi1227854; midpoint 67.890 ms; rejected and source restored"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/tensor_contraction.rs",
+      "result": "empty after rejection; no production source retained"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "jq . artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.json >/dev/null",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-lax matmul_2d_ikj -- --nocapture",
+      "result": "pass on vmi1227854; 1 passed"
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "pass on vmi1149989"
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+      "result": "pass on vmi1153651"
+    },
+    {
+      "command": "cargo fmt -p fj-lax -- --check",
+      "result": "blocked by pre-existing formatting drift in crates/fj-lax/src/lib.rs and crates/fj-lax/src/linalg.rs; the new benchmark row was not reported"
+    },
+    {
+      "command": "ubs crates/fj-lax/benches/lax_baseline.rs artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.json artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.golden artifacts/performance/evidence/fj_lax_matmul_cache_block_pass52_2026-06-03.golden.sha256",
+      "result": "exit 0; existing benchmark-file unwrap/direct-index inventory reported, UBS embedded fmt/check/clippy sections passed"
+    }
+  ],
+  "notes": [
+    "The added 512x512x512 Criterion row remains as measurement coverage for future GEMM work.",
+    "Next deeper primitive: packed-panel/register-blocked safe-Rust GEMM microkernel that preserves per-output ascending-l order without partial-sum reassociation."
+  ]
+}
