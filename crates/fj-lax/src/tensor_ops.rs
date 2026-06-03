@@ -2360,6 +2360,32 @@ pub(crate) fn eval_convert_element_type(
     }
 }
 
+/// Round `x` from f64 to f32 using round-to-odd: exact values pass through;
+/// otherwise return whichever of the two bracketing f32 values has an odd
+/// mantissa LSB. Composing this with a round-to-nearest f32->f16/bf16 narrowing
+/// yields a correctly single-rounded f64->f16/bf16 (Boldo–Melquiond), avoiding
+/// the double rounding that `x as f32` followed by narrowing would introduce at
+/// f16/bf16 half-ULP tie points. f32's 24 significand bits suffice for both f16
+/// (11) and bf16 (8).
+fn f64_to_f32_round_to_odd(x: f64) -> f32 {
+    let nearest = x as f32;
+    if !nearest.is_finite() || f64::from(nearest) == x || (nearest.to_bits() & 1) == 1 {
+        return nearest; // non-finite, exact, or already odd
+    }
+    // `nearest` is finite, even, and `x` was rounded: switch to the odd neighbor
+    // on the toward-x side. Moving an f32 toward larger values is `bits + 1` for
+    // non-negative and `bits - 1` for negative (and vice versa toward smaller).
+    let bits = nearest.to_bits();
+    let toward_larger = x > f64::from(nearest);
+    let negative = (bits >> 31) == 1;
+    let neighbor = if toward_larger == !negative {
+        bits + 1
+    } else {
+        bits - 1
+    };
+    f32::from_bits(neighbor)
+}
+
 fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
     let f64_val = || -> Option<f64> {
         match lit {
@@ -2428,8 +2454,11 @@ fn convert_literal(lit: Literal, target: DType) -> Result<Literal, EvalError> {
     Ok(match target {
         DType::F64 => Literal::from_f64(f64_val().unwrap_or(0.0)),
         DType::F32 => Literal::from_f32(f64_val().unwrap_or(0.0) as f32),
-        DType::F16 => Literal::from_f16_f32(f64_val().unwrap_or(0.0) as f32),
-        DType::BF16 => Literal::from_bf16_f32(f64_val().unwrap_or(0.0) as f32),
+        // Round f64 -> f16/bf16 in a single step (round-to-nearest-even) like
+        // XLA's ConvertElementType. The round-to-odd f32 intermediate prevents
+        // the double rounding that a plain `as f32` would cause near a tie.
+        DType::F16 => Literal::from_f16_f32(f64_to_f32_round_to_odd(f64_val().unwrap_or(0.0))),
+        DType::BF16 => Literal::from_bf16_f32(f64_to_f32_round_to_odd(f64_val().unwrap_or(0.0))),
         DType::I64 | DType::I32 => Literal::I64(i64_val().unwrap_or(0)),
         DType::U64 => Literal::U64(u64_val().unwrap_or(0)),
         DType::U32 => Literal::U32(u64_val().unwrap_or(0) as u32),
@@ -5268,6 +5297,29 @@ mod tests {
                 "expected tensor, got {other:?}"
             ),
         }
+    }
+
+    #[test]
+    fn convert_element_type_f64_to_f16_single_rounds() {
+        // f64 -> f16 must round once (to-nearest-even), not via f32. This value
+        // sits just above the f16 half-ULP tie at 1.0 + 2^-11, by less than the
+        // f32 ULP, so a double rounding (f64->f32->f16) collapses it onto the tie
+        // and rounds DOWN to f16(1.0) = 0x3C00, while a single direct rounding
+        // goes UP to f16(1.0 + 2^-10) = 1.0009765625 = 0x3C01 (matching XLA).
+        let x = v_f64(&[1.00048828125 + 2f64.powi(-30)]);
+        let p = params(&[("new_dtype", "f16")]);
+        let result = eval_convert_element_type(&[x], &p).unwrap();
+        assert_eq!(result.dtype(), DType::F16);
+        let Value::Tensor(t) = result else {
+            panic!("expected tensor");
+        };
+        let Literal::F16Bits(bits) = t.elements[0] else {
+            panic!("expected F16Bits");
+        };
+        assert_eq!(
+            bits, 0x3C01,
+            "f64->f16 must round up once (single rounding), got {bits:#06x}"
+        );
     }
 
     #[test]

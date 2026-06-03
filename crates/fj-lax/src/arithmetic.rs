@@ -5190,8 +5190,8 @@ mod tests {
                 Primitive::Div => x / y,
                 _ => unreachable!(),
             };
-            let a = v_f64(&lhs_data);
-            let b = v_f64(&rhs_data);
+            let a = Value::vector_f64(&lhs_data).unwrap();
+            let b = Value::vector_f64(&rhs_data).unwrap();
             let result = eval_binary_elementwise(primitive, &[a, b], |x, y| x + y, scalar).unwrap();
             let Value::Tensor(tensor) = result else {
                 panic!("expected tensor for {primitive:?}");
@@ -5223,8 +5223,8 @@ mod tests {
             (Primitive::Max, crate::jax_max_f64 as fn(f64, f64) -> f64),
             (Primitive::Min, crate::jax_min_f64 as fn(f64, f64) -> f64),
         ] {
-            let a = v_f64(&lhs_data);
-            let b = v_f64(&rhs_data);
+            let a = Value::vector_f64(&lhs_data).unwrap();
+            let b = Value::vector_f64(&rhs_data).unwrap();
             // Pass the real dispatch ops so the generic fallback (if hit) would
             // match too; the fast path is what actually runs here.
             let int_op = |x: i64, y: i64| {
@@ -5846,13 +5846,13 @@ mod tests {
         // (the old naive truncated sum was only ~1e-4 at s=2). Riemann zeta is
         // ζ(s) = hurwitz_zeta(s, 1); also check genuine Hurwitz cases (q ≠ 1).
         let cases = [
-            (2.0, 1.0, PI * PI / 6.0),       // ζ(2) = π²/6
-            (3.0, 1.0, 1.2020569031595943),  // Apéry's constant
-            (4.0, 1.0, PI.powi(4) / 90.0),   // ζ(4) = π⁴/90
-            (5.0, 1.0, 1.0369277551433699),  // ζ(5)
-            (6.0, 1.0, PI.powi(6) / 945.0),  // ζ(6) = π⁶/945
-            (2.0, 2.0, PI * PI / 6.0 - 1.0), // ζ(2,2) = ζ(2) - 1
-            (2.0, 0.5, PI * PI / 2.0),       // ζ(2,1/2) = π²/2
+            (2.0, 1.0, PI * PI / 6.0),        // ζ(2) = π²/6
+            (3.0, 1.0, 1.2020569031595943),   // Apéry's constant
+            (4.0, 1.0, PI.powi(4) / 90.0),    // ζ(4) = π⁴/90
+            (5.0, 1.0, 1.036_927_755_143_37), // ζ(5)
+            (6.0, 1.0, PI.powi(6) / 945.0),   // ζ(6) = π⁶/945
+            (2.0, 2.0, PI * PI / 6.0 - 1.0),  // ζ(2,2) = ζ(2) - 1
+            (2.0, 0.5, PI * PI / 2.0),        // ζ(2,1/2) = π²/2
         ];
         for (s, q, expected) in cases {
             let got = hurwitz_zeta_approx(s, q);

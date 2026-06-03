@@ -1,0 +1,117 @@
+{
+  "artifact": "fj_core_literal_buffer_dense_f64_pass44_2026-06-03",
+  "date": "2026-06-03",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-mcqr.30",
+  "pass": 44,
+  "target": {
+    "profile_backing": "criterion target eval/add_64k_f64_vec from fj-lax lax_baseline after pass43 left the residual large-F64 elementwise storage gap as the top no-gaps mcqr.30 target",
+    "bench": "cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3"
+  },
+  "one_lever": {
+    "name": "dense F64 LiteralBuffer storage for Value::vector_f64",
+    "files": [
+      "crates/fj-core/src/lib.rs",
+      "crates/fj-lax/src/arithmetic.rs"
+    ],
+    "description": "TensorValue F64 vectors now use a dense Arc<Vec<f64>> LiteralBuffer representation with lazy public Literal materialization. The current same-shape F64 arithmetic route consumes LiteralBuffer::as_f64_slice and returns TensorValue::new_f64_values, so large F64 Add/Sub/Mul/Div/Max/Min avoid the 24-byte Literal input representation while preserving the existing public Literal APIs."
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1227854",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-pass44-baseline-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "eval_add_64k_f64_vec_midpoint_us": 76.890,
+      "eval_add_64k_f64_vec_ci_us": [
+        74.833,
+        79.226
+      ],
+      "eval_add_64k_f64_dense_ref_midpoint_us": 35.872,
+      "eval_add_64k_f64_dense_ref_ci_us": [
+        35.421,
+        36.298
+      ]
+    },
+    "after": {
+      "worker": "vmi1264463",
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-pass44-after-20260603 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "eval_add_64k_f64_vec_midpoint_us": 29.070,
+      "eval_add_64k_f64_vec_ci_us": [
+        27.069,
+        31.394
+      ],
+      "eval_add_64k_f64_dense_ref_midpoint_us": 959.67,
+      "eval_add_64k_f64_dense_ref_ci_us": [
+        872.17,
+        1069.4
+      ]
+    },
+    "delta": {
+      "eval_add_64k_f64_vec_speedup_x": 2.6452,
+      "target_midpoint_delta_us": -47.820
+    },
+    "score": {
+      "impact": 4.0,
+      "confidence": 4.0,
+      "effort": 3.0,
+      "impact_x_confidence_over_effort": 5.3333,
+      "decision": "keep"
+    }
+  },
+  "isomorphism_proof": {
+    "ordering": "Dense same-shape arithmetic zips lhs and rhs f64 slices in the same row-major element order as the previous Literal loop and collects outputs in that order.",
+    "tie_breaking": "No sorting, dispatch priority, or comparison key changed. Max and Min still call the existing jax_max_f64 and jax_min_f64 helpers, so NaN propagation and signed-zero behavior match the scalar path.",
+    "floating_point": "Each element uses the same scalar f64 closure (+, -, *, /, jax_max_f64, jax_min_f64) as before. No reductions, reassociation, fused multiply-add, approximate math, BLAS, LAPACK, MKL, XLA, unsafe code, or cross-element SIMD reordering was introduced.",
+    "rng": "No RNG sources, seeds, sampling order, or nondeterministic iteration paths changed.",
+    "public_literal_api": "LiteralBuffer::as_slice, Deref, AsRef, Index, IntoIterator, Serialize, Deserialize, Debug, PartialEq, and to_vec expose the same Literal sequence as the previous Vec<Literal> representation. Dense storage materializes through Literal::from_f64, preserving f64 bit payloads, signed zero, and NaN payloads.",
+    "mutation_aliasing": "Mutable operations and mutable indexing materialize dense storage to Literal storage before mutation, preserving clone-by-value observable behavior.",
+    "malformed_tensors": "TensorValue::new remains element-count-only for declared F64 tensors with malformed Literal payloads. Dense storage is used only by the new TensorValue::new_f64_values constructor and Value::vector_f64, so malformed literal-backed tensors still fall back to the old path."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_core_literal_buffer_dense_f64_pass44_2026-06-03.golden",
+    "sha256": "5f8ac6d4f527ae05d7081467b801f7229bcac132533fd209e66aecbc33d63c9f",
+    "check_command": "sha256sum -c artifacts/performance/evidence/fj_core_literal_buffer_dense_f64_pass44_2026-06-03.golden.sha256"
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-core -p fj-lax -- --check",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-core/src/lib.rs crates/fj-lax/src/arithmetic.rs",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo test -p fj-core dense_f64_pass44 -- --nocapture",
+      "result": "pass on vmi1156319; 3 passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo test -p fj-lax dense_f64_pass44 -- --nocapture",
+      "result": "pass on vmi1227854; 3 passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo check -p fj-core -p fj-lax --all-targets",
+      "result": "pass on vmi1149989"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo clippy -p fj-core -p fj-lax --all-targets -- -D warnings",
+      "result": "pass on vmi1153651 after truncating an unrelated fj-lax test literal to clippy's representable f64 form"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo test -p fj-lax hurwitz_zeta_high_accuracy -- --nocapture",
+      "result": "pass on vmi1149989; covers the clippy literal adjustment"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 ... rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'eval/add_64k_f64' --sample-size 30 --warm-up-time 1 --measurement-time 3",
+      "result": "pass on vmi1264463; target midpoint 76.890 us -> 29.070 us"
+    },
+    {
+      "command": "ubs crates/fj-core/src/lib.rs crates/fj-lax/src/arithmetic.rs",
+      "result": "exit 1 from file-wide pre-existing test panic/unwrap inventories and heuristic findings; UBS internal fmt, clippy, cargo check, test build, cargo-audit, and cargo-deny subchecks were clean"
+    }
+  ],
+  "notes": [
+    "The after dense_ref row is a bench-local raw Vec clone/add reference and does not exercise eval_primitive or production TensorValue storage. It was noisy on vmi1264463 and is not used as the keep/drop target.",
+    "The production target row is profile-backed and improved by 2.6452x.",
+    "No C BLAS, MKL, LAPACK, XLA, unsafe code, or behavior-altering floating-point reassociation was introduced."
+  ]
+}

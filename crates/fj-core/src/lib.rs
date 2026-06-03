@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 use std::ops::{Deref, Index, IndexMut};
 use std::slice::SliceIndex;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CompatibilityMode {
@@ -872,15 +872,9 @@ impl Value {
     }
 
     pub fn vector_f64(values: &[f64]) -> Result<Self, ValueError> {
-        let elements = values
-            .iter()
-            .copied()
-            .map(Literal::from_f64)
-            .collect::<Vec<_>>();
-        Ok(Self::Tensor(TensorValue::new(
-            DType::F64,
+        Ok(Self::Tensor(TensorValue::new_f64_values(
             Shape::vector(values.len() as u32),
-            elements,
+            values.to_vec(),
         )?))
     }
 
@@ -949,18 +943,65 @@ impl Value {
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct LiteralBuffer(Arc<Vec<Literal>>);
+pub struct LiteralBuffer {
+    storage: LiteralBufferStorage,
+}
+
+enum LiteralBufferStorage {
+    Literals(Arc<Vec<Literal>>),
+    F64 {
+        values: Arc<Vec<f64>>,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
+}
 
 impl LiteralBuffer {
     #[must_use]
     pub fn new(elements: Vec<Literal>) -> Self {
-        Self(Arc::new(elements))
+        Self {
+            storage: LiteralBufferStorage::Literals(Arc::new(elements)),
+        }
+    }
+
+    #[must_use]
+    pub fn from_f64_values(values: Vec<f64>) -> Self {
+        Self {
+            storage: LiteralBufferStorage::F64 {
+                values: Arc::new(values),
+                literals: Arc::new(OnceLock::new()),
+            },
+        }
     }
 
     #[must_use]
     pub fn as_slice(&self) -> &[Literal] {
-        self.0.as_slice()
+        match &self.storage {
+            LiteralBufferStorage::Literals(elements) => elements.as_slice(),
+            LiteralBufferStorage::F64 { values, literals } => literals
+                .get_or_init(|| Arc::new(values.iter().copied().map(Literal::from_f64).collect()))
+                .as_slice(),
+        }
+    }
+
+    #[must_use]
+    pub fn as_f64_slice(&self) -> Option<&[f64]> {
+        match &self.storage {
+            LiteralBufferStorage::Literals(_) => None,
+            LiteralBufferStorage::F64 { values, .. } => Some(values.as_slice()),
+        }
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        match &self.storage {
+            LiteralBufferStorage::Literals(elements) => elements.len(),
+            LiteralBufferStorage::F64 { values, .. } => values.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     #[must_use]
@@ -969,7 +1010,15 @@ impl LiteralBuffer {
     }
 
     fn make_mut(&mut self) -> &mut Vec<Literal> {
-        Arc::make_mut(&mut self.0)
+        if matches!(self.storage, LiteralBufferStorage::F64 { .. }) {
+            let elements = self.as_slice().to_vec();
+            self.storage = LiteralBufferStorage::Literals(Arc::new(elements));
+        }
+
+        match &mut self.storage {
+            LiteralBufferStorage::Literals(elements) => Arc::make_mut(elements),
+            LiteralBufferStorage::F64 { .. } => unreachable!("dense buffer was materialized"),
+        }
     }
 
     pub fn push(&mut self, value: Literal) {
@@ -997,6 +1046,30 @@ impl Default for LiteralBuffer {
         Self::new(Vec::new())
     }
 }
+
+impl Clone for LiteralBuffer {
+    fn clone(&self) -> Self {
+        match &self.storage {
+            LiteralBufferStorage::Literals(elements) => Self {
+                storage: LiteralBufferStorage::Literals(Arc::clone(elements)),
+            },
+            LiteralBufferStorage::F64 { values, literals } => Self {
+                storage: LiteralBufferStorage::F64 {
+                    values: Arc::clone(values),
+                    literals: Arc::clone(literals),
+                },
+            },
+        }
+    }
+}
+
+impl PartialEq for LiteralBuffer {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_slice() == other.as_slice()
+    }
+}
+
+impl Eq for LiteralBuffer {}
 
 impl std::fmt::Debug for LiteralBuffer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1062,9 +1135,25 @@ impl IntoIterator for LiteralBuffer {
     type IntoIter = std::vec::IntoIter<Literal>;
 
     fn into_iter(self) -> Self::IntoIter {
-        Arc::try_unwrap(self.0)
-            .unwrap_or_else(|elements| (*elements).clone())
-            .into_iter()
+        match self.storage {
+            LiteralBufferStorage::Literals(elements) => Arc::try_unwrap(elements)
+                .unwrap_or_else(|elements| (*elements).clone())
+                .into_iter(),
+            LiteralBufferStorage::F64 { values, literals } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                values
+                    .iter()
+                    .copied()
+                    .map(Literal::from_f64)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
+        }
     }
 }
 
@@ -1084,7 +1173,7 @@ where
     I: SliceIndex<[Literal]>,
 {
     fn index_mut(&mut self, index: I) -> &mut Self::Output {
-        &mut Arc::make_mut(&mut self.0)[index]
+        &mut self.make_mut()[index]
     }
 }
 
@@ -1125,6 +1214,26 @@ impl TensorValue {
             dtype,
             shape,
             elements: elements.into(),
+        })
+    }
+
+    pub fn new_f64_values(shape: Shape, values: Vec<f64>) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != values.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: values.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype: DType::F64,
+            shape,
+            elements: LiteralBuffer::from_f64_values(values),
         })
     }
 
@@ -1293,6 +1402,10 @@ impl TensorValue {
     }
 
     pub fn to_f64_vec(&self) -> Option<Vec<f64>> {
+        if let Some(values) = self.elements.as_f64_slice() {
+            return Some(values.to_vec());
+        }
+
         self.elements.iter().copied().map(Literal::as_f64).collect()
     }
 
@@ -2986,9 +3099,9 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        Atom, DType, Equation, Jaxpr, JaxprValidationError, Literal, Primitive, ProgramSpec, Shape,
-        TensorValue, TraceTransformLedger, Transform, Value, ValueError, VarId, build_program,
-        verify_transform_composition,
+        Atom, DType, Equation, Jaxpr, JaxprValidationError, Literal, LiteralBuffer, Primitive,
+        ProgramSpec, Shape, TensorValue, TraceTransformLedger, Transform, Value, ValueError, VarId,
+        build_program, verify_transform_composition,
     };
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
@@ -5211,6 +5324,98 @@ mod tests {
         let lit = Literal::from_complex128(1.0, 2.0);
         assert!(lit.as_f64().is_none());
         assert!(lit.as_i64().is_none());
+    }
+
+    #[test]
+    fn dense_f64_pass44_literal_buffer_preserves_slice_api_and_cow() {
+        let mut buffer =
+            LiteralBuffer::from_f64_values(vec![1.25, -0.0, f64::from_bits(0x7ff8_0000_0000_0001)]);
+        let expected = vec![
+            Literal::from_f64(1.25),
+            Literal::from_f64(-0.0),
+            Literal::from_f64(f64::from_bits(0x7ff8_0000_0000_0001)),
+        ];
+
+        assert_eq!(buffer.len(), 3);
+        assert!(!buffer.is_empty());
+        assert_eq!(buffer.as_f64_slice().expect("dense values").len(), 3);
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.to_vec(), expected);
+        assert_eq!(buffer[1], Literal::from_f64(-0.0));
+        assert_eq!(format!("{buffer:?}"), format!("{:?}", expected));
+        assert_eq!(
+            serde_json::to_string(&buffer).expect("serialize dense buffer"),
+            serde_json::to_string(&expected).expect("serialize literal vec")
+        );
+
+        let owned = buffer.clone().into_iter().collect::<Vec<_>>();
+        assert_eq!(owned, expected);
+        assert_eq!(buffer, expected);
+
+        let original = buffer.clone();
+        buffer[0] = Literal::from_f64(9.0);
+        assert_eq!(original.as_slice(), expected.as_slice());
+        assert_eq!(buffer[0], Literal::from_f64(9.0));
+        assert!(
+            buffer.as_f64_slice().is_none(),
+            "mutating dense storage should materialize to literal storage"
+        );
+    }
+
+    #[test]
+    fn dense_f64_pass44_vector_f64_uses_dense_storage_with_identical_literals() {
+        let input = [1.25, -0.0, f64::from_bits(0x7ff8_0000_0000_0001)];
+        let value = Value::vector_f64(&input).expect("vector_f64 should build");
+        let tensor = value.as_tensor().expect("expected tensor");
+        assert_eq!(tensor.shape, Shape::vector(3));
+        assert_eq!(tensor.dtype, DType::F64);
+        assert_eq!(
+            tensor
+                .elements
+                .as_f64_slice()
+                .expect("dense values")
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            input
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+        let literal_bits = tensor
+            .elements
+            .iter()
+            .map(|literal| match literal {
+                Literal::F64Bits(bits) => *bits,
+                other => panic!("expected f64 literal, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            literal_bits,
+            input
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dense_f64_pass44_tensor_new_keeps_malformed_f64_constructible() {
+        let tensor = TensorValue::new(DType::F64, Shape::vector(1), vec![Literal::I64(7)])
+            .expect("TensorValue::new only checks element count");
+        assert!(tensor.elements.as_f64_slice().is_none());
+        match tensor.validate_dtype_consistency() {
+            Err(ValueError::ElementDTypeMismatch {
+                index,
+                declared,
+                literal,
+            }) => {
+                assert_eq!(index, 0);
+                assert_eq!(declared, DType::F64);
+                assert_eq!(literal, Literal::I64(7));
+            }
+            other => panic!("expected ElementDTypeMismatch, got {other:?}"),
+        }
     }
 
     // ── Shape tests ──────────────────────────────────────────
