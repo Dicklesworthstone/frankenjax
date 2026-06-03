@@ -1,0 +1,18 @@
+schema=frankenjax.performance_golden.v1
+crate=fj-lax
+pass=31
+target=eval/complex_mul_1k_complex128
+primitive=Mul
+dtype=Complex128
+shape=[3]
+output_order=row-major
+
+inputs:
+0 lhs=(1.5,-2.0) rhs=(2.0,0.5)
+1 lhs=(-0.0,3.0) rhs=(-4.0,-0.0)
+2 lhs=(7.0,-0.25) rhs=(0.125,8.0)
+
+outputs:
+0 re_bits=0x4010000000000000 im_bits=0xc00a000000000000
+1 re_bits=0x0000000000000000 im_bits=0xc028000000000000
+2 re_bits=0x4007000000000000 im_bits=0x404bfc0000000000

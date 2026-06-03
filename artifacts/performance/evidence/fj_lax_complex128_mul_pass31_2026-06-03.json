@@ -1,0 +1,123 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-mcqr.15",
+  "pass": 31,
+  "date": "2026-06-03",
+  "crate": "fj-lax",
+  "target": "eval/complex_mul_1k_complex128",
+  "skill_pass": "repeatedly-apply-skill pass 31 -> extreme-software-optimization",
+  "profile_backed_target": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-profile-pass31 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- --sample-size 20 --warm-up-time 1 --measurement-time 2",
+    "worker": "vmi1156319",
+    "rank_among_non_excluded_residual_numeric_targets": 2,
+    "mean_us": 44.239,
+    "ci_us": [43.507, 45.024],
+    "higher_non_excluded_target": {
+      "target": "eval/expm1_1k_complex128",
+      "mean_us": 53.288,
+      "rejection_reason": "transcendental complex math path; no order-preserving single-dispatch lever identified for pass 31"
+    },
+    "excluded_higher_targets": [
+      {
+        "target": "eval/sin_64k_f64",
+        "mean_us": 1363.8,
+        "reason": "F64 unary path already landed and explicitly excluded"
+      },
+      {
+        "target": "eval/exp_64k_f64",
+        "mean_us": 851.28,
+        "reason": "F64 unary path already landed and explicitly excluded"
+      },
+      {
+        "target": "eval/reduce_window_64x64_3x3_same_f64",
+        "mean_us": 140.81,
+        "reason": "rank2 SAME reduce_window interior path already landed and explicitly excluded"
+      }
+    ]
+  },
+  "optimization": {
+    "lever": "Same-shape Complex128 tensor Mul fast path in eval_binary_elementwise_complex.",
+    "files_changed": [
+      "crates/fj-lax/src/arithmetic.rs",
+      "artifacts/performance/evidence/fj_lax_complex128_mul_pass31_2026-06-03.golden",
+      "artifacts/performance/evidence/fj_lax_complex128_mul_pass31_2026-06-03.golden.sha256",
+      "artifacts/performance/evidence/fj_lax_complex128_mul_pass31_2026-06-03.json"
+    ],
+    "guard": "primitive == Mul; both operands are tensors; shapes are equal; both declared dtypes are Complex128; every element is Literal::Complex128Bits",
+    "single_lever": true,
+    "unsafe": false
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "vmi1156319",
+      "mean_us": 44.239,
+      "ci_us": [43.507, 45.024],
+      "sample_size": 20,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 2
+    },
+    "after": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-rebench-pass31 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/complex_mul_1k_complex128 --sample-size 60 --warm-up-time 1 --measurement-time 3",
+      "worker": "vmi1227854",
+      "mean_us": 1.6893,
+      "ci_us": [1.5939, 1.7863],
+      "sample_size": 60,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 3
+    },
+    "speedup": 26.187770082283,
+    "delta_percent": -96.181423630733,
+    "worker_caveat": "Baseline and after used different RCH workers; the delta is large enough to clear the score threshold despite worker variance."
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 5,
+    "effort": 1,
+    "impact_x_confidence_over_effort": 20,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Yes. The fast path emits one output per pair in the same zipped row-major tensor order as the generic same-shape loop.",
+    "floating_point": "Identical source operation order for Mul: output real is ar*br - ai*bi, output imag is ar*bi + ai*br. No reassociation, fused operation, vector reduction, or approximation is introduced.",
+    "errors": "Malformed declared-Complex128 tensors still fall through to the generic path by returning None when any element is not Complex128Bits.",
+    "tie_breaking": "N/A. Complex Mul has no ties or comparisons.",
+    "rng": "N/A. Complex Mul is deterministic and consumes no random state.",
+    "scope": "Only same-shape Complex128 tensor Mul changes. Scalar, broadcast, Complex64, Div, Pow, Rem, Max, Min, Atan2, XLogY, LogAddExp, real dtypes, and shape-error paths are unchanged.",
+    "golden_output": "artifacts/performance/evidence/fj_lax_complex128_mul_pass31_2026-06-03.golden",
+    "golden_sha256": "d0f714129d53f5b5edc7b06125b1461b6a780ec118d8f81534fb916eb594748a"
+  },
+  "validation": [
+    {
+      "command": "cargo fmt -p fj-lax",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt --check -p fj-lax",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-check-pass31 rch exec -- cargo check -p fj-lax --all-targets",
+      "worker": "vmi1149989",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-test-pass31 rch exec -- cargo test -p fj-lax --all-targets",
+      "worker": "vmi1156319",
+      "result": "pass; 999 tests plus lax_baseline bench target smoke checks"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-fj-lax-clippy-pass31 rch exec -- cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+      "worker": "vmi1153651",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_complex128_mul_pass31_2026-06-03.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "notes": [
+    "Source for this lever landed in 489fcd3a alongside frankenjax-mcqr.14; this evidence artifact and frankenjax-mcqr.15 preserve the separate pass-31 Complex128 Mul proof trail.",
+    "The working tree had pre-existing dirty edits in crates/fj-lax/src/arithmetic.rs before pass 31; this pass did not revert or overwrite them.",
+    "No commits, pushes, bead closeout, stash, reset, revert, reservation release, or file deletion were performed."
+  ]
+}
