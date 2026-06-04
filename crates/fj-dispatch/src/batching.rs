@@ -3625,13 +3625,37 @@ fn batch_svd_multi(
     let mut svd_scratch = SvdScratch::default();
     for batch in 0..batch_size {
         let base = batch * matrix_len;
-        matrix.clear();
-        for lit in &tensor.elements[base..base + matrix_len] {
-            matrix.push(lit.as_f64().ok_or_else(|| {
+        if m == 3 && n == 2 && !full_matrices {
+            let a00 = tensor.elements[base].as_f64().ok_or_else(|| {
                 BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
-            })?);
+            })?;
+            let a01 = tensor.elements[base + 1].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a10 = tensor.elements[base + 2].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a11 = tensor.elements[base + 3].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a20 = tensor.elements[base + 4].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a21 = tensor.elements[base + 5].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            svd_decompose_matrix_3x2_thin([a00, a01, a10, a11, a20, a21], &mut svd_scratch);
+        } else {
+            matrix.clear();
+            for lit in &tensor.elements[base..base + matrix_len] {
+                matrix.push(lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for svd: expected numeric elements".to_owned(),
+                    )
+                })?);
+            }
+            svd_decompose_matrix(m, n, &matrix, full_matrices, &mut svd_scratch);
         }
-        svd_decompose_matrix(m, n, &matrix, full_matrices, &mut svd_scratch);
         u_elements.extend(svd_scratch.u_out.iter().copied().map(Literal::from_f64));
         s_elements.extend(svd_scratch.sigma.iter().copied().map(Literal::from_f64));
         vt_elements.extend(svd_scratch.vt.iter().copied().map(Literal::from_f64));
@@ -3763,6 +3787,149 @@ fn svd_decompose_matrix(
             }
         }
     }
+}
+
+fn svd_decompose_matrix_3x2_thin(a: [f64; 6], scratch: &mut SvdScratch) {
+    let a00 = a[0];
+    let a01 = a[1];
+    let a10 = a[2];
+    let a11 = a[3];
+    let a20 = a[4];
+    let a21 = a[5];
+
+    let mut ata00 = 0.0;
+    ata00 += a00 * a00;
+    ata00 += a10 * a10;
+    ata00 += a20 * a20;
+
+    let mut ata01 = 0.0;
+    ata01 += a00 * a01;
+    ata01 += a10 * a11;
+    ata01 += a20 * a21;
+
+    let ata10 = ata01;
+
+    let mut ata11 = 0.0;
+    ata11 += a01 * a01;
+    ata11 += a11 * a11;
+    ata11 += a21 * a21;
+
+    let mut v00 = 1.0;
+    let mut v01 = 0.0;
+    let mut v10 = 0.0;
+    let mut v11 = 1.0;
+
+    let mut max_val = 0.0_f64;
+    let value = ata01.abs();
+    if value > max_val {
+        max_val = value;
+    }
+
+    if max_val >= f64::EPSILON * 1e2 {
+        let app = ata00;
+        let aqq = ata11;
+        let apq = ata01;
+
+        let theta = if (app - aqq).abs() < f64::EPSILON {
+            std::f64::consts::FRAC_PI_4
+        } else {
+            0.5 * (2.0 * apq / (app - aqq)).atan()
+        };
+
+        let (sin_t, cos_t) = theta.sin_cos();
+
+        let new_row_p0 = cos_t * ata00 + sin_t * ata10;
+        let new_row_q0 = -sin_t * ata00 + cos_t * ata10;
+        let new_row_p1 = cos_t * ata01 + sin_t * ata11;
+        let new_row_q1 = -sin_t * ata01 + cos_t * ata11;
+
+        ata00 = cos_t * new_row_p0 + sin_t * new_row_p1;
+        ata11 = -sin_t * new_row_q0 + cos_t * new_row_q1;
+
+        let vip = v00;
+        let viq = v01;
+        v00 = cos_t * vip + sin_t * viq;
+        v01 = -sin_t * vip + cos_t * viq;
+
+        let vip = v10;
+        let viq = v11;
+        v10 = cos_t * vip + sin_t * viq;
+        v11 = -sin_t * vip + cos_t * viq;
+    }
+
+    let mut col0 = 0;
+    let mut col1 = 1;
+    if ata11.total_cmp(&ata00).is_gt() {
+        std::mem::swap(&mut col0, &mut col1);
+    }
+
+    let (lambda0, lambda1) = if col0 == 0 {
+        (ata00, ata11)
+    } else {
+        (ata11, ata00)
+    };
+    let v_sorted00 = if col0 == 0 { v00 } else { v01 };
+    let v_sorted01 = if col1 == 0 { v00 } else { v01 };
+    let v_sorted10 = if col0 == 0 { v10 } else { v11 };
+    let v_sorted11 = if col1 == 0 { v10 } else { v11 };
+
+    let SvdScratch {
+        sigma,
+        u,
+        u_out,
+        vt,
+        ..
+    } = scratch;
+
+    sigma.clear();
+    sigma.resize(2, 0.0_f64);
+    sigma[0] = lambda0.max(0.0).sqrt();
+    sigma[1] = lambda1.max(0.0).sqrt();
+
+    u.clear();
+    u.resize(6, 0.0_f64);
+    if sigma[0] > f64::EPSILON * 1e4 {
+        let mut val = 0.0;
+        val += a00 * v_sorted00;
+        val += a01 * v_sorted10;
+        u[0] = val / sigma[0];
+
+        let mut val = 0.0;
+        val += a10 * v_sorted00;
+        val += a11 * v_sorted10;
+        u[2] = val / sigma[0];
+
+        let mut val = 0.0;
+        val += a20 * v_sorted00;
+        val += a21 * v_sorted10;
+        u[4] = val / sigma[0];
+    }
+    if sigma[1] > f64::EPSILON * 1e4 {
+        let mut val = 0.0;
+        val += a00 * v_sorted01;
+        val += a01 * v_sorted11;
+        u[1] = val / sigma[1];
+
+        let mut val = 0.0;
+        val += a10 * v_sorted01;
+        val += a11 * v_sorted11;
+        u[3] = val / sigma[1];
+
+        let mut val = 0.0;
+        val += a20 * v_sorted01;
+        val += a21 * v_sorted11;
+        u[5] = val / sigma[1];
+    }
+
+    u_out.clear();
+    u_out.extend_from_slice(u);
+
+    vt.clear();
+    vt.resize(4, 0.0_f64);
+    vt[0] = v_sorted00;
+    vt[1] = v_sorted10;
+    vt[2] = v_sorted01;
+    vt[3] = v_sorted11;
 }
 
 fn extend_orthogonal_columns_matrix(u: &[f64], m: usize, k: usize, m_full: usize) -> Vec<f64> {
@@ -8443,6 +8610,48 @@ mod tests {
                 expected.as_tensor().unwrap().shape.dims
             );
             assert_f64_close(&extract_f64_vec(&actual.value), &extract_f64_vec(&expected));
+        }
+    }
+
+    #[test]
+    fn svd_3x2_thin_fast_path_matches_generic_bits() {
+        let cases = [
+            [1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            [1.0, 0.1, 0.0, 1.5, 0.2, 2.0],
+            [-1.5, 0.25, 0.75, -2.0, 3.0, 4.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ];
+
+        for matrix in cases {
+            let mut expected = SvdScratch::default();
+            svd_decompose_matrix(3, 2, &matrix, false, &mut expected);
+
+            let mut fast = SvdScratch::default();
+            svd_decompose_matrix_3x2_thin(matrix, &mut fast);
+
+            assert_eq!(
+                fast.u_out.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected
+                    .u_out
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "U mismatch for {matrix:?}"
+            );
+            assert_eq!(
+                fast.sigma.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected
+                    .sigma
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "sigma mismatch for {matrix:?}"
+            );
+            assert_eq!(
+                fast.vt.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.vt.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "Vt mismatch for {matrix:?}"
+            );
         }
     }
 

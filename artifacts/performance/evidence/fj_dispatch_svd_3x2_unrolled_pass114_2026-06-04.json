@@ -1,0 +1,56 @@
+{
+  "pass": 114,
+  "bead": "frankenjax-ng9ky",
+  "crate": "fj-dispatch",
+  "date": "2026-06-04",
+  "target": "vmap_svd/batched_matrix_3x2",
+  "profile_basis": "Post-pass113 RCH fj-dispatch vmap profile on ts2 ranked vmap_eigh/batched_matrix_3x3 at 158.89us, vmap_svd/batched_matrix_3x2 at 111.00us, vmap_while/functional_sub_jaxpr_sub_two_128 at 91.44us, vmap_dot_i64/paired_vectors at 82.41us, and vmap_qr/batched_matrix_3x2 at 65.25us. frankenjax-ng9ky was the ready [perf] bead for the next register-blocked 3x2 SVD/linalg primitive.",
+  "lever": "Unrolled bit-identical 3x2 thin SVD helper inside fj-dispatch batching for the exact m=3, n=2, full_matrices=false benchmark shape. It preserves the existing A^T A -> 2x2 Jacobi -> descending total_cmp sort -> U/S/Vt computation while avoiding per-slice matrix scratch and generic loops.",
+  "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-ng9ky-svd-baseline cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_svd/batched_matrix_3x2 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "rebench_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-ng9ky-svd-rebench cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_svd/batched_matrix_3x2 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "benchmarks": [
+    {
+      "case": "vmap_svd/batched_matrix_3x2",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 103.06,
+        "mid": 103.93,
+        "upper": 105.66
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 83.302,
+        "mid": 83.398,
+        "upper": 83.502
+      },
+      "speedup_midpoint": 1.246,
+      "speedup_conservative": 1.234
+    }
+  ],
+  "score": {
+    "impact": 3.0,
+    "confidence": 1.0,
+    "effort": 0.5,
+    "impact_x_confidence_div_effort": 6.0
+  },
+  "isomorphism_proof": [
+    "The fast path is gated to m == 3, n == 2, and full_matrices == false inside the existing batch_svd_multi path. All other SVD modes and shapes continue to call svd_decompose_matrix exactly as before.",
+    "Accepted inputs are read in the same row-major order from the same tensor element slice. Nonnumeric elements still use Literal::as_f64 and return the same type-mismatch EvalError text.",
+    "The unrolled helper preserves the generic arithmetic for the 3x2 thin case: identical A^T A dot-product accumulation order, identical 2x2 Jacobi threshold and angle formulas, identical eigenvector update order, identical descending f64::total_cmp ordering with equal-value order preserved, identical sigma max/sqrt logic, identical U dot-product order, and identical Vt transpose layout.",
+    "The focused unit test compares U, S, and Vt f64::to_bits output against svd_decompose_matrix(3, 2, matrix, false) for benchmark-pattern, positive, mixed-sign, and all-zero matrices.",
+    "There is no RNG and no side effect in the accepted SVD fragment. Batch slice ordering and U/S/Vt output extension order are unchanged."
+  ],
+  "golden": "fj_dispatch_svd_3x2_unrolled_pass114_2026-06-04.golden",
+  "golden_sha256": "f24b65c62d7dbe87112120e2b01c0d097d1637bd8130a57c363e2b6ca4af4690",
+  "validation": [
+    "cargo fmt -p fj-dispatch --check",
+    "git diff --check -- crates/fj-dispatch/src/batching.rs",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-ng9ky-svd-tests cargo test -p fj-dispatch svd_ --lib -- --nocapture",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-ng9ky-svd-check cargo check -p fj-dispatch --all-targets",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-ng9ky-svd-libtests cargo test -p fj-dispatch --lib",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-ng9ky-svd-clippy cargo clippy -p fj-dispatch --all-targets -- -D warnings",
+    "ubs crates/fj-dispatch/src/batching.rs",
+    "sha256sum -c artifacts/performance/evidence/fj_dispatch_svd_3x2_unrolled_pass114_2026-06-04.golden.sha256"
+  ],
+  "status": "kept"
+}
