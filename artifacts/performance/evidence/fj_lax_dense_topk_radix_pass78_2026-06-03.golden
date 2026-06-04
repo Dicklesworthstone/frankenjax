@@ -1,0 +1,13 @@
+frankenjax-mcqr.30.21 pass78 golden
+target=eval/topk_64k_k128_f64_vec
+lever=dense i64/f64 TopK via complement-key stable LSD radix (eval_top_k_dense), bypassing the SortKey/Literal 3-tuple comparison sort
+method=same-worker dense vs Vec<Literal> reference benches, run in one process on vmi1153651 (64k axis, k=128)
+worker=vmi1153651
+topk_64k_k128_f64=dense 2364.204us [2300.384, 2433.964] vs literal 16691.834us [16491.738, 16898.261] = 7.06x mid, 6.78x conservative
+topk_64k_k128_i64=dense 2626.246us [2594.615, 2661.008] vs literal 14738.925us [14377.678, 15126.615] = 5.61x mid, 5.40x conservative
+score=10.0
+alien_primitive=radix sort/selection (non-comparison, O(n)) + dense SoA gather, alien_cs_graveyard section 8.2
+source_change=eval_top_k_dense gathers the contiguous last-axis slice from as_i64_slice/as_f64_slice, stable ascending radix on the complement total-order key (!((v as u64)^(1<<63)) for i64, !f64_total_order_key(v) for f64), takes first k into a dense output; eval_top_k calls it first, else the unchanged generic comparison path
+isomorphism=generic comparator is compare_sort_keys(b,a).then(a_idx.cmp(b_idx)) (descending value, ascending in-slice index ties); complement key -> ascending radix gives descending value, stability gives ascending-index ties; f64 keys use the total_cmp bit transform so NaN/payload-NaN/+-inf/+-0 order identically; outputs are top-k values (input dtype) + i64 in-slice indices; non-dense/non-i64/f64/short-axis inputs use the generic path
+golden_note=bit-identical to the comparison path for values + indices across i64 ties and f64 NaN/+-inf/+-0/duplicate ties; verified dense-vs-Literal, multi-slice [3,800]
+validation=RCH cargo test -p fj-lax --lib top_k passed 5 tests incl radix_top_k_dense_matches_generic; RCH cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings passed

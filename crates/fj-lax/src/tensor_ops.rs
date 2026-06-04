@@ -3251,6 +3251,98 @@ pub(crate) fn eval_argmax(
     eval_arg_extremum(primitive, inputs, params, true)
 }
 
+/// Dense i64/f64 TopK fast path over the last (contiguous) axis: for each slice,
+/// stably ascending-radix the `(complement key, in-slice index)` pairs and take
+/// the first `k`. The complement (`!total_order_key`) turns the ascending radix
+/// into descending-by-value, and stability keeps equal values in ascending
+/// in-slice index order — exactly the generic comparator
+/// `compare_sort_keys(b, a).then(a_idx.cmp(b_idx))`. Returns `None` (generic
+/// path) for non-dense / non-i64/f64 storage or short axes.
+fn eval_top_k_dense(
+    tensor: &TensorValue,
+    k: usize,
+    stride: usize,
+    n_slices: usize,
+    output_dims: &[u32],
+) -> Result<Option<Vec<Value>>, EvalError> {
+    if stride < RADIX_SORT_MIN_AXIS {
+        return Ok(None);
+    }
+    let mut pairs: Vec<(u64, u32)> = Vec::with_capacity(stride);
+    let mut scratch: Vec<(u64, u32)> = vec![(0, 0); stride];
+    let mut out_idx: Vec<i64> = Vec::with_capacity(n_slices * k);
+
+    if let Some(values) = tensor.elements.as_i64_slice() {
+        let mut out_vals: Vec<i64> = Vec::with_capacity(n_slices * k);
+        for slice in 0..n_slices {
+            let base = slice * stride;
+            pairs.clear();
+            for (i, &v) in values[base..base + stride].iter().enumerate() {
+                pairs.push((!((v as u64) ^ (1_u64 << 63)), i as u32));
+            }
+            radix_pairs_ascending(&mut pairs, &mut scratch);
+            for &(_, orig) in pairs.iter().take(k) {
+                out_vals.push(values[base + orig as usize]);
+                out_idx.push(i64::from(orig));
+            }
+        }
+        let values_t = TensorValue::new_i64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_vals,
+        )
+        .map_err(EvalError::InvalidTensor)?;
+        let indices_t = TensorValue::new_i64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_idx,
+        )
+        .map_err(EvalError::InvalidTensor)?;
+        return Ok(Some(vec![
+            Value::Tensor(values_t),
+            Value::Tensor(indices_t),
+        ]));
+    }
+
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        let mut out_vals: Vec<f64> = Vec::with_capacity(n_slices * k);
+        for slice in 0..n_slices {
+            let base = slice * stride;
+            pairs.clear();
+            for (i, &v) in values[base..base + stride].iter().enumerate() {
+                pairs.push((!f64_total_order_key(v), i as u32));
+            }
+            radix_pairs_ascending(&mut pairs, &mut scratch);
+            for &(_, orig) in pairs.iter().take(k) {
+                out_vals.push(values[base + orig as usize]);
+                out_idx.push(i64::from(orig));
+            }
+        }
+        let values_t = TensorValue::new_f64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_vals,
+        )
+        .map_err(EvalError::InvalidTensor)?;
+        let indices_t = TensorValue::new_i64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            out_idx,
+        )
+        .map_err(EvalError::InvalidTensor)?;
+        return Ok(Some(vec![
+            Value::Tensor(values_t),
+            Value::Tensor(indices_t),
+        ]));
+    }
+
+    Ok(None)
+}
+
 pub(crate) fn eval_top_k(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -3300,6 +3392,12 @@ pub(crate) fn eval_top_k(
 
             let stride = axis_size;
             let n_slices = tensor.elements.len() / stride;
+
+            // Dense i64/f64 radix fast path (O(n) vs the comparison sort's
+            // O(n log n)); returns None for non-dense / short axes -> generic.
+            if let Some(result) = eval_top_k_dense(tensor, k, stride, n_slices, &output_dims)? {
+                return Ok(result);
+            }
 
             let mut values_elements = Vec::with_capacity(n_slices * k);
             let mut indices_elements = Vec::with_capacity(n_slices * k);
@@ -5967,6 +6065,112 @@ mod tests {
         assert_eq!(values, vec![9.0, 5.0, 4.0]);
         let indices = extract_i64_vec(&outputs[1]);
         assert_eq!(indices, vec![5, 4, 2]);
+    }
+
+    #[test]
+    fn radix_top_k_dense_matches_generic() {
+        // Dense (radix) vs Literal-backed (generic comparison) TopK over a long
+        // last axis, including duplicates/ties (tie order = ascending index) and,
+        // for f64, NaN / +-inf / +-0. Multi-slice [3, 800]. Compared by bits.
+        let rows = 3usize;
+        let cols = 800usize;
+        let k = 50usize;
+
+        // i64
+        let di: Vec<i64> = (0..rows * cols)
+            .map(|i| ((i as i64) * 2_654_435_761).rem_euclid(97) - 40) // many ties
+            .collect();
+        let dense_i = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                di.clone(),
+            )
+            .unwrap(),
+        );
+        let lit_i = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                di.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            dense_i
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_i64_slice()
+                .is_some()
+        );
+        assert!(lit_i.as_tensor().unwrap().elements.as_i64_slice().is_none());
+        let p = params(&[("k", "50")]);
+        let _ = k;
+        let dout = super::eval_top_k(&[dense_i], &p).unwrap();
+        let lout = super::eval_top_k(&[lit_i], &p).unwrap();
+        assert_eq!(
+            extract_i64_vec(&dout[0]),
+            extract_i64_vec(&lout[0]),
+            "i64 topk values"
+        );
+        assert_eq!(
+            extract_i64_vec(&dout[1]),
+            extract_i64_vec(&lout[1]),
+            "i64 topk indices"
+        );
+
+        // f64 with special values + ties
+        let df: Vec<f64> = (0..rows * cols)
+            .map(|i| match i % 17 {
+                0 => f64::NAN,
+                1 => f64::INFINITY,
+                2 => f64::NEG_INFINITY,
+                3 => -0.0,
+                4 => 0.0,
+                5 => 7.0,
+                6 => 7.0, // tie
+                _ => ((i as f64) * 0.5).sin() * 100.0,
+            })
+            .collect();
+        let dense_f = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                df.clone(),
+            )
+            .unwrap(),
+        );
+        let lit_f = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                df.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        let dof = super::eval_top_k(&[dense_f], &p).unwrap();
+        let lof = super::eval_top_k(&[lit_f], &p).unwrap();
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        assert_eq!(bits(&dof[0]), bits(&lof[0]), "f64 topk values");
+        assert_eq!(
+            extract_i64_vec(&dof[1]),
+            extract_i64_vec(&lof[1]),
+            "f64 topk indices"
+        );
     }
 
     #[test]

@@ -1,0 +1,67 @@
+{
+    "bead": "frankenjax-mcqr.30.21",
+    "pass": 78,
+    "date": "2026-06-03",
+    "crate": "fj-lax",
+    "target": "eval/topk_64k_k128_f64_vec",
+    "lever_summary": "Dense i64/f64 TopK via the pass74/75 radix machinery. eval_top_k did a full per-slice comparison sort over (orig_idx, Literal, SortKey) 3-tuples then take(k). New eval_top_k_dense gathers the contiguous last-axis slice from as_i64_slice()/as_f64_slice(), stably ascending-radix the (complement total-order key, in-slice index) pairs, and takes the first k into a dense output — bypassing the SortKey/Literal machinery. The complement (!key) turns the ascending radix into descending-by-value, and stability keeps equal values in ascending index order.",
+    "alien_graveyard": {
+        "primitive": "radix sort/selection (non-comparison, O(n)) + dense SoA gather",
+        "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 8.2",
+        "mapping": "reuse the integer/float total-order radix for TopK: a stable ascending radix on the complemented key yields the top-k in descending order with ascending-index ties, replacing the O(n log n) comparison sort + Literal 3-tuples"
+    },
+    "method": "Same-worker comparison on vmi1153651: dense (vector_*) input vs Vec<Literal>-backed reference run in the same process (the literal input forces the generic comparison-sort path; the dense input takes the radix path).",
+    "results": {
+        "topk_64k_k128_f64": {
+            "dense_ns": 2364203.7,
+            "dense_ci_ns": [2300383.5, 2433964.1],
+            "literal_ns": 16691833.7,
+            "literal_ci_ns": [16491737.7, 16898260.7],
+            "speedup_midpoint_x": 7.06,
+            "speedup_conservative_x": 6.78
+        },
+        "topk_64k_k128_i64": {
+            "dense_ns": 2626246.3,
+            "dense_ci_ns": [2594614.5, 2661007.7],
+            "literal_ns": 14738925.2,
+            "literal_ci_ns": [14377677.9, 15126615.2],
+            "speedup_midpoint_x": 5.61,
+            "speedup_conservative_x": 5.40
+        }
+    },
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- topk_64k_k128 --save-baseline topk",
+    "score": {
+        "impact": 5.0,
+        "confidence": 4.0,
+        "effort": 2.0,
+        "impact_times_confidence_over_effort": 10.0,
+        "kept": true
+    },
+    "change": {
+        "files": [
+            "crates/fj-lax/src/tensor_ops.rs",
+            "crates/fj-lax/benches/lax_baseline.rs"
+        ],
+        "lever": "Added eval_top_k_dense (reuses radix_pairs_ascending + f64_total_order_key from the dense-sort passes); eval_top_k calls it first after computing output_dims/stride/n_slices, returning None (generic path) for non-dense / non-i64/f64 / short axes."
+    },
+    "isomorphism": {
+        "ordering": "unchanged: the generic comparator is compare_sort_keys(b, a).then(a_idx.cmp(b_idx)) (descending value, ascending in-slice index for ties); a stable ascending radix on the complement key (!((v as u64)^(1<<63)) for i64, !f64_total_order_key(v) for f64) reproduces exactly that order — complement -> descending value, stability -> ascending index for equal values",
+        "float_semantics": "f64 keys use the total_cmp bit transform, so NaN / payload-NaN / +-inf / +-0 order identically to the generic SortKey::Float (total_cmp) path",
+        "outputs": "top-k values in input dtype (dense) + i64 in-slice indices — the same fields and order the generic path writes",
+        "tie_breaking": "ascending in-slice index, identical to the generic .then(a.0.cmp(&b.0))",
+        "rng": "not applicable",
+        "errors": "returns None (generic path) for non-dense / non-i64/f64 storage or axes shorter than RADIX_SORT_MIN_AXIS; k>axis_size still rejected upstream"
+    },
+    "validation": [
+        {
+            "name": "dense_topk_parity",
+            "command": "rch exec -- cargo test -p fj-lax --lib top_k",
+            "result": "passed: 5 tests incl radix_top_k_dense_matches_generic (dense vs Literal/generic, i64 + f64 with NaN/+-inf/+-0/duplicate ties, multi-slice [3,800], values by bits + indices)"
+        },
+        {
+            "name": "clippy_deny_warnings",
+            "command": "rch exec -- cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+            "result": "passed"
+        }
+    ]
+}
