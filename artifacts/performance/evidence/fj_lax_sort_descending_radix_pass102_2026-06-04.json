@@ -1,0 +1,20 @@
+{
+    "pass": 102, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "algorithmic complexity-class replacement (O(n log n) -> O(n)) for descending sort/argsort",
+    "target": "eval/sort_64k_f64_descending (sort_along_axis descending path)",
+    "lever_summary": "Descending sort/argsort was gated out of the radix paths (always generic comparison sort). Descending == ascending radix of the complement key (key ^ u64::MAX); stable radix keeps equal keys in ascending index order = generic stable descending. A key_mask XORed into the radix key drives it across i64/f64 dense + f32/f16/bf16/u32/u64/i32 literal paths.",
+    "method": "same-bench A/B; baseline = stashed generic descending sort; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, unaffected) — workers measured identical.",
+    "results": {
+        "calibration_reduce_us": {"candidate": 12.821, "baseline": 12.792, "worker_ratio": 0.998},
+        "sort_64k_f64_descending": {"baseline_ms": 10.009, "candidate_ms": 2.810, "speedup_x": 3.56}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/tensor_ops.rs", "crates/fj-lax/benches/lax_baseline.rs"],
+        "lever": "Added descending param + key_mask (u64::MAX when descending) to sort_along_axis_dense_i64/_f64/_literal_radix; sort_along_axis routes descending through them. Added eval/sort_64k_f64_descending bench + radix_sort_descending_matches_generic test."},
+    "isomorphism": {"type": "BIT-IDENTICAL permutation to generic stable descending: !key ascending == key descending (exact reversal), stable radix keeps equal keys ascending-index == stable sort_by(compare_sort_keys(b,a))", "validation": "radix_sort_descending_matches_generic (f64/i64 dense-vs-Literal + f32 vs reference) + pre-existing sort_1d_descending + 16 sort tests pass"},
+    "validation": [
+        {"name": "sort_tests", "command": "rch exec -- cargo test -p fj-lax --release sort", "result": "16 passed"},
+        {"name": "clippy", "command": "rch exec -- cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings", "result": "clean"}
+    ],
+    "note": "Completes radix coverage of sort/argsort: ascending (pass98/99) + descending (pass102), all single-key numeric dtypes; Complex stays generic (2-key)."
+}

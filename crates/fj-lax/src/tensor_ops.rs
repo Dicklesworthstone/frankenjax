@@ -3947,11 +3947,16 @@ const RADIX_SORT_MIN_AXIS: usize = 256;
 fn sort_along_axis_dense_i64(
     tensor: &TensorValue,
     axis: usize,
+    descending: bool,
     return_indices: bool,
 ) -> Result<Option<Value>, EvalError> {
     let Some(values) = tensor.elements.as_i64_slice() else {
         return Ok(None);
     };
+    // Descending == ascending radix of the complement key (`key ^ u64::MAX`);
+    // stable radix keeps equal keys in ascending index order, matching the
+    // generic stable descending comparator.
+    let key_mask: u64 = if descending { u64::MAX } else { 0 };
     let primitive = if return_indices {
         Primitive::Argsort
     } else {
@@ -3986,7 +3991,7 @@ fn sort_along_axis_dense_i64(
             for i in 0..axis_dim {
                 // Sign-flip so byte-wise unsigned order == signed i64 order.
                 let v = values[base + i * axis_stride];
-                pairs.push(((v as u64) ^ (1_u64 << 63), i as u32));
+                pairs.push((((v as u64) ^ (1_u64 << 63)) ^ key_mask, i as u32));
             }
             radix_pairs_ascending(&mut pairs, &mut scratch);
             for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
@@ -4025,11 +4030,14 @@ fn f64_total_order_key(value: f64) -> u64 {
 fn sort_along_axis_dense_f64(
     tensor: &TensorValue,
     axis: usize,
+    descending: bool,
     return_indices: bool,
 ) -> Result<Option<Value>, EvalError> {
     let Some(values) = tensor.elements.as_f64_slice() else {
         return Ok(None);
     };
+    // Descending == ascending radix of the complement total-order key.
+    let key_mask: u64 = if descending { u64::MAX } else { 0 };
     let primitive = if return_indices {
         Primitive::Argsort
     } else {
@@ -4064,7 +4072,7 @@ fn sort_along_axis_dense_f64(
             pairs.clear();
             for i in 0..axis_dim {
                 pairs.push((
-                    f64_total_order_key(values[base + i * axis_stride]),
+                    f64_total_order_key(values[base + i * axis_stride]) ^ key_mask,
                     i as u32,
                 ));
             }
@@ -4105,8 +4113,11 @@ fn sort_along_axis_dense_f64(
 fn sort_along_axis_literal_radix(
     tensor: &TensorValue,
     axis: usize,
+    descending: bool,
     return_indices: bool,
 ) -> Result<Option<Value>, EvalError> {
+    // Descending == ascending radix of the complement key.
+    let key_mask: u64 = if descending { u64::MAX } else { 0 };
     enum KeyKind {
         Float,
         Unsigned,
@@ -4173,7 +4184,7 @@ fn sort_along_axis_literal_radix(
         |base| {
             pairs.clear();
             for i in 0..axis_dim {
-                pairs.push((keys[base + i * axis_stride], i as u32));
+                pairs.push((keys[base + i * axis_stride] ^ key_mask, i as u32));
             }
             radix_pairs_ascending(&mut pairs, &mut scratch);
             for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
@@ -4273,22 +4284,22 @@ fn sort_along_axis(
         ));
     }
 
-    // Dense ascending radix fast paths (no Literal machinery). Each returns None
-    // for descending / wrong-dtype / non-dense / short axes -> generic path below.
-    if !descending {
-        if tensor.dtype == DType::I64
-            && let Some(value) = sort_along_axis_dense_i64(tensor, axis, return_indices)?
-        {
-            return Ok(value);
-        }
-        if tensor.dtype == DType::F64
-            && let Some(value) = sort_along_axis_dense_f64(tensor, axis, return_indices)?
-        {
-            return Ok(value);
-        }
-        if let Some(value) = sort_along_axis_literal_radix(tensor, axis, return_indices)? {
-            return Ok(value);
-        }
+    // Radix fast paths (no Literal machinery), for both ascending and descending:
+    // descending uses the complement key (ascending radix of `!key` == stable
+    // descending). Each returns None for wrong-dtype / non-dense / short axes ->
+    // generic path below.
+    if tensor.dtype == DType::I64
+        && let Some(value) = sort_along_axis_dense_i64(tensor, axis, descending, return_indices)?
+    {
+        return Ok(value);
+    }
+    if tensor.dtype == DType::F64
+        && let Some(value) = sort_along_axis_dense_f64(tensor, axis, descending, return_indices)?
+    {
+        return Ok(value);
+    }
+    if let Some(value) = sort_along_axis_literal_radix(tensor, axis, descending, return_indices)? {
+        return Ok(value);
     }
 
     let strides = checked_row_major_strides(primitive, "sort", &tensor.shape.dims)?;
@@ -6215,6 +6226,129 @@ mod tests {
         let d_arg = extract_i64_vec(&eval_argsort(Primitive::Argsort, &[dense()], &asc).unwrap());
         let l_arg = extract_i64_vec(&eval_argsort(Primitive::Argsort, &[literal()], &asc).unwrap());
         assert_eq!(d_arg, l_arg, "radix f64 argsort vs generic");
+    }
+
+    #[test]
+    fn radix_sort_descending_matches_generic() {
+        // Descending radix (complement key) must match the generic STABLE
+        // descending comparison sort exactly — same order, ascending-index ties.
+        let n = 1000usize;
+        let desc = params(&[("descending", "true")]); // 1D -> axis 0
+
+        // f64: dense (radix) vs Literal (generic), by bits, incl NaN/inf/-0/dups.
+        let fdata: Vec<f64> = (0..n)
+            .map(|i| match i % 9 {
+                0 => f64::NAN,
+                1 => f64::INFINITY,
+                2 => f64::NEG_INFINITY,
+                3 => -0.0,
+                4 => 0.0,
+                5 => 3.0,
+                _ => ((i as f64) * 1.000_173).sin() * 1e6 - (i as f64),
+            })
+            .collect();
+        let sh = Shape {
+            dims: vec![n as u32],
+        };
+        let f_dense = Value::Tensor(TensorValue::new_f64_values(sh.clone(), fdata.clone()).unwrap());
+        let f_lit = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                sh.clone(),
+                fdata.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(f_dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        assert!(f_lit.as_tensor().unwrap().elements.as_f64_slice().is_none());
+        let fbits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        assert_eq!(
+            fbits(&eval_sort(Primitive::Sort, std::slice::from_ref(&f_dense), &desc).unwrap()),
+            fbits(&eval_sort(Primitive::Sort, std::slice::from_ref(&f_lit), &desc).unwrap()),
+            "f64 desc sort dense vs generic"
+        );
+        assert_eq!(
+            extract_i64_vec(
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&f_dense), &desc).unwrap()
+            ),
+            extract_i64_vec(
+                &eval_argsort(Primitive::Argsort, std::slice::from_ref(&f_lit), &desc).unwrap()
+            ),
+            "f64 desc argsort dense vs generic"
+        );
+
+        // i64: dense vs Literal.
+        let idata: Vec<i64> = (0..n as i64)
+            .map(|i| i.wrapping_mul(2_654_435_761) ^ (i % 7))
+            .collect();
+        let i_dense = Value::Tensor(TensorValue::new_i64_values(sh.clone(), idata.clone()).unwrap());
+        let i_lit = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                sh.clone(),
+                idata.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let ivals = |v: &Value| -> Vec<i64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_i64().unwrap())
+                .collect()
+        };
+        assert_eq!(
+            ivals(&eval_sort(Primitive::Sort, std::slice::from_ref(&i_dense), &desc).unwrap()),
+            ivals(&eval_sort(Primitive::Sort, std::slice::from_ref(&i_lit), &desc).unwrap()),
+            "i64 desc sort dense vs generic"
+        );
+
+        // f32 (Literal-backed radix) vs an independent descending-total_cmp /
+        // ascending-index reference.
+        let f32data: Vec<f32> = (0..n)
+            .map(|i| match i % 7 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                2 => -0.0,
+                3 => 5.0,
+                _ => ((i as f32) * 0.37).cos() * 100.0,
+            })
+            .collect();
+        let f32t = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                sh.clone(),
+                f32data.iter().map(|&v| Literal::F32Bits(v.to_bits())).collect(),
+            )
+            .unwrap(),
+        );
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| {
+            (f32data[b] as f64)
+                .total_cmp(&(f32data[a] as f64))
+                .then(a.cmp(&b))
+        });
+        let exp_f32: Vec<u32> = idx.iter().map(|&i| f32data[i].to_bits()).collect();
+        let got_f32: Vec<u32> = eval_sort(Primitive::Sort, std::slice::from_ref(&f32t), &desc)
+            .unwrap()
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::F32Bits(b) => *b,
+                o => panic!("expected F32Bits, got {o:?}"),
+            })
+            .collect();
+        assert_eq!(got_f32, exp_f32, "f32 desc sort vs reference");
     }
 
     #[test]

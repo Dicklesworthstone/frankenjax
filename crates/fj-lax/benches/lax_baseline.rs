@@ -1107,6 +1107,21 @@ fn bench_sort_64k_f64(c: &mut Criterion) {
     });
 }
 
+// Descending f64 sort over a 64k axis: complement-key radix path (pass102) vs
+// the generic O(n log n) descending comparison sort.
+fn bench_sort_64k_f64_descending(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| ((i as f64) * 1.000_173).sin() * 1e6 - (i as f64))
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("dimension".to_owned(), "0".to_owned());
+    p.insert("descending".to_owned(), "true".to_owned());
+    c.bench_function("eval/sort_64k_f64_descending", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Dense f64 Argmax over a 64k axis: dense fast path (pass101) vs the generic
 // per-element sort_key/compare_sort_keys scan.
 fn bench_argmax_64k_f64(c: &mut Criterion) {
@@ -2323,6 +2338,7 @@ criterion_group!(
     bench_sort_64k_i64,
     bench_sort_64k_f64,
     bench_argmax_64k_f64,
+    bench_sort_64k_f64_descending,
     bench_sort_64k_f32,
     bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,
