@@ -1,0 +1,19 @@
+{
+  "pass": 118,
+  "crate": "fj-lax",
+  "target": "batched f64 matmul via Primitive::DotGeneral (bMK,bKN->bMN; attention/batched-GEMM), bench eval/dot_general_batched_8x256x256x256_f64",
+  "function": "tensor_contraction::batched_matmul_2d (threaded over flattened batch×row space, fast i-k-j kernel) + arithmetic::batched_standard_f64_matmul routing in eval_dot_general",
+  "lever": "Route canonical batched f64 matmul off the generic per-(output,contracted)-pair dot_general loop onto a contiguous i-k-j kernel parallelized over the flattened (batch × output-row) space. Combines the fast kernel (~10x better per-FMA than the per-element loop) with full multi-core utilization regardless of batch count. The pass117 lever threaded the SLOW general kernel; this uses the FAST kernel. Gated >=1M FMAs (routing) and >=67M (threading); small batched matmuls keep the LLVM-optimized generic loop.",
+  "isomorphism": "BIT-EXACT. Each output element accumulates a[b,i,l]*b[b,l,j] in ascending-l order at batch-major row-major position, identical to the serial per-batch matmul / generic dot_general loop. Proven by batched_matmul_2d_bit_identical (kernel vs textbook) + dot_general_parallel_bit_identical (4x256^3=67.1M end-to-end via the routed path, to_bits vs textbook per-batch ref) + 6/6 dot_general & 12/12 matmul tests.",
+  "baseline_threaded_general_ms": 114.37,
+  "candidate_ms": 7.3238,
+  "calibration_baseline_us": 12.704,
+  "calibration_candidate_us": 13.815,
+  "speedup_vs_threaded_general_worker_corrected": 16.98,
+  "speedup_vs_serial_general_raw": 855.0,
+  "note": "8x256x256x256 (134M FMAs): generic threaded loop (pass117) 114.37ms -> fast kernel 7.3238ms = ~17x worker-corrected; vs the original serial general loop (6.26s, pass117 evidence) ~855x. ~18 GFLOP/s effective (fast i-k-j + ~48-64 core RCH worker).",
+  "score": "impact 5 (batched matmul = attention, the hottest reachable ML op) x confidence 5 (bit-exact, multiple tests, serial path untouched) / effort 3 = 8.3",
+  "tests": "fj-lax matmul 12/12 + dot_general 6/6 (incl batched_matmul_2d_bit_identical, dot_general_parallel_bit_identical); clippy -D warnings clean.",
+  "bench_note": "Measured via temporary bench in foreign-dirty lax_baseline.rs (restored, not committed). Baseline via in-place BATCHED_FASTPATH_MIN_OPS=usize::MAX toggle (-> threaded general loop). Only arithmetic.rs + tensor_contraction.rs committed.",
+  "date": "2026-06-04"
+}

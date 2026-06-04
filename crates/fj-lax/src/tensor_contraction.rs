@@ -244,6 +244,80 @@ fn matmul_2d_row_block(a: &[f64], k: usize, b: &[f64], n: usize, row_start: usiz
     }
 }
 
+/// Batched matrix product: `a` is `[batch, m, k]`, `b` is `[batch, k, n]`, both
+/// row-major flat; returns `[batch, m, n]` flat. Each batch slice is an
+/// independent GEMM. Parallelizes over the flattened (batch × output-row) space
+/// with the same i-k-j kernel, so it uses the fast contiguous kernel *and*
+/// saturates many cores even when the batch count is small — and every output
+/// element accumulates in ascending-`l` order, bit-for-bit identical to a serial
+/// per-batch matmul / the generic dot_general loop (see
+/// batched_matmul_2d_bit_identical).
+pub fn batched_matmul_2d(a: &[f64], batch: usize, m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
+    let mut result = vec![0.0; batch * m * n];
+    if batch == 0 || m == 0 || n == 0 || k == 0 {
+        return result;
+    }
+    let total_rows = batch * m;
+    const PARALLEL_MIN_OPS: usize = 1 << 26; // ~67M FMAs
+    let ops = total_rows.saturating_mul(k).saturating_mul(n);
+    let threads = if ops >= PARALLEL_MIN_OPS {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(total_rows)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        batched_matmul_row_block(a, b, m, k, n, 0, &mut result);
+        return result;
+    }
+
+    let rows_per = total_rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = result.as_mut_slice();
+        let mut g_start = 0usize;
+        while g_start < total_rows {
+            let chunk_rows = rows_per.min(total_rows - g_start);
+            let (block, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            let gs = g_start;
+            scope.spawn(move || batched_matmul_row_block(a, b, m, k, n, gs, block));
+            g_start += chunk_rows;
+        }
+    });
+    result
+}
+
+/// Compute global output rows `[g_start, g_start + block.len()/n)` of a batched
+/// matmul into `block`. Global row `g` is batch `g / m`, row `g % m`: its A row
+/// is `a[g*k .. g*k+k]` (A is `[batch,m,k]` so `(bt*m+i)*k == g*k`) and its B
+/// panel is batch `g/m`'s `[k,n]` block. Ascending-`l` accumulation.
+fn batched_matmul_row_block(
+    a: &[f64],
+    b: &[f64],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f64],
+) {
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let g = g_start + ri;
+        let bt = g / m;
+        let a_off = g * k;
+        let b_off = bt * k * n;
+        for l in 0..k {
+            let a_il = a[a_off + l];
+            let src = &b[b_off + l * n..b_off + l * n + n];
+            for j in 0..n {
+                c_row[j] += a_il * src[j];
+            }
+        }
+    }
+}
+
 /// Outer product of two vectors.
 ///
 /// Matches `jnp.outer(a, b)`.
@@ -367,6 +441,31 @@ mod tests {
             }
         }
         for idx in 0..m * n {
+            assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
+        }
+    }
+
+    #[test]
+    fn batched_matmul_2d_bit_identical() {
+        // Batched matmul kernel must equal the textbook per-batch ascending-l
+        // reference bit-for-bit.
+        let (bt, m, k, n) = (3usize, 5usize, 7usize, 4usize);
+        let a: Vec<f64> = (0..bt * m * k).map(|i| (i as f64 * 0.021).sin() * 2.0 - 0.5).collect();
+        let b: Vec<f64> = (0..bt * k * n).map(|i| (i as f64 * 0.029).cos() * 1.6 + 0.3).collect();
+        let got = batched_matmul_2d(&a, bt, m, k, &b, n);
+        let mut want = vec![0.0f64; bt * m * n];
+        for batch in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut s = 0.0;
+                    for l in 0..k {
+                        s += a[(batch * m + i) * k + l] * b[(batch * k + l) * n + j];
+                    }
+                    want[(batch * m + i) * n + j] = s;
+                }
+            }
+        }
+        for idx in 0..bt * m * n {
             assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
         }
     }

@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::EvalError;
-use crate::tensor_contraction::matmul_2d;
+use crate::tensor_contraction::{batched_matmul_2d, matmul_2d};
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Binary elementwise operation dispatching on int/float paths.
@@ -4348,6 +4348,74 @@ fn dot_output_value(
     }
 }
 
+/// Fast path for the canonical **batched** f64 matmul `lhs[B..,M,K]·rhs[B..,K,N]
+/// -> out[B..,M,N]` (leading batch dims in order, single contracting axis at the
+/// M|K / K|N boundary). Routes each contiguous batch slice through the
+/// contiguous, multi-threaded `batched_matmul_2d` kernel instead of the generic
+/// per-(output,contracted)-pair `dot_general` loop. Bit-exact (ascending-k,
+/// batch-major output) — see dot_general_batched_fast_path_bit_identical.
+/// Returns `None` for any non-canonical layout / dtype / sub-threshold size,
+/// leaving the generic path untouched.
+#[allow(clippy::too_many_arguments)]
+fn batched_standard_f64_matmul(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    lhs_batch: &[usize],
+    rhs_batch: &[usize],
+    lhs_contracting: &[usize],
+    rhs_contracting: &[usize],
+    lhs_free_dims: &[usize],
+    rhs_free_dims: &[usize],
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    if lhs.dtype != DType::F64 || rhs.dtype != DType::F64 {
+        return Ok(None);
+    }
+    let nb = lhs_batch.len();
+    if nb == 0
+        || rhs_batch.len() != nb
+        || lhs.rank() != nb + 2
+        || rhs.rank() != nb + 2
+        || (0..nb).any(|i| lhs_batch[i] != i || rhs_batch[i] != i)
+        || lhs_free_dims != [nb]
+        || lhs_contracting != [nb + 1]
+        || rhs_contracting != [nb]
+        || rhs_free_dims != [nb + 1]
+    {
+        return Ok(None);
+    }
+    let m = lhs.shape.dims[nb] as usize;
+    let k = lhs.shape.dims[nb + 1] as usize;
+    let n = rhs.shape.dims[nb + 1] as usize;
+    if k == 0 || rhs.shape.dims[nb] as usize != k || m == 0 || n == 0 {
+        return Ok(None);
+    }
+    let mut batch = 1usize;
+    for i in 0..nb {
+        if lhs.shape.dims[i] != rhs.shape.dims[i] || lhs.shape.dims[i] == 0 {
+            return Ok(None);
+        }
+        batch = batch.saturating_mul(lhs.shape.dims[i] as usize);
+    }
+    // Only worth the contiguous-kernel route for enough work; small batched
+    // matmuls stay on the LLVM-optimized generic loop (no regression).
+    const BATCHED_FASTPATH_MIN_OPS: usize = 1 << 20; // ~1M FMAs
+    if batch.saturating_mul(m).saturating_mul(k).saturating_mul(n) < BATCHED_FASTPATH_MIN_OPS {
+        return Ok(None);
+    }
+    let (Some(lhs_values), Some(rhs_values)) = (dot_f64_elements(lhs), dot_f64_elements(rhs))
+    else {
+        return Ok(None);
+    };
+    let values = batched_matmul_2d(&lhs_values, batch, m, k, &rhs_values, n);
+    Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        values,
+    )?)))
+}
+
 fn rank2_f64_matmul(
     lhs: &TensorValue,
     rhs: &TensorValue,
@@ -4708,6 +4776,23 @@ pub(crate) fn eval_dot_general(
         && lhs_free_dims.as_slice() == [0usize]
         && rhs_free_dims.as_slice() == [1usize];
     if standard_rank2_matmul && let Some(value) = rank2_f64_matmul(lhs, rhs, &output_dims)? {
+        return Ok(value);
+    }
+
+    // Canonical batched f64 matmul -> contiguous multi-threaded kernel (fast i-k-j
+    // per slice, parallelized over the flattened batch×row space) instead of the
+    // generic per-element loop. Bit-exact; falls through for non-canonical cases.
+    if let Some(value) = batched_standard_f64_matmul(
+        lhs,
+        rhs,
+        &lhs_batch,
+        &rhs_batch,
+        &lhs_contracting,
+        &rhs_contracting,
+        &lhs_free_dims,
+        &rhs_free_dims,
+        &output_dims,
+    )? {
         return Ok(value);
     }
 
