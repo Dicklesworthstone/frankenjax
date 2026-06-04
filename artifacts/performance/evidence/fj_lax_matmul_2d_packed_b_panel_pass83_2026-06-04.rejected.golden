@@ -1,0 +1,11 @@
+frankenjax-p1vbf.11 pass83 rejected packed-B-panel GEMM candidate
+profile_full_worker=vmi1153651
+profile_full_matmul_512_ms=[54.278,60.229,66.963]
+focused_baseline_worker=ts2
+focused_baseline_matmul_512_ms=[33.178,33.277,33.432]
+candidate_worker=ts2
+candidate_matmul_512_ms=[58.944,59.272,59.495]
+candidate_speedup_vs_focused_baseline_mid=0.56143
+source_retained=false
+proof_tests=rch cargo test -p fj-lax matmul_2d passed 3 tests in candidate state
+next_primitive=recursive/cache-oblivious GEMM traversal preserving per-cell ascending-k; defer Strassen-style FP reordering until a separate behavior-contract bead proves it is allowed

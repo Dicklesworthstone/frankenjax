@@ -1,0 +1,141 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_matmul_2d_packed_b_panel_pass83_2026-06-04",
+  "status": "rejected",
+  "date": "2026-06-04",
+  "agent": "BlackThrush",
+  "bead": "frankenjax-p1vbf.11",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_512x512x512_f64",
+  "skill_pass": "repeatedly-apply-skill pass83 -> extreme-software-optimization",
+  "profile_backing": {
+    "full_profile_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "full_profile_worker": "vmi1153651",
+    "top_rows": [
+      {
+        "name": "linalg/matmul_2d_512x512x512_f64",
+        "time_ms": [
+          54.278,
+          60.229,
+          66.963
+        ]
+      },
+      {
+        "name": "linalg/eig_48x48_f64",
+        "time_ms": [
+          26.963,
+          28.522,
+          30.919
+        ]
+      },
+      {
+        "name": "eval/dot_256x256x256_f64",
+        "time_ms": [
+          11.15,
+          12.73,
+          14.203
+        ]
+      },
+      {
+        "name": "linalg/matmul_2d_256x256x256_f64",
+        "time_ms": [
+          8.1121,
+          8.4344,
+          8.9806
+        ]
+      },
+      {
+        "name": "linalg/svd_48x48_f64",
+        "time_ms": [
+          4.2542,
+          5.7318,
+          7.3155
+        ]
+      }
+    ]
+  },
+  "focused_baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "worker": "ts2",
+    "time_ms": [
+      33.178,
+      33.277,
+      33.432
+    ]
+  },
+  "candidate": {
+    "lever": "packed 16-column B-panel GEMM traversal for matmul_2d",
+    "description": "Packed each 16-column B panel into contiguous storage, then reused that panel across all output rows while preserving each output cell's original l=0..k-1 scalar accumulation order; tail columns used the original scalar order.",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "proof_test": {
+      "command": "rch exec -- cargo test -p fj-lax matmul_2d -- --nocapture",
+      "worker": "ts2",
+      "result": "pass",
+      "details": "3 tests passed in candidate state, including adversarial signed-zero, infinity, and NaN-payload bit-pattern coverage over full panel plus tail columns."
+    },
+    "rebench": {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+      "worker": "ts2",
+      "time_ms": [
+        58.944,
+        59.272,
+        59.495
+      ],
+      "speedup_vs_focused_baseline_mid": 0.56143
+    }
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate preserved row-major output values and each output cell accumulated l=0..k-1 in ascending order.",
+    "tie_breaking": "N/A: GEMM has no comparison or tie-breaking behavior.",
+    "floating_point": "Candidate used the same scalar multiplication and addition sequence per output cell; no FMA, reassociation, partial-sum merge, SIMD reduction, mixed precision, or Strassen-style reordering was introduced.",
+    "rng": "N/A: matmul_2d consumes no random state.",
+    "errors": "No public error path changed in candidate state; slice indexing stayed in matmul_2d.",
+    "golden_sha256": "8024918c0fc067e75296a70100d7b830ed274b740eac97216aa978d4dbd41657"
+  },
+  "validation": [
+    {
+      "command": "rustfmt --check crates/fj-lax/src/tensor_contraction.rs",
+      "result": "pass after manual restore"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/tensor_contraction.rs",
+      "result": "empty after manual restore"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_matmul_2d_packed_b_panel_pass83_2026-06-04.rejected.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "alien_source": {
+    "primary_sources": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.5",
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.6",
+      "/data/projects/alien_cs_graveyard/high_level_summary_of_frankensuite_planned_and_implemented_features_and_concepts.md#0.7"
+    ],
+    "primitive_family": "cache-aware dense linear algebra with packed/tiled kernels and communication-avoiding follow-up decompositions",
+    "applied_slice": "Tried a packed B-panel traversal after local-accumulator col8 and 4x4 schedules regressed."
+  },
+  "next_primitive": {
+    "target": "recursive/cache-oblivious GEMM traversal preserving per-cell ascending-k accumulation",
+    "reason": "Packed B panels improved reuse in theory but added copy and traversal overhead that regressed the measured 512x512 GEMM hotspot. The next pass should change the traversal recursively around cache-sized output submatrices while retaining the original scalar contribution order per cell.",
+    "target_ratio": ">=2.0x on linalg/matmul_2d_512x512x512_f64",
+    "proof_obligations": [
+      "row-major output values unchanged",
+      "each output cell receives contributions in the original l=0..k-1 order",
+      "no FMA, reassociation, mixed precision, RNG, tie-breaking, or public error change",
+      "golden sha256 passes before close"
+    ],
+    "fallback_trigger": "Reject and restore source if same-worker RCH Criterion mean does not beat the retained baseline with Score>=2.0."
+  }
+}
