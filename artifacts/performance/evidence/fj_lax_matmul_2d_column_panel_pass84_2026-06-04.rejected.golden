@@ -1,0 +1,11 @@
+frankenjax-p1vbf.12 pass84 rejected direct column-panel GEMM candidate
+profile_full_worker=vmi1153651
+profile_full_matmul_512_ms=[54.278,60.229,66.963]
+focused_baseline_worker=ts2
+focused_baseline_matmul_512_ms=[33.178,33.277,33.432]
+candidate_worker=ts2
+candidate_matmul_512_ms=[42.717,43.166,44.027]
+candidate_speedup_vs_focused_baseline_mid=0.77091
+source_retained=false
+proof_tests=rch cargo test -p fj-lax matmul_2d passed 3 tests in candidate state
+next_target=pivot away from GEMM traversal variants; reprofile and attack linalg/eig_48x48_f64 or another non-GEMM top hotspot with a different algorithmic primitive
