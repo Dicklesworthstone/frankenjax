@@ -1189,9 +1189,11 @@ pub(crate) fn eval_pad(
     }
 
     let out_total = checked_shape_element_count(primitive, "pad", &out_dims)?;
-    let mut out_elements = vec![pad_literal; out_total];
 
+    // Edge cases with trivial / tiny output (rank-0 scalar, empty output): build
+    // the Literal output directly.
     if rank == 0 {
+        let mut out_elements = vec![pad_literal; out_total];
         if !out_elements.is_empty() {
             out_elements[0] = operand.elements[0];
         }
@@ -1205,9 +1207,52 @@ pub(crate) fn eval_pad(
         return Ok(Value::Tensor(TensorValue::new(
             operand.dtype,
             Shape { dims: out_dims },
-            out_elements,
+            Vec::new(),
         )?));
     }
+
+    // Row-major strides.
+    let in_dims = &operand.shape.dims;
+    let out_strides = checked_row_major_strides(primitive, "pad", &out_dims)?;
+
+    // Dense fast paths: fill the dense output with the pad value (fast typed fill
+    // vs the per-element Literal clone) and place input elements into dense
+    // storage — bypassing input materialization and the Vec<Literal> output.
+    // When there is no interior dilation and no cropping (all low >= 0 and the
+    // input fits within the output extent), each contiguous input row maps to a
+    // contiguous output run, so whole rows are bulk-copied (copy_from_slice)
+    // instead of placed element-by-element. Otherwise the per-element placement
+    // (pad_fill_place) runs. Both are bit-identical to the generic path.
+    let row_copyable = interiors.iter().all(|&i| i == 0)
+        && (0..rank).all(|ax| {
+            lows[ax] >= 0
+                && (lows[ax] as usize + in_dims[ax] as usize) <= out_dims[ax] as usize
+        });
+    if let (Some(src), Some(pad)) = (operand.elements.as_f64_slice(), pad_literal.as_f64()) {
+        let out = if row_copyable {
+            pad_copy_rows(src, pad, out_total, rank, in_dims, &lows, &out_strides)
+        } else {
+            pad_fill_place(src, pad, out_total, rank, in_dims, &lows, &interiors, &out_dims, &out_strides)
+        };
+        return Ok(Value::Tensor(TensorValue::new_f64_values(
+            Shape { dims: out_dims },
+            out,
+        )?));
+    }
+    if let (Some(src), Some(pad)) = (operand.elements.as_i64_slice(), pad_literal.as_i64()) {
+        let out = if row_copyable {
+            pad_copy_rows(src, pad, out_total, rank, in_dims, &lows, &out_strides)
+        } else {
+            pad_fill_place(src, pad, out_total, rank, in_dims, &lows, &interiors, &out_dims, &out_strides)
+        };
+        return Ok(Value::Tensor(TensorValue::new_i64_values(
+            Shape { dims: out_dims },
+            out,
+        )?));
+    }
+
+    // Generic Literal path.
+    let mut out_elements = vec![pad_literal; out_total];
     if operand.elements.is_empty() {
         return Ok(Value::Tensor(TensorValue::new(
             operand.dtype,
@@ -1215,10 +1260,6 @@ pub(crate) fn eval_pad(
             out_elements,
         )?));
     }
-
-    // Row-major strides.
-    let in_dims = &operand.shape.dims;
-    let out_strides = checked_row_major_strides(primitive, "pad", &out_dims)?;
 
     let mut in_coords = vec![0_usize; rank];
     for element in &operand.elements {
@@ -1250,6 +1291,89 @@ pub(crate) fn eval_pad(
         Shape { dims: out_dims },
         out_elements,
     )?))
+}
+
+/// Dense Pad kernel (rank >= 1): a dense output prefilled with `pad`, into which
+/// each source element is placed at its row-major destination via the same index
+/// math as the generic path (low offset + interior dilation, dropped if it falls
+/// outside the output extent for negative low / high cropping). Generic over the
+/// element type so the f64/i64 dense paths share identical placement with the
+/// generic Literal loop — bit-for-bit identical output.
+/// Dense Pad kernel for the no-interior, no-cropping case (all `low >= 0` and the
+/// input fits within the output extent): each contiguous input row (the last
+/// axis) maps to a contiguous output run, so whole rows are bulk-copied. Output
+/// is row-major and `out_strides[last] == 1`, so the destination of a row is its
+/// leading-axis base plus `low[last]`. Bit-identical to per-element placement.
+fn pad_copy_rows<T: Copy>(
+    src: &[T],
+    pad: T,
+    out_total: usize,
+    rank: usize,
+    in_dims: &[u32],
+    lows: &[i64],
+    out_strides: &[usize],
+) -> Vec<T> {
+    let mut out = vec![pad; out_total];
+    let last = rank - 1;
+    let in_last = in_dims[last] as usize;
+    if in_last == 0 {
+        return out;
+    }
+    let outer_count = src.len() / in_last;
+    for r in 0..outer_count {
+        // Decompose the row index into leading-axis coordinates (row-major: the
+        // last leading axis varies fastest) and accumulate the output base.
+        let mut rem = r;
+        let mut out_base = lows[last] as usize * out_strides[last];
+        for ax in (0..last).rev() {
+            let d = in_dims[ax] as usize;
+            let coord = rem % d;
+            rem /= d;
+            out_base += (lows[ax] as usize + coord) * out_strides[ax];
+        }
+        let in_start = r * in_last;
+        out[out_base..out_base + in_last].copy_from_slice(&src[in_start..in_start + in_last]);
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pad_fill_place<T: Copy>(
+    src: &[T],
+    pad: T,
+    out_total: usize,
+    rank: usize,
+    in_dims: &[u32],
+    lows: &[i64],
+    interiors: &[usize],
+    out_dims: &[u32],
+    out_strides: &[usize],
+) -> Vec<T> {
+    let mut out = vec![pad; out_total];
+    let mut in_coords = vec![0_usize; rank];
+    for &element in src {
+        let mut out_flat = 0_usize;
+        let mut place_element = true;
+        for ax in 0..rank {
+            let coord = lows[ax] + (in_coords[ax] * (interiors[ax] + 1)) as i64;
+            if coord < 0 || coord >= i64::from(out_dims[ax]) {
+                place_element = false;
+                break;
+            }
+            out_flat += coord as usize * out_strides[ax];
+        }
+        if place_element {
+            out[out_flat] = element;
+        }
+        for ax in (0..rank).rev() {
+            in_coords[ax] += 1;
+            if in_coords[ax] < in_dims[ax] as usize {
+                break;
+            }
+            in_coords[ax] = 0;
+        }
+    }
+    out
 }
 
 /// Slice: extract a sub-tensor.

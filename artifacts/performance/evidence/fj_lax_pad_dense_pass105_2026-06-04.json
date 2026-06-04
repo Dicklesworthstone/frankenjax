@@ -1,0 +1,16 @@
+{
+    "pass": 105, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "dense data-model + bulk row-copy for Pad",
+    "target": "eval/pad_256x256_to_258x258_f64 (eval_pad)",
+    "lever_summary": "Pad built a Vec<Literal> (per-element Literal fill + per-element odometer placement). Dense path (F64/I64): typed dense fill, then bulk copy_from_slice of whole contiguous input rows when no-interior/no-crop (pad_copy_rows, O(rows)), else per-element placement (pad_fill_place); dense output via new_*_values.",
+    "method": "same-bench A/B; baseline = stashed generic Pad; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, unaffected).",
+    "results": {
+        "calibration_reduce_us": {"candidate": 12.736, "baseline": 7.9477, "candidate_worker_slower_x": 1.60},
+        "pad_256x256_to_258x258_f64": {"baseline_us": 635.34, "candidate_us": 26.425, "raw_x": 24.0, "worker_corrected_x": 38.5}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/tensor_ops.rs", "crates/fj-lax/benches/lax_baseline.rs", "crates/fj-lax/src/lib.rs"],
+        "lever": "eval_pad: edge cases first; dense F64/I64 path with row_copyable check -> pad_copy_rows (bulk copy_from_slice) else pad_fill_place; dense output. Added eval/pad_256x256_to_258x258_f64 bench + pad_dense_matches_literal_path test (crop/interior + no-crop row-copy)."},
+    "isomorphism": {"type": "BIT-IDENTICAL: pad_copy_rows places identical elements at identical row-major offsets (no-interior/no-crop), pad_fill_place mirrors the generic odometer for crop/interior; dense output value-equal", "validation": "pad_dense_matches_literal_path (f64/i64, both paths) + 23 pad tests pass"},
+    "note": "First measured a simple input-only dense variant (kept per-element placement) at ~1.40x; the win is the bulk ROW COPY (256 copy_from_slice vs 65536 per-element placements + Literal fill/output). Dense vein now covers reductions/cumulative/argmax/elementwise/convert/broadcast/pad."
+}

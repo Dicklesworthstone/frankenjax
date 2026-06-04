@@ -4090,6 +4090,75 @@ mod tests {
     }
 
     #[test]
+    fn pad_dense_matches_literal_path() {
+        // The dense (F64/I64) pad fast path must equal the generic Literal path
+        // element-by-element under edge + interior + negative (cropping) padding.
+        let shape = Shape { dims: vec![3, 4] };
+        let params = pad_params("1,-1", "2,1", "1,0"); // low/high incl crop + interior
+
+        // f64: dense (new_f64_values) vs Literal-backed.
+        let fdata: Vec<f64> = (0..12).map(|i| (i as f64) * 1.5 - 2.0).collect();
+        let f_dense = Value::Tensor(TensorValue::new_f64_values(shape.clone(), fdata.clone()).unwrap());
+        let f_lit = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                shape.clone(),
+                fdata.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(f_dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        assert!(f_lit.as_tensor().unwrap().elements.as_f64_slice().is_none());
+        let pv = Value::scalar_f64(9.0);
+        let d = eval_primitive(Primitive::Pad, &[f_dense, pv.clone()], &params).unwrap();
+        let l = eval_primitive(Primitive::Pad, &[f_lit, pv], &params).unwrap();
+        let fbits = |v: &Value| -> Vec<u64> {
+            v.as_tensor().unwrap().elements.iter().map(|x| x.as_f64().unwrap().to_bits()).collect()
+        };
+        assert_eq!(d.as_tensor().unwrap().shape.dims, l.as_tensor().unwrap().shape.dims);
+        assert_eq!(fbits(&d), fbits(&l), "f64 pad dense vs generic");
+
+        // i64: dense vs Literal-backed.
+        let idata: Vec<i64> = (0..12).map(|i| i as i64 * 7 - 5).collect();
+        let i_dense = Value::Tensor(TensorValue::new_i64_values(shape.clone(), idata.clone()).unwrap());
+        let i_lit = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                shape.clone(),
+                idata.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let di = eval_primitive(Primitive::Pad, &[i_dense, Value::scalar_i64(0)], &params).unwrap();
+        let li = eval_primitive(Primitive::Pad, &[i_lit, Value::scalar_i64(0)], &params).unwrap();
+        let ivals = |v: &Value| -> Vec<i64> {
+            v.as_tensor().unwrap().elements.iter().map(|x| x.as_i64().unwrap()).collect()
+        };
+        assert_eq!(ivals(&di), ivals(&li), "i64 pad dense vs generic");
+
+        // No-interior, no-crop config exercises the dense ROW-COPY path; it must
+        // also match the generic per-element placement.
+        let nc = pad_params("1,2", "2,1", "0,0");
+        let f_dense2 =
+            Value::Tensor(TensorValue::new_f64_values(shape.clone(), fdata.clone()).unwrap());
+        let f_lit2 = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                shape.clone(),
+                fdata.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        let dnc = eval_primitive(Primitive::Pad, &[f_dense2, Value::scalar_f64(9.0)], &nc).unwrap();
+        let lnc = eval_primitive(Primitive::Pad, &[f_lit2, Value::scalar_f64(9.0)], &nc).unwrap();
+        assert_eq!(
+            dnc.as_tensor().unwrap().shape.dims,
+            lnc.as_tensor().unwrap().shape.dims
+        );
+        assert_eq!(fbits(&dnc), fbits(&lnc), "f64 pad row-copy vs generic");
+    }
+
+    #[test]
     fn pad_scalar_with_empty_padding_config_passes_through() {
         let out = eval_primitive(
             Primitive::Pad,

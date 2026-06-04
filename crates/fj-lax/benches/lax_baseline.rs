@@ -1134,6 +1134,31 @@ fn bench_broadcast_256_to_256x256_f64(c: &mut Criterion) {
     });
 }
 
+// Pad a 256x256 dense f64 tensor with 1 element of edge padding on each side
+// (-> 258x258). Dense fast path (pass105, typed fill + placement into dense
+// storage) vs the generic Literal fill + per-element placement.
+fn bench_pad_256x256_to_258x258_f64(c: &mut Criterion) {
+    let data: Vec<f64> = (0..256 * 256).map(|i| (i as f64) * 0.001 - 5.0).collect();
+    let operand = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![256, 256],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let pad_value = Value::scalar_f64(0.0);
+    let mut p = BTreeMap::new();
+    p.insert("padding_low".to_owned(), "1,1".to_owned());
+    p.insert("padding_high".to_owned(), "1,1".to_owned());
+    p.insert("padding_interior".to_owned(), "0,0".to_owned());
+    let inputs = [operand, pad_value];
+    c.bench_function("eval/pad_256x256_to_258x258_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Pad, &inputs, &p))
+    });
+}
+
 // Descending f64 sort over a 64k axis: complement-key radix path (pass102) vs
 // the generic O(n log n) descending comparison sort.
 fn bench_sort_64k_f64_descending(c: &mut Criterion) {
@@ -2368,6 +2393,7 @@ criterion_group!(
     bench_sort_64k_f64_descending,
     bench_convert_64k_f64_to_i64,
     bench_broadcast_256_to_256x256_f64,
+    bench_pad_256x256_to_258x258_f64,
     bench_sort_64k_f32,
     bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,
