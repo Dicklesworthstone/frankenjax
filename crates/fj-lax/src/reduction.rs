@@ -697,8 +697,6 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         )?));
                     }
 
-                    let strides =
-                        checked_strides(primitive, "bitwise reduction input", &tensor.shape.dims)?;
                     let kept_axes: Vec<usize> =
                         (0..rank).filter(|i| !axes_sorted.contains(i)).collect();
                     let mut result = try_filled_vec(
@@ -707,26 +705,32 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         out_count,
                         bool_init,
                     )?;
-                    let mut multi = Vec::with_capacity(strides.len());
-                    for flat_idx in 0..tensor.elements.len() {
-                        flat_to_multi_into(flat_idx, &strides, &mut multi);
-                        let out_idx = multi_to_out_flat(
-                            primitive,
-                            "bitwise reduction output",
-                            &multi,
-                            &kept_axes,
-                            &out_dims,
-                        )?;
-                        let val = match tensor.elements[flat_idx] {
-                            Literal::Bool(v) => v,
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    primitive,
-                                    detail: "expected bool tensor",
-                                });
-                            }
-                        };
-                        result[out_idx] = bool_op(result[out_idx], val);
+                    // Drive an incremental out-index odometer (no per-element
+                    // flat_to_multi decode); for dense Bool storage fold the
+                    // contiguous bool slice directly (no Literal::Bool match,
+                    // 1 byte/elem). Bit-identical to the generic loop: same
+                    // ascending flat order, same out_idx mapping, same bool_op.
+                    let mut odometer =
+                        OutIndexOdometer::new(&tensor.shape.dims, &kept_axes, &out_dims);
+                    if let Some(values) = tensor.elements.as_bool_slice() {
+                        for &val in values {
+                            let out_idx = odometer.next_index();
+                            result[out_idx] = bool_op(result[out_idx], val);
+                        }
+                    } else {
+                        for literal in tensor.elements.iter() {
+                            let out_idx = odometer.next_index();
+                            let val = match literal {
+                                Literal::Bool(v) => *v,
+                                _ => {
+                                    return Err(EvalError::TypeMismatch {
+                                        primitive,
+                                        detail: "expected bool tensor",
+                                    });
+                                }
+                            };
+                            result[out_idx] = bool_op(result[out_idx], val);
+                        }
                     }
 
                     let elements = result.into_iter().map(Literal::Bool).collect();
@@ -1527,6 +1531,66 @@ mod tests {
                     l.as_scalar_literal(),
                     "{prim:?} pattern={pattern}"
                 );
+            }
+        }
+    }
+
+    /// Bit-exact parity for the dense-bool AXIS reduction (odometer + as_bool_slice)
+    /// vs the Vec<Literal> decode loop, across ReduceAnd/ReduceOr and every axis
+    /// subset of a rank-3 bool tensor.
+    #[test]
+    fn dense_bool_axis_reduce_bit_identical_to_literal_path() {
+        let dims = vec![2_u32, 3, 4];
+        let n = 2 * 3 * 4;
+        let data: Vec<bool> = (0..n).map(|i| (i * 7 + 1) % 3 != 0).collect();
+        let dense = Value::Tensor(
+            TensorValue::new_bool_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        assert!(
+            dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_some()
+        );
+        let literal = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape { dims: dims.clone() },
+                data.iter().copied().map(Literal::Bool).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(
+            literal
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_bool_slice()
+                .is_none()
+        );
+
+        let bools = |v: &Value| -> Vec<bool> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| matches!(l, Literal::Bool(true)))
+                .collect()
+        };
+        for prim in [Primitive::ReduceAnd, Primitive::ReduceOr] {
+            for axes in ["0", "1", "2", "0,1", "1,2", "0,2"] {
+                let mut params = BTreeMap::new();
+                params.insert("axes".to_owned(), axes.to_owned());
+                let d = crate::eval_primitive(prim, std::slice::from_ref(&dense), &params).unwrap();
+                let l =
+                    crate::eval_primitive(prim, std::slice::from_ref(&literal), &params).unwrap();
+                assert_eq!(
+                    d.as_tensor().unwrap().shape.dims,
+                    l.as_tensor().unwrap().shape.dims
+                );
+                assert_eq!(bools(&d), bools(&l), "{prim:?} axes={axes}");
             }
         }
     }

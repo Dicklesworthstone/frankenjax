@@ -1,0 +1,13 @@
+frankenjax-mcqr.30.25 pass81 golden
+target=eval/reduce_and_256_axis1_bool_vec
+lever=dense bool axis reduction via OutIndexOdometer (decode removal) + as_bool_slice dense fold
+method=same-worker-calibrated A/B (baseline = reduction.rs stashed to the committed per-element flat_to_multi decode); unchanged full-bool-reduce calibration bench normalizes worker delta
+baseline_decode_ns=1062728.3 calib=1603.1
+after_ns=224988.0 [223003.1, 227121.9] calib=932.0 [921.7, 944.2]
+speedup_calibrated=2.75x mid, 2.69x conservative
+score=8.0
+alien_primitive=incremental index odometer + dense SoA gather, alien_cs_graveyard section 8.2
+source_change=eval_reduce_bitwise_axes DType::Bool non-reduce-all branch drives OutIndexOdometer (no flat_to_multi decode) and folds as_bool_slice for dense Bool storage, else the unchanged Literal::Bool loop (odometer-driven); removed the now-unused checked_strides binding
+isomorphism=ascending flat order; odometer reproduces multi_to_out_flat(flat_to_multi_into(flat)); same bool_init seed and bool_op (ReduceAnd &&, ReduceOr ||); as_bool_slice Some only for dense Bool storage, else unchanged Literal loop; output Bool tensor
+rejected_sub_levers=dense-bool comparison OUTPUT ~0.92x neutral (reverted; comparison bottleneck is per-element int_cmp/i128, not output write); dense-vs-Literal-with-odometer 1.23x only isolates the data-model delta — the real win is the decode removal vs the committed baseline
+validation=RCH cargo test -p fj-lax --lib --release reduction passed 33 tests incl dense_bool_axis_reduce_bit_identical_to_literal_path (ReduceAnd/ReduceOr x all rank-3 axis subsets); RCH cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings passed

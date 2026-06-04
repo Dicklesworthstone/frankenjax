@@ -859,6 +859,48 @@ fn bench_reduce_and_64k_bool_literal_reference(c: &mut Criterion) {
     });
 }
 
+// 256x256 bool ReduceAnd along axis 1: dense bool storage + out-index odometer
+// (pass81) vs the Vec<Literal> per-element flat_to_multi decode + match. Same
+// process for a same-worker ratio.
+fn bench_reduce_and_256_axis1_bool_vec(c: &mut Criterion) {
+    let n = 256usize;
+    let data: Vec<bool> = (0..n * n).map(|i| i % 97 != 0).collect();
+    let input = Value::Tensor(
+        TensorValue::new_bool_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_owned(), "1".to_owned());
+    c.bench_function("eval/reduce_and_256_axis1_bool_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceAnd, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_reduce_and_256_axis1_bool_literal_reference(c: &mut Criterion) {
+    let n = 256usize;
+    let elements: Vec<Literal> = (0..n * n).map(|i| Literal::Bool(i % 97 != 0)).collect();
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::Bool,
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_owned(), "1".to_owned());
+    c.bench_function("eval/reduce_and_256_axis1_bool_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceAnd, std::slice::from_ref(&input), &p))
+    });
+}
+
 // 64k i64 ascending sort: exercises the LSD radix path (pass74) vs the prior
 // comparison sort. Pseudo-random keys (negatives, wide range, duplicates) so the
 // sort does real work; ascending is the default direction.
@@ -1712,6 +1754,8 @@ criterion_group!(
     bench_reduce_sum_64k_i64_literal_reference,
     bench_reduce_and_64k_bool_vec,
     bench_reduce_and_64k_bool_literal_reference,
+    bench_reduce_and_256_axis1_bool_vec,
+    bench_reduce_and_256_axis1_bool_literal_reference,
     bench_sort_64k_i64,
     bench_sort_64k_f64,
     bench_sort_calib_reduce_64k_i64,
