@@ -1,0 +1,129 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_matmul_2d_full_b_transpose_pass87_2026-06-04",
+  "status": "rejected",
+  "date": "2026-06-04",
+  "agent": "BlackThrush",
+  "bead": "frankenjax-p1vbf.14",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_512x512x512_f64",
+  "skill_pass": "repeatedly-apply-skill pass87 -> extreme-software-optimization",
+  "profile_backing": {
+    "full_profile_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "full_profile_worker": "ts2",
+    "top_rows": [
+      {
+        "name": "linalg/matmul_2d_512x512x512_f64",
+        "time_ms": [
+          33.58,
+          33.898,
+          34.228
+        ]
+      },
+      {
+        "name": "linalg/eig_48x48_f64",
+        "time_ms": [
+          17.731,
+          17.876,
+          17.999
+        ]
+      },
+      {
+        "name": "eval/dot_256x256x256_f64",
+        "time_ms": [
+          6.795,
+          7.003,
+          7.236
+        ]
+      }
+    ]
+  },
+  "focused_baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "worker": "ts2",
+    "time_ms": [
+      33.58,
+      33.898,
+      34.228
+    ],
+    "source_state": "baseline recorded in frankenjax-p1vbf.14 before the full-B transpose edit"
+  },
+  "candidate": {
+    "lever": "full-B transpose row-major dot layout for matmul_2d",
+    "description": "Packed B once into row-major columns with b_transposed[j * k + l] = b[l * n + j], then computed each output cell as a contiguous A-row/B-column dot while preserving l=0..k-1 accumulation order per cell.",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "proof_test": {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax matmul_2d -- --nocapture",
+      "worker": "ts2",
+      "result": "pass",
+      "details": "3 tests passed in candidate state: matmul_2d_basic, matmul_2d_ikj_bit_identical_to_ijk, and matmul_2d_b_transpose_matches_ijk_adversarial_bits covering NaN payloads, infinities, and signed zero."
+    },
+    "format_check": {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs",
+      "result": "pass"
+    },
+    "rebench": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+      "worker": "ts2",
+      "time_ms": [
+        152.01,
+        152.65,
+        153.38
+      ],
+      "speedup_vs_focused_baseline_mid": 0.22206
+    }
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate preserved row-major output order and assigned each output cell once.",
+    "tie_breaking": "N/A: matmul_2d has no comparisons, sorting, or tie-breaking behavior.",
+    "floating_point": "Candidate copied B f64 bits into a transposed buffer, then used the same scalar multiplication and sum += product sequence for each output cell with l ascending. It introduced no FMA, reassociation, partial-sum merge, SIMD reduction, mixed precision, or Strassen-style reordering.",
+    "rng": "N/A: matmul_2d consumes no random state.",
+    "errors": "No retained source change; candidate slice indexing remained within matmul_2d during proof tests.",
+    "golden_sha256": "bf2085e8fa2300e495c6e24c8678941843cc40204f30ce6a8f0c714239a63801"
+  },
+  "validation": [
+    {
+      "command": "git diff --quiet -- crates/fj-lax/src/tensor_contraction.rs",
+      "result": "pass: source diff empty after restore"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs",
+      "result": "pass after restore"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_matmul_2d_full_b_transpose_pass87_2026-06-04.rejected.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "alien_source": {
+    "primary_sources": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.5",
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.6"
+    ],
+    "primitive_family": "cache-local dense linear algebra layout transformation",
+    "applied_slice": "Tried full RHS transpose packing after prior register, local-accumulator, packed-panel, and direct-panel GEMM traversal variants failed the score gate."
+  },
+  "next_primitive": {
+    "target": "Reprofile and pivot away from bit-exact GEMM traversal variants; attack the next top profile-backed non-GEMM hotspot or file a behavior-contract bead for FP-reordering GEMM algorithms such as blocked microkernels with partial sums or Strassen-like recursion.",
+    "reason": "Full-B transpose made B reads contiguous but destroyed the i-k-j kernel's streaming C-row update and regressed by 4.50x on the same worker. More bit-exact traversal variants have repeatedly failed, so the next pass must be a different hotspot or a separately proved behavior contract for a fundamentally different numerical algorithm.",
+    "target_ratio": ">=2.0x on the next profile-backed hotspot",
+    "proof_obligations": [
+      "observable output order unchanged",
+      "floating-point operation order unchanged unless a separate behavior-contract bead proves exact allowed tolerance",
+      "no RNG, tie-breaking, or public error change",
+      "golden sha256 passes before close"
+    ],
+    "fallback_trigger": "Reject and restore source if same-worker RCH Criterion does not clear Score>=2.0."
+  }
+}

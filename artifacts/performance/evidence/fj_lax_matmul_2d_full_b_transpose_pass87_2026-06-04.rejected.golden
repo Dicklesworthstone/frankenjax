@@ -1,0 +1,12 @@
+frankenjax-p1vbf.14 pass87 rejected full-B transpose GEMM candidate
+profile_full_worker=ts2
+profile_full_matmul_512_ms=[33.580,33.898,34.228]
+focused_baseline_worker=ts2
+focused_baseline_matmul_512_ms=[33.580,33.898,34.228]
+candidate_worker=ts2
+candidate_matmul_512_ms=[152.01,152.65,153.38]
+candidate_speedup_vs_focused_baseline_mid=0.22206
+source_retained=false
+proof_tests=rch cargo test -p fj-lax matmul_2d passed 3 tests in candidate state, including adversarial NaN/infinity/signed-zero bit coverage
+source_restore_check=git diff -- crates/fj-lax/src/tensor_contraction.rs is empty after restore
+next_target=stop GEMM traversal variants; pivot to a different profile-backed hotspot or file a behavior-contract bead for FP-reordering GEMM algorithms
