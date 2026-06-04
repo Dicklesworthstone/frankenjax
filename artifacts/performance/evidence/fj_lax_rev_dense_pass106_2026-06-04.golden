@@ -1,0 +1,11 @@
+pass106 golden — fj-lax: dense Rev fast path (reusable odometer + dense output)
+target=eval/rev_256x256_f64 (eval_rev)
+lever=dense data-model + allocation removal. Rev built result: Vec<Literal> and, PER OUTPUT ELEMENT, allocated a fresh vec![0; rank] coords buffer + decoded flat_idx via division + reversed + recomputed src_flat + materialized a Literal. New shared rev_gather<T> walks output positions with a SINGLE reused coordinate odometer (no per-element allocation, incremental row-major advance instead of per-element division), reflects reversed-axis coords, and copies src[src_flat]; dense F64/I64/Bool read the typed slice and write dense storage (new_*_values), bypassing input Literal materialization and the Vec<Literal> output.
+method=same-bench A/B on RCH Criterion; baseline = git-stashed eval_rev (per-element vec![0;rank] + decode + Vec<Literal>); normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, UNAFFECTED).
+calibration_reduce=candidate 8.759us vs baseline 8.3562us -> workers within ~5% (candidate 1.048x slower)
+rev_256x256_f64=baseline 1587.1us [1583.9, 1591.0] vs candidate 331.80us [331.41, 332.25] = 4.78x raw -> 5.0x worker-corrected
+score=impact 4 (Rev common: flip augmentation, conv-kernel reversal, sequence reversal) x confidence 5 (BIT-EXACT vs generic; rev_dense_matches_generic f64/i64 multi-axis + 13 rev tests pass) / effort 2 = 10.0
+alien_primitive=reusable-odometer index walk (eliminating per-element coordinate allocation) + dense SoA gather into dense storage (alien_cs_graveyard dense-storage / arena-reuse)
+isomorphism=BIT-IDENTICAL to the generic path. rev_gather visits output positions in the same row-major order; the odometer-advanced coords equal the decoded flat_idx coords; reversed-axis reflection (dim-1-coord) and src_flat are identical; output values/order unchanged. Dense F64/I64/Bool output is value-equal to the Literal-backed output.
+golden_note=rev_dense_matches_generic: dense (new_*_values) vs Literal-backed rev of a 4x3x5 tensor reversing axes 0 and 2, f64 + i64; 13 rev tests pass.
+validation=RCH cargo test -p fj-lax --release rev: 13 passed; RCH cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings: clean.

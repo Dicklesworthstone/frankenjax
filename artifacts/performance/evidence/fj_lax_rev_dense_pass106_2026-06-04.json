@@ -1,0 +1,16 @@
+{
+    "pass": 106, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "dense data-model + per-element allocation removal for Rev",
+    "target": "eval/rev_256x256_f64 (eval_rev)",
+    "lever_summary": "Rev allocated a fresh vec![0;rank] coords buffer PER OUTPUT ELEMENT + division decode + Vec<Literal> output. Shared rev_gather<T> uses one reused odometer (no per-element alloc, incremental advance), reflects reversed axes, copies src[src_flat]; dense F64/I64/Bool read the typed slice and write new_*_values.",
+    "method": "same-bench A/B; baseline = stashed generic Rev; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, unaffected) — workers within ~5%.",
+    "results": {
+        "calibration_reduce_us": {"candidate": 8.759, "baseline": 8.3562, "worker_ratio": 1.048},
+        "rev_256x256_f64": {"baseline_us": 1587.1, "candidate_us": 331.80, "raw_x": 4.78, "worker_corrected_x": 5.0}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/tensor_ops.rs", "crates/fj-lax/benches/lax_baseline.rs"],
+        "lever": "Added rev_gather<T> (reused odometer); eval_rev routes dense F64/I64/Bool to new_*_values and the generic path also uses rev_gather over the materialized Literal slice. Added eval/rev_256x256_f64 bench + rev_dense_matches_generic test."},
+    "isomorphism": {"type": "BIT-IDENTICAL: rev_gather odometer coords == decoded flat_idx coords, same reflection + src_flat, same output order; dense output value-equal", "validation": "rev_dense_matches_generic (f64/i64, axes 0,2) + 13 rev tests pass"},
+    "note": "Main cost was the per-element coords allocation; removing it + dense gives 5x. Dense vein now covers reductions/cumulative/argmax/elementwise/convert/broadcast/pad/rev."
+}

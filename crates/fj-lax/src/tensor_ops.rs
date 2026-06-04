@@ -5368,33 +5368,37 @@ pub(crate) fn eval_rev(
 
             // Compute strides (row-major)
             let strides = checked_row_major_strides(primitive, "rev", dims)?;
-            let mut result = vec![Literal::I64(0); total];
+            let reversed: Vec<bool> = (0..rank).map(|ax| axes.contains(&ax)).collect();
 
-            for (flat_idx, elem) in result.iter_mut().enumerate() {
-                // Decompose flat_idx into multi-index
-                let mut remaining = flat_idx;
-                let mut coords = vec![0_usize; rank];
-                for d in 0..rank {
-                    coords[d] = remaining / strides[d];
-                    remaining %= strides[d];
-                }
-
-                // Reverse specified axes
-                let mut src_coords = coords;
-                for &a in &axes {
-                    src_coords[a] = (dims[a] as usize) - 1 - src_coords[a];
-                }
-
-                // Compute source flat index
-                let src_flat: usize = src_coords
-                    .iter()
-                    .zip(strides.iter())
-                    .map(|(c, s)| c * s)
-                    .sum();
-
-                *elem = tensor.elements[src_flat];
+            // Dense fast paths: gather reversed elements straight from the typed
+            // slice into dense storage via a shared reusable-odometer kernel
+            // (rev_gather) — bypassing the per-element `vec![0; rank]` allocation
+            // and division decode, the input Literal materialization, and the
+            // Vec<Literal> output. Bit-identical to the generic path below.
+            if let Some(src) = tensor.elements.as_f64_slice() {
+                let out = rev_gather(src, dims, &strides, &reversed, total);
+                return Ok(Value::Tensor(
+                    TensorValue::new_f64_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
+            if let Some(src) = tensor.elements.as_i64_slice() {
+                let out = rev_gather(src, dims, &strides, &reversed, total);
+                return Ok(Value::Tensor(
+                    TensorValue::new_i64_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
+            if let Some(src) = tensor.elements.as_bool_slice() {
+                let out = rev_gather(src, dims, &strides, &reversed, total);
+                return Ok(Value::Tensor(
+                    TensorValue::new_bool_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
             }
 
+            let src = tensor.elements.as_slice();
+            let result = rev_gather(src, dims, &strides, &reversed, total);
             Ok(Value::Tensor(
                 TensorValue::new(tensor.dtype, tensor.shape.clone(), result).map_err(|e| {
                     EvalError::Unsupported {
@@ -5405,6 +5409,43 @@ pub(crate) fn eval_rev(
             ))
         }
     }
+}
+
+/// Reverse-along-axes gather shared by `eval_rev`'s dense and generic paths: walk
+/// output positions in row-major order with a reused coordinate odometer (no
+/// per-element allocation), reflect the coordinate on each reversed axis, and
+/// copy `src[src_flat]`. Generic over the element type so the dense (f64/i64/bool)
+/// and Literal paths share identical index math.
+fn rev_gather<T: Copy>(
+    src: &[T],
+    dims: &[u32],
+    strides: &[usize],
+    reversed: &[bool],
+    total: usize,
+) -> Vec<T> {
+    let rank = dims.len();
+    let mut out = Vec::with_capacity(total);
+    let mut coords = vec![0_usize; rank];
+    for _ in 0..total {
+        let mut src_flat = 0_usize;
+        for ax in 0..rank {
+            let c = if reversed[ax] {
+                dims[ax] as usize - 1 - coords[ax]
+            } else {
+                coords[ax]
+            };
+            src_flat += c * strides[ax];
+        }
+        out.push(src[src_flat]);
+        for ax in (0..rank).rev() {
+            coords[ax] += 1;
+            if coords[ax] < dims[ax] as usize {
+                break;
+            }
+            coords[ax] = 0;
+        }
+    }
+    out
 }
 
 // ── Squeeze: remove singleton dimensions ───────────────────────
@@ -6198,6 +6239,52 @@ mod tests {
         let p = params(&[("axes", "0")]);
         let result = eval_rev(&[x], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![4.0, 3.0, 2.0, 1.0]);
+    }
+
+    #[test]
+    fn rev_dense_matches_generic() {
+        // Dense (F64/I64) rev fast path vs Literal-backed generic path on a rank-3
+        // tensor reversing axes 0 and 2 — must match exactly.
+        let shape = Shape { dims: vec![4, 3, 5] };
+        let n = 60usize;
+        let p = params(&[("axes", "0,2")]);
+
+        let fdata: Vec<f64> = (0..n).map(|i| (i as f64) * 1.5 - 7.0).collect();
+        let f_dense = Value::Tensor(TensorValue::new_f64_values(shape.clone(), fdata.clone()).unwrap());
+        let f_lit = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                shape.clone(),
+                fdata.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(f_dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        assert!(f_lit.as_tensor().unwrap().elements.as_f64_slice().is_none());
+        assert_eq!(
+            extract_f64_vec(&eval_rev(std::slice::from_ref(&f_dense), &p).unwrap()),
+            extract_f64_vec(&eval_rev(std::slice::from_ref(&f_lit), &p).unwrap()),
+            "f64 rev dense vs generic"
+        );
+
+        let idata: Vec<i64> = (0..n as i64).map(|i| i * 3 - 11).collect();
+        let i_dense = Value::Tensor(TensorValue::new_i64_values(shape.clone(), idata.clone()).unwrap());
+        let i_lit = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                shape.clone(),
+                idata.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let ivals = |v: &Value| -> Vec<i64> {
+            v.as_tensor().unwrap().elements.iter().map(|l| l.as_i64().unwrap()).collect()
+        };
+        assert_eq!(
+            ivals(&eval_rev(std::slice::from_ref(&i_dense), &p).unwrap()),
+            ivals(&eval_rev(std::slice::from_ref(&i_lit), &p).unwrap()),
+            "i64 rev dense vs generic"
+        );
     }
 
     // ── Iota ──

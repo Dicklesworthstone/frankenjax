@@ -1159,6 +1159,26 @@ fn bench_pad_256x256_to_258x258_f64(c: &mut Criterion) {
     });
 }
 
+// Rev (reverse both axes of a 256x256 f64 tensor): dense odometer-gather fast
+// path (pass106) vs the generic per-element vec![0;rank] + decode + Vec<Literal>.
+fn bench_rev_256x256_f64(c: &mut Criterion) {
+    let data: Vec<f64> = (0..256 * 256).map(|i| (i as f64) * 0.001 - 5.0).collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![256, 256],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_owned(), "0,1".to_owned());
+    c.bench_function("eval/rev_256x256_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Rev, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Descending f64 sort over a 64k axis: complement-key radix path (pass102) vs
 // the generic O(n log n) descending comparison sort.
 fn bench_sort_64k_f64_descending(c: &mut Criterion) {
@@ -2394,6 +2414,7 @@ criterion_group!(
     bench_convert_64k_f64_to_i64,
     bench_broadcast_256_to_256x256_f64,
     bench_pad_256x256_to_258x258_f64,
+    bench_rev_256x256_f64,
     bench_sort_64k_f32,
     bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,
