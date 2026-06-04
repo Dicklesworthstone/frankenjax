@@ -1204,6 +1204,26 @@ fn bench_topk_64k_k128_f64_literal_reference(c: &mut Criterion) {
     });
 }
 
+// F32 TopK (k=128): previously the generic O(n log n) comparison path (F32 is
+// Literal-backed); now the complement-key LSD radix path (pass100).
+fn bench_topk_64k_k128_f32(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| Literal::F32Bits((((i as f32) * 1.000_173).sin() * 1e3 - (i as f32)).to_bits()))
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape::vector(LARGE_ELEMENTWISE_LEN as u32),
+            elements,
+        )
+        .unwrap(),
+    );
+    let p = topk_params();
+    c.bench_function("eval/topk_64k_k128_f32", |bencher| {
+        bencher.iter(|| eval_primitive_multi(Primitive::TopK, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_topk_64k_k128_i64_vec(c: &mut Criterion) {
     let data: Vec<i64> = (0..LARGE_ELEMENTWISE_LEN as i64)
         .map(|i| (i.wrapping_mul(2_654_435_761)).rem_euclid(1_000_003) - 500_000)
@@ -2293,6 +2313,7 @@ criterion_group!(
     bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,
     bench_topk_64k_k128_f64_vec,
+    bench_topk_64k_k128_f32,
     bench_topk_64k_k128_f64_literal_reference,
     bench_topk_64k_k128_i64_vec,
     bench_topk_64k_k128_i64_literal_reference,

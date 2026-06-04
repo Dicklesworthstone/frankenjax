@@ -3523,7 +3523,72 @@ fn eval_top_k_dense(
         ]));
     }
 
-    Ok(None)
+    // Literal-backed numeric dtypes with no dense storage (F32/F16/BF16, U32/U64,
+    // I32): same complement-key radix as i64/f64, keyed per dtype family to match
+    // the generic `compare_sort_keys` order — Float via f64_total_order_key(as_f64),
+    // Unsigned via as_u64, Signed via (as_i64 as u64)^(1<<63). Mirrors the sort
+    // path's sort_along_axis_literal_radix. F64/I64 are handled by the dense
+    // branches above; Bool/Complex fall through to the generic path.
+    enum TopKKeyKind {
+        Float,
+        Unsigned,
+        Signed,
+    }
+    let kind = match tensor.dtype {
+        DType::F32 | DType::F16 | DType::BF16 => TopKKeyKind::Float,
+        DType::U32 | DType::U64 => TopKKeyKind::Unsigned,
+        DType::I32 => TopKKeyKind::Signed,
+        _ => return Ok(None),
+    };
+    let elems = tensor.elements.as_slice();
+    let mut comp = Vec::with_capacity(elems.len());
+    for lit in elems.iter() {
+        let key = match kind {
+            TopKKeyKind::Float => match lit.as_f64() {
+                Some(v) => f64_total_order_key(v),
+                None => return Ok(None),
+            },
+            TopKKeyKind::Unsigned => match lit.as_u64() {
+                Some(v) => v,
+                None => return Ok(None),
+            },
+            TopKKeyKind::Signed => match lit.as_i64() {
+                Some(v) => (v as u64) ^ (1_u64 << 63),
+                None => return Ok(None),
+            },
+        };
+        comp.push(!key);
+    }
+
+    let mut out_lit: Vec<Literal> = Vec::with_capacity(n_slices * k);
+    for slice in 0..n_slices {
+        let base = slice * stride;
+        pairs.clear();
+        for (i, &key) in comp[base..base + stride].iter().enumerate() {
+            pairs.push((key, i as u32));
+        }
+        order_top_k_pairs(&mut pairs, &mut scratch, k);
+        for &(_, orig) in pairs.iter().take(k) {
+            out_lit.push(elems[base + orig as usize]);
+            out_idx.push(i64::from(orig));
+        }
+    }
+    let values_t = TensorValue::new(
+        tensor.dtype,
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        out_lit,
+    )
+    .map_err(EvalError::InvalidTensor)?;
+    let indices_t = TensorValue::new_i64_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        out_idx,
+    )
+    .map_err(EvalError::InvalidTensor)?;
+    Ok(Some(vec![Value::Tensor(values_t), Value::Tensor(indices_t)]))
 }
 
 pub(crate) fn eval_top_k(
@@ -6890,5 +6955,65 @@ mod tests {
             err.to_string().contains(">= 1 dimension"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn top_k_f32_radix_matches_reference() {
+        // F32 top_k now uses the Literal-backed complement-key radix (axis >= 256).
+        // Validate against an independent descending-total_cmp / ascending-index
+        // reference over data incl NaN / +-inf / +-0 / NaN-payload / dups.
+        let n = 1000usize;
+        let data: Vec<f32> = (0..n)
+            .map(|i| match i % 11 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                2 => f32::NEG_INFINITY,
+                3 => -0.0,
+                4 => 0.0,
+                5 => f32::from_bits(0x7fc0_0001),
+                6 => 2.5,
+                _ => ((i as f32) * 1.000_173).sin() * 1e3 - (i as f32),
+            })
+            .collect();
+        let tensor = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.iter().map(|&v| Literal::F32Bits(v.to_bits())).collect(),
+            )
+            .unwrap(),
+        );
+
+        for k in [1usize, 32, 257] {
+            let mut idx: Vec<usize> = (0..n).collect();
+            idx.sort_by(|&a, &b| {
+                (data[b] as f64)
+                    .total_cmp(&(data[a] as f64))
+                    .then(a.cmp(&b))
+            });
+            let expected_bits: Vec<u32> = idx[..k].iter().map(|&i| data[i].to_bits()).collect();
+            let expected_idx: Vec<i64> = idx[..k].iter().map(|&i| i as i64).collect();
+
+            let p = params(&[("k", &k.to_string())]);
+            let outputs = super::eval_top_k(std::slice::from_ref(&tensor), &p).unwrap();
+            let got_bits: Vec<u32> = outputs[0]
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => *b,
+                    other => panic!("expected F32Bits, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(got_bits, expected_bits, "top_k f32 values, k={k}");
+            assert_eq!(
+                extract_i64_vec(&outputs[1]),
+                expected_idx,
+                "top_k f32 indices, k={k}"
+            );
+        }
     }
 }

@@ -1,0 +1,20 @@
+{
+    "pass": 100, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "algorithmic complexity-class replacement (O(n log n) -> O(n)) for F32/F16/BF16/U32/U64/I32 TopK",
+    "target": "eval/topk_64k_k128_f32 (eval_top_k Literal-backed numeric path)",
+    "lever_summary": "eval_top_k_dense covered only i64/f64 dense; F32/F16/BF16/U32/U64/I32 fell to the generic O(n log n) full comparison sort. Added a Literal-backed complement-key radix branch (mirrors pass99 sort): float=!f64_total_order_key(as_f64), unsigned=!as_u64, signed=!((as_i64 as u64)^(1<<63)) + order_top_k_pairs (partial selection for small k, stable radix for large k).",
+    "method": "same-bench A/B; baseline = stashed generic comparison-sort top-k; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, unaffected).",
+    "results": {
+        "calibration_reduce_us": {"candidate": 10.665, "baseline": 9.0399, "candidate_worker_slower_x": 1.18},
+        "topk_64k_k128_f32": {"baseline_ms": 9.7631, "candidate_us": 702.43, "raw_x": 13.9, "worker_corrected_x": 16.4}
+    },
+    "score": {"impact": 5.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 12.5, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/tensor_ops.rs", "crates/fj-lax/benches/lax_baseline.rs"],
+        "lever": "Added a Literal-backed dtype-keyed complement-key branch to eval_top_k_dense (F32/F16/BF16/U32/U64/I32). Added eval/topk_64k_k128_f32 bench + top_k_f32_radix_matches_reference test (k=1/32/257)."},
+    "isomorphism": {"type": "BIT-IDENTICAL to generic top_k (complement key -> descending value, in-slice index -> ascending tie order, == compare_sort_keys(b,a).then(idx)); values=original literals, indices=i64", "validation": "top_k_f32_radix_matches_reference (k=1/32/257, NaN/inf/-0/payload/dups by bits) + 6 topk tests pass"},
+    "validation": [
+        {"name": "topk_tests", "command": "rch exec -- cargo test -p fj-lax --release top_k", "result": "6 passed"},
+        {"name": "clippy", "command": "rch exec -- cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings", "result": "clean"}
+    ],
+    "note": "Completes radix coverage of the sort family (sort + topk) across all single-key numeric dtypes. One branch covers F32/F16/BF16/U32/U64/I32; only F32 benched/parity-tested directly (others share identical machinery; U32 key validated by pass99)."
+}
