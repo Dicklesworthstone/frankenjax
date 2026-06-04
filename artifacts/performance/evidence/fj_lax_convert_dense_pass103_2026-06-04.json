@@ -1,0 +1,16 @@
+{
+    "pass": 103, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "dense data-model fast path with dense output for ConvertElementType",
+    "target": "eval/convert_64k_f64_to_i64 (eval_convert_element_type)",
+    "lever_summary": "ConvertElementType built a Vec<Literal> via per-element convert_literal. Added a dense fast path: dense source (F64/I64 slice) -> dense-output target (F64/I64/Bool exact dtype) via a tight typed loop into new_f64_values/new_i64_values/new_bool_values, bypassing input materialization + convert_literal + the Vec<Literal> output. Other targets / non-dense fall through to generic.",
+    "method": "same-bench A/B; baseline = stashed generic convert_literal loop; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, unaffected).",
+    "results": {
+        "calibration_reduce_us": {"candidate": 8.2215, "baseline": 7.7709, "candidate_worker_slower_x": 1.058},
+        "convert_64k_f64_to_i64": {"baseline_us": 996.07, "candidate_us": 70.991, "raw_x": 14.03, "worker_corrected_x": 14.8}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/tensor_ops.rs", "crates/fj-lax/benches/lax_baseline.rs"],
+        "lever": "eval_convert_element_type: dense source (as_f64_slice/as_i64_slice) x dense-output target (F64/I64/Bool) -> new_*_values typed loop. Added eval/convert_64k_f64_to_i64 bench + convert_element_type_dense_matches_generic_all_targets test (11 targets x f64/i64)."},
+    "isomorphism": {"type": "BIT-IDENTICAL values to convert_literal (F64->I64 v as i64, F64->Bool v!=0.0, I64->F64 v as f64, etc.); dense vs Literal-backed value-equal", "validation": "convert_element_type_dense_matches_generic_all_targets (NaN/inf/-0/extremes, all 11 targets, by bits) + 6 convert tests pass"},
+    "note": "Earlier input-only dense read was ~neutral (1.09x); the win is DENSE OUTPUT (eliminating the Vec<Literal> build + per-element convert_literal). I32/F32/F16/BF16/U32/U64/Complex targets stay generic (no exact-dtype dense storage)."
+}

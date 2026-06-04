@@ -1107,6 +1107,20 @@ fn bench_sort_64k_f64(c: &mut Criterion) {
     });
 }
 
+// ConvertElementType over a 64k dense f64 tensor: dense fast path (pass103,
+// reads as_f64_slice) vs the generic per-element Literal-materialize + convert.
+fn bench_convert_64k_f64_to_i64(c: &mut Criterion) {
+    let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| ((i as f64) * 1.000_173).sin() * 1e6 - (i as f64))
+        .collect();
+    let input = Value::vector_f64(&data).unwrap();
+    let mut p = BTreeMap::new();
+    p.insert("new_dtype".to_owned(), "i64".to_owned());
+    c.bench_function("eval/convert_64k_f64_to_i64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ConvertElementType, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Descending f64 sort over a 64k axis: complement-key radix path (pass102) vs
 // the generic O(n log n) descending comparison sort.
 fn bench_sort_64k_f64_descending(c: &mut Criterion) {
@@ -2339,6 +2353,7 @@ criterion_group!(
     bench_sort_64k_f64,
     bench_argmax_64k_f64,
     bench_sort_64k_f64_descending,
+    bench_convert_64k_f64_to_i64,
     bench_sort_64k_f32,
     bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,

@@ -2591,15 +2591,54 @@ pub(crate) fn eval_convert_element_type(
             Ok(Value::Scalar(converted))
         }
         Value::Tensor(tensor) => {
+            // Dense-output fast path: a dense source slice (F64/I64) converted to
+            // a dense-output target (F64/I64/Bool, exact dtype) is a tight typed
+            // loop into dense storage — bypassing both the input Literal
+            // materialization AND the per-element convert_literal + Vec<Literal>
+            // output build. Values are exactly what convert_literal produces.
+            let shape = tensor.shape.clone();
+            if let Some(values) = tensor.elements.as_f64_slice() {
+                let dense = match target_dtype {
+                    // from_f64(v): identity in value.
+                    DType::F64 => Some(TensorValue::new_f64_values(shape.clone(), values.to_vec())),
+                    // i64_val(F64Bits) == v as i64 (NaN->0, +-inf saturate).
+                    DType::I64 => Some(TensorValue::new_i64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v as i64).collect(),
+                    )),
+                    // bool_val(F64Bits) == v != 0.0 (NaN -> true).
+                    DType::Bool => Some(TensorValue::new_bool_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v != 0.0).collect(),
+                    )),
+                    _ => None,
+                };
+                if let Some(t) = dense {
+                    return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
+                }
+            } else if let Some(values) = tensor.elements.as_i64_slice() {
+                let dense = match target_dtype {
+                    DType::F64 => Some(TensorValue::new_f64_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v as f64).collect(),
+                    )),
+                    DType::I64 => Some(TensorValue::new_i64_values(shape.clone(), values.to_vec())),
+                    DType::Bool => Some(TensorValue::new_bool_values(
+                        shape.clone(),
+                        values.iter().map(|&v| v != 0).collect(),
+                    )),
+                    _ => None,
+                };
+                if let Some(t) = dense {
+                    return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
+                }
+            }
+
             let mut out = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
                 out.push(convert_literal(*literal, target_dtype)?);
             }
-            Ok(Value::Tensor(TensorValue::new(
-                target_dtype,
-                tensor.shape.clone(),
-                out,
-            )?))
+            Ok(Value::Tensor(TensorValue::new(target_dtype, shape, out)?))
         }
     }
 }
@@ -6790,6 +6829,70 @@ mod tests {
         let result = eval_convert_element_type(&[x], &p).unwrap();
         assert_eq!(result.dtype(), DType::F64);
         assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn convert_element_type_dense_matches_generic_all_targets() {
+        // The dense f64/i64 fast path reuses convert_literal on the reconstructed
+        // literal, so it must equal the generic (Literal-backed) path element-by
+        // -element (by bits) for every target dtype, incl tricky casts.
+        let targets = [
+            "f64", "f32", "f16", "bf16", "i64", "i32", "u64", "u32", "bool", "complex64",
+            "complex128",
+        ];
+        let lits = |v: &Value| {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .copied()
+                .collect::<Vec<Literal>>()
+        };
+
+        // f64 source incl NaN / +-inf / +-0 / negative / fractional / large.
+        let fdata = [1.9_f64, -3.7, 0.0, -0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e19, -1e19, 2.5];
+        let f_dense = Value::Tensor(
+            TensorValue::new_f64_values(Shape::vector(fdata.len() as u32), fdata.to_vec()).unwrap(),
+        );
+        let f_lit = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape::vector(fdata.len() as u32),
+                fdata.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(f_dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        assert!(f_lit.as_tensor().unwrap().elements.as_f64_slice().is_none());
+
+        // i64 source incl negatives / extremes.
+        let idata = [1_i64, -3, 0, i64::MIN, i64::MAX, -1, 42, 7];
+        let i_dense = Value::Tensor(
+            TensorValue::new_i64_values(Shape::vector(idata.len() as u32), idata.to_vec()).unwrap(),
+        );
+        let i_lit = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape::vector(idata.len() as u32),
+                idata.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(i_dense.as_tensor().unwrap().elements.as_i64_slice().is_some());
+
+        for t in targets {
+            let p = params(&[("new_dtype", t)]);
+            assert_eq!(
+                lits(&eval_convert_element_type(std::slice::from_ref(&f_dense), &p).unwrap()),
+                lits(&eval_convert_element_type(std::slice::from_ref(&f_lit), &p).unwrap()),
+                "f64 -> {t} dense vs generic"
+            );
+            assert_eq!(
+                lits(&eval_convert_element_type(std::slice::from_ref(&i_dense), &p).unwrap()),
+                lits(&eval_convert_element_type(std::slice::from_ref(&i_lit), &p).unwrap()),
+                "i64 -> {t} dense vs generic"
+            );
+        }
     }
 
     #[test]
