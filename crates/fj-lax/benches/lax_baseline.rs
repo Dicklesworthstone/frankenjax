@@ -1192,6 +1192,20 @@ fn bench_rev_256x256_f64(c: &mut Criterion) {
     });
 }
 
+// Dense i64 BroadcastedIota over a large 2-D shape: dense fast path (pass108,
+// new_i64_values) vs the generic per-element Literal build (+ per-element Result
+// from literal_from_index_for_dtype). Output is built fresh every call (no input
+// to amortize), so the Vec<Literal> output build dominates the generic path.
+fn bench_broadcasted_iota_512x512_i64(c: &mut Criterion) {
+    let mut p = BTreeMap::new();
+    p.insert("shape".to_owned(), "512,512".to_owned());
+    p.insert("dimension".to_owned(), "1".to_owned());
+    p.insert("dtype".to_owned(), "i64".to_owned());
+    c.bench_function("eval/broadcasted_iota_512x512_i64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::BroadcastedIota, &[], &p))
+    });
+}
+
 // Descending f64 sort over a 64k axis: complement-key radix path (pass102) vs
 // the generic O(n log n) descending comparison sort.
 fn bench_sort_64k_f64_descending(c: &mut Criterion) {
@@ -2429,6 +2443,7 @@ criterion_group!(
     bench_pad_256x256_to_258x258_f64,
     bench_rev_256x256_f64,
     bench_one_hot_2048x512_f64,
+    bench_broadcasted_iota_512x512_i64,
     bench_sort_64k_f32,
     bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,

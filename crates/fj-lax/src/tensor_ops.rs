@@ -3115,11 +3115,76 @@ pub(crate) fn eval_broadcasted_iota(
         })?;
     let axis_extent = shape_usize[dimension];
 
-    let mut elements = Vec::with_capacity(total);
-    for flat in 0..total {
-        let axis_index = (flat / stride) % axis_extent;
-        elements.push(literal_from_index_for_dtype(primitive, dtype, axis_index)?);
+    // Structural construction: the iota value at a flat index is
+    // `(flat / stride) % axis_extent`, i.e. the coordinate along `dimension`.
+    // That value is constant across each contiguous run of `stride` elements;
+    // the runs cycle `0..axis_extent` to form a block of length
+    // `axis_extent * stride`; and that block repeats `outer` times, where
+    // `outer` is the product of the dimensions before `dimension`. So the whole
+    // tensor is built with bulk per-value fills + memcpy block repeats
+    // (`extend_from_within`), eliminating the per-element division entirely. The
+    // `axis_values` (only `axis_extent` of them, not one per output element)
+    // carry the exact same values `literal_from_index_for_dtype` would produce,
+    // so the output is bit-for-bit identical to the prior per-element loop.
+    //
+    // `outer` divides `total` exactly (total = outer * axis_extent * stride) and
+    // both `stride` and `axis_extent` are >= 1 here (a zero trailing dim would
+    // have made `total == 0`, handled above).
+    let block_len = axis_extent * stride;
+    let outer = total / block_len;
+
+    // `iota_from_axis_values` fills `stride` copies of each axis value to build
+    // one block, then repeats that block `outer` times via `extend_from_within`
+    // (a memcpy), generic over the element type so the dense (i64/f64) and
+    // Literal paths share identical layout logic.
+    fn iota_from_axis_values<T: Copy>(
+        axis_values: &[T],
+        stride: usize,
+        outer: usize,
+        total: usize,
+    ) -> Vec<T> {
+        let block_len = axis_values.len() * stride;
+        let mut out = Vec::with_capacity(total);
+        for &v in axis_values {
+            out.resize(out.len() + stride, v);
+        }
+        for _ in 1..outer {
+            out.extend_from_within(0..block_len);
+        }
+        out
     }
+
+    // Dense-output fast paths for the common iota dtypes (I64 is the default).
+    // I64/F64 never overflow (unlike I32/U32), and `a as i64` / `a as f64`
+    // reproduce `literal_from_index_for_dtype` exactly.
+    match dtype {
+        DType::I64 => {
+            let axis_values: Vec<i64> = (0..axis_extent as i64).collect();
+            let out = iota_from_axis_values(&axis_values, stride, outer, total);
+            return Ok(Value::Tensor(TensorValue::new_i64_values(
+                Shape { dims: shape_u32 },
+                out,
+            )?));
+        }
+        DType::F64 => {
+            let axis_values: Vec<f64> = (0..axis_extent).map(|a| a as f64).collect();
+            let out = iota_from_axis_values(&axis_values, stride, outer, total);
+            return Ok(Value::Tensor(TensorValue::new_f64_values(
+                Shape { dims: shape_u32 },
+                out,
+            )?));
+        }
+        _ => {}
+    }
+
+    // Generic (Literal) path: build the small per-axis-value `Literal` table
+    // once (this is where I32/U32 range checks happen), then the same fill +
+    // block-repeat layout. `block_len` element-wise clones for the first block,
+    // the rest memcpy.
+    let axis_values: Vec<Literal> = (0..axis_extent)
+        .map(|a| literal_from_index_for_dtype(primitive, dtype, a))
+        .collect::<Result<_, _>>()?;
+    let elements = iota_from_axis_values(&axis_values, stride, outer, total);
 
     Ok(Value::Tensor(TensorValue::new(
         dtype,

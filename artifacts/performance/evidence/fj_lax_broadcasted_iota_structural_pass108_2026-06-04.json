@@ -1,0 +1,23 @@
+{
+  "pass": 108,
+  "crate": "fj-lax",
+  "target": "eval/broadcasted_iota_512x512_i64",
+  "function": "eval_broadcasted_iota",
+  "lever": "Replace per-element (flat/stride)%axis_extent division + Vec<Literal> with structural run-length fill + extend_from_within memcpy block-repeat; no per-element division; dense I64/F64 output via new_*_values.",
+  "baseline_us": 2176.8,
+  "candidate_us": 45.365,
+  "calibration_baseline_us": 9.4964,
+  "calibration_candidate_us": 8.3760,
+  "speedup_raw": 48.0,
+  "speedup_worker_corrected": 42.3,
+  "score": 10.0,
+  "negative_results": [
+    "dense-output-only iota (kept per-element division): 1.60x worker-corrected, below 2x bar (division dominates both paths)",
+    "dense-output eval_transpose: ~13% REGRESSION (generic already cache-blocked + division-free; criterion amortizes input materialization); reverted"
+  ],
+  "isomorphism": "bit-identical; flat=o*ax*st+a*st+s => (flat/st)%ax=a; constructed buffer holds axis_values[a] at block pos a*st+s, block repeated outer times.",
+  "golden": "fj_lax_broadcasted_iota_structural_pass108_2026-06-04.golden",
+  "golden_sha256": "f78e84d46b7ff7d4ef12df610ea749b1d2f806b4cec3107aee7cf4f1238e42e0",
+  "tests": "broadcasted_iota_dense_matches_reference + 12 iota tests pass; clippy -D warnings clean",
+  "date": "2026-06-04"
+}

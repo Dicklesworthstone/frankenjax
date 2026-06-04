@@ -3842,6 +3842,44 @@ mod tests {
     }
 
     #[test]
+    fn broadcasted_iota_dense_matches_reference() {
+        // The dense I64/F64 BroadcastedIota fast path must produce dense storage
+        // whose values equal an independent reference computed with the same
+        // `(flat / stride) % axis_extent` index formula. Exercise a rank-3 shape
+        // with a non-leading iota dimension.
+        let dims = [3_usize, 4, 5];
+        let dimension = 1_usize; // axis carrying the iota
+        let total: usize = dims.iter().product();
+        let stride: usize = dims[(dimension + 1)..].iter().product();
+        let axis_extent = dims[dimension];
+        let expected: Vec<i64> = (0..total)
+            .map(|flat| ((flat / stride) % axis_extent) as i64)
+            .collect();
+
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "3,4,5".to_string());
+        params.insert("dimension".into(), "1".to_string());
+
+        // I64 (default dtype): dense storage + value-equal to reference.
+        params.insert("dtype".into(), "i64".to_string());
+        let i_out = eval_primitive(Primitive::BroadcastedIota, &[], &params).unwrap();
+        let i_tensor = i_out.as_tensor().unwrap();
+        assert_eq!(i_tensor.shape.dims, vec![3, 4, 5]);
+        assert!(i_tensor.elements.as_i64_slice().is_some(), "i64 iota should be dense");
+        assert_eq!(i_tensor.elements.as_i64_slice().unwrap(), expected.as_slice());
+
+        // F64: dense storage + bit-equal to `index as f64`.
+        params.insert("dtype".into(), "f64".to_string());
+        let f_out = eval_primitive(Primitive::BroadcastedIota, &[], &params).unwrap();
+        let f_tensor = f_out.as_tensor().unwrap();
+        assert!(f_tensor.elements.as_f64_slice().is_some(), "f64 iota should be dense");
+        let f_bits: Vec<u64> =
+            f_tensor.elements.as_f64_slice().unwrap().iter().map(|v| v.to_bits()).collect();
+        let exp_bits: Vec<u64> = expected.iter().map(|&v| (v as f64).to_bits()).collect();
+        assert_eq!(f_bits, exp_bits, "f64 iota dense vs reference");
+    }
+
+    #[test]
     fn broadcast_in_dim_empty_huge_tensor_returns_empty_tensor() {
         let huge = u32::MAX;
         let input = Value::Tensor(
