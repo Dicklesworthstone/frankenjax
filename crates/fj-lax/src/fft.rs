@@ -291,6 +291,128 @@ fn idft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
 /// so X[k] = chirp[k]·Σ_j (x[j]·chirp[j])·conj(chirp[k−j]) — a convolution of
 /// a[j] = x[j]·chirp[j] with the kernel conj(chirp). The chirp exponent is
 /// 2n-periodic in t², so t²·mod·2n keeps the angle small and accurate.
+/// A Bluestein "plan" for a fixed transform length `n` and direction: the chirp
+/// table and the FFT of the convolution kernel. For a batched transform (an FFT
+/// along the last axis of `[B, n]`) these are identical for every one of the `B`
+/// rows, so building the plan once and reusing it across rows removes the
+/// per-row chirp `sin_cos` table builds, the per-row kernel FFT, and the per-row
+/// allocations — turning ~3 FFTs + ~3n trig calls per row into ~2 FFTs and zero
+/// trig per row.
+struct BluesteinPlan {
+    n: usize,
+    m: usize,
+    inverse: bool,
+    /// chirp[t] = e^{sign·πi·t²/n} for t in 0..n (sign = -1 forward, +1 inverse).
+    chirp: Vec<(f64, f64)>,
+    /// FFT of the symmetric conj(chirp) kernel, length m (invariant across rows).
+    fb: Vec<(f64, f64)>,
+}
+
+/// Reusable per-row work buffers for [`BluesteinPlan::apply_into`].
+#[derive(Default)]
+struct BluesteinScratch {
+    a: Vec<(f64, f64)>,
+    fa: Vec<(f64, f64)>,
+    prod: Vec<(f64, f64)>,
+    conv: Vec<(f64, f64)>,
+}
+
+impl BluesteinPlan {
+    /// Precompute the chirp table and kernel FFT for length `n` (`n >= 2`).
+    fn new(n: usize, inverse: bool) -> Self {
+        let sign = if inverse { 1.0 } else { -1.0 };
+        let two_n = 2_u128 * n as u128;
+        // chirp exponent is 2n-periodic in t², so t²·mod·2n keeps the angle
+        // small and accurate.
+        let chirp: Vec<(f64, f64)> = (0..n)
+            .map(|t| {
+                let m2 = ((t as u128 * t as u128) % two_n) as f64;
+                let angle = sign * PI * m2 / (n as f64);
+                let (s, c) = angle.sin_cos();
+                (c, s)
+            })
+            .collect();
+
+        // Convolution length: a power of two >= 2n-1, so the size-m circular
+        // convolution reproduces the linear convolution Bluestein requires.
+        let m = (2 * n - 1).next_power_of_two();
+        let mut b = vec![(0.0_f64, 0.0_f64); m];
+        // Kernel g[d] = conj(chirp[d]); symmetric-extended.
+        b[0] = (1.0, 0.0);
+        for j in 1..n {
+            let (cr, ci) = chirp[j];
+            let g = (cr, -ci);
+            b[j] = g;
+            b[m - j] = g;
+        }
+        let mut fb = Vec::new();
+        radix2_fft_1d_into(&b, &mut fb, false);
+
+        Self {
+            n,
+            m,
+            inverse,
+            chirp,
+            fb,
+        }
+    }
+
+    /// Transform one length-`n` row into `output`, reusing `scratch`.
+    fn apply_into(
+        &self,
+        input: &[(f64, f64)],
+        scratch: &mut BluesteinScratch,
+        output: &mut Vec<(f64, f64)>,
+    ) {
+        let BluesteinScratch { a, fa, prod, conv } = scratch;
+        let n = self.n;
+        let m = self.m;
+
+        a.clear();
+        a.resize(m, (0.0, 0.0));
+        for (j, slot) in a.iter_mut().take(n).enumerate() {
+            let (cr, ci) = self.chirp[j];
+            let (xr, xi) = input[j];
+            *slot = (xr * cr - xi * ci, xr * ci + xi * cr);
+        }
+
+        radix2_fft_1d_into(a, fa, false);
+
+        prod.clear();
+        prod.resize(m, (0.0, 0.0));
+        for (p, (&(ar, ai), &(br, bi))) in prod.iter_mut().zip(fa.iter().zip(self.fb.iter())) {
+            *p = (ar * br - ai * bi, ar * bi + ai * br);
+        }
+
+        radix2_fft_1d_into(prod, conv, true);
+
+        let inv_n = if self.inverse { 1.0 / (n as f64) } else { 1.0 };
+        output.clear();
+        output.reserve(n);
+        for (k, &(vr, vi)) in conv.iter().take(n).enumerate() {
+            let (cr, ci) = self.chirp[k];
+            output.push(((cr * vr - ci * vi) * inv_n, (cr * vi + ci * vr) * inv_n));
+        }
+    }
+}
+
+/// Bluestein's algorithm (chirp-z transform): the length-`n` DFT for ARBITRARY
+/// `n` in O(n log n), by re-expressing the transform as a convolution evaluated
+/// with power-of-two radix-2 FFTs — replacing the O(n²) direct [`dft_1d`] for
+/// non-power-of-two lengths.
+///
+/// `inverse == false` matches [`dft_1d`] (X[k] = Σ x[j]·e^{-2πi·jk/n}); `inverse
+/// == true` matches [`idft_1d`] (the +sign transform scaled by 1/n). The result
+/// is bit-different from the direct DFT but agrees to floating tolerance (both
+/// compute the same mathematical transform).
+///
+/// Single-shot entry point (builds a one-row plan). Batched callers should build
+/// a [`BluesteinPlan`] once and reuse it across rows via [`BluesteinPlan::apply_into`].
+///
+/// Derivation: with W = e^{sign·2πi/n}, jk = (j²+k²−(k−j)²)/2 gives
+/// W^{jk} = chirp[j]·chirp[k]·conj(chirp[k−j]) where chirp[t] = e^{sign·πi·t²/n},
+/// so X[k] = chirp[k]·Σ_j (x[j]·chirp[j])·conj(chirp[k−j]) — a convolution of
+/// a[j] = x[j]·chirp[j] with the kernel conj(chirp).
 fn bluestein_dft_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>, inverse: bool) {
     let n = input.len();
     output.clear();
@@ -302,57 +424,9 @@ fn bluestein_dft_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>, invers
         output.push(input[0]);
         return;
     }
-
-    let sign = if inverse { 1.0 } else { -1.0 };
-    let two_n = 2_u128 * n as u128;
-    let chirp = |t: usize| -> (f64, f64) {
-        let m2 = ((t as u128 * t as u128) % two_n) as f64;
-        let angle = sign * PI * m2 / (n as f64);
-        let (s, c) = angle.sin_cos();
-        (c, s)
-    };
-
-    // Convolution length: a power of two >= 2n-1, so the circular convolution of
-    // the padded sequences equals the linear convolution Bluestein requires.
-    let m = (2 * n - 1).next_power_of_two();
-
-    let mut a = vec![(0.0_f64, 0.0_f64); m];
-    let mut b = vec![(0.0_f64, 0.0_f64); m];
-
-    for j in 0..n {
-        let (cr, ci) = chirp(j);
-        let (xr, xi) = input[j];
-        a[j] = (xr * cr - xi * ci, xr * ci + xi * cr);
-    }
-    // Kernel g[d] = conj(chirp[d]); symmetric-extended so the size-m circular
-    // convolution reproduces the linear convolution at indices 0..n.
-    b[0] = (1.0, 0.0);
-    for j in 1..n {
-        let (cr, ci) = chirp(j);
-        let g = (cr, -ci);
-        b[j] = g;
-        b[m - j] = g;
-    }
-
-    let mut fa = Vec::new();
-    let mut fb = Vec::new();
-    radix2_fft_1d_into(&a, &mut fa, false);
-    radix2_fft_1d_into(&b, &mut fb, false);
-
-    let mut prod = vec![(0.0_f64, 0.0_f64); m];
-    for (p, (&(ar, ai), &(br, bi))) in prod.iter_mut().zip(fa.iter().zip(fb.iter())) {
-        *p = (ar * br - ai * bi, ar * bi + ai * br);
-    }
-
-    let mut conv = Vec::new();
-    radix2_fft_1d_into(&prod, &mut conv, true);
-
-    let inv_n = if inverse { 1.0 / (n as f64) } else { 1.0 };
-    output.reserve(n);
-    for (k, &(vr, vi)) in conv.iter().take(n).enumerate() {
-        let (cr, ci) = chirp(k);
-        output.push(((cr * vr - ci * vi) * inv_n, (cr * vi + ci * vr) * inv_n));
-    }
+    let plan = BluesteinPlan::new(n, inverse);
+    let mut scratch = BluesteinScratch::default();
+    plan.apply_into(input, &mut scratch, output);
 }
 
 fn bit_reverse_permute(values: &mut [(f64, f64)]) {
@@ -490,10 +564,17 @@ pub(crate) fn eval_fft(
 
     let mut out_elements = Vec::with_capacity(elements.len());
     let mut transform_buf = Vec::with_capacity(n);
+    // Non-power-of-two: build the Bluestein plan once and reuse it across every
+    // row, instead of rebuilding the chirp table + kernel FFT per row.
+    let plan = (n > 1 && !n.is_power_of_two()).then(|| BluesteinPlan::new(n, false));
+    let mut scratch = BluesteinScratch::default();
     for batch in 0..batch_size {
         let start = batch * n;
         let slice = &elements[start..start + n];
-        fft_1d_into(slice, &mut transform_buf);
+        match &plan {
+            Some(plan) => plan.apply_into(slice, &mut scratch, &mut transform_buf),
+            None => fft_1d_into(slice, &mut transform_buf),
+        }
         for &(re, im) in &transform_buf {
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }
@@ -544,10 +625,15 @@ pub(crate) fn eval_ifft(
 
     let mut out_elements = Vec::with_capacity(elements.len());
     let mut transform_buf = Vec::with_capacity(n);
+    let plan = (n > 1 && !n.is_power_of_two()).then(|| BluesteinPlan::new(n, true));
+    let mut scratch = BluesteinScratch::default();
     for batch in 0..batch_size {
         let start = batch * n;
         let slice = &elements[start..start + n];
-        ifft_1d_into(slice, &mut transform_buf);
+        match &plan {
+            Some(plan) => plan.apply_into(slice, &mut scratch, &mut transform_buf),
+            None => ifft_1d_into(slice, &mut transform_buf),
+        }
         for &(re, im) in &transform_buf {
             out_elements.push(make_complex_literal(re, im, out_dtype));
         }

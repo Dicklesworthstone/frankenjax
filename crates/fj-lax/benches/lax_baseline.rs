@@ -25,6 +25,22 @@ fn complex_vector(len: usize) -> Value {
     })
 }
 
+fn complex_matrix(rows: usize, cols: usize) -> Value {
+    let elements: Vec<Literal> = (0..rows * cols)
+        .map(|i| {
+            let x = i as f64;
+            Literal::from_complex128((x * 0.125).sin(), (x * 0.25).cos())
+        })
+        .collect();
+    Value::Tensor(TensorValue {
+        dtype: DType::Complex128,
+        shape: Shape {
+            dims: vec![rows as u32, cols as u32],
+        },
+        elements: elements.into(),
+    })
+}
+
 fn real_vector(len: usize) -> Value {
     let elements: Vec<Literal> = (0..len)
         .map(|i| {
@@ -1770,6 +1786,17 @@ fn bench_fft_1009_prime(c: &mut Criterion) {
     });
 }
 
+// Batched non-power-of-two FFT along the last axis: 128 rows of length 1000.
+// Exercises the shared Bluestein plan (chirp table + kernel FFT built once and
+// reused across all 128 rows) vs the per-row rebuild.
+fn bench_fft_batch_128x1000(c: &mut Criterion) {
+    let input = complex_matrix(128, 1000);
+    let p = no_params();
+    c.bench_function("eval/fft_batch_128x1000_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_rfft_256(c: &mut Criterion) {
     let input = real_vector(256);
     let p = no_params();
@@ -2236,6 +2263,7 @@ criterion_group!(
     bench_ifft_256,
     bench_fft_1000,
     bench_fft_1009_prime,
+    bench_fft_batch_128x1000,
     bench_rfft_256,
     bench_irfft_256,
     bench_reshape,

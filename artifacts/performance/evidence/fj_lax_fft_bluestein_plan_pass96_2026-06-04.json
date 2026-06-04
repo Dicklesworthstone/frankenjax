@@ -1,0 +1,21 @@
+{
+    "pass": 96, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "structural: FFTW-style shared Bluestein plan across batched rows (bit-exact)",
+    "target": "eval/fft_batch_128x1000_complex128 (eval_fft/eval_ifft non-power-of-two batched path)",
+    "lever_summary": "Hoist the per-row Bluestein chirp table + kernel-FFT into a BluesteinPlan built once per (n,direction) and reused across all rows of a batched FFT, with a reusable BluesteinScratch. Eliminates per-row ~3n sin_cos, the per-row kernel FFT, and 6 per-row allocations. Single calls also compute the chirp table once instead of 3 sin_cos loops.",
+    "method": "same-bench A/B; baseline = stashed per-row Bluestein (pass95); normalized by eval/fft_256 (pow2 radix-2, unaffected) calibration.",
+    "results": {
+        "calibration_fft_256_us": {"candidate": 5.643, "baseline": 5.901, "worker_ratio": 1.046},
+        "fft_batch_128x1000": {"baseline_ms": 25.358, "candidate_ms": 11.180, "raw_x": 2.27, "worker_corrected_x": 2.17},
+        "fft_1000_single": {"baseline_us": 221.28, "candidate_us": 140.12, "raw_x": 1.58, "worker_corrected_x": 1.51}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/fft.rs", "crates/fj-lax/benches/lax_baseline.rs"],
+        "lever": "Added BluesteinPlan {chirp table, fb} + BluesteinScratch + apply_into; bluestein_dft_into builds a one-shot plan; eval_fft/eval_ifft build the plan once for non-pow2 n and reuse across rows. Added eval/fft_batch_128x1000 bench + complex_matrix helper."},
+    "isomorphism": {"type": "BIT-IDENTICAL to committed per-row Bluestein (pass95) — same chirp values, kernel FFT, products, inverse FFT, scaling; only hoisted/table-ized", "validation": "30 fft tests + linalg_fft_oracle_parity (real jnp.fft) pass"},
+    "validation": [
+        {"name": "fft_tests", "command": "rch exec -- cargo test -p fj-lax --release fft", "result": "30 passed"},
+        {"name": "clippy", "command": "rch exec -- cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings", "result": "clean"}
+    ],
+    "note": "Builds on pass95 Bluestein. Headline win is the batched real-world case (2.17x). Next: rfft does a wasteful full-complex FFT — the half-size real-packing trick is a separate ~2x candidate."
+}

@@ -1,0 +1,12 @@
+pass96 golden — fj-lax batched FFT: shared Bluestein plan (chirp table + kernel FFT reused across rows)
+target=eval/fft_batch_128x1000_complex128 (eval_fft/eval_ifft non-power-of-two batched path); also eval/fft_1000_complex128 (single)
+lever=FFTW-style plan reuse. For an FFT along the last axis of [B, n] with non-power-of-two n, the Bluestein chirp table and the convolution-kernel FFT (fb) are IDENTICAL for all B rows, but the previous code rebuilt them (plus ~3n sin_cos and a full kernel FFT and 6 allocations) per row. Introduced BluesteinPlan (chirp table + fb, built once per (n,direction)) + reusable BluesteinScratch; eval_fft/eval_ifft build the plan once and call plan.apply_into per row. Single calls also benefit: the chirp table is now computed once instead of in 3 separate sin_cos loops.
+method=same-bench A/B on RCH Criterion; baseline = git-stashed per-row Bluestein (committed pass95); candidate = shared plan. Normalized by eval/fft_256_complex128 (power-of-two -> radix-2, UNAFFECTED by this change) as a worker-speed calibration.
+calibration_fft_256=candidate 5.643us vs baseline 5.901us -> workers differ 1.046x
+fft_batch_128x1000=baseline 25.358ms [24.606, 26.212] vs candidate 11.180ms [11.095, 11.273] = 2.27x raw -> 2.17x worker-corrected
+fft_1000_single=baseline 221.28us [210.09, 233.50] vs candidate 140.12us [138.77, 141.64] = 1.58x raw -> 1.51x worker-corrected
+score=impact 4 (FFT is common; batched-over-last-axis is the real-world shape) x confidence 5 (BIT-EXACT reorganization of pass95 Bluestein; 30 fft tests + JAX oracle pass) / effort 2 = 10.0
+alien_primitive=precomputed transform plan / arena scratch reuse across a batch (FFTW "plan" pattern) on the existing safe-Rust radix-2 + Bluestein kernels
+isomorphism=BIT-IDENTICAL to the committed per-row Bluestein (pass95). Same chirp values chirp[t]=e^{sign*pi*i*(t^2 mod 2n)/n}, same symmetric conj-chirp kernel and its radix-2 FFT, same a[j]=x[j]*chirp[j], same fa*fb pointwise product, same inverse FFT, same chirp[k]*conv[k]*inv_n — only hoisted out of the per-row loop and table-ized. No arithmetic or ordering change.
+golden_note=30 fj-lax fft tests pass (incl bluestein_matches_direct_dft_across_sizes at 1e-9 over primes+composites, non_power_of_two_lengths_match_dft_reference at 1e-10, round-trips); fj-conformance linalg_fft_oracle_parity (real jnp.fft) passes.
+validation=RCH cargo test -p fj-lax --release fft: 30 passed; RCH cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings: clean.
