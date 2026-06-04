@@ -1,0 +1,91 @@
+{
+  "bead": "frankenjax-y5pyk",
+  "pass": 75,
+  "crate": "fj-dispatch",
+  "target": "vmap_eigh/batched_matrix_3x3",
+  "profile_backed": true,
+  "lever": "Reuse Jacobi Eigh row scratch buffers across iterations instead of allocating new row vectors inside every Jacobi rotation.",
+  "source_files": [
+    "crates/fj-dispatch/src/batching.rs"
+  ],
+  "baseline": {
+    "source": "Pass74 final same-worker RCH rebench after axis0 Eigh move elision",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-pass74-eigh-rebench rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_eigh/batched_matrix_3x3 --noplot --sample-size 20 --warm-up-time 1 --measurement-time 3",
+    "worker": "ts2",
+    "time_us": {
+      "lower": 368.92,
+      "mean": 371.56,
+      "upper": 373.73
+    }
+  },
+  "rebench": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_eigh/batched_matrix_3x3 --noplot --sample-size 20 --warm-up-time 1 --measurement-time 3",
+    "worker": "ts2",
+    "time_us": {
+      "lower": 307.93,
+      "mean": 308.67,
+      "upper": 309.51
+    }
+  },
+  "speedup": {
+    "mean": 1.2037,
+    "conservative": 1.1919
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 5,
+    "effort": 1,
+    "value": 15.0,
+    "decision": "keep"
+  },
+  "alien_inputs": [
+    "arena/slab reuse: move fixed-size loop scratch allocation out of the hot Jacobi rotation loop",
+    "preserve the existing numerical algorithm and operation order while reducing allocator traffic"
+  ],
+  "isomorphism_proof": {
+    "ordering": "The same p/q pivot scan, row update loops, eigenvector update loops, and output sorting order execute unchanged.",
+    "tie_breaking": "Eigenvalue sorting remains indices.sort_by with f64::total_cmp on computed eigenvalues.",
+    "floating_point": "Each row element and eigenvector element is computed by the same multiply/add/sub expressions in the same order; only Vec allocation lifetime changes.",
+    "rng": "No RNG state is read or written.",
+    "fallback": "Input validation, shape/rank errors, non-square errors, batch fallback, and nonleading batch movement are unchanged."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_eigh_jacobi_row_scratch_pass75_2026-06-04.golden",
+    "sha256": "bcb7a043a581d165097ff63b7dc9caba550b1ed4a724a1f3d208254e31523e21",
+    "verified_by": "sha256sum artifacts/performance/evidence/fj_dispatch_eigh_jacobi_row_scratch_pass75_2026-06-04.golden"
+  },
+  "validation": [
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch --all-targets",
+      "worker": "ts2",
+      "result": "255 unit tests passed; 55 integration tests passed; dispatch_baseline bench harness smoke passed"
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-dispatch --all-targets",
+      "worker": "ts2",
+      "result": "passed"
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "worker": "ts2",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt --check -p fj-dispatch",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check -- crates/fj-dispatch/src/batching.rs",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/batching.rs",
+      "result": "exit 0; 0 critical findings; fmt/clippy/build checks clean; existing file-wide warning inventory remains"
+    }
+  ],
+  "coordination": {
+    "agent": "BlackThrush",
+    "bead_claim": "frankenjax-y5pyk assigned to BlackThrush",
+    "file_reservation": "Agent Mail reservation mutation blocked by split-brain mailbox lock from unrelated FrankenNumPy inbox processes; proceeded under the Beads claim and avoided unrelated dirty files."
+  }
+}

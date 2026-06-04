@@ -3106,6 +3106,8 @@ fn jacobi_eigendecomposition_matrix(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f
 
     let max_iter = 100 * n * n;
     let tol = f64::EPSILON * 1e2;
+    let mut new_row_p = vec![0.0; n];
+    let mut new_row_q = vec![0.0; n];
 
     for _ in 0..max_iter {
         let mut max_val = 0.0_f64;
@@ -3138,8 +3140,6 @@ fn jacobi_eigendecomposition_matrix(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f
 
         let (sin_t, cos_t) = theta.sin_cos();
 
-        let mut new_row_p = vec![0.0; n];
-        let mut new_row_q = vec![0.0; n];
         for i in 0..n {
             new_row_p[i] = cos_t * a[p * n + i] + sin_t * a[q * n + i];
             new_row_q[i] = -sin_t * a[p * n + i] + cos_t * a[q * n + i];
@@ -7800,6 +7800,45 @@ mod tests {
         assert_eq!(
             outputs[1].value.as_tensor().unwrap().shape.dims,
             vec![2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_eigh_multi_leading_batch_dim_golden_sha256() {
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 2],
+                [
+                    2.0, 0.0, 0.0, 3.0, // batch element 0
+                    4.0, 1.0, 1.0, 4.0, // batch element 1
+                ]
+                .as_slice(),
+            ),
+            0,
+        );
+
+        let outputs = apply_batch_rule_multi(Primitive::Eigh, &[input], &BTreeMap::new()).unwrap();
+        let w = outputs[0].value.as_tensor().unwrap();
+        let v = outputs[1].value.as_tensor().unwrap();
+        let w_bits: Vec<u64> = extract_f64_vec(&outputs[0].value)
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        let v_bits: Vec<u64> = extract_f64_vec(&outputs[1].value)
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        let digest = fj_test_utils::fixture_id_from_json(&(
+            w.shape.dims.clone(),
+            w_bits,
+            v.shape.dims.clone(),
+            v_bits,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            digest,
+            "de40295687095bc622bd73074d24337004f440bdd2cc65d8a8759dfb5cf0b106"
         );
     }
 
