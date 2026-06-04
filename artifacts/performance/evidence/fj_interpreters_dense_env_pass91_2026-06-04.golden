@@ -1,0 +1,13 @@
+frankenjax-y0hsx pass91 golden — fj-interpreters flat slot-array environment
+target=eval_jaxpr_throughput/chain_add (fj-interpreters eval_jaxpr_with_consts)
+lever=replace the FxHashMap<VarId,Value> interpreter environment with a flat Vec<Option<Value>> indexed by VarId.0 (different memory layout: O(1) array index per variable lookup, single allocation), plus an allocation-free reused input-scratch buffer and a direct single-output eval_primitive dispatch. A sparse/huge-id fallback retains the FxHashMap path.
+method=same-worker RCH Criterion; baseline = pre-change FxHashMap interpreter (pass90 profile); calibration = vmap_eigh/batched_matrix_3x3 (few-equation, kernel-dominated; ~unaffected by the env change)
+worker=rch dispatch_baseline (calibration vmap_eigh 236.07us vs pass90 241.5us => ~2% worker delta)
+chain_add/1000=candidate 67.328us [66.599, 68.074] vs baseline 117.04us = 1.74x
+chain_add/100=candidate 6.7986us [6.7244, 6.8736] vs baseline 11.927us = 1.75x
+chain_add/10=candidate 0.80983us [0.80382, 0.81610] vs baseline 1.1108us = 1.37x
+score=impact 4 (universal interpreter hot loop: every eval/jit/grad/vmap execution path) x confidence 5 (bit-exact; dense_and_hashed_envs_agree parity test + 131 fj-interpreters tests pass; calibration-confirmed) / effort 2 = 10.0
+alien_primitive=flat array-indexed environment replacing a hash map (different memory layout) + arena-style reused scratch buffer; alien_cs_graveyard memory-layout / dense-storage section
+isomorphism=identical results to the prior FxHashMap interpreter. Same input-resolution order (input atoms in order; Atom::Var -> env lookup, Atom::Lit -> Value::Scalar), same primitive dispatch (single-output prims call eval_primitive directly — bit-identical to eval_primitive_multi's vec![eval_primitive] for non-multi prims, gated on outputs.len()==1; multi-output/sub-jaxpr equations route through the shared eval_equation_outputs_from_resolved), same MissingVariable errors (dense bounds-checked get + None == HashMap get None), same output collection order. Variable ids are minted densely+sequentially by the tracer (ensure_dense_var), so the dense path is taken for traced jaxprs; pathological sparse/huge ids fall back to the identical-semantics FxHashMap path (proven equal by dense_and_hashed_envs_agree).
+golden_note=dense vs hashed env produce bit-identical Value outputs (dense_and_hashed_envs_agree: (a+b)*a over dense ids and ids offset by 5_000_000); all 131 fj-interpreters tests (which assert exact Value equality) pass against the new dense path.
+validation=RCH cargo test -p fj-interpreters --release: 131 passed (incl dense_and_hashed_envs_agree). RCH cargo clippy -p fj-interpreters --release --all-targets --no-deps -- -D warnings: clean.

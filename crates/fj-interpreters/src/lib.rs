@@ -619,27 +619,31 @@ pub fn eval_equation_outputs(
     equation: &Equation,
     env: &FxHashMap<VarId, Value>,
 ) -> Result<Vec<Value>, InterpreterError> {
+    let resolved = resolve_equation_inputs(equation, env)?;
+    eval_equation_outputs_from_resolved(equation, &resolved)
+}
+
+/// Evaluate `equation` from its already-resolved input values.
+///
+/// This is the part of [`eval_equation_outputs`] that does not touch the
+/// variable environment: given the equation's inputs already resolved to
+/// `Value`s (in atom order), it dispatches to the multi-output primitive
+/// evaluator or the control-flow sub-jaxpr evaluators and validates output
+/// arity. Splitting it out lets both the hash-map environment and the flat
+/// slot-array environment share identical evaluation/dispatch semantics —
+/// they differ only in how inputs are resolved.
+fn eval_equation_outputs_from_resolved(
+    equation: &Equation,
+    resolved: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
     let outputs = if equation.sub_jaxprs.is_empty() {
-        let resolved = resolve_equation_inputs(equation, env)?;
-        eval_primitive_multi(equation.primitive, &resolved, &equation.params)?
+        eval_primitive_multi(equation.primitive, resolved, &equation.params)?
     } else {
         match equation.primitive {
-            Primitive::Cond => {
-                let resolved = resolve_equation_inputs(equation, env)?;
-                evaluate_cond_sub_jaxprs(equation, &resolved)?
-            }
-            Primitive::Scan => {
-                let resolved = resolve_equation_inputs(equation, env)?;
-                evaluate_scan_sub_jaxprs(equation, &resolved)?
-            }
-            Primitive::While => {
-                let resolved = resolve_equation_inputs(equation, env)?;
-                evaluate_while_sub_jaxprs(equation, &resolved)?
-            }
-            Primitive::Switch => {
-                let resolved = resolve_equation_inputs(equation, env)?;
-                evaluate_switch_sub_jaxprs(equation, &resolved)?
-            }
+            Primitive::Cond => evaluate_cond_sub_jaxprs(equation, resolved)?,
+            Primitive::Scan => evaluate_scan_sub_jaxprs(equation, resolved)?,
+            Primitive::While => evaluate_while_sub_jaxprs(equation, resolved)?,
+            Primitive::Switch => evaluate_switch_sub_jaxprs(equation, resolved)?,
             primitive => {
                 return Err(InterpreterError::Primitive(EvalError::Unsupported {
                     primitive,
@@ -660,6 +664,24 @@ pub fn eval_equation_outputs(
         });
     }
     Ok(outputs)
+}
+
+/// True for the multi-output primitives whose `eval_primitive` (single-output)
+/// result would silently drop later outputs. The interpreter routes these
+/// through the multi-output path; everything else can take the single-output
+/// fast path. Mirrors the list in [`eval_equation_single`].
+#[inline]
+fn is_multi_output_primitive(primitive: Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Qr
+            | Primitive::Lu
+            | Primitive::Svd
+            | Primitive::Eigh
+            | Primitive::TopK
+            | Primitive::Slogdet
+            | Primitive::Eig
+    )
 }
 
 /// Single-output fast path for [`eval_equation_outputs`].
@@ -730,6 +752,102 @@ pub fn eval_jaxpr_with_consts(
         });
     }
 
+    // The tracer mints variables densely and sequentially (`ensure_dense_var`
+    // in fj-trace), so the defined-variable ids are a compact range. When that
+    // holds we evaluate against a flat `Vec<Option<Value>>` indexed by
+    // `VarId.0` — a direct array index per lookup instead of a hash, and a
+    // single allocation instead of an incrementally-grown hash map. Pathological
+    // (sparse / very large) id ranges fall back to the hash-map environment so
+    // we never over-allocate. Both paths are bit-for-bit identical: same input
+    // resolution order, same primitive dispatch, same `MissingVariable` errors.
+    let mut max_var: u32 = 0;
+    let mut def_count: usize = 0;
+    for var in jaxpr.constvars.iter().chain(jaxpr.invars.iter()) {
+        max_var = max_var.max(var.0);
+        def_count += 1;
+    }
+    for eqn in &jaxpr.equations {
+        for out_var in &eqn.outputs {
+            max_var = max_var.max(out_var.0);
+            def_count += 1;
+        }
+    }
+    let slots_needed = max_var as usize + 1;
+    if slots_needed <= def_count.saturating_mul(8).max(256) {
+        eval_jaxpr_dense_env(jaxpr, const_values, args, slots_needed)
+    } else {
+        eval_jaxpr_hashed_env(jaxpr, const_values, args)
+    }
+}
+
+/// Flat slot-array interpreter environment (hot path). `slots` must be
+/// `max_defined_var_id + 1`. Each variable lookup is an `O(1)` bounds-checked
+/// array index; the equation-input scratch buffer is reused across equations so
+/// a chain of single-output primitives performs no per-equation allocation.
+fn eval_jaxpr_dense_env(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+    slots: usize,
+) -> Result<Vec<Value>, InterpreterError> {
+    let mut env: Vec<Option<Value>> = vec![None; slots];
+    for (idx, var) in jaxpr.constvars.iter().enumerate() {
+        env[var.0 as usize] = Some(const_values[idx].clone());
+    }
+    for (idx, var) in jaxpr.invars.iter().enumerate() {
+        env[var.0 as usize] = Some(args[idx].clone());
+    }
+
+    let mut scratch: Vec<Value> = Vec::new();
+    for eqn in &jaxpr.equations {
+        scratch.clear();
+        scratch.reserve(eqn.inputs.len());
+        for atom in &eqn.inputs {
+            match atom {
+                Atom::Var(var) => {
+                    let value = env
+                        .get(var.0 as usize)
+                        .and_then(|slot| slot.as_ref())
+                        .ok_or(InterpreterError::MissingVariable(*var))?;
+                    scratch.push(value.clone());
+                }
+                Atom::Lit(lit) => scratch.push(Value::Scalar(*lit)),
+            }
+        }
+
+        if eqn.sub_jaxprs.is_empty()
+            && eqn.outputs.len() == 1
+            && !is_multi_output_primitive(eqn.primitive)
+        {
+            let output = eval_primitive(eqn.primitive, &scratch, &eqn.params)
+                .map_err(InterpreterError::Primitive)?;
+            env[eqn.outputs[0].0 as usize] = Some(output);
+        } else {
+            let outputs = eval_equation_outputs_from_resolved(eqn, &scratch)?;
+            for (out_var, output) in eqn.outputs.iter().zip(outputs) {
+                env[out_var.0 as usize] = Some(output);
+            }
+        }
+    }
+
+    jaxpr
+        .outvars
+        .iter()
+        .map(|var| {
+            env.get(var.0 as usize)
+                .and_then(|slot| slot.clone())
+                .ok_or(InterpreterError::MissingVariable(*var))
+        })
+        .collect()
+}
+
+/// Hash-map interpreter environment — fallback for jaxprs whose variable ids
+/// are sparse or very large. Semantically identical to [`eval_jaxpr_dense_env`].
+fn eval_jaxpr_hashed_env(
+    jaxpr: &Jaxpr,
+    const_values: &[Value],
+    args: &[Value],
+) -> Result<Vec<Value>, InterpreterError> {
     let mut env: FxHashMap<VarId, Value> = FxHashMap::with_capacity_and_hasher(
         jaxpr.constvars.len() + jaxpr.invars.len() + jaxpr.equations.len(),
         Default::default(),
@@ -824,6 +942,52 @@ mod tests {
             eval_jaxpr_with_consts(&jaxpr, &[Value::scalar_i64(10)], &[Value::scalar_i64(7)])
                 .expect("closed-over const path should evaluate");
         assert_eq!(outputs, vec![Value::scalar_i64(17)]);
+    }
+
+    // Build a two-equation chain `out = (a + b) * a` with variable ids offset
+    // by `base`. `base == 0` yields dense ids (slot-array env); a large `base`
+    // yields sparse ids that force the hash-map fallback env.
+    fn chain_jaxpr_with_base(base: u32) -> Jaxpr {
+        let a = VarId(base + 1);
+        let b = VarId(base + 2);
+        let sum = VarId(base + 3);
+        let out = VarId(base + 4);
+        Jaxpr::new(
+            vec![a, b],
+            vec![],
+            vec![out],
+            vec![
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(a), Atom::Var(b)],
+                    outputs: smallvec![sum],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(sum), Atom::Var(a)],
+                    outputs: smallvec![out],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        )
+    }
+
+    #[test]
+    fn dense_and_hashed_envs_agree() {
+        // (a + b) * a with a=4, b=5 -> 9 * 4 = 36.
+        let args = [Value::scalar_i64(4), Value::scalar_i64(5)];
+        let dense = eval_jaxpr(&chain_jaxpr_with_base(0), &args).expect("dense env evaluates");
+        // base 5_000_000 makes slots_needed ~5e6 >> def_count*8, forcing the
+        // hash-map fallback path.
+        let hashed =
+            eval_jaxpr(&chain_jaxpr_with_base(5_000_000), &args).expect("hashed env evaluates");
+        assert_eq!(dense, vec![Value::scalar_i64(36)]);
+        assert_eq!(dense, hashed);
     }
 
     #[test]

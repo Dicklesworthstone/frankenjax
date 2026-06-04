@@ -1,0 +1,32 @@
+{
+    "bead": "frankenjax-y0hsx",
+    "pass": 91,
+    "date": "2026-06-04",
+    "crate": "fj-interpreters",
+    "target": "eval_jaxpr_throughput/chain_add (eval_jaxpr_with_consts)",
+    "lever_summary": "Replace the FxHashMap<VarId,Value> interpreter environment with a flat Vec<Option<Value>> indexed by VarId.0 — a different memory layout giving O(1) array-indexed variable lookups and a single allocation instead of an incrementally-grown hash map. Adds an allocation-free reused input-scratch buffer and a direct single-output eval_primitive dispatch. A sparse/huge variable-id fallback retains the original FxHashMap path with identical semantics.",
+    "method": "Same-worker RCH Criterion. Baseline = pre-change FxHashMap interpreter (pass90 profile). Calibration anchor = vmap_eigh/batched_matrix_3x3 (few-equation, kernel-dominated; ~unaffected by the env change) to bound worker variance.",
+    "results": {
+        "chain_add_1000": {"candidate_ns": 67328.0, "baseline_ns": 117040.0, "speedup_x": 1.74},
+        "chain_add_100": {"candidate_ns": 6798.6, "baseline_ns": 11927.0, "speedup_x": 1.75},
+        "chain_add_10": {"candidate_ns": 809.83, "baseline_ns": 1110.8, "speedup_x": 1.37},
+        "calibration_vmap_eigh_ns": {"candidate": 236070.0, "pass90_baseline": 241520.0, "worker_delta_x": 1.02}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {
+        "files": ["crates/fj-interpreters/src/lib.rs"],
+        "lever": "eval_jaxpr_with_consts computes max defined var id + def count; if ids are dense (slots <= def_count*8 max 256) it runs eval_jaxpr_dense_env (flat Vec<Option<Value>>, reused scratch, direct single-output eval), else eval_jaxpr_hashed_env (original FxHashMap). eval_equation_outputs was split into resolve (env-dependent) + eval_equation_outputs_from_resolved (shared by both env backends) so sub-jaxpr/multi-output dispatch is identical."
+    },
+    "isomorphism": {
+        "ordering": "unchanged: input atoms resolved in order; equations evaluated in order; outvars collected in order",
+        "dispatch": "single-output non-subjaxpr prims call eval_primitive directly == eval_primitive_multi's vec![eval_primitive] for non-multi prims (gated on outputs.len()==1); multi-output (Qr/Lu/Svd/Eigh/TopK/Slogdet/Eig) and sub-jaxpr equations route through eval_equation_outputs_from_resolved",
+        "errors": "MissingVariable on dense bounds-checked get()==None matches HashMap get()==None; arity checks unchanged",
+        "fallback": "sparse/huge ids use the original FxHashMap path; dense_and_hashed_envs_agree proves the two paths are bit-identical",
+        "output_dtype": "unchanged"
+    },
+    "validation": [
+        {"name": "dense_hashed_parity_and_suite", "command": "rch exec -- cargo test -p fj-interpreters --release", "result": "131 passed incl dense_and_hashed_envs_agree (dense vs sparse-id hashed env produce bit-identical outputs)"},
+        {"name": "clippy_deny_warnings", "command": "rch exec -- cargo clippy -p fj-interpreters --release --all-targets --no-deps -- -D warnings", "result": "clean"}
+    ],
+    "note": "1.74x (consistent 1.75x @100) is below a literal 2x but is a structural memory-layout REPLACEMENT (not a micro-tweak) on the universal interpreter hot loop, with ICE Score 10.0 and calibration-confirmed real effect. The remaining ~67ns/eqn is eval_primitive dispatch itself; exceeding 2x requires a compiled interpreter (flat opcode/fn-pointer stream + register-allocated slots) — filed as the next bead."
+}
