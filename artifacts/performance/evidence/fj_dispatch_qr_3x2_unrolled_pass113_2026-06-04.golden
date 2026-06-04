@@ -1,0 +1,35 @@
+pass113 golden - fj-dispatch unrolled 3x2 thin QR batching
+target bead: frankenjax-lr0pf
+
+profile target:
+  benchmark: vmap_qr/batched_matrix_3x2
+  baseline worker: ts2
+  baseline: 87.589us [87.429, 87.807]
+  candidate worker: ts2
+  candidate: 64.963us [64.928, 64.993]
+
+accepted fast path:
+  shape: rank-3 batched matrix tensor with per-slice m=3, n=2
+  qr mode: full_matrices=false
+  input reads: six row-major elements per batch slice through Literal::as_f64
+  output layout: Q shape [batch, 3, 2], R shape [batch, 2, 2]
+
+bitwise proof cases:
+  case identity_plus_row: [1.0, 0.0, 0.0, 1.0, 1.0, 1.0]
+    expected: Q and R f64 bit patterns equal qr_decompose_matrix(3, 2, matrix, false)
+  case mixed_signs: [-1.5, 0.25, 0.75, -2.0, 3.0, 4.0]
+    expected: Q and R f64 bit patterns equal qr_decompose_matrix(3, 2, matrix, false)
+  case zero_leading_entry: [0.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+    expected: Q and R f64 bit patterns equal qr_decompose_matrix(3, 2, matrix, false)
+  case all_zero: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    expected: Q and R f64 bit patterns equal qr_decompose_matrix(3, 2, matrix, false)
+
+guard_miss_surfaces:
+  full_matrices=true, non-3x2 matrices, non-rank-3 inputs, malformed batch shapes, nonnumeric elements, and unrelated primitives all continue through the existing generic QR batching path and preserve existing errors.
+
+isomorphism:
+  ordering: batch slice order, row-major input reads, Q extension order, and R extension order are unchanged.
+  tie_breaking: none; QR has no comparison tie selection in the accepted 3x2 fragment.
+  floating_point: the unrolled helper performs the same Householder reflector construction, threshold checks, dot products, update order, reverse reflector application, diagonal sign normalization, and signed-zero-producing negations as the generic helper for m=3, n=2, full_matrices=false.
+  rng: N/A; QR batching has no random state or effects.
+  fallback: any shape or mode outside the exact 3x2 thin guard uses the original generic helper unchanged.

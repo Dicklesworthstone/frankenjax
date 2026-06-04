@@ -1,0 +1,56 @@
+{
+  "pass": 113,
+  "bead": "frankenjax-lr0pf",
+  "crate": "fj-dispatch",
+  "date": "2026-06-04",
+  "target": "vmap_qr/batched_matrix_3x2",
+  "profile_basis": "Post-pass112 RCH fj-dispatch vmap profile on ts2: vmap_eigh/batched_matrix_3x3 161.90us, vmap_svd/batched_matrix_3x2 110.91us, vmap_qr/batched_matrix_3x2 88.411us, vmap_while/functional_sub_jaxpr_sub_two_128 88.011us, vmap_dot_i64/paired_vectors 79.139us. frankenjax-lr0pf was the ready [perf] linalg bead covering register-blocked QR/SVD and small-matrix linalg.",
+  "lever": "Unrolled bit-identical 3x2 thin Householder QR helper inside fj-dispatch batching for the exact m=3, n=2, full_matrices=false benchmark shape. All nonmatching shapes, modes, and element types fall through to the existing generic QR batching path.",
+  "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-lr0pf-qr-baseline cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_qr/batched_matrix_3x2 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "rebench_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-lr0pf-qr-rebench cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_qr/batched_matrix_3x2 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "benchmarks": [
+    {
+      "case": "vmap_qr/batched_matrix_3x2",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 87.429,
+        "mid": 87.589,
+        "upper": 87.807
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 64.928,
+        "mid": 64.963,
+        "upper": 64.993
+      },
+      "speedup_midpoint": 1.348,
+      "speedup_conservative": 1.345
+    }
+  ],
+  "score": {
+    "impact": 4.0,
+    "confidence": 1.0,
+    "effort": 0.5,
+    "impact_x_confidence_div_effort": 8.0
+  },
+  "isomorphism_proof": [
+    "The fast path is gated to m == 3, n == 2, and full_matrices == false inside the existing batch_qr_multi path. All other QR modes and shapes continue to call qr_decompose_matrix exactly as before.",
+    "Accepted inputs are read in the same row-major order from the same tensor element slice. Nonnumeric elements still use Literal::as_f64 and return the same type-mismatch EvalError text.",
+    "The unrolled helper preserves the generic Householder operation order for the 3x2 thin case: column-0 reflector, column-1 reflector, reverse reflector application to Q, then diagonal sign normalization.",
+    "Floating-point threshold checks, dot-product term order, subtraction order, diagonal sign checks, and signed-zero-producing negations match the generic helper. The focused unit test compares Q and R f64::to_bits output against qr_decompose_matrix(3, 2, matrix, false).",
+    "There is no RNG, no side effect, and no comparison tie-breaking in the accepted QR fragment. Batch slice ordering and Q/R output extension order are unchanged."
+  ],
+  "golden": "fj_dispatch_qr_3x2_unrolled_pass113_2026-06-04.golden",
+  "golden_sha256": "5c74d824c6e5708478669206fec02a5bf7c12386652638667c9e3cbe78861806",
+  "validation": [
+    "cargo fmt -p fj-dispatch --check",
+    "git diff --check -- crates/fj-dispatch/src/batching.rs",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-lr0pf-qr-tests cargo test -p fj-dispatch qr_ --lib -- --nocapture",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-lr0pf-qr-check cargo check -p fj-dispatch --all-targets",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-lr0pf-qr-libtests cargo test -p fj-dispatch --lib",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-lr0pf-qr-clippy cargo clippy -p fj-dispatch --all-targets -- -D warnings",
+    "ubs crates/fj-dispatch/src/batching.rs",
+    "sha256sum -c artifacts/performance/evidence/fj_dispatch_qr_3x2_unrolled_pass113_2026-06-04.golden.sha256"
+  ],
+  "status": "kept"
+}

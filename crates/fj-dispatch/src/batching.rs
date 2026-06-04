@@ -2890,13 +2890,41 @@ fn batch_qr_multi(
     let mut qr_scratch = QrScratch::default();
     for batch in 0..batch_size {
         let base = batch * matrix_len;
-        matrix.clear();
-        for lit in &tensor.elements[base..base + matrix_len] {
-            matrix.push(lit.as_f64().ok_or_else(|| {
+        if m == 3 && n == 2 && !full_matrices {
+            let a00 = tensor.elements[base].as_f64().ok_or_else(|| {
                 BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
-            })?);
+            })?;
+            let a01 = tensor.elements[base + 1].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
+            })?;
+            let a10 = tensor.elements[base + 2].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
+            })?;
+            let a11 = tensor.elements[base + 3].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
+            })?;
+            let a20 = tensor.elements[base + 4].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
+            })?;
+            let a21 = tensor.elements[base + 5].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for qr: expected numeric elements".to_owned())
+            })?;
+            qr_decompose_matrix_3x2_thin(
+                [a00, a01, a10, a11, a20, a21],
+                &mut qr_scratch.q_out,
+                &mut qr_scratch.r_out,
+            );
+        } else {
+            matrix.clear();
+            for lit in &tensor.elements[base..base + matrix_len] {
+                matrix.push(lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for qr: expected numeric elements".to_owned(),
+                    )
+                })?);
+            }
+            qr_decompose_matrix(m, n, &matrix, full_matrices, &mut qr_scratch);
         }
-        qr_decompose_matrix(m, n, &matrix, full_matrices, &mut qr_scratch);
         q_elements.extend(qr_scratch.q_out.iter().copied().map(Literal::from_f64));
         r_elements.extend(qr_scratch.r_out.iter().copied().map(Literal::from_f64));
     }
@@ -2929,6 +2957,99 @@ struct QrScratch {
     tau_store: Vec<f64>,
     q_out: Vec<f64>,
     r_out: Vec<f64>,
+}
+
+fn qr_decompose_matrix_3x2_thin(a: [f64; 6], q_out: &mut Vec<f64>, r_out: &mut Vec<f64>) {
+    let mut r = a;
+
+    let mut v00 = r[0];
+    let v01 = r[2];
+    let v02 = r[4];
+    let norm_v0 = (v00 * v00 + v01 * v01 + v02 * v02).sqrt();
+    let alpha0 = if v00 >= 0.0 { -norm_v0 } else { norm_v0 };
+    v00 -= alpha0;
+    let v_norm_sq0 = v00 * v00 + v01 * v01 + v02 * v02;
+    let tau0 = if v_norm_sq0 > f64::EPSILON * 1e4 {
+        let tau = 2.0 / v_norm_sq0;
+
+        let dot = v00 * r[0] + v01 * r[2] + v02 * r[4];
+        r[0] -= tau * v00 * dot;
+        r[2] -= tau * v01 * dot;
+        r[4] -= tau * v02 * dot;
+
+        let dot = v00 * r[1] + v01 * r[3] + v02 * r[5];
+        r[1] -= tau * v00 * dot;
+        r[3] -= tau * v01 * dot;
+        r[5] -= tau * v02 * dot;
+
+        tau
+    } else {
+        v00 = 0.0;
+        0.0
+    };
+
+    let mut v10 = r[3];
+    let v11 = r[5];
+    let norm_v1 = (v10 * v10 + v11 * v11).sqrt();
+    let alpha1 = if v10 >= 0.0 { -norm_v1 } else { norm_v1 };
+    v10 -= alpha1;
+    let v_norm_sq1 = v10 * v10 + v11 * v11;
+    let tau1 = if v_norm_sq1 > f64::EPSILON * 1e4 {
+        let tau = 2.0 / v_norm_sq1;
+
+        let dot = v10 * r[3] + v11 * r[5];
+        r[3] -= tau * v10 * dot;
+        r[5] -= tau * v11 * dot;
+
+        tau
+    } else {
+        v10 = 0.0;
+        0.0
+    };
+
+    q_out.clear();
+    q_out.resize(6, 0.0);
+    q_out[0] = 1.0;
+    q_out[3] = 1.0;
+
+    if tau1.abs() >= f64::EPSILON {
+        let dot = v10 * q_out[3] + v11 * q_out[5];
+        q_out[3] -= tau1 * v10 * dot;
+        q_out[5] -= tau1 * v11 * dot;
+    }
+
+    if tau0.abs() >= f64::EPSILON {
+        let dot = v00 * q_out[0] + v01 * q_out[2] + v02 * q_out[4];
+        q_out[0] -= tau0 * v00 * dot;
+        q_out[2] -= tau0 * v01 * dot;
+        q_out[4] -= tau0 * v02 * dot;
+
+        let dot = v00 * q_out[1] + v01 * q_out[3] + v02 * q_out[5];
+        q_out[1] -= tau0 * v00 * dot;
+        q_out[3] -= tau0 * v01 * dot;
+        q_out[5] -= tau0 * v02 * dot;
+    }
+
+    r_out.clear();
+    r_out.resize(4, 0.0);
+    r_out[0] = r[0];
+    r_out[1] = r[1];
+    r_out[3] = r[3];
+
+    if r_out[0] < 0.0 {
+        r_out[0] = -r_out[0];
+        r_out[1] = -r_out[1];
+        q_out[0] = -q_out[0];
+        q_out[2] = -q_out[2];
+        q_out[4] = -q_out[4];
+    }
+    if r_out[3] < 0.0 {
+        r_out[2] = -r_out[2];
+        r_out[3] = -r_out[3];
+        q_out[1] = -q_out[1];
+        q_out[3] = -q_out[3];
+        q_out[5] = -q_out[5];
+    }
 }
 
 /// Householder QR of a single `m x n` matrix, writing Q into `scratch.q_out`
@@ -7758,6 +7879,44 @@ mod tests {
                 expected.as_tensor().unwrap().shape.dims
             );
             assert_f64_close(&extract_f64_vec(&actual.value), &extract_f64_vec(&expected));
+        }
+    }
+
+    #[test]
+    fn qr_3x2_thin_fast_path_matches_generic_householder_bits() {
+        let cases = [
+            [1.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            [-1.5, 0.25, 0.75, -2.0, 3.0, 4.0],
+            [0.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        ];
+
+        for matrix in cases {
+            let mut expected = QrScratch::default();
+            qr_decompose_matrix(3, 2, &matrix, false, &mut expected);
+
+            let mut q = Vec::new();
+            let mut r = Vec::new();
+            qr_decompose_matrix_3x2_thin(matrix, &mut q, &mut r);
+
+            assert_eq!(
+                q.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected
+                    .q_out
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "Q mismatch for {matrix:?}"
+            );
+            assert_eq!(
+                r.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected
+                    .r_out
+                    .iter()
+                    .map(|v| v.to_bits())
+                    .collect::<Vec<_>>(),
+                "R mismatch for {matrix:?}"
+            );
         }
     }
 
