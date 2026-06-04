@@ -1,0 +1,134 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_i64_compare_direct_pass86_2026-06-04",
+  "status": "rejected",
+  "date": "2026-06-04",
+  "agent": "BlackThrush",
+  "bead": "frankenjax-mcqr.30.29",
+  "crate": "fj-lax",
+  "target": "eval/lt_64k_i64_vec",
+  "skill_pass": "repeatedly-apply-skill pass86 -> extreme-software-optimization",
+  "profile_backing": {
+    "source": "Pass81 dense-bool comparison output rejection diagnosed dense i64 comparison as dominated by per-lane int_cmp/i128 widening; Pass84 ledger kept i64 comparison specialization as a profile-backed residual target after dense gather/scatter.",
+    "prior_profile_rows": [
+      {
+        "name": "eval/lt_64k_i64_vec",
+        "reason": "dense i64 inputs already avoid Literal materialization, leaving comparison dispatch and widening as the visible lane cost"
+      },
+      {
+        "name": "eval/lt_scalar_64k_i64_vec",
+        "reason": "scalar comparison route shares the same generic int_cmp closure"
+      }
+    ]
+  },
+  "focused_baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline lt_64k_i64 -- --warm-up-time 1 --measurement-time 3 --sample-size 20 --noplot",
+    "worker": "ts2",
+    "time_us": [
+      48.573,
+      48.915,
+      49.314
+    ],
+    "literal_reference_us": [
+      127.02,
+      128.99,
+      131.60
+    ]
+  },
+  "candidate": {
+    "lever": "direct Primitive-specific i64 comparisons without widening operands through i128",
+    "description": "Temporarily added compare_i64 and routed dense same-shape, scalar, and broadcast i64 comparison paths through it instead of int_cmp(i128::from(lhs), i128::from(rhs)).",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/comparison.rs"
+    ],
+    "rebench": {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline lt_64k_i64 -- --warm-up-time 1 --measurement-time 3 --sample-size 20 --noplot",
+      "worker": "ts2",
+      "time_us": [
+        92.111,
+        93.286,
+        94.761
+      ],
+      "literal_reference_us": [
+        155.75,
+        156.65,
+        157.52
+      ],
+      "speedup_vs_focused_baseline_mid": 0.52435
+    },
+    "scalar_cross_worker_probe": {
+      "baseline_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline lt_scalar_64k_i64 -- --warm-up-time 1 --measurement-time 3 --sample-size 20 --noplot",
+      "baseline_worker": "vmi1153651",
+      "baseline_us": [
+        94.596,
+        103.76,
+        116.82
+      ],
+      "candidate_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline lt_scalar_64k_i64 -- --warm-up-time 1 --measurement-time 3 --sample-size 20 --noplot",
+      "candidate_worker": "vmi1264463",
+      "candidate_us": [
+        187.80,
+        193.36,
+        200.36
+      ],
+      "interpretation": "Cross-worker scalar probe was also slower, but only the same-worker lt_64k_i64 row is used for the keep/reject decision."
+    },
+    "proof_test": {
+      "command": "rch exec -- cargo test -p fj-lax --lib comparison",
+      "worker": "vmi1293453",
+      "result": "pass",
+      "details": "20 comparison tests passed in candidate state, including dense_i64_compare_bit_identical_to_literal_path, dense_broadcast_compare_bit_identical_to_literal_path, scalar order, unsigned comparison, and complex error coverage."
+    }
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 1.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate kept the existing row-major same-shape traversal, scalar tensor traversal, and BroadcastOdometer traversal order.",
+    "tie_breaking": "Integer comparison equal-value behavior was primitive-identical for Eq, Ne, Lt, Le, Gt, and Ge; there is no stable sort or tie index.",
+    "floating_point": "No floating-point path changed; f64/f32 comparison routes remained on the existing float comparator.",
+    "rng": "N/A: comparison evaluation consumes no random state.",
+    "errors": "Unsupported dtype and complex comparison errors stayed on the existing fallback paths.",
+    "golden_sha256": "0f09da3362040cd05f2925a7deb3124884e8aab25da6dd6b7dce31835e3af2a0"
+  },
+  "validation": [
+    {
+      "command": "rch exec -- cargo test -p fj-lax --lib comparison",
+      "result": "pass: 20 tests in candidate state"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/comparison.rs",
+      "result": "empty after restore"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_i64_compare_direct_pass86_2026-06-04.rejected.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "alien_source": {
+    "primary_sources": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#8.2"
+    ],
+    "primitive_family": "typed lane execution over dense SoA storage",
+    "applied_slice": "Tried replacing the generic widened integer comparison lane with primitive-specific i64 comparisons over dense i64 buffers."
+  },
+  "next_primitive": {
+    "target": "strided non-contiguous dense gather, pending the next focused profile",
+    "reason": "The direct i64 comparison micro-lever regressed the same-worker benchmark. Do not repeat this family; pivot to the next profile-backed structural primitive in the dense indexing pipeline, or reprofile and choose a higher row if the bottleneck shifted.",
+    "target_ratio": ">=2.0x on same-worker RCH Criterion evidence",
+    "proof_obligations": [
+      "observable output order unchanged",
+      "gather fill/drop/clip and repeated-index semantics unchanged",
+      "floating-point element bits copied without arithmetic",
+      "no RNG or tie-breaking behavior",
+      "golden sha256 passes before close"
+    ],
+    "fallback_trigger": "Reject and restore source if same-worker RCH Criterion mean does not beat the retained baseline with Score>=2.0."
+  }
+}

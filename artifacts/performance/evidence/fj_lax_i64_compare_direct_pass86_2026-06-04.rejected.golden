@@ -1,0 +1,12 @@
+frankenjax-mcqr.30.29 pass86 rejected direct i64 comparison candidate
+profile_source=pass81 dense-bool comparison output rejection diagnosed per-lane int_cmp/i128 residual
+focused_baseline_worker=ts2
+focused_baseline_lt_64k_i64_vec_us=[48.573,48.915,49.314]
+focused_baseline_lt_64k_i64_literal_ref_us=[127.02,128.99,131.60]
+candidate_worker=ts2
+candidate_lt_64k_i64_vec_us=[92.111,93.286,94.761]
+candidate_lt_64k_i64_literal_ref_us=[155.75,156.65,157.52]
+candidate_speedup_vs_focused_baseline_mid=0.52435
+source_retained=false
+proof_tests=rch cargo test -p fj-lax --lib comparison passed 20 tests in candidate state
+next_target=strided non-contiguous gather dense path or another newly profiled non-comparison hotspot; avoid repeating i128 comparison micro-levers
