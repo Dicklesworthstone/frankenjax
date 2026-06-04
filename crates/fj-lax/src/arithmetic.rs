@@ -41,10 +41,9 @@ pub(crate) fn eval_binary_elementwise(
                 {
                     return Ok(value);
                 }
-                if primitive == Primitive::Add
-                    && lhs.dtype == DType::I64
+                if lhs.dtype == DType::I64
                     && rhs.dtype == DType::I64
-                    && let Some(value) = eval_same_shape_i64_add(lhs, rhs, &int_op)?
+                    && let Some(value) = eval_same_shape_i64_binop(lhs, rhs, &int_op)?
                 {
                     return Ok(value);
                 }

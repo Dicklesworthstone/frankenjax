@@ -5,10 +5,10 @@
   "seed": null,
   "mode": "strict",
   "env": {
-    "rust_version": "rustc 1.97.0-nightly (37d85e592 2026-04-28)",
+    "rust_version": "rustc 1.98.0-nightly (14210df0e 2026-05-31)",
     "os": "linux",
-    "cargo_target_dir": "/data/projects/frankenjax/.rch-target-ts1-job-29850584173520104-1779556771077907997-0",
-    "timestamp_unix_ms": 1779556907557
+    "cargo_target_dir": "/data/tmp/cargo-target",
+    "timestamp_unix_ms": 1780528836109
   },
   "artifact_refs": [
     "packet:FJ-P2C-001",
@@ -16,12 +16,12 @@
     "/data/projects/frankenjax/crates/fj-core/../../artifacts/testing/logs/fj-core/fj_core__tests__transform_composition_valid_single_transforms.json"
   ],
   "result": "pass",
-  "duration_ms": 80,
+  "duration_ms": 923,
   "details": "packet_id=FJ-P2C-001;suite_id=fj-core;result=pass",
   "phase_timings": {
-    "setup_ms": 21,
+    "setup_ms": 922,
     "execute_ms": 0,
     "verify_ms": 0,
-    "teardown_ms": 59
+    "teardown_ms": 0
   }
 }
