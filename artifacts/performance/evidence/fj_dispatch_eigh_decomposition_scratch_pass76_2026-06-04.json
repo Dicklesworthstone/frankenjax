@@ -53,6 +53,7 @@
     "path": "artifacts/performance/evidence/fj_dispatch_eigh_decomposition_scratch_pass76_2026-06-04.golden",
     "sha256": "1f9664d4f4cc680ce95164c2f21b5f9875a28cd5600d985e52a60906d5ffa844",
     "in_code_digest": "de40295687095bc622bd73074d24337004f440bdd2cc65d8a8759dfb5cf0b106",
+    "rank3_in_code_digest": "1dc99b980e9600f888e0c05c77537a6e4f1abc64276e09d204f3163634defeb7",
     "verified_by": "sha256sum -c artifacts/performance/evidence/fj_dispatch_eigh_decomposition_scratch_pass76_2026-06-04.golden.sha256"
   },
   "validation": [
@@ -60,6 +61,11 @@
       "command": "rch exec -- cargo test -p fj-dispatch --all-targets",
       "worker": "vmi1153651",
       "result": "255 unit tests passed; 55 integration tests passed; dispatch_baseline bench harness smoke passed"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-dispatch test_batch_trace_eigh_multi_rank3_golden_sha256",
+      "worker": "ts2",
+      "result": "1 focused rank-3 golden unit test passed; 255 unit tests and 55 integration tests filtered out"
     },
     {
       "command": "rch exec -- cargo check -p fj-dispatch --all-targets",
@@ -90,7 +96,7 @@
   ],
   "coordination": {
     "agent": "BlackThrush",
-    "bead_claim": "frankenjax-mcqr.49 assigned to BlackThrush",
+    "bead_claim": "frankenjax-mcqr.49 assigned to BlackThrush; duplicate claim frankenjax-mcqr.48 closed as superseded by this pass",
     "file_reservation": "Agent Mail reservation mutation blocked by split-brain mailbox lock from unrelated FrankenNumPy inbox processes; proceeded under the Beads claim and avoided unrelated dirty files."
   }
 }
