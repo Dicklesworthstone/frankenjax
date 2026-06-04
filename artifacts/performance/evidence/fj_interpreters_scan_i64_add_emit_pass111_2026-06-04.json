@@ -1,0 +1,64 @@
+{
+  "pass": 111,
+  "bead": "frankenjax-17h7c",
+  "crate": "fj-interpreters",
+  "date": "2026-06-04",
+  "target": "eval/scan_sub_jaxpr_add_emit_128",
+  "profile_basis": "Ready [perf] bead frankenjax-17h7c, filed from the fj-interpreters pe_baseline profile after pass110; scan_sub_jaxpr_add_emit_128 was the next profile-backed interpreter hotspot.",
+  "lever": "exact scalar-I64 carry plus scalar/vector-I64 xs add-emit scan direct evaluator before the generic functional scan loop",
+  "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-scan-baseline cargo bench -p fj-interpreters --bench pe_baseline -- eval/scan_sub_jaxpr_add_emit_128 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "rebench_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-scan-rebench cargo bench -p fj-interpreters --bench pe_baseline -- eval/scan_sub_jaxpr_add_emit_128 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "confirmation_rebench_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-scan-confirm cargo bench -p fj-interpreters --bench pe_baseline -- eval/scan_sub_jaxpr_add_emit_128 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "benchmarks": [
+    {
+      "case": "eval/scan_sub_jaxpr_add_emit_128",
+      "baseline_worker": "ts2",
+      "baseline_ns": {
+        "lower": 51122.0,
+        "mid": 51258.0,
+        "upper": 51418.0
+      },
+      "candidate_worker": "ts1",
+      "candidate_ns": {
+        "lower": 376.80,
+        "mid": 381.73,
+        "upper": 388.17
+      },
+      "confirmation_worker": "vmi1227854",
+      "confirmation_ns": {
+        "lower": 391.38,
+        "mid": 395.89,
+        "upper": 400.30
+      },
+      "speedup_midpoint": 134.28,
+      "speedup_conservative": 127.71
+    }
+  ],
+  "score": {
+    "impact": 10.0,
+    "confidence": 1.0,
+    "effort": 1.0,
+    "impact_x_confidence_div_effort": 10.0
+  },
+  "isomorphism_proof": [
+    "The direct path runs after the existing scan arity, const count, carry count, xs count, output arity, scan length, and zero-length-output validations, so those error-ordering surfaces are preserved.",
+    "The guard accepts only no-constvar/no-effect scan bodies with exactly two invars, two outvars, and exactly two Primitive::Add equations: carry + x -> carry_out, then carry_out + I64(0) -> y_out.",
+    "The scan equation itself must have no effects and either no params or exactly reverse=true; all other params and all body params/effects/sub_jaxprs miss the guard and fall back to the generic scan loop.",
+    "Accepted values are scalar I64 carry plus scalar I64 xs for length 1 or rank-1 I64 tensor xs; non-I64, malformed literal-backed tensors, non-rank-1 tensors, and multi-carry scans fall back.",
+    "Forward and reverse output ordering is preserved: forward writes ys in increasing input order, while reverse iterates indices in reverse and writes each accumulated y back to the original index, matching the generic per_y reverse.",
+    "Integer arithmetic uses i64::wrapping_add, matching Primitive::Add I64 scalar behavior. There is no floating-point, RNG, tie-breaking, or side-effect behavior in the accepted fragment."
+  ],
+  "golden": "fj_interpreters_scan_i64_add_emit_pass111_2026-06-04.golden",
+  "golden_sha256": "PENDING",
+  "validation": [
+    "cargo fmt -p fj-interpreters --check",
+    "git diff --check -- crates/fj-interpreters/src/lib.rs",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-scan-tests cargo test -p fj-interpreters scan --lib -- --nocapture",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-lib-tests cargo test -p fj-interpreters --lib",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-check cargo check -p fj-interpreters --all-targets",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-17h7c-clippy cargo clippy -p fj-interpreters --all-targets -- -D warnings",
+    "ubs crates/fj-interpreters/src/lib.rs",
+    "sha256sum -c artifacts/performance/evidence/fj_interpreters_scan_i64_add_emit_pass111_2026-06-04.golden.sha256"
+  ],
+  "status": "kept"
+}

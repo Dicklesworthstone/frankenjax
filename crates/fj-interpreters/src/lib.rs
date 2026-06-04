@@ -469,14 +469,20 @@ fn evaluate_scan_sub_jaxprs(
         }));
     }
 
-    let mut carry = carry_inputs.to_vec();
-    let init_shapes: Vec<Shape> = carry.iter().map(value_shape).collect();
-    let init_dtypes: Vec<_> = carry.iter().map(Value::dtype).collect();
-    let mut per_y = vec![Vec::with_capacity(scan_len); y_count];
     let reverse = equation
         .params
         .get("reverse")
         .is_some_and(|value| value == "true");
+    if let Some(result) =
+        try_eval_scan_i64_add_emit(equation, body_jaxpr, carry_inputs, xs, scan_len, reverse)
+    {
+        return result;
+    }
+
+    let mut carry = carry_inputs.to_vec();
+    let init_shapes: Vec<Shape> = carry.iter().map(value_shape).collect();
+    let init_dtypes: Vec<_> = carry.iter().map(Value::dtype).collect();
+    let mut per_y = vec![Vec::with_capacity(scan_len); y_count];
 
     let scan_context = ScanIterationContext {
         body_jaxpr,
@@ -521,6 +527,127 @@ fn evaluate_scan_sub_jaxprs(
         outputs.push(Value::Tensor(stacked));
     }
     Ok(outputs)
+}
+
+fn try_eval_scan_i64_add_emit(
+    equation: &Equation,
+    body_jaxpr: &Jaxpr,
+    carry_inputs: &[Value],
+    xs: &Value,
+    scan_len: usize,
+    reverse: bool,
+) -> Option<Result<Vec<Value>, InterpreterError>> {
+    if !scan_equation_params_are_i64_add_emit_safe(equation, reverse)
+        || !equation.effects.is_empty()
+        || !is_i64_add_emit_scan_body(body_jaxpr)
+        || carry_inputs.len() != 1
+    {
+        return None;
+    }
+    let Value::Scalar(Literal::I64(init_carry)) = carry_inputs.first()? else {
+        return None;
+    };
+
+    let mut carry = *init_carry;
+    let mut ys = vec![0_i64; scan_len];
+    let mut y_shape = Shape::vector(1);
+    match xs {
+        Value::Scalar(Literal::I64(x)) => {
+            if scan_len != 1 {
+                return None;
+            }
+            carry = carry.wrapping_add(*x);
+            ys[0] = carry;
+        }
+        Value::Tensor(tensor) => {
+            if tensor.dtype != DType::I64 || tensor.shape.rank() != 1 || tensor.len() != scan_len {
+                return None;
+            }
+            if let Some(values) = tensor.elements.as_i64_slice() {
+                scan_i64_values_into(values, reverse, &mut carry, &mut ys);
+            } else if reverse {
+                for idx in (0..scan_len).rev() {
+                    let x = tensor.elements.get(idx).copied()?.as_i64()?;
+                    carry = carry.wrapping_add(x);
+                    ys[idx] = carry;
+                }
+            } else {
+                for (idx, y) in ys.iter_mut().enumerate() {
+                    let x = tensor.elements.get(idx).copied()?.as_i64()?;
+                    carry = carry.wrapping_add(x);
+                    *y = carry;
+                }
+            }
+            y_shape = tensor.shape.clone();
+        }
+        Value::Scalar(_) => return None,
+    }
+
+    Some(
+        TensorValue::new_i64_values(y_shape, ys)
+            .map(|tensor| vec![Value::scalar_i64(carry), Value::Tensor(tensor)])
+            .map_err(|error| InterpreterError::Primitive(EvalError::InvalidTensor(error))),
+    )
+}
+
+fn scan_equation_params_are_i64_add_emit_safe(equation: &Equation, reverse: bool) -> bool {
+    if reverse {
+        equation.params.len() == 1
+            && equation
+                .params
+                .get("reverse")
+                .is_some_and(|value| value == "true")
+    } else {
+        equation.params.is_empty()
+    }
+}
+
+fn scan_i64_values_into(values: &[i64], reverse: bool, carry: &mut i64, ys: &mut [i64]) {
+    if reverse {
+        for idx in (0..values.len()).rev() {
+            *carry = carry.wrapping_add(values[idx]);
+            ys[idx] = *carry;
+        }
+    } else {
+        for (x, y) in values.iter().zip(ys.iter_mut()) {
+            *carry = carry.wrapping_add(*x);
+            *y = *carry;
+        }
+    }
+}
+
+fn is_i64_add_emit_scan_body(jaxpr: &Jaxpr) -> bool {
+    if !jaxpr.constvars.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 2
+        || jaxpr.outvars.len() != 2
+        || jaxpr.equations.len() != 2
+    {
+        return false;
+    }
+
+    let carry_var = jaxpr.invars[0];
+    let x_var = jaxpr.invars[1];
+    let carry_out = jaxpr.outvars[0];
+    let y_out = jaxpr.outvars[1];
+    let carry_eqn = &jaxpr.equations[0];
+    if carry_eqn.primitive != Primitive::Add
+        || !carry_eqn.params.is_empty()
+        || !carry_eqn.effects.is_empty()
+        || !carry_eqn.sub_jaxprs.is_empty()
+        || carry_eqn.outputs.as_slice() != [carry_out]
+        || carry_eqn.inputs.as_slice() != [Atom::Var(carry_var), Atom::Var(x_var)]
+    {
+        return false;
+    }
+
+    let emit_eqn = &jaxpr.equations[1];
+    emit_eqn.primitive == Primitive::Add
+        && emit_eqn.params.is_empty()
+        && emit_eqn.effects.is_empty()
+        && emit_eqn.sub_jaxprs.is_empty()
+        && emit_eqn.outputs.as_slice() == [y_out]
+        && emit_eqn.inputs.as_slice() == [Atom::Var(carry_out), Atom::Lit(Literal::I64(0))]
 }
 
 struct ScanIterationContext<'a> {
@@ -1618,6 +1745,95 @@ mod tests {
         assert_eq!(
             outputs[2],
             Value::vector_i64(&[2, 5, 12]).expect("ys vector should build")
+        );
+    }
+
+    #[test]
+    fn eval_scan_i64_add_emit_fast_path_matches_generic_forward_and_reverse() {
+        for reverse in [false, true] {
+            let fast = make_scan_sub_jaxpr_control_flow_jaxpr(reverse);
+            let mut generic = fast.clone();
+            generic.equations[0].sub_jaxprs[0].equations[1]
+                .params
+                .insert("force_generic".to_owned(), "1".to_owned());
+            let inputs = [
+                Value::scalar_i64(i64::MAX),
+                Value::vector_i64(&[1, 2, -5, 9]).expect("xs vector should build"),
+            ];
+
+            let fast_outputs = eval_jaxpr(&fast, &inputs).expect("fast scan should evaluate");
+            let generic_outputs =
+                eval_jaxpr(&generic, &inputs).expect("generic scan should evaluate");
+            assert_eq!(fast_outputs, generic_outputs, "reverse={reverse}");
+        }
+    }
+
+    #[test]
+    fn eval_scan_i64_add_emit_fast_path_matches_generic_for_scalar_xs() {
+        let fast = make_scan_sub_jaxpr_control_flow_jaxpr(false);
+        let mut generic = fast.clone();
+        generic.equations[0].sub_jaxprs[0].equations[1]
+            .params
+            .insert("force_generic".to_owned(), "1".to_owned());
+        let inputs = [Value::scalar_i64(5), Value::scalar_i64(-8)];
+
+        let fast_outputs = eval_jaxpr(&fast, &inputs).expect("fast scalar scan should evaluate");
+        let generic_outputs =
+            eval_jaxpr(&generic, &inputs).expect("generic scalar scan should evaluate");
+        assert_eq!(fast_outputs, generic_outputs);
+        assert_eq!(fast_outputs[0], Value::scalar_i64(-3));
+        assert_eq!(
+            fast_outputs[1],
+            Value::vector_i64(&[-3]).expect("scalar scan y vector should build")
+        );
+    }
+
+    #[test]
+    fn eval_scan_i64_add_emit_fast_path_guard_miss_matches_generic() {
+        let mut guard_miss = make_scan_sub_jaxpr_control_flow_jaxpr(false);
+        guard_miss.equations[0]
+            .params
+            .insert("unrelated".to_owned(), "keeps_generic".to_owned());
+        let mut forced_generic = guard_miss.clone();
+        forced_generic.equations[0].sub_jaxprs[0].equations[1]
+            .params
+            .insert("force_generic".to_owned(), "1".to_owned());
+        let inputs = [
+            Value::scalar_i64(10),
+            Value::vector_i64(&[4, -7, 9, 2]).expect("xs vector should build"),
+        ];
+
+        let guard_miss_outputs =
+            eval_jaxpr(&guard_miss, &inputs).expect("guard-miss scan should evaluate");
+        let generic_outputs =
+            eval_jaxpr(&forced_generic, &inputs).expect("generic scan should evaluate");
+        assert_eq!(guard_miss_outputs, generic_outputs);
+    }
+
+    #[test]
+    fn eval_scan_i64_add_emit_fast_path_accepts_literal_backed_i64_xs() {
+        let jaxpr = make_scan_sub_jaxpr_control_flow_jaxpr(false);
+        let literal_xs = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape::vector(4),
+                vec![
+                    Literal::I64(4),
+                    Literal::I64(-7),
+                    Literal::I64(9),
+                    Literal::I64(2),
+                ],
+            )
+            .expect("literal-backed xs should build"),
+        );
+        let outputs =
+            eval_jaxpr(&jaxpr, &[Value::scalar_i64(10), literal_xs]).expect("scan should evaluate");
+
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], Value::scalar_i64(18));
+        assert_eq!(
+            outputs[1],
+            Value::vector_i64(&[14, 7, 16, 18]).expect("ys vector should build")
         );
     }
 

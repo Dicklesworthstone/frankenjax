@@ -1,0 +1,55 @@
+pass111 golden - fj-interpreters exact I64 add-emit scan direct evaluator
+target bead: frankenjax-17h7c
+
+profile target:
+  benchmark: eval/scan_sub_jaxpr_add_emit_128
+  baseline worker: ts2
+  baseline: 51.258us [51.122, 51.418]
+  candidate worker: ts1
+  candidate: 381.73ns [376.80, 388.17]
+  confirmation worker: vmi1227854
+  confirmation: 395.89ns [391.38, 400.30]
+
+case wrapping_forward:
+  init: I64(9223372036854775807)
+  xs: [1, 2, -5, 9]
+  fast output: [I64(-9223372036854775802), I64Tensor([-9223372036854775808, -9223372036854775806, 9223372036854775805, -9223372036854775802])]
+  forced generic output: [I64(-9223372036854775802), I64Tensor([-9223372036854775808, -9223372036854775806, 9223372036854775805, -9223372036854775802])]
+
+case wrapping_reverse:
+  init: I64(9223372036854775807)
+  xs: [1, 2, -5, 9]
+  fast output: [I64(-9223372036854775802), I64Tensor([-9223372036854775802, -9223372036854775803, -9223372036854775805, -9223372036854775800])]
+  forced generic output: [I64(-9223372036854775802), I64Tensor([-9223372036854775802, -9223372036854775803, -9223372036854775805, -9223372036854775800])]
+
+case literal_backed_xs:
+  init: I64(10)
+  xs: [4, -7, 9, 2]
+  output: [I64(18), I64Tensor([14, 7, 16, 18])]
+
+case scalar_xs:
+  init: I64(5)
+  xs: I64(-8)
+  fast output: [I64(-3), I64Tensor([-3])]
+  forced generic output: [I64(-3), I64Tensor([-3])]
+
+case explicit_guard_miss_scan_param:
+  scan param: unrelated=keeps_generic
+  init: I64(10)
+  xs: [4, -7, 9, 2]
+  guard-miss output: [I64(18), I64Tensor([14, 7, 16, 18])]
+  forced generic output: [I64(18), I64Tensor([14, 7, 16, 18])]
+
+guard matrix:
+  nonempty unrelated scan params, non-reverse scan params, scan/body effects,
+  constvars, sub-jaxprs, non-I64 carry, non-I64 xs, non-rank-1 xs,
+  multi-carry, and nonmatching scan bodies all miss the direct evaluator and
+  continue through the existing generic scan path after the same pre-existing
+  scan validation.
+
+isomorphism:
+  ordering: result vector order remains [final_carry, stacked_ys]; reverse scan writes each y at its original input index, matching the generic reverse-then-reverse output sequence.
+  tie_breaking: none; accepted primitive family is integer Add only.
+  floating_point: N/A; accepted values are scalar/vector I64 only.
+  rng: N/A; accepted body and equation have no effects and no sub-jaxprs.
+  arithmetic: wrapping_add preserves existing scalar I64 Add semantics.
