@@ -1,0 +1,9 @@
+target: vmap_while/functional_sub_jaxpr_sub_two_128
+input: vector_i64 values 64..95 repeated 4 times
+transform: vmap
+while: cond carry > 0; body carry - 2; max_iter 256
+output_dtype: i64
+output_shape: [128]
+output_values: [0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1, 0, -1]
+boundary_error: input [64], max_iter 32 -> while_loop exceeded max iterations (32)
+fallback_guard: overflow-risk i64 arithmetic returns to active-mask loop

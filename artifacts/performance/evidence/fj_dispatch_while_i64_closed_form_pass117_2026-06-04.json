@@ -1,0 +1,57 @@
+{
+  "project": "frankenjax",
+  "bead": "frankenjax-marhx",
+  "pass": 117,
+  "date": "2026-06-04",
+  "crate": "fj-dispatch",
+  "target": "vmap_while/functional_sub_jaxpr_sub_two_128",
+  "profile_basis": {
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-pass117-dispatch-profile cargo bench -p fj-dispatch --bench dispatch_baseline -- 'vmap_(gather|scatter|qr|eigh|svd|switch|scan|while)|eval_jaxpr_throughput|dispatch_latency|transform_composition|cache_key_generation|jaxpr_fingerprint|jaxpr_validation' --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+    "worker": "ts2",
+    "observation": "vmap_while/functional_sub_jaxpr_sub_two_128 was the largest clean non-linalg dispatch/control-flow row at 87.621 us [87.472, 87.770]. Larger vmap_eigh/vmap_svd rows flow through linalg surfaces already assigned/dirty under another agent."
+  },
+  "baseline": {
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-pass117-while-baseline cargo bench -p fj-dispatch --bench dispatch_baseline -- 'vmap_while/functional_sub_jaxpr_sub_two_128' --sample-size 20 --measurement-time 2 --warm-up-time 1 --noplot",
+    "worker": "ts2",
+    "ci_us": [86.612, 87.238, 88.190]
+  },
+  "candidate": {
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-pass117-while-rebench cargo bench -p fj-dispatch --bench dispatch_baseline -- 'vmap_while/functional_sub_jaxpr_sub_two_128' --sample-size 20 --measurement-time 2 --warm-up-time 1 --noplot",
+    "worker": "ts2",
+    "ci_us": [7.9367, 8.0364, 8.2464]
+  },
+  "speedup": {
+    "midpoint": 10.855358,
+    "conservative": 10.503007
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 4,
+    "effort": 2,
+    "impact_x_confidence_div_effort": 10.0
+  },
+  "lever": "Guard the exact scalar-I64 sub-jaxpr while family cond carry > literal and body carry - positive literal, then compute each lane's termination count closed-form instead of simulating the active-mask loop. Overflow-risk and unsupported cases fall back to the existing active-mask implementation.",
+  "isomorphism": {
+    "ordering": "Output lanes are written in the same batch order as the prior active-mask loop.",
+    "tie_breaking": "No sorting, tie-breaking, or branch-choice ordering is present.",
+    "floating_point": "Accepted path is I64-only; no floating-point operations are introduced.",
+    "rng": "No RNG or effects are present in the accepted sub-jaxpr shape.",
+    "arithmetic": "For accepted positive-step monotone lanes, final carry equals the same repeated wrapping_sub sequence before any wrap can occur; overflow-risk cases decline to the existing loop. The max_iter boundary preserves the existing behavior where condition true on the final allowed iteration is still an error.",
+    "fallback": "Non-I64 literals, non-Gt conditions, non-Sub bodies, nonpositive steps, overflow-risk arithmetic, malformed shapes, and all other while sub-jaxprs keep the old active-mask path."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_while_i64_closed_form_pass117_2026-06-04.golden",
+    "sha256": "b9fc7a75ccbfde86db0e133884680fd3f697dea1a07a338a0b085528b5cd4191"
+  },
+  "validation": [
+    "RCH focused test: cargo test -p fj-dispatch i64_gt_sub_while_closed_form -- --nocapture (1 passed)",
+    "RCH cargo check -p fj-dispatch --all-targets passed",
+    "RCH cargo test -p fj-dispatch --lib passed (259 tests)",
+    "RCH cargo clippy -p fj-dispatch --all-targets -- -D warnings passed",
+    "cargo fmt -p fj-dispatch --check passed",
+    "rustfmt --edition 2024 --check crates/fj-dispatch/src/batching.rs passed",
+    "sha256sum -c artifacts/performance/evidence/fj_dispatch_while_i64_closed_form_pass117_2026-06-04.golden.sha256 passed",
+    "git diff --check passed for touched files; repository-wide diff-check is blocked by pre-existing conflict markers in unrelated fj-conformance files",
+    "UBS crates/fj-dispatch/src/batching.rs reported 0 critical issues; existing file-wide warning inventory remains"
+  ]
+}

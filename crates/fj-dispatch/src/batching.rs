@@ -6236,6 +6236,18 @@ fn batch_while_sub_jaxpr_scalar_loop(
     let Some(max_iter) = parse_while_sub_jaxpr_max_iter(&equation.params) else {
         return Ok(None);
     };
+
+    if let Some(values) = solve_i64_gt_sub_while(
+        cond_op,
+        cond_threshold,
+        body_op,
+        body_operand,
+        max_iter,
+        &carry_values,
+    )? {
+        return build_batched_scalar_while_outputs(output_dtype, batch_size, values);
+    }
+
     let mut active = vec![true; batch_size];
 
     for _ in 0..max_iter {
@@ -6275,6 +6287,55 @@ fn batch_while_sub_jaxpr_scalar_loop(
     }
 
     build_batched_scalar_while_outputs(output_dtype, batch_size, carry_values)
+}
+
+fn solve_i64_gt_sub_while(
+    cond_op: WhileCondOp,
+    cond_threshold: Literal,
+    body_op: WhileScalarOp,
+    body_operand: Literal,
+    max_iter: usize,
+    carry_values: &[Literal],
+) -> Result<Option<Vec<Literal>>, BatchError> {
+    if !matches!(cond_op, WhileCondOp::Gt) || !matches!(body_op, WhileScalarOp::Sub) {
+        return Ok(None);
+    }
+    let (Literal::I64(threshold), Literal::I64(step)) = (cond_threshold, body_operand) else {
+        return Ok(None);
+    };
+    if step <= 0 {
+        return Ok(None);
+    }
+
+    let mut outputs = Vec::with_capacity(carry_values.len());
+    let step = i128::from(step);
+    let threshold = i128::from(threshold);
+    let max_iter = max_iter as i128;
+    for literal in carry_values {
+        let Literal::I64(init) = *literal else {
+            return Ok(None);
+        };
+        let init = i128::from(init);
+        let iterations = if init > threshold {
+            ((init - threshold - 1) / step) + 1
+        } else {
+            0
+        };
+        let final_value = init - iterations * step;
+        let Ok(final_value) = i64::try_from(final_value) else {
+            return Ok(None);
+        };
+        if iterations >= max_iter {
+            return Err(BatchError::EvalError(format!(
+                "{} exceeded max iterations ({})",
+                Primitive::While.as_str(),
+                max_iter
+            )));
+        }
+        outputs.push(Literal::I64(final_value));
+    }
+
+    Ok(Some(outputs))
 }
 
 fn build_batched_scalar_while_outputs(
@@ -9042,6 +9103,62 @@ mod tests {
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0].batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&outputs[0].value), vec![-1, 0, -1]);
+    }
+
+    #[test]
+    fn test_i64_gt_sub_while_closed_form_preserves_loop_boundary() {
+        let values = [
+            Literal::I64(64),
+            Literal::I64(65),
+            Literal::I64(1),
+            Literal::I64(0),
+            Literal::I64(-1),
+        ];
+        let solved = solve_i64_gt_sub_while(
+            WhileCondOp::Gt,
+            Literal::I64(0),
+            WhileScalarOp::Sub,
+            Literal::I64(2),
+            64,
+            &values,
+        )
+        .expect("closed form should not fail")
+        .expect("gt/sub i64 while should be recognized");
+        assert_eq!(
+            solved,
+            vec![
+                Literal::I64(0),
+                Literal::I64(-1),
+                Literal::I64(-1),
+                Literal::I64(0),
+                Literal::I64(-1),
+            ]
+        );
+
+        let err = solve_i64_gt_sub_while(
+            WhileCondOp::Gt,
+            Literal::I64(0),
+            WhileScalarOp::Sub,
+            Literal::I64(2),
+            32,
+            &[Literal::I64(64)],
+        )
+        .expect_err("condition true on the final allowed iteration must remain a max_iter error");
+        assert!(
+            err.to_string()
+                .contains("while_loop exceeded max iterations (32)")
+        );
+
+        let overflow_risk = solve_i64_gt_sub_while(
+            WhileCondOp::Gt,
+            Literal::I64(i64::MIN),
+            WhileScalarOp::Sub,
+            Literal::I64(i64::MAX),
+            64,
+            &[Literal::I64(0)],
+        )
+        .expect("overflow-risk cases should fall back instead of failing");
+        assert_eq!(overflow_risk, None);
     }
 
     #[test]
