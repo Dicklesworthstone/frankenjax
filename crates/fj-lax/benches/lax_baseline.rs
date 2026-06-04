@@ -761,6 +761,69 @@ fn bench_matmul_2d_512(c: &mut Criterion) {
     });
 }
 
+// 2D conv (1x32x32x8 input, 3x3x8x16 kernel, SAME): dense f64 conv path (pass87)
+// vs the generic per-multiply Literal path. Same process for a same-worker ratio.
+fn conv2d_inputs(dense: bool) -> (Value, Value) {
+    let (n, h, w, cin) = (1usize, 32usize, 32usize, 8usize);
+    let (kh, kw, cout) = (3usize, 3usize, 16usize);
+    let ld = vec![n as u32, h as u32, w as u32, cin as u32];
+    let rd = vec![kh as u32, kw as u32, cin as u32, cout as u32];
+    let lhs: Vec<f64> = (0..n * h * w * cin)
+        .map(|i| ((i as f64) * 0.013).sin())
+        .collect();
+    let rhs: Vec<f64> = (0..kh * kw * cin * cout)
+        .map(|i| ((i as f64) * 0.017).cos())
+        .collect();
+    if dense {
+        (
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: ld }, lhs).unwrap()),
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims: rd }, rhs).unwrap()),
+        )
+    } else {
+        (
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: ld },
+                    lhs.into_iter().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            ),
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: rd },
+                    rhs.into_iter().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            ),
+        )
+    }
+}
+
+fn conv2d_bench_params() -> BTreeMap<String, String> {
+    let mut p = BTreeMap::new();
+    p.insert("padding".to_owned(), "same".to_owned());
+    p.insert("strides".to_owned(), "1".to_owned());
+    p
+}
+
+fn bench_conv2d_32x32x8_3x3x16_f64_vec(c: &mut Criterion) {
+    let (lhs, rhs) = conv2d_inputs(true);
+    let p = conv2d_bench_params();
+    c.bench_function("eval/conv2d_32x32x8_3x3x16_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Conv, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_conv2d_32x32x8_3x3x16_f64_literal_reference(c: &mut Criterion) {
+    let (lhs, rhs) = conv2d_inputs(false);
+    let p = conv2d_bench_params();
+    c.bench_function("eval/conv2d_32x32x8_3x3x16_f64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Conv, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_solve_24x24_24rhs(c: &mut Criterion) {
     // Multi-RHS linear solve: A (24x24, diagonally dominant => non-singular)
     // and B (24x24). Exercises solve_multi_rhs, which factorizes A once.
@@ -2026,6 +2089,8 @@ criterion_group!(
     bench_svd_48_f64,
     bench_matmul_2d_256,
     bench_matmul_2d_512,
+    bench_conv2d_32x32x8_3x3x16_f64_vec,
+    bench_conv2d_32x32x8_3x3x16_f64_literal_reference,
     bench_solve_24x24_24rhs,
     bench_concat_axis1_3x_f64,
     bench_concat_axis0_3x_f64,

@@ -1,0 +1,60 @@
+{
+    "bead": "frankenjax-mcqr.30.32",
+    "pass": 87,
+    "date": "2026-06-04",
+    "crate": "fj-lax",
+    "target": "eval/conv2d_32x32x8_3x3x16_f64_vec",
+    "lever_summary": "Dense f64 2D convolution. eval_conv_2d's non-complex innermost loop read lhs.elements[idx].as_f64() + rhs.elements[idx].as_f64() per multiply (Literal materialization + match). New dense f64 fast path reads both operands from as_f64_slice() and accumulates in f64, emitting new_f64_values — bypassing the per-multiply Literal dispatch in the convolution hot loop.",
+    "alien_graveyard": {
+        "primitive": "dense SoA + direct convolution over contiguous typed storage",
+        "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 8.2",
+        "mapping": "evaluate the conv stencil over contiguous native f64 with a typed multiply-accumulate instead of materializing + matching a tagged-union per multiply"
+    },
+    "method": "Same-worker comparison on vmi1156319: dense (new_f64_values) lhs+rhs vs Vec<Literal>-backed lhs+rhs run in the same process; identical SAME-padding stride-1 conv params.",
+    "results": {
+        "conv2d_1x32x32x8_3x3x8x16_same": {
+            "dense_ns": 4390005.2,
+            "dense_ci_ns": [4308546.2, 4486530.4],
+            "literal_ns": 18005534.6,
+            "literal_ci_ns": [17628809.4, 18395272.2],
+            "speedup_midpoint_x": 4.10,
+            "speedup_conservative_x": 3.93
+        }
+    },
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- conv2d_32x32x8 --save-baseline cv",
+    "score": {
+        "impact": 5.0,
+        "confidence": 4.0,
+        "effort": 2.0,
+        "impact_times_confidence_over_effort": 10.0,
+        "kept": true
+    },
+    "change": {
+        "files": [
+            "crates/fj-lax/src/tensor_ops.rs",
+            "crates/fj-lax/benches/lax_baseline.rs"
+        ],
+        "lever": "eval_conv_2d gains a dense f64 fast path (both operands as_f64_slice, f64 multiply-accumulate, new_f64_values output) before the generic non-complex loop, gated on out_dtype==F64 and both operands dense; complex / non-dense / mixed inputs fall through unchanged."
+    },
+    "isomorphism": {
+        "ordering": "unchanged: same n/oh/ow/co output iteration and same kh/kw/ci accumulation order with the same padding bounds skip; same lhs_idx/rhs_idx index math",
+        "arithmetic": "unchanged: acc starts at 0.0 and accumulates lhs*rhs in the same order; for dense f64, src[idx] == as_f64().unwrap_or(0.0); output via from_f64 (out_dtype == F64, new_f64_values)",
+        "padding": "SAME and VALID + strides validated",
+        "tie_breaking": "not applicable",
+        "rng": "not applicable",
+        "errors": "same checked_mul batch-offset overflow check; gated on as_f64_slice() Some so complex / non-dense / mixed-dtype inputs use the generic path",
+        "output_dtype": "F64"
+    },
+    "validation": [
+        {
+            "name": "dense_conv2d_parity",
+            "command": "rch exec -- cargo test -p fj-lax --lib --release conv",
+            "result": "passed: 22 tests incl dense_f64_conv_2d_matches_generic (valid/same x stride 1/2, multi-channel [2,9,7,3] x [3,3,3,4]; dense vs Literal/generic by bits)"
+        },
+        {
+            "name": "clippy_deny_warnings",
+            "command": "rch exec -- cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings",
+            "result": "passed (release dodges shared-target proc-macro rmeta drift in debug)"
+        }
+    ]
+}

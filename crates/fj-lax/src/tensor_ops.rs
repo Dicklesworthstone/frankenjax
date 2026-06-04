@@ -4607,6 +4607,61 @@ fn eval_conv_2d(
 
     let is_complex = matches!(out_dtype, DType::Complex64 | DType::Complex128);
 
+    // Dense F64 fast path: read both operands straight from their contiguous f64
+    // backings, bypassing the per-multiply Literal materialization + match in the
+    // innermost conv loop. Bit-identical to the generic non-complex path — same
+    // index math, same ascending kh/kw/ci accumulation order, same `*`/`+`, and
+    // the same from_f64 output (out_dtype == F64; for dense f64,
+    // src[idx] == as_f64().unwrap_or(0.0)). Falls through otherwise.
+    if !is_complex
+        && out_dtype == DType::F64
+        && let (Some(lhs_src), Some(rhs_src)) =
+            (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+    {
+        let mut out = Vec::with_capacity(total);
+        for n in 0..batch {
+            let n_offset =
+                n.checked_mul(height_width_c_in)
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "conv batch index overflow".into(),
+                    })?;
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let mut acc = 0.0_f64;
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
+                            if in_h < 0 || (in_h as usize) >= height {
+                                continue;
+                            }
+                            let h_offset = (in_h as usize) * width_c_in;
+                            for kw in 0..kernel_w {
+                                let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
+                                if in_w < 0 || (in_w as usize) >= width {
+                                    continue;
+                                }
+                                for ci in 0..c_in {
+                                    let lhs_idx = n_offset + h_offset + (in_w as usize) * c_in + ci;
+                                    let rhs_idx =
+                                        kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
+                                    acc += lhs_src[lhs_idx] * rhs_src[rhs_idx];
+                                }
+                            }
+                        }
+                        out.push(acc);
+                    }
+                }
+            }
+        }
+        return Ok(Value::Tensor(TensorValue::new_f64_values(
+            Shape {
+                dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
+            },
+            out,
+        )?));
+    }
+
     for n in 0..batch {
         let n_offset = n
             .checked_mul(height_width_c_in)

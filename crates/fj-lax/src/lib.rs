@@ -7031,6 +7031,80 @@ mod tests {
     }
 
     #[test]
+    fn dense_f64_conv_2d_matches_generic() {
+        // Dense f64 2D conv (the new fast path) must be bit-identical to the
+        // generic Literal path. lhs=[N,H,W,Cin], rhs=[KH,KW,Cin,Cout]; SAME +
+        // VALID padding, multi-channel.
+        let (n, h, w, cin) = (2usize, 9usize, 7usize, 3usize);
+        let (kh, kw, cout) = (3usize, 3usize, 4usize);
+        let lhs_data: Vec<f64> = (0..n * h * w * cin)
+            .map(|i| ((i as f64) * 0.137).sin() * 3.0 - 1.0)
+            .collect();
+        let rhs_data: Vec<f64> = (0..kh * kw * cin * cout)
+            .map(|i| ((i as f64) * 0.211).cos() * 0.5)
+            .collect();
+        let mk = |d: &[f64], dims: Vec<u32>, dense: bool| {
+            if dense {
+                Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+            } else {
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F64,
+                        Shape { dims },
+                        d.iter().copied().map(Literal::from_f64).collect(),
+                    )
+                    .unwrap(),
+                )
+            }
+        };
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        let ld = vec![n as u32, h as u32, w as u32, cin as u32];
+        let rd = vec![kh as u32, kw as u32, cin as u32, cout as u32];
+        assert!(
+            mk(&lhs_data, ld.clone(), true)
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f64_slice()
+                .is_some()
+        );
+        for (pad, stride) in [("valid", "1"), ("same", "1"), ("valid", "2")] {
+            let p = conv_params(pad, stride);
+            let d = eval_primitive(
+                Primitive::Conv,
+                &[
+                    mk(&lhs_data, ld.clone(), true),
+                    mk(&rhs_data, rd.clone(), true),
+                ],
+                &p,
+            )
+            .unwrap();
+            let l = eval_primitive(
+                Primitive::Conv,
+                &[
+                    mk(&lhs_data, ld.clone(), false),
+                    mk(&rhs_data, rd.clone(), false),
+                ],
+                &p,
+            )
+            .unwrap();
+            assert_eq!(
+                d.as_tensor().unwrap().shape.dims,
+                l.as_tensor().unwrap().shape.dims,
+                "conv2d {pad} {stride} shape"
+            );
+            assert_eq!(bits(&d), bits(&l), "conv2d {pad} stride={stride}");
+        }
+    }
+
+    #[test]
     fn conv_1d_valid_single_channel() {
         // lhs=[1, 4, 1] (batch=1, width=4, channels=1)
         // rhs=[2, 1, 1] (kernel=2, c_in=1, c_out=1)
