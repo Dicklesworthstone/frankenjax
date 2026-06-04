@@ -1,0 +1,68 @@
+{
+  "bead": "frankenjax-5c38v",
+  "pass": 71,
+  "crate": "fj-dispatch",
+  "target": "vmap_while/batched_scalar_add_128",
+  "profile_target": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --noplot",
+    "worker": "ts2",
+    "git_head": "f009c478",
+    "mean_us": 120.78,
+    "ci_low_us": 120.43,
+    "ci_high_us": 121.19
+  },
+  "baseline": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_while/batched_scalar_add_128 --noplot",
+    "worker": "ts2",
+    "git_head": "f009c478",
+    "mean_us": 121.76,
+    "ci_low_us": 121.36,
+    "ci_high_us": 122.16
+  },
+  "after": {
+    "command": "rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_while/batched_scalar_add_128 --noplot",
+    "worker": "ts2",
+    "git_head": "f009c478 plus patch",
+    "mean_us": 9.1933,
+    "ci_low_us": 9.1409,
+    "ci_high_us": 9.2507
+  },
+  "speedup": {
+    "mean": 13.2459,
+    "conservative": 13.1196
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 5,
+    "effort": 2,
+    "value": 12.5
+  },
+  "lever": "Guarded dense-I64 batch-axis-0 while add/lt path borrows i64 slices and runs the scalar recurrence directly, avoiding dense buffer materialization into Vec<Literal>, active-mask allocation, and per-iteration Literal op/condition matchers.",
+  "isomorphism": {
+    "accepted_surface": "inputs len 3; body_op absent or add; cond_op absent or lt; at least one input batched on axis 0; all batched inputs are dense I64 rank-1 tensors with equal batch size; unbatched inputs are I64 scalar or scalar tensor.",
+    "fallback_surface": "non-I64, non-dense I64 tensors, nonzero batch axes, mismatched batch sizes, non-add body ops, non-lt cond ops, non-scalar/rank-mismatched inputs, malformed tensors, and all functional sub-jaxpr while cases use the existing generic path.",
+    "ordering": "Each lane is independent under vmapped while semantics; evaluating one lane to completion yields the same per-lane carry as the prior lockstep active-mask loop because no lane can observe another lane. Output lane order is batch index order.",
+    "integer_semantics": "The body uses i64::wrapping_add exactly like apply_while_scalar_op(WhileScalarOp::Add) for Literal::I64.",
+    "condition_semantics": "The cond uses carry < threshold exactly like apply_while_scalar_cond(WhileCondOp::Lt) for Literal::I64.",
+    "max_iter_semantics": "If a lane executes max_iter body updates, the path returns the same while_loop exceeded max iterations error even if the final body update makes the condition false, matching the prior active flag after the last condition check.",
+    "floating_point": "FP inputs are excluded, so FP ordering, NaN, signed zero, and rounding behavior remain on the existing path.",
+    "rng": "No RNG state or tie-breaking surface is involved."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_while_i64_add_lt_batch0_pass71_2026-06-03.golden",
+    "sha256": "429d6bdfff70fba0e7c714e2a41cea2a514a2f977e7291240420b8459ad34736"
+  },
+  "validation_completed": [
+    "rch focused dense_i64_add_lt tests on ts2: 2 passed",
+    "rch Criterion after row on ts2: 9.1933 us mean [9.1409, 9.2507]",
+    "rch full fj-dispatch tests on ts2: 250 unit tests, 55 integration tests, doc-tests",
+    "rch check -p fj-dispatch --all-targets on ts2",
+    "rch clippy -p fj-dispatch --all-targets --no-deps -- -D warnings on ts2",
+    "cargo fmt --check -p fj-dispatch",
+    "sha256sum -c golden",
+    "jq evidence json",
+    "git diff --check for touched files",
+    "ubs crates/fj-dispatch/src/batching.rs: 0 critical issues"
+  ],
+  "validation_pending": []
+}

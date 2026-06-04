@@ -4201,6 +4201,9 @@ fn batch_while(
     inputs: &[BatchTracer],
     params: &BTreeMap<String, String>,
 ) -> Result<BatchTracer, BatchError> {
+    if let Some(result) = batch_while_i64_add_lt_batch0(inputs, params)? {
+        return Ok(result);
+    }
     if let Some(result) = batch_while_scalar_loop(inputs, params)? {
         return Ok(result);
     }
@@ -4208,6 +4211,131 @@ fn batch_while(
     // Per-element fallback semantics currently match vmapped while behavior:
     // each batch element runs an independent loop until its own condition is false.
     batch_control_flow_fallback(Primitive::While, inputs, params)
+}
+
+enum I64Batch0Values<'a> {
+    Scalar(i64),
+    Slice(&'a [i64]),
+}
+
+impl I64Batch0Values<'_> {
+    fn at(&self, index: usize) -> i64 {
+        match self {
+            Self::Scalar(value) => *value,
+            Self::Slice(values) => values[index],
+        }
+    }
+}
+
+fn batch_while_i64_add_lt_batch0(
+    inputs: &[BatchTracer],
+    params: &BTreeMap<String, String>,
+) -> Result<Option<BatchTracer>, BatchError> {
+    if inputs.len() != 3
+        || params
+            .get("body_op")
+            .is_some_and(|body_op| body_op.as_str() != "add")
+        || params
+            .get("cond_op")
+            .is_some_and(|cond_op| cond_op.as_str() != "lt")
+    {
+        return Ok(None);
+    }
+
+    let Some(batch_size) = while_i64_batch0_size(inputs)? else {
+        return Ok(None);
+    };
+    let Some(init_values) = while_i64_batch0_values(&inputs[0], batch_size) else {
+        return Ok(None);
+    };
+    let Some(step_values) = while_i64_batch0_values(&inputs[1], batch_size) else {
+        return Ok(None);
+    };
+    let Some(threshold_values) = while_i64_batch0_values(&inputs[2], batch_size) else {
+        return Ok(None);
+    };
+
+    let max_iter = params
+        .get("max_iter")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1000);
+    let mut outputs = Vec::with_capacity(batch_size);
+    for batch_idx in 0..batch_size {
+        let mut carry = init_values.at(batch_idx);
+        let step = step_values.at(batch_idx);
+        let threshold = threshold_values.at(batch_idx);
+        let mut iteration = 0_usize;
+        while iteration < max_iter {
+            if carry >= threshold {
+                break;
+            }
+            carry = carry.wrapping_add(step);
+            iteration += 1;
+        }
+        if iteration == max_iter {
+            return Err(BatchError::EvalError(format!(
+                "{} exceeded max iterations ({max_iter})",
+                Primitive::While.as_str()
+            )));
+        }
+        outputs.push(carry);
+    }
+
+    TensorValue::new_i64_values(Shape::vector(batch_size as u32), outputs)
+        .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
+        .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn while_i64_batch0_size(inputs: &[BatchTracer]) -> Result<Option<usize>, BatchError> {
+    let mut batch_size = None;
+    for input in inputs {
+        match input.batch_dim {
+            None => {}
+            Some(0) => {
+                let size = get_batch_size(&input.value, 0)?;
+                if batch_size.is_some_and(|existing| existing != size) {
+                    return Ok(None);
+                }
+                batch_size = Some(size);
+            }
+            Some(_) => return Ok(None),
+        }
+    }
+    Ok(batch_size)
+}
+
+fn while_i64_batch0_values(input: &BatchTracer, batch_size: usize) -> Option<I64Batch0Values<'_>> {
+    match input.batch_dim {
+        None => match &input.value {
+            Value::Scalar(Literal::I64(value)) => Some(I64Batch0Values::Scalar(*value)),
+            Value::Tensor(tensor)
+                if tensor.dtype == DType::I64
+                    && tensor.shape == Shape::scalar()
+                    && tensor.elements.len() == 1 =>
+            {
+                tensor
+                    .elements
+                    .as_i64_slice()
+                    .map(|values| I64Batch0Values::Scalar(values[0]))
+                    .or_else(|| match tensor.elements[0] {
+                        Literal::I64(value) => Some(I64Batch0Values::Scalar(value)),
+                        _ => None,
+                    })
+            }
+            _ => None,
+        },
+        Some(0) => {
+            let tensor = input.value.as_tensor()?;
+            if tensor.dtype != DType::I64
+                || tensor.rank() != 1
+                || tensor.elements.len() != batch_size
+            {
+                return None;
+            }
+            tensor.elements.as_i64_slice().map(I64Batch0Values::Slice)
+        }
+        Some(_) => None,
+    }
 }
 
 fn batch_while_scalar_loop(
@@ -8378,6 +8506,44 @@ mod tests {
         let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![6, 25, 24]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_dense_i64_add_lt_batch0_direct_path() {
+        let init = BatchTracer::batched(Value::vector_i64(&[0, 10, 4]).unwrap(), 0);
+        let step = BatchTracer::batched(Value::vector_i64(&[2, 3, 5]).unwrap(), 0);
+        let threshold = BatchTracer::batched(Value::vector_i64(&[5, 25, 20]).unwrap(), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "32".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params)
+            .expect("dense i64 while add/lt should batch directly");
+
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.elements.as_i64_slice().unwrap(), &[6, 25, 24]);
+    }
+
+    #[test]
+    fn test_batch_trace_while_dense_i64_add_lt_preserves_max_iter_boundary() {
+        let init = BatchTracer::batched(Value::vector_i64(&[0]).unwrap(), 0);
+        let step = BatchTracer::batched(Value::vector_i64(&[10]).unwrap(), 0);
+        let threshold = BatchTracer::batched(Value::vector_i64(&[10]).unwrap(), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "1".to_owned()),
+        ]);
+
+        let err =
+            apply_batch_rule(Primitive::While, &[init, step, threshold], &params).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("while_loop exceeded max iterations (1)")
+        );
     }
 
     #[test]
