@@ -1,0 +1,130 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_matmul_2d_col8_pass81_2026-06-04",
+  "status": "rejected",
+  "date": "2026-06-04",
+  "agent": "BlackThrush",
+  "bead": "frankenjax-p1vbf.9",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_512x512x512_f64",
+  "skill_pass": "repeatedly-apply-skill pass81 -> extreme-software-optimization",
+  "profile_backing": {
+    "full_profile_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "full_profile_worker": "vmi1153651",
+    "top_rows": [
+      {
+        "name": "linalg/matmul_2d_512x512x512_f64",
+        "time_ms": [
+          54.278,
+          60.229,
+          66.963
+        ]
+      },
+      {
+        "name": "linalg/eig_48x48_f64",
+        "time_ms": [
+          26.963,
+          28.522,
+          30.919
+        ]
+      },
+      {
+        "name": "eval/dot_256x256x256_f64",
+        "time_ms": [
+          11.15,
+          12.73,
+          14.203
+        ]
+      },
+      {
+        "name": "linalg/matmul_2d_256x256x256_f64",
+        "time_ms": [
+          8.1121,
+          8.4344,
+          8.9806
+        ]
+      },
+      {
+        "name": "linalg/svd_48x48_f64",
+        "time_ms": [
+          4.2542,
+          5.7318,
+          7.3155
+        ]
+      }
+    ]
+  },
+  "focused_baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "worker": "vmi1293453",
+    "time_ms": [
+      25.401,
+      26.218,
+      27.225
+    ]
+  },
+  "candidate": {
+    "lever": "one-row col8 register accumulator for matmul_2d",
+    "description": "For n>=8, accumulated eight output columns in scalar locals across the full ascending-k loop and stored each output cell once; scalar tail handled non-multiple-of-eight columns.",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "rebench": {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_512x512x512_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+      "worker": "ts2",
+      "time_ms": [
+        75.93,
+        83.411,
+        92.66
+      ],
+      "speedup_vs_focused_baseline_mid": 0.31431840720061023
+    }
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate preserved row-major output and the same per-cell l=0..k-1 contribution order.",
+    "tie_breaking": "N/A: GEMM has no comparison or tie-breaking behavior.",
+    "floating_point": "Candidate used the same scalar multiplication and addition sequence per output cell; no FMA, reassociation, partial-sum merge, SIMD reduction, or mixed precision was introduced.",
+    "rng": "N/A: matmul_2d consumes no random state.",
+    "errors": "No public error path changed in candidate state; slice indexing stayed in matmul_2d.",
+    "golden_sha256": "b31f63734fa82425013b26e750724e16f537a413b65934b114e97b24d5a627e6"
+  },
+  "validation": [
+    {
+      "command": "rustfmt --check crates/fj-lax/src/tensor_contraction.rs",
+      "result": "pass before and after candidate restore"
+    },
+    {
+      "command": "rch exec -- cargo test -p fj-lax matmul_2d -- --nocapture",
+      "worker": "ts2",
+      "result": "pass in candidate state",
+      "details": "3 tests passed, including adversarial NaN/signed-zero bit-pattern test"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/tensor_contraction.rs",
+      "result": "empty after manual restore"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_matmul_2d_col8_pass81_2026-06-04.rejected.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "alien_source": {
+    "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.6",
+    "primitive": "communication-avoiding / cache-aware dense linear algebra",
+    "applied_slice": "Tried a register-local one-row column tile after prior row-block, transpose, row-parallel, and SIMD levers failed."
+  },
+  "next_primitive": {
+    "target": "recursive/cache-oblivious GEMM or packed-B panel with explicit per-cell ascending-k proof",
+    "reason": "The col8 register-local schedule improved C write locality but destroyed B traversal locality and regressed sharply. The next attempt should improve B reuse without switching to strided-B column walks.",
+    "target_ratio": ">=2.0x on linalg/matmul_2d_512x512x512_f64"
+  }
+}

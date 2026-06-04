@@ -1,0 +1,11 @@
+frankenjax-p1vbf.9 pass81 rejected col8 register GEMM candidate
+profile_full_worker=vmi1153651
+profile_full_matmul_512_mid_ms=60.229
+focused_baseline_worker=vmi1293453
+focused_baseline_matmul_512_ms=[25.401,26.218,27.225]
+candidate_worker=ts2
+candidate_matmul_512_ms=[75.930,83.411,92.660]
+candidate_speedup_vs_focused_baseline_mid=0.31432
+source_retained=false
+proof_tests=rch cargo test -p fj-lax matmul_2d passed 3 tests in candidate state
+next_primitive=recursive/cache-oblivious GEMM or packed-B panel with explicit per-cell ascending-k proof
