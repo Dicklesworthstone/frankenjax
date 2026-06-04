@@ -5598,19 +5598,31 @@ fn batch_scan_add_emit_carry_i64(
     }
 
     let mut final_carry = Vec::with_capacity(batch_size);
-    let mut ys = vec![Literal::I64(0); expected_len];
+    let mut ys = vec![0_i64; expected_len];
     for (batch_idx, init) in init_values.into_iter().enumerate() {
         let Literal::I64(mut carry) = init else {
             return Ok(None);
         };
         let row_offset = batch_idx * scan_len;
-        if reverse {
+        if let Some(values) = xs_tensor.elements.as_i64_slice() {
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    carry = carry.wrapping_add(values[row_offset + scan_idx]);
+                    ys[row_offset + scan_idx] = carry;
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    carry = carry.wrapping_add(values[row_offset + scan_idx]);
+                    ys[row_offset + scan_idx] = carry;
+                }
+            }
+        } else if reverse {
             for scan_idx in (0..scan_len).rev() {
                 let Literal::I64(x) = xs_tensor.elements[row_offset + scan_idx] else {
                     return Ok(None);
                 };
                 carry = carry.wrapping_add(x);
-                ys[row_offset + scan_idx] = Literal::I64(carry);
+                ys[row_offset + scan_idx] = carry;
             }
         } else {
             for scan_idx in 0..scan_len {
@@ -5618,20 +5630,15 @@ fn batch_scan_add_emit_carry_i64(
                     return Ok(None);
                 };
                 carry = carry.wrapping_add(x);
-                ys[row_offset + scan_idx] = Literal::I64(carry);
+                ys[row_offset + scan_idx] = carry;
             }
         }
-        final_carry.push(Literal::I64(carry));
+        final_carry.push(carry);
     }
 
-    let carry = TensorValue::new(
-        DType::I64,
-        Shape::vector(xs_tensor.shape.dims[0]),
-        final_carry,
-    )
-    .map_err(|error| BatchError::TensorError(error.to_string()))?;
-    let y = TensorValue::new(
-        DType::I64,
+    let carry = TensorValue::new_i64_values(Shape::vector(xs_tensor.shape.dims[0]), final_carry)
+        .map_err(|error| BatchError::TensorError(error.to_string()))?;
+    let y = TensorValue::new_i64_values(
         Shape {
             dims: vec![xs_tensor.shape.dims[0], xs_tensor.shape.dims[1]],
         },
@@ -8840,9 +8847,25 @@ mod tests {
 
         assert_eq!(outputs.len(), 2);
         assert_eq!(extract_i64_vec(&outputs[0].value), vec![i64::MIN + 2]);
+        assert!(
+            outputs[0]
+                .value
+                .as_tensor()
+                .and_then(|tensor| tensor.elements.as_i64_slice())
+                .is_some(),
+            "direct scan carry output should use dense i64 storage"
+        );
         assert_eq!(
             extract_i64_vec(&outputs[1].value),
             vec![i64::MIN, i64::MIN + 2]
+        );
+        assert!(
+            outputs[1]
+                .value
+                .as_tensor()
+                .and_then(|tensor| tensor.elements.as_i64_slice())
+                .is_some(),
+            "direct scan ys output should use dense i64 storage"
         );
     }
 

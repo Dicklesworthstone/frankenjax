@@ -1,0 +1,56 @@
+{
+  "pass": 112,
+  "bead": "frankenjax-iv4mg",
+  "crate": "fj-dispatch",
+  "date": "2026-06-04",
+  "target": "vmap_scan/functional_sub_jaxpr_add_emit_128x64",
+  "profile_basis": "Ready [perf] bead frankenjax-iv4mg, filed from a post-pass110 fj-dispatch profile where vmap_scan/functional_sub_jaxpr_add_emit_128x64 was the top non-owned dispatch hotspot at 61.524us midpoint.",
+  "lever": "dense I64 output buffers for the existing exact add-emit functional scan specialization, plus dense xs reads when available; all other paths fall through to the existing generic batching evaluator",
+  "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-iv4mg-baseline cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_scan/functional_sub_jaxpr_add_emit_128x64 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "rebench_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-iv4mg-rebench cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_scan/functional_sub_jaxpr_add_emit_128x64 --sample-size 40 --measurement-time 2 --warm-up-time 1 --noplot",
+  "benchmarks": [
+    {
+      "case": "vmap_scan/functional_sub_jaxpr_add_emit_128x64",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 60.569,
+        "mid": 60.798,
+        "upper": 61.054
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 45.135,
+        "mid": 45.167,
+        "upper": 45.199
+      },
+      "speedup_midpoint": 1.346,
+      "speedup_conservative": 1.34
+    }
+  ],
+  "score": {
+    "impact": 4.0,
+    "confidence": 1.0,
+    "effort": 0.5,
+    "impact_x_confidence_div_effort": 8.0
+  },
+  "isomorphism_proof": [
+    "The optimization is inside the pre-existing batch_scan_add_emit_carry_i64 guard; accepted scan/body shapes, carry arity, xs arity, scan length, reverse parameter handling, effect checks, body params, and output arity are unchanged.",
+    "Dense xs reads use the same row_offset + scan_idx indexing as the literal-backed path; malformed declared-I64 tensors that do not expose an I64 slice still enter the literal-matching path and return None on the same non-I64 elements as before.",
+    "Forward and reverse output ordering is preserved: forward fills increasing scan indices, while reverse iterates decreasing indices and writes each accumulated y back to the original row-major output index.",
+    "I64 arithmetic still uses i64::wrapping_add. There is no floating-point, RNG, tie-breaking, or side-effect behavior in the accepted fragment.",
+    "The only kept representation change is output storage: final carry and stacked ys are constructed with TensorValue::new_i64_values instead of TensorValue::new(DType::I64, ..., Vec<Literal>). DType, shape, batch_dim, value order, and observable extracted values are unchanged."
+  ],
+  "golden": "fj_dispatch_scan_i64_dense_outputs_pass112_2026-06-04.golden",
+  "golden_sha256": "1cbac033921fbe66cc9153ec9fd30080b50710177c1e815d07d1d271682254c0",
+  "validation": [
+    "cargo fmt -p fj-dispatch --check",
+    "git diff --check -- crates/fj-dispatch/src/batching.rs",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-iv4mg-scan-tests cargo test -p fj-dispatch scan_sub_jaxprs --lib -- --nocapture",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-iv4mg-check cargo check -p fj-dispatch --all-targets",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-iv4mg-tests cargo test -p fj-dispatch --lib",
+    "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-iv4mg-clippy cargo clippy -p fj-dispatch --all-targets -- -D warnings",
+    "ubs crates/fj-dispatch/src/batching.rs",
+    "sha256sum -c artifacts/performance/evidence/fj_dispatch_scan_i64_dense_outputs_pass112_2026-06-04.golden.sha256"
+  ],
+  "status": "kept"
+}

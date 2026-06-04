@@ -1,0 +1,43 @@
+pass112 golden - fj-dispatch dense I64 scan add-emit outputs
+target bead: frankenjax-iv4mg
+
+profile target:
+  benchmark: vmap_scan/functional_sub_jaxpr_add_emit_128x64
+  baseline worker: ts2
+  baseline: 60.798us [60.569, 61.054]
+  candidate worker: ts2
+  candidate: 45.167us [45.135, 45.199]
+
+case wrapping_forward_dense_outputs:
+  init: I64(9223372036854775807)
+  xs: I64Tensor([[1, 2]])
+  output carry: dense I64Tensor([-9223372036854775806])
+  output ys: dense I64Tensor([[-9223372036854775808, -9223372036854775806]])
+
+case batched_forward:
+  init: I64(0)
+  xs: I64Tensor([[1, 2, 3], [10, 20, 30]])
+  output carry: dense I64Tensor([6, 60])
+  output ys: dense I64Tensor([[1, 3, 6], [10, 30, 60]])
+
+case batched_reverse:
+  init: I64(0)
+  xs: I64Tensor([[1, 2, 3], [10, 20, 30]])
+  output carry: dense I64Tensor([6, 60])
+  output ys: dense I64Tensor([[6, 5, 3], [60, 50, 30]])
+
+case literal_backed_xs_fallback_read:
+  declared dtype: I64
+  input storage: Literal::I64 elements
+  behavior: same values as the dense xs path; the input read path falls back to Literal matching and the output is still dense I64.
+
+case guard_miss_surfaces:
+  nonmatching scan bodies, multi-carry scans, scan/body effects, constvars, body params, unrelated scan params, non-I64 carry values, non-I64 xs values, non-rank-2 batched xs tensors, and malformed declared-I64 literal tensors all miss the direct dense-output path and continue through the existing generic batching path.
+
+isomorphism:
+  ordering: result vector order remains [final_carry, stacked_ys]; row-major output layout is unchanged; reverse scan writes each y at the original input index.
+  tie_breaking: none; accepted primitive family is integer Add only.
+  floating_point: N/A; accepted values are I64 tensors only.
+  rng: N/A; accepted scan equation and body have no effects and no sub-jaxprs.
+  arithmetic: wrapping_add preserves existing I64 Add semantics.
+  representation: only TensorValue element storage changes from Vec<Literal> to dense I64 buffers for accepted outputs; observed values, dtype, shape, and batch_dim are unchanged.
