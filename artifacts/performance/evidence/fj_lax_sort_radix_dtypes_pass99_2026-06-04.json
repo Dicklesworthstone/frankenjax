@@ -1,0 +1,21 @@
+{
+    "pass": 99, "date": "2026-06-04", "crate": "fj-lax",
+    "kind": "generalize pass98 F32 radix to F32/F16/BF16/U32/U64/I32 (O(n log n) -> O(n))",
+    "target": "eval/sort_64k_u32 (+ eval/sort_64k_f32 preserved from pass98)",
+    "lever_summary": "Replace sort_along_axis_f32_radix with sort_along_axis_literal_radix: per-dtype-family ascending u64 key — Float(F32/F16/BF16)=f64_total_order_key(as_f64), Unsigned(U32/U64)=as_u64, Signed(I32)=(as_i64 as u64)^(1<<63) — reproducing the generic compare_sort_keys order, in O(n) LSD radix. F64/I64 excluded (dense paths).",
+    "method": "same-bench A/B; baseline = stashed generic comparison sort; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, unaffected). u32 A/B on a noisy worker (wide CIs, non-overlapping); f32 (pass98, same machinery) was a clean 2.98x.",
+    "results": {
+        "calibration_reduce_us": {"candidate": 13.515, "baseline": 12.957, "worker_ratio": 1.04},
+        "sort_64k_u32": {"baseline_ms": 17.749, "candidate_ms": 10.792, "raw_x": 1.645, "worker_corrected_x": 1.72},
+        "sort_64k_f32_pass98_preserved": {"baseline_ms": 7.5544, "candidate_ms": 2.3540, "worker_corrected_x": 2.98}
+    },
+    "score": {"impact": 4.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 10.0, "kept": true},
+    "change": {"files": ["crates/fj-lax/src/tensor_ops.rs", "crates/fj-lax/benches/lax_baseline.rs"],
+        "lever": "sort_along_axis_f32_radix -> sort_along_axis_literal_radix (dtype-family key switch); routing calls it unconditionally (self-gates on dtype). Added eval/sort_64k_u32 bench + radix_sort_u32_ascending_matches_unsigned_reference test."},
+    "isomorphism": {"type": "BIT-IDENTICAL output permutation per dtype family (Float total_cmp / Unsigned cmp / Signed cmp; both stable); sort emits reordered original literals, argsort same i64 indices", "validation": "radix_sort_f32_* + radix_sort_u32_* parity tests + 15 sort tests pass"},
+    "validation": [
+        {"name": "sort_tests", "command": "rch exec -- cargo test -p fj-lax --release sort", "result": "15 passed"},
+        {"name": "clippy", "command": "rch exec -- cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings", "result": "clean"}
+    ],
+    "note": "Completes the radix-sort dtype coverage (F64/I64 dense + F32/F16/BF16/U32/U64/I32 Literal radix). Complex stays generic (lexicographic 2-key, not single-key radix-able)."
+}

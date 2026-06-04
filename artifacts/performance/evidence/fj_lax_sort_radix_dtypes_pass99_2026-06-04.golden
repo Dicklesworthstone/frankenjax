@@ -1,0 +1,12 @@
+pass99 golden — fj-lax: generalize LSD radix sort to F32/F16/BF16/U32/U64/I32 (O(n log n)->O(n))
+target=eval/sort_64k_u32 (+ eval/sort_64k_f32 from pass98); sort_along_axis Literal-backed numeric path
+lever=generalize the pass98 F32 radix into sort_along_axis_literal_radix keyed per dtype family by an ascending u64: Float (F32/F16/BF16) -> f64_total_order_key(as_f64); Unsigned (U32/U64) -> as_u64; Signed (I32) -> (as_i64 as u64)^(1<<63). Each reproduces the generic compare_sort_keys order exactly (total_cmp / unsigned cmp / signed cmp). F64/I64 keep their dedicated dense paths + generic-for-Literal (excluded). Bool/Complex -> generic.
+method=same-bench A/B on RCH Criterion; baseline = git-stashed generic comparison sort; normalized by eval/sort_calib_reduce_64k_i64 (ReduceSum, UNAFFECTED) calibration. NOTE: the u32 A/B ran on a noisy worker (wide CIs) but the sort CIs do not overlap so the ratio is real; the f32 case (pass98, same machinery) measured a clean 2.98x on a quiet worker and is preserved unchanged here.
+calibration_reduce=candidate 13.515us vs baseline 12.957us -> workers within 1.04x
+sort_64k_u32=baseline 17.749ms [16.209, 19.575] vs candidate 10.792ms [9.174, 12.948] = 1.645x raw -> 1.72x worker-corrected
+sort_64k_f32(pass98, preserved)=7.5544ms -> 2.3540ms = 2.98x worker-corrected
+score=impact 4 (broadens the radix to U32/U64 indices/masks + BF16/F16 ML half-floats + I32) x confidence 5 (BIT-EXACT vs generic; f32 + u32 parity tests + 15 sort tests pass) / effort 2 = 10.0
+alien_primitive=LSD radix over fixed-width keys (O(n) vs comparison O(n log n)); single key-derivation switch over dtype family. 100% safe Rust.
+isomorphism=BIT-IDENTICAL output permutation to the generic comparison path for each dtype family. Float: f64_total_order_key(as_f64) == f64::total_cmp order (SortKey::Float uses as_f64); Unsigned: as_u64 == Unsigned cmp; Signed: (i64 as u64)^(1<<63) == signed cmp. Both the generic slice::sort_by and LSD radix are STABLE -> ties identical. Sort emits reordered ORIGINAL literals (exact bits); argsort emits the same i64 indices.
+golden_note=radix_sort_f32_ascending_matches_total_cmp_reference (NaN/inf/-0/payload/dups by bits) + radix_sort_u32_ascending_matches_unsigned_reference (0/u32::MAX/dups) + 15 sort tests pass.
+validation=RCH cargo test -p fj-lax --release sort: 15 passed; RCH cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings: clean.

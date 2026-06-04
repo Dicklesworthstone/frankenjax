@@ -3951,23 +3951,35 @@ fn sort_along_axis_dense_f64(
     Ok(Some(Value::Tensor(out_value)))
 }
 
-/// Ascending radix sort/argsort along `axis` for F32 tensors. F32 has no dense
-/// storage variant (it is Literal-backed), but the generic path keys F32 via
-/// `literal.as_f64()` → `SortKey::Float` → `f64::total_cmp`; keying the radix by
-/// `f64_total_order_key(literal.as_f64())` reproduces that ordering exactly, and
-/// both the generic `sort_by` and LSD radix are stable, so the output permutation
-/// is bit-for-bit identical — in O(n) radix passes instead of O(n log n)
-/// comparisons. Sort emits the reordered original F32 literals; argsort emits
-/// dense i64 in-slice indices. Returns `None` (generic path) for non-F32, short
-/// axes, or any element that is not numerically orderable via `as_f64`.
-fn sort_along_axis_f32_radix(
+/// Ascending radix sort/argsort along `axis` for Literal-backed numeric tensors
+/// that have no dense storage variant (F32/F16/BF16, U32/U64, I32). The generic
+/// path keys these via `compare_sort_keys` — `SortKey::Float(as_f64).total_cmp`
+/// for floats, unsigned `cmp` for U32/U64, signed `cmp` for integers. Each maps
+/// to an ascending `u64` radix key that reproduces that exact order:
+/// `f64_total_order_key(as_f64)` (float), `as_u64` (unsigned), and
+/// `(as_i64 as u64) ^ (1<<63)` (signed). Both the generic `sort_by` and LSD radix
+/// are stable, so the output permutation is bit-for-bit identical — in O(n) radix
+/// passes instead of O(n log n) comparisons. Sort emits the reordered original
+/// literals (exact bits); argsort emits dense i64 in-slice indices. F64/I64 are
+/// excluded (their dedicated dense paths run first; Literal-backed F64/I64 keep
+/// the generic path so their radix-vs-generic tests stay meaningful). Returns
+/// `None` (generic path) for Bool/Complex, short axes, or non-orderable elements.
+fn sort_along_axis_literal_radix(
     tensor: &TensorValue,
     axis: usize,
     return_indices: bool,
 ) -> Result<Option<Value>, EvalError> {
-    if tensor.dtype != DType::F32 {
-        return Ok(None);
+    enum KeyKind {
+        Float,
+        Unsigned,
+        Signed,
     }
+    let kind = match tensor.dtype {
+        DType::F32 | DType::F16 | DType::BF16 => KeyKind::Float,
+        DType::U32 | DType::U64 => KeyKind::Unsigned,
+        DType::I32 => KeyKind::Signed,
+        _ => return Ok(None),
+    };
     let axis_dim = tensor.shape.dims[axis] as usize;
     if axis_dim < RADIX_SORT_MIN_AXIS {
         return Ok(None);
@@ -3986,16 +3998,27 @@ fn sort_along_axis_f32_radix(
     }
     let outer_count = total / axis_dim;
 
-    // Materialize the literals once and pre-extract f64 keys; bail to the generic
-    // path if any element is not numerically orderable (matches the generic
-    // `sort_key` fallibility without diverging behavior).
+    // Materialize the literals once and pre-extract ascending u64 keys; bail to
+    // the generic path if any element is not orderable in the expected family
+    // (matches the generic `sort_key` fallibility without diverging behavior).
     let elems = tensor.elements.as_slice();
-    let mut values = Vec::with_capacity(total);
+    let mut keys = Vec::with_capacity(total);
     for lit in elems.iter() {
-        match lit.as_f64() {
-            Some(v) => values.push(v),
-            None => return Ok(None),
-        }
+        let key = match kind {
+            KeyKind::Float => match lit.as_f64() {
+                Some(v) => f64_total_order_key(v),
+                None => return Ok(None),
+            },
+            KeyKind::Unsigned => match lit.as_u64() {
+                Some(v) => v,
+                None => return Ok(None),
+            },
+            KeyKind::Signed => match lit.as_i64() {
+                Some(v) => (v as u64) ^ (1_u64 << 63),
+                None => return Ok(None),
+            },
+        };
+        keys.push(key);
     }
 
     let mut out_idx = vec![0_i64; total];
@@ -4012,10 +4035,7 @@ fn sort_along_axis_f32_radix(
         |base| {
             pairs.clear();
             for i in 0..axis_dim {
-                pairs.push((
-                    f64_total_order_key(values[base + i * axis_stride]),
-                    i as u32,
-                ));
+                pairs.push((keys[base + i * axis_stride], i as u32));
             }
             radix_pairs_ascending(&mut pairs, &mut scratch);
             for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
@@ -4033,7 +4053,7 @@ fn sort_along_axis_f32_radix(
         TensorValue::new_i64_values(tensor.shape.clone(), out_idx)
             .map_err(EvalError::InvalidTensor)?
     } else {
-        TensorValue::new(DType::F32, tensor.shape.clone(), out_lit)
+        TensorValue::new(tensor.dtype, tensor.shape.clone(), out_lit)
             .map_err(EvalError::InvalidTensor)?
     };
     Ok(Some(Value::Tensor(out_value)))
@@ -4128,9 +4148,7 @@ fn sort_along_axis(
         {
             return Ok(value);
         }
-        if tensor.dtype == DType::F32
-            && let Some(value) = sort_along_axis_f32_radix(tensor, axis, return_indices)?
-        {
+        if let Some(value) = sort_along_axis_literal_radix(tensor, axis, return_indices)? {
             return Ok(value);
         }
     }
@@ -6116,6 +6134,58 @@ mod tests {
 
         let arg = extract_i64_vec(&eval_argsort(Primitive::Argsort, &[tensor()], &asc).unwrap());
         assert_eq!(arg, expected_arg, "radix f32 argsort vs total_cmp reference");
+    }
+
+    #[test]
+    fn radix_sort_u32_ascending_matches_unsigned_reference() {
+        // U32 sort/argsort now uses the LSD radix path. Validate against an
+        // independent stable unsigned-value reference, including 0 / u32::MAX /
+        // dups, over an axis >= 256 so the radix path is taken.
+        let n = 1000usize;
+        let data: Vec<u32> = (0..n)
+            .map(|i| match i % 7 {
+                0 => 0,
+                1 => u32::MAX,
+                2 => 1,
+                3 => (i as u32) % 5, // duplicates
+                _ => ((i as u32).wrapping_mul(2_654_435_761)) ^ (i as u32),
+            })
+            .collect();
+
+        let tensor = || {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::U32,
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    data.iter().map(|&v| Literal::U32(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let asc = params(&[("dimension", "0"), ("descending", "false")]);
+
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| data[a].cmp(&data[b]));
+        let expected_vals: Vec<u32> = idx.iter().map(|&i| data[i]).collect();
+        let expected_arg: Vec<i64> = idx.iter().map(|&i| i as i64).collect();
+
+        let sorted = eval_sort(Primitive::Sort, &[tensor()], &asc).unwrap();
+        let got_vals: Vec<u32> = sorted
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::U32(v) => *v,
+                other => panic!("expected U32, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(got_vals, expected_vals, "radix u32 sort vs unsigned reference");
+
+        let arg = extract_i64_vec(&eval_argsort(Primitive::Argsort, &[tensor()], &asc).unwrap());
+        assert_eq!(arg, expected_arg, "radix u32 argsort vs unsigned reference");
     }
 
     // ── Argsort ──

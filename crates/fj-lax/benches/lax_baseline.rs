@@ -1132,6 +1132,30 @@ fn bench_sort_64k_f32(c: &mut Criterion) {
     });
 }
 
+// U32 sort: previously the generic O(n log n) comparison path (U32 is
+// Literal-backed); now the LSD radix path (pass99).
+fn bench_sort_64k_u32(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| Literal::U32((i as u32).wrapping_mul(2_654_435_761) ^ (i as u32)))
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new(
+            DType::U32,
+            Shape {
+                dims: vec![LARGE_ELEMENTWISE_LEN as u32],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("dimension".to_owned(), "0".to_owned());
+    p.insert("descending".to_owned(), "false".to_owned());
+    c.bench_function("eval/sort_64k_u32", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Sort, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Calibration: an unchanged op (full i64 reduce) used to confirm the radix A/B
 // pair ran on the same worker (its ratio should be ~1.0 across the two runs).
 fn bench_sort_calib_reduce_64k_i64(c: &mut Criterion) {
@@ -2266,6 +2290,7 @@ criterion_group!(
     bench_sort_64k_i64,
     bench_sort_64k_f64,
     bench_sort_64k_f32,
+    bench_sort_64k_u32,
     bench_sort_calib_reduce_64k_i64,
     bench_topk_64k_k128_f64_vec,
     bench_topk_64k_k128_f64_literal_reference,
