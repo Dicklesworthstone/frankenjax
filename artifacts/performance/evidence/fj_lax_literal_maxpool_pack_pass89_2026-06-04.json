@@ -1,0 +1,116 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-mcqr.30.34",
+  "pass": 89,
+  "date": "2026-06-04",
+  "crate": "fj-lax",
+  "target": "eval/maxpool_256x256_f64_literal_ref",
+  "profile_backed_target": {
+    "worker": "ts2",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/maxpool_256x256_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+    "baseline_literal_ref_ms": 12.269,
+    "baseline_literal_ref_ci_ms": [12.236, 12.313],
+    "baseline_dense_vec_ms": 2.5781,
+    "baseline_dense_vec_ci_ms": [2.5704, 2.5923],
+    "rank": 1,
+    "basis": "Fresh focused profile showed the literal-backed maxpool variant paying the generic per-window Literal path while the dense vec variant already used the typed max/min kernel."
+  },
+  "optimization": {
+    "lever": "Route literal-backed DType::F64 rank-2 max/min reduce_window through reduce_window_f64_values so it packs tagged literals once, then reuses the existing typed max/min pooling kernel.",
+    "one_lever": true,
+    "files_changed": [
+      "crates/fj-lax/src/lib.rs"
+    ],
+    "alien_graveyard": {
+      "primitive": "dense SoA plus stencil/windowed reduction over contiguous typed storage",
+      "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 8.2",
+      "mapping": "Pack a declared-F64 Literal tensor into a contiguous f64 slab once, then evaluate the pooling stencil over native f64 values instead of materializing and matching a tagged Literal for every window element."
+    },
+    "guard": "rank == 2, dtype == F64, reduce_op in {max,min}, and reduce_window_f64_values(tensor) succeeds; all other cases use the previous generic path."
+  },
+  "benchmark": {
+    "baseline": {
+      "worker": "ts2",
+      "literal_ref_ms": 12.269,
+      "literal_ref_ci_ms": [12.236, 12.313],
+      "dense_vec_ms": 2.5781,
+      "dense_vec_ci_ms": [2.5704, 2.5923],
+      "sample_size": 10,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 2
+    },
+    "after": {
+      "worker": "ts2",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/maxpool_256x256_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+      "literal_ref_ms": 2.698,
+      "literal_ref_ci_ms": [2.6865, 2.7114],
+      "dense_vec_ms": 2.5497,
+      "dense_vec_ci_ms": [2.5418, 2.559],
+      "sample_size": 10,
+      "warm_up_seconds": 1,
+      "measurement_seconds": 2
+    },
+    "speedup_midpoint_x": 4.547442550037065,
+    "speedup_conservative_x": 4.512795160433725,
+    "delta_percent": -78.01043279729399
+  },
+  "score": {
+    "impact": 5.0,
+    "confidence": 4.0,
+    "effort": 2.0,
+    "impact_times_confidence_over_effort": 10.0,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering": "Unchanged: output positions are emitted in row-major order, and each output cell scans window rows then window columns in the same order as the generic Literal accumulator path.",
+    "padding": "Unchanged: SAME and VALID geometry and pad lows are still computed by the shared caller before dispatch; the typed kernel keeps the same padded-row/col skip conditions.",
+    "floating_point": "Unchanged for valid F64 literals: reduce_window_f64_values copies each f64 value, then the typed kernel uses the same -inf/+inf initial accumulator and the same jax_max_f64/jax_min_f64 combiner, preserving NaN propagation and signed-zero behavior.",
+    "tie_breaking": "Not applicable; max/min returns values only, with no index/tie metadata.",
+    "rng": "Not applicable; reduce_window is deterministic and consumes no RNG.",
+    "fallbacks": "Malformed declared-F64 tensors, non-F64 dtypes, non-rank-2 operands, and non-max/min reduce ops do not satisfy the guard and therefore retain the previous generic behavior and error surface.",
+    "output_storage": "The optimized literal-backed case now returns dense F64 storage, matching the already-shipped dense path while preserving dtype, shape, element order, and f64 output bits."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_literal_maxpool_pack_pass89_2026-06-04.golden",
+    "sha256": "39f7645f0b7f15d0baa00c72ab3189420463213cb3c6dec26cef825593d9d37e",
+    "description": "Golden records the literal-ref baseline, same-worker after timing, one-lever source change, score, and isomorphism obligations for literal-backed F64 max/min reduce_window packing."
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax dense_f64_reduce_window_max_min_matches_generic --lib -- --nocapture",
+      "worker": "ts2",
+      "result": "pass; 1 focused test passed, 1065 filtered out"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/maxpool_256x256_f64 --noplot --sample-size 10 --warm-up-time 1 --measurement-time 2",
+      "worker": "ts2",
+      "result": "pass; literal_ref midpoint 12.269 ms -> 2.6980 ms"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings",
+      "worker": "ts2",
+      "result": "pass"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check --config skip_children=true crates/fj-lax/src/lib.rs",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/lib.rs",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_literal_maxpool_pack_pass89_2026-06-04.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/lib.rs",
+      "result": "exit 1 from existing file-wide inventory; UBS fmt, clippy, cargo check, test build, audit, and deny subchecks were clean"
+    }
+  ],
+  "notes": [
+    "The previous session already landed fj_lax_dense_conv1d as pass88, so this evidence uses pass89 while keeping bead frankenjax-mcqr.30.34.",
+    "Package-level rustfmt check is currently blocked by unrelated pre-existing formatting in crates/fj-lax/src/arithmetic.rs; the touched lib.rs check passed.",
+    "Unrelated dirty peer edits in crates/fj-lax/src/linalg.rs and generated artifacts were left unstaged."
+  ]
+}

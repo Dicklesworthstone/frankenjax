@@ -1,0 +1,12 @@
+frankenjax-mcqr.30.34 pass89 golden
+target=eval/maxpool_256x256_f64_literal_ref
+lever=literal-backed rank-2 f64 max/min reduce_window now packs declared-F64 Literal tensors once via reduce_window_f64_values and reuses the typed eval_reduce_window_rank2_f64_max_min kernel
+method=same-worker ts2 RCH Criterion focused bench for maxpool_256x256_f64, before and after the one-lever source change
+baseline=literal_ref 12269.000us [12236.000, 12313.000]; dense vec 2578.100us [2570.400, 2592.300]
+after=literal_ref 2698.000us [2686.500, 2711.400]; dense vec 2549.700us [2541.800, 2559.000]
+speedup=4.547x midpoint, 4.513x conservative using baseline low / after high
+score=10.0
+alien_primitive=dense SoA plus stencil/windowed reduction over contiguous typed storage; pack tagged literals once, then run the native pooling stencil
+source_change=eval_reduce_window_rank2_f64_max_min now accepts a contiguous f64 slice; eval_reduce_window gates rank-2 F64 max/min on reduce_window_f64_values, so dense tensors borrow and literal-backed tensors pack once; malformed declared-F64 tensors still fall through
+isomorphism=same row-major output order, same in-window row-major iteration and padding skips, same -inf/+inf initial accumulators, same jax_max_f64/jax_min_f64 NaN and signed-zero behavior, no tie-breaking surface, no RNG, same fallback/error surface for non-F64/non-rank2/non-max-min/malformed tensors
+validation=RCH ts2 cargo test -p fj-lax dense_f64_reduce_window_max_min_matches_generic --lib passed; RCH ts2 cargo clippy -p fj-lax --release --all-targets --no-deps -- -D warnings passed; rustfmt isolated lib.rs check passed; git diff --check passed; UBS file scan build/fmt/clippy/audit/deny clean but file-wide existing panic/warning inventory remains

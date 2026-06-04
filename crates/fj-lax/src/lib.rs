@@ -2766,18 +2766,17 @@ fn eval_reduce_window_rank2_f64_sum(
     ))
 }
 
-/// Dense rank-2 F64 max/min reduce_window (maxpool/minpool). Reads the operand
-/// straight from its contiguous `as_f64_slice()` backing and writes a dense f64
-/// output, bypassing the generic path's per-window-element Literal
-/// materialization + `reduce_window_accumulate_literal` match. Bit-for-bit
-/// identical to the generic path for F64: same in-bounds-only window iteration
-/// and padding skip, same `-inf`/`+inf` initial accumulator, and the same
-/// `jax_max_f64`/`jax_min_f64` (NaN-propagating) combiner. `is_max` selects max
-/// vs min. Caller gates on rank==2, F64, dense storage, and reduce_op in max/min.
+/// Rank-2 F64 max/min reduce_window (maxpool/minpool) over contiguous f64
+/// values. Dense tensors borrow their backing storage; literal-backed F64
+/// tensors are packed once by the caller. Bit-for-bit identical to the generic
+/// path for F64: same in-bounds-only window iteration and padding skip, same
+/// `-inf`/`+inf` initial accumulator, and the same `jax_max_f64`/`jax_min_f64`
+/// (NaN-propagating) combiner. `is_max` selects max vs min.
 #[allow(clippy::too_many_arguments)]
 fn eval_reduce_window_rank2_f64_max_min(
     primitive: Primitive,
     tensor: &TensorValue,
+    src: &[f64],
     window_dims: &[usize],
     strides: &[usize],
     out_dims: &[u32],
@@ -2785,13 +2784,6 @@ fn eval_reduce_window_rank2_f64_max_min(
     total_output: usize,
     is_max: bool,
 ) -> Result<Value, EvalError> {
-    let Some(src) = tensor.elements.as_f64_slice() else {
-        // Gated by the caller; defensively fall back is impossible here.
-        return Err(reduce_window_unsupported(
-            primitive,
-            "dense f64 max/min reduce_window requires dense storage",
-        ));
-    };
     let input_rows = tensor.shape.dims[0] as usize;
     let input_cols = tensor.shape.dims[1] as usize;
     let out_rows = out_dims[0] as usize;
@@ -2962,11 +2954,12 @@ fn eval_reduce_window(
     if tensor.dtype == fj_core::DType::F64
         && rank == 2
         && matches!(reduce_op, "max" | "min")
-        && tensor.elements.as_f64_slice().is_some()
+        && let Some(src) = reduce_window_f64_values(tensor)
     {
         return eval_reduce_window_rank2_f64_max_min(
             primitive,
             tensor,
+            src.as_ref(),
             &window_dims,
             &strides,
             &out_dims,
@@ -3111,7 +3104,11 @@ fn eval_reduce_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{EvalError, eval_primitive};
+    use super::{
+        EvalError, eval_primitive, reduce_window_accumulate_literal,
+        reduce_window_accumulator_literal, reduce_window_initial_accumulator,
+        reduce_window_same_geometry,
+    };
     use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value, ValueError};
     use std::collections::BTreeMap;
 
@@ -9143,10 +9140,9 @@ mod tests {
 
     #[test]
     fn dense_f64_reduce_window_max_min_matches_generic() {
-        // Dense f64 rank-2 max/min reduce_window (the new fast path) must be
-        // bit-identical to the generic Literal path, incl NaN/+-inf and SAME/
-        // VALID padding. Dense operand via new_f64_values, literal via new (forces
-        // the generic path since as_f64_slice() is None).
+        // Dense and literal-backed f64 rank-2 max/min reduce_window paths must
+        // be bit-identical to the generic Literal accumulator semantics, incl
+        // NaN/+-inf and SAME/VALID padding.
         let rows = 7usize;
         let cols = 9usize;
         let data: Vec<f64> = (0..rows * cols)
@@ -9194,23 +9190,101 @@ mod tests {
                 .map(|l| l.as_f64().unwrap().to_bits())
                 .collect()
         };
+
+        let reference_bits =
+            |op: &str, window: (usize, usize), stride: (usize, usize), pad: &str| {
+                let geometry = |input_dim: usize, win: usize, stride: usize| match pad {
+                    "SAME" => reduce_window_same_geometry(
+                        Primitive::ReduceWindow,
+                        input_dim,
+                        win,
+                        stride,
+                        false,
+                    )
+                    .unwrap(),
+                    "VALID" => {
+                        if input_dim >= win {
+                            ((input_dim - win) / stride + 1, 0)
+                        } else {
+                            (0, 0)
+                        }
+                    }
+                    _ => unreachable!("test only uses SAME/VALID padding"),
+                };
+                let (out_rows, pad_rows) = geometry(rows, window.0, stride.0);
+                let (out_cols, pad_cols) = geometry(cols, window.1, stride.1);
+                let mut out = Vec::with_capacity(out_rows * out_cols);
+                for out_row in 0..out_rows {
+                    let row_base = out_row * stride.0;
+                    for out_col in 0..out_cols {
+                        let col_base = out_col * stride.1;
+                        let mut accum = reduce_window_initial_accumulator(DType::F64, op);
+                        for window_row in 0..window.0 {
+                            let padded_row = row_base + window_row;
+                            if padded_row < pad_rows {
+                                continue;
+                            }
+                            let input_row = padded_row - pad_rows;
+                            if input_row >= rows {
+                                continue;
+                            }
+                            let row_offset = input_row * cols;
+                            for window_col in 0..window.1 {
+                                let padded_col = col_base + window_col;
+                                if padded_col < pad_cols {
+                                    continue;
+                                }
+                                let input_col = padded_col - pad_cols;
+                                if input_col >= cols {
+                                    continue;
+                                }
+                                reduce_window_accumulate_literal(
+                                    Primitive::ReduceWindow,
+                                    op,
+                                    &mut accum,
+                                    Literal::from_f64(data[row_offset + input_col]),
+                                )
+                                .unwrap();
+                            }
+                        }
+                        let literal = reduce_window_accumulator_literal(
+                            Primitive::ReduceWindow,
+                            DType::F64,
+                            accum,
+                        )
+                        .unwrap();
+                        out.push(literal.as_f64().unwrap().to_bits());
+                    }
+                }
+                (vec![out_rows as u32, out_cols as u32], out)
+            };
+
         for op in ["max", "min"] {
             for (win, stride, pad) in [
-                ("3,3", "1,1", "SAME"),
-                ("2,2", "2,2", "VALID"),
-                ("3,2", "1,1", "VALID"),
+                ((3usize, 3usize), (1usize, 1usize), "SAME"),
+                ((2, 2), (2, 2), "VALID"),
+                ((3, 2), (1, 1), "VALID"),
             ] {
-                let p = rw_params_with_padding(op, win, stride, pad);
+                let win_param = format!("{},{}", win.0, win.1);
+                let stride_param = format!("{},{}", stride.0, stride.1);
+                let p = rw_params_with_padding(op, &win_param, &stride_param, pad);
+                let (reference_shape, reference) = reference_bits(op, win, stride, pad);
                 let d = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p)
                     .unwrap();
                 let l = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&literal), &p)
                     .unwrap();
                 assert_eq!(
                     d.as_tensor().unwrap().shape.dims,
-                    l.as_tensor().unwrap().shape.dims,
-                    "{op} {win} {pad} shape"
+                    reference_shape,
+                    "{op} {win:?} {pad} shape"
                 );
-                assert_eq!(bits(&d), bits(&l), "{op} {win} {stride} {pad}");
+                assert_eq!(
+                    l.as_tensor().unwrap().shape.dims,
+                    reference_shape,
+                    "{op} {win:?} {pad} literal shape"
+                );
+                assert_eq!(bits(&d), reference, "{op} {win:?} {stride:?} {pad}");
+                assert_eq!(bits(&l), reference, "{op} {win:?} {stride:?} {pad} literal");
             }
         }
     }
