@@ -1,0 +1,13 @@
+frankenjax-mcqr.30.15 pass69 golden
+target=eval/scalar_mul_64k_i64_vec
+lever=dense i64 elementwise — generalize same-shape I64 binop (eval_same_shape_i64_binop, any op) + i64 scalar broadcast (eval_i64_scalar_broadcast_binop, both orders) folding as_i64_slice
+method=same-worker dense vs Vec<Literal> reference benches, run in one process on ts2
+worker=ts2
+scalar_mul_64k_i64=dense 28.408us [28.200, 28.652] vs literal 1258.489us [1252.663, 1264.972] = 44.30x mid, 43.72x conservative
+mul_64k_i64_same_shape=dense 37.226us [36.494, 38.070] vs literal 127.461us [126.061, 129.109] = 3.42x mid, 3.31x conservative
+score=10.0
+alien_primitive=dense SoA / typed columnar storage applied to elementwise binops, alien_cs_graveyard section 8.2
+source_change=eval_same_shape_i64_add renamed to eval_same_shape_i64_binop and the Add-only call-site guard dropped (any I64xI64 same-shape); eval_i64_scalar_broadcast_binop added and wired into both scalar arms after the F64 broadcast attempt; both fall back to the unchanged generic path when not dense i64
+isomorphism=element order preserved; scalar broadcast preserves operand order via scalar_on_left for non-commutative Sub/Div; for I64xI64 binary_literal_op returns Literal::I64(int_op(a,b)) and the fast paths apply the same dispatcher int_op (wrapping_add/sub/mul, checked_div().unwrap_or(0), max/min, pow) so wrapping/overflow is identical; promote_dtype(I64,I64)=I64 and output is new_i64_values; Literal-backed/mixed/non-I64-scalar inputs fall back to the generic path
+golden_note=headline scalar-mul 44x because the generic scalar path runs heavy binary_literal_op per element; same-shape mul 3.4x; both bit-identical to the Vec<Literal> path incl i64::MIN/MAX wrapping
+validation=RCH cargo test -p fj-lax --lib dense_i64 passed (sub/mul/scalar-broadcast parity, both orders, wrapping); RCH full fj-lax lib suite 1049 passed; RCH cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings passed

@@ -181,6 +181,61 @@ fn bench_add_64k_i64_literal_reference(c: &mut Criterion) {
     });
 }
 
+// Dense i64 same-shape Mul + i64 scalar broadcast Mul: the generalized i64
+// elementwise fast paths (pass69) beyond the pass67 Add. Each paired with a
+// Vec<Literal> reference run in the same process for a same-worker ratio.
+fn i64_literal_vec_64k() -> Value {
+    let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN as i64)
+        .map(Literal::I64)
+        .collect();
+    Value::Tensor(
+        TensorValue::new(
+            DType::I64,
+            Shape::vector(LARGE_ELEMENTWISE_LEN as u32),
+            elements,
+        )
+        .unwrap(),
+    )
+}
+
+fn bench_mul_64k_i64_vec(c: &mut Criterion) {
+    let data: Vec<i64> = (0..LARGE_ELEMENTWISE_LEN as i64).collect();
+    let lhs = Value::vector_i64(&data).unwrap();
+    let rhs = Value::vector_i64(&data).unwrap();
+    let p = no_params();
+    c.bench_function("eval/mul_64k_i64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Mul, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_mul_64k_i64_literal_reference(c: &mut Criterion) {
+    let lhs = i64_literal_vec_64k();
+    let rhs = i64_literal_vec_64k();
+    let p = no_params();
+    c.bench_function("eval/mul_64k_i64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Mul, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_scalar_mul_64k_i64_vec(c: &mut Criterion) {
+    let data: Vec<i64> = (0..LARGE_ELEMENTWISE_LEN as i64).collect();
+    let tensor = Value::vector_i64(&data).unwrap();
+    let scalar = Value::scalar_i64(3);
+    let p = no_params();
+    c.bench_function("eval/scalar_mul_64k_i64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Mul, &[tensor.clone(), scalar.clone()], &p))
+    });
+}
+
+fn bench_scalar_mul_64k_i64_literal_reference(c: &mut Criterion) {
+    let tensor = i64_literal_vec_64k();
+    let scalar = Value::scalar_i64(3);
+    let p = no_params();
+    c.bench_function("eval/scalar_mul_64k_i64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Mul, &[tensor.clone(), scalar.clone()], &p))
+    });
+}
+
 fn bench_scalar_mul_1k_f64_vector(c: &mut Criterion) {
     let data: Vec<f64> = (0..1000).map(|i| i as f64 * 0.001).collect();
     let scalar = Value::scalar_f64(3.5);
@@ -1171,6 +1226,10 @@ criterion_group!(
     bench_add_64k_f64_dense_reference,
     bench_add_64k_i64_vec,
     bench_add_64k_i64_literal_reference,
+    bench_mul_64k_i64_vec,
+    bench_mul_64k_i64_literal_reference,
+    bench_scalar_mul_64k_i64_vec,
+    bench_scalar_mul_64k_i64_literal_reference,
     bench_scalar_mul_1k_f64_vector,
     bench_tensor_sub_scalar_1k_f64_vector,
     bench_eq_1k_f64_vector,

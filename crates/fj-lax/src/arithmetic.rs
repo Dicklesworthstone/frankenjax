@@ -75,6 +75,9 @@ pub(crate) fn eval_binary_elementwise(
             if let Some(value) = eval_f64_scalar_broadcast_binop(primitive, *lhs, rhs, true)? {
                 return Ok(value);
             }
+            if let Some(value) = eval_i64_scalar_broadcast_binop(*lhs, rhs, true, &int_op)? {
+                return Ok(value);
+            }
 
             let mut elements = Vec::with_capacity(rhs.elements.len());
             for right in rhs.elements.iter().copied() {
@@ -93,6 +96,9 @@ pub(crate) fn eval_binary_elementwise(
         }
         (Value::Tensor(lhs), Value::Scalar(rhs)) => {
             if let Some(value) = eval_f64_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
+                return Ok(value);
+            }
+            if let Some(value) = eval_i64_scalar_broadcast_binop(*rhs, lhs, false, &int_op)? {
                 return Ok(value);
             }
 
@@ -188,17 +194,23 @@ fn eval_same_shape_f64_map(
 /// dispatcher supplies `i64::wrapping_add`, so overflow behavior is unchanged.
 /// Returning `Ok(None)` for non-I64 elements preserves malformed-tensor fallback.
 #[inline]
-fn eval_same_shape_i64_add(
+/// Same-shape I64⊗I64 elementwise fast path for any binop whose I64⊗I64 result
+/// is `Literal::I64(int_op(a, b))` — i.e. every primitive routed through
+/// `eval_binary_elementwise` (Add/Sub/Mul/Div/Rem/Max/Min/Pow); the dispatcher's
+/// `int_op` carries the exact per-primitive semantics (e.g. `wrapping_add`,
+/// `checked_div().unwrap_or(0)`). Comparisons take a separate path and never
+/// reach here.
+fn eval_same_shape_i64_binop(
     lhs: &TensorValue,
     rhs: &TensorValue,
     int_op: &impl Fn(i64, i64) -> i64,
 ) -> Result<Option<Value>, EvalError> {
     // Dense i64 fast path: fold the two contiguous `i64` backing slices directly
     // and emit a dense `i64` output. Bit-for-bit identical to the generic
-    // `Vec<Literal>` loop below — same `int_op` (the dispatcher's
-    // `i64::wrapping_add`), same element order, same I64 output — but skips the
-    // per-element `Literal::I64` match and the 24-byte enum stride (8 vs 24
-    // bytes/element). `as_i64_slice()` is `Some` only for I64 dense storage.
+    // `Vec<Literal>` loop below — same `int_op`, same element order, same I64
+    // output — but skips the per-element `Literal::I64` match and the 24-byte
+    // enum stride (8 vs 24 bytes/element). `as_i64_slice()` is `Some` only for
+    // I64 dense storage.
     if let (Some(left_values), Some(right_values)) =
         (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
     {
@@ -225,6 +237,40 @@ fn eval_same_shape_i64_add(
         DType::I64,
         lhs.shape.clone(),
         elements,
+    )?)))
+}
+
+/// I64 scalar⊗tensor broadcast fast path. `scalar_on_left` distinguishes
+/// `Scalar ⊗ Tensor` (`int_op(scalar, elem)`) from `Tensor ⊗ Scalar`
+/// (`int_op(elem, scalar)`), preserving operand order for non-commutative ops.
+/// Bit-for-bit identical to the generic `binary_literal_op` path: for I64⊗I64 it
+/// returns `Literal::I64(int_op(a, b))`, and `promote_dtype(I64, I64) == I64`.
+/// Returns `Ok(None)` (falling back to the generic loop) unless the scalar is
+/// `I64` and the tensor is I64 dense storage.
+#[inline]
+fn eval_i64_scalar_broadcast_binop(
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+    int_op: &impl Fn(i64, i64) -> i64,
+) -> Result<Option<Value>, EvalError> {
+    let Literal::I64(scalar) = scalar else {
+        return Ok(None);
+    };
+    if tensor.dtype != DType::I64 {
+        return Ok(None);
+    }
+    let Some(values) = tensor.elements.as_i64_slice() else {
+        return Ok(None);
+    };
+    let out: Vec<i64> = if scalar_on_left {
+        values.iter().map(|&v| int_op(scalar, v)).collect()
+    } else {
+        values.iter().map(|&v| int_op(v, scalar)).collect()
+    };
+    Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+        tensor.shape.clone(),
+        out,
     )?)))
 }
 
@@ -5165,6 +5211,75 @@ mod tests {
         // Spot-check the wrapping semantics are preserved (not saturated/panicked).
         assert_eq!(dense_vals[2], i64::MAX.wrapping_add(i64::MAX));
         assert_eq!(dense_vals[3], i64::MIN.wrapping_add(i64::MIN));
+    }
+
+    /// Bit-exact parity for the generalized dense-i64 elementwise fast paths:
+    /// same-shape Sub/Mul (non-commutative + wrapping) and i64 scalar broadcast
+    /// in both operand orders, dense (vector_i64) vs Vec<Literal>-backed.
+    #[test]
+    fn dense_i64_sub_mul_and_scalar_broadcast_bit_identical_to_literal_path() {
+        let data: Vec<i64> = vec![7, -3, i64::MAX, i64::MIN, 0, -1, 5, 123456789];
+        let n = data.len() as u32;
+        let lit_vec = |d: &[i64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape { dims: vec![n] },
+                    d.iter().copied().map(Literal::I64).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let ints = |v: &Value| -> Vec<i64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_i64().unwrap())
+                .collect()
+        };
+        let p = std::collections::BTreeMap::new();
+
+        // Same-shape Sub and Mul.
+        for prim in [Primitive::Sub, Primitive::Mul] {
+            let dense = crate::eval_primitive(
+                prim,
+                &[
+                    Value::vector_i64(&data).unwrap(),
+                    Value::vector_i64(&data).unwrap(),
+                ],
+                &p,
+            )
+            .unwrap();
+            let literal =
+                crate::eval_primitive(prim, &[lit_vec(&data), lit_vec(&data)], &p).unwrap();
+            assert_eq!(ints(&dense), ints(&literal), "same-shape {prim:?}");
+        }
+
+        // Scalar broadcast, both operand orders, non-commutative Sub.
+        let scalar = Value::Scalar(Literal::I64(1_000));
+        for prim in [Primitive::Sub, Primitive::Mul, Primitive::Add] {
+            // Tensor ⊗ Scalar
+            let dense_ts = crate::eval_primitive(
+                prim,
+                &[Value::vector_i64(&data).unwrap(), scalar.clone()],
+                &p,
+            )
+            .unwrap();
+            let lit_ts =
+                crate::eval_primitive(prim, &[lit_vec(&data), scalar.clone()], &p).unwrap();
+            assert_eq!(ints(&dense_ts), ints(&lit_ts), "tensor⊗scalar {prim:?}");
+            // Scalar ⊗ Tensor
+            let dense_st = crate::eval_primitive(
+                prim,
+                &[scalar.clone(), Value::vector_i64(&data).unwrap()],
+                &p,
+            )
+            .unwrap();
+            let lit_st =
+                crate::eval_primitive(prim, &[scalar.clone(), lit_vec(&data)], &p).unwrap();
+            assert_eq!(ints(&dense_st), ints(&lit_st), "scalar⊗tensor {prim:?}");
+        }
     }
 
     fn s_f64(v: f64) -> Value {

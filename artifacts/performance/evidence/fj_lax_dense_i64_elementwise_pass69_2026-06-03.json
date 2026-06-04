@@ -1,0 +1,74 @@
+{
+    "bead": "frankenjax-mcqr.30.15",
+    "pass": 69,
+    "date": "2026-06-03",
+    "crate": "fj-lax",
+    "target": "eval/scalar_mul_64k_i64_vec",
+    "lever_summary": "Extend the dense i64 elementwise fast paths beyond the pass67 Add: generalize the same-shape I64 fast path to any I64xI64 binop (the dispatcher's int_op carries per-primitive semantics for Sub/Mul/Div/Rem/Max/Min/Pow), and add an i64 scalar-broadcast fast path in both operand orders. Both fold LiteralBuffer::as_i64_slice() and emit dense i64.",
+    "alien_graveyard": {
+        "primitive": "dense SoA / typed columnar storage applied to elementwise binops",
+        "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 8.2",
+        "mapping": "consume the contiguous i64 backing store (mcqr.30.13) across the full integer elementwise op set instead of per-element tagged-union dispatch via binary_literal_op"
+    },
+    "method": "Same-worker comparison on ts2: dense (vector_i64) inputs vs Vec<Literal>-backed reference benches run in the same process, isolating the data-model win from cross-worker CPU variance.",
+    "results": {
+        "scalar_mul_64k_i64": {
+            "dense_ns": 28407.7,
+            "dense_ci_ns": [28200.1, 28652.1],
+            "literal_ns": 1258488.8,
+            "literal_ci_ns": [1252663.4, 1264972.1],
+            "speedup_midpoint_x": 44.30,
+            "speedup_conservative_x": 43.72,
+            "note": "headline: the generic scalar-broadcast path runs the heavy binary_literal_op (promote_dtype + literal_to_i128 + i64::try_from) per element; the dense path is a tight int_op fold"
+        },
+        "mul_64k_i64_same_shape": {
+            "dense_ns": 37225.6,
+            "dense_ci_ns": [36493.5, 38069.5],
+            "literal_ns": 127460.6,
+            "literal_ci_ns": [126060.8, 129108.8],
+            "speedup_midpoint_x": 3.42,
+            "speedup_conservative_x": 3.31
+        }
+    },
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 64k_i64 --save-baseline i64elem",
+    "score": {
+        "impact": 5.0,
+        "confidence": 4.0,
+        "effort": 2.0,
+        "impact_times_confidence_over_effort": 10.0,
+        "kept": true
+    },
+    "change": {
+        "files": [
+            "crates/fj-lax/src/arithmetic.rs",
+            "crates/fj-lax/benches/lax_baseline.rs"
+        ],
+        "lever": "Renamed eval_same_shape_i64_add -> eval_same_shape_i64_binop and dropped the Add-only guard at the call site (fires for any I64xI64 same-shape). Added eval_i64_scalar_broadcast_binop(scalar, tensor, scalar_on_left, int_op) wired into both Scalar(*)Tensor and Tensor(*)Scalar arms after the F64 broadcast attempt. Both fall back to the unchanged generic path when not dense i64."
+    },
+    "isomorphism": {
+        "ordering": "unchanged: slices folded in element order; scalar broadcast preserves operand order via scalar_on_left for non-commutative Sub/Div",
+        "integer_op": "unchanged: for I64xI64, binary_literal_op returns Literal::I64(int_op(a,b)); the fast paths apply the same dispatcher int_op (Add wrapping_add, Sub wrapping_sub, Mul wrapping_mul, Div checked_div().unwrap_or(0), etc.), so wrapping/overflow behavior is identical",
+        "dtype_promotion": "unchanged: promote_dtype(I64, I64) == I64; fast paths emit new_i64_values (I64)",
+        "tie_breaking": "not applicable",
+        "rng": "not applicable",
+        "errors": "as_i64_slice() is Some only for I64 dense storage; mixed/Literal-backed/malformed-I64 and non-I64 scalar inputs return None and run the unchanged generic loop (which still produces the identical Literal::I64 result for I64xI64)",
+        "output_dtype": "I64 for all covered ops"
+    },
+    "validation": [
+        {
+            "name": "i64_elementwise_parity",
+            "command": "rch exec -- cargo test -p fj-lax --lib dense_i64",
+            "result": "passed: dense_i64_sub_mul_and_scalar_broadcast_bit_identical_to_literal_path (Sub/Mul same-shape + scalar broadcast both orders, incl i64::MIN/MAX wrapping) + the pass67 add and pass68 reduce parity tests"
+        },
+        {
+            "name": "full_fj_lax_lib_suite",
+            "command": "rch exec -- cargo test -p fj-lax --lib",
+            "result": "passed: 1049 tests (generalized same-shape i64 path, no regressions)"
+        },
+        {
+            "name": "clippy_deny_warnings",
+            "command": "rch exec -- cargo clippy -p fj-lax --all-targets --no-deps -- -D warnings",
+            "result": "passed"
+        }
+    ]
+}
