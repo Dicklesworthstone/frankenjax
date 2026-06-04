@@ -1,0 +1,19 @@
+{
+  "pass": 113,
+  "crate": "fj-lax",
+  "target": "einsum2 \"B...XY,B...YZ->B...XZ\" (batched jnp.einsum matmul), bench eval/einsum_batched_matmul_8x64_f64",
+  "function": "fj_lax::einsum::einsum2 (generalized try_einsum2_matmul: leading batch prefix nb>=0 -> per-slice matmul_2d)",
+  "lever": "Generalize last pass's 2-D einsum matmul fast path to a leading batch-label prefix: detect 'B...XY,B...YZ->B...XZ' (identical leading batch labels on a/b/out, distinct X/Y/Z not reused as batch labels) and route each contiguous M*K / K*N batch slice to matmul_2d, instead of the generic per-(output,contracted)-pair loop that allocates a HashMap every iteration. ONE lever; subsumes the 2-D case (nb=0) and falls through for all other patterns.",
+  "isomorphism": "BIT-EXACT. Each batch slice sums the contracted index Y ascending into result[(batch)*M*N + X*N + Z]; identical summation order and batch-major row-major layout to the generic loop. Proven by unit tests einsum2_matmul_fast_path_bit_identical (2-D, 3 labellings) + einsum2_batched_matmul_fast_path_bit_identical (1- and 2-batch-dim, to_bits vs textbook reference); existing einsum_batch_matmul passes. 2-D matmul path already JAX-validated (conformance einsum_oracle 15/15 last pass); batched uses the same matmul_2d + ascending-k sum.",
+  "baseline_ms": 765.21,
+  "candidate_ms": 0.49394,
+  "calibration_baseline_us": 8.3013,
+  "calibration_candidate_us": 12.805,
+  "speedup_raw": 1549.0,
+  "speedup_worker_corrected": 2390.0,
+  "note": "generic batched path is HashMap-per-inner-iteration (8x64^3 -> 765 ms/call); fast path 493.94 us. Magnitude makes worker variance irrelevant. Clears the 2x bar by >700x.",
+  "score": "impact 5 (batched einsum matmul = attention/ML workhorse) x confidence 5 (bit-exact unit tests + inherited JAX parity) / effort 2 = 12.5",
+  "tests": "fj-lax einsum 11/11 (incl batched bit-identity); clippy -D warnings clean. fj-conformance einsum_oracle NOT runnable this session (crate broken by foreign unresolved UU conflict markers in oracle_recapture.rs:692 - pre-existing, not from this change).",
+  "bench_note": "Measured via a temporary bench in the foreign-dirty lax_baseline.rs; NOT committed (restored). Baseline obtained by toggling the fast-path call off in-place (git stash is unreliable here due to the persistent UU merge conflicts). Only einsum.rs committed.",
+  "date": "2026-06-04"
+}
