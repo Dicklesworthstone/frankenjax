@@ -675,7 +675,10 @@ impl Literal {
         let bits = nearest.to_bits();
         let toward_larger = x > f64::from(nearest);
         let negative = (bits >> 31) == 1;
-        let neighbor = if toward_larger == !negative {
+        // `toward_larger == !negative` minimized (clippy::nonminimal_bool); same
+        // truth table: step the f32 magnitude up when moving toward +inf for a
+        // positive (or away from 0 for a negative), down otherwise.
+        let neighbor = if toward_larger != negative {
             bits + 1
         } else {
             bits - 1
