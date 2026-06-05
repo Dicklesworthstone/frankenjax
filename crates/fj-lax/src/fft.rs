@@ -737,12 +737,12 @@ const MIXED_RADIX_MAX_PRIME: usize = 13;
 
 /// Smallest prime factor of `n` (n >= 2).
 fn smallest_prime_factor(n: usize) -> usize {
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         return 2;
     }
     let mut d = 3;
     while d * d <= n {
-        if n % d == 0 {
+        if n.is_multiple_of(d) {
             return d;
         }
         d += 2;
@@ -779,6 +779,7 @@ fn is_mixed_radix_smooth(n: usize) -> bool {
 /// `big_n` (`roots[k] = e^{sign·2πi·k/big_n}`) supplies every twiddle by stride
 /// `big_n/nn`, so no trig and **no per-node allocation** happens in the recursion.
 /// For a smooth `nn` this is O(nn · Σ prime factors) flops with two buffers total.
+#[allow(clippy::too_many_arguments)]
 fn mixed_radix_ping(
     x: &[(f64, f64)],
     offset: usize,
