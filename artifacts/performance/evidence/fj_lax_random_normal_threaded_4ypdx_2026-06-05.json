@@ -1,0 +1,100 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "pass": 133,
+  "bead": "frankenjax-4ypdx",
+  "crate": "fj-lax",
+  "target": "random/normal_1m_f64",
+  "date": "2026-06-05",
+  "skill_loop": [
+    "repeatedly-apply-skill",
+    "extreme-software-optimization"
+  ],
+  "profile_backing": {
+    "source": "Bead frankenjax-4ypdx filed from post-mt4sb RCH ts2 profile: random/uniform_1m_f64 was about 13 ms while random/normal_1m_f64 was about 284-286 ms, showing the per-element sqrt2 * erf_inv_approx transform dominated after RNG bit generation.",
+    "rejected_measurement": {
+      "command": "cargo bench -p fj-lax --bench lax_baseline -- random/normal_1m_f64 from /data/tmp/frankenjax-rng-baseline-4ypdx-20260605",
+      "reason": "Ignored. RCH rejected the non-canonical /data/tmp worktree path and the command fell back to local execution."
+    }
+  },
+  "lever": {
+    "description": "Split large random_normal outputs into scoped-thread contiguous chunks after materializing the existing random_uniform stream, applying the exact existing sqrt2 * erf_inv_approx(uniform[i]) expression to each original index.",
+    "files": [
+      "crates/fj-lax/src/threefry.rs"
+    ],
+    "single_lever": true,
+    "commit": "4f78e478"
+  },
+  "baseline": {
+    "worker": "ts2",
+    "worktree": "/data/projects/.scratch/frankenjax-rng-baseline-4ypdx-20260605",
+    "revision": "60497818",
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-baseline-rch-target rch exec -- cargo bench -p fj-lax --bench lax_baseline -- random/normal_1m_f64",
+    "time_ms_ci_low": 292.82,
+    "time_ms_mid": 295.91,
+    "time_ms_ci_high": 299.18
+  },
+  "after": {
+    "worker": "ts2",
+    "worktree": "/data/projects/.scratch/frankenjax-rng-after-4ypdx-20260605",
+    "revision": "ba8f64ed",
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-after-clean-rch-target rch exec -- cargo bench -p fj-lax --bench lax_baseline -- random/normal_1m_f64",
+    "time_ms_ci_low": 35.855,
+    "time_ms_mid": 36.218,
+    "time_ms_ci_high": 36.578
+  },
+  "result": {
+    "speedup_midpoint": 8.169971837208017,
+    "speedup_conservative": 8.005030346109684,
+    "score": {
+      "impact": 5,
+      "confidence": 5,
+      "effort": 2,
+      "value": 12.5,
+      "keep_threshold": 2.0,
+      "decision": "keep"
+    }
+  },
+  "isomorphism": {
+    "ordering": "Preserved. random_uniform is fully materialized first, then output chunks are split by contiguous index ranges. Each out[start + offset] uses uniforms[start + offset].",
+    "tie_breaking": "No comparison or tie-breaking surface exists in random_normal generation.",
+    "floating_point": "Per element, the expression remains sqrt2 * erf_inv_approx(u). There are no reductions, reassociations, fused operations, or cross-element dependencies.",
+    "rng": "The RNG stream is unchanged because random_uniform key handling and bit generation are untouched before the transform. SIMD uniform parity and conformance fixture tests passed.",
+    "golden_output_sha256": "982d444c8f93dd7331fff1e2141e40ee967f6698a7a12cbeef104d38b6c6c29b",
+    "residual_risk": "Large outputs now use scoped thread spawning and can panic if the OS refuses thread creation. Small outputs stay serial, and available_parallelism failure falls back to one thread."
+  },
+  "validation": [
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-proof-rch-target rch exec -- cargo test -p fj-lax --lib random_normal -- --nocapture",
+      "worker": "ts2",
+      "result": "pass",
+      "tests": "2 passed: threaded_random_normal_transform_matches_serial, random_normal_threaded_golden_sha256"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-proof-simd-rch-target rch exec -- cargo test -p fj-lax --lib simd_ -- --nocapture",
+      "worker": "ts2",
+      "result": "pass",
+      "tests": "2 passed: simd_generate_u32_bits_matches_scalar, simd_uniform_matches_scalar_bits"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-conformance-rch-target rch exec -- cargo test -p fj-conformance --test random_determinism rng_fixture -- --nocapture",
+      "worker": "ts2",
+      "result": "pass",
+      "tests": "7 passed"
+    },
+    {
+      "command": "cargo fmt -p fj-lax --check",
+      "result": "blocked_preexisting",
+      "note": "Package-level fmt is blocked by unrelated existing formatting drift in fj-lax bench/arithmetic/comparison/fft/lib/linalg/tensor_ops files."
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-check-rch-target rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-rng-clippy-rch-target rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "blocked_unrelated_worktree_dirty",
+      "note": "Shared checkout clippy was blocked by an unrelated in-progress mj9ip SIMD-exp edit in crates/fj-lax/src/arithmetic.rs before this evidence artifact was written."
+    }
+  ],
+  "next_primitive": "At initial closeout the next ready candidate was frankenjax-mj9ip (SLEEF-grade safe-Rust portable-SIMD exp). The Beads sync in this commit records that candidate as rejected by its strict floating-point/golden isomorphism gate with no source change kept."
+}
