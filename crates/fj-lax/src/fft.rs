@@ -1086,6 +1086,56 @@ fn rfft_rows_into(
 ///
 /// Reconstructs the full spectrum from Hermitian symmetry, computes IDFT,
 /// and takes the real part.
+/// Reconstruct the Hermitian-symmetric full spectrum and inverse-transform each
+/// of `rows` half-spectra (starting at `row_start`) into the dense real (`f64`)
+/// output block. Each row is independent and computed in the exact same order as
+/// the serial path, so this is bit-identical (and safe to run one thread per
+/// row-block). Owns its per-row scratch.
+#[allow(clippy::too_many_arguments)]
+fn irfft_rows_f64_into(
+    elements: &[(f64, f64)],
+    plan: Option<&BluesteinPlan>,
+    fft_length: usize,
+    input_last: usize,
+    copy_len: usize,
+    row_start: usize,
+    rows: usize,
+    out_blk: &mut [f64],
+) {
+    let mut full = vec![(0.0, 0.0); fft_length];
+    let mut transformed = Vec::with_capacity(fft_length);
+    let mut scratch = BluesteinScratch::default();
+    for r in 0..rows {
+        let start = (row_start + r) * input_last;
+        let half_spectrum = &elements[start..start + input_last];
+
+        full[..copy_len].copy_from_slice(&half_spectrum[..copy_len]);
+        full[copy_len..].fill((0.0, 0.0));
+        for (k, slot) in full
+            .iter_mut()
+            .enumerate()
+            .take(fft_length)
+            .skip(input_last)
+        {
+            let mirror = fft_length - k;
+            if mirror < input_last {
+                let (re, im) = half_spectrum[mirror];
+                *slot = (re, -im);
+            }
+        }
+
+        match plan {
+            Some(plan) => plan.apply_into(&full, &mut scratch, &mut transformed),
+            None => ifft_1d_into(&full, &mut transformed),
+        }
+
+        let dst = &mut out_blk[r * fft_length..r * fft_length + fft_length];
+        for (o, &(re, _)) in dst.iter_mut().zip(transformed.iter()) {
+            *o = re;
+        }
+    }
+}
+
 pub(crate) fn eval_irfft(
     inputs: &[Value],
     params: &std::collections::BTreeMap<String, String>,
@@ -1137,28 +1187,84 @@ pub(crate) fn eval_irfft(
     let out_shape = Shape { dims: out_dims };
     let output_count = checked_output_element_count(primitive, batch_size, fft_length)?;
 
-    let mut out_elements = Vec::with_capacity(output_count);
     let copy_len = fft_length.min(input_last);
-
-    // Reuse buffers across batch iterations to avoid O(batch_size) allocations
-    let mut full = vec![(0.0, 0.0); fft_length];
-    let mut transformed = Vec::with_capacity(fft_length);
     // Non-power-of-two transform length: build the inverse Bluestein plan once
     // and reuse it across every row.
     let plan = (fft_length > 1 && !fft_length.is_power_of_two())
         .then(|| BluesteinPlan::new(fft_length, true));
+
+    // Dense + threaded fast path for the common F64 output (Complex128 input).
+    // Rows are independent (Hermitian reconstruct + inverse transform + real
+    // extraction), so large batches fan out across threads into a dense f64
+    // output — bit-identical to the serial path.
+    if out_dtype == DType::F64 {
+        let mut out = vec![0.0f64; output_count];
+        const IRFFT_PARALLEL_MIN_ELEMS: usize = 1 << 17; // 131_072
+        let threads = if output_count >= IRFFT_PARALLEL_MIN_ELEMS && batch_size > 1 {
+            std::thread::available_parallelism()
+                .map(|p| p.get())
+                .unwrap_or(1)
+                .min(batch_size)
+        } else {
+            1
+        };
+        if threads <= 1 {
+            irfft_rows_f64_into(
+                &elements,
+                plan.as_ref(),
+                fft_length,
+                input_last,
+                copy_len,
+                0,
+                batch_size,
+                &mut out,
+            );
+        } else {
+            let rows_per = batch_size.div_ceil(threads);
+            let plan_ref = plan.as_ref();
+            let elements_ref = &elements;
+            std::thread::scope(|scope| {
+                let mut rest: &mut [f64] = out.as_mut_slice();
+                let mut row0 = 0usize;
+                while row0 < batch_size {
+                    let rows = rows_per.min(batch_size - row0);
+                    let (blk, tail) = rest.split_at_mut(rows * fft_length);
+                    rest = tail;
+                    scope.spawn(move || {
+                        irfft_rows_f64_into(
+                            elements_ref,
+                            plan_ref,
+                            fft_length,
+                            input_last,
+                            copy_len,
+                            row0,
+                            rows,
+                            blk,
+                        );
+                    });
+                    row0 += rows;
+                }
+            });
+        }
+        let tensor =
+            TensorValue::new_f64_values(out_shape, out).map_err(EvalError::InvalidTensor)?;
+        return Ok(Value::Tensor(tensor));
+    }
+
+    // Non-F64 output dtypes (F32/F16/BF16 from Complex64 etc.) keep the serial
+    // Literal path.
+    let mut out_elements = Vec::with_capacity(output_count);
+    let mut full = vec![(0.0, 0.0); fft_length];
+    let mut transformed = Vec::with_capacity(fft_length);
     let mut scratch = BluesteinScratch::default();
 
     for batch in 0..batch_size {
         let start = batch * input_last;
         let half_spectrum = &elements[start..start + input_last];
 
-        // Reconstruct full spectrum using Hermitian symmetry (reuse buffer)
-        // X[k] = conj(X[n-k]) for k = n/2+1..n-1
         full[..copy_len].copy_from_slice(&half_spectrum[..copy_len]);
         full[copy_len..].fill((0.0, 0.0));
 
-        // Fill conjugate-symmetric part
         for (k, slot) in full
             .iter_mut()
             .enumerate()
@@ -1177,7 +1283,6 @@ pub(crate) fn eval_irfft(
             None => ifft_1d_into(&full, &mut transformed),
         }
 
-        // Take real part only
         for &(re, _) in &transformed {
             out_elements.push(make_real_literal(re, out_dtype));
         }
@@ -1401,6 +1506,66 @@ mod tests {
         assert_eq!(
             batched_bits, expected,
             "threaded batch RFFT must match per-row serial bit-for-bit"
+        );
+    }
+
+    /// Threading isomorphism proof for the dense IRFFT: a batched inverse real FFT
+    /// large enough to fan out across threads must produce, row for row, exactly
+    /// the same bits as inverting each row's half-spectrum on its own (serial).
+    #[test]
+    fn threaded_batch_irfft_matches_per_row_serial() {
+        let mut rp = BTreeMap::new();
+        rp.insert("fft_length".to_owned(), "256".to_owned());
+        let rows = 2048usize;
+        let cols = 256usize; // output 2048*256 = 524288 >= 1<<17 -> threaded
+        assert!(rows * cols >= (1usize << 17) && rows > 1);
+
+        let real_rows: Vec<Vec<f64>> = (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| {
+                        let x = (r * cols + c) as f64;
+                        (x * 0.0009765625).sin() + 0.4 * (x * 0.002).cos()
+                    })
+                    .collect()
+            })
+            .collect();
+        let flat: Vec<f64> = real_rows.iter().flatten().copied().collect();
+        let real_mat = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                flat,
+            )
+            .unwrap(),
+        );
+        let batched_spectrum = eval_rfft(std::slice::from_ref(&real_mat), &rp).unwrap();
+        let batched = eval_irfft(std::slice::from_ref(&batched_spectrum), &rp).unwrap();
+        let got: Vec<u64> = batched
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap().to_bits())
+            .collect();
+
+        let mut expect: Vec<u64> = Vec::with_capacity(rows * cols);
+        for data in &real_rows {
+            let v = make_real_vector(data);
+            let spec = eval_rfft(std::slice::from_ref(&v), &rp).unwrap();
+            let inv = eval_irfft(std::slice::from_ref(&spec), &rp).unwrap();
+            expect.extend(
+                inv.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap().to_bits()),
+            );
+        }
+        assert_eq!(
+            got, expect,
+            "threaded batch IRFFT must match per-row serial bit-for-bit"
         );
     }
 

@@ -2440,6 +2440,18 @@ fn bench_irfft_256(c: &mut Criterion) {
     });
 }
 
+// Batched IRFFT: 2048 rows, fft_length 256 (input half-spectrum 129 wide). Each
+// row reconstructs the Hermitian spectrum + runs an inverse transform + real
+// extraction independently — compute-heavy, threads cleanly into dense f64 output.
+fn bench_irfft_batch_2048x256(c: &mut Criterion) {
+    let mut params = BTreeMap::new();
+    params.insert("fft_length".to_owned(), "256".to_owned());
+    let full = eval_primitive(Primitive::Rfft, &[real_matrix(2048, 256)], &params).unwrap();
+    c.bench_function("eval/irfft_batch_2048x256_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Irfft, std::slice::from_ref(&full), &params))
+    });
+}
+
 fn bench_reshape(c: &mut Criterion) {
     let data: Vec<i64> = (0..1000).collect();
     let input = Value::vector_i64(&data).unwrap();
@@ -2928,6 +2940,7 @@ criterion_group!(
     bench_rfft_batch_2048x256_dense_input,
     bench_fft_batch_2048x256_real_dense,
     bench_irfft_256,
+    bench_irfft_batch_2048x256,
     bench_reshape,
     bench_gather_128_rows_16_cols,
     bench_gather_256x256_f64_vec,

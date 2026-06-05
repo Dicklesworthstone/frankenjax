@@ -1,0 +1,12 @@
+{
+  "bead": "frankenjax-7alz4",
+  "crate": "fj-lax (fft)",
+  "target": "eval_irfft (inverse real FFT). It was serial + Literal-backed: per row it reconstructed the Hermitian full spectrum, ran the inverse transform, took the real part, and pushed Literals. Each row is independent and compute-heavy (inverse FFT).",
+  "lever": "irfft_rows_f64_into: a reusable per-row-block worker (own scratch) that reconstructs the Hermitian spectrum, inverse-transforms, and writes the real parts into a dense f64 output block. For the common F64 output (Complex128 input), large batches fan out across threads (thread::scope over row-blocks, PARALLEL_MIN_ELEMS=1<<17). Non-F64 output dtypes (F32/F16/BF16 from Complex64) keep the serial Literal path.",
+  "isomorphism": "BIT-EXACT. threaded_batch_irfft_matches_per_row_serial (2048x256 batched IRFFT == inverting each row's half-spectrum on its own, bit-for-bit). Rows are independent and computed in the same order; F64 output via new_f64_values matches make_real_literal(F64). 1110 fj-lax tests pass.",
+  "measurements_same_session_back_to_back": {
+    "irfft_batch_2048x256_complex128": { "before_serial_ms": 13.34, "after_threaded_ms": 6.35, "ratio": 2.10 }
+  },
+  "decision": "SHIP. 2.10x on batched IRFFT. Completes the FFT family — fft/ifft (d9aedc64), rfft (e15a3638), half-length rfft (f1bba3a3), and now irfft are all dense + threaded. Bit-exact.",
+  "date": "2026-06-05"
+}
