@@ -1314,6 +1314,34 @@ fn bench_qr_1024_f64(c: &mut Criterion) {
     });
 }
 
+// Pseudoinverse of a tall real matrix: the m>=n branch forms the n×n Gram matrix
+// AᵀA and pseudo-inverts it via a symmetric Jacobi eigensolve, which dominates at
+// these sizes. real_f64_data() gives a well-conditioned deterministic matrix.
+fn real_f64_data(rows: usize, cols: usize) -> Vec<f64> {
+    (0..rows * cols)
+        .map(|i| {
+            let x = i as f64;
+            (x * 0.125).sin() + (x * 0.03125).cos()
+        })
+        .collect()
+}
+
+fn bench_pinv_256x128_f64(c: &mut Criterion) {
+    let (m, n) = (256usize, 128usize);
+    let a = real_f64_data(m, n);
+    c.bench_function("linalg/pinv_256x128_f64", |bencher| {
+        bencher.iter(|| fj_lax::linalg::pinv(std::hint::black_box(&a), m, n, 1e-15))
+    });
+}
+
+fn bench_pinv_192x192_f64(c: &mut Criterion) {
+    let n = 192usize;
+    let a = real_f64_data(n, n);
+    c.bench_function("linalg/pinv_192x192_f64", |bencher| {
+        bencher.iter(|| fj_lax::linalg::pinv(std::hint::black_box(&a), n, n, 1e-15))
+    });
+}
+
 fn bench_lu_128_f64(c: &mut Criterion) {
     let n = 128usize;
     let mut data = Vec::with_capacity(n * n);
@@ -3435,6 +3463,8 @@ criterion_group!(
     bench_cholesky_1024_f64,
     bench_qr_128_f64,
     bench_qr_1024_f64,
+    bench_pinv_256x128_f64,
+    bench_pinv_192x192_f64,
     bench_lu_128_f64,
     bench_lu_1024_f64,
     bench_svd_48_f64,

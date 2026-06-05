@@ -3075,7 +3075,13 @@ pub fn pinv(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
 /// `√λ_i > rcond·√λ_max` (singular-value cutoff, matching JAX). `g` is consumed
 /// (overwritten by the eigensolver).
 fn gram_pseudoinverse(g: &mut [f64], d: usize, rcond: f64) -> Vec<f64> {
-    let (lambdas, v) = jacobi_eigendecomposition(g, d);
+    // Row-cyclic Jacobi (O(d³·sweeps)) instead of the classic max-pivot kernel
+    // (O(d⁴): an O(d²) off-diagonal scan before every rotation). The output
+    // G⁺ = Σ_i (1/λ_i) vᵢ vᵢᵀ sums over ALL eigenpairs, so it is invariant to the
+    // eigenpair order the two solvers emit; both converge to the same spectrum to
+    // machine precision, so pinv/lstsq stay tolerance-equal. Mirrors the SVD/eigh
+    // real fast paths, which already use this kernel.
+    let (lambdas, v) = jacobi_eigendecomposition_cyclic(g, d);
     let lambda_max = lambdas.iter().copied().fold(0.0_f64, f64::max);
     // √λ_i > rcond·√λ_max  ⇔  λ_i > rcond²·λ_max
     let cutoff = rcond * rcond * lambda_max;
