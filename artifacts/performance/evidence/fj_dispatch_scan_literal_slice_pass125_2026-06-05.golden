@@ -1,0 +1,58 @@
+pass125 golden - fj-dispatch scan literal-slice and dense-output paths
+target bead: frankenjax-mcqr.55
+
+profile target:
+  benchmark group: vmap_scan
+  baseline worker: ts2, commit 7ff581c3
+  candidate worker: ts2, commit 7ff581c3 + crates/fj-dispatch/src/batching.rs patch
+
+case shared_init_i64_add_literal_backed:
+  init: I64(10)
+  xs: I64Tensor([[1, 2, 3], [-5, 7, 9]]) stored as Literal::I64 elements
+  output carry: dense I64Tensor([16, 21])
+  ordering: row 0 then row 1, scan indices increasing
+  arithmetic: wrapping_add only
+
+case shared_init_i64_add_reverse_literal_backed:
+  init: I64(10)
+  xs: I64Tensor([[1, 2, 3], [-5, 7, 9]]) stored as Literal::I64 elements
+  output carry: dense I64Tensor([16, 21])
+  ordering: row 0 then row 1, scan indices decreasing within each row
+  arithmetic: wrapping_add only
+
+case shared_init_i64_max_literal_backed:
+  init: I64(0)
+  xs: I64Tensor([[-1, 4, 3], [-5, -2, -9]]) stored as Literal::I64 elements
+  output carry: dense I64Tensor([4, 0])
+  tie_breaking: integer max only; no index tie value is exposed
+
+case shared_init_f32_add_literal_backed:
+  init: F32Bits(0x3f000000)
+  xs: F32Tensor([[1.0, 2.25], [0.25, -0.75]]) stored as Literal::F32Bits elements
+  output carry bits: [0x40700000, 0x00000000]
+  output carry values: [3.75, 0.0]
+  ordering: row-major, left-to-right f32 accumulation preserved
+
+case functional_i64_add_emit_literal_backed:
+  init: I64(0)
+  xs: I64Tensor([[1, 2, 3], [10, 20, 30]]) stored as Literal::I64 elements
+  output carry: dense I64Tensor([6, 60])
+  output ys: dense I64Tensor([[1, 3, 6], [10, 30, 60]])
+  output ordering: result vector remains [final_carry, stacked_ys]
+
+case functional_i64_add_emit_reverse_literal_backed:
+  init: I64(0)
+  xs: I64Tensor([[1, 2, 3], [10, 20, 30]]) stored as Literal::I64 elements
+  output carry: dense I64Tensor([6, 60])
+  output ys: dense I64Tensor([[6, 5, 3], [60, 50, 30]])
+  reverse ordering: each accumulated y is written at the original row-major scan index
+
+guard_miss_surfaces:
+  nonmatching body_op values, batched init for the shared-init paths, non-batch0 xs, non-rank-2 tensors, wrong dtypes, malformed declared dtype literals, multi-carry functional scans, and non-add functional bodies all continue through the existing fallback behavior.
+
+isomorphism:
+  ordering: row order, scan-index traversal, reverse output placement, and response output order are unchanged.
+  tie_breaking: no observable tie index exists in accepted max outputs.
+  floating_point: f32 accumulation order is unchanged; no reassociation, widening, or NaN repair is introduced.
+  rng: none; accepted scan equations have no random primitive and no effects.
+  representation: accepted i64 outputs now use dense I64 storage, preserving dtype, shape, batch_dim, and extracted values.

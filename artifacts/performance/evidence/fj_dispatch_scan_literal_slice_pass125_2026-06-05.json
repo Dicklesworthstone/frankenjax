@@ -1,0 +1,110 @@
+{
+  "pass": 125,
+  "bead": "frankenjax-mcqr.55",
+  "crate": "fj-dispatch",
+  "date": "2026-06-05",
+  "status": "kept",
+  "target": "vmap_scan",
+  "profile_basis": "After closing duplicate leading-axis reduction bead frankenjax-mcqr.30.36, br ready had no unclaimed perf bead and active fj-lax/linalg ownership was held by another agent. Read-only recon identified the disjoint fj-dispatch/fj-interpreters dispatch/eval lane. Fresh clean baseline on ts2 at 7ff581c3 showed vmap_scan rows at 51.7-57.0us and dispatch rows at 4.1-40.4us. A broad direct CPU backend resolver was rejected because it regressed vmap dispatch rows despite improving scan rows; this kept lever is scan-local.",
+  "lever": "For literal-backed and dense-backed scan tensors, choose the storage access path once outside hot scan loops, reuse the borrowed literal or dense i64 slice, and construct accepted i64 scan outputs with TensorValue::new_i64_values. The f32 shared-init scan keeps its literal output representation but hoists the literal slice before the loop. Functional add-emit i64 scan keeps dense outputs and hoists the literal fallback slice outside the batch loop.",
+  "baseline_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.scratch/targets/frankenjax-dispatch-registry-baseline-7ff cargo bench -p fj-dispatch --bench dispatch_baseline -- 'dispatch_latency|vmap_scan' --sample-size 50 --measurement-time 3 --warm-up-time 1",
+  "rebench_command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.scratch/targets/frankenjax-dispatch-scan-dense-candidate-bench cargo bench -p fj-dispatch --bench dispatch_baseline -- 'vmap_scan' --sample-size 50 --measurement-time 3 --warm-up-time 1",
+  "benchmarks": [
+    {
+      "case": "vmap_scan/shared_init_batched_xs_128x64",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 51.846,
+        "mid": 52.330,
+        "upper": 52.879
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 12.708,
+        "mid": 12.821,
+        "upper": 12.968
+      },
+      "speedup_midpoint": 4.081,
+      "speedup_conservative": 3.998
+    },
+    {
+      "case": "vmap_scan/shared_init_batched_xs_max_128x64",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 51.308,
+        "mid": 51.730,
+        "upper": 52.190
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 12.162,
+        "mid": 12.236,
+        "upper": 12.320
+      },
+      "speedup_midpoint": 4.228,
+      "speedup_conservative": 4.164
+    },
+    {
+      "case": "vmap_scan/shared_init_batched_xs_f32_add_128x64",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 51.822,
+        "mid": 52.391,
+        "upper": 53.090
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 14.163,
+        "mid": 14.267,
+        "upper": 14.383
+      },
+      "speedup_midpoint": 3.672,
+      "speedup_conservative": 3.603
+    },
+    {
+      "case": "vmap_scan/functional_sub_jaxpr_add_emit_128x64",
+      "baseline_worker": "ts2",
+      "baseline_us": {
+        "lower": 56.422,
+        "mid": 57.015,
+        "upper": 57.758
+      },
+      "candidate_worker": "ts2",
+      "candidate_us": {
+        "lower": 20.169,
+        "mid": 20.394,
+        "upper": 20.678
+      },
+      "speedup_midpoint": 2.796,
+      "speedup_conservative": 2.729
+    }
+  ],
+  "score": {
+    "impact": 5.0,
+    "confidence": 1.0,
+    "effort": 0.5,
+    "impact_x_confidence_div_effort": 10.0
+  },
+  "isomorphism_proof": [
+    "Accepted guards are unchanged: same input arity, shared-init batch_dim constraints, body_op matching, dtype checks, rank checks, expected element counts, and functional add-emit body recognition.",
+    "For i64 shared-init add/max, dense and literal inputs use the same row_offset + scan_idx indexing as before. Reverse mode still iterates scan indices in decreasing order. Add remains wrapping_add and max remains signed i64::max.",
+    "For f32 shared-init add, the patch only hoists xs.elements.as_slice() outside the loop. Accumulation order, f32 width, NaN behavior, signed zero behavior, and output Literal::F32Bits representation are unchanged.",
+    "For functional add-emit i64 scan, dense and literal fallback branches fill final_carry and ys in the same positions as before. Reverse scan still writes each accumulated y at the original row-major scan index.",
+    "No RNG, effect ordering, transform ordering, cache-key input, backend selection, dispatch response construction, or error class is changed.",
+    "The only i64 representation change is accepted scan outputs moving from Vec<Literal> construction to dense I64 buffers; dtype, shape, batch_dim, extracted values, and observable output ordering are unchanged."
+  ],
+  "golden": "fj_dispatch_scan_literal_slice_pass125_2026-06-05.golden",
+  "golden_sha256": "e305115f2c24fafa51a76d16174724d5f981ff5ecf56018ed23ba14e0ffea17c",
+  "validation": [
+    "rustfmt --edition 2024 --check crates/fj-dispatch/src/batching.rs",
+    "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.scratch/targets/frankenjax-dispatch-scan-dense-test cargo test -p fj-dispatch --lib batch_trace_scan",
+    "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.scratch/targets/frankenjax-dispatch-scan-dense-func-test cargo test -p fj-dispatch --lib batch_eval_jaxpr_scan_sub_jaxprs",
+    "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.scratch/targets/frankenjax-dispatch-scan-dense-check cargo check -p fj-dispatch --all-targets",
+    "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/projects/.scratch/targets/frankenjax-dispatch-scan-dense-clippy-nodeps cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+    "sha256sum -c artifacts/performance/evidence/fj_dispatch_scan_literal_slice_pass125_2026-06-05.golden.sha256"
+  ],
+  "validation_notes": [
+    "A stricter dependency-linting run without --no-deps failed in existing fj-core code at crates/fj-core/src/lib.rs:678 with clippy::nonminimal_bool. The touched fj-dispatch targets pass clippy with --no-deps, and cargo check -p fj-dispatch --all-targets passes.",
+    "All performance baselines and rebenchmarks listed above ran on worker ts2."
+  ]
+}

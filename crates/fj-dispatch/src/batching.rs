@@ -4690,28 +4690,46 @@ fn batch_scan_i64_add_shared_init_batch0(
 
     let reverse = params.get("reverse").is_some_and(|value| value == "true");
     let mut outputs = Vec::with_capacity(batch_size);
-    for batch_idx in 0..batch_size {
-        let mut carry = init;
-        let row_offset = batch_idx * scan_len;
-        if reverse {
-            for scan_idx in (0..scan_len).rev() {
-                let Literal::I64(x) = xs.elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry = carry.wrapping_add(x);
+    if let Some(values) = xs.elements.as_i64_slice() {
+        for batch_idx in 0..batch_size {
+            let mut carry = init;
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    carry = carry.wrapping_add(values[row_offset + scan_idx]);
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    carry = carry.wrapping_add(values[row_offset + scan_idx]);
+                }
             }
-        } else {
-            for scan_idx in 0..scan_len {
-                let Literal::I64(x) = xs.elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry = carry.wrapping_add(x);
-            }
+            outputs.push(carry);
         }
-        outputs.push(Literal::I64(carry));
+    } else {
+        let elements = xs.elements.as_slice();
+        for batch_idx in 0..batch_size {
+            let mut carry = init;
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    let Literal::I64(x) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry = carry.wrapping_add(x);
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    let Literal::I64(x) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry = carry.wrapping_add(x);
+                }
+            }
+            outputs.push(carry);
+        }
     }
 
-    TensorValue::new(DType::I64, Shape::vector(batch_size as u32), outputs)
+    TensorValue::new_i64_values(Shape::vector(batch_size as u32), outputs)
         .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
         .map_err(|e| BatchError::TensorError(e.to_string()))
 }
@@ -4759,28 +4777,46 @@ fn batch_scan_i64_max_shared_init_batch0(
 
     let reverse = params.get("reverse").is_some_and(|value| value == "true");
     let mut outputs = Vec::with_capacity(batch_size);
-    for batch_idx in 0..batch_size {
-        let mut carry = init;
-        let row_offset = batch_idx * scan_len;
-        if reverse {
-            for scan_idx in (0..scan_len).rev() {
-                let Literal::I64(x) = xs.elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry = carry.max(x);
+    if let Some(values) = xs.elements.as_i64_slice() {
+        for batch_idx in 0..batch_size {
+            let mut carry = init;
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    carry = carry.max(values[row_offset + scan_idx]);
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    carry = carry.max(values[row_offset + scan_idx]);
+                }
             }
-        } else {
-            for scan_idx in 0..scan_len {
-                let Literal::I64(x) = xs.elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry = carry.max(x);
-            }
+            outputs.push(carry);
         }
-        outputs.push(Literal::I64(carry));
+    } else {
+        let elements = xs.elements.as_slice();
+        for batch_idx in 0..batch_size {
+            let mut carry = init;
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    let Literal::I64(x) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry = carry.max(x);
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    let Literal::I64(x) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry = carry.max(x);
+                }
+            }
+            outputs.push(carry);
+        }
     }
 
-    TensorValue::new(DType::I64, Shape::vector(batch_size as u32), outputs)
+    TensorValue::new_i64_values(Shape::vector(batch_size as u32), outputs)
         .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
         .map_err(|e| BatchError::TensorError(e.to_string()))
 }
@@ -4829,20 +4865,21 @@ fn batch_scan_f32_add_shared_init_batch0(
     }
 
     let reverse = params.get("reverse").is_some_and(|value| value == "true");
+    let elements = xs.elements.as_slice();
     let mut outputs = Vec::with_capacity(batch_size);
     for batch_idx in 0..batch_size {
         let mut carry = init;
         let row_offset = batch_idx * scan_len;
         if reverse {
             for scan_idx in (0..scan_len).rev() {
-                let Literal::F32Bits(bits) = xs.elements[row_offset + scan_idx] else {
+                let Literal::F32Bits(bits) = elements[row_offset + scan_idx] else {
                     return Ok(None);
                 };
                 carry += f32::from_bits(bits);
             }
         } else {
             for scan_idx in 0..scan_len {
-                let Literal::F32Bits(bits) = xs.elements[row_offset + scan_idx] else {
+                let Literal::F32Bits(bits) = elements[row_offset + scan_idx] else {
                     return Ok(None);
                 };
                 carry += f32::from_bits(bits);
@@ -5987,12 +6024,12 @@ fn batch_scan_add_emit_carry_i64(
 
     let mut final_carry = Vec::with_capacity(batch_size);
     let mut ys = vec![0_i64; expected_len];
-    for (batch_idx, init) in init_values.into_iter().enumerate() {
-        let Literal::I64(mut carry) = init else {
-            return Ok(None);
-        };
-        let row_offset = batch_idx * scan_len;
-        if let Some(values) = xs_tensor.elements.as_i64_slice() {
+    if let Some(values) = xs_tensor.elements.as_i64_slice() {
+        for (batch_idx, init) in init_values.into_iter().enumerate() {
+            let Literal::I64(mut carry) = init else {
+                return Ok(None);
+            };
+            let row_offset = batch_idx * scan_len;
             if reverse {
                 for scan_idx in (0..scan_len).rev() {
                     carry = carry.wrapping_add(values[row_offset + scan_idx]);
@@ -6004,24 +6041,34 @@ fn batch_scan_add_emit_carry_i64(
                     ys[row_offset + scan_idx] = carry;
                 }
             }
-        } else if reverse {
-            for scan_idx in (0..scan_len).rev() {
-                let Literal::I64(x) = xs_tensor.elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry = carry.wrapping_add(x);
-                ys[row_offset + scan_idx] = carry;
-            }
-        } else {
-            for scan_idx in 0..scan_len {
-                let Literal::I64(x) = xs_tensor.elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry = carry.wrapping_add(x);
-                ys[row_offset + scan_idx] = carry;
-            }
+            final_carry.push(carry);
         }
-        final_carry.push(carry);
+    } else {
+        let elements = xs_tensor.elements.as_slice();
+        for (batch_idx, init) in init_values.into_iter().enumerate() {
+            let Literal::I64(mut carry) = init else {
+                return Ok(None);
+            };
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    let Literal::I64(x) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry = carry.wrapping_add(x);
+                    ys[row_offset + scan_idx] = carry;
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    let Literal::I64(x) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry = carry.wrapping_add(x);
+                    ys[row_offset + scan_idx] = carry;
+                }
+            }
+            final_carry.push(carry);
+        }
     }
 
     let carry = TensorValue::new_i64_values(Shape::vector(xs_tensor.shape.dims[0]), final_carry)
