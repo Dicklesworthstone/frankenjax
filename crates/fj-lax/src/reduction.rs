@@ -312,12 +312,57 @@ fn dense_f64_axis_reduce(
     out_dims: &[u32],
     out_count: usize,
     float_init: f64,
-    float_op: &impl Fn(f64, f64) -> f64,
+    float_op: &(impl Fn(f64, f64) -> f64 + Sync),
 ) -> Option<Vec<f64>> {
     let values = tensor.elements.as_f64_slice()?;
     if tensor.shape.dims.is_empty() {
         return None;
     }
+
+    // Trailing-axis reduction fast path: when the kept axes are exactly the
+    // leading prefix `0..k`, every output element reduces one contiguous input
+    // block (`values[o*block .. (o+1)*block]`) in ascending order — identical to
+    // the odometer's emission order. The output rows are independent, so a large
+    // reduction fans out across threads. Bit-for-bit identical to the serial fold.
+    let kept_is_leading_prefix = kept_axes.iter().enumerate().all(|(i, &ax)| ax == i);
+    if kept_is_leading_prefix
+        && out_count > 1
+        && values.len() == out_count * (values.len() / out_count)
+        && values.len() >= (1 << 18)
+    {
+        let block = values.len() / out_count;
+        let mut result = vec![float_init; out_count];
+        let threads = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(out_count);
+        if threads > 1 {
+            let rows_per = out_count.div_ceil(threads);
+            let op_ref = float_op;
+            std::thread::scope(|scope| {
+                let mut res_rest: &mut [f64] = result.as_mut_slice();
+                let mut row0 = 0usize;
+                while row0 < out_count {
+                    let rows = rows_per.min(out_count - row0);
+                    let (res_blk, res_tail) = res_rest.split_at_mut(rows);
+                    res_rest = res_tail;
+                    let vblk = &values[row0 * block..(row0 + rows) * block];
+                    row0 += rows;
+                    scope.spawn(move || {
+                        for (r, slot) in res_blk.iter_mut().enumerate() {
+                            let mut acc = float_init;
+                            for &v in &vblk[r * block..r * block + block] {
+                                acc = op_ref(acc, v);
+                            }
+                            *slot = acc;
+                        }
+                    });
+                }
+            });
+            return Some(result);
+        }
+    }
+
     let mut odometer = OutIndexOdometer::new(&tensor.shape.dims, kept_axes, out_dims);
     let mut result = vec![float_init; out_count];
     for &value in values {
@@ -391,7 +436,7 @@ pub(crate) fn eval_reduce_axes(
     int_init: i64,
     float_init: f64,
     int_op: impl Fn(i64, i64) -> i64,
-    float_op: impl Fn(f64, f64) -> f64,
+    float_op: impl Fn(f64, f64) -> f64 + Sync,
 ) -> Result<Value, EvalError> {
     if inputs.len() != 1 {
         return Err(EvalError::ArityMismatch {
@@ -1877,6 +1922,56 @@ mod tests {
     /// dense `new_f64_values` tensor (fast path) must produce element-for-element
     /// identical bits to the `Vec<Literal>`-backed tensor (generic decode loop)
     /// for ReduceSum/Prod/Max/Min across every axis subset of a rank-3 tensor,
+    /// Isomorphism proof for the threaded trailing-axis reduction: a large
+    /// `[N,M]` reduce over axis 1 (>= 1<<18, output rows independent) must equal,
+    /// bit-for-bit, an independent per-row serial fold in ascending order.
+    #[test]
+    fn threaded_trailing_reduce_bit_identical() {
+        let (n, m) = (4096usize, 64usize); // 262_144 = 1<<18 -> threaded
+        assert!(n * m >= (1usize << 18) && n > 1);
+        let data: Vec<f64> = (0..n * m)
+            .map(|i| ((i % 101) as f64 - 50.0) * 0.125 + 0.3 * ((i % 7) as f64))
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, m as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+
+        type Op = fn(f64, f64) -> f64;
+        let cases: [(Primitive, f64, Op); 4] = [
+            (Primitive::ReduceSum, 0.0, |a, b| a + b),
+            (Primitive::ReduceProd, 1.0, |a, b| a * b),
+            (Primitive::ReduceMax, f64::NEG_INFINITY, crate::jax_max_f64),
+            (Primitive::ReduceMin, f64::INFINITY, crate::jax_min_f64),
+        ];
+        for (prim, init, op) in cases {
+            let mut p = BTreeMap::new();
+            p.insert("axes".to_owned(), "1".to_owned());
+            let got = extract_f64_vec(
+                &crate::eval_primitive(prim, std::slice::from_ref(&input), &p).unwrap(),
+            );
+            let mut expect: Vec<f64> = Vec::with_capacity(n);
+            for row in data.chunks(m) {
+                let mut acc = init;
+                for &v in row {
+                    acc = op(acc, v);
+                }
+                expect.push(acc);
+            }
+            assert_eq!(got.len(), expect.len());
+            for i in 0..n {
+                assert_eq!(got[i].to_bits(), expect[i].to_bits(), "{prim:?} row {i}");
+            }
+        }
+    }
+
+    /// Per-element dense fast path equals the generic literal path for every axis
+    /// reduction across `reduce_sum/prod/max/min` on a small tensor (serial),
     /// including NaN/±inf/signed-zero values. Routes through `eval_primitive` so
     /// the real per-primitive float_init/float_op are exercised.
     #[test]

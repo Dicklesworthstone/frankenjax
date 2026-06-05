@@ -1,0 +1,13 @@
+{
+  "bead": "frankenjax-jyyzg",
+  "crate": "fj-lax (reduction)",
+  "target": "Dense F64 axis (partial) reduction reduce_sum/prod/max/min. dense_f64_axis_reduce scanned all input elements serially through an OutIndexOdometer; for a [4096,1024] reduce over axis 1 (4M -> 4096) it ran 19.3ms — ~10x off bandwidth (compute-bound: odometer + non-inlining float_op closure).",
+  "lever": "Trailing-axis fast path: when the kept axes are exactly the leading prefix 0..k (i.e. the reduced axes are trailing), each output element reduces one contiguous input block values[o*block..(o+1)*block] in ascending order — identical to the odometer's emission order. Output rows are independent, so a large reduction (>= 1<<18) fans out across threads, each thread folding its block of rows into disjoint output slots. Other axis layouts keep the serial odometer.",
+  "isomorphism": "BIT-EXACT. threaded_trailing_reduce_bit_identical ([4096,64] reduce axis1, sum/prod/max/min == independent per-row serial fold in ascending order, bit-for-bit). float_op uses jax_max_f64/jax_min_f64 (NaN-propagating) to match the generic path. dense_f64_axis_reduce / eval_reduce_axes float_op gained + Sync. 1106 fj-lax tests pass.",
+  "measurements_same_session_back_to_back": {
+    "reduce_sum_4096x1024_axis1_f64": { "before_serial_ms": 19.28, "after_threaded_ms": 5.78, "ratio": 3.33 }
+  },
+  "decision": "SHIP. 3.33x on trailing-axis F64 reduction (ubiquitous: reduce over feature/sequence dims). Bit-exact (per-row fold preserves order, no cross-row reassociation). Non-trailing/strided layouts and full reductions stay serial (full f64 sum can't be bit-exactly reassociated).",
+  "follow_ups": "Full reductions (single output) can't be bit-exactly parallelized for f64 sum/prod. Leading-axis reduction (strided output) is threadable by output slot but cache-unfriendly — separate lever if profiled hot.",
+  "date": "2026-06-05"
+}

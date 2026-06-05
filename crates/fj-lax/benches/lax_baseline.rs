@@ -1603,6 +1603,26 @@ fn bench_reduce_sum_1k(c: &mut Criterion) {
     });
 }
 
+// Last-axis partial reduction: 4096x1024 f64 reduce axis 1 -> [4096]. Each of the
+// 4096 output rows reduces a contiguous input block independently.
+fn bench_reduce_sum_4096x1024_axis1_f64(c: &mut Criterion) {
+    let data: Vec<f64> = (0..4096 * 1024).map(|i| (i as f64) * 0.001).collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![4096, 1024],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_owned(), "1".to_owned());
+    c.bench_function("eval/reduce_sum_4096x1024_axis1_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Large-array F64 full reduction: quantifies the mcqr.30 data-model gap on the
 // reduction path. A dense F64 tensor materializes a 24-byte `Vec<Literal>` and
 // the per-element `as_f64()` match blocks the fold, moving ~3x the bytes of a
@@ -2782,6 +2802,7 @@ criterion_group!(
     bench_concat_axis0_3x_f64,
     bench_transpose_256x256_f64,
     bench_reduce_sum_1k,
+    bench_reduce_sum_4096x1024_axis1_f64,
     bench_reduce_sum_64k_f64,
     bench_reduce_sum_64k_f64_literal_reference,
     bench_reduce_max_64k_f64,
