@@ -1,0 +1,38 @@
+{
+  "pass": 125,
+  "date": "2026-06-05",
+  "crate": "fj-lax",
+  "kind": "radix pass-count specialization for fixed-width U32 sort keys",
+  "target": "eval/sort_64k_u32",
+  "profile_source": "full fj-lax Criterion profile after FFT/RFFT work showed sort_64k_u32 among the remaining fj-lax hotspots; focused ts2 baseline confirmed sort_64k_u32 median 5.2727 ms.",
+  "lever_summary": "Use four stable LSD radix byte passes for DType::U32 in sort_along_axis_literal_radix. U32 keys have only four significant low bytes; high bytes are constant for both ascending and descending-complement keys. All other dtype-family radix paths continue through the eight-pass helper.",
+  "method": "RCH Criterion A/B on worker ts2; same command before and after: cargo bench -p fj-lax --bench lax_baseline -- 'eval/(sort_64k_u32|sort_64k_f32|sort_64k_f64|sort_calib_reduce_64k_i64)' --sample-size 12 --measurement-time 1 --warm-up-time 1 --noplot.",
+  "results": {
+    "sort_64k_u32": {"baseline_ms": 5.2727, "candidate_ms": 4.1180, "raw_x": 1.2804},
+    "sort_64k_f64_control": {"baseline_ms": 2.7198, "candidate_ms": 2.8041},
+    "sort_64k_f32_control": {"baseline_ms": 2.6003, "candidate_ms": 2.7052},
+    "calibration_reduce_64k_i64_us": {"baseline": 7.9677, "candidate": 8.3751, "note": "later candidate run was about 5.1% slower on the unrelated calibration; U32 still improves 1.28x raw"}
+  },
+  "score": {"impact": 3.0, "confidence": 5.0, "effort": 2.0, "impact_times_confidence_over_effort": 7.5, "kept": true},
+  "change": {
+    "files": ["crates/fj-lax/src/tensor_ops.rs"],
+    "lever": "DType::U32 selects radix_pairs_ascending_u32 (4 byte passes); radix_pairs_ascending remains the generic 8 byte path."
+  },
+  "isomorphism": {
+    "ordering_preserved": "yes; U32 unsigned order is fully determined by the low 32 key bits, and descending complement has constant high bytes for all U32 keys",
+    "tie_breaking_unchanged": "yes; the same input-order index is carried in each pair and stable LSD radix preserves equal-key order",
+    "floating_point": "N/A; U32 branch only, existing float radix path remains eight-pass",
+    "rng": "N/A",
+    "golden_outputs": "fj_lax_sort_u32_four_pass_2026-06-05.golden sha256 verified; combined output blob sha256 3b64f6423070fb99c0824260f664bdc30815e851b5cf9a46a94ed65027c39f10"
+  },
+  "validation": [
+    {"name": "golden_sha256", "command": "sha256sum -c artifacts/performance/evidence/fj_lax_sort_u32_four_pass_2026-06-05.golden.sha256", "result": "OK"},
+    {"name": "rustfmt_touched_file", "command": "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_ops.rs", "result": "clean"},
+    {"name": "focused_u32_parity", "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax radix_sort_u32_ascending_matches_unsigned_reference --lib -- --nocapture", "result": "1 passed on ts2"},
+    {"name": "sort_filter", "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax sort --lib -- --nocapture", "result": "16 passed on ts2"},
+    {"name": "check", "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo check -p fj-lax --all-targets", "result": "clean on ts2"},
+    {"name": "clippy", "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings", "result": "clean on ts2"},
+    {"name": "ubs", "command": "ubs crates/fj-lax/src/tensor_ops.rs | rg 'CRITICAL|panic!|expected U32|Critical issues|Summary Statistics'", "result": "file-wide UBS still reports 5 pre-existing non-U32 test panic findings; the two new expected-U32 panic findings from the first draft were removed"}
+  ],
+  "alien_primitive": "fixed-width LSD radix specialization; safe Rust; no C BLAS/MKL/XLA or unsafe code"
+}

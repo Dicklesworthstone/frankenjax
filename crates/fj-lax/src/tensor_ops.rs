@@ -4581,7 +4581,11 @@ fn sort_along_axis_literal_radix(
             for i in 0..axis_dim {
                 pairs.push((keys[base + i * axis_stride] ^ key_mask, i as u32));
             }
-            radix_pairs_ascending(&mut pairs, &mut scratch);
+            if tensor.dtype == DType::U32 {
+                radix_pairs_ascending_u32(&mut pairs, &mut scratch);
+            } else {
+                radix_pairs_ascending(&mut pairs, &mut scratch);
+            }
             for (out_pos, &(_, orig)) in pairs.iter().enumerate() {
                 let dst = base + out_pos * axis_stride;
                 if return_indices {
@@ -4635,7 +4639,20 @@ fn for_each_sort_slice(
 /// sorted result.
 #[inline]
 fn radix_pairs_ascending(pairs: &mut Vec<(u64, u32)>, scratch: &mut Vec<(u64, u32)>) {
-    for byte in 0..8 {
+    radix_pairs_ascending_passes::<8>(pairs, scratch);
+}
+
+#[inline]
+fn radix_pairs_ascending_u32(pairs: &mut Vec<(u64, u32)>, scratch: &mut Vec<(u64, u32)>) {
+    radix_pairs_ascending_passes::<4>(pairs, scratch);
+}
+
+#[inline]
+fn radix_pairs_ascending_passes<const PASSES: usize>(
+    pairs: &mut Vec<(u64, u32)>,
+    scratch: &mut Vec<(u64, u32)>,
+) {
+    for byte in 0..PASSES {
         let shift = byte * 8;
         let mut counts = [0_usize; 256];
         for &(key, _) in pairs.iter() {
@@ -7179,23 +7196,52 @@ mod tests {
         let expected_arg: Vec<i64> = idx.iter().map(|&i| i as i64).collect();
 
         let sorted = eval_sort(Primitive::Sort, &[tensor()], &asc).unwrap();
-        let got_vals: Vec<u32> = sorted
+        let got_vals: Option<Vec<u32>> = sorted
             .as_tensor()
             .unwrap()
             .elements
             .iter()
             .map(|l| match l {
-                Literal::U32(v) => *v,
-                other => panic!("expected U32, got {other:?}"),
+                Literal::U32(v) => Some(*v),
+                _ => None,
             })
             .collect();
         assert_eq!(
-            got_vals, expected_vals,
+            got_vals.as_deref(),
+            Some(expected_vals.as_slice()),
             "radix u32 sort vs unsigned reference"
         );
 
         let arg = extract_i64_vec(&eval_argsort(Primitive::Argsort, &[tensor()], &asc).unwrap());
         assert_eq!(arg, expected_arg, "radix u32 argsort vs unsigned reference");
+
+        let desc = params(&[("dimension", "0"), ("descending", "true")]);
+        let mut desc_idx: Vec<usize> = (0..n).collect();
+        desc_idx.sort_by(|&a, &b| data[b].cmp(&data[a]).then(a.cmp(&b)));
+        let expected_desc_vals: Vec<u32> = desc_idx.iter().map(|&i| data[i]).collect();
+        let expected_desc_arg: Vec<i64> = desc_idx.iter().map(|&i| i as i64).collect();
+        let sorted_desc = eval_sort(Primitive::Sort, &[tensor()], &desc).unwrap();
+        let got_desc_vals: Option<Vec<u32>> = sorted_desc
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::U32(v) => Some(*v),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            got_desc_vals.as_deref(),
+            Some(expected_desc_vals.as_slice()),
+            "descending radix u32 sort vs unsigned reference"
+        );
+        let desc_arg =
+            extract_i64_vec(&eval_argsort(Primitive::Argsort, &[tensor()], &desc).unwrap());
+        assert_eq!(
+            desc_arg, expected_desc_arg,
+            "descending radix u32 argsort vs unsigned reference"
+        );
     }
 
     // ── Argsort ──

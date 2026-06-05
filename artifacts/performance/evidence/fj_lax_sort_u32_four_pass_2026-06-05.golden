@@ -1,0 +1,15 @@
+pass125 golden - fj-lax: specialize U32 radix sort to four byte passes
+target=eval/sort_64k_u32; sort_along_axis_literal_radix U32 path
+lever=U32 radix keys only contain four significant bytes, so the stable LSD radix path uses four byte passes for DType::U32 and keeps the existing eight-pass helper for all 64-bit/float/signed literal radix users.
+fixture=1000 element U32 vector from radix_sort_u32_ascending_matches_unsigned_reference: i%7 maps to 0, u32::MAX, 1, i%5 duplicates, or ((i*2654435761) wrapping xor i). Axis dimension is 1000 so the radix path is taken.
+golden_blob=v1 bytes: b"fj_lax_sort_u32_four_pass_v1\0" + ascending sorted U32 values as little-endian u32 + ascending argsort as little-endian i64 + descending sorted U32 values as little-endian u32 + descending argsort as little-endian i64.
+golden_blob_sha256=3b64f6423070fb99c0824260f664bdc30815e851b5cf9a46a94ed65027c39f10
+ascending_values_sha256=cb5df70ebdfcc007704f2f05d96d76398fe631226a0ae2a4aaeece620f910d5e
+ascending_args_sha256=bc8ebfa9c98d3be44177eedc9997e64fe46e46be75ee96e3f5b0390c778d3c99
+descending_values_sha256=46c42827d7db9ea5e80d114d14739a960baf8b2ca76d1b2d3067efc5c85fd9d9
+descending_args_sha256=aea4b01c6f52a1aefc4320a7e71e35c7f470c159e126193c6ec508a5cddac108
+ascending_values_first16=[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+ascending_args_first16=[0,7,10,14,21,28,35,42,45,49,56,63,70,77,80,84]
+descending_values_first16=[4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295,4294967295]
+descending_args_first16=[1,8,15,22,29,36,43,50,57,64,71,78,85,92,99,106]
+isomorphism=U32 ascending keys are exactly the unsigned value. For descending, key xor u64::MAX leaves all high bytes equal for U32 and reverses the low 32 bits, so four low-byte passes induce the same total order as eight passes. LSD radix is stable, preserving original index tie order for sort and argsort. Floating-point and RNG are not involved.
