@@ -1,0 +1,13 @@
+{
+  "bead": "frankenjax-rcuth",
+  "crate": "fj-lax (arithmetic)",
+  "target": "Complex unary transcendentals (Exp/Log/Sin/Cos/Tan/Sinh/Cosh/Tanh/Asin/.../Expm1/Log1p/...) on complex64/128 via eval_unary_complex_map. It was serial AND Literal-backed: per element it materialized a Literal, decoded (re,im), applied the op, and built a Literal output. complex_exp = exp + sin + cos per element (and tanh/log similar), so it is extremely compute-bound.",
+  "lever": "Dense + threaded fast path in eval_unary_complex_map: when the operand is dense-complex-backed (as_complex_slice) and length >= 1<<13, apply op across scoped threads into a dense (re,im) output via new_complex_values — no per-Literal decode/rebuild. The packed values equal literal_to_complex_parts' output and new_complex_values re-applies the same dtype narrowing as complex_literal_from_f64_parts, so it is bit-identical to the serial map. op gained a + Sync bound.",
+  "isomorphism": "BIT-EXACT. threaded_dense_complex_unary_bit_identical_to_literal (8192 dense-c128 Exp/Log/Tanh/Sin == Literal-backed serial map, bit-for-bit). Each element independent, identical op. 1108 fj-lax tests pass.",
+  "measurements_same_session_back_to_back": {
+    "exp_256k_complex128_dense": { "before_serial_literal_ms": 14.09, "after_threaded_dense_ms": 5.28, "ratio": 2.67 }
+  },
+  "decision": "SHIP. 2.67x on dense complex Exp (covers the whole complex-unary-transcendental family — log/sin/tan/sinh/cosh/tanh/asin/... all route through the same map). Combines dense-extract (skip Literal materialization) + threading a compute-heavy op. Bit-exact. Extends the dense Complex storage adoption (6294o) to complex transcendentals.",
+  "follow_ups": "Literal-backed complex transcendental inputs still serial (per-element Result handling complicates threading) — but the steady-state (complex op feeding complex op produces dense) is covered. Complex-binary transcendentals (complex pow/atan2) are a smaller follow-up.",
+  "date": "2026-06-05"
+}

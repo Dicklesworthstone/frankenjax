@@ -1439,12 +1439,19 @@ fn broadcast_binary_i64(
     )?)))
 }
 
+/// F64 broadcast binary fast path. Produces output elements in the same
+/// row-major flat order as the generic broadcast loop using identical index
+/// math, applying `float_op` directly to the gathered F64 values. Bit-for-bit
+/// identical to the generic path for F64 operands (where binary_literal_op is
+/// `from_f64(float_op(from_bits(l), from_bits(r)))`). Returns `Ok(None)` if any
+/// gathered element is not `F64Bits`, so the caller falls through to generic.
+#[inline]
+#[allow(clippy::too_many_arguments)]
 /// Threaded broadcast fast path for the expensive binary ops. Returns `None`
 /// unless both operands are dense F64 (caller already checked the op + size).
 /// Each thread decodes its own output flat-index range to broadcast-gathered
 /// operand indices and applies the identical `float_op` — bit-for-bit identical
 /// to the serial gather, just split across the output space.
-#[inline]
 #[allow(clippy::too_many_arguments)]
 fn broadcast_binary_f64_expensive_parallel(
     lhs: &TensorValue,
@@ -1492,14 +1499,6 @@ fn broadcast_binary_f64_expensive_parallel(
         .map(Value::Tensor)
 }
 
-/// F64 broadcast binary fast path. Produces output elements in the same
-/// row-major flat order as the generic broadcast loop using identical index
-/// math, applying `float_op` directly to the gathered F64 values. Bit-for-bit
-/// identical to the generic path for F64 operands (where binary_literal_op is
-/// `from_f64(float_op(from_bits(l), from_bits(r)))`). Returns `Ok(None)` if any
-/// gathered element is not `F64Bits`, so the caller falls through to generic.
-#[inline]
-#[allow(clippy::too_many_arguments)]
 fn broadcast_binary_f64(
     lhs: &TensorValue,
     rhs: &TensorValue,
@@ -6634,6 +6633,59 @@ mod tests {
             })
             .collect();
         assert_eq!(tensor.elements, expected);
+    }
+
+    /// Isomorphism proof for the threaded dense complex-unary path: a large
+    /// dense-complex128 Exp/Log/Tanh (>= 1<<13, threaded) must equal the
+    /// Literal-backed serial map bit-for-bit.
+    #[test]
+    fn threaded_dense_complex_unary_bit_identical_to_literal() {
+        let n = 1usize << 13; // 8192 -> threaded
+        let data: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let x = i as f64;
+                ((x * 0.013).sin() * 2.0, (x * 0.0071).cos() - 0.5)
+            })
+            .collect();
+        let lit = v_complex128(&data);
+        let dense = v_complex128_dense(&data);
+        assert!(
+            dense
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_complex_slice()
+                .is_some()
+        );
+        let bits = |v: &Value| -> Vec<(u64, u64)> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Complex128Bits(re, im) => (*re, *im),
+                    other => panic!("expected c128, got {other:?}"),
+                })
+                .collect()
+        };
+        let prims = [
+            Primitive::Exp,
+            Primitive::Log,
+            Primitive::Tanh,
+            Primitive::Sin,
+        ];
+        for prim in prims {
+            let from_lit =
+                crate::eval_primitive(prim, std::slice::from_ref(&lit), &BTreeMap::new()).unwrap();
+            let from_dense =
+                crate::eval_primitive(prim, std::slice::from_ref(&dense), &BTreeMap::new())
+                    .unwrap();
+            assert_eq!(
+                bits(&from_lit),
+                bits(&from_dense),
+                "{prim:?} dense threaded != literal serial"
+            );
+        }
     }
 
     /// Isomorphism proof: the dense `as_complex_slice` multiply fast path must
