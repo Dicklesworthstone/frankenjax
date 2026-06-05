@@ -1,0 +1,16 @@
+{
+  "pass": 122,
+  "crate": "fj-lax",
+  "outcome": "REJECTED (not shipped) — threading batched FFT over rows is Amdahl-limited by serial complex-Literal conversion, not FFT compute.",
+  "target": "eval_fft batched rows (Primitive::Fft over [batch, n] complex), bench eval/fft_batched_2048x256_c128",
+  "lever_tried": "Thread the independent per-row FFTs (fft_transform_rows: std::thread::scope over row blocks, each with its own Bluestein scratch). Bit-exact (per-row transform unchanged, row-major order; a fft_batched_threaded_bit_identical test passed: 2048x256, threaded == per-row fft_1d).",
+  "result": {
+    "serial_ms": 11.778, "threaded_ms": 10.201,
+    "calibration_serial_us": 5.1948, "calibration_threaded_us": 5.4619,
+    "speedup_worker_corrected": 1.21
+  },
+  "diagnosis": "At 2048x256 (524288 complex elements, n=256 radix2), the FFT butterfly compute is a minority of eval_fft's time. The dominant cost is the SERIAL complex<->Literal conversion: extract_tensor_complex maps 524288 Literals -> (f64,f64) before the transform, and the output builds 524288 make_complex_literal — both serial and memory/convert-bound, because Complex64/128 are Literal-backed (no dense complex slice like as_f64_slice). Threading only the transform leaves these serial parts dominant -> ~1.21x (Amdahl).",
+  "next_lever": "Dense complex storage (a LiteralBuffer::Complex128 dense variant with as_complex_slice, mirroring the dense F64/I64/Bool path) so eval_fft reads/writes contiguous (f64,f64) without per-element Literal materialization — then the transform threading would actually dominate. OR thread the input extract + output build alongside the transform. The first is architectural (fj-core data model); target >=2x batched FFT once complex is dense. For large-n FFTs (few rows, big n) the compute fraction rises and row-threading alone would help more — but the common batched-small-n case stays conversion-bound.",
+  "tests": "fft_batched_threaded_bit_identical passed (bit-exact); 32/32 fft tests passed; clippy clean. Reverted (not shipped) since 1.21x < 2x.",
+  "date": "2026-06-05"
+}
