@@ -233,8 +233,8 @@ pub fn eval_primitive(
         Primitive::Abs => eval_abs(primitive, inputs),
         Primitive::Exp => eval_exp(primitive, inputs),
         Primitive::Log => eval_log(primitive, inputs),
-        Primitive::Log2 => eval_unary_elementwise(primitive, inputs, f64::log2),
-        Primitive::Exp2 => eval_unary_elementwise(primitive, inputs, f64::exp2),
+        Primitive::Log2 => eval_unary_elementwise_parallel(primitive, inputs, f64::log2),
+        Primitive::Exp2 => eval_unary_elementwise_parallel(primitive, inputs, f64::exp2),
         Primitive::Sinc => eval_unary_elementwise(primitive, inputs, |x| {
             if x == 0.0 {
                 1.0
@@ -253,9 +253,9 @@ pub fn eval_primitive(
         Primitive::Sin => eval_sin(primitive, inputs),
         Primitive::Cos => eval_cos(primitive, inputs),
         Primitive::Tan => eval_tan(primitive, inputs),
-        Primitive::Asin => eval_unary_elementwise(primitive, inputs, f64::asin),
-        Primitive::Acos => eval_unary_elementwise(primitive, inputs, f64::acos),
-        Primitive::Atan => eval_unary_elementwise(primitive, inputs, f64::atan),
+        Primitive::Asin => eval_unary_elementwise_parallel(primitive, inputs, f64::asin),
+        Primitive::Acos => eval_unary_elementwise_parallel(primitive, inputs, f64::acos),
+        Primitive::Atan => eval_unary_elementwise_parallel(primitive, inputs, f64::atan),
         Primitive::Deg2Rad => eval_unary_elementwise(primitive, inputs, f64::to_radians),
         Primitive::Rad2Deg => eval_unary_elementwise(primitive, inputs, f64::to_degrees),
         // Hyperbolic
@@ -266,8 +266,8 @@ pub fn eval_primitive(
         Primitive::Acosh => eval_acosh(primitive, inputs),
         Primitive::Atanh => eval_atanh(primitive, inputs),
         // Additional math
-        Primitive::Expm1 => eval_unary_elementwise(primitive, inputs, f64::exp_m1),
-        Primitive::Log1p => eval_unary_elementwise(primitive, inputs, f64::ln_1p),
+        Primitive::Expm1 => eval_unary_elementwise_parallel(primitive, inputs, f64::exp_m1),
+        Primitive::Log1p => eval_unary_elementwise_parallel(primitive, inputs, f64::ln_1p),
         Primitive::Sign => eval_unary_int_or_float(
             primitive,
             inputs,
