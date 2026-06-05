@@ -3781,6 +3781,45 @@ pub(crate) fn eval_polygamma(primitive: Primitive, inputs: &[Value]) -> Result<V
         }
         (Value::Scalar(n_lit), Value::Tensor(x_tensor)) => {
             let n = polygamma_literal_to_i64(*n_lit, primitive)?;
+            // Dense + threaded fast path: polygamma_approx is a heavy series/
+            // asymptotic evaluation per element, so a dense-F64 `x` tensor fans out
+            // across threads. For F64Bits, polygamma_literal_to_f64 == from_bits ==
+            // the slice value, so this is bit-identical to the serial loop below.
+            if x_tensor.dtype == DType::F64
+                && let Some(xs) = x_tensor.elements.as_f64_slice()
+                && xs.len() >= (1 << 13)
+            {
+                let len = xs.len();
+                let threads = std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(1)
+                    .min(len);
+                if threads > 1 {
+                    let mut out = vec![0.0f64; len];
+                    let chunk = len.div_ceil(threads);
+                    std::thread::scope(|scope| {
+                        let mut rest: &mut [f64] = out.as_mut_slice();
+                        let mut start = 0usize;
+                        while start < len {
+                            let take = chunk.min(len - start);
+                            let (blk, tail) = rest.split_at_mut(take);
+                            rest = tail;
+                            let s = start;
+                            scope.spawn(move || {
+                                for (i, o) in blk.iter_mut().enumerate() {
+                                    *o = polygamma_approx(n, xs[s + i]);
+                                }
+                            });
+                            start += take;
+                        }
+                    });
+                    return Ok(Value::Tensor(TensorValue::new_f64_values(
+                        x_tensor.shape.clone(),
+                        out,
+                    )?));
+                }
+            }
+
             let mut elements = Vec::with_capacity(x_tensor.elements.len());
             for x_elem in &x_tensor.elements {
                 let x = polygamma_literal_to_f64(*x_elem, primitive)?;
@@ -7428,6 +7467,47 @@ mod tests {
         }
         assert!(hurwitz_zeta_approx(1.0, 1.0).is_infinite()); // pole at s=1
         assert!(hurwitz_zeta_approx(2.0, f64::NAN).is_nan());
+    }
+
+    /// Isomorphism proof for the threaded dense polygamma path: polygamma(n, x)
+    /// over a large dense-F64 tensor (>= 1<<13, threaded) must equal the
+    /// element-wise polygamma_approx(n, x) reference bit-for-bit.
+    #[test]
+    fn threaded_dense_polygamma_bit_identical_to_reference() {
+        let len = 1usize << 13;
+        let x: Vec<f64> = (0..len).map(|i| 0.5 + (i % 4096) as f64 * 0.01).collect();
+        let xt = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![len as u32],
+                },
+                x.clone(),
+            )
+            .unwrap(),
+        );
+        for n in [0i64, 1, 2, 3] {
+            let got = crate::eval_primitive(
+                Primitive::Polygamma,
+                &[Value::scalar_i64(n), xt.clone()],
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            let got: Vec<u64> = got
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect();
+            let expect: Vec<u64> = x
+                .iter()
+                .map(|&v| polygamma_approx(n, v).to_bits())
+                .collect();
+            assert_eq!(
+                got, expect,
+                "polygamma n={n} threaded != element-wise reference"
+            );
+        }
     }
 
     #[test]

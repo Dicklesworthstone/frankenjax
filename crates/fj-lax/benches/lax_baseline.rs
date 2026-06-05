@@ -220,6 +220,21 @@ fn bench_erf_1m_f64_vec(c: &mut Criterion) {
     });
 }
 
+// 256k polygamma(2, x) over a dense f64 tensor: polygamma_approx is a heavy
+// series/asymptotic evaluation per element — compute-bound, threads.
+fn bench_polygamma_n2_256k_f64(c: &mut Criterion) {
+    let n = Value::scalar_i64(2);
+    let x: Vec<f64> = (0..1 << 18)
+        .map(|i| 0.5 + (i % 4096) as f64 * 0.01)
+        .collect();
+    let xt = Value::vector_f64(&x).unwrap();
+    let inputs = [n, xt];
+    let p = no_params();
+    c.bench_function("eval/polygamma_n2_256k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Polygamma, &inputs, &p))
+    });
+}
+
 fn bench_cbrt_1m_f64_vec(c: &mut Criterion) {
     let a: Vec<f64> = (0..1 << 20).map(|i| (i as f64) * 0.0007 - 300.0).collect();
     let input = Value::vector_f64(&a).unwrap();
@@ -2807,6 +2822,7 @@ criterion_group!(
     bench_pow_scalar_1m_f64_literal_reference,
     bench_atan2_1m_f64_vec,
     bench_erf_1m_f64_vec,
+    bench_polygamma_n2_256k_f64,
     bench_cbrt_1m_f64_vec,
     bench_atan2_scalar_1m_f64_vec,
     bench_atan2_scalar_1m_f64_literal_reference,

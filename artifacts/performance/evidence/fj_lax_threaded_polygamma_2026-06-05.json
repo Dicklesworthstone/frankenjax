@@ -1,0 +1,12 @@
+{
+  "bead": "frankenjax-8u0n9",
+  "crate": "fj-lax (arithmetic)",
+  "target": "eval_polygamma (Scalar n, Tensor x) — polygamma_n(x) over a tensor. Serial + Literal-backed. polygamma_approx is a heavy series/asymptotic evaluation per element (the most compute-heavy unary special function).",
+  "lever": "Thread the dense-F64 x case: read as_f64_slice and apply polygamma_approx(n, x) across scoped threads into a dense f64 output (>= 1<<13). For F64Bits, polygamma_literal_to_f64 == from_bits == the slice value, so bit-identical to the serial loop. Non-dense / non-F64 keep serial.",
+  "isomorphism": "BIT-EXACT. threaded_dense_polygamma_bit_identical_to_reference (n=0,1,2,3 over a dense tensor == element-wise polygamma_approx(n,x), bit-for-bit). 1111 fj-lax tests pass (remote-verified).",
+  "measurements_same_session_back_to_back": {
+    "polygamma_n2_256k_f64": { "before_serial_ms": 176.66, "after_threaded_ms": 8.61, "ratio": 20.5 }
+  },
+  "decision": "SHIP. 20.5x — polygamma_approx is so compute-heavy that threading across cores (plus dense extract) gives near-linear scaling. Bit-exact, zero-regression. Committed git-first (no rch between edit and commit) per the rch-source-clobber workaround.",
+  "date": "2026-06-05"
+}
