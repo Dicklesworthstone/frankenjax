@@ -1735,6 +1735,29 @@ fn eval_bitwise_binary(primitive: Primitive, inputs: &[Value]) -> Result<Value, 
 
             match a.dtype {
                 fj_core::DType::I64 => {
+                    // Dense I64 broadcast: gather via the shared contiguous-inner
+                    // traversal (no per-element flat→multi decode) straight from
+                    // the i64 backings into a dense i64 output. `bitwise_broadcast_
+                    // strides` is output-aligned (0 for broadcast dims), exactly
+                    // what broadcast_visit_row_major expects, so the (a_idx, b_idx)
+                    // sequence — and the result — is bit-for-bit identical.
+                    if let (Some(av), Some(bv)) =
+                        (a.elements.as_i64_slice(), b.elements.as_i64_slice())
+                    {
+                        let mut out = Vec::with_capacity(out_count);
+                        crate::arithmetic::broadcast_visit_row_major(
+                            &out_shape.dims,
+                            &a_strides,
+                            &b_strides,
+                            |ai, bi| {
+                                out.push(apply_bitwise_binary_i64(primitive, av[ai], bv[bi]));
+                            },
+                        );
+                        return Ok(Value::Tensor(
+                            TensorValue::new_i64_values(out_shape, out)
+                                .map_err(EvalError::InvalidTensor)?,
+                        ));
+                    }
                     let mut elements = Vec::with_capacity(out_count);
                     for flat_idx in 0..out_count {
                         let multi = bitwise_flat_to_multi(flat_idx, &out_strides);
@@ -1832,6 +1855,24 @@ fn eval_bitwise_tensor_same_shape(
 ) -> Result<Value, EvalError> {
     match a.dtype {
         fj_core::DType::I64 => {
+            // Dense I64 path: a contiguous `apply_bitwise_binary_i64` map straight
+            // into a dense i64 backing, skipping the per-element Literal::I64 match
+            // and 24-byte enum stride on both inputs and the output. Bit-for-bit
+            // identical to the loop below (same op, same order). `as_i64_slice` is
+            // `Some` only for dense I64 storage.
+            if let (Some(av), Some(bv)) =
+                (a.elements.as_i64_slice(), b.elements.as_i64_slice())
+            {
+                let out: Vec<i64> = av
+                    .iter()
+                    .zip(bv)
+                    .map(|(&va, &vb)| apply_bitwise_binary_i64(primitive, va, vb))
+                    .collect();
+                return Ok(Value::Tensor(
+                    TensorValue::new_i64_values(a.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
             let mut elements = Vec::with_capacity(a.elements.len());
             for (ea, eb) in a.elements.iter().zip(b.elements.iter()) {
                 match (ea, eb) {

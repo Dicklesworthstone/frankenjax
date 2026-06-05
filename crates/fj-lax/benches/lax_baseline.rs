@@ -444,6 +444,21 @@ fn bench_add_broadcast_col_1024x1024_i64(c: &mut Criterion) {
     });
 }
 
+fn bench_bitand_same_shape_1024x1024_i64(c: &mut Criterion) {
+    // Same-shape [1024,1024] & [1024,1024], i64 (integer bitmask combine).
+    let n = 1024usize;
+    let a: Vec<i64> = (0..(n * n) as i64).map(|i| i * 2654435761).collect();
+    let b: Vec<i64> = (0..(n * n) as i64).map(|i| i ^ 0x5555_5555).collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs =
+        Value::Tensor(TensorValue::new_i64_values(Shape { dims: dims.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new_i64_values(Shape { dims }, b).unwrap());
+    let p = no_params();
+    c.bench_function("eval/bitand_same_shape_1024x1024_i64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::BitwiseAnd, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_select_1024x1024_f64(c: &mut Criterion) {
     // jnp.where(mask, a, b): dense-bool cond + dense-f64 branches [1024,1024].
     // The cond is dense Bool storage (as a comparison now produces), exercising
@@ -3350,6 +3365,7 @@ criterion_group!(
     bench_add_broadcast_col_1024x1024_f64,
     bench_add_broadcast_row_1024x1024_i64,
     bench_add_broadcast_col_1024x1024_i64,
+    bench_bitand_same_shape_1024x1024_i64,
     bench_select_1024x1024_f64,
     bench_lt_same_shape_1024x1024_f64,
     bench_lt_broadcast_row_1024x1024_f64,
