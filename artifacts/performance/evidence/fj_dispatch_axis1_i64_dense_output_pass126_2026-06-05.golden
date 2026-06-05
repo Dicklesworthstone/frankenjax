@@ -1,0 +1,8 @@
+pass126 golden - fj-dispatch axis-1 I64 vmap dense-output fusion
+target: dispatch_latency/vmap/rank2_add_one_in_axes_1
+input: I64 tensor shape [64,128], row-major values 0..8191, ProgramSpec::AddOne, Transform::Vmap, vmap_in_axes=1
+output_shape: [128,64]
+first8: [1,129,257,385,513,641,769,897]
+last8: [7296,7424,7552,7680,7808,7936,8064,8192]
+fixture_digest: 29d48dbffb8ba3bc95e29416bbe470cd18432ffd471b8ec7ef068c3b7a61b3ef
+storage_change: dense I64 output; materialized Literal order remains identical

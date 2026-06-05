@@ -1,0 +1,119 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "bead": "frankenjax-z92vn",
+  "pass": 126,
+  "date": "2026-06-05",
+  "crate": "fj-dispatch",
+  "target": "dispatch_latency/vmap/rank2_add_one_in_axes_1",
+  "skill_pass": "repeatedly-apply-skill -> extreme-software-optimization",
+  "no_gaps_directive": {
+    "external_blas_lapack_xla": false,
+    "safe_rust": true,
+    "primitive": "Keep the existing rank-2 axis-1 I64 scalar Add vmap fusion but emit dense I64 output and borrow dense I64 input when available."
+  },
+  "profile_backed_target": {
+    "bead_source": "frankenjax-z92vn was filed after pass125 reprofile found dispatch_latency/vmap/rank2_add_one_in_axes_1 still at roughly 42us on ts2.",
+    "fresh_baseline_command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-z92vn-baseline-20260605 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency/vmap/rank2_add_one_in_axes_1 --sample-size 100 --measurement-time 3 --warm-up-time 1",
+    "baseline_worker": "ts2",
+    "baseline_mean_us": 42.795,
+    "baseline_ci_us": [42.236, 43.410]
+  },
+  "optimization": {
+    "lever": "Inside fuse_rank2_axis1_i64_scalar_add_move_to_front, collect transposed wrapping-add results as Vec<i64>, use as_i64_slice when the input is dense-backed, and construct the output with TensorValue::new_i64_values instead of Vec<Literal> plus TensorValue::new.",
+    "files_changed": [
+      "crates/fj-dispatch/src/batching.rs",
+      "artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.golden",
+      "artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.golden.sha256",
+      "artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.json"
+    ],
+    "guard": "Primitive::Add, batch_dim == 1, batched value is rank-2 DType::I64 tensor, scalar value is Literal::I64, and fallback to the existing literal validation remains for literal-backed tensors.",
+    "fallback": "All non-matching primitive, dtype, rank, axis, non-scalar, and malformed-literal cases continue to return None and use the existing generic path.",
+    "single_lever": true,
+    "unsafe": false
+  },
+  "benchmark": {
+    "candidate_ts1_provisional": {
+      "worker": "ts1",
+      "mean_us": 17.537,
+      "ci_us": [16.812, 18.364],
+      "note": "Cross-worker result was treated as provisional only."
+    },
+    "after": {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-z92vn-candidate2-20260605 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency/vmap/rank2_add_one_in_axes_1 --sample-size 100 --measurement-time 3 --warm-up-time 1",
+      "worker": "ts2",
+      "mean_us": 21.841,
+      "ci_us": [21.657, 22.062]
+    },
+    "speedup_mean": 1.9594,
+    "speedup_conservative": 1.9144,
+    "delta_percent": -48.03,
+    "same_worker": true
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 4,
+    "effort": 1,
+    "impact_x_confidence_over_effort": 16,
+    "kept": true
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Yes. The loop still emits output[col,row] from source[row,col], matching the prior axis-1 move-to-front layout and default out_axes=0 row-major output order.",
+    "arithmetic": "I64 addition remains value.wrapping_add(scalar) for every accepted element.",
+    "shape_and_dtype": "Output shape remains [cols, rows] and dtype remains DType::I64. Only the internal LiteralBuffer storage changes to dense I64.",
+    "tie_breaking": "N/A. Add has no comparisons or ties.",
+    "floating_point": "N/A for this optimized guard. Floating-point paths are excluded by DType::I64 and Literal::I64 checks.",
+    "rng": "N/A. No random state is read or written.",
+    "error_behavior": "Malformed literal-backed I64 tensors still return None and use the existing fallback; all other rejected cases are unchanged.",
+    "golden_output_sha256": "29d48dbffb8ba3bc95e29416bbe470cd18432ffd471b8ec7ef068c3b7a61b3ef",
+    "golden_file": "artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.golden",
+    "golden_file_sha256": "5d35bef78843ba0718180f4b33782485035ce5f529fb835e29dc0b67c4813646"
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-z92vn-proof-20260605 rch exec -- cargo test -p fj-dispatch test_in_axes_1 -- --nocapture",
+      "worker": "ts1",
+      "result": "pass; 3 tests passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-z92vn-check-20260605 rch exec -- cargo check -p fj-dispatch --all-targets",
+      "worker": "ts1",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-z92vn-clippy-20260605 rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "worker": "ts2",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt -p fj-dispatch -- --check",
+      "worker": "local",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.golden.sha256",
+      "worker": "local",
+      "result": "pass"
+    },
+    {
+      "command": "jq . artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.json >/dev/null",
+      "worker": "local",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check",
+      "worker": "local",
+      "result": "pass"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/batching.rs artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.json artifacts/performance/evidence/fj_dispatch_axis1_i64_dense_output_pass126_2026-06-05.golden",
+      "worker": "local",
+      "result": "exit 0; no critical issues; existing file-wide warning inventory only"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-z92vn-test-20260605 rch exec -- cargo test -p fj-dispatch --lib",
+      "worker": "ts2",
+      "result": "blocked by unrelated existing Eigh sign-orientation assertions: batching::tests::test_batch_trace_eigh_multi_leading_batch_dim and batching::tests::test_batch_trace_eigh_multi_nonleading_batch_dim fail at crates/fj-dispatch/src/batching.rs:7325 with eigenvector sign +/-0.7071067811865475"
+    }
+  ],
+  "next_primitive": "Reprofile after closing z92vn. If fj-lax ownership is clean, the next high-impact no-gaps lane is frankenjax-mcqr.56 GEMM microkernel; otherwise choose another disjoint profile-backed dispatch/interpreter residual."
+}

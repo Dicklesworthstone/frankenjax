@@ -691,23 +691,30 @@ fn fuse_rank2_axis1_i64_scalar_add_move_to_front(
 
     let rows = tensor.shape.dims[0] as usize;
     let cols = tensor.shape.dims[1] as usize;
-    let mut elements = Vec::with_capacity(tensor.elements.len());
-    for col in 0..cols {
-        for row in 0..rows {
-            let idx = row * cols + col;
-            let Literal::I64(value) = tensor.elements[idx] else {
-                return Ok(None);
-            };
-            elements.push(Literal::I64(value.wrapping_add(*scalar)));
+    let mut values = Vec::with_capacity(tensor.elements.len());
+    if let Some(src) = tensor.elements.as_i64_slice() {
+        for col in 0..cols {
+            for row in 0..rows {
+                values.push(src[row * cols + col].wrapping_add(*scalar));
+            }
+        }
+    } else {
+        let src = tensor.elements.as_slice();
+        for col in 0..cols {
+            for row in 0..rows {
+                let Literal::I64(value) = src[row * cols + col] else {
+                    return Ok(None);
+                };
+                values.push(value.wrapping_add(*scalar));
+            }
         }
     }
 
-    let moved = TensorValue::new(
-        DType::I64,
+    let moved = TensorValue::new_i64_values(
         Shape {
             dims: vec![cols as u32, rows as u32],
         },
-        elements,
+        values,
     )
     .map_err(|e| BatchError::TensorError(e.to_string()))?;
     Ok(Some(BatchTracer {
