@@ -1,0 +1,19 @@
+{
+  "bead": "frankenjax-pgl20",
+  "crate": "fj-lax (fft)",
+  "target": "eval_rfft power-of-two path. After d9aedc64/e15a3638 (threaded dense rfft) the transform was the dominant remaining cost: eval_rfft zero-padded each real row to a full N-point COMPLEX FFT even though the input is real.",
+  "lever": "Half-length real-FFT (the classic rfft algorithm). For even power-of-two N: pack the N real samples as N/2 complex z[m]=x[2m]+i*x[2m+1], run one N/2-point complex FFT (HALF the radix-2 butterflies), then O(N) twiddle recombination (A=(Z[k]+conj(Z[M-k]))/2, B=(Z[k]-conj(Z[M-k]))/(2i), X[k]=A+exp(-2*pi*i*k/N)*B) to the N/2+1 Hermitian outputs. Non-power-of-two keeps the Bluestein full-FFT path; this slots into the existing threaded rfft_rows_into.",
+  "isomorphism": "TOLERANCE (not bit-identical): the algorithm intentionally reorders floating-point ops vs the zero-pad full FFT. half_length_rfft_matches_full_fft_reference asserts <=1e-9 agreement with the full-FFT reference across N in {2,4,8,16,256}. half_length_rfft_golden_output_digest pins the chosen safe-Rust kernel output (FNV-1a-64 = 0xbd9e108f2d66fe21 over a 64x256 rfft). 1099 fj-lax tests pass.",
+  "measurements_eval_rfft_batch_2048x256 (same-session back-to-back)": {
+    "before_full_fft_literal_ms": 11.78,
+    "after_half_length_literal_ms": 7.80,
+    "before_full_fft_dense_f64_ms": 7.36,
+    "after_half_length_dense_f64_ms": 4.49,
+    "ratio_literal": 1.51,
+    "ratio_dense_f64": 1.64,
+    "cumulative_vs_original_serial_rfft": 2.86
+  },
+  "honest_assessment": "1.64x isolated (dense-f64 input) over the prior full-FFT threaded path — a real algorithmic win (literally halves the butterflies, the textbook rfft optimization), but below the 2x-isolated bar because the rfft is now extract/recombination/output bound, not butterfly bound. Cumulatively the FFT-family work (dense storage + threading + dense-f64 extract + half-length) is ~2.86x vs the original serial rfft.",
+  "follow_ups": "eval_irfft still uses the full inverse FFT — the symmetric half-length inverse (Hermitian-half -> N/2 complex IFFT + unpack) is the matching lever. Filed under the same pgl20 thread.",
+  "date": "2026-06-05"
+}

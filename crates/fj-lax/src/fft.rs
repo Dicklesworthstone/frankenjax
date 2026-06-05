@@ -417,6 +417,82 @@ impl Radix2Plan {
     }
 }
 
+/// Reusable plan for an even power-of-two real FFT.
+///
+/// The N-point real signal is packed into an N/2-point complex signal and
+/// transformed with a planned radix-2 FFT, then recombined with precomputed
+/// twiddles. This changes floating-point operation order versus the full complex
+/// FFT path, so tests validate mathematical equivalence by tolerance.
+struct RealRfftPower2Plan {
+    fft_length: usize,
+    half_len: usize,
+    half_fft: Radix2Plan,
+    twiddles: Vec<(f64, f64)>,
+}
+
+impl RealRfftPower2Plan {
+    fn new(fft_length: usize) -> Self {
+        debug_assert!(fft_length >= 2);
+        debug_assert!(fft_length.is_power_of_two());
+        let half_len = fft_length / 2;
+        let half_fft = Radix2Plan::new(half_len, false);
+        let twiddles = (1..half_len)
+            .map(|k| {
+                let angle = -2.0 * PI * (k as f64) / (fft_length as f64);
+                let (sin_a, cos_a) = angle.sin_cos();
+                (cos_a, sin_a)
+            })
+            .collect();
+        Self {
+            fft_length,
+            half_len,
+            half_fft,
+            twiddles,
+        }
+    }
+
+    fn apply_into(
+        &self,
+        input: &[(f64, f64)],
+        copy_len: usize,
+        packed: &mut Vec<(f64, f64)>,
+        transformed: &mut Vec<(f64, f64)>,
+        out: &mut [(f64, f64)],
+    ) {
+        debug_assert_eq!(out.len(), self.half_len + 1);
+        packed.clear();
+        packed.resize(self.half_len, (0.0, 0.0));
+
+        for (idx, slot) in packed.iter_mut().enumerate() {
+            let even = 2 * idx;
+            let odd = even + 1;
+            let even_re = if even < copy_len { input[even].0 } else { 0.0 };
+            let odd_re = if odd < copy_len { input[odd].0 } else { 0.0 };
+            *slot = (even_re, odd_re);
+        }
+
+        self.half_fft.apply_into(packed, transformed);
+
+        let (z0_re, z0_im) = transformed[0];
+        out[0] = (z0_re + z0_im, 0.0);
+        out[self.half_len] = (z0_re - z0_im, 0.0);
+
+        for k in 1..self.half_len {
+            let (a_re, a_im) = transformed[k];
+            let (b_re, b_im) = transformed[self.half_len - k];
+            let avg_re = 0.5 * (a_re + b_re);
+            let avg_im = 0.5 * (a_im - b_im);
+            let diff_re = 0.5 * (a_re - b_re);
+            let diff_im = 0.5 * (a_im + b_im);
+
+            let (cos_a, sin_a) = self.twiddles[k - 1];
+            let rotated_re = diff_re * cos_a - diff_im * sin_a;
+            let rotated_im = diff_re * sin_a + diff_im * cos_a;
+            out[k] = (avg_re + rotated_im, avg_im - rotated_re);
+        }
+    }
+}
+
 impl BluesteinPlan {
     /// Precompute the chirp table and kernel FFT for length `n` (`n >= 2`).
     fn new(n: usize, inverse: bool) -> Self {
@@ -883,6 +959,8 @@ pub(crate) fn eval_rfft(
     // it across every row (chirp table + kernel FFT are identical per row).
     let plan = (fft_length > 1 && !fft_length.is_power_of_two())
         .then(|| BluesteinPlan::new(fft_length, false));
+    let real_plan = (fft_length >= 2 && fft_length.is_power_of_two())
+        .then(|| RealRfftPower2Plan::new(fft_length));
 
     // Dense complex output, one row-block per thread for large batches. Each row
     // is independent (pad -> transform -> keep Hermitian half), so this is
@@ -902,6 +980,7 @@ pub(crate) fn eval_rfft(
         rfft_rows_into(
             &elements,
             plan.as_ref(),
+            real_plan.as_ref(),
             fft_length,
             input_last,
             copy_len,
@@ -913,6 +992,7 @@ pub(crate) fn eval_rfft(
     } else {
         let rows_per = batch_size.div_ceil(threads);
         let plan_ref = plan.as_ref();
+        let real_plan_ref = real_plan.as_ref();
         let elements_ref = &elements;
         std::thread::scope(|scope| {
             let mut rest: &mut [(f64, f64)] = out_values.as_mut_slice();
@@ -925,6 +1005,7 @@ pub(crate) fn eval_rfft(
                     rfft_rows_into(
                         elements_ref,
                         plan_ref,
+                        real_plan_ref,
                         fft_length,
                         input_last,
                         copy_len,
@@ -953,6 +1034,7 @@ pub(crate) fn eval_rfft(
 fn rfft_rows_into(
     elements: &[(f64, f64)],
     plan: Option<&BluesteinPlan>,
+    real_plan: Option<&RealRfftPower2Plan>,
     fft_length: usize,
     input_last: usize,
     copy_len: usize,
@@ -961,6 +1043,24 @@ fn rfft_rows_into(
     rows: usize,
     out_blk: &mut [(f64, f64)],
 ) {
+    if let Some(real_plan) = real_plan {
+        debug_assert_eq!(real_plan.fft_length, fft_length);
+        let mut packed = Vec::with_capacity(real_plan.half_len);
+        let mut transformed = Vec::with_capacity(real_plan.half_len);
+        for r in 0..rows {
+            let start = (row_start + r) * input_last;
+            let batch_slice = &elements[start..start + input_last];
+            real_plan.apply_into(
+                batch_slice,
+                copy_len,
+                &mut packed,
+                &mut transformed,
+                &mut out_blk[r * out_last..r * out_last + out_last],
+            );
+        }
+        return;
+    }
+
     let mut padded = vec![(0.0, 0.0); fft_length];
     let mut transformed = Vec::with_capacity(fft_length);
     let mut scratch = BluesteinScratch::default();
@@ -1301,6 +1401,68 @@ mod tests {
         assert_eq!(
             batched_bits, expected,
             "threaded batch RFFT must match per-row serial bit-for-bit"
+        );
+    }
+
+    #[test]
+    fn half_length_rfft_matches_full_fft_reference() {
+        for &(fft_length, input_len) in &[(2_usize, 1_usize), (4, 4), (8, 5), (16, 20), (256, 193)]
+        {
+            let data: Vec<f64> = (0..input_len)
+                .map(|i| {
+                    let x = i as f64;
+                    (x * 0.03125).sin() - 0.4 * (x * 0.046875).cos()
+                })
+                .collect();
+            let input = make_real_vector(&data);
+            let mut params = BTreeMap::new();
+            params.insert("fft_length".to_owned(), fft_length.to_string());
+            let actual = eval_rfft(std::slice::from_ref(&input), &params).unwrap();
+            let actual = extract_complex_elements(&actual);
+
+            let mut padded = vec![(0.0, 0.0); fft_length];
+            for (slot, &value) in padded.iter_mut().zip(data.iter()) {
+                slot.0 = value;
+            }
+            let expected = fft_1d(&padded);
+            assert_complex_close(&actual, &expected[..fft_length / 2 + 1], 1e-9);
+        }
+    }
+
+    /// Golden guard for the half-length real FFT path. The path intentionally
+    /// reorders floating-point operations versus the old full-FFT implementation,
+    /// so this pins the chosen safe-Rust algorithm rather than claiming bit-level
+    /// isomorphism to the previous kernel.
+    #[test]
+    fn half_length_rfft_golden_output_digest() {
+        let p = BTreeMap::new();
+        let (rows, cols) = (64_usize, 256_usize);
+        let data: Vec<f64> = (0..rows * cols)
+            .map(|i| {
+                let x = i as f64;
+                (x * 0.0078125).sin() + 0.3 * (x * 0.015625).cos()
+            })
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let out = eval_rfft(std::slice::from_ref(&input), &p).unwrap();
+        let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+        for (re, im) in complex_bits(&out) {
+            for byte in re.to_le_bytes().into_iter().chain(im.to_le_bytes()) {
+                digest ^= u64::from(byte);
+                digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(
+            digest, 0xbd9e_108f_2d66_fe21,
+            "RFFT half-length golden output digest changed"
         );
     }
 
