@@ -851,12 +851,11 @@ pub(crate) fn eval_svd(
     // SVD with identical singular values (the eigenvalues of AᵀA are unique);
     // U/Vᵀ may differ by per-column sign/rotation within the SVD's inherent
     // freedom, so parity is verified by reconstruction + spectrum match against
-    // the complex path, not bit-identity (see svd_real_fast_path_*).
-    // full_matrices is excluded: it needs an orthonormal-column extension not
-    // yet ported to the real path.
-    if !matches!(inputs[0].dtype(), DType::Complex64 | DType::Complex128) && !full_matrices {
+    // the complex path, not bit-identity (see svd_real_fast_path_*). Handles
+    // both thin and full_matrices (the latter extends U via real Gram–Schmidt).
+    if !matches!(inputs[0].dtype(), DType::Complex64 | DType::Complex128) {
         let (m, n, a, dtype) = extract_matrix(primitive, &inputs[0])?;
-        return eval_svd_real_thin(m, n, &a, dtype);
+        return eval_svd_real(m, n, &a, dtype, full_matrices);
     }
 
     let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
@@ -964,17 +963,20 @@ pub(crate) fn eval_svd(
     Ok(vec![u_val, s_val, vh_val])
 }
 
-/// Real thin-SVD fast path: a contiguous-f64, cyclic-Jacobi replacement for the
-/// complex `eval_svd` kernel when the input is real. Produces a valid thin SVD
-/// (U m×k, S length-k descending, Vᵀ k×n) whose singular values match the
-/// complex path to machine precision; U/Vᵀ are equal up to the SVD's intrinsic
-/// per-column sign/rotation freedom. Verified by reconstruction + spectrum
-/// parity rather than bit-identity (see the `svd_real_fast_path_*` tests).
-fn eval_svd_real_thin(
+/// Real-SVD fast path: a contiguous-f64, cyclic-Jacobi replacement for the
+/// complex `eval_svd` kernel when the input is real. Produces a valid SVD
+/// (thin: U m×k, Vᵀ k×n; full_matrices: U m×m, Vᵀ n×n) whose singular values
+/// match the complex path to machine precision; U/Vᵀ are equal up to the SVD's
+/// intrinsic per-column sign/rotation freedom. Verified by reconstruction +
+/// spectrum parity rather than bit-identity (see the `svd_real_fast_path_*`
+/// tests). For full_matrices, U's k economy columns are extended to an m×m
+/// orthonormal basis via real Gram–Schmidt (`extend_orthogonal_columns`).
+fn eval_svd_real(
     m: usize,
     n: usize,
     a: &[f64],
     dtype: DType,
+    full_matrices: bool,
 ) -> Result<Vec<Value>, EvalError> {
     let k = m.min(n);
 
@@ -1023,15 +1025,25 @@ fn eval_svd_real_thin(
         }
     }
 
-    // V^T (conjugate transpose of real V is its transpose), thin: k×n.
-    let mut vh = vec![0.0_f64; k * n];
-    for i in 0..k {
+    // For full_matrices, extend U's k economy columns to an m×m orthonormal
+    // basis (real Gram–Schmidt); thin keeps the m×k economy U.
+    let u_cols = if full_matrices { m } else { k };
+    let u_out = if full_matrices && u_cols > k {
+        extend_orthogonal_columns(&u, m, k, u_cols)
+    } else {
+        u
+    };
+
+    // Vᵀ (transpose of real V). full_matrices: n×n; thin: k×n.
+    let vt_rows = if full_matrices { n } else { k };
+    let mut vh = vec![0.0_f64; vt_rows * n];
+    for i in 0..vt_rows {
         for j in 0..n {
             vh[i * n + j] = v_sorted[j * n + i];
         }
     }
 
-    let u_val = matrix_to_value(m, k, &u, dtype)?;
+    let u_val = matrix_to_value(m, u_cols, &u_out, dtype)?;
 
     let s_elements: Vec<Literal> = sigma
         .iter()
@@ -1041,7 +1053,7 @@ fn eval_svd_real_thin(
         .map_err(EvalError::InvalidTensor)?;
     let s_val = Value::Tensor(s_tensor);
 
-    let vh_val = matrix_to_value(k, n, &vh, dtype)?;
+    let vh_val = matrix_to_value(vt_rows, n, &vh, dtype)?;
 
     Ok(vec![u_val, s_val, vh_val])
 }
@@ -1346,7 +1358,6 @@ fn jacobi_eigendecomposition(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
 
 /// Extend a set of k orthogonal columns in an m×k matrix to m×m_full
 /// by adding orthogonal complement columns via Gram-Schmidt.
-#[allow(dead_code)]
 fn extend_orthogonal_columns(u: &[f64], m: usize, k: usize, m_full: usize) -> Vec<f64> {
     let mut result = vec![0.0_f64; m * m_full];
 
@@ -3035,80 +3046,115 @@ mod tests {
     fn svd_real_fast_path_matches_complex_spectrum_and_reconstructs() {
         // The cyclic-Jacobi real fast path must (1) produce the same singular
         // spectrum as the complex max-pivot kernel to machine precision and
-        // (2) yield a valid thin SVD: U·diag(S)·Vᵀ = A and Vᵀ rows orthonormal.
-        // Covers tall (m>n), wide (m<n), and square inputs.
+        // (2) yield a valid SVD: U·diag(S)·Vᵀ = A with U and Vᵀ orthonormal.
+        // Covers tall (m>n), wide (m<n), square × thin and full_matrices.
         for &(m, n) in &[(6usize, 4usize), (4usize, 6usize), (5usize, 5usize)] {
-            let mut data = vec![0.0f64; m * n];
-            for i in 0..m {
-                for j in 0..n {
-                    data[i * n + j] = ((i * 13 + j * 7) % 11) as f64 - 5.0 + 0.25 * (i as f64);
-                }
-            }
-            let k = m.min(n);
-            let a_real = make_matrix(m, n, &data);
-            let a_complex = Value::Tensor(
-                TensorValue::new(
-                    DType::Complex128,
-                    Shape {
-                        dims: vec![m as u32, n as u32],
-                    },
-                    data.iter()
-                        .map(|&v| Literal::from_complex128(v, 0.0))
-                        .collect(),
-                )
-                .unwrap(),
-            );
-
-            let real_out = eval_svd(&[a_real], &BTreeMap::new()).unwrap();
-            let cplx_out = eval_svd(&[a_complex], &BTreeMap::new()).unwrap();
-            assert_eq!(real_out.len(), 3, "{m}x{n}: expected U,S,Vh");
-
-            let u = extract_f64_elements(&real_out[0]); // m×k
-            let s = extract_f64_elements(&real_out[1]); // k
-            let vh = extract_f64_elements(&real_out[2]); // k×n
-            let s_cplx = extract_f64_elements(&cplx_out[1]); // k (real even on complex path)
-
-            assert_eq!(s.len(), k, "{m}x{n}: S length");
-            // (1) spectrum parity vs the reference complex kernel.
-            for t in 0..k {
-                assert!(
-                    (s[t] - s_cplx[t]).abs() < 1e-9,
-                    "{m}x{n}: singular value {t} {} vs complex {} differ",
-                    s[t],
-                    s_cplx[t]
-                );
-                if t > 0 {
-                    assert!(s[t - 1] >= s[t], "{m}x{n}: singular values not descending");
-                }
-            }
-
-            // (2a) reconstruction U·diag(S)·Vᵀ = A.
-            for i in 0..m {
-                for j in 0..n {
-                    let mut acc = 0.0;
-                    for t in 0..k {
-                        acc += u[i * k + t] * s[t] * vh[t * n + j];
-                    }
-                    assert!(
-                        (acc - data[i * n + j]).abs() < 1e-9,
-                        "{m}x{n}: reconstruction[{i}][{j}] {acc} vs {}",
-                        data[i * n + j]
-                    );
-                }
-            }
-
-            // (2b) Vᵀ rows orthonormal (Vh·Vhᵀ = I_k).
-            for s1 in 0..k {
-                for s2 in 0..k {
-                    let mut dot = 0.0;
+            for full in [false, true] {
+                let mut data = vec![0.0f64; m * n];
+                for i in 0..m {
                     for j in 0..n {
-                        dot += vh[s1 * n + j] * vh[s2 * n + j];
+                        data[i * n + j] = ((i * 13 + j * 7) % 11) as f64 - 5.0 + 0.25 * (i as f64);
                     }
-                    let expected = if s1 == s2 { 1.0 } else { 0.0 };
+                }
+                let k = m.min(n);
+                let u_cols = if full { m } else { k };
+                let vt_rows = if full { n } else { k };
+                let mut params = BTreeMap::new();
+                if full {
+                    params.insert("full_matrices".to_owned(), "true".to_owned());
+                }
+                let a_real = make_matrix(m, n, &data);
+                let a_complex = Value::Tensor(
+                    TensorValue::new(
+                        DType::Complex128,
+                        Shape {
+                            dims: vec![m as u32, n as u32],
+                        },
+                        data.iter()
+                            .map(|&v| Literal::from_complex128(v, 0.0))
+                            .collect(),
+                    )
+                    .unwrap(),
+                );
+
+                let real_out = eval_svd(&[a_real], &params).unwrap();
+                let cplx_out = eval_svd(&[a_complex], &params).unwrap();
+                assert_eq!(real_out.len(), 3, "{m}x{n} full={full}: expected U,S,Vh");
+
+                let u = extract_f64_elements(&real_out[0]); // m×u_cols
+                let s = extract_f64_elements(&real_out[1]); // k
+                let vh = extract_f64_elements(&real_out[2]); // vt_rows×n
+                let s_cplx = extract_f64_elements(&cplx_out[1]); // k
+
+                // Output shapes must match the complex reference path.
+                if let (Value::Tensor(ru), Value::Tensor(cu)) = (&real_out[0], &cplx_out[0]) {
+                    assert_eq!(ru.shape.dims, cu.shape.dims, "{m}x{n} full={full}: U shape");
+                }
+                if let (Value::Tensor(rv), Value::Tensor(cv)) = (&real_out[2], &cplx_out[2]) {
+                    assert_eq!(rv.shape.dims, cv.shape.dims, "{m}x{n} full={full}: Vh shape");
+                }
+
+                assert_eq!(s.len(), k, "{m}x{n} full={full}: S length");
+                // (1) spectrum parity vs the reference complex kernel.
+                for t in 0..k {
                     assert!(
-                        (dot - expected).abs() < 1e-9,
-                        "{m}x{n}: Vh row dot[{s1}][{s2}] = {dot}, expected {expected}"
+                        (s[t] - s_cplx[t]).abs() < 1e-9,
+                        "{m}x{n} full={full}: singular value {t} {} vs complex {} differ",
+                        s[t],
+                        s_cplx[t]
                     );
+                    if t > 0 {
+                        assert!(
+                            s[t - 1] >= s[t],
+                            "{m}x{n} full={full}: singular values not descending"
+                        );
+                    }
+                }
+
+                // (2a) reconstruction U·diag(S)·Vᵀ = A (only first k columns of U
+                // and rows of Vᵀ carry nonzero singular values).
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut acc = 0.0;
+                        for t in 0..k {
+                            acc += u[i * u_cols + t] * s[t] * vh[t * n + j];
+                        }
+                        assert!(
+                            (acc - data[i * n + j]).abs() < 1e-9,
+                            "{m}x{n} full={full}: reconstruction[{i}][{j}] {acc} vs {}",
+                            data[i * n + j]
+                        );
+                    }
+                }
+
+                // (2b) U columns orthonormal (Uᵀ·U = I_{u_cols}).
+                for c1 in 0..u_cols {
+                    for c2 in 0..u_cols {
+                        let mut dot = 0.0;
+                        for i in 0..m {
+                            dot += u[i * u_cols + c1] * u[i * u_cols + c2];
+                        }
+                        let expected = if c1 == c2 { 1.0 } else { 0.0 };
+                        assert!(
+                            (dot - expected).abs() < 1e-9,
+                            "{m}x{n} full={full}: U col dot[{c1}][{c2}] = {dot}, expected {expected}"
+                        );
+                    }
+                }
+
+                // (2c) Vᵀ rows orthonormal (Vh·Vhᵀ = I_{vt_rows}).
+                for s1 in 0..vt_rows {
+                    for s2 in 0..vt_rows {
+                        let mut dot = 0.0;
+                        for j in 0..n {
+                            dot += vh[s1 * n + j] * vh[s2 * n + j];
+                        }
+                        let expected = if s1 == s2 { 1.0 } else { 0.0 };
+                        assert!(
+                            (dot - expected).abs() < 1e-9,
+                            "{m}x{n} full={full}: Vh row dot[{s1}][{s2}] = {dot}, expected {expected}"
+                        );
+                    }
                 }
             }
         }

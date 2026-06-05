@@ -1024,6 +1024,44 @@ fn bench_svd_48_complex_path(c: &mut Criterion) {
     });
 }
 
+/// full_matrices=true real SVD (real cyclic-Jacobi path, U extended to m×m).
+fn bench_svd_48_full_f64(c: &mut Criterion) {
+    let n = 48usize;
+    let m = real_matrix(n, n);
+    let mut p = no_params();
+    p.insert("full_matrices".to_owned(), "true".to_owned());
+    c.bench_function("linalg/svd_48x48_full_f64", |bencher| {
+        bencher.iter(|| eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&m), &p))
+    });
+}
+
+/// full_matrices=true on identical data typed Complex128 (imag 0) → the complex
+/// max-pivot kernel. Same-binary baseline for the full real path's speedup.
+fn bench_svd_48_full_complex_path(c: &mut Criterion) {
+    let n = 48usize;
+    let elements: Vec<Literal> = (0..n * n)
+        .map(|i| {
+            let x = i as f64;
+            Literal::from_complex128((x * 0.125).sin() + (x * 0.03125).cos(), 0.0)
+        })
+        .collect();
+    let m = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let mut p = no_params();
+    p.insert("full_matrices".to_owned(), "true".to_owned());
+    c.bench_function("linalg/svd_48x48_full_complex_path", |bencher| {
+        bencher.iter(|| eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&m), &p))
+    });
+}
+
 fn bench_matmul_2d_256(c: &mut Criterion) {
     // Public conformance-tested GEMM kernel: 256x256 @ 256x256.
     let (m, k, n) = (256usize, 256usize, 256usize);
@@ -2939,6 +2977,8 @@ criterion_group!(
     bench_lu_128_f64,
     bench_svd_48_f64,
     bench_svd_48_complex_path,
+    bench_svd_48_full_f64,
+    bench_svd_48_full_complex_path,
     bench_matmul_2d_256,
     bench_matmul_2d_512,
     bench_conv2d_32x32x8_3x3x16_f64_vec,
