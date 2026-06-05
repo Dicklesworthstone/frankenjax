@@ -5465,20 +5465,25 @@ fn eval_conv_2d(
                         let mut acc = 0.0_f64;
                         for kh in 0..kernel_h {
                             let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
-                            if in_h < 0 || (in_h as usize) >= height {
-                                continue;
-                            }
-                            let h_offset = (in_h as usize) * width_c_in;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_offset = if h_oob { 0 } else { (in_h as usize) * width_c_in };
                             for kw in 0..kernel_w {
                                 let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
-                                if in_w < 0 || (in_w as usize) >= width {
-                                    continue;
-                                }
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
                                 for ci in 0..c_in {
-                                    let lhs_idx = n_offset + h_offset + (in_w as usize) * c_in + ci;
                                     let rhs_idx =
                                         kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
-                                    acc += lhs_src[lhs_idx] * rhs_src[rhs_idx];
+                                    // Zero-padded taps add `0·w` (matching the im2col
+                                    // GEMM and XLA), not a skip — keeps the small-conv
+                                    // dense path bit-identical to the im2col path.
+                                    let lhs_val = if oob {
+                                        0.0
+                                    } else {
+                                        lhs_src[n_offset + h_offset + in_w_off + ci]
+                                    };
+                                    acc += lhs_val * rhs_src[rhs_idx];
                                 }
                             }
                         }
@@ -5537,20 +5542,27 @@ fn eval_conv_2d(
                         let mut acc = 0.0_f64;
                         for kh in 0..kernel_h {
                             let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
-                            if in_h < 0 || (in_h as usize) >= height {
-                                continue;
-                            }
-                            let h_offset = (in_h as usize) * width_c_in;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_offset = if h_oob { 0 } else { (in_h as usize) * width_c_in };
                             for kw in 0..kernel_w {
                                 let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
-                                if in_w < 0 || (in_w as usize) >= width {
-                                    continue;
-                                }
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
                                 for ci in 0..c_in {
-                                    let lhs_idx = n_offset + h_offset + (in_w as usize) * c_in + ci;
                                     let rhs_idx =
                                         kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
-                                    let lhs_val = lhs.elements[lhs_idx].as_f64().unwrap_or(0.0);
+                                    // Out-of-bounds (padding) taps contribute `0·w`,
+                                    // exactly as XLA's zero-padding and the im2col GEMM
+                                    // do — adding the term rather than skipping it keeps
+                                    // the two paths bit-identical, including the signed-
+                                    // zero accumulator case a `continue` would mishandle.
+                                    let lhs_val = if oob {
+                                        0.0
+                                    } else {
+                                        let lhs_idx = n_offset + h_offset + in_w_off + ci;
+                                        lhs.elements[lhs_idx].as_f64().unwrap_or(0.0)
+                                    };
                                     let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
                                     acc += lhs_val * rhs_val;
                                 }
