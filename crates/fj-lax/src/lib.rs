@@ -2378,19 +2378,27 @@ fn reduce_window_rank2_f64_sum_3x3_border(
     out_row: usize,
     out_col: usize,
 ) -> f64 {
-    let row_start = out_row.saturating_sub(1);
-    let row_end = out_row.saturating_add(2).min(input_rows);
-    let col_start = out_col.saturating_sub(1);
-    let col_end = out_col.saturating_add(2).min(input_cols);
+    // 3x3 'same' window (pad 1) covers input positions [out-1, out, out+1].
+    // Out-of-bounds (padding) taps contribute 0.0 — XLA pads reduce_window with
+    // the reduction init (0.0 for sum) and reduces the FULL window, so the pad
+    // taps must be summed (a no-op for finite data, but it fixes the signed-zero
+    // case where a -0.0 partial sum must land +0.0). Full-window row-major order
+    // keeps this bit-identical to the generic loop and to valid-on-zero-padded.
     let mut accum = 0.0;
-
-    for input_row in row_start..row_end {
-        let row_offset = input_row * input_cols;
-        for input_col in col_start..col_end {
-            accum += reduce_window_f64_sum_value(tensor.elements[row_offset + input_col]);
+    for dr in 0..3usize {
+        let in_row = out_row as isize + dr as isize - 1;
+        let row_oob = in_row < 0 || (in_row as usize) >= input_rows;
+        let row_offset = if row_oob { 0 } else { (in_row as usize) * input_cols };
+        for dc in 0..3usize {
+            let in_col = out_col as isize + dc as isize - 1;
+            let v = if row_oob || in_col < 0 || (in_col as usize) >= input_cols {
+                0.0
+            } else {
+                reduce_window_f64_sum_value(tensor.elements[row_offset + in_col as usize])
+            };
+            accum += v;
         }
     }
-
     accum
 }
 
@@ -2417,19 +2425,23 @@ fn reduce_window_rank2_f64_sum_3x3_border_values(
     out_row: usize,
     out_col: usize,
 ) -> f64 {
-    let row_start = out_row.saturating_sub(1);
-    let row_end = out_row.saturating_add(2).min(input_rows);
-    let col_start = out_col.saturating_sub(1);
-    let col_end = out_col.saturating_add(2).min(input_cols);
+    // See reduce_window_rank2_f64_sum_3x3_border: OOB padding taps add 0.0
+    // (XLA zero-init padding), iterated full-window row-major.
     let mut accum = 0.0;
-
-    for input_row in row_start..row_end {
-        let row_offset = input_row * input_cols;
-        for input_col in col_start..col_end {
-            accum += values[row_offset + input_col];
+    for dr in 0..3usize {
+        let in_row = out_row as isize + dr as isize - 1;
+        let row_oob = in_row < 0 || (in_row as usize) >= input_rows;
+        let row_offset = if row_oob { 0 } else { (in_row as usize) * input_cols };
+        for dc in 0..3usize {
+            let in_col = out_col as isize + dc as isize - 1;
+            let v = if row_oob || in_col < 0 || (in_col as usize) >= input_cols {
+                0.0
+            } else {
+                values[row_offset + in_col as usize]
+            };
+            accum += v;
         }
     }
-
     accum
 }
 
@@ -2660,16 +2672,14 @@ fn eval_reduce_window_rank2_f64_sum(
                     let padded_row = row_base.checked_add(window_row).ok_or_else(|| {
                         reduce_window_unsupported(primitive, "reduce_window window index overflow")
                     })?;
-                    if padded_row < pad_rows {
-                        continue;
-                    }
-                    let input_row = padded_row - pad_rows;
-                    if input_row >= input_rows {
-                        continue;
-                    }
-                    let row_offset = input_row.checked_mul(input_cols).ok_or_else(|| {
-                        reduce_window_unsupported(primitive, "reduce_window flat index overflow")
-                    })?;
+                    let row_oob = padded_row < pad_rows || (padded_row - pad_rows) >= input_rows;
+                    let row_offset = if row_oob {
+                        0
+                    } else {
+                        (padded_row - pad_rows).checked_mul(input_cols).ok_or_else(|| {
+                            reduce_window_unsupported(primitive, "reduce_window flat index overflow")
+                        })?
+                    };
                     for window_col in 0..window_cols {
                         let padded_col = col_base.checked_add(window_col).ok_or_else(|| {
                             reduce_window_unsupported(
@@ -2677,21 +2687,18 @@ fn eval_reduce_window_rank2_f64_sum(
                                 "reduce_window window index overflow",
                             )
                         })?;
-                        if padded_col < pad_cols {
-                            continue;
-                        }
-                        let input_col = padded_col - pad_cols;
-                        if input_col >= input_cols {
-                            continue;
-                        }
-                        let flat_input_idx =
-                            row_offset.checked_add(input_col).ok_or_else(|| {
-                                reduce_window_unsupported(
-                                    primitive,
-                                    "reduce_window flat index overflow",
-                                )
-                            })?;
-                        accum += src[flat_input_idx];
+                        // Out-of-bounds (padding) taps add 0.0 — XLA pads
+                        // reduce_window with the sum init (0.0) and reduces the
+                        // full window; a no-op for finite data, fixes signed-zero.
+                        let v = if row_oob
+                            || padded_col < pad_cols
+                            || (padded_col - pad_cols) >= input_cols
+                        {
+                            0.0
+                        } else {
+                            src[row_offset + (padded_col - pad_cols)]
+                        };
+                        accum += v;
                     }
                 }
                 output.push(accum);
@@ -2723,32 +2730,32 @@ fn eval_reduce_window_rank2_f64_sum(
                 let padded_row = row_base.checked_add(window_row).ok_or_else(|| {
                     reduce_window_unsupported(primitive, "reduce_window window index overflow")
                 })?;
-                if padded_row < pad_rows {
-                    continue;
-                }
-                let input_row = padded_row - pad_rows;
-                if input_row >= input_rows {
-                    continue;
-                }
-                let row_offset = input_row.checked_mul(input_cols).ok_or_else(|| {
-                    reduce_window_unsupported(primitive, "reduce_window flat index overflow")
-                })?;
+                let row_oob = padded_row < pad_rows || (padded_row - pad_rows) >= input_rows;
+                let row_offset = if row_oob {
+                    0
+                } else {
+                    (padded_row - pad_rows).checked_mul(input_cols).ok_or_else(|| {
+                        reduce_window_unsupported(primitive, "reduce_window flat index overflow")
+                    })?
+                };
 
                 for window_col in 0..window_cols {
                     let padded_col = col_base.checked_add(window_col).ok_or_else(|| {
                         reduce_window_unsupported(primitive, "reduce_window window index overflow")
                     })?;
-                    if padded_col < pad_cols {
-                        continue;
-                    }
-                    let input_col = padded_col - pad_cols;
-                    if input_col >= input_cols {
-                        continue;
-                    }
-                    let flat_input_idx = row_offset.checked_add(input_col).ok_or_else(|| {
-                        reduce_window_unsupported(primitive, "reduce_window flat index overflow")
-                    })?;
-                    accum += tensor.elements[flat_input_idx].as_f64().unwrap_or(0.0);
+                    // OOB (padding) taps add 0.0 — XLA reduce_window init=0 over
+                    // the full window (no-op for finite data, fixes signed-zero).
+                    let v = if row_oob
+                        || padded_col < pad_cols
+                        || (padded_col - pad_cols) >= input_cols
+                    {
+                        0.0
+                    } else {
+                        tensor.elements[row_offset + (padded_col - pad_cols)]
+                            .as_f64()
+                            .unwrap_or(0.0)
+                    };
+                    accum += v;
                 }
             }
 
@@ -3001,6 +3008,16 @@ fn eval_reduce_window(
 
     let mut output_elements = Vec::with_capacity(total_output);
 
+    // Out-of-bounds (padding) taps contribute the reduction init value: XLA pads
+    // reduce_window with `init` and reduces the FULL window. For sum that is 0
+    // (so a -0.0 partial sum lands +0.0, as XLA does); for max/min the init is
+    // ∓∞, so combining it is a no-op — making this correct for every op.
+    let pad_literal = reduce_window_accumulator_literal(
+        primitive,
+        output_dtype,
+        reduce_window_initial_accumulator(output_dtype, reduce_op),
+    )?;
+
     // Iterate over all output positions using multi-dimensional index
     let out_dims_usize: Vec<usize> = out_dims.iter().map(|d| *d as usize).collect();
     let mut out_idx = vec![0usize; rank];
@@ -3055,14 +3072,12 @@ fn eval_reduce_window(
                 })?;
             }
 
-            if in_bounds {
-                reduce_window_accumulate_literal(
-                    primitive,
-                    reduce_op,
-                    &mut accum,
-                    tensor.elements[flat_input_idx],
-                )?;
-            }
+            let tap = if in_bounds {
+                tensor.elements[flat_input_idx]
+            } else {
+                pad_literal
+            };
+            reduce_window_accumulate_literal(primitive, reduce_op, &mut accum, tap)?;
 
             // Increment window index
             let mut carry = true;
@@ -9224,6 +9239,105 @@ mod tests {
         let mut p = rw_params(reduce_op, window, strides);
         p.insert("padding".to_owned(), padding.to_owned());
         p
+    }
+
+    #[test]
+    fn reduce_window_sum_same_padding_zero_pads_like_valid_on_padded_input() {
+        // XLA pads reduce_window with the sum init (0.0) and reduces the FULL
+        // window. Metamorphic proof exercising the 3x3 fast path, the general
+        // rank-2 f64 sum path, and the generic N-D loop: 'same' padding on X must
+        // be bit-identical to 'valid' on X explicitly zero-bordered. Signed-zero /
+        // infinity inputs make the skip-vs-zero-pad difference observable.
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        let mk2 = |rows: usize, cols: usize, data: Vec<f64>| {
+            Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: vec![rows as u32, cols as u32],
+                    },
+                    data,
+                )
+                .unwrap(),
+            )
+        };
+        let check_2d = |rows: usize, cols: usize, data: Vec<f64>, win: usize, pad: usize| {
+            let win_s = format!("{win},{win}");
+            let same = eval_primitive(
+                Primitive::ReduceWindow,
+                &[mk2(rows, cols, data.clone())],
+                &rw_params_with_padding("sum", &win_s, "1,1", "same"),
+            )
+            .unwrap();
+            let (pr, pc) = (rows + 2 * pad, cols + 2 * pad);
+            let mut padded = vec![0.0_f64; pr * pc];
+            for r in 0..rows {
+                for c in 0..cols {
+                    padded[(r + pad) * pc + (c + pad)] = data[r * cols + c];
+                }
+            }
+            let valid = eval_primitive(
+                Primitive::ReduceWindow,
+                &[mk2(pr, pc, padded)],
+                &rw_params_with_padding("sum", &win_s, "1,1", "valid"),
+            )
+            .unwrap();
+            assert_eq!(
+                same.as_tensor().unwrap().shape.dims,
+                valid.as_tensor().unwrap().shape.dims,
+                "2d shape {rows}x{cols} win {win}"
+            );
+            assert_eq!(
+                bits(&same),
+                bits(&valid),
+                "2d sum same vs valid-on-padded {rows}x{cols} win {win}"
+            );
+        };
+
+        // 4x4, 3x3 window → the 3x3-same fast path (border + interior).
+        let d4: Vec<f64> = vec![
+            -0.0, 1.0, -2.0, 0.5, 3.0, -0.0, f64::INFINITY, -1.0, -0.0, -0.0, 2.0, -3.0, 4.0, -1.5,
+            -0.0, 0.0,
+        ];
+        check_2d(4, 4, d4, 3, 1);
+
+        // 6x6, 5x5 window → the general rank-2 f64 sum path (not the 3x3 special).
+        let d6: Vec<f64> = (0..36)
+            .map(|i| match i % 7 {
+                0 => -0.0,
+                3 => f64::INFINITY,
+                _ => ((i as f64) * 0.1).sin() - 0.3,
+            })
+            .collect();
+        check_2d(6, 6, d6, 5, 2);
+
+        // 1D window-3 'same' → the generic N-D loop (rank != 2).
+        let x1: Vec<f64> = vec![-0.0, 1.0, -0.0, f64::INFINITY, -2.0, -0.0];
+        let same1 = eval_primitive(
+            Primitive::ReduceWindow,
+            &[Value::vector_f64(&x1).unwrap()],
+            &rw_params_with_padding("sum", "3", "1", "same"),
+        )
+        .unwrap();
+        let mut p1 = vec![0.0_f64; x1.len() + 2];
+        p1[1..1 + x1.len()].copy_from_slice(&x1);
+        let valid1 = eval_primitive(
+            Primitive::ReduceWindow,
+            &[Value::vector_f64(&p1).unwrap()],
+            &rw_params_with_padding("sum", "3", "1", "valid"),
+        )
+        .unwrap();
+        assert_eq!(
+            bits(&same1),
+            bits(&valid1),
+            "1d generic sum same vs valid-on-padded"
+        );
     }
 
     #[test]
