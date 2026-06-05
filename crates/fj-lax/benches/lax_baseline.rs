@@ -235,6 +235,25 @@ fn bench_polygamma_n2_256k_f64(c: &mut Criterion) {
     });
 }
 
+// 256k same-shape Igamma(a, x): regularized lower incomplete gamma — a series /
+// continued-fraction evaluation per element. Compute-bound, threads.
+fn bench_igamma_256k_f64(c: &mut Criterion) {
+    let a: Vec<f64> = (0..1 << 18)
+        .map(|i| 1.0 + (i % 97) as f64 * 0.05)
+        .collect();
+    let x: Vec<f64> = (0..1 << 18)
+        .map(|i| 0.5 + (i % 211) as f64 * 0.02)
+        .collect();
+    let inputs = [
+        Value::vector_f64(&a).unwrap(),
+        Value::vector_f64(&x).unwrap(),
+    ];
+    let p = no_params();
+    c.bench_function("eval/igamma_256k_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Igamma, &inputs, &p))
+    });
+}
+
 fn bench_cbrt_1m_f64_vec(c: &mut Criterion) {
     let a: Vec<f64> = (0..1 << 20).map(|i| (i as f64) * 0.0007 - 300.0).collect();
     let input = Value::vector_f64(&a).unwrap();
@@ -2823,6 +2842,7 @@ criterion_group!(
     bench_atan2_1m_f64_vec,
     bench_erf_1m_f64_vec,
     bench_polygamma_n2_256k_f64,
+    bench_igamma_256k_f64,
     bench_cbrt_1m_f64_vec,
     bench_atan2_scalar_1m_f64_vec,
     bench_atan2_scalar_1m_f64_literal_reference,

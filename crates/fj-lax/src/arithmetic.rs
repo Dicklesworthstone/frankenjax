@@ -21,6 +21,12 @@ fn is_expensive_binary(primitive: Primitive) -> bool {
             | Primitive::Hypot
             | Primitive::LogAddExp
             | Primitive::XLogY
+            // Heavy binary special functions (series / continued-fraction
+            // approximations) routed through eval_binary_elementwise — even more
+            // compute-bound per element than pow/atan2.
+            | Primitive::Igamma
+            | Primitive::Igammac
+            | Primitive::Zeta
     )
 }
 
@@ -6461,6 +6467,40 @@ mod tests {
                 .iter()
                 .zip(b.iter())
                 .map(|(&x, &y)| refop(x, y).to_bits())
+                .collect();
+            assert_eq!(got, expect, "{prim:?} threaded != element-wise reference");
+        }
+    }
+
+    /// Isomorphism proof for the heavy binary special functions newly routed onto
+    /// the threaded expensive-binary path (Igamma/Igammac/Zeta): a large same-shape
+    /// dense-F64 evaluation must equal the element-wise reference bit-for-bit.
+    #[test]
+    fn threaded_special_binary_bit_identical_to_reference() {
+        let n = 1usize << 16; // > 1<<16 -> threaded
+        let a: Vec<f64> = (0..n).map(|i| 1.0 + (i % 97) as f64 * 0.05).collect();
+        let x: Vec<f64> = (0..n).map(|i| 0.5 + (i % 211) as f64 * 0.02).collect();
+        let va = v_f64(&a);
+        let vx = v_f64(&x);
+        let cases: [(Primitive, fn(f64, f64) -> f64); 3] = [
+            (Primitive::Igamma, igamma_approx),
+            (Primitive::Igammac, igammac_approx),
+            (Primitive::Zeta, hurwitz_zeta_approx),
+        ];
+        for (prim, refop) in cases {
+            let got =
+                crate::eval_primitive(prim, &[va.clone(), vx.clone()], &BTreeMap::new()).unwrap();
+            let got: Vec<u64> = got
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect();
+            let expect: Vec<u64> = a
+                .iter()
+                .zip(x.iter())
+                .map(|(&av, &xv)| refop(av, xv).to_bits())
                 .collect();
             assert_eq!(got, expect, "{prim:?} threaded != element-wise reference");
         }

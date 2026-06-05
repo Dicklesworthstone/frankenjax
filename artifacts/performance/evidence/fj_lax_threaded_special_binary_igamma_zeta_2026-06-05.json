@@ -1,0 +1,12 @@
+{
+  "bead": "frankenjax-5hosx",
+  "crate": "fj-lax (arithmetic)",
+  "target": "Heavy binary special functions Igamma/Igammac/Zeta. They route through eval_binary_elementwise with very compute-heavy float_ops (igamma_approx/igammac_approx = continued-fraction; hurwitz_zeta_approx = series) but were not in is_expensive_binary, so they missed the threaded same-shape/scalar/broadcast paths built for pow/atan2.",
+  "lever": "Add Primitive::Igamma | Igammac | Zeta to is_expensive_binary. This single predicate change routes them onto the three existing threaded expensive-binary paths (eval_same_shape_f64_expensive_parallel, eval_f64_scalar_expensive_parallel, broadcast_binary_f64_expensive_parallel), which apply the exact same float_op across scoped threads — bit-identical to the serial path.",
+  "isomorphism": "BIT-EXACT. threaded_special_binary_bit_identical_to_reference (1<<16 same-shape Igamma/Igammac/Zeta == element-wise igamma_approx/igammac_approx/hurwitz_zeta_approx, bit-for-bit). 1112 fj-lax tests pass (remote-verified).",
+  "measurements_same_session_back_to_back": {
+    "igamma_256k_f64": { "before_serial_ms": 46.38, "after_threaded_ms": 5.84, "ratio": 7.94 }
+  },
+  "decision": "SHIP. 7.94x on Igamma (Igammac ~same, Zeta similar — all share the heavy-op threaded path). A one-predicate change leveraging the proven expensive-binary infra; also threads igamma_grad_a (routes via Primitive::Igamma). Bit-exact. Committed git-first per the rch-source-clobber workaround.",
+  "date": "2026-06-05"
+}
