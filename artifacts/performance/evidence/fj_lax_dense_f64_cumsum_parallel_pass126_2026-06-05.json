@@ -1,0 +1,62 @@
+{
+  "bead": "frankenjax-mcqr.30.35",
+  "status": "validated_landed_duplicate",
+  "landed_commit": "5c7b5fe86490ee30555c1c0651c0b10c29d79b37",
+  "landed_bead": "frankenjax-zwfc0",
+  "crate": "fj-lax",
+  "target": "dense F64 cumulative scan over contiguous last-axis lines",
+  "lever": "Safe-Rust direct-output cumulative scan splits independent contiguous last-axis lines across scoped threads for large multi-line tensors; small, one-line, and strided scans keep the existing in-place serial path.",
+  "baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/cumsum",
+    "worker": "ts2",
+    "cumsum_64k_f64_vec_us": { "low": 90.905, "mid": 90.999, "high": 91.090 },
+    "cumsum_4m_f64_1d_ms": { "low": 34.347, "mid": 34.529, "high": 34.708 },
+    "cumsum_4096x1024_f64_axis1_ms": { "low": 34.540, "mid": 34.736, "high": 34.927 },
+    "cumsum_64k_f64_literal_ref_ms": { "mid": 1.0322 }
+  },
+  "final_rebench": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/cumsum",
+    "worker": "ts2",
+    "cumsum_64k_f64_vec_us": { "low": 91.201, "mid": 91.352, "high": 91.524 },
+    "cumsum_4m_f64_1d_ms": { "low": 33.951, "mid": 34.098, "high": 34.252 },
+    "cumsum_4096x1024_f64_axis1_ms": { "low": 9.3754, "mid": 9.5082, "high": 9.6597 },
+    "cumsum_64k_f64_literal_ref_ms": { "low": 1.0389, "mid": 1.0481, "high": 1.0570 }
+  },
+  "speedup": {
+    "cumsum_4096x1024_midpoint": 3.653,
+    "cumsum_4096x1024_conservative": 3.575,
+    "cumsum_4m_midpoint": 1.013,
+    "cumsum_64k_midpoint": 0.996
+  },
+  "isomorphism": {
+    "ordering": "Per output line, accumulation order is unchanged: forward scans visit increasing element index, reverse scans visit decreasing element index. Threading only partitions independent whole lines.",
+    "floating_point": "No reassociation occurs within a line. NaN, infinity, signed-zero, and cummax/cummin edge behavior are covered by threaded_cumulative_matches_serial_reference.",
+    "rng": "No RNG is used.",
+    "tie_breaking": "No tie-breaking state changes; cummax/cummin call the same primitive operation in the same per-line order.",
+    "shape_and_errors": "Shape, dtype, arity, axis parsing, zero-sized fallback, and non-dense fallback remain on the existing eval_cumulative path."
+  },
+  "golden_output": {
+    "fixture": "eval/cumsum_4096x1024_f64_axis1 input data[i] = i * 0.001; output bytes are little-endian f64 bit patterns from the serial per-row cumsum reference.",
+    "sha256": "9a4700cc64d2177abf8cf3af7663ede4c08ca156e186c4ad4a5e11c5388be482"
+  },
+  "proof_commands": [
+    "rustfmt --check crates/fj-lax/src/reduction.rs",
+    "rch exec -- cargo test -p fj-lax cumulative --lib -- --nocapture",
+    "rch exec -- cargo check -p fj-lax --all-targets",
+    "rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings"
+  ],
+  "proof_results": {
+    "rustfmt": "pass",
+    "tests": "pass on ts2: dense_cumulative_bit_identical_to_literal_path and threaded_cumulative_matches_serial_reference",
+    "check": "pass on ts2",
+    "clippy": "pass on ts2"
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 4,
+    "effort": 2,
+    "impact_x_confidence_div_effort": 10.0
+  },
+  "decision": "Keep landed commit 5c7b5fe86490ee30555c1c0651c0b10c29d79b37. This bead duplicates the same profile-backed hotspot and is closed against that landed implementation plus this validation evidence.",
+  "next_profile_target": "Long single-line cumulative scans need a Blelloch-style chunked parallel prefix primitive because line threading cannot parallelize the dependency chain."
+}
