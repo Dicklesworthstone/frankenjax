@@ -767,66 +767,124 @@ fn is_mixed_radix_smooth(n: usize) -> bool {
     true
 }
 
-/// Recursive mixed-radix Cooley-Tukey DFT (decimation-in-time). At each level the
-/// length `nn` is split by its smallest prime factor `p` into `p` interleaved
-/// subsequences of length `m = nn/p`, each transformed recursively, then combined
+/// Allocation-free recursive mixed-radix Cooley-Tukey DFT (decimation-in-time).
+///
+/// Computes the length-`nn` DFT of the strided input `x[offset], x[offset+stride],
+/// …` into `out[0..nn]`, using `scratch[0..nn]` (a same-size sibling buffer) as
+/// workspace. At each level the length is split by its smallest prime factor `p`
+/// into `p` subsequences of length `m = nn/p`; the `p` sub-DFTs are written into
+/// disjoint blocks of `scratch` (each using the matching block of `out` as ITS
+/// scratch — the two buffers ping-pong roles down the recursion), then combined
 /// via `X[q] = Σ_r W_nn^{r·q} · F_r[q mod m]`. The global `roots` table of size
 /// `big_n` (`roots[k] = e^{sign·2πi·k/big_n}`) supplies every twiddle by stride
-/// `big_n/nn`, so no trig is evaluated in the recursion. For a smooth `nn` this is
-/// O(nn · Σ prime factors) — far below Bluestein's padded power-of-two transform.
-fn mixed_radix_rec(x: &[(f64, f64)], roots: &[(f64, f64)], big_n: usize) -> Vec<(f64, f64)> {
-    let nn = x.len();
+/// `big_n/nn`, so no trig and **no per-node allocation** happens in the recursion.
+/// For a smooth `nn` this is O(nn · Σ prime factors) flops with two buffers total.
+fn mixed_radix_ping(
+    x: &[(f64, f64)],
+    offset: usize,
+    stride: usize,
+    out: &mut [(f64, f64)],
+    scratch: &mut [(f64, f64)],
+    nn: usize,
+    roots: &[(f64, f64)],
+    big_n: usize,
+) {
     if nn == 1 {
-        return vec![x[0]];
+        out[0] = x[offset];
+        return;
     }
     let p = smallest_prime_factor(nn);
     let m = nn / p;
-    let stride = big_n / nn;
 
-    let mut subs: Vec<Vec<(f64, f64)>> = Vec::with_capacity(p);
+    // Recurse: sub-DFT r -> scratch[r*m..], using out[r*m..] as its workspace.
     for r in 0..p {
-        let sub: Vec<(f64, f64)> = (0..m).map(|k| x[r + p * k]).collect();
-        subs.push(mixed_radix_rec(&sub, roots, big_n));
+        let base = r * m;
+        mixed_radix_ping(
+            x,
+            offset + r * stride,
+            stride * p,
+            &mut scratch[base..base + m],
+            &mut out[base..base + m],
+            m,
+            roots,
+            big_n,
+        );
     }
 
-    let mut out = vec![(0.0, 0.0); nn];
-    for (q, slot) in out.iter_mut().enumerate() {
-        let qm = q % m;
-        let mut re = 0.0;
-        let mut im = 0.0;
-        for (r, sub) in subs.iter().enumerate() {
-            // W_nn^{r·q} = roots[((r·q) mod nn) · stride].
-            let (tr, ti) = roots[((r * q) % nn) * stride];
-            let (sr, si) = sub[qm];
-            re += tr * sr - ti * si;
-            im += tr * si + ti * sr;
+    // Combine the p sub-DFTs (now in `scratch`) into `out`:
+    // out[q] = Σ_r W_nn^{r·q} · scratch[r·m + (q mod m)].
+    // The twiddle index `(r·q) mod nn` and the source index `q mod m` are advanced
+    // by increment-and-wrap counters rather than a per-element integer modulo
+    // (division), which dominated at these lengths. Each `out[q]` accumulates the
+    // r-terms in ascending r, so the result is identical to the direct form.
+    let s_tw = big_n / nn;
+
+    // Specialized radix-2 butterfly: out[s] = E + W·O, out[s+m] = E − W·O, one
+    // pass over the m groups (the ± symmetry halves the work vs the general
+    // accumulate, and radix-2 is the most common split for power-of-two-rich n).
+    if p == 2 {
+        let (lo, hi) = out.split_at_mut(m);
+        for s in 0..m {
+            let (e_re, e_im) = scratch[s];
+            let (o_re, o_im) = scratch[m + s];
+            let (tr, ti) = roots[s * s_tw]; // W_nn^s
+            let wr = tr * o_re - ti * o_im;
+            let wi = tr * o_im + ti * o_re;
+            lo[s] = (e_re + wr, e_im + wi);
+            hi[s] = (e_re - wr, e_im - wi);
         }
-        *slot = (re, im);
+        return;
     }
-    out
+
+    for slot in out.iter_mut() {
+        *slot = (0.0, 0.0);
+    }
+    for r in 0..p {
+        let row = r * m;
+        let mut idx = 0usize; // (r·q) mod nn
+        let mut qm = 0usize; // q mod m
+        for slot in out.iter_mut() {
+            let (tr, ti) = roots[idx * s_tw];
+            let (sr, si) = scratch[row + qm];
+            slot.0 += tr * sr - ti * si;
+            slot.1 += tr * si + ti * sr;
+            idx += r;
+            if idx >= nn {
+                idx -= nn;
+            }
+            qm += 1;
+            if qm == m {
+                qm = 0;
+            }
+        }
+    }
 }
 
 /// Apply the mixed-radix FFT for one length-`n` row using a precomputed `roots`
-/// table (`precompute_twiddles(n, inverse)`), writing into `output`. For the
-/// inverse transform the `1/n` normalization is applied here, matching
-/// `radix2_fft_1d_into` / Bluestein so callers need no extra scaling.
+/// table (`precompute_twiddles(n, inverse)`), writing into `output` and reusing
+/// the caller-owned `scratch` buffer (both resized to `n`). For the inverse
+/// transform the `1/n` normalization is applied here, matching `radix2_fft_1d_into`
+/// / Bluestein so callers need no extra scaling.
 fn mixed_radix_into(
     input: &[(f64, f64)],
     roots: &[(f64, f64)],
     inverse: bool,
     output: &mut Vec<(f64, f64)>,
+    scratch: &mut Vec<(f64, f64)>,
 ) {
     let n = input.len();
-    let mut result = mixed_radix_rec(input, roots, n);
+    output.clear();
+    output.resize(n, (0.0, 0.0));
+    scratch.clear();
+    scratch.resize(n, (0.0, 0.0));
+    mixed_radix_ping(input, 0, 1, output, scratch, n, roots, n);
     if inverse {
         let inv_n = 1.0 / (n as f64);
-        for v in result.iter_mut() {
+        for v in output.iter_mut() {
             v.0 *= inv_n;
             v.1 *= inv_n;
         }
     }
-    output.clear();
-    output.extend_from_slice(&result);
 }
 
 /// Per-row transform engine for a batch of equal-length rows. Built once and
@@ -854,6 +912,7 @@ impl BatchFftPlan {
         &self,
         input: &[(f64, f64)],
         scratch: &mut BluesteinScratch,
+        mixed_scratch: &mut Vec<(f64, f64)>,
         inverse: bool,
         output: &mut Vec<(f64, f64)>,
     ) {
@@ -865,7 +924,9 @@ impl BatchFftPlan {
                     fft_1d_into(input, output);
                 }
             }
-            BatchFftPlan::Mixed(roots) => mixed_radix_into(input, roots, inverse, output),
+            BatchFftPlan::Mixed(roots) => {
+                mixed_radix_into(input, roots, inverse, output, mixed_scratch)
+            }
             BatchFftPlan::Bluestein(plan) => plan.apply_into(input, scratch, output),
         }
     }
@@ -904,10 +965,17 @@ fn transform_batches_dense(
 
     if threads <= 1 {
         let mut scratch = BluesteinScratch::default();
+        let mut mixed_scratch = Vec::new();
         let mut buf = Vec::with_capacity(n);
         for batch in 0..batch_size {
             let s = batch * n;
-            plan.apply_into(&elements[s..s + n], &mut scratch, inverse, &mut buf);
+            plan.apply_into(
+                &elements[s..s + n],
+                &mut scratch,
+                &mut mixed_scratch,
+                inverse,
+                &mut buf,
+            );
             out[s..s + n].copy_from_slice(&buf);
         }
         return out;
@@ -925,11 +993,12 @@ fn transform_batches_dense(
             let base = row0 * n;
             scope.spawn(move || {
                 let mut scratch = BluesteinScratch::default();
+                let mut mixed_scratch = Vec::new();
                 let mut buf = Vec::with_capacity(n);
                 for r in 0..rows {
                     let gs = base + r * n;
                     let src = &elements[gs..gs + n];
-                    plan_ref.apply_into(src, &mut scratch, inverse, &mut buf);
+                    plan_ref.apply_into(src, &mut scratch, &mut mixed_scratch, inverse, &mut buf);
                     blk[r * n..r * n + n].copy_from_slice(&buf);
                 }
             });
@@ -1901,12 +1970,13 @@ mod tests {
                 .map(|i| (((i as f64) * 0.3).sin() * 2.0, ((i as f64) * 0.17).cos() - 0.2))
                 .collect();
 
+            let mut scratch = Vec::new();
             let mut got = Vec::new();
-            mixed_radix_into(&input, &precompute_twiddles(n, false), false, &mut got);
+            mixed_radix_into(&input, &precompute_twiddles(n, false), false, &mut got, &mut scratch);
             assert_complex_close(&got, &dft_1d(&input), 1e-9);
 
             let mut back = Vec::new();
-            mixed_radix_into(&got, &precompute_twiddles(n, true), true, &mut back);
+            mixed_radix_into(&got, &precompute_twiddles(n, true), true, &mut back, &mut scratch);
             assert_complex_close(&back, &input, 1e-9);
         }
         // Prime / large-prime-factor / power-of-two lengths stay off the path.
