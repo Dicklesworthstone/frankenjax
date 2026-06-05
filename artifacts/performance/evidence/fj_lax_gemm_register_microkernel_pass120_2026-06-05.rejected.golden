@@ -1,0 +1,25 @@
+frankenjax-p1vbf.15 pass120 rejected proof record
+
+Target:
+linalg/matmul_2d_256x256x256_f64
+
+Baseline on RCH ts2:
+eval/dot_256x256x256_f64: 4.5157 ms 4.5551 ms 4.6144 ms
+linalg/matmul_2d_256x256x256_f64: 4.2265 ms 4.2498 ms 4.2677 ms
+linalg/matmul_2d_512x512x512_f64: 5.9010 ms 6.0199 ms 6.1661 ms
+
+Candidate on RCH ts2:
+eval/dot_256x256x256_f64: 5.0644 ms 5.1421 ms 5.2327 ms
+linalg/matmul_2d_256x256x256_f64: 4.6928 ms 4.7055 ms 4.7263 ms
+linalg/matmul_2d_512x512x512_f64: 6.1000 ms 6.2243 ms 6.4068 ms
+
+Proof before rejection:
+RCH cargo test -p fj-lax --lib matmul_2d passed 5 tests:
+- batched_matmul_2d_bit_identical
+- matmul_2d_basic
+- matmul_2d_ikj_bit_identical_to_ijk
+- matmul_2d_threaded_bit_identical
+- matmul_2d_large_bit_identical_to_ijk
+
+Decision:
+Rejected. Target midpoint speedup was 0.9044x, reachable dot midpoint speedup was 0.8859x, and 512^3 control also regressed. Source hunk removed; tensor_contraction.rs diff is empty.

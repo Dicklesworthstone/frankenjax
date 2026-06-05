@@ -1,0 +1,81 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "pass": 120,
+  "bead": "frankenjax-p1vbf.15",
+  "status": "rejected",
+  "date": "2026-06-05",
+  "agent": "IcyGlacier",
+  "target": "linalg/matmul_2d_256x256x256_f64",
+  "profile_basis": "After pass119 rejected blocked threading, the remaining clean GEMM residual was the single-thread 256^3 matmul_2d window. The committed code records that blocked threading failed because 16.7M FMAs is too little work per core; the next named primitive was a packed/register MRxNR microkernel.",
+  "alien_graveyard_primitive": "Safe-Rust BLAS-style register tiling for GEMM: keep a small C tile in scalar registers, reuse B values across multiple output rows, and preserve per-cell ascending-k accumulation.",
+  "alien_artifact_contract": {
+    "objective": "Improve single-core 256^3 GEMM throughput without C BLAS/MKL/XLA and without changing f64 output bits.",
+    "constraints": [
+      "100% safe Rust",
+      "no new dependency",
+      "one lever only",
+      "each output cell accumulates l=0..k in the same order as the serial i-k-j kernel",
+      "row, column, and thread partitioning must not affect any cell's arithmetic order"
+    ],
+    "fallback": "If same-worker RCH Criterion rebench is below Score>=2.0 or regresses controls, remove the source hunk and keep only rejected evidence."
+  },
+  "baseline_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-pass120-gemm-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_256x256x256_f64|eval/dot_256x256x256_f64|linalg/matmul_2d_512x512x512_f64' --sample-size 20 --measurement-time 2 --warm-up-time 1 --noplot",
+  "proof_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-pass120-gemm-test cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+  "rebench_command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-pass120-gemm-candidate cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_256x256x256_f64|eval/dot_256x256x256_f64|linalg/matmul_2d_512x512x512_f64' --sample-size 20 --measurement-time 2 --warm-up-time 1 --noplot",
+  "worker": "ts2",
+  "baseline": {
+    "eval/dot_256x256x256_f64_ms": {
+      "lower": 4.5157,
+      "mid": 4.5551,
+      "upper": 4.6144
+    },
+    "linalg/matmul_2d_256x256x256_f64_ms": {
+      "lower": 4.2265,
+      "mid": 4.2498,
+      "upper": 4.2677
+    },
+    "linalg/matmul_2d_512x512x512_f64_ms": {
+      "lower": 5.9010,
+      "mid": 6.0199,
+      "upper": 6.1661
+    }
+  },
+  "candidate": {
+    "lever": "MR4xNR4 scalar-register tile inside matmul_2d_row_block, with scalar fallback for row and column tails.",
+    "eval/dot_256x256x256_f64_ms": {
+      "lower": 5.0644,
+      "mid": 5.1421,
+      "upper": 5.2327
+    },
+    "linalg/matmul_2d_256x256x256_f64_ms": {
+      "lower": 4.6928,
+      "mid": 4.7055,
+      "upper": 4.7263
+    },
+    "linalg/matmul_2d_512x512x512_f64_ms": {
+      "lower": 6.1000,
+      "mid": 6.2243,
+      "upper": 6.4068
+    }
+  },
+  "result": {
+    "target_speedup_mid": 0.9044,
+    "target_speedup_conservative": 0.8939,
+    "reachable_dot_speedup_mid": 0.8859,
+    "large_control_speedup_mid": 0.9510,
+    "score": 0.0,
+    "decision": "Reject and restore source to empty tensor_contraction.rs diff."
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Candidate proof tests passed before rejection. Each accepted tile accumulated each cell in l=0..k order; tails used the old scalar loop.",
+    "tie_breaking": "N/A: GEMM has no sorting or tie-breaking.",
+    "floating_point": "Candidate was bit-isomorphic in tests, but rejected for speed. No floating-point behavior changed in kept source because the source hunk was removed.",
+    "rng": "N/A: no RNG.",
+    "golden_outputs": "See fj_lax_gemm_register_microkernel_pass120_2026-06-05.rejected.golden.sha256."
+  },
+  "validation": [
+    "RCH focused cargo test -p fj-lax --lib matmul_2d passed 5 tests on ts2 before rejection.",
+    "Post-revert git diff -- crates/fj-lax/src/tensor_contraction.rs is empty."
+  ],
+  "next_pivot": "Do not retry MR4xNR4 scalar register tiling. The regression indicates the existing i-k-j row scan is better matched to autovectorization/prefetch at 256^3. Next attack should be a different primitive: packed A/B panels plus explicit safe portable-SIMD once stable/allowed, or a behavior-contract bead for FP-reordering blocked/Strassen-style GEMM if JAX tolerance parity is accepted."
+}
