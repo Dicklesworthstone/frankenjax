@@ -5255,16 +5255,22 @@ fn eval_conv_1d(
                     let mut acc_im = 0.0_f64;
                     for k in 0..kernel_w {
                         let in_pos = (w * stride + k) as isize - pad_left as isize;
-                        if in_pos >= 0 && (in_pos as usize) < width {
-                            for ci in 0..c_in {
+                        let oob = in_pos < 0 || (in_pos as usize) >= width;
+                        for ci in 0..c_in {
+                            let rhs_idx = k * c_in_c_out + ci * c_out + co;
+                            // Zero-padded (OOB) taps contribute 0·w, matching XLA's
+                            // zero-padding; a no-op for finite data, but fixes signed-
+                            // zero / non-finite parity vs the old in-bounds-only skip.
+                            let (lhs_re, lhs_im) = if oob {
+                                (0.0, 0.0)
+                            } else {
                                 let lhs_idx = n_offset + (in_pos as usize) * c_in + ci;
-                                let rhs_idx = k * c_in_c_out + ci * c_out + co;
-                                let (lhs_re, lhs_im) = literal_as_complex(&lhs.elements[lhs_idx]);
-                                let (rhs_re, rhs_im) = literal_as_complex(&rhs.elements[rhs_idx]);
-                                // Complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
-                                acc_re += lhs_re * rhs_re - lhs_im * rhs_im;
-                                acc_im += lhs_re * rhs_im + lhs_im * rhs_re;
-                            }
+                                literal_as_complex(&lhs.elements[lhs_idx])
+                            };
+                            let (rhs_re, rhs_im) = literal_as_complex(&rhs.elements[rhs_idx]);
+                            // Complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+                            acc_re += lhs_re * rhs_re - lhs_im * rhs_im;
+                            acc_im += lhs_re * rhs_im + lhs_im * rhs_re;
                         }
                     }
                     elements.push(conv_literal_from_complex(out_dtype, acc_re, acc_im));
@@ -5515,21 +5521,26 @@ fn eval_conv_2d(
                         let mut acc_im = 0.0_f64;
                         for kh in 0..kernel_h {
                             let in_h = (oh * stride_h + kh) as isize - pad_top as isize;
-                            if in_h < 0 || (in_h as usize) >= height {
-                                continue;
-                            }
-                            let h_offset = (in_h as usize) * width_c_in;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_offset = if h_oob { 0 } else { (in_h as usize) * width_c_in };
                             for kw in 0..kernel_w {
                                 let in_w = (ow * stride_w + kw) as isize - pad_left as isize;
-                                if in_w < 0 || (in_w as usize) >= width {
-                                    continue;
-                                }
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
                                 for ci in 0..c_in {
-                                    let lhs_idx = n_offset + h_offset + (in_w as usize) * c_in + ci;
                                     let rhs_idx =
                                         kh * kw_c_in_c_out + kw * c_in_c_out + ci * c_out + co;
-                                    let (lhs_re, lhs_im) =
-                                        literal_as_complex(&lhs.elements[lhs_idx]);
+                                    // Zero-padded (OOB) taps contribute 0·w, matching
+                                    // XLA's zero-padding (and the real conv2d path); a
+                                    // no-op for finite data, but fixes signed-zero /
+                                    // non-finite parity vs the old `continue`-skip.
+                                    let (lhs_re, lhs_im) = if oob {
+                                        (0.0, 0.0)
+                                    } else {
+                                        let lhs_idx = n_offset + h_offset + in_w_off + ci;
+                                        literal_as_complex(&lhs.elements[lhs_idx])
+                                    };
                                     let (rhs_re, rhs_im) =
                                         literal_as_complex(&rhs.elements[rhs_idx]);
                                     acc_re += lhs_re * rhs_re - lhs_im * rhs_im;
@@ -6452,6 +6463,99 @@ mod tests {
                 "conv2d im2col vs direct bits for {padding}/{stride}"
             );
         }
+    }
+
+    #[test]
+    fn conv2d_complex_same_padding_zero_pads_like_valid_on_padded_input() {
+        // The complex conv2d path must treat out-of-bounds 'same'-padding taps as
+        // 0+0i (XLA zero-padding), not skip them. Metamorphic proof: 'same' padding
+        // on X must be bit-identical to 'valid' padding on X explicitly zero-bordered
+        // — both multiply every (kh,kw,ci) tap (pad positions = 0+0i) by the same
+        // kernel in the same order. The signed-zero / infinity inputs make the
+        // skip-vs-zero-pad difference observable (a `continue`-skip leaves the
+        // accumulator at -0.0 where zero-padding lands +0.0).
+        let (h, w, c_in, c_out) = (2usize, 2usize, 1usize, 1usize);
+        let (kh, kw) = (3usize, 3usize); // odd ⇒ symmetric pad of 1 each side @ stride 1
+
+        let x: Vec<(f64, f64)> = vec![
+            (-0.0, 0.0),
+            (1.5, -2.0),
+            (f64::INFINITY, -0.0),
+            (-3.0, 0.5),
+        ];
+        // Negative real/imag kernel parts so 0·w yields signed-zero sub-terms.
+        let kdata: Vec<(f64, f64)> = (0..kh * kw * c_in * c_out)
+            .map(|i| {
+                let s = i as f64;
+                ((s * 0.3).cos() - 0.5, (s * 0.7).sin() - 0.5)
+            })
+            .collect();
+
+        let mk_c = |dims: Vec<u32>, data: &[(f64, f64)]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::Complex128,
+                    Shape { dims },
+                    data.iter()
+                        .map(|&(re, im)| Literal::Complex128Bits(re.to_bits(), im.to_bits()))
+                        .collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let kernel = mk_c(
+            vec![kh as u32, kw as u32, c_in as u32, c_out as u32],
+            &kdata,
+        );
+
+        let same = eval_conv(
+            Primitive::Conv,
+            &[
+                mk_c(vec![1, h as u32, w as u32, c_in as u32], &x),
+                kernel.clone(),
+            ],
+            &params(&[("padding", "same"), ("strides", "1")]),
+        )
+        .unwrap();
+
+        // X explicitly zero-bordered by 1 on every side, then 'valid'.
+        let (ph, pw) = (h + 2, w + 2);
+        let mut xp = vec![(0.0_f64, 0.0_f64); ph * pw * c_in];
+        for r in 0..h {
+            for col in 0..w {
+                for ci in 0..c_in {
+                    xp[((r + 1) * pw + (col + 1)) * c_in + ci] = x[(r * w + col) * c_in + ci];
+                }
+            }
+        }
+        let valid = eval_conv(
+            Primitive::Conv,
+            &[mk_c(vec![1, ph as u32, pw as u32, c_in as u32], &xp), kernel],
+            &params(&[("padding", "valid"), ("strides", "1")]),
+        )
+        .unwrap();
+
+        let bits = |v: &Value| -> Vec<(u64, u64)> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::Complex128Bits(re, im) => (*re, *im),
+                    other => panic!("expected complex literal, got {other:?}"),
+                })
+                .collect()
+        };
+        assert_eq!(
+            same.as_tensor().unwrap().shape.dims,
+            valid.as_tensor().unwrap().shape.dims,
+            "same(X) and valid(zero-padded X) must share shape"
+        );
+        assert_eq!(
+            bits(&same),
+            bits(&valid),
+            "complex conv2d 'same' must zero-pad OOB taps bit-for-bit like valid-on-padded"
+        );
     }
 
     // ── Reshape ──
