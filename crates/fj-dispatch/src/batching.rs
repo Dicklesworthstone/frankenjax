@@ -3267,25 +3267,50 @@ fn batch_eigh_multi(
     let mut w_elements = Vec::with_capacity(batch_size * m);
     let mut v_elements = Vec::with_capacity(batch_size * m * m);
 
-    let mut matrix = Vec::with_capacity(matrix_len);
-    let mut scratch = EighScratch::with_order(m);
-    for batch in 0..batch_size {
-        let base = batch * matrix_len;
-        matrix.clear();
-        for lit in &tensor.elements[base..base + matrix_len] {
-            matrix.push(lit.as_f64().ok_or_else(|| {
-                BatchError::EvalError(
-                    "type mismatch for eigh: expected numeric elements".to_owned(),
-                )
-            })?);
+    if m == 3 {
+        let mut matrix = Vec::new();
+        let mut fallback_scratch = None;
+        for batch in 0..batch_size {
+            let base = batch * matrix_len;
+            let elements = &tensor.elements[base..base + 9];
+            let a = [
+                elements[0].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[1].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[2].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[3].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[4].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[5].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[6].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[7].as_f64().ok_or_else(eigh_type_mismatch)?,
+                elements[8].as_f64().ok_or_else(eigh_type_mismatch)?,
+            ];
+            if let Some((w3, v3)) = analytic_eigh_3x3(&a) {
+                append_eigh_3x3_outputs(w3, v3, &mut w_elements, &mut v_elements);
+                continue;
+            }
+
+            matrix.clear();
+            matrix.extend_from_slice(&a);
+            let scratch = fallback_scratch.get_or_insert_with(|| EighScratch::with_order(3));
+            append_eigh_decomposition(&mut matrix, m, scratch, &mut w_elements, &mut v_elements);
         }
-        append_eigh_decomposition(
-            &mut matrix,
-            m,
-            &mut scratch,
-            &mut w_elements,
-            &mut v_elements,
-        );
+    } else {
+        let mut matrix = Vec::with_capacity(matrix_len);
+        let mut scratch = EighScratch::with_order(m);
+        for batch in 0..batch_size {
+            let base = batch * matrix_len;
+            matrix.clear();
+            for lit in &tensor.elements[base..base + matrix_len] {
+                matrix.push(lit.as_f64().ok_or_else(eigh_type_mismatch)?);
+            }
+            append_eigh_decomposition(
+                &mut matrix,
+                m,
+                &mut scratch,
+                &mut w_elements,
+                &mut v_elements,
+            );
+        }
     }
 
     let w_shape = Shape {
@@ -3303,6 +3328,20 @@ fn batch_eigh_multi(
         .map(|result| BatchTracer::batched(result, 0))
         .map_err(|e| BatchError::TensorError(e.to_string()))?;
     Ok(vec![w, v])
+}
+
+fn eigh_type_mismatch() -> BatchError {
+    BatchError::EvalError("type mismatch for eigh: expected numeric elements".to_owned())
+}
+
+fn append_eigh_3x3_outputs(
+    w: [f64; 3],
+    v: [f64; 9],
+    w_elements: &mut Vec<Literal>,
+    v_elements: &mut Vec<Literal>,
+) {
+    w_elements.extend(w.into_iter().map(Literal::from_f64));
+    v_elements.extend(v.into_iter().map(Literal::from_f64));
 }
 
 #[derive(Default)]

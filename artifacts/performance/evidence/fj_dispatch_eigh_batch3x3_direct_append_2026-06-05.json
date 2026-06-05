@@ -1,0 +1,124 @@
+{
+  "crate": "fj-dispatch",
+  "target": "vmap_eigh/batched_matrix_3x3",
+  "date": "2026-06-05",
+  "agent": "BlackThrush",
+  "profile_backed": true,
+  "source_profile": {
+    "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-profile-178064 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+    "worker": "ts1",
+    "rank": 1,
+    "time_us": {
+      "lower": 102.18,
+      "mean": 106.81,
+      "upper": 111.28
+    }
+  },
+  "lever": "For accepted 3x3 batched Eigh slices, append the existing analytic solver's arrays directly and allocate generic scratch only when the analytic residual check rejects.",
+  "source_files": [
+    "crates/fj-dispatch/src/batching.rs"
+  ],
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-eigh3-baseline-rch-target-178064 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_eigh/batched_matrix_3x3 --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+    "worker": "ts2",
+    "time_us": {
+      "lower": 157.48,
+      "mean": 158.33,
+      "upper": 159.21
+    }
+  },
+  "rebench": {
+    "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-eigh3-candidate-rch-target-178064 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_eigh/batched_matrix_3x3 --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+    "worker": "ts2",
+    "time_us": {
+      "lower": 154.34,
+      "mean": 154.79,
+      "upper": 155.28
+    }
+  },
+  "speedup": {
+    "mean": 1.0229,
+    "conservative": 1.0142
+  },
+  "score": {
+    "impact_percent": 2.29,
+    "confidence": 0.95,
+    "effort": 0.75,
+    "value": 2.9,
+    "decision": "keep"
+  },
+  "isomorphism_proof": {
+    "ordering": "Batch lane order and output order remain w then v; direct append uses the same [w0,w1,w2] and row-major [v00,v01,v02,...] arrays produced by analytic_eigh_3x3.",
+    "tie_breaking": "Eigenvalue ordering and equal-value tie behavior stay inside analytic_eigh_3x3 or the unchanged Jacobi fallback; no new compare or sort rule is introduced.",
+    "floating_point": "Accepted 3x3 slices call the same analytic_eigh_3x3 function with the same nine f64 inputs. Rejected slices copy those same parsed f64 values into the unchanged generic decomposition fallback.",
+    "rng": "No RNG state is read or written.",
+    "unsafe": "No unsafe code introduced.",
+    "error_paths": "Shape, rank, non-square, batch-dim movement, tensor construction, and numeric type mismatch errors are preserved."
+  },
+  "golden_output": {
+    "leading_batch_digest": "de40295687095bc622bd73074d24337004f440bdd2cc65d8a8759dfb5cf0b106",
+    "rank3_digest": "9c8554df967d304b2570460fc5db4fca86602577232fcf8b01177fcd41cd365f",
+    "verified_by": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-eigh-test-rch-target-178064 rch exec -- cargo test -p fj-dispatch batch_trace_eigh_multi -- --nocapture"
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-check-rch-target-178064 rch exec -- cargo check -p fj-dispatch --all-targets",
+      "worker": "ts2",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-eigh-test-rch-target-178064 rch exec -- cargo test -p fj-dispatch batch_trace_eigh_multi -- --nocapture",
+      "worker": "ts2",
+      "result": "6 Eigh batching tests passed, including leading-batch and rank3 golden SHA-256 tests"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-test-rch-target-178064 rch exec -- cargo test -p fj-dispatch -- --nocapture",
+      "worker": "ts2",
+      "result": "260 unit tests, 55 integration tests, and doc tests passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-clippy-nodeps-rch-target-178064 rch exec -- cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "worker": "ts2",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt -p fj-dispatch --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check -- crates/fj-dispatch/src/batching.rs",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/batching.rs",
+      "result": "exit 0; 0 critical findings; formatting, clippy, check, and test-build subchecks clean in shadow workspace"
+    }
+  ],
+  "known_external_blocker": {
+    "command": "RCH_FORCE_REMOTE=1 CARGO_TARGET_DIR=/data/tmp/frankenjax-blackthrush-dispatch-clippy-rch-target-178064 rch exec -- cargo clippy -p fj-dispatch --all-targets -- -D warnings",
+    "worker": "ts2",
+    "result": "blocked by committed dependency lint errors in crates/fj-lax/src/arithmetic.rs: duplicated clippy::too_many_arguments attribute and missing allow on broadcast_binary_f64; this file was not modified by this pass"
+  },
+  "coordination": {
+    "ready_perf_beads": "br ready --json returned []",
+    "bead_mutation": "skipped because .beads/issues.jsonl was under active exclusive IcyGlacier reservation",
+    "reservations": [
+      {
+        "id": 28637,
+        "path": "crates/fj-dispatch/src/batching.rs"
+      },
+      {
+        "id": 28638,
+        "path": "crates/fj-dispatch/benches/dispatch_baseline.rs"
+      },
+      {
+        "id": 28639,
+        "path": "artifacts/performance/evidence/fj_dispatch_eigh_batch3x3_*"
+      }
+    ]
+  },
+  "alien_inputs": [
+    "Batch-structured small-matrix kernel: avoid generic per-slice materialization when a fixed-shape analytic primitive already returns the final dense outputs.",
+    "Communication-avoiding linear algebra principle applied at small scale: keep data on the stack and move only final outputs through the Value layer."
+  ]
+}
