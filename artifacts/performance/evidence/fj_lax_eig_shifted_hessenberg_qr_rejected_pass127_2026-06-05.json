@@ -1,0 +1,42 @@
+{
+  "bead": "frankenjax-6fs4h",
+  "parent_bead": "frankenjax-p1vbf",
+  "pass": 127,
+  "target": "fj-lax linalg/eig_48x48_f64",
+  "lever": "shifted real-Hessenberg QR iteration using trailing 2x2 real eigenvalue shift",
+  "decision": "rejected",
+  "reason": "Same-worker Criterion comparison on RCH ts1 did not beat the unshifted baseline; candidate regressed by 2.33% at midpoint.",
+  "baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64",
+    "worker": "ts1",
+    "code_state": "pass127 patch removed",
+    "time_ms_ci_low": 11.271,
+    "time_ms_mid": 11.380,
+    "time_ms_ci_high": 11.491
+  },
+  "candidate": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64",
+    "worker": "ts1",
+    "code_state": "pass127 shifted-QR candidate",
+    "time_ms_ci_low": 11.445,
+    "time_ms_mid": 11.645,
+    "time_ms_ci_high": 11.872
+  },
+  "speedup_midpoint": 0.9774,
+  "score": {
+    "impact": 0,
+    "confidence": 5,
+    "effort": 3,
+    "value": 0.0,
+    "keep_threshold": 2.0
+  },
+  "behavior_proof": {
+    "final_source_diff": "none; linalg.rs patch was reverted before closeout",
+    "candidate_conformance": "rch exec -- cargo test -p fj-conformance --test linalg_oracle eig -- --nocapture passed on ts1 with 18 passed, 0 failed, 38 filtered",
+    "ordering_tie_breaking": "final tree keeps the committed unshifted QR ordering and tie behavior",
+    "floating_point": "final tree is bit-for-bit identical to pre-pass source; candidate used a different FP iteration order and was rejected",
+    "rng": "not applicable; eig path has no RNG",
+    "golden_sha256": "9b84bf2da55576f8de5832828ae6cb271d82a59dc11212513acd95ec29603791"
+  },
+  "next_primitive": "Do not continue micro-tuning shifted QR. Pivot to a deeper primitive: deflated Francis double-shift QR with active-window splitting, or a symmetric-specialized path for real symmetric eig workloads if profiling isolates that shape."
+}
