@@ -1858,7 +1858,12 @@ pub(crate) fn eval_eigh(
         (w3.to_vec(), v3.to_vec())
     } else {
         let mut a_work = a;
-        let (eigenvalues, eigenvectors) = jacobi_eigendecomposition(&mut a_work, m);
+        // Row-cyclic Jacobi (O(n³·sweeps)) instead of the classic max-pivot
+        // sweep (O(n⁴): an O(n²) off-diagonal search before every rotation).
+        // Same spectrum to machine precision; eigenvectors differ only within
+        // the eigendecomposition's intrinsic sign/rotation freedom, and eigh
+        // conformance is reconstruction + spectrum based (V diag(w) Vᵀ = A).
+        let (eigenvalues, eigenvectors) = jacobi_eigendecomposition_cyclic(&mut a_work, m);
 
         // Sort eigenvalues in ascending order (JAX convention for eigh)
         let mut indices: Vec<usize> = (0..m).collect();

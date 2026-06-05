@@ -894,6 +894,36 @@ fn bench_eig_48(c: &mut Criterion) {
     });
 }
 
+fn bench_eigh_48(c: &mut Criterion) {
+    // Real symmetric eigendecomposition (Eigh) via Jacobi. Diagonally dominant
+    // symmetric 48×48 so the iterative path (not the 3×3 analytic shortcut)
+    // runs and is well-conditioned.
+    let n = 48usize;
+    let mut data = vec![0.0f64; n * n];
+    for i in 0..n {
+        for j in i..n {
+            let v = if i == j {
+                (n as f64) + (i as f64)
+            } else {
+                (((i * 7 + j * 13) % 5) as f64) - 2.0
+            };
+            data[i * n + j] = v;
+            data[j * n + i] = v;
+        }
+    }
+    let m = Value::Tensor(TensorValue {
+        dtype: DType::F64,
+        shape: Shape {
+            dims: vec![n as u32, n as u32],
+        },
+        elements: data.into_iter().map(Literal::from_f64).collect(),
+    });
+    let p = no_params();
+    c.bench_function("linalg/eigh_48x48_f64", |bencher| {
+        bencher.iter(|| eval_primitive_multi(Primitive::Eigh, std::slice::from_ref(&m), &p))
+    });
+}
+
 fn bench_cholesky_128_f64(c: &mut Criterion) {
     // Real SPD matrix A = B^T B + n*I (diagonally dominant, positive definite).
     let n = 128usize;
@@ -2903,6 +2933,7 @@ criterion_group!(
     bench_dot_100,
     bench_dot_256_matrix_f64,
     bench_eig_48,
+    bench_eigh_48,
     bench_cholesky_128_f64,
     bench_qr_128_f64,
     bench_lu_128_f64,
