@@ -1,0 +1,68 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "pass": 129,
+  "bead": "frankenjax-p1vbf.26",
+  "parent_bead": "frankenjax-p1vbf",
+  "crate": "fj-lax",
+  "target": "linalg/qr_1024x1024_f64",
+  "profile_backing": {
+    "source": "No ready [perf] bead was available; frankenjax-p1vbf.26 was filed from the post-eig RCH linalg reprofile where qr_1024x1024_f64 was the top fj-lax linalg row.",
+    "post_eig_reprofile_ts1_ms": [81.613, 83.365, 85.092],
+    "focused_baseline_before_edit": {
+      "worker": "ts1",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-qr-pass26-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/qr_1024x1024_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+      "range_ms": [94.480, 95.653, 96.780]
+    }
+  },
+  "lever": {
+    "kind": "bit-preserving Householder microkernel loop form",
+    "description": "Replace iterator-based lane loops in apply_real_householder_columns with explicit while loops over the same 8-column tile, same row traversal, and same per-lane arithmetic.",
+    "one_lever_scope": ["crates/fj-lax/src/linalg.rs apply_real_householder_columns"],
+    "not_in_scope": "No blocked WY/communication-avoiding QR, no tile-width change, no reflector construction change, no dtype/fallback behavior change."
+  },
+  "baseline": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-qr-pass26-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/qr_1024x1024_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "time_ms_ci_low": 94.480,
+    "time_ms_mid": 95.653,
+    "time_ms_ci_high": 96.780
+  },
+  "candidate": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-qr-pass26-candidate cargo bench -p fj-lax --bench lax_baseline -- linalg/qr_1024x1024_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "time_ms_ci_low": 75.393,
+    "time_ms_mid": 76.259,
+    "time_ms_ci_high": 77.219
+  },
+  "result": {
+    "speedup_midpoint": 1.2543150747000324,
+    "speedup_conservative": 1.2235330682850009,
+    "absolute_midpoint_saved_ms": 19.394,
+    "score": {
+      "impact": 3,
+      "confidence": 4,
+      "effort": 1.5,
+      "value": 8.0,
+      "keep_threshold": 2.0,
+      "decision": "keep"
+    }
+  },
+  "isomorphism": {
+    "ordering": "Reflector generation order, reflector application order, Q reverse-pass order, R extraction order, and diagonal sign normalization are unchanged. Each tile still visits row_offset from 0..v.len() and lane from 0..width in ascending order.",
+    "tie_breaking": "QR has no comparison/tie-breaking surface in this path.",
+    "floating_point": "For every affected element, the expression sequence is unchanged: dot += vi * matrix[row_base + lane], then dot *= tau, then matrix[row_base + lane] -= vi * dot. The while loops replace iterator adapters only; no reassociation, FMA request, pivoting, or reduction reorder was introduced.",
+    "rng": "No RNG is present in Primitive::Qr.",
+    "golden_output_sha256": "6119fc5cf4759d8cdcd9c34d89a79de89d205203730814fc06aa52bf57ff262b",
+    "golden_file_sha256": "d8ba8403ae93e0aba340ed2cf656c0c58a7df0b363c6a6910d8d82e8026a65bf"
+  },
+  "validation": [
+    "RCH ts1 cargo test -p fj-lax --lib qr_ -- --nocapture: 10 passed",
+    "RCH ts1 cargo test -p fj-conformance --test linalg_oracle qr -- --nocapture: 8 passed",
+    "RCH ts1 cargo check -p fj-lax --all-targets: passed",
+    "RCH ts1 cargo clippy -p fj-lax --all-targets -- -D warnings: passed",
+    "git diff --check -- crates/fj-lax/src/linalg.rs: passed",
+    "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs: blocked by pre-existing formatting drift outside this hunk at SVD/LU test lines",
+    "ubs crates/fj-lax/src/linalg.rs: nonzero due existing file-wide panic/unwrap/direct-index inventories; embedded fmt/clippy/check/test subchecks clean"
+  ],
+  "next_primitive": "Reprofile after this keep; if QR remains top, the next deep QR primitive is a behavior-contract bead for blocked WY/communication-avoiding QR under JAX tolerance because it changes floating-point association."
+}

@@ -744,22 +744,34 @@ fn apply_real_householder_columns(
         let width = QR_REFLECTOR_COL_TILE.min(col_end - col);
         let mut dots = [0.0_f64; QR_REFLECTOR_COL_TILE];
 
-        for (row_offset, &vi) in v.iter().enumerate() {
+        let mut row_offset = 0;
+        while row_offset < v.len() {
+            let vi = v[row_offset];
             let row_base = (row_start + row_offset) * row_stride + col;
-            for (lane, dot) in dots.iter_mut().take(width).enumerate() {
-                *dot += vi * matrix[row_base + lane];
+            let mut lane = 0;
+            while lane < width {
+                dots[lane] += vi * matrix[row_base + lane];
+                lane += 1;
             }
+            row_offset += 1;
         }
 
-        for dot in dots.iter_mut().take(width) {
-            *dot *= tau;
+        let mut lane = 0;
+        while lane < width {
+            dots[lane] *= tau;
+            lane += 1;
         }
 
-        for (row_offset, &vi) in v.iter().enumerate() {
+        let mut row_offset = 0;
+        while row_offset < v.len() {
+            let vi = v[row_offset];
             let row_base = (row_start + row_offset) * row_stride + col;
-            for (lane, &tau_dot) in dots.iter().take(width).enumerate() {
-                matrix[row_base + lane] -= vi * tau_dot;
+            let mut lane = 0;
+            while lane < width {
+                matrix[row_base + lane] -= vi * dots[lane];
+                lane += 1;
             }
+            row_offset += 1;
         }
 
         col += width;
