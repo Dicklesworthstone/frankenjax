@@ -210,7 +210,6 @@ fn extract_tensor_complex(
 
 /// Precompute n-th roots of unity: e^{-2πi·k/n} for k = 0..n (forward DFT).
 /// Returns (cos, sin) pairs for lookup by index.
-#[cfg(test)]
 #[inline]
 fn precompute_twiddles(n: usize, inverse: bool) -> Vec<(f64, f64)> {
     let sign = if inverse { 1.0 } else { -1.0 };
@@ -731,6 +730,147 @@ fn ifft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
     }
 }
 
+/// Largest prime factor a length may have to take the mixed-radix path instead
+/// of Bluestein. The radix base-case is a direct O(p²) DFT, so this is kept small
+/// — any larger prime factor (e.g. a prime length) falls back to Bluestein.
+const MIXED_RADIX_MAX_PRIME: usize = 13;
+
+/// Smallest prime factor of `n` (n >= 2).
+fn smallest_prime_factor(n: usize) -> usize {
+    if n % 2 == 0 {
+        return 2;
+    }
+    let mut d = 3;
+    while d * d <= n {
+        if n % d == 0 {
+            return d;
+        }
+        d += 2;
+    }
+    n
+}
+
+/// Whether `n` should use the mixed-radix FFT: composite, not a power of two, and
+/// with every prime factor ≤ `MIXED_RADIX_MAX_PRIME`.
+fn is_mixed_radix_smooth(n: usize) -> bool {
+    if n < 2 || n.is_power_of_two() {
+        return false;
+    }
+    let mut m = n;
+    while m > 1 {
+        let p = smallest_prime_factor(m);
+        if p > MIXED_RADIX_MAX_PRIME {
+            return false;
+        }
+        m /= p;
+    }
+    true
+}
+
+/// Recursive mixed-radix Cooley-Tukey DFT (decimation-in-time). At each level the
+/// length `nn` is split by its smallest prime factor `p` into `p` interleaved
+/// subsequences of length `m = nn/p`, each transformed recursively, then combined
+/// via `X[q] = Σ_r W_nn^{r·q} · F_r[q mod m]`. The global `roots` table of size
+/// `big_n` (`roots[k] = e^{sign·2πi·k/big_n}`) supplies every twiddle by stride
+/// `big_n/nn`, so no trig is evaluated in the recursion. For a smooth `nn` this is
+/// O(nn · Σ prime factors) — far below Bluestein's padded power-of-two transform.
+fn mixed_radix_rec(x: &[(f64, f64)], roots: &[(f64, f64)], big_n: usize) -> Vec<(f64, f64)> {
+    let nn = x.len();
+    if nn == 1 {
+        return vec![x[0]];
+    }
+    let p = smallest_prime_factor(nn);
+    let m = nn / p;
+    let stride = big_n / nn;
+
+    let mut subs: Vec<Vec<(f64, f64)>> = Vec::with_capacity(p);
+    for r in 0..p {
+        let sub: Vec<(f64, f64)> = (0..m).map(|k| x[r + p * k]).collect();
+        subs.push(mixed_radix_rec(&sub, roots, big_n));
+    }
+
+    let mut out = vec![(0.0, 0.0); nn];
+    for (q, slot) in out.iter_mut().enumerate() {
+        let qm = q % m;
+        let mut re = 0.0;
+        let mut im = 0.0;
+        for (r, sub) in subs.iter().enumerate() {
+            // W_nn^{r·q} = roots[((r·q) mod nn) · stride].
+            let (tr, ti) = roots[((r * q) % nn) * stride];
+            let (sr, si) = sub[qm];
+            re += tr * sr - ti * si;
+            im += tr * si + ti * sr;
+        }
+        *slot = (re, im);
+    }
+    out
+}
+
+/// Apply the mixed-radix FFT for one length-`n` row using a precomputed `roots`
+/// table (`precompute_twiddles(n, inverse)`), writing into `output`. For the
+/// inverse transform the `1/n` normalization is applied here, matching
+/// `radix2_fft_1d_into` / Bluestein so callers need no extra scaling.
+fn mixed_radix_into(
+    input: &[(f64, f64)],
+    roots: &[(f64, f64)],
+    inverse: bool,
+    output: &mut Vec<(f64, f64)>,
+) {
+    let n = input.len();
+    let mut result = mixed_radix_rec(input, roots, n);
+    if inverse {
+        let inv_n = 1.0 / (n as f64);
+        for v in result.iter_mut() {
+            v.0 *= inv_n;
+            v.1 *= inv_n;
+        }
+    }
+    output.clear();
+    output.extend_from_slice(&result);
+}
+
+/// Per-row transform engine for a batch of equal-length rows. Built once and
+/// shared across rows: power-of-two lengths use radix-2, smooth composite lengths
+/// use mixed-radix (caching the roots table), and everything else uses a cached
+/// Bluestein plan.
+enum BatchFftPlan {
+    Pow2,
+    Mixed(Vec<(f64, f64)>),
+    Bluestein(BluesteinPlan),
+}
+
+impl BatchFftPlan {
+    fn new(n: usize, inverse: bool) -> Self {
+        if n <= 1 || n.is_power_of_two() {
+            BatchFftPlan::Pow2
+        } else if is_mixed_radix_smooth(n) {
+            BatchFftPlan::Mixed(precompute_twiddles(n, inverse))
+        } else {
+            BatchFftPlan::Bluestein(BluesteinPlan::new(n, inverse))
+        }
+    }
+
+    fn apply_into(
+        &self,
+        input: &[(f64, f64)],
+        scratch: &mut BluesteinScratch,
+        inverse: bool,
+        output: &mut Vec<(f64, f64)>,
+    ) {
+        match self {
+            BatchFftPlan::Pow2 => {
+                if inverse {
+                    ifft_1d_into(input, output);
+                } else {
+                    fft_1d_into(input, output);
+                }
+            }
+            BatchFftPlan::Mixed(roots) => mixed_radix_into(input, roots, inverse, output),
+            BatchFftPlan::Bluestein(plan) => plan.apply_into(input, scratch, output),
+        }
+    }
+}
+
 /// Transform every length-`n` row of `elements` along the last axis into a dense
 /// `(re, im)` output buffer. Rows are independent, so for large batches the work
 /// is split across threads — each thread owns its own per-row Bluestein scratch
@@ -744,8 +884,8 @@ fn transform_batches_dense(
     batch_size: usize,
     inverse: bool,
 ) -> Vec<(f64, f64)> {
-    // Shared, immutable Bluestein plan for non-power-of-two lengths (built once).
-    let plan = (n > 1 && !n.is_power_of_two()).then(|| BluesteinPlan::new(n, inverse));
+    // Shared, immutable per-row plan (built once): radix-2 / mixed-radix / Bluestein.
+    let plan = BatchFftPlan::new(n, inverse);
     let total = batch_size * n;
     let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
 
@@ -767,11 +907,7 @@ fn transform_batches_dense(
         let mut buf = Vec::with_capacity(n);
         for batch in 0..batch_size {
             let s = batch * n;
-            match &plan {
-                Some(plan) => plan.apply_into(&elements[s..s + n], &mut scratch, &mut buf),
-                None if inverse => ifft_1d_into(&elements[s..s + n], &mut buf),
-                None => fft_1d_into(&elements[s..s + n], &mut buf),
-            }
+            plan.apply_into(&elements[s..s + n], &mut scratch, inverse, &mut buf);
             out[s..s + n].copy_from_slice(&buf);
         }
         return out;
@@ -793,11 +929,7 @@ fn transform_batches_dense(
                 for r in 0..rows {
                     let gs = base + r * n;
                     let src = &elements[gs..gs + n];
-                    match plan_ref {
-                        Some(plan) => plan.apply_into(src, &mut scratch, &mut buf),
-                        None if inverse => ifft_1d_into(src, &mut buf),
-                        None => fft_1d_into(src, &mut buf),
-                    }
+                    plan_ref.apply_into(src, &mut scratch, inverse, &mut buf);
                     blk[r * n..r * n + n].copy_from_slice(&buf);
                 }
             });
@@ -1757,6 +1889,30 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn mixed_radix_matches_dft_for_smooth_sizes() {
+        // The mixed-radix path must equal the O(n²) DFT reference (and round-trip
+        // through the inverse) for smooth composite lengths.
+        for &n in &[6usize, 12, 15, 63, 100, 720, 945, 1000] {
+            assert!(is_mixed_radix_smooth(n), "n={n} should take the mixed-radix path");
+            let input: Vec<(f64, f64)> = (0..n)
+                .map(|i| (((i as f64) * 0.3).sin() * 2.0, ((i as f64) * 0.17).cos() - 0.2))
+                .collect();
+
+            let mut got = Vec::new();
+            mixed_radix_into(&input, &precompute_twiddles(n, false), false, &mut got);
+            assert_complex_close(&got, &dft_1d(&input), 1e-9);
+
+            let mut back = Vec::new();
+            mixed_radix_into(&got, &precompute_twiddles(n, true), true, &mut back);
+            assert_complex_close(&back, &input, 1e-9);
+        }
+        // Prime / large-prime-factor / power-of-two lengths stay off the path.
+        assert!(!is_mixed_radix_smooth(1009)); // prime
+        assert!(!is_mixed_radix_smooth(34)); // 2·17, factor 17 > 13
+        assert!(!is_mixed_radix_smooth(1024)); // power of two
     }
 
     #[test]
