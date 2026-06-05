@@ -5167,6 +5167,45 @@ fn eval_conv_1d(
         }
 
         let conv_ops = total.saturating_mul(kernel_w).saturating_mul(c_in);
+
+        // im2col + GEMM fast path (mirrors eval_conv_2d). The kernel rhs_src is
+        // laid out [K,Cin,Cout] row-major == the [(K·Cin) × Cout] GEMM matrix;
+        // gathering each output position's receptive field (zero-filled for
+        // out-of-bounds/padding) into a row turns the conv into one cache-blocked,
+        // auto-threaded matmul_2d. Bit-for-bit identical to the direct loop for
+        // finite inputs: same ascending (k,ci) accumulation order, and the
+        // zero-padded out-of-bounds taps add 0.0 (a no-op on a finite partial
+        // sum, exactly as the direct loop's bounds check skips them). The GEMM
+        // also vectorizes over Cout, which the direct scalar accumulate cannot.
+        let kdim = kernel_w * c_in;
+        if conv_ops >= CONV_IM2COL_MIN_OPS && kdim > 0 {
+            let num_rows = total / c_out;
+            let mut col = vec![0.0_f64; num_rows * kdim];
+            for n in 0..batch {
+                let n_offset = n * width_c_in;
+                for w in 0..out_w {
+                    let row_base = (n * out_w + w) * kdim;
+                    for k in 0..kernel_w {
+                        let in_pos = (w * stride + k) as isize - pad_left as isize;
+                        if in_pos < 0 || (in_pos as usize) >= width {
+                            continue;
+                        }
+                        let src_base = n_offset + (in_pos as usize) * c_in;
+                        let col_base = row_base + k * c_in;
+                        col[col_base..col_base + c_in]
+                            .copy_from_slice(&lhs_src[src_base..src_base + c_in]);
+                    }
+                }
+            }
+            let out = matmul_2d(&col, num_rows, kdim, rhs_src, c_out);
+            return Ok(Value::Tensor(TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![batch as u32, out_w as u32, c_out as u32],
+                },
+                out,
+            )?));
+        }
+
         let threads = conv_morsel_threads(total, conv_ops);
         let mut out = if threads > 1 {
             let mut out = vec![0.0_f64; total];
