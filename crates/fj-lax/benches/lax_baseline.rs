@@ -967,6 +967,33 @@ fn bench_svd_48_f64(c: &mut Criterion) {
     });
 }
 
+/// Same numeric data as `bench_svd_48_f64`, but typed Complex128 (imag 0) so it
+/// forces the complex SVD kernel. Lets the real-path speedup be measured against
+/// the complex path inside one binary on one worker (no cross-invocation drift).
+fn bench_svd_48_complex_path(c: &mut Criterion) {
+    let n = 48usize;
+    let elements: Vec<Literal> = (0..n * n)
+        .map(|i| {
+            let x = i as f64;
+            Literal::from_complex128((x * 0.125).sin() + (x * 0.03125).cos(), 0.0)
+        })
+        .collect();
+    let m = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            elements,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("linalg/svd_48x48_complex_path", |bencher| {
+        bencher.iter(|| eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&m), &p))
+    });
+}
+
 fn bench_matmul_2d_256(c: &mut Criterion) {
     // Public conformance-tested GEMM kernel: 256x256 @ 256x256.
     let (m, k, n) = (256usize, 256usize, 256usize);
@@ -2880,6 +2907,7 @@ criterion_group!(
     bench_qr_128_f64,
     bench_lu_128_f64,
     bench_svd_48_f64,
+    bench_svd_48_complex_path,
     bench_matmul_2d_256,
     bench_matmul_2d_512,
     bench_conv2d_32x32x8_3x3x16_f64_vec,

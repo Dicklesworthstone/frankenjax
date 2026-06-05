@@ -835,13 +835,33 @@ pub(crate) fn eval_svd(
         });
     }
 
-    let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
-    let k = m.min(n);
-    let zero = (0.0, 0.0);
-
     let full_matrices = params
         .get("full_matrices")
         .is_some_and(|v| v.trim() == "true");
+
+    // Real fast path (thin SVD). For real input the complex kernel below
+    // touches only the real component (A^H A, the Hermitian Jacobi sweep, and
+    // U = A V Σ⁻¹ all reduce to real arithmetic when every imaginary part is
+    // zero), but it pays two avoidable costs: 16-byte (re,im) striding through
+    // complex_mul/complex_div, and — dominating at n≈48 — an O(n²) max-pivot
+    // *search* before every single rotation, making the classic Jacobi O(n⁴).
+    // `eval_svd_real_thin` works in a contiguous Vec<f64> and replaces the
+    // max-pivot search with a row-cyclic sweep (O(n³·sweeps), ~8 sweeps),
+    // computing the same spectrum to machine precision. The result is a valid
+    // SVD with identical singular values (the eigenvalues of AᵀA are unique);
+    // U/Vᵀ may differ by per-column sign/rotation within the SVD's inherent
+    // freedom, so parity is verified by reconstruction + spectrum match against
+    // the complex path, not bit-identity (see svd_real_fast_path_*).
+    // full_matrices is excluded: it needs an orthonormal-column extension not
+    // yet ported to the real path.
+    if !matches!(inputs[0].dtype(), DType::Complex64 | DType::Complex128) && !full_matrices {
+        let (m, n, a, dtype) = extract_matrix(primitive, &inputs[0])?;
+        return eval_svd_real_thin(m, n, &a, dtype);
+    }
+
+    let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
+    let k = m.min(n);
+    let zero = (0.0, 0.0);
 
     // Step 1: Compute A^H A (n×n Hermitian matrix)
     let mut aha = vec![zero; n * n];
@@ -942,6 +962,176 @@ pub(crate) fn eval_svd(
     let vh_val = complex_matrix_to_value(vt_rows, n, &vh_out, dtype)?;
 
     Ok(vec![u_val, s_val, vh_val])
+}
+
+/// Real thin-SVD fast path: a contiguous-f64, cyclic-Jacobi replacement for the
+/// complex `eval_svd` kernel when the input is real. Produces a valid thin SVD
+/// (U m×k, S length-k descending, Vᵀ k×n) whose singular values match the
+/// complex path to machine precision; U/Vᵀ are equal up to the SVD's intrinsic
+/// per-column sign/rotation freedom. Verified by reconstruction + spectrum
+/// parity rather than bit-identity (see the `svd_real_fast_path_*` tests).
+fn eval_svd_real_thin(
+    m: usize,
+    n: usize,
+    a: &[f64],
+    dtype: DType,
+) -> Result<Vec<Value>, EvalError> {
+    let k = m.min(n);
+
+    // Step 1: A^T A (n×n symmetric).
+    let mut ata = vec![0.0_f64; n * n];
+    for i in 0..n {
+        for j in i..n {
+            let mut dot = 0.0_f64;
+            for row in 0..m {
+                dot += a[row * n + i] * a[row * n + j];
+            }
+            ata[i * n + j] = dot;
+            ata[j * n + i] = dot;
+        }
+    }
+
+    // Step 2: symmetric eigendecomposition via row-cyclic Jacobi → V, σ².
+    let (eigenvalues, v) = jacobi_eigendecomposition_cyclic(&mut ata, n);
+
+    // Step 3: sort eigenvalues (and V columns) descending.
+    let mut indices: Vec<usize> = (0..n).collect();
+    indices.sort_by(|&a, &b| eigenvalues[b].total_cmp(&eigenvalues[a]));
+
+    let mut sigma = vec![0.0_f64; k];
+    let mut v_sorted = vec![0.0_f64; n * n];
+    for (new_col, &old_col) in indices.iter().enumerate() {
+        if new_col < k {
+            sigma[new_col] = eigenvalues[old_col].max(0.0).sqrt();
+        }
+        for row in 0..n {
+            v_sorted[row * n + new_col] = v[row * n + old_col];
+        }
+    }
+
+    // Step 4: U = A V Σ⁻¹ (thin: m×k).
+    let mut u = vec![0.0_f64; m * k];
+    for i in 0..m {
+        for j in 0..k {
+            if sigma[j] > f64::EPSILON * 1e4 {
+                let mut val = 0.0_f64;
+                for col in 0..n {
+                    val += a[i * n + col] * v_sorted[col * n + j];
+                }
+                u[i * k + j] = val / sigma[j];
+            }
+        }
+    }
+
+    // V^T (conjugate transpose of real V is its transpose), thin: k×n.
+    let mut vh = vec![0.0_f64; k * n];
+    for i in 0..k {
+        for j in 0..n {
+            vh[i * n + j] = v_sorted[j * n + i];
+        }
+    }
+
+    let u_val = matrix_to_value(m, k, &u, dtype)?;
+
+    let s_elements: Vec<Literal> = sigma
+        .iter()
+        .map(|&v| linalg_literal_from_f64(dtype, v))
+        .collect();
+    let s_tensor = TensorValue::new(dtype, Shape { dims: vec![k as u32] }, s_elements)
+        .map_err(EvalError::InvalidTensor)?;
+    let s_val = Value::Tensor(s_tensor);
+
+    let vh_val = matrix_to_value(k, n, &vh, dtype)?;
+
+    Ok(vec![u_val, s_val, vh_val])
+}
+
+/// Row-cyclic Jacobi eigendecomposition of a real symmetric n×n matrix.
+///
+/// Returns `(eigenvalues, V)` with `A = V diag(eigenvalues) Vᵀ`, eigenvectors as
+/// columns (`V[row*n + col]`). Unlike the classic `jacobi_eigendecomposition`
+/// (which scans all O(n²) off-diagonals to pick the largest pivot *before every
+/// rotation* — O(n⁴) overall), this sweeps the upper triangle in fixed
+/// (p,q) order and converges in a handful of sweeps (O(n³·sweeps)). Each
+/// rotation uses the numerically stable symmetric-Schur coefficients
+/// (Golub & Van Loan, Alg. 8.4.1): solve `t² + 2τt − 1 = 0` for the smaller
+/// root, then `c = 1/√(1+t²)`, `s = tc`. Converges to the same spectrum as the
+/// max-pivot kernel to machine precision.
+fn jacobi_eigendecomposition_cyclic(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut v = vec![0.0_f64; n * n];
+    for i in 0..n {
+        v[i * n + i] = 1.0;
+    }
+    if n <= 1 {
+        let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
+        return (eigenvalues, v);
+    }
+
+    let tol = f64::EPSILON * 1e2;
+    let max_sweeps = 100;
+
+    for _ in 0..max_sweeps {
+        // Off-diagonal magnitude (max |a_pq|, p<q). Convergence when below tol.
+        let mut off = 0.0_f64;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                off = off.max(a[p * n + q].abs());
+            }
+        }
+        if off < tol {
+            break;
+        }
+
+        for p in 0..(n - 1) {
+            for q in (p + 1)..n {
+                let apq = a[p * n + q];
+                if apq == 0.0 {
+                    continue;
+                }
+                let app = a[p * n + p];
+                let aqq = a[q * n + q];
+
+                // Symmetric Schur: t is the smaller root of t² + 2τt − 1 = 0.
+                let tau = (aqq - app) / (2.0 * apq);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+
+                // A ← Jᵀ A J. Update columns p,q (left mult by J on rows handled
+                // by the symmetric column pass below).
+                for i in 0..n {
+                    let aip = a[i * n + p];
+                    let aiq = a[i * n + q];
+                    a[i * n + p] = c * aip - s * aiq;
+                    a[i * n + q] = s * aip + c * aiq;
+                }
+                for i in 0..n {
+                    let api = a[p * n + i];
+                    let aqi = a[q * n + i];
+                    a[p * n + i] = c * api - s * aqi;
+                    a[q * n + i] = s * api + c * aqi;
+                }
+                // Off-diagonal (p,q) is annihilated; pin it to exact zero.
+                a[p * n + q] = 0.0;
+                a[q * n + p] = 0.0;
+
+                // V ← V J.
+                for i in 0..n {
+                    let vip = v[i * n + p];
+                    let viq = v[i * n + q];
+                    v[i * n + p] = c * vip - s * viq;
+                    v[i * n + q] = s * vip + c * viq;
+                }
+            }
+        }
+    }
+
+    let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i]).collect();
+    (eigenvalues, v)
 }
 
 /// Complex Jacobi eigendecomposition of a Hermitian n×n matrix.
@@ -2833,6 +3023,89 @@ mod tests {
                 i / 3,
                 i % 3
             );
+        }
+    }
+
+    #[test]
+    fn svd_real_fast_path_matches_complex_spectrum_and_reconstructs() {
+        // The cyclic-Jacobi real fast path must (1) produce the same singular
+        // spectrum as the complex max-pivot kernel to machine precision and
+        // (2) yield a valid thin SVD: U·diag(S)·Vᵀ = A and Vᵀ rows orthonormal.
+        // Covers tall (m>n), wide (m<n), and square inputs.
+        for &(m, n) in &[(6usize, 4usize), (4usize, 6usize), (5usize, 5usize)] {
+            let mut data = vec![0.0f64; m * n];
+            for i in 0..m {
+                for j in 0..n {
+                    data[i * n + j] = ((i * 13 + j * 7) % 11) as f64 - 5.0 + 0.25 * (i as f64);
+                }
+            }
+            let k = m.min(n);
+            let a_real = make_matrix(m, n, &data);
+            let a_complex = Value::Tensor(
+                TensorValue::new(
+                    DType::Complex128,
+                    Shape {
+                        dims: vec![m as u32, n as u32],
+                    },
+                    data.iter()
+                        .map(|&v| Literal::from_complex128(v, 0.0))
+                        .collect(),
+                )
+                .unwrap(),
+            );
+
+            let real_out = eval_svd(&[a_real], &BTreeMap::new()).unwrap();
+            let cplx_out = eval_svd(&[a_complex], &BTreeMap::new()).unwrap();
+            assert_eq!(real_out.len(), 3, "{m}x{n}: expected U,S,Vh");
+
+            let u = extract_f64_elements(&real_out[0]); // m×k
+            let s = extract_f64_elements(&real_out[1]); // k
+            let vh = extract_f64_elements(&real_out[2]); // k×n
+            let s_cplx = extract_f64_elements(&cplx_out[1]); // k (real even on complex path)
+
+            assert_eq!(s.len(), k, "{m}x{n}: S length");
+            // (1) spectrum parity vs the reference complex kernel.
+            for t in 0..k {
+                assert!(
+                    (s[t] - s_cplx[t]).abs() < 1e-9,
+                    "{m}x{n}: singular value {t} {} vs complex {} differ",
+                    s[t],
+                    s_cplx[t]
+                );
+                if t > 0 {
+                    assert!(s[t - 1] >= s[t], "{m}x{n}: singular values not descending");
+                }
+            }
+
+            // (2a) reconstruction U·diag(S)·Vᵀ = A.
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0;
+                    for t in 0..k {
+                        acc += u[i * k + t] * s[t] * vh[t * n + j];
+                    }
+                    assert!(
+                        (acc - data[i * n + j]).abs() < 1e-9,
+                        "{m}x{n}: reconstruction[{i}][{j}] {acc} vs {}",
+                        data[i * n + j]
+                    );
+                }
+            }
+
+            // (2b) Vᵀ rows orthonormal (Vh·Vhᵀ = I_k).
+            for s1 in 0..k {
+                for s2 in 0..k {
+                    let mut dot = 0.0;
+                    for j in 0..n {
+                        dot += vh[s1 * n + j] * vh[s2 * n + j];
+                    }
+                    let expected = if s1 == s2 { 1.0 } else { 0.0 };
+                    assert!(
+                        (dot - expected).abs() < 1e-9,
+                        "{m}x{n}: Vh row dot[{s1}][{s2}] = {dot}, expected {expected}"
+                    );
+                }
+            }
         }
     }
 
