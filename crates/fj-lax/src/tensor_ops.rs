@@ -5191,13 +5191,15 @@ fn eval_conv_1d(
                             let mut acc = 0.0_f64;
                             for k in 0..kernel_w {
                                 let in_pos = (w * stride + k) as isize - pad_left as isize;
-                                if in_pos >= 0 && (in_pos as usize) < width {
-                                    let lhs_base = n_offset + (in_pos as usize) * c_in;
-                                    let rhs_base = k * c_in_c_out + co;
-                                    for ci in 0..c_in {
-                                        acc +=
-                                            lhs_src[lhs_base + ci] * rhs_src[rhs_base + ci * c_out];
-                                    }
+                                let oob = in_pos < 0 || (in_pos as usize) >= width;
+                                let lhs_base = if oob { 0 } else { n_offset + (in_pos as usize) * c_in };
+                                let rhs_base = k * c_in_c_out + co;
+                                // Zero-padded (OOB) taps add 0·w, matching XLA zero-
+                                // padding and conv2d; a no-op for finite data, fixes
+                                // signed-zero parity vs the old in-bounds-only skip.
+                                for ci in 0..c_in {
+                                    let lhs_val = if oob { 0.0 } else { lhs_src[lhs_base + ci] };
+                                    acc += lhs_val * rhs_src[rhs_base + ci * c_out];
                                 }
                             }
                             *slot = acc;
@@ -5219,12 +5221,16 @@ fn eval_conv_1d(
                         let mut acc = 0.0_f64;
                         for k in 0..kernel_w {
                             let in_pos = (w * stride + k) as isize - pad_left as isize;
-                            if in_pos >= 0 && (in_pos as usize) < width {
-                                for ci in 0..c_in {
-                                    let lhs_idx = n_offset + (in_pos as usize) * c_in + ci;
-                                    let rhs_idx = k * c_in_c_out + ci * c_out + co;
-                                    acc += lhs_src[lhs_idx] * rhs_src[rhs_idx];
-                                }
+                            let oob = in_pos < 0 || (in_pos as usize) >= width;
+                            for ci in 0..c_in {
+                                let rhs_idx = k * c_in_c_out + ci * c_out + co;
+                                // Zero-padded (OOB) taps add 0·w (XLA zero-padding).
+                                let lhs_val = if oob {
+                                    0.0
+                                } else {
+                                    lhs_src[n_offset + (in_pos as usize) * c_in + ci]
+                                };
+                                acc += lhs_val * rhs_src[rhs_idx];
                             }
                         }
                         out.push(acc);
@@ -5278,14 +5284,19 @@ fn eval_conv_1d(
                     let mut acc = 0.0_f64;
                     for k in 0..kernel_w {
                         let in_pos = (w * stride + k) as isize - pad_left as isize;
-                        if in_pos >= 0 && (in_pos as usize) < width {
-                            for ci in 0..c_in {
+                        let oob = in_pos < 0 || (in_pos as usize) >= width;
+                        for ci in 0..c_in {
+                            let rhs_idx = k * c_in_c_out + ci * c_out + co;
+                            // Zero-padded (OOB) taps add 0·w (XLA zero-padding); a
+                            // no-op for finite data, fixes signed-zero parity.
+                            let lhs_val = if oob {
+                                0.0
+                            } else {
                                 let lhs_idx = n_offset + (in_pos as usize) * c_in + ci;
-                                let rhs_idx = k * c_in_c_out + ci * c_out + co;
-                                let lhs_val = lhs.elements[lhs_idx].as_f64().unwrap_or(0.0);
-                                let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
-                                acc += lhs_val * rhs_val;
-                            }
+                                lhs.elements[lhs_idx].as_f64().unwrap_or(0.0)
+                            };
+                            let rhs_val = rhs.elements[rhs_idx].as_f64().unwrap_or(0.0);
+                            acc += lhs_val * rhs_val;
                         }
                     }
                     elements.push(conv_float_literal_from_f64(out_dtype, acc));
@@ -6287,6 +6298,67 @@ mod tests {
             .iter()
             .map(|&(k, v)| (k.to_owned(), v.to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn conv1d_real_same_padding_zero_pads_like_valid_on_padded_input() {
+        // The real conv1d paths must treat out-of-bounds 'same'-padding taps as
+        // 0·w (XLA zero-padding), matching conv2d. Metamorphic proof: 'same'
+        // padding on X is bit-identical to 'valid' padding on X explicitly
+        // zero-bordered — both sum every (k,ci) tap (pad positions = 0) by the
+        // same kernel in the same order. Signed-zero / infinity inputs make the
+        // skip-vs-zero-pad difference observable (-0.0 vs +0.0 accumulator).
+        let (width, c_in, c_out) = (3usize, 2usize, 2usize);
+        let kw = 3usize; // odd ⇒ symmetric pad of 1 each side @ stride 1
+
+        let x: Vec<f64> = vec![-0.0, 1.5, f64::INFINITY, -2.0, -0.0, 3.0]; // width*c_in
+        let kdata: Vec<f64> = (0..kw * c_in * c_out)
+            .map(|i| ((i as f64) * 0.3).cos() - 0.5)
+            .collect();
+        let mk = |dims: Vec<u32>, data: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, data.to_vec()).unwrap())
+        };
+        let kernel = mk(vec![kw as u32, c_in as u32, c_out as u32], &kdata);
+
+        let same = eval_conv(
+            Primitive::Conv,
+            &[mk(vec![1, width as u32, c_in as u32], &x), kernel.clone()],
+            &params(&[("padding", "same"), ("strides", "1")]),
+        )
+        .unwrap();
+
+        let pw = width + 2;
+        let mut xp = vec![0.0_f64; pw * c_in];
+        for col in 0..width {
+            for ci in 0..c_in {
+                xp[(col + 1) * c_in + ci] = x[col * c_in + ci];
+            }
+        }
+        let valid = eval_conv(
+            Primitive::Conv,
+            &[mk(vec![1, pw as u32, c_in as u32], &xp), kernel],
+            &params(&[("padding", "valid"), ("strides", "1")]),
+        )
+        .unwrap();
+
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        assert_eq!(
+            same.as_tensor().unwrap().shape.dims,
+            valid.as_tensor().unwrap().shape.dims,
+            "same(X) and valid(zero-padded X) must share shape"
+        );
+        assert_eq!(
+            bits(&same),
+            bits(&valid),
+            "conv1d 'same' must zero-pad OOB taps bit-for-bit like valid-on-padded"
+        );
     }
 
     #[test]
