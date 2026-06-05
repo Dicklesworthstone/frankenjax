@@ -151,41 +151,30 @@ pub(crate) fn eval_comparison(
             if let (Some(left), Some(right)) =
                 (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
             {
-                let mut elements = Vec::with_capacity(out_count);
+                let mut out = Vec::with_capacity(out_count);
                 crate::arithmetic::broadcast_visit_row_major(
                     &out_shape.dims,
                     &lhs_strides,
                     &rhs_strides,
                     |li, ri| {
-                        elements.push(Literal::Bool(int_cmp(
-                            i128::from(left[li]),
-                            i128::from(right[ri]),
-                        )));
+                        out.push(int_cmp(i128::from(left[li]), i128::from(right[ri])));
                     },
                 );
-                return Ok(Value::Tensor(TensorValue::new(
-                    DType::Bool,
-                    out_shape,
-                    elements,
-                )?));
+                return Ok(Value::Tensor(TensorValue::new_bool_values(out_shape, out)?));
             }
             if let (Some(left), Some(right)) =
                 (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
             {
-                let mut elements = Vec::with_capacity(out_count);
+                let mut out = Vec::with_capacity(out_count);
                 crate::arithmetic::broadcast_visit_row_major(
                     &out_shape.dims,
                     &lhs_strides,
                     &rhs_strides,
                     |li, ri| {
-                        elements.push(Literal::Bool(float_cmp(left[li], right[ri])));
+                        out.push(float_cmp(left[li], right[ri]));
                     },
                 );
-                return Ok(Value::Tensor(TensorValue::new(
-                    DType::Bool,
-                    out_shape,
-                    elements,
-                )?));
+                return Ok(Value::Tensor(TensorValue::new_bool_values(out_shape, out)?));
             }
 
             let mut elements = Vec::with_capacity(out_count);
@@ -264,21 +253,36 @@ fn eval_same_shape_f64_compare(
     rhs: &TensorValue,
     float_cmp: &impl Fn(f64, f64) -> bool,
 ) -> Result<Option<Value>, EvalError> {
-    let mut elements = Vec::with_capacity(lhs.elements.len());
+    // Dense F64 path: a contiguous `float_cmp` map straight into a dense `Vec<bool>`
+    // backing (DType::Bool). This vectorizes the compare-and-write and shrinks the
+    // mask from 24 bytes/elem (Literal) to 1, the dominant cost at scale. Bit-for-
+    // bit identical: same `float_cmp` in the same order, and a Bool's value carries
+    // no representation ambiguity, so dense-bool output equals the Literal output.
+    if let (Some(left), Some(right)) =
+        (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+    {
+        let out: Vec<bool> = left
+            .iter()
+            .zip(right)
+            .map(|(&a, &b)| float_cmp(a, b))
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            lhs.shape.clone(),
+            out,
+        )?)));
+    }
+
+    let mut out = Vec::with_capacity(lhs.elements.len());
     for (left, right) in lhs.elements.iter().zip(&rhs.elements) {
         let (Literal::F64Bits(left_bits), Literal::F64Bits(right_bits)) = (*left, *right) else {
             return Ok(None);
         };
-        elements.push(Literal::Bool(float_cmp(
-            f64::from_bits(left_bits),
-            f64::from_bits(right_bits),
-        )));
+        out.push(float_cmp(f64::from_bits(left_bits), f64::from_bits(right_bits)));
     }
 
-    Ok(Some(Value::Tensor(TensorValue::new(
-        DType::Bool,
+    Ok(Some(Value::Tensor(TensorValue::new_bool_values(
         lhs.shape.clone(),
-        elements,
+        out,
     )?)))
 }
 
@@ -304,30 +308,28 @@ fn eval_same_shape_i64_compare(
     if let (Some(left_values), Some(right_values)) =
         (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
     {
-        let elements: Vec<Literal> = left_values
+        let out: Vec<bool> = left_values
             .iter()
             .zip(right_values)
-            .map(|(&left, &right)| Literal::Bool(int_cmp(i128::from(left), i128::from(right))))
+            .map(|(&left, &right)| int_cmp(i128::from(left), i128::from(right)))
             .collect();
-        return Ok(Some(Value::Tensor(TensorValue::new(
-            DType::Bool,
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
             lhs.shape.clone(),
-            elements,
+            out,
         )?)));
     }
 
-    let mut elements = Vec::with_capacity(lhs.elements.len());
+    let mut out = Vec::with_capacity(lhs.elements.len());
     for (left, right) in lhs.elements.iter().zip(&rhs.elements) {
         let (Literal::I64(left), Literal::I64(right)) = (*left, *right) else {
             return Ok(None);
         };
-        elements.push(Literal::Bool(int_cmp(i128::from(left), i128::from(right))));
+        out.push(int_cmp(i128::from(left), i128::from(right)));
     }
 
-    Ok(Some(Value::Tensor(TensorValue::new(
-        DType::Bool,
+    Ok(Some(Value::Tensor(TensorValue::new_bool_values(
         lhs.shape.clone(),
-        elements,
+        out,
     )?)))
 }
 
@@ -353,21 +355,20 @@ fn eval_i64_scalar_compare(
         return Ok(None);
     };
     let scalar = i128::from(scalar);
-    let elements: Vec<Literal> = values
+    let out: Vec<bool> = values
         .iter()
         .map(|&v| {
             let value = i128::from(v);
-            Literal::Bool(if scalar_on_left {
+            if scalar_on_left {
                 int_cmp(scalar, value)
             } else {
                 int_cmp(value, scalar)
-            })
+            }
         })
         .collect();
-    Ok(Some(Value::Tensor(TensorValue::new(
-        DType::Bool,
+    Ok(Some(Value::Tensor(TensorValue::new_bool_values(
         tensor.shape.clone(),
-        elements,
+        out,
     )?)))
 }
 
@@ -390,24 +391,40 @@ fn eval_f64_scalar_compare(
         return Ok(None);
     }
     let scalar = f64::from_bits(scalar_bits);
-    let mut elements = Vec::with_capacity(tensor.elements.len());
+    // Dense F64 path: contiguous map into a dense Bool backing.
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        let out: Vec<bool> = values
+            .iter()
+            .map(|&value| {
+                if scalar_on_left {
+                    float_cmp(scalar, value)
+                } else {
+                    float_cmp(value, scalar)
+                }
+            })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+
+    let mut out = Vec::with_capacity(tensor.elements.len());
     for &elem in &tensor.elements {
         let Literal::F64Bits(bits) = elem else {
             return Ok(None);
         };
         let value = f64::from_bits(bits);
-        let out = if scalar_on_left {
+        out.push(if scalar_on_left {
             float_cmp(scalar, value)
         } else {
             float_cmp(value, scalar)
-        };
-        elements.push(Literal::Bool(out));
+        });
     }
 
-    Ok(Some(Value::Tensor(TensorValue::new(
-        DType::Bool,
+    Ok(Some(Value::Tensor(TensorValue::new_bool_values(
         tensor.shape.clone(),
-        elements,
+        out,
     )?)))
 }
 

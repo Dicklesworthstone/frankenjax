@@ -444,6 +444,36 @@ fn bench_add_broadcast_col_1024x1024_i64(c: &mut Criterion) {
     });
 }
 
+fn bench_lt_same_shape_1024x1024_f64(c: &mut Criterion) {
+    // Same-shape [1024,1024] < [1024,1024], f64 → Bool mask (the most common
+    // comparison shape). Exercises the dense-Bool output write path.
+    let n = 1024usize;
+    let a: Vec<f64> = (0..n * n).map(|i| i as f64 * 1e-4).collect();
+    let b: Vec<f64> = (0..n * n).map(|i| ((i * 7 + 3) % 1000) as f64).collect();
+    let lhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            a,
+        )
+        .unwrap(),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            b,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/lt_same_shape_1024x1024_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Lt, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_lt_broadcast_row_1024x1024_f64(c: &mut Criterion) {
     // Row broadcast [1024,1024] < [1024], f64 → Bool mask (thresholding).
     let n = 1024usize;
@@ -3293,6 +3323,7 @@ criterion_group!(
     bench_add_broadcast_col_1024x1024_f64,
     bench_add_broadcast_row_1024x1024_i64,
     bench_add_broadcast_col_1024x1024_i64,
+    bench_lt_same_shape_1024x1024_f64,
     bench_lt_broadcast_row_1024x1024_f64,
     bench_lt_broadcast_row_1024x1024_i64,
     bench_mul_broadcast_row_512x512_c128,
