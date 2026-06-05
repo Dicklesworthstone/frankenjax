@@ -1512,7 +1512,6 @@ fn broadcast_binary_i64(
 /// `from_f64(float_op(from_bits(l), from_bits(r)))`). Returns `Ok(None)` if any
 /// gathered element is not `F64Bits`, so the caller falls through to generic.
 #[inline]
-#[allow(clippy::too_many_arguments)]
 /// Threaded broadcast fast path for the expensive binary ops. Returns `None`
 /// unless both operands are dense F64 (caller already checked the op + size).
 /// Each thread decodes its own output flat-index range to broadcast-gathered
@@ -1565,6 +1564,7 @@ fn broadcast_binary_f64_expensive_parallel(
         .map(Value::Tensor)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn broadcast_binary_f64(
     lhs: &TensorValue,
     rhs: &TensorValue,
@@ -6482,7 +6482,8 @@ mod tests {
         let x: Vec<f64> = (0..n).map(|i| 0.5 + (i % 211) as f64 * 0.02).collect();
         let va = v_f64(&a);
         let vx = v_f64(&x);
-        let cases: [(Primitive, fn(f64, f64) -> f64); 3] = [
+        type SpecialBinaryCase = (Primitive, fn(f64, f64) -> f64);
+        let cases: [SpecialBinaryCase; 3] = [
             (Primitive::Igamma, igamma_approx),
             (Primitive::Igammac, igammac_approx),
             (Primitive::Zeta, hurwitz_zeta_approx),
