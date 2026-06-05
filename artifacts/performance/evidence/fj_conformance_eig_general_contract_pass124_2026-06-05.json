@@ -1,0 +1,64 @@
+{
+  "bead": "frankenjax-p1vbf.18",
+  "pass": 124,
+  "agent": "IcyGlacier",
+  "target": {
+    "crate": "fj-conformance",
+    "surface": "Primitive::Eig general oracle contract",
+    "profile_backed_hotspot": "fj-lax linalg/eig_48x48_f64",
+    "baseline_command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64",
+    "baseline_worker": "ts2",
+    "baseline_ms": {
+      "lower": 17.600,
+      "point": 17.692,
+      "upper": 17.781
+    }
+  },
+  "lever": {
+    "kind": "behavior contract gate",
+    "production_code_changed": false,
+    "description": "Pinned a general Primitive::Eig conformance contract before the shifted/deflated packed-Hessenberg QR implementation. The contract covers real diagonal-dominant, nonsymmetric real, repeated, near-repeated, complex-conjugate, and 3x3 diagonal-deflation cases."
+  },
+  "isomorphism": {
+    "behavior_unchanged": true,
+    "reason": "Only fj-conformance oracle tests changed; no runtime, dispatch, or linalg implementation code changed.",
+    "ordering": "Public Eig output order remains unspecified. The golden summary canonicalizes only for proof reporting using real-desc, imag-desc, original-index tie.",
+    "tie_breaking": "Repeated and near-repeated cases are checked as unordered multisets with explicit tolerance slots; canonical ordering is proof-only.",
+    "floating_point": "The production Eig arithmetic is untouched. The contract checks eigenvalue multisets, Complex128 dtype/shape, and Av=lambda*v residuals for real cases at fixed tolerances.",
+    "rng": "No RNG is present.",
+    "golden_sha256": "9b84bf2da55576f8de5832828ae6cb271d82a59dc11212513acd95ec29603791"
+  },
+  "validation": [
+    {
+      "command": "rch exec -- cargo test -p fj-conformance --test linalg_oracle eig -- --nocapture",
+      "worker": "ts2",
+      "result": "pass",
+      "summary": "18 passed; 0 failed; 38 filtered out"
+    },
+    {
+      "command": "rustfmt --check crates/fj-conformance/tests/linalg_oracle.rs",
+      "result": "pass"
+    },
+    {
+      "command": "rch exec -- cargo clippy -q -p fj-conformance --test linalg_oracle -- -D warnings",
+      "worker": "ts1",
+      "result": "pass"
+    },
+    {
+      "command": "cargo fmt -p fj-conformance --check",
+      "result": "blocked_by_unrelated_file",
+      "summary": "Package-level fmt also reports a pre-existing unrelated formatting diff in crates/fj-conformance/tests/gather_scatter_oracle.rs. The touched linalg_oracle.rs file passes rustfmt --check."
+    },
+    {
+      "command": "ubs crates/fj-conformance/tests/linalg_oracle.rs",
+      "result": "nonzero_existing_test_inventory",
+      "summary": "UBS reports existing test-file panic/assert/direct-index inventories; embedded fmt/clippy/check/test subchecks were clean."
+    }
+  ],
+  "performance_result": {
+    "speedup": null,
+    "score": null,
+    "reason": "Contract-only gate; no production performance lever was kept in this commit. The next profile-backed lever is shifted/deflated packed-Hessenberg QR against the 17.692 ms eig_48 baseline, target >=2x."
+  },
+  "next_primitive": "Shifted and deflated QR over a packed real Hessenberg layout, harvested from communication-avoiding / blocked eigensolver primitives."
+}

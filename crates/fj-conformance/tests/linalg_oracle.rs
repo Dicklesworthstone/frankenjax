@@ -5,7 +5,12 @@
 
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 use fj_lax::eval_primitive_multi;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::fmt::Write;
+
+type ComplexF64 = (f64, f64);
+type EigOutput = (Vec<ComplexF64>, Vec<ComplexF64>);
 
 fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
@@ -51,6 +56,15 @@ fn extract_f64_vec_from_value(val: &Value) -> Vec<f64> {
     }
 }
 
+fn extract_complex128_elements(val: &Value) -> Vec<ComplexF64> {
+    val.as_tensor()
+        .unwrap()
+        .elements
+        .iter()
+        .map(|l| l.as_complex128().unwrap())
+        .collect()
+}
+
 fn assert_close(actual: &[f64], expected: &[f64], tol: f64, context: &str) {
     assert_eq!(
         actual.len(),
@@ -77,6 +91,150 @@ fn matmul(m: usize, k: usize, n: usize, a: &[f64], b: &[f64]) -> Vec<f64> {
         }
     }
     c
+}
+
+fn complex_sub((ar, ai): ComplexF64, (br, bi): ComplexF64) -> ComplexF64 {
+    (ar - br, ai - bi)
+}
+
+fn complex_mul((ar, ai): ComplexF64, (br, bi): ComplexF64) -> ComplexF64 {
+    (ar * br - ai * bi, ar * bi + ai * br)
+}
+
+fn complex_abs((re, im): ComplexF64) -> f64 {
+    re.hypot(im)
+}
+
+fn assert_complex_unordered_close(
+    actual: &[ComplexF64],
+    expected: &[ComplexF64],
+    tol: f64,
+    context: &str,
+) {
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "{context}: length mismatch: got {}, expected {}",
+        actual.len(),
+        expected.len()
+    );
+    let mut used = vec![false; actual.len()];
+    for &(expected_re, expected_im) in expected {
+        let mut best_idx = None;
+        let mut best_dist = f64::INFINITY;
+        for (idx, &(actual_re, actual_im)) in actual.iter().enumerate() {
+            if used[idx] {
+                continue;
+            }
+            let dist = (actual_re - expected_re).hypot(actual_im - expected_im);
+            if dist < best_dist {
+                best_idx = Some(idx);
+                best_dist = dist;
+            }
+        }
+        let idx = best_idx.unwrap_or_else(|| panic!("{context}: no unmatched eigenvalue"));
+        assert!(
+            best_dist <= tol,
+            "{context}: eigenvalue {:?} is not within {tol} of expected ({expected_re}, {expected_im}); best actual {:?}",
+            (expected_re, expected_im),
+            actual[idx]
+        );
+        used[idx] = true;
+    }
+}
+
+fn assert_eig_output_shapes(result: &[Value], n: u32, context: &str) {
+    assert_eq!(result.len(), 2, "{context}: Eig should return W and V");
+    for (label, value, dims) in [("W", &result[0], vec![n]), ("V", &result[1], vec![n, n])] {
+        let tensor = value
+            .as_tensor()
+            .unwrap_or_else(|| panic!("{context}: {label} should be a tensor"));
+        assert_eq!(tensor.dtype, DType::Complex128, "{context}: {label} dtype");
+        assert_eq!(tensor.shape.dims, dims, "{context}: {label} shape");
+        tensor
+            .validate_dtype_consistency()
+            .unwrap_or_else(|e| panic!("{context}: {label} dtype/element invariant: {e}"));
+    }
+}
+
+fn assert_eig_residual(a: &[f64], n: usize, w: &[ComplexF64], v: &[ComplexF64], tol: f64) -> f64 {
+    let mut max_residual = 0.0_f64;
+    for col in 0..n {
+        let mut column_norm_sq = 0.0;
+        for row in 0..n {
+            column_norm_sq += complex_abs(v[row * n + col]).powi(2);
+        }
+        assert!(
+            column_norm_sq.sqrt() > 1e-12,
+            "eig eigenvector column {col} should be nonzero"
+        );
+
+        for row in 0..n {
+            let mut av = (0.0, 0.0);
+            for k in 0..n {
+                let (v_re, v_im) = v[k * n + col];
+                av.0 += a[row * n + k] * v_re;
+                av.1 += a[row * n + k] * v_im;
+            }
+            let lambda_v = complex_mul(w[col], v[row * n + col]);
+            max_residual = max_residual.max(complex_abs(complex_sub(av, lambda_v)));
+        }
+    }
+    assert!(
+        max_residual <= tol,
+        "eig residual max {max_residual} exceeds tolerance {tol}"
+    );
+    max_residual
+}
+
+fn eig2x2_expected(a: &[f64; 4]) -> Vec<ComplexF64> {
+    let trace = a[0] + a[3];
+    let det = a[0] * a[3] - a[1] * a[2];
+    let disc = trace * trace - 4.0 * det;
+    if disc >= 0.0 {
+        let sqrt_disc = disc.sqrt();
+        vec![
+            ((trace + sqrt_disc) / 2.0, 0.0),
+            ((trace - sqrt_disc) / 2.0, 0.0),
+        ]
+    } else {
+        let sqrt_disc = (-disc).sqrt();
+        vec![
+            (trace / 2.0, sqrt_disc / 2.0),
+            (trace / 2.0, -sqrt_disc / 2.0),
+        ]
+    }
+}
+
+fn canonicalize_complex_values(values: &[ComplexF64], tol: f64) -> Vec<ComplexF64> {
+    let mut indexed: Vec<(usize, ComplexF64)> = values
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(idx, (re, im))| {
+            let re = if re.abs() <= tol { 0.0 } else { re };
+            let im = if im.abs() <= tol { 0.0 } else { im };
+            (idx, (re, im))
+        })
+        .collect();
+    indexed.sort_by(
+        |(left_idx, (left_re, left_im)), (right_idx, (right_re, right_im))| {
+            right_re
+                .total_cmp(left_re)
+                .then_with(|| right_im.total_cmp(left_im))
+                .then_with(|| left_idx.cmp(right_idx))
+        },
+    );
+    indexed.into_iter().map(|(_, value)| value).collect()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for byte in digest {
+        write!(&mut out, "{byte:02x}").unwrap();
+    }
+    out
 }
 
 // ======================== Cholesky ========================
@@ -402,6 +560,265 @@ fn oracle_eigh_3x3_diagonal_repeated_eigenvalue() {
         &a_data,
         1e-10,
         "V@diag(w)@V^T = A for repeated-eigenvalue case",
+    );
+}
+
+// ======================== Eig (General Eigendecomposition) ========================
+
+fn eval_eig_case_n(n: u32, a_data: &[f64], context: &str) -> EigOutput {
+    let a = make_f64_matrix(n, n, a_data);
+    let result =
+        eval_primitive_multi(Primitive::Eig, std::slice::from_ref(&a), &no_params()).unwrap();
+    assert_eig_output_shapes(&result, n, context);
+    (
+        extract_complex128_elements(&result[0]),
+        extract_complex128_elements(&result[1]),
+    )
+}
+
+fn eval_eig_case(a_data: &[f64; 4], context: &str) -> EigOutput {
+    eval_eig_case_n(2, a_data, context)
+}
+
+#[test]
+fn oracle_eig_real_diagonal_dominant_contract() {
+    let a_data = [
+        6.0, 0.25, //
+        0.5, 2.0,
+    ];
+    let (w, v) = eval_eig_case(&a_data, "real diagonal-dominant eig");
+    let expected = eig2x2_expected(&a_data);
+
+    assert_complex_unordered_close(&w, &expected, 1e-10, "diagonal-dominant eig eigenvalues");
+    assert_eig_residual(&a_data, 2, &w, &v, 1e-10);
+}
+
+#[test]
+fn oracle_eig_nonsymmetric_real_contract() {
+    let a_data = [
+        3.0, 4.0, //
+        1.0, 2.0,
+    ];
+    let (w, v) = eval_eig_case(&a_data, "nonsymmetric real eig");
+    let expected = eig2x2_expected(&a_data);
+
+    assert_complex_unordered_close(&w, &expected, 1e-10, "nonsymmetric eig eigenvalues");
+    assert_eig_residual(&a_data, 2, &w, &v, 1e-10);
+}
+
+#[test]
+fn oracle_eig_repeated_and_near_repeated_contract() {
+    let repeated = [
+        2.0, 0.0, //
+        0.0, 2.0,
+    ];
+    let (w_repeated, v_repeated) = eval_eig_case(&repeated, "repeated eig");
+    assert_complex_unordered_close(
+        &w_repeated,
+        &[(2.0, 0.0), (2.0, 0.0)],
+        1e-12,
+        "repeated eig eigenvalues",
+    );
+    assert_eig_residual(&repeated, 2, &w_repeated, &v_repeated, 1e-12);
+
+    let near_repeated = [
+        1.0 + 1e-8,
+        0.0, //
+        0.0,
+        1.0,
+    ];
+    let (w_near, v_near) = eval_eig_case(&near_repeated, "near-repeated eig");
+    assert_complex_unordered_close(
+        &w_near,
+        &[(1.0 + 1e-8, 0.0), (1.0, 0.0)],
+        1e-8,
+        "near-repeated eig eigenvalues",
+    );
+    assert_eig_residual(&near_repeated, 2, &w_near, &v_near, 1e-8);
+}
+
+#[test]
+fn oracle_eig_complex_conjugate_contract() {
+    let a_data = [
+        0.5, -2.0, //
+        2.0, 0.5,
+    ];
+    let (w, v) = eval_eig_case(&a_data, "complex-conjugate eig");
+    let expected = eig2x2_expected(&a_data);
+
+    assert_complex_unordered_close(&w, &expected, 1e-12, "complex-pair eig eigenvalues");
+    assert!(
+        (w[0].0 - w[1].0).abs() <= 1e-12,
+        "complex conjugate pair should share a real part: {w:?}"
+    );
+    assert!(
+        (w[0].1 + w[1].1).abs() <= 1e-12,
+        "complex conjugate pair imaginary parts should cancel: {w:?}"
+    );
+    for (idx, value) in v.iter().enumerate() {
+        assert!(
+            value.0.is_finite() && value.1.is_finite(),
+            "complex-pair eigenvector element {idx} should be finite: {value:?}"
+        );
+    }
+}
+
+#[test]
+fn oracle_eig_three_by_three_diagonal_deflation_contract() {
+    let a_data = [
+        7.0, 0.0, 0.0, //
+        0.0, 3.0, 0.0, //
+        0.0, 0.0, -2.0,
+    ];
+    let (w, v) = eval_eig_case_n(3, &a_data, "3x3 diagonal eig");
+
+    assert_complex_unordered_close(
+        &w,
+        &[(7.0, 0.0), (3.0, 0.0), (-2.0, 0.0)],
+        1e-12,
+        "3x3 diagonal eig eigenvalues",
+    );
+    assert_eig_residual(&a_data, 3, &w, &v, 1e-12);
+}
+
+fn eig_contract_summary() -> String {
+    let cases = [
+        (
+            "real_diagonal_dominant",
+            2,
+            [
+                6.0, 0.25, //
+                0.5, 2.0,
+            ]
+            .as_slice(),
+            None,
+            true,
+            1e-10,
+        ),
+        (
+            "nonsymmetric_real",
+            2,
+            [
+                3.0, 4.0, //
+                1.0, 2.0,
+            ]
+            .as_slice(),
+            None,
+            true,
+            1e-10,
+        ),
+        (
+            "repeated",
+            2,
+            [
+                2.0, 0.0, //
+                0.0, 2.0,
+            ]
+            .as_slice(),
+            None,
+            true,
+            1e-12,
+        ),
+        (
+            "near_repeated",
+            2,
+            [
+                1.0 + 1e-8,
+                0.0, //
+                0.0,
+                1.0,
+            ]
+            .as_slice(),
+            Some(vec![(1.0 + 1e-8, 0.0), (1.0, 0.0)]),
+            true,
+            1e-8,
+        ),
+        (
+            "complex_conjugate",
+            2,
+            [
+                0.5, -2.0, //
+                2.0, 0.5,
+            ]
+            .as_slice(),
+            None,
+            false,
+            1e-12,
+        ),
+        (
+            "three_by_three_diagonal_deflation",
+            3,
+            [
+                7.0, 0.0, 0.0, //
+                0.0, 3.0, 0.0, //
+                0.0, 0.0, -2.0,
+            ]
+            .as_slice(),
+            Some(vec![(7.0, 0.0), (3.0, 0.0), (-2.0, 0.0)]),
+            true,
+            1e-12,
+        ),
+    ];
+
+    let mut summary = String::new();
+    writeln!(
+        &mut summary,
+        "Primitive::Eig contract v1; public order unspecified; canonical order=real_desc,imag_desc,original_index_tie"
+    )
+    .unwrap();
+    for (name, n, a_data, expected, check_residual, tol) in cases {
+        let (w, v) = eval_eig_case_n(n, a_data, name);
+        let expected = expected.unwrap_or_else(|| {
+            assert_eq!(n, 2, "{name}: analytic helper only covers 2x2 eig cases");
+            eig2x2_expected(&[a_data[0], a_data[1], a_data[2], a_data[3]])
+        });
+        assert_complex_unordered_close(&w, &expected, tol, name);
+        let residual_status = if check_residual {
+            assert_eig_residual(a_data, n as usize, &w, &v, tol);
+            "checked_within_tol"
+        } else {
+            "not_asserted_v1_complex_pair"
+        };
+        let canonical = canonicalize_complex_values(&expected, tol);
+        let conjugate_status = if name == "complex_conjugate" {
+            assert!(
+                (canonical[0].0 - canonical[1].0).abs() <= tol
+                    && (canonical[0].1 + canonical[1].1).abs() <= tol,
+                "complex_conjugate summary requires a conjugate pair: {canonical:?}"
+            );
+            "checked"
+        } else {
+            "not_applicable"
+        };
+        write!(
+            &mut summary,
+            "case={name};tol={tol:.0e};w_dtype=Complex128;w_shape=[{n}];v_dtype=Complex128;v_shape=[{n},{n}];eigenvalue_multiset=checked;canonical_slots={};expected=",
+            canonical.len()
+        )
+        .unwrap();
+        for (idx, (re, im)) in canonical.iter().enumerate() {
+            if idx > 0 {
+                summary.push(',');
+            }
+            write!(&mut summary, "({re:.12e},{im:.12e})").unwrap();
+        }
+        summary.push(';');
+        writeln!(
+            &mut summary,
+            "residual={residual_status};conjugate_pair={conjugate_status}"
+        )
+        .unwrap();
+    }
+    summary
+}
+
+#[test]
+fn golden_eig_general_contract_sha256() {
+    let summary = eig_contract_summary();
+    assert_eq!(
+        sha256_hex(summary.as_bytes()),
+        "9b84bf2da55576f8de5832828ae6cb271d82a59dc11212513acd95ec29603791",
+        "Primitive::Eig contract summary:\n{summary}"
     );
 }
 
