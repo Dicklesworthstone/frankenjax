@@ -241,7 +241,14 @@ fn matmul_2d_with_threads(
 /// `block.len() / n` rows) of the m×n product into `block`, via the i-k-j
 /// kernel. Each output element accumulates `a[i][l]*b[l][j]` in ascending-`l`
 /// order — bit-for-bit identical to the serial whole-matrix kernel.
-fn matmul_2d_row_block(a: &[f64], k: usize, b: &[f64], n: usize, row_start: usize, block: &mut [f64]) {
+fn matmul_2d_row_block(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
     for (ri, c_row) in block.chunks_mut(n).enumerate() {
         let a_row = (row_start + ri) * k;
         for l in 0..k {
@@ -262,7 +269,14 @@ fn matmul_2d_row_block(a: &[f64], k: usize, b: &[f64], n: usize, row_start: usiz
 /// element accumulates in ascending-`l` order, bit-for-bit identical to a serial
 /// per-batch matmul / the generic dot_general loop (see
 /// batched_matmul_2d_bit_identical).
-pub fn batched_matmul_2d(a: &[f64], batch: usize, m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64> {
+pub fn batched_matmul_2d(
+    a: &[f64],
+    batch: usize,
+    m: usize,
+    k: usize,
+    b: &[f64],
+    n: usize,
+) -> Vec<f64> {
     let mut result = vec![0.0; batch * m * n];
     if batch == 0 || m == 0 || n == 0 || k == 0 {
         return result;
@@ -460,8 +474,12 @@ mod tests {
         // Batched matmul kernel must equal the textbook per-batch ascending-l
         // reference bit-for-bit.
         let (bt, m, k, n) = (3usize, 5usize, 7usize, 4usize);
-        let a: Vec<f64> = (0..bt * m * k).map(|i| (i as f64 * 0.021).sin() * 2.0 - 0.5).collect();
-        let b: Vec<f64> = (0..bt * k * n).map(|i| (i as f64 * 0.029).cos() * 1.6 + 0.3).collect();
+        let a: Vec<f64> = (0..bt * m * k)
+            .map(|i| (i as f64 * 0.021).sin() * 2.0 - 0.5)
+            .collect();
+        let b: Vec<f64> = (0..bt * k * n)
+            .map(|i| (i as f64 * 0.029).cos() * 1.6 + 0.3)
+            .collect();
         let got = batched_matmul_2d(&a, bt, m, k, &b, n);
         let mut want = vec![0.0f64; bt * m * n];
         for batch in 0..bt {
@@ -486,8 +504,12 @@ mod tests {
         // bit-for-bit, including a thread count that exceeds the row count (so
         // some threads get empty/partial blocks) and a partial last block.
         let (m, k, n) = (13usize, 17usize, 11usize);
-        let a: Vec<f64> = (0..m * k).map(|i| (i as f64 * 0.019).sin() * 3.0 - 0.7).collect();
-        let b: Vec<f64> = (0..k * n).map(|i| (i as f64 * 0.023).cos() * 1.9 + 0.2).collect();
+        let a: Vec<f64> = (0..m * k)
+            .map(|i| (i as f64 * 0.019).sin() * 3.0 - 0.7)
+            .collect();
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| (i as f64 * 0.023).cos() * 1.9 + 0.2)
+            .collect();
         let serial = super::matmul_2d_with_threads(&a, m, k, &b, n, 1);
         for threads in [2usize, 3, 4, 8, 16, 32] {
             let parallel = super::matmul_2d_with_threads(&a, m, k, &b, n, threads);
