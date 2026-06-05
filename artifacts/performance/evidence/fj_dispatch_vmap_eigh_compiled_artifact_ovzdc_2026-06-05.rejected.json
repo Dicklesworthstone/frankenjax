@@ -1,0 +1,90 @@
+{
+  "bead": "frankenjax-ovzdc",
+  "status": "rejected_no_source_kept",
+  "target": {
+    "crate": "fj-dispatch",
+    "criterion_benchmark": "dispatch_baseline",
+    "case": "vmap_eigh/batched_matrix_3x3",
+    "profile_basis": "RCH ts2 crate-scoped dispatch profile ranked vmap_eigh/batched_matrix_3x3 as the top fj-dispatch row."
+  },
+  "baseline": {
+    "worker": "ts2",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-dispatch-next-profile-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "criterion_us": {
+      "lower": 156.63,
+      "mid": 158.57,
+      "upper": 160.03
+    },
+    "full_profile_neighbors_us": {
+      "vmap_svd/batched_matrix_3x2": {
+        "lower": 83.923,
+        "mid": 84.382,
+        "upper": 85.009
+      },
+      "vmap_dot_i64/paired_vectors": {
+        "lower": 81.595,
+        "mid": 82.894,
+        "upper": 83.594
+      },
+      "vmap_qr/batched_matrix_3x2": {
+        "lower": 66.595,
+        "mid": 67.318,
+        "upper": 68.07
+      }
+    }
+  },
+  "candidates": [
+    {
+      "name": "dispatch_entry_calls_existing_batch_rule_multi",
+      "lever": "Guarded execute_vmap path for exact single-equation Eigh called the existing generic batch-rule helper directly.",
+      "worker": "ts2",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-ovzdc-candidate-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_eigh/batched_matrix_3x3 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+      "criterion_us": {
+        "lower": 156.31,
+        "mid": 157.43,
+        "upper": 159.6
+      },
+      "midpoint_speedup": 1.0072,
+      "conservative_speedup": 0.9814,
+      "score_decision": "reject",
+      "rejection_reason": "Conservative same-worker comparison regressed; Score < 2.0.",
+      "source_kept": false
+    },
+    {
+      "name": "direct_axis0_3x3_tensor_value_helper",
+      "lever": "Extracted the F64 axis-0 3x3 Eigh value construction helper and bypassed BatchTracer wrapping for the exact dispatch shape.",
+      "worker": "ts2",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-ovzdc-helper-candidate-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_eigh/batched_matrix_3x3 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+      "criterion_us": {
+        "lower": 154.62,
+        "mid": 156.14,
+        "upper": 157.2
+      },
+      "midpoint_speedup": 1.0156,
+      "conservative_speedup": 0.9964,
+      "score_decision": "reject",
+      "rejection_reason": "Midpoint moved slightly but conservative same-worker interval did not prove a win; Score < 2.0.",
+      "source_kept": false
+    }
+  ],
+  "behavior_isomorphism": {
+    "source_kept": false,
+    "reason_no_expanded_golden": "Both candidates failed the performance keep gate and were removed before commit.",
+    "preserved_surfaces": [
+      "output ordering remains baseline because no source was kept",
+      "eigenvalue ordering remains baseline because no source was kept",
+      "eigenvector sign convention remains baseline because no source was kept",
+      "floating point operations remain baseline because no source was kept",
+      "RNG behavior unaffected"
+    ],
+    "compile_gate_for_second_candidate": {
+      "worker": "ts2",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-ovzdc-helper-check-rch-target rch exec -- cargo check -p fj-dispatch --all-targets",
+      "result": "pass"
+    }
+  },
+  "next_deeper_primitive": {
+    "direction": "Stop iterating fj-dispatch Eigh micro-bypasses; attack a different profile-backed primitive such as dense f64 cotangent accumulation in fj-ad if its current in-progress owner can be confirmed, or re-profile fj-dispatch for a non-Eigh structural target.",
+    "target_ratio": ">=1.25x same-worker midpoint with conservative interval not worse than baseline"
+  }
+}
