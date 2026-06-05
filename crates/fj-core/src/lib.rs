@@ -989,6 +989,17 @@ enum LiteralBufferStorage {
         values: Arc<Vec<bool>>,
         literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
     },
+    /// Dense complex storage: `(re, im)` pairs as `f64`, tagged with the logical
+    /// complex dtype (`Complex64` or `Complex128`). Lets complex-heavy ops (FFT,
+    /// complex elementwise) borrow a packed `&[(f64, f64)]` slice and emit dense
+    /// outputs without per-element `Literal` materialization. For `Complex64` the
+    /// stored `f64` pairs are exactly the widened `f32` values, so materializing
+    /// back via `from_complex64(re as f32, im as f32)` is bit-identical.
+    Complex {
+        values: Arc<Vec<(f64, f64)>>,
+        dtype: DType,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
     RepeatedPatches {
         base: Arc<Vec<Literal>>,
         repeats: usize,
@@ -1041,6 +1052,33 @@ impl LiteralBuffer {
         Self {
             storage: LiteralBufferStorage::Bool {
                 values: Arc::new(values),
+                literals: Arc::new(OnceLock::new()),
+            },
+        }
+    }
+
+    /// Build a dense complex buffer from `(re, im)` `f64` pairs tagged with a
+    /// complex dtype. `dtype` must be `Complex64` or `Complex128`.
+    #[must_use]
+    pub fn from_complex_values(values: Vec<(f64, f64)>, dtype: DType) -> Self {
+        debug_assert!(
+            matches!(dtype, DType::Complex64 | DType::Complex128),
+            "from_complex_values requires a complex dtype"
+        );
+        // Invariant: a `Complex64` dense buffer always holds f32-exact values, so
+        // the packed slice (`as_complex_slice`) and the lazily materialized
+        // `Literal` agree bit-for-bit. `Complex128` keeps full f64 precision.
+        let mut values = values;
+        if dtype == DType::Complex64 {
+            for pair in &mut values {
+                pair.0 = pair.0 as f32 as f64;
+                pair.1 = pair.1 as f32 as f64;
+            }
+        }
+        Self {
+            storage: LiteralBufferStorage::Complex {
+                values: Arc::new(values),
+                dtype,
                 literals: Arc::new(OnceLock::new()),
             },
         }
@@ -1108,6 +1146,20 @@ impl LiteralBuffer {
             LiteralBufferStorage::Bool { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::Bool).collect()))
                 .as_slice(),
+            LiteralBufferStorage::Complex {
+                values,
+                dtype,
+                literals,
+            } => literals
+                .get_or_init(|| {
+                    Arc::new(
+                        values
+                            .iter()
+                            .map(|&(re, im)| complex_pair_to_literal(re, im, *dtype))
+                            .collect(),
+                    )
+                })
+                .as_slice(),
             LiteralBufferStorage::RepeatedPatches {
                 base,
                 repeats,
@@ -1139,8 +1191,31 @@ impl LiteralBuffer {
             LiteralBufferStorage::F64 { values, .. } => Some(values.as_slice()),
             LiteralBufferStorage::I64 { .. } => None,
             LiteralBufferStorage::Bool { .. } => None,
+            LiteralBufferStorage::Complex { .. } => None,
             LiteralBufferStorage::RepeatedPatches { .. } => None,
             LiteralBufferStorage::Concat { .. } => None,
+        }
+    }
+
+    /// Borrow the dense complex storage as packed `(re, im)` `f64` pairs, if this
+    /// buffer is complex-backed. Returns `None` for `Literal`-backed or non-complex
+    /// buffers (callers fall back to per-element extraction). The logical complex
+    /// dtype is available via [`Self::complex_dtype`].
+    #[must_use]
+    pub fn as_complex_slice(&self) -> Option<&[(f64, f64)]> {
+        match &self.storage {
+            LiteralBufferStorage::Complex { values, .. } => Some(values.as_slice()),
+            _ => None,
+        }
+    }
+
+    /// The logical complex dtype of a complex-backed buffer (`Complex64`/`Complex128`),
+    /// or `None` if this buffer is not dense-complex-backed.
+    #[must_use]
+    pub fn complex_dtype(&self) -> Option<DType> {
+        match &self.storage {
+            LiteralBufferStorage::Complex { dtype, .. } => Some(*dtype),
+            _ => None,
         }
     }
 
@@ -1151,6 +1226,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::Literals(_)
             | LiteralBufferStorage::F64 { .. }
             | LiteralBufferStorage::Bool { .. }
+            | LiteralBufferStorage::Complex { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
             | LiteralBufferStorage::Concat { .. } => None,
         }
@@ -1163,6 +1239,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::Literals(_)
             | LiteralBufferStorage::F64 { .. }
             | LiteralBufferStorage::I64 { .. }
+            | LiteralBufferStorage::Complex { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
             | LiteralBufferStorage::Concat { .. } => None,
         }
@@ -1175,6 +1252,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::F64 { values, .. } => values.len(),
             LiteralBufferStorage::I64 { values, .. } => values.len(),
             LiteralBufferStorage::Bool { values, .. } => values.len(),
+            LiteralBufferStorage::Complex { values, .. } => values.len(),
             LiteralBufferStorage::RepeatedPatches { base, repeats, .. } => base.len() * repeats,
             LiteralBufferStorage::Concat { len, .. } => *len,
         }
@@ -1196,6 +1274,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::F64 { .. }
                 | LiteralBufferStorage::I64 { .. }
                 | LiteralBufferStorage::Bool { .. }
+                | LiteralBufferStorage::Complex { .. }
                 | LiteralBufferStorage::RepeatedPatches { .. }
                 | LiteralBufferStorage::Concat { .. }
         ) {
@@ -1208,6 +1287,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::F64 { .. }
             | LiteralBufferStorage::I64 { .. }
             | LiteralBufferStorage::Bool { .. }
+            | LiteralBufferStorage::Complex { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
             | LiteralBufferStorage::Concat { .. } => unreachable!("lazy buffer was materialized"),
         }
@@ -1260,6 +1340,17 @@ impl Clone for LiteralBuffer {
             LiteralBufferStorage::Bool { values, literals } => Self {
                 storage: LiteralBufferStorage::Bool {
                     values: Arc::clone(values),
+                    literals: Arc::clone(literals),
+                },
+            },
+            LiteralBufferStorage::Complex {
+                values,
+                dtype,
+                literals,
+            } => Self {
+                storage: LiteralBufferStorage::Complex {
+                    values: Arc::clone(values),
+                    dtype: *dtype,
                     literals: Arc::clone(literals),
                 },
             },
@@ -1409,6 +1500,23 @@ impl IntoIterator for LiteralBuffer {
                     .collect::<Vec<_>>()
                     .into_iter()
             }
+            LiteralBufferStorage::Complex {
+                values,
+                dtype,
+                literals,
+            } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                values
+                    .iter()
+                    .map(|&(re, im)| complex_pair_to_literal(re, im, dtype))
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
             LiteralBufferStorage::RepeatedPatches {
                 base,
                 repeats,
@@ -1469,6 +1577,17 @@ impl PartialEq<Vec<Literal>> for LiteralBuffer {
 impl PartialEq<LiteralBuffer> for Vec<Literal> {
     fn eq(&self, other: &LiteralBuffer) -> bool {
         self.as_slice() == other.as_slice()
+    }
+}
+
+/// Materialize one dense complex `(re, im)` pair into a `Literal` of the given
+/// complex dtype. For `Complex64` the `f64` inputs are narrowed back to `f32`
+/// (bit-identical to the round-trip that produced the dense buffer).
+#[inline]
+fn complex_pair_to_literal(re: f64, im: f64, dtype: DType) -> Literal {
+    match dtype {
+        DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+        _ => Literal::from_complex128(re, im),
     }
 }
 
@@ -1607,6 +1726,33 @@ impl TensorValue {
             dtype: DType::Bool,
             shape,
             elements: LiteralBuffer::from_bool_values(values),
+        })
+    }
+
+    /// Build a complex tensor from dense `(re, im)` `f64` pairs, backed by the
+    /// packed [`LiteralBuffer::from_complex_values`] storage (no per-element
+    /// `Literal` materialization). `dtype` must be `Complex64` or `Complex128`.
+    pub fn new_complex_values(
+        dtype: DType,
+        shape: Shape,
+        values: Vec<(f64, f64)>,
+    ) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != values.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: values.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype,
+            shape,
+            elements: LiteralBuffer::from_complex_values(values, dtype),
         })
     }
 

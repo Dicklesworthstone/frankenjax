@@ -182,6 +182,14 @@ fn extract_tensor_complex(
         });
     }
 
+    // Fast path: dense complex-backed buffers expose packed `(re, im)` f64 pairs,
+    // so we bulk-copy them instead of matching+converting each `Literal`. The dense
+    // representation is bit-identical to what `literal_to_complex` would produce
+    // (Complex128: exact f64; Complex64: the same f32→f64 widening).
+    if let Some(dense) = tensor.elements.as_complex_slice() {
+        return Ok((tensor.shape.clone(), tensor.dtype, dense.to_vec()));
+    }
+
     let elements: Vec<(f64, f64)> = tensor
         .elements
         .iter()
@@ -645,6 +653,82 @@ fn ifft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
     }
 }
 
+/// Transform every length-`n` row of `elements` along the last axis into a dense
+/// `(re, im)` output buffer. Rows are independent, so for large batches the work
+/// is split across threads — each thread owns its own per-row Bluestein scratch
+/// and buffer, and writes a disjoint slice of the output. The Bluestein plan is
+/// built once and shared immutably. The result is bit-identical to the serial
+/// path (no cross-row interaction, no reordering of any butterfly). `inverse`
+/// selects FFT vs IFFT.
+fn transform_batches_dense(
+    elements: &[(f64, f64)],
+    n: usize,
+    batch_size: usize,
+    inverse: bool,
+) -> Vec<(f64, f64)> {
+    // Shared, immutable Bluestein plan for non-power-of-two lengths (built once).
+    let plan = (n > 1 && !n.is_power_of_two()).then(|| BluesteinPlan::new(n, inverse));
+    let total = batch_size * n;
+    let mut out: Vec<(f64, f64)> = vec![(0.0, 0.0); total];
+
+    // Only fan out when there is enough work to amortize thread spawn; dense
+    // storage makes the extract/output trivial, so the per-row transform is the
+    // dominant cost and parallelizes cleanly across rows.
+    const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144
+    let threads = if total >= PARALLEL_MIN_ELEMS && batch_size > 1 {
+        std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(batch_size)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        let mut scratch = BluesteinScratch::default();
+        let mut buf = Vec::with_capacity(n);
+        for batch in 0..batch_size {
+            let s = batch * n;
+            match &plan {
+                Some(plan) => plan.apply_into(&elements[s..s + n], &mut scratch, &mut buf),
+                None if inverse => ifft_1d_into(&elements[s..s + n], &mut buf),
+                None => fft_1d_into(&elements[s..s + n], &mut buf),
+            }
+            out[s..s + n].copy_from_slice(&buf);
+        }
+        return out;
+    }
+
+    let rows_per = batch_size.div_ceil(threads);
+    let plan_ref = &plan;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [(f64, f64)] = out.as_mut_slice();
+        let mut row0 = 0usize;
+        while row0 < batch_size {
+            let rows = rows_per.min(batch_size - row0);
+            let (blk, tail) = rest.split_at_mut(rows * n);
+            rest = tail;
+            let base = row0 * n;
+            scope.spawn(move || {
+                let mut scratch = BluesteinScratch::default();
+                let mut buf = Vec::with_capacity(n);
+                for r in 0..rows {
+                    let gs = base + r * n;
+                    let src = &elements[gs..gs + n];
+                    match plan_ref {
+                        Some(plan) => plan.apply_into(src, &mut scratch, &mut buf),
+                        None if inverse => ifft_1d_into(src, &mut buf),
+                        None => fft_1d_into(src, &mut buf),
+                    }
+                    blk[r * n..r * n + n].copy_from_slice(&buf);
+                }
+            });
+            row0 += rows;
+        }
+    });
+    out
+}
+
 // ── FFT ──────────────────────────────────────────────────────────────
 
 /// Compute the 1D FFT along the last axis.
@@ -677,26 +761,13 @@ pub(crate) fn eval_fft(
     }
     let batch_size = elements.len() / n;
 
-    let mut out_elements = Vec::with_capacity(elements.len());
-    let mut transform_buf = Vec::with_capacity(n);
-    // Non-power-of-two: build the Bluestein plan once and reuse it across every
-    // row, instead of rebuilding the chirp table + kernel FFT per row.
-    let plan = (n > 1 && !n.is_power_of_two()).then(|| BluesteinPlan::new(n, false));
-    let mut scratch = BluesteinScratch::default();
-    for batch in 0..batch_size {
-        let start = batch * n;
-        let slice = &elements[start..start + n];
-        match &plan {
-            Some(plan) => plan.apply_into(slice, &mut scratch, &mut transform_buf),
-            None => fft_1d_into(slice, &mut transform_buf),
-        }
-        for &(re, im) in &transform_buf {
-            out_elements.push(make_complex_literal(re, im, out_dtype));
-        }
-    }
-
-    let tensor =
-        TensorValue::new(out_dtype, shape, out_elements).map_err(EvalError::InvalidTensor)?;
+    // Dense complex output via the threaded per-row transform: extract already
+    // borrowed a packed slice (no per-`Literal` conversion), and the output is
+    // built straight into dense `(re, im)` storage. Rows are independent so large
+    // batches fan out across threads — bit-identical to the serial path.
+    let out_values = transform_batches_dense(&elements, n, batch_size, false);
+    let tensor = TensorValue::new_complex_values(out_dtype, shape, out_values)
+        .map_err(EvalError::InvalidTensor)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -738,24 +809,10 @@ pub(crate) fn eval_ifft(
     }
     let batch_size = elements.len() / n;
 
-    let mut out_elements = Vec::with_capacity(elements.len());
-    let mut transform_buf = Vec::with_capacity(n);
-    let plan = (n > 1 && !n.is_power_of_two()).then(|| BluesteinPlan::new(n, true));
-    let mut scratch = BluesteinScratch::default();
-    for batch in 0..batch_size {
-        let start = batch * n;
-        let slice = &elements[start..start + n];
-        match &plan {
-            Some(plan) => plan.apply_into(slice, &mut scratch, &mut transform_buf),
-            None => ifft_1d_into(slice, &mut transform_buf),
-        }
-        for &(re, im) in &transform_buf {
-            out_elements.push(make_complex_literal(re, im, out_dtype));
-        }
-    }
-
-    let tensor =
-        TensorValue::new(out_dtype, shape, out_elements).map_err(EvalError::InvalidTensor)?;
+    // Dense complex output via the threaded per-row inverse transform (see eval_fft).
+    let out_values = transform_batches_dense(&elements, n, batch_size, true);
+    let tensor = TensorValue::new_complex_values(out_dtype, shape, out_values)
+        .map_err(EvalError::InvalidTensor)?;
     Ok(Value::Tensor(tensor))
 }
 
@@ -819,7 +876,7 @@ pub(crate) fn eval_rfft(
     replace_last_axis_len(primitive, &mut out_dims, out_last)?;
     let out_shape = Shape { dims: out_dims };
 
-    let mut out_elements = Vec::with_capacity(output_count);
+    let mut out_elements: Vec<Literal> = Vec::with_capacity(output_count);
     let copy_len = fft_length.min(input_last);
 
     // Reuse buffers across batch iterations to avoid O(batch_size) allocations
@@ -1001,6 +1058,179 @@ mod tests {
             dims: vec![data.len() as u32],
         };
         Value::Tensor(TensorValue::new(DType::Complex64, shape, elements).unwrap())
+    }
+
+    /// Build the same logical complex128 vector backed by dense `(f64, f64)`
+    /// storage (the new `as_complex_slice` fast path) rather than `Literal`s.
+    fn make_complex_vector_dense(data: &[(f64, f64)]) -> Value {
+        let shape = Shape {
+            dims: vec![data.len() as u32],
+        };
+        Value::Tensor(
+            TensorValue::new_complex_values(DType::Complex128, shape, data.to_vec()).unwrap(),
+        )
+    }
+
+    /// Read every element's (re, im) raw bits — the bit-exact fingerprint of a
+    /// complex tensor, independent of storage representation.
+    fn complex_bits(v: &Value) -> Vec<(u64, u64)> {
+        v.as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|lit| match lit {
+                Literal::Complex128Bits(re, im) => (*re, *im),
+                Literal::Complex64Bits(re, im) => (u64::from(*re), u64::from(*im)),
+                other => panic!("expected complex literal, got {other:?}"),
+            })
+            .collect()
+    }
+
+    /// Isomorphism proof for frankenjax-6294o: the dense `as_complex_slice` input
+    /// path and the `Literal`-backed input path must produce bit-identical FFT
+    /// outputs. Covers fft / ifft / rfft over power-of-two and Bluestein lengths.
+    #[test]
+    fn dense_complex_input_bit_identical_to_literal_input() {
+        let p = BTreeMap::new();
+        // Lengths: 8 (radix-2) and 6 (Bluestein, non-power-of-two).
+        for len in [8_usize, 6] {
+            let data: Vec<(f64, f64)> = (0..len)
+                .map(|i| {
+                    let x = i as f64;
+                    ((x * 0.125).sin(), (x * 0.25).cos() - 0.3 * x)
+                })
+                .collect();
+            let lit = make_complex_vector(&data);
+            let dense = make_complex_vector_dense(&data);
+            assert!(
+                dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_complex_slice()
+                    .is_some(),
+                "dense input should expose as_complex_slice"
+            );
+            assert!(
+                lit.as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_complex_slice()
+                    .is_none(),
+                "literal input must not be dense-complex-backed"
+            );
+            for prim in [Primitive::Fft, Primitive::Ifft] {
+                let from_lit = eval_fft_dispatch(prim, &lit, &p);
+                let from_dense = eval_fft_dispatch(prim, &dense, &p);
+                assert_eq!(
+                    complex_bits(&from_lit),
+                    complex_bits(&from_dense),
+                    "{prim:?} len={len}: dense-input output must match literal-input bit-for-bit"
+                );
+            }
+        }
+    }
+
+    fn eval_fft_dispatch(prim: Primitive, input: &Value, p: &BTreeMap<String, String>) -> Value {
+        match prim {
+            Primitive::Fft => eval_fft(std::slice::from_ref(input), p).unwrap(),
+            Primitive::Ifft => eval_ifft(std::slice::from_ref(input), p).unwrap(),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Threading isomorphism proof for frankenjax-6294o: a batched FFT large
+    /// enough to fan out across threads (`rows*cols >= 1<<18`, `rows > 1`) must
+    /// produce, row for row, exactly the same bits as transforming each row on
+    /// its own (which always takes the serial path, `batch_size == 1`). Any
+    /// row-partitioning or shared-state bug would diverge here.
+    #[test]
+    fn threaded_batch_fft_matches_per_row_serial() {
+        let p = BTreeMap::new();
+        let rows = 512_usize;
+        let cols = 512_usize; // 512*512 = 262_144 = 1<<18 -> threaded path
+        assert!(rows * cols >= (1usize << 18) && rows > 1);
+
+        let row_data: Vec<Vec<(f64, f64)>> = (0..rows)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| {
+                        let x = (r * cols + c) as f64;
+                        ((x * 0.0009765625).sin(), (x * 0.001953125).cos() - 0.1)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        for prim in [Primitive::Fft, Primitive::Ifft] {
+            // Batched (threaded) evaluation over a dense rows×cols input.
+            let flat: Vec<(f64, f64)> = row_data.iter().flatten().copied().collect();
+            let batched_input = Value::Tensor(
+                TensorValue::new_complex_values(
+                    DType::Complex128,
+                    Shape {
+                        dims: vec![rows as u32, cols as u32],
+                    },
+                    flat,
+                )
+                .unwrap(),
+            );
+            let batched = eval_fft_dispatch(prim, &batched_input, &p);
+            let batched_bits = complex_bits(&batched);
+
+            // Per-row serial reference.
+            let mut expected: Vec<(u64, u64)> = Vec::with_capacity(rows * cols);
+            for data in &row_data {
+                let single = make_complex_vector_dense(data);
+                expected.extend(complex_bits(&eval_fft_dispatch(prim, &single, &p)));
+            }
+
+            assert_eq!(
+                batched_bits, expected,
+                "{prim:?}: threaded batch output must match per-row serial bit-for-bit"
+            );
+        }
+    }
+
+    /// Golden-output regression guard for frankenjax-6294o. Pins the bit-exact
+    /// output of a canonical 64×128 complex128 FFT through the dense+threaded
+    /// path. The little-endian (re,im) bit stream of the 8192-element output has
+    ///   sha256 = e08a6c8279950e499a2619baa424616e9a205eafd8727223aacdb633026a356a
+    /// (131072 bytes); the inline FNV-1a-64 digest below is a self-contained
+    /// proxy so the guard needs no `sha2` dependency. Any numeric drift in the
+    /// transform, the dense storage round-trip, or threading changes this digest.
+    #[test]
+    fn fft_golden_output_digest() {
+        let p = BTreeMap::new();
+        let (rows, cols) = (64_usize, 128_usize);
+        let data: Vec<(f64, f64)> = (0..rows * cols)
+            .map(|i| {
+                let x = i as f64;
+                ((x * 0.0078125).sin(), (x * 0.015625).cos() - 0.2)
+            })
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                data,
+            )
+            .unwrap(),
+        );
+        let out = eval_fft(std::slice::from_ref(&input), &p).unwrap();
+        let mut digest: u64 = 0xcbf2_9ce4_8422_2325;
+        for (re, im) in complex_bits(&out) {
+            for byte in re.to_le_bytes().into_iter().chain(im.to_le_bytes()) {
+                digest ^= u64::from(byte);
+                digest = digest.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        assert_eq!(
+            digest, 0xe981_f3ae_df00_1c51,
+            "FFT golden output digest changed — behavior is NOT isomorphic"
+        );
     }
 
     fn oversized_fft_length_params() -> BTreeMap<String, String> {

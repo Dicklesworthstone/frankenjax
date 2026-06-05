@@ -41,6 +41,28 @@ fn complex_matrix(rows: usize, cols: usize) -> Value {
     })
 }
 
+// Same logical data as `complex_matrix`, but backed by dense `(re, im)` f64
+// storage (the `as_complex_slice` fast path) instead of per-element `Literal`s.
+// This is the steady-state representation a complex pipeline produces upstream.
+fn complex_matrix_dense(rows: usize, cols: usize) -> Value {
+    let values: Vec<(f64, f64)> = (0..rows * cols)
+        .map(|i| {
+            let x = i as f64;
+            ((x * 0.125).sin(), (x * 0.25).cos())
+        })
+        .collect();
+    Value::Tensor(
+        TensorValue::new_complex_values(
+            DType::Complex128,
+            Shape {
+                dims: vec![rows as u32, cols as u32],
+            },
+            values,
+        )
+        .unwrap(),
+    )
+}
+
 fn real_vector(len: usize) -> Value {
     let elements: Vec<Literal> = (0..len)
         .map(|i| {
@@ -1993,6 +2015,74 @@ fn bench_fft_batch_128x1000(c: &mut Criterion) {
     });
 }
 
+// Batched power-of-two FFT along the last axis: 2048 rows of length 256.
+// 256 is a power of two so the radix-2 transform is fast (O(n log n) with cheap
+// butterflies) — making the serial complex<->Literal conversion the dominant
+// cost. This is the scenario where dense Complex storage (as_complex_slice) wins.
+fn bench_fft_batch_2048x256(c: &mut Criterion) {
+    let input = complex_matrix(2048, 256);
+    let p = no_params();
+    c.bench_function("eval/fft_batch_2048x256_complex128", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &p))
+    });
+}
+
+// Same FFT as `bench_fft_batch_2048x256` but with a dense-complex-backed input,
+// so `extract_tensor_complex` borrows the packed `(re, im)` slice instead of
+// converting 524288 `Literal`s one by one. Isolates the dense-extract win.
+fn bench_fft_batch_2048x256_dense_input(c: &mut Criterion) {
+    let input = complex_matrix_dense(2048, 256);
+    let p = no_params();
+    c.bench_function(
+        "eval/fft_batch_2048x256_complex128_dense_input",
+        |bencher| {
+            bencher.iter(|| eval_primitive(Primitive::Fft, std::slice::from_ref(&input), &p))
+        },
+    );
+}
+
+// Same-binary head-to-head of the two complex-output build strategies for a
+// 512k-element complex128 buffer: dense packed `(re, im)` storage vs the
+// `Vec<Literal>` build. Isolates output-build cost from extract/transform.
+fn bench_complex_build_dense_512k(c: &mut Criterion) {
+    let values: Vec<(f64, f64)> = (0..2048 * 256)
+        .map(|i| {
+            let x = i as f64;
+            ((x * 0.125).sin(), (x * 0.25).cos())
+        })
+        .collect();
+    let shape = Shape {
+        dims: vec![2048, 256],
+    };
+    c.bench_function("eval/complex_build_dense_512k", |bencher| {
+        bencher.iter(|| {
+            TensorValue::new_complex_values(DType::Complex128, shape.clone(), values.clone())
+                .unwrap()
+        })
+    });
+}
+
+fn bench_complex_build_literal_512k(c: &mut Criterion) {
+    let values: Vec<(f64, f64)> = (0..2048 * 256)
+        .map(|i| {
+            let x = i as f64;
+            ((x * 0.125).sin(), (x * 0.25).cos())
+        })
+        .collect();
+    let shape = Shape {
+        dims: vec![2048, 256],
+    };
+    c.bench_function("eval/complex_build_literal_512k", |bencher| {
+        bencher.iter(|| {
+            let lits: Vec<Literal> = values
+                .iter()
+                .map(|&(re, im)| Literal::from_complex128(re, im))
+                .collect();
+            TensorValue::new(DType::Complex128, shape.clone(), lits).unwrap()
+        })
+    });
+}
+
 fn bench_rfft_256(c: &mut Criterion) {
     let input = real_vector(256);
     let p = no_params();
@@ -2481,6 +2571,10 @@ criterion_group!(
     bench_fft_1000,
     bench_fft_1009_prime,
     bench_fft_batch_128x1000,
+    bench_fft_batch_2048x256,
+    bench_fft_batch_2048x256_dense_input,
+    bench_complex_build_dense_512k,
+    bench_complex_build_literal_512k,
     bench_rfft_256,
     bench_rfft_batch_64x1000,
     bench_irfft_256,

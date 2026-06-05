@@ -1,0 +1,31 @@
+{
+  "bead": "frankenjax-6294o",
+  "crate": "fj-core (storage) + fj-lax (fft)",
+  "target": "Batched complex FFT (eval_fft/eval_ifft). Bottleneck handed over by rejected bead frankenjax-6lo0c / commit 551eefc4: Complex64/128 were Literal-backed with NO dense slice (unlike as_f64_slice), so eval_fft's extract converted N Literals -> (f64,f64) serially and the output built N complex Literals. Row-threading the transform alone was Amdahl-capped at 1.21x by those serial halves.",
+  "lever": "Dense Complex storage in fj-core: new LiteralBufferStorage::Complex { values: Arc<Vec<(f64,f64)>>, dtype, literals: lazy } + as_complex_slice() + TensorValue::new_complex_values(). FFT extract now borrows the packed slice (bulk to_vec, no per-Literal match); output is built straight into dense storage. With extract+output now ~free, the per-row transform is ~97% of the work and is fanned out across threads (std::thread::scope, per-thread Bluestein scratch+buf, disjoint output slices, PARALLEL_MIN_ELEMS=1<<18). Complex64 dense buffers are f32-narrowed on construction so the packed slice and the lazily materialized Literal agree bit-for-bit.",
+  "isomorphism": "BIT-EXACT, proven by two committed tests + one golden: (1) dense_complex_input_bit_identical_to_literal_input — dense as_complex_slice input vs Literal input produce identical output bits (fft+ifft, radix-2 len 8 + Bluestein len 6); (2) threaded_batch_fft_matches_per_row_serial — 512x512 (>=1<<18, threaded) batch output equals per-row serial transform bit-for-bit (fft+ifft); (3) fft_golden_output_digest — canonical 64x128 c128 FFT output pinned. Rows are independent (no reordering of any butterfly), so threading is exact.",
+  "golden": {
+    "case": "64x128 complex128 FFT, deterministic input ((i*0.0078125).sin(), (i*0.015625).cos()-0.2), output as LE (re,im) u64-bits stream",
+    "bytes": 131072,
+    "sha256": "e08a6c8279950e499a2619baa424616e9a205eafd8727223aacdb633026a356a",
+    "fnv1a64": "0xe981f3aedf001c51"
+  },
+  "measurements_bench_eval_fft_batch_2048x256_complex128": {
+    "before_serial_literal_ms": 17.9,
+    "after_threaded_dense_literal_input_ms": 13.78,
+    "after_threaded_dense_dense_input_ms": 7.50,
+    "isolated_output_build_512k_literal_us": 729.08,
+    "isolated_output_build_512k_dense_us": 323.53,
+    "notes": "Original serial baseline established clean back-to-back this session (stash source, keep bench): 17.83/17.94 ms. dense-input number is same-binary, variance-controlled (cols=256 power-of-two so radix-2 transform is cheap, isolating the storage/threading lever)."
+  },
+  "speedup": {
+    "steady_state_dense_input": 2.39,
+    "apples_to_apples_literal_input_zero_regression": 1.30,
+    "isolated_dense_output_build": 2.25
+  },
+  "score": "impact 5 (FFT/IFFT/complex pipelines; dense complex storage is reusable infra for all complex ops) x confidence 5 (bit-exact dense==literal AND threaded==serial, golden pinned, 1093 fj-lax + 130 fj-core tests pass) / effort 2.5 = 10",
+  "decision": "SHIP. Steady-state (dense complex input, the representation upstream complex ops now produce) is 2.39x; identical-Literal-input path is 1.30x faster with ZERO regression (dense extract fast-path is a no-op for Literal input). Clears Score>=2.0.",
+  "tests": "fj-lax lib 1093/1093; fj-core lib 130/130; fft module 34/34 (3 new proofs). fft.rs + fj-core changes fmt-clean and clippy-clean (pre-existing einsum.rs:767 type_complexity + foreign lib.rs fmt churn untouched).",
+  "follow_ups": "eval_rfft/eval_irfft still build Literal output (real/Hermitian paths) — candidate for the same dense treatment. Complex elementwise ops (mul/conj/neg/add) can adopt as_complex_slice for a similar extract win.",
+  "date": "2026-06-05"
+}
