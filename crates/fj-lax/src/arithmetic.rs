@@ -6079,7 +6079,11 @@ pub(crate) fn eval_integer_pow(
         result
     }
 
-    fn integer_pow_literal(literal: Literal, exponent: i32) -> Result<Literal, &'static str> {
+    fn integer_pow_literal(
+        literal: Literal,
+        exponent: i32,
+        dtype: DType,
+    ) -> Result<Literal, &'static str> {
         match literal {
             Literal::Complex64Bits(re_bits, im_bits) => {
                 let z = (
@@ -6094,6 +6098,20 @@ pub(crate) fn eval_integer_pow(
                 let result = complex_powi(z, exponent);
                 Ok(Literal::from_complex128(result.0, result.1))
             }
+            // Integer bases with a non-negative exponent use EXACT wrapping integer
+            // power (two's-complement, per dtype width), matching XLA/`lax.integer_
+            // pow`. The old f64 `powi` round-trip lost precision above 2^53 and
+            // saturated on overflow instead of wrapping. (Negative exponents on an
+            // integer base — a TypeError in JAX — fall through to the float path.)
+            Literal::I64(base) if exponent >= 0 => {
+                let e = exponent as u32;
+                Ok(match dtype {
+                    DType::I32 => Literal::I64(i64::from((base as i32).wrapping_pow(e))),
+                    _ => Literal::I64(base.wrapping_pow(e)),
+                })
+            }
+            Literal::U32(base) if exponent >= 0 => Ok(Literal::U32(base.wrapping_pow(exponent as u32))),
+            Literal::U64(base) if exponent >= 0 => Ok(Literal::U64(base.wrapping_pow(exponent as u32))),
             _ => {
                 let value = literal.as_f64().ok_or("expected numeric")?;
                 let in_dtype = literal_dtype(literal);
@@ -6103,7 +6121,7 @@ pub(crate) fn eval_integer_pow(
     }
 
     match &inputs[0] {
-        Value::Scalar(literal) => integer_pow_literal(*literal, exponent)
+        Value::Scalar(literal) => integer_pow_literal(*literal, exponent, literal_dtype(*literal))
             .map(Value::Scalar)
             .map_err(|e| EvalError::TypeMismatch {
                 primitive,
@@ -6113,7 +6131,7 @@ pub(crate) fn eval_integer_pow(
             let out_dtype = tensor.dtype;
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in &tensor.elements {
-                elements.push(integer_pow_literal(*literal, exponent).map_err(|e| {
+                elements.push(integer_pow_literal(*literal, exponent, out_dtype).map_err(|e| {
                     EvalError::TypeMismatch {
                         primitive,
                         detail: e,
@@ -8554,6 +8572,31 @@ mod tests {
         params.insert("exponent".to_owned(), "-2".to_owned());
         let result = eval_integer_pow(Primitive::IntegerPow, &[s_f64(2.0)], &params).unwrap();
         assert!((extract_f64(&result) - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn integer_pow_i64_exact_and_wrapping() {
+        // lax.integer_pow on integers is exact wrapping arithmetic, not an f64
+        // round-trip. 3^39 exceeds 2^53, where the old `(x as f64).powi(e) as i64`
+        // lost precision.
+        let p = |e: &str| {
+            let mut m = BTreeMap::new();
+            m.insert("exponent".to_owned(), e.to_owned());
+            m
+        };
+        let r = eval_integer_pow(Primitive::IntegerPow, &[s_i64(3)], &p("39")).unwrap();
+        assert_eq!(r.as_i64_scalar().unwrap(), 4_052_555_153_018_976_267);
+        assert_eq!(r.as_i64_scalar().unwrap(), 3i64.wrapping_pow(39));
+
+        // 2^63 overflows i64 → two's-complement wrap (XLA), not saturation.
+        let r = eval_integer_pow(Primitive::IntegerPow, &[s_i64(2)], &p("63")).unwrap();
+        assert_eq!(r.as_i64_scalar().unwrap(), i64::MIN);
+
+        // Small powers stay exact.
+        let r = eval_integer_pow(Primitive::IntegerPow, &[s_i64(7)], &p("2")).unwrap();
+        assert_eq!(r.as_i64_scalar().unwrap(), 49);
+        let r = eval_integer_pow(Primitive::IntegerPow, &[s_i64(-3)], &p("3")).unwrap();
+        assert_eq!(r.as_i64_scalar().unwrap(), -27);
     }
 
     // ── Nextafter ──
