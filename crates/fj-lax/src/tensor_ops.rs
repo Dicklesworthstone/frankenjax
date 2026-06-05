@@ -4192,27 +4192,15 @@ fn extremum_along_axis(
         Ok(flat)
     };
 
-    // Dense fast paths: scan the contiguous typed slice with the same comparison
-    // (F64 total_cmp / I64 cmp) and strict-greater/less update so the FIRST
-    // occurrence wins ties — bit-identical indices to the generic
-    // sort_key/compare_sort_keys scan, without the per-element Literal machinery.
+    // Dense fast paths: scan the contiguous typed slice without the per-element
+    // Literal machinery. F64 uses the JAX float reducer (`arg_extreme_float`:
+    // IEEE compare + sign-agnostic first-NaN); I64 uses strict cmp with
+    // first-occurrence tie-break (no NaN for integers).
     if let Some(values) = tensor.elements.as_f64_slice() {
         for outer in 0..outer_count {
             let base = base_of(outer)?;
-            let mut best_idx = 0_usize;
-            let mut best = values[base];
-            for i in 1..axis_dim {
-                let v = values[base + i * axis_stride];
-                let better = if find_max {
-                    v.total_cmp(&best) == std::cmp::Ordering::Greater
-                } else {
-                    v.total_cmp(&best) == std::cmp::Ordering::Less
-                };
-                if better {
-                    best_idx = i;
-                    best = v;
-                }
-            }
+            let best_idx =
+                arg_extreme_float(axis_dim, find_max, |i| values[base + i * axis_stride]);
             result_elements.push(Literal::I64(best_idx as i64));
         }
     } else if let Some(values) = tensor.elements.as_i64_slice() {
@@ -4228,6 +4216,43 @@ fn extremum_along_axis(
                     best = v;
                 }
             }
+            result_elements.push(Literal::I64(best_idx as i64));
+        }
+    } else if matches!(
+        tensor.dtype,
+        DType::BF16 | DType::F16 | DType::F32 | DType::F64
+    ) {
+        // Real floats not in dense f64 storage (F16/F32/BF16, or strided/non-dense
+        // F64): gather each slice's strided values as f64 — widening BF16/F16/F32
+        // is exact and order-preserving, NaN stays NaN — then apply the same JAX
+        // float reducer as the dense path so -NaN selection and ±0.0 ties match.
+        let mut slice_buf: Vec<f64> = Vec::with_capacity(axis_dim);
+        for outer in 0..outer_count {
+            let base = base_of(outer)?;
+            slice_buf.clear();
+            for i in 0..axis_dim {
+                let flat_idx = i
+                    .checked_mul(axis_stride)
+                    .and_then(|offset| base.checked_add(offset))
+                    .ok_or_else(|| EvalError::Unsupported {
+                        primitive,
+                        detail: "argmin/argmax axis offset overflowed".to_owned(),
+                    })?;
+                let literal = *tensor.elements.get(flat_idx).ok_or_else(|| {
+                    EvalError::Unsupported {
+                        primitive,
+                        detail: format!(
+                            "argmin/argmax flat index {flat_idx} out of bounds for {total} elements"
+                        ),
+                    }
+                })?;
+                let v = literal.as_f64().ok_or_else(|| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("argmin/argmax expected a float literal, got {literal:?}"),
+                })?;
+                slice_buf.push(v);
+            }
+            let best_idx = arg_extreme_float(axis_dim, find_max, |i| slice_buf[i]);
             result_elements.push(Literal::I64(best_idx as i64));
         }
     } else {
@@ -4867,6 +4892,37 @@ enum SortKey {
     /// [real, imag] float keys) and NumPy's complex sort. Both components are
     /// widened to f64 so Complex64 and Complex128 share one comparison path.
     Complex(f64, f64),
+}
+
+/// First index of the extremum along a float slice, matching JAX's
+/// `_ArgMinMaxReducer` (jax/_src/lax/lax.py): a candidate replaces the
+/// accumulator when it is strictly better under IEEE `>` / `<` (so ±0.0 compare
+/// equal and the first occurrence wins ties) OR when it is NaN (sign-agnostic,
+/// via `v != v`). The first NaN therefore wins outright and is sticky — later
+/// NaNs and finite values cannot displace it — which is exactly what
+/// `jnp.argmax` / `jnp.argmin` return (verified against JAX CPU). This is the
+/// real-float reducer; integer/bool/complex dtypes keep the total-order
+/// `sort_key` path. It differs from `total_cmp` in two JAX-relevant ways:
+/// total_cmp ranks -NaN below -inf (so a -NaN is missed by argmax / picked
+/// wrongly by argmin), and ranks -0.0 < +0.0 (so a later +0.0 would beat an
+/// earlier -0.0). `n` is the slice length (`axis_dim`, always ≥ 1 here).
+fn arg_extreme_float<F: Fn(usize) -> f64>(n: usize, find_max: bool, get: F) -> usize {
+    let mut best_idx = 0_usize;
+    let mut best = get(0);
+    let mut best_nan = best.is_nan();
+    let mut i = 1;
+    while i < n && !best_nan {
+        let v = get(i);
+        if v.is_nan() {
+            best_idx = i;
+            best_nan = true;
+        } else if (find_max && v > best) || (!find_max && v < best) {
+            best_idx = i;
+            best = v;
+        }
+        i += 1;
+    }
+    best_idx
 }
 
 fn sort_key(literal: Literal) -> Result<SortKey, String> {
@@ -7838,6 +7894,58 @@ mod tests {
             ),
             "i64 argmin dense vs generic"
         );
+    }
+
+    #[test]
+    fn argmax_argmin_nan_and_signed_zero_match_jax() {
+        // Pins fj to JAX's _ArgMinMaxReducer (jax/_src/lax/lax.py): a NaN of EITHER
+        // sign is selected (op_val != op_val), the FIRST NaN wins and is sticky,
+        // and ±0.0 compare equal under IEEE so first-occurrence wins ties. Indices
+        // below were verified directly against jnp.argmax/argmin (CPU). The prior
+        // total_cmp scan missed -NaN (ranked below -inf) and split ±0.0.
+        let neg_nan = f64::from_bits(0xFFF8_0000_0000_0000); // sign bit set
+        let pos_nan = f64::NAN; // 0x7FF8...
+        // (input, expected argmax, expected argmin)
+        let cases: &[(&[f64], i64, i64)] = &[
+            (&[3.0, neg_nan, 5.0], 1, 1),
+            (&[3.0, pos_nan, 5.0], 1, 1),
+            (&[3.0, neg_nan, 5.0, neg_nan, 1.0], 1, 1), // first NaN sticky
+            (&[neg_nan, 3.0, 5.0], 0, 0),
+            (&[-0.0, 0.0], 0, 0),
+            (&[0.0, -0.0], 0, 0),
+            (&[5.0, -0.0, 0.0, -5.0], 0, 3),
+            (&[1.0, 2.0, 3.0], 2, 0), // NaN-free control
+        ];
+        let p = BTreeMap::new();
+        for &(data, want_max, want_min) in cases {
+            // Dense f64 storage (as_f64_slice fast path) and Literal-backed storage
+            // (generic path) must BOTH match JAX.
+            let dense = Value::Tensor(
+                TensorValue::new_f64_values(Shape::vector(data.len() as u32), data.to_vec())
+                    .unwrap(),
+            );
+            let literal = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape::vector(data.len() as u32),
+                    data.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            );
+            assert!(literal.as_tensor().unwrap().elements.as_f64_slice().is_none());
+            for v in [&dense, &literal] {
+                let got_max = eval_argmax(Primitive::Argmax, std::slice::from_ref(v), &p)
+                    .unwrap()
+                    .as_i64_scalar()
+                    .unwrap();
+                let got_min = eval_argmin(Primitive::Argmin, std::slice::from_ref(v), &p)
+                    .unwrap()
+                    .as_i64_scalar()
+                    .unwrap();
+                assert_eq!(got_max, want_max, "argmax {data:?}");
+                assert_eq!(got_min, want_min, "argmin {data:?}");
+            }
+        }
     }
 
     #[test]
