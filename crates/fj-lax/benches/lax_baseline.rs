@@ -2929,6 +2929,25 @@ fn bench_rfft_batch_64x1003_bluestein(c: &mut Criterion) {
     });
 }
 
+// Padding-heavy case: 1500 = 2^2·3·5^3 is far above the previous power of two, so
+// Bluestein would pad to 4096 (~2.7x). Mixed-radix transforms it natively. The
+// 1499 (prime) control pads to 4096 too and stays on Bluestein — same invocation.
+fn bench_rfft_batch_64x1500_mixed(c: &mut Criterion) {
+    let input = real_matrix(64, 1500);
+    let p = no_params();
+    c.bench_function("eval/rfft_batch_64x1500_mixed_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_rfft_batch_64x1499_bluestein(c: &mut Criterion) {
+    let input = real_matrix(64, 1499);
+    let p = no_params();
+    c.bench_function("eval/rfft_batch_64x1499_bluestein_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Rfft, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Batched power-of-two real FFT: 2048 rows of length 256. The radix-2 transform
 // is cheap so the per-row work fans out across threads (dense complex output).
 fn bench_rfft_batch_2048x256(c: &mut Criterion) {
@@ -3516,6 +3535,8 @@ criterion_group!(
     bench_rfft_256,
     bench_rfft_batch_64x1000,
     bench_rfft_batch_64x1003_bluestein,
+    bench_rfft_batch_64x1500_mixed,
+    bench_rfft_batch_64x1499_bluestein,
     bench_rfft_batch_2048x256,
     bench_rfft_batch_2048x256_dense_input,
     bench_fft_batch_2048x256_real_dense,
