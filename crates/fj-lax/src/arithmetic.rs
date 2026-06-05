@@ -7946,6 +7946,57 @@ mod tests {
         assert_eq!(parallel[0].to_bits(), lgamma_approx(data[0]).to_bits());
     }
 
+    /// Erf and Cbrt were routed onto the threaded transcendental path; a large
+    /// dense-F64 tensor must equal the serial elementwise map bit-for-bit.
+    #[test]
+    fn erf_cbrt_parallel_bit_identical() {
+        let n = 300_000usize; // > 1<<18 -> threaded
+        let data: Vec<f64> = (0..n)
+            .map(|i| ((i % 4001) as f64 - 2000.0) * 0.001)
+            .collect();
+        let input = tensor_f64(vec![n as u32], &data);
+
+        let erf_par = extract_f64_vec(
+            &crate::eval_primitive(
+                Primitive::Erf,
+                std::slice::from_ref(&input),
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let erf_ser = extract_f64_vec(
+            &eval_unary_elementwise(Primitive::Erf, std::slice::from_ref(&input), erf_approx)
+                .unwrap(),
+        );
+        for idx in 0..n {
+            assert_eq!(
+                erf_par[idx].to_bits(),
+                erf_ser[idx].to_bits(),
+                "erf at {idx}"
+            );
+        }
+
+        let cbrt_par = extract_f64_vec(
+            &crate::eval_primitive(
+                Primitive::Cbrt,
+                std::slice::from_ref(&input),
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let cbrt_ser = extract_f64_vec(
+            &eval_unary_elementwise(Primitive::Cbrt, std::slice::from_ref(&input), f64::cbrt)
+                .unwrap(),
+        );
+        for idx in 0..n {
+            assert_eq!(
+                cbrt_par[idx].to_bits(),
+                cbrt_ser[idx].to_bits(),
+                "cbrt at {idx}"
+            );
+        }
+    }
+
     #[test]
     fn dot_general_parallel_bit_identical() {
         // A batched matmul large enough (4·256·256·256 = 67.1M FMAs) to engage

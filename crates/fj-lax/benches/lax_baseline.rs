@@ -178,6 +178,28 @@ fn bench_atan2_1m_f64_vec(c: &mut Criterion) {
     });
 }
 
+// 1M erf (Gaussian CDF) — a compute-bound unary transcendental that was on the
+// serial path; routed through eval_unary_elementwise_parallel.
+fn bench_erf_1m_f64_vec(c: &mut Criterion) {
+    let a: Vec<f64> = (0..1 << 20)
+        .map(|i| ((i % 4001) as f64 - 2000.0) * 0.001)
+        .collect();
+    let input = Value::vector_f64(&a).unwrap();
+    let p = no_params();
+    c.bench_function("eval/erf_1m_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Erf, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_cbrt_1m_f64_vec(c: &mut Criterion) {
+    let a: Vec<f64> = (0..1 << 20).map(|i| (i as f64) * 0.0007 - 300.0).collect();
+    let input = Value::vector_f64(&a).unwrap();
+    let p = no_params();
+    c.bench_function("eval/cbrt_1m_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Cbrt, std::slice::from_ref(&input), &p))
+    });
+}
+
 // 1M tensor ** scalar (x ** 2.5): the ubiquitous scalar-power broadcast,
 // compute-bound on powf — exercises the threaded scalar-broadcast expensive path.
 fn bench_pow_scalar_1m_f64_vec(c: &mut Criterion) {
@@ -2681,6 +2703,8 @@ criterion_group!(
     bench_pow_scalar_1m_f64_vec,
     bench_pow_scalar_1m_f64_literal_reference,
     bench_atan2_1m_f64_vec,
+    bench_erf_1m_f64_vec,
+    bench_cbrt_1m_f64_vec,
     bench_atan2_scalar_1m_f64_vec,
     bench_atan2_scalar_1m_f64_literal_reference,
     bench_div_1k_f64_vector,

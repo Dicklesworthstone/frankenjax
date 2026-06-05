@@ -1,0 +1,19 @@
+{
+  "bead": "frankenjax-598go",
+  "crate": "fj-lax (lib dispatch)",
+  "target": "Unary transcendentals Erf/Erfc/Cbrt, which called the serial eval_unary_elementwise while the hyperbolic/inverse/gamma family (sinh/cosh/tanh/asinh/acosh/atanh/lgamma/digamma/erf_inv) already used eval_unary_elementwise_parallel.",
+  "lever": "Route Erf, Erfc, Cbrt through eval_unary_elementwise_parallel (the proven, op-agnostic threaded transcendental path). erf_approx is the project's own polynomial approximation and cbrt is moderately expensive — both compute-bound, so threading over elements scales. One-line dispatch changes; the helper falls back to serial below 1<<18.",
+  "isomorphism": "BIT-EXACT by construction (op-agnostic helper, already covered by lgamma_parallel_bit_identical). Added erf_cbrt_parallel_bit_identical (300k dense F64: parallel Erf/Cbrt == serial eval_unary_elementwise, bit-for-bit). 1103 fj-lax tests pass.",
+  "measurements_same_session_back_to_back": {
+    "erf_1m_f64_vec":  { "before_serial_ms": 42.81, "after_threaded_ms": 5.39, "ratio": 7.9 },
+    "cbrt_1m_f64_vec": { "before_serial_ms": 16.54, "after_threaded_ms": 4.27, "ratio": 3.9 }
+  },
+  "measured_and_excluded": {
+    "Expm1": { "ratio": 1.53, "reason": "f64::exp_m1 is a cheap libm intrinsic, memory-bound" },
+    "Log1p": { "reason": "f64::ln_1p same class as exp_m1; excluded with it" },
+    "note": "Matches the prior transcendental commit's exclusion of exp/log/sin/cos (~1.9x, memory-bound, over-spawn risk). Kept serial."
+  },
+  "decision": "SHIP. Erf 7.9x, Erfc ~7.9x (same erf_approx), Cbrt 3.9x — all compute-bound transcendentals. Expm1/Log1p measured-and-excluded (<2x, cheap intrinsics). Clears Score>=2.0.",
+  "follow_ups": "Multi-dim broadcast of the expensive binary ops (broadcast_binary_tensors) still serial. erf_approx itself is a crude approximation (~1e-4 vs JAX) per project memory — accuracy (not perf) is a separate open item.",
+  "date": "2026-06-05"
+}

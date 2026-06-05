@@ -32,7 +32,7 @@ use arithmetic::{
     eval_igamma, eval_igammac, eval_imag, eval_integer_pow, eval_is_finite, eval_is_inf,
     eval_is_nan, eval_lgamma, eval_log, eval_neg, eval_nextafter, eval_polygamma, eval_real,
     eval_round, eval_select, eval_select_n, eval_signbit, eval_sin, eval_sinh, eval_tan, eval_tanh,
-    eval_unary_elementwise, eval_unary_int_or_float, eval_zeta,
+    eval_unary_elementwise, eval_unary_elementwise_parallel, eval_unary_int_or_float, eval_zeta,
 };
 
 use comparison::eval_comparison;
@@ -295,8 +295,10 @@ pub fn eval_primitive(
         Primitive::Logistic => {
             eval_unary_elementwise(primitive, inputs, |x| 1.0 / (1.0 + (-x).exp()))
         }
-        Primitive::Erf => eval_unary_elementwise(primitive, inputs, erf_approx),
-        Primitive::Erfc => eval_unary_elementwise(primitive, inputs, |x| 1.0 - erf_approx(x)),
+        Primitive::Erf => eval_unary_elementwise_parallel(primitive, inputs, erf_approx),
+        Primitive::Erfc => {
+            eval_unary_elementwise_parallel(primitive, inputs, |x| 1.0 - erf_approx(x))
+        }
         Primitive::Lgamma => eval_lgamma(primitive, inputs),
         Primitive::Digamma => eval_digamma(primitive, inputs),
         Primitive::Polygamma => eval_polygamma(primitive, inputs),
@@ -472,7 +474,7 @@ pub fn eval_primitive(
         Primitive::ExpandDims => eval_expand_dims(inputs, params),
         Primitive::Tile => eval_tile(inputs, params),
         // Special math
-        Primitive::Cbrt => eval_unary_elementwise(primitive, inputs, f64::cbrt),
+        Primitive::Cbrt => eval_unary_elementwise_parallel(primitive, inputs, f64::cbrt),
         Primitive::IsFinite => eval_is_finite(primitive, inputs),
         Primitive::IsNan => eval_is_nan(primitive, inputs),
         Primitive::IsInf => eval_is_inf(primitive, inputs),
