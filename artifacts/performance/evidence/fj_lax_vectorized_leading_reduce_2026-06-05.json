@@ -1,0 +1,13 @@
+{
+  "bead": "frankenjax-6ym2w",
+  "crate": "fj-lax (reduction)",
+  "target": "Dense F64 leading-axis (axis-0) reduction. dense_f64_axis_reduce drove the OutIndexOdometer per element; for a [4096,1024] reduce over axis 0 the odometer's per-element next_index() branching dominated (6.0ms), even though the input reads are already contiguous.",
+  "lever": "When the kept axes are exactly the trailing suffix (reduced axes are the leading prefix), the reduction is a column accumulation: out[o] = op over k of values[k*block + o]. Replace the per-element odometer with a contiguous nested loop `for k { for (slot, &v) in result.zip(row_k) { *slot = op(*slot, v) } }`. The inner column loop is a contiguous read + L1-resident accumulator, which the compiler vectorizes (the float_op closure is a ZST and inlines to a concrete +/*). Each output column folds k in ascending order — identical to the odometer's emission order. A different VECTORIZATION lever (not threading).",
+  "isomorphism": "BIT-EXACT. leading_axis_column_reduce_bit_identical ([4096,64] reduce axis0, sum/prod/max/min == a column accumulation folding k ascending, bit-for-bit). jax_max_f64/jax_min_f64 NaN-propagating ops match the generic path. 1107 fj-lax tests pass.",
+  "measurements_same_session_back_to_back": {
+    "reduce_sum_4096x1024_axis0_f64": { "before_odometer_ms": 6.02, "after_vectorized_ms": 2.78, "ratio": 2.16 }
+  },
+  "threading_rejected": "Threading the column reduction was MEASURED and rejected: splitting columns gives each thread strided (block-apart) reads that negate cache/prefetch locality (5.86ms, no gain); the cache-friendly partial-sum-per-row-block approach reassociates the f64 sum and breaks bit-parity. The serial vectorized form is the bit-exact ceiling.",
+  "decision": "SHIP. 2.16x on leading-axis F64 reduction (reduce over batch/sample dim — ubiquitous), bit-exact, zero-regression (other layouts keep their paths). Pairs with the trailing-axis threaded reduction (jyyzg) to cover both reduction orientations.",
+  "date": "2026-06-05"
+}

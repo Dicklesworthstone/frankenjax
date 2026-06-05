@@ -363,6 +363,38 @@ fn dense_f64_axis_reduce(
         }
     }
 
+    // Leading-axis reduction fast path: when the kept axes are exactly the trailing
+    // suffix (the reduced axes are the leading prefix), the reduction is a column
+    // accumulation — `out[o] = op_k(values[k*block + o])` for k over the reduced
+    // extent, o over the `block = out_count` kept columns. The inner loop over `o`
+    // is a contiguous read + contiguous accumulate (vectorizable for `+`/`*`), and
+    // each output column accumulates k in ascending order — identical to the
+    // odometer's emission order. Threads own disjoint column ranges (each does the
+    // full k-loop), so the result is bit-for-bit identical to the serial fold.
+    let rank = tensor.shape.dims.len();
+    let kept_is_trailing_suffix = !kept_axes.is_empty()
+        && *kept_axes.last().unwrap() == rank - 1
+        && kept_axes
+            .iter()
+            .enumerate()
+            .all(|(i, &ax)| ax == rank - kept_axes.len() + i);
+    if kept_is_trailing_suffix
+        && out_count > 1
+        && values.len() == out_count * (values.len() / out_count)
+        && values.len() >= (1 << 18)
+    {
+        let block = out_count;
+        let outer = values.len() / block;
+        let mut result = vec![float_init; block];
+        for k in 0..outer {
+            let row = &values[k * block..k * block + block];
+            for (slot, &v) in result.iter_mut().zip(row.iter()) {
+                *slot = float_op(*slot, v);
+            }
+        }
+        return Some(result);
+    }
+
     let mut odometer = OutIndexOdometer::new(&tensor.shape.dims, kept_axes, out_dims);
     let mut result = vec![float_init; out_count];
     for &value in values {
@@ -1966,6 +1998,52 @@ mod tests {
             assert_eq!(got.len(), expect.len());
             for i in 0..n {
                 assert_eq!(got[i].to_bits(), expect[i].to_bits(), "{prim:?} row {i}");
+            }
+        }
+    }
+
+    /// Isomorphism proof for the leading-axis (column) reduction fast path: a large
+    /// `[N,M]` reduce over axis 0 (>= 1<<18) must equal, bit-for-bit, a column
+    /// accumulation that folds k in ascending order (the odometer's emission order).
+    #[test]
+    fn leading_axis_column_reduce_bit_identical() {
+        let (n, m) = (4096usize, 64usize); // 262_144 = 1<<18
+        assert!(n * m >= (1usize << 18) && m > 1);
+        let data: Vec<f64> = (0..n * m)
+            .map(|i| ((i % 103) as f64 - 51.0) * 0.0625 + 0.2 * ((i % 5) as f64))
+            .collect();
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(
+                Shape {
+                    dims: vec![n as u32, m as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+
+        type Op = fn(f64, f64) -> f64;
+        let cases: [(Primitive, f64, Op); 4] = [
+            (Primitive::ReduceSum, 0.0, |a, b| a + b),
+            (Primitive::ReduceProd, 1.0, |a, b| a * b),
+            (Primitive::ReduceMax, f64::NEG_INFINITY, crate::jax_max_f64),
+            (Primitive::ReduceMin, f64::INFINITY, crate::jax_min_f64),
+        ];
+        for (prim, init, op) in cases {
+            let mut p = BTreeMap::new();
+            p.insert("axes".to_owned(), "0".to_owned());
+            let got = extract_f64_vec(
+                &crate::eval_primitive(prim, std::slice::from_ref(&input), &p).unwrap(),
+            );
+            let mut expect = vec![init; m];
+            for k in 0..n {
+                for j in 0..m {
+                    expect[j] = op(expect[j], data[k * m + j]);
+                }
+            }
+            assert_eq!(got.len(), m);
+            for j in 0..m {
+                assert_eq!(got[j].to_bits(), expect[j].to_bits(), "{prim:?} col {j}");
             }
         }
     }
