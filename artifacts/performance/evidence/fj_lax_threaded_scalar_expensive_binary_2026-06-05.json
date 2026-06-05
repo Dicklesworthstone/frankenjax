@@ -1,0 +1,13 @@
+{
+  "bead": "frankenjax-mj1a0",
+  "crate": "fj-lax (arithmetic)",
+  "target": "scalar⊗tensor and tensor⊗scalar broadcast for the expensive binary ops Pow/Atan2/Hypot/LogAddExp/XLogY (e.g. x ** 2.5). eval_f64_scalar_broadcast_binop only fast-pathed Add/Sub/Mul/Div via dense::scalar_op; the expensive ops returned None and fell to the generic per-Literal loop (materialize + per-element transcendental, serial).",
+  "lever": "eval_f64_scalar_expensive_parallel — the scalar-broadcast analogue of last commit's eval_same_shape_f64_expensive_parallel (frankenjax-jo7l8). When the tensor operand is dense F64, the op is an expensive transcendental, and len >= 1<<16, apply the identical float_op (scalar_on_left selects operand order) across scoped threads. Hoisted the shared threshold + is_expensive_binary predicate. Cheap ops keep their existing dense scalar_op path.",
+  "isomorphism": "BIT-EXACT. threaded_expensive_binary_scalar_bit_identical_to_reference (n=1<<16, Pow/Atan2 both tensor⊗scalar and scalar⊗tensor == element-wise f64::powf/atan2, bit-for-bit). 1102 fj-lax tests pass.",
+  "measurements_same_session_back_to_back": {
+    "pow_scalar_1m_f64_vec (x ** 2.5)": { "before_serial_generic_ms": 49.93, "after_threaded_dense_ms": 5.96, "ratio": 8.4 }
+  },
+  "decision": "SHIP. 8.4x on x**scalar (ubiquitous: squaring, powers, normalization). Combines a missing dense scalar path + threading a compute-bound op. Clears Score>=2.0.",
+  "notes": "Also restored eval_binary_elementwise's #[inline] (an earlier const insertion had displaced it onto a helper). Completes the expensive-binary parallelization across same-shape (jo7l8) + scalar-broadcast. Remaining: multi-dim broadcast of expensive binops still serial; unary expensive ops not yet in eval_unary_elementwise_parallel.",
+  "date": "2026-06-05"
+}

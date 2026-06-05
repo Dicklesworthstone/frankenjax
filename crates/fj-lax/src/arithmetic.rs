@@ -8,10 +8,84 @@ use crate::EvalError;
 use crate::tensor_contraction::{batched_matmul_2d, matmul_2d};
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
-/// Binary elementwise operation dispatching on int/float paths.
-/// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
-/// scalar-tensor, tensor-scalar, and multi-dim broadcasting.
+/// Expensive per-element cost amortizes the thread fan-out at a lower element
+/// count than cheap ops.
+const EXPENSIVE_BINARY_PARALLEL_MIN: usize = 1 << 16; // 65_536
+
 #[inline]
+fn is_expensive_binary(primitive: Primitive) -> bool {
+    matches!(
+        primitive,
+        Primitive::Pow
+            | Primitive::Atan2
+            | Primitive::Hypot
+            | Primitive::LogAddExp
+            | Primitive::XLogY
+    )
+}
+
+/// Threaded scalar⊗tensor (or tensor⊗scalar) fast path for the expensive binary
+/// ops. Mirrors [`eval_same_shape_f64_expensive_parallel`] for the broadcast case
+/// (e.g. `x ** 2.0`), applying the identical `float_op` so it is bit-for-bit
+/// identical to the serial generic path. `scalar_on_left` selects operand order.
+fn eval_f64_scalar_expensive_parallel(
+    primitive: Primitive,
+    scalar: Literal,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+    float_op: &(impl Fn(f64, f64) -> f64 + Sync),
+) -> Option<Value> {
+    if !is_expensive_binary(primitive) {
+        return None;
+    }
+    let Literal::F64Bits(scalar_bits) = scalar else {
+        return None;
+    };
+    if tensor.dtype != DType::F64 {
+        return None;
+    }
+    let src = tensor.elements.as_f64_slice()?;
+    let n = src.len();
+    if n < EXPENSIVE_BINARY_PARALLEL_MIN {
+        return None;
+    }
+    let scalar = f64::from_bits(scalar_bits);
+    let threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(n);
+    if threads <= 1 {
+        return None;
+    }
+    let mut out = vec![0.0f64; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = float_op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f64] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    let v = src[s + i];
+                    *o = if scalar_on_left {
+                        op_ref(scalar, v)
+                    } else {
+                        op_ref(v, scalar)
+                    };
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f64_values(tensor.shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
 /// Expensive elementwise binary ops are dominated by per-element transcendental
 /// cost, not memory traffic, so threading over elements scales (unlike cheap
 /// memory-bound add/sub/mul). These currently fall through to the generic
@@ -25,21 +99,11 @@ fn eval_same_shape_f64_expensive_parallel(
     rhs: &TensorValue,
     float_op: &(impl Fn(f64, f64) -> f64 + Sync),
 ) -> Option<Value> {
-    if !matches!(
-        primitive,
-        Primitive::Pow
-            | Primitive::Atan2
-            | Primitive::Hypot
-            | Primitive::LogAddExp
-            | Primitive::XLogY
-    ) {
+    if !is_expensive_binary(primitive) {
         return None;
     }
     let (a, b) = (lhs.elements.as_f64_slice()?, rhs.elements.as_f64_slice()?);
     let n = a.len();
-    // Expensive per-element cost amortizes the fan-out at a lower element count
-    // than cheap ops.
-    const EXPENSIVE_BINARY_PARALLEL_MIN: usize = 1 << 16; // 65_536
     if n < EXPENSIVE_BINARY_PARALLEL_MIN {
         return None;
     }
@@ -74,6 +138,10 @@ fn eval_same_shape_f64_expensive_parallel(
         .map(Value::Tensor)
 }
 
+/// Binary elementwise operation dispatching on int/float paths.
+/// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
+/// scalar-tensor, tensor-scalar, and multi-dim broadcasting.
+#[inline]
 pub(crate) fn eval_binary_elementwise(
     primitive: Primitive,
     inputs: &[Value],
@@ -142,6 +210,11 @@ pub(crate) fn eval_binary_elementwise(
             }
         }
         (Value::Scalar(lhs), Value::Tensor(rhs)) => {
+            if let Some(value) =
+                eval_f64_scalar_expensive_parallel(primitive, *lhs, rhs, true, &float_op)
+            {
+                return Ok(value);
+            }
             if let Some(value) = eval_f64_scalar_broadcast_binop(primitive, *lhs, rhs, true)? {
                 return Ok(value);
             }
@@ -165,6 +238,11 @@ pub(crate) fn eval_binary_elementwise(
             )?))
         }
         (Value::Tensor(lhs), Value::Scalar(rhs)) => {
+            if let Some(value) =
+                eval_f64_scalar_expensive_parallel(primitive, *rhs, lhs, false, &float_op)
+            {
+                return Ok(value);
+            }
             if let Some(value) = eval_f64_scalar_broadcast_binop(primitive, *rhs, lhs, false)? {
                 return Ok(value);
             }
@@ -6148,7 +6226,8 @@ mod tests {
         let b: Vec<f64> = (0..n).map(|i| 0.5 + (i % 13) as f64 * 0.1).collect();
         let va = v_f64(&a);
         let vb = v_f64(&b);
-        let cases: [(Primitive, fn(f64, f64) -> f64); 3] = [
+        type BinaryRef = fn(f64, f64) -> f64;
+        let cases: [(Primitive, BinaryRef); 3] = [
             (Primitive::Pow, |x, y| x.powf(y)),
             (Primitive::Atan2, |x, y| x.atan2(y)),
             (Primitive::Hypot, |x, y| x.hypot(y)),
@@ -6169,6 +6248,54 @@ mod tests {
                 .map(|(&x, &y)| refop(x, y).to_bits())
                 .collect();
             assert_eq!(got, expect, "{prim:?} threaded != element-wise reference");
+        }
+    }
+
+    /// Isomorphism proof for the threaded scalar-broadcast expensive path: a
+    /// large `tensor op scalar` and `scalar op tensor` must equal the element-wise
+    /// reference (same float op, same operand order). Covers `x ** 2.5`.
+    #[test]
+    fn threaded_expensive_binary_scalar_bit_identical_to_reference() {
+        let n = 1usize << 16;
+        let t: Vec<f64> = (0..n).map(|i| 1.0 + (i % 97) as f64 * 0.01).collect();
+        let vt = v_f64(&t);
+        let s = 2.5f64;
+        let vs = Value::scalar_f64(s);
+        // tensor op scalar
+        for (prim, refop) in [
+            (
+                Primitive::Pow,
+                (|x: f64, y: f64| x.powf(y)) as fn(f64, f64) -> f64,
+            ),
+            (Primitive::Atan2, (|x, y| x.atan2(y)) as fn(f64, f64) -> f64),
+        ] {
+            let got =
+                crate::eval_primitive(prim, &[vt.clone(), vs.clone()], &BTreeMap::new()).unwrap();
+            let got: Vec<u64> = got
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect();
+            let expect: Vec<u64> = t.iter().map(|&x| refop(x, s).to_bits()).collect();
+            assert_eq!(got, expect, "{prim:?} tensor⊗scalar threaded != reference");
+
+            // scalar op tensor
+            let got2 =
+                crate::eval_primitive(prim, &[vs.clone(), vt.clone()], &BTreeMap::new()).unwrap();
+            let got2: Vec<u64> = got2
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect();
+            let expect2: Vec<u64> = t.iter().map(|&x| refop(s, x).to_bits()).collect();
+            assert_eq!(
+                got2, expect2,
+                "{prim:?} scalar⊗tensor threaded != reference"
+            );
         }
     }
 
@@ -7802,12 +7929,18 @@ mod tests {
         let n = 70_000usize;
         let data: Vec<f64> = (0..n).map(|i| 0.5 + (i % 997) as f64 * 0.01).collect();
         let input = tensor_f64(vec![n as u32], &data);
-        let parallel = extract_f64_vec(&eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&input)).unwrap());
-        let serial =
-            extract_f64_vec(&eval_unary_elementwise(Primitive::Lgamma, &[input], lgamma_approx).unwrap());
+        let parallel =
+            extract_f64_vec(&eval_lgamma(Primitive::Lgamma, std::slice::from_ref(&input)).unwrap());
+        let serial = extract_f64_vec(
+            &eval_unary_elementwise(Primitive::Lgamma, &[input], lgamma_approx).unwrap(),
+        );
         assert_eq!(parallel.len(), serial.len());
         for idx in 0..n {
-            assert_eq!(parallel[idx].to_bits(), serial[idx].to_bits(), "mismatch at {idx}");
+            assert_eq!(
+                parallel[idx].to_bits(),
+                serial[idx].to_bits(),
+                "mismatch at {idx}"
+            );
         }
         // also spot-check vs a direct reference value
         assert_eq!(parallel[0].to_bits(), lgamma_approx(data[0]).to_bits());
@@ -7819,8 +7952,12 @@ mod tests {
         // the threaded output-space path must equal the textbook per-batch,
         // ascending-k reference bit-for-bit.
         let (bt, m, k, n) = (4usize, 256usize, 256usize, 256usize);
-        let a_data: Vec<f64> = (0..bt * m * k).map(|i| ((i % 97) as f64 * 0.013).sin()).collect();
-        let b_data: Vec<f64> = (0..bt * k * n).map(|i| ((i % 89) as f64 * 0.017).cos()).collect();
+        let a_data: Vec<f64> = (0..bt * m * k)
+            .map(|i| ((i % 97) as f64 * 0.013).sin())
+            .collect();
+        let b_data: Vec<f64> = (0..bt * k * n)
+            .map(|i| ((i % 89) as f64 * 0.017).cos())
+            .collect();
         let a = tensor_f64(vec![bt as u32, m as u32, k as u32], &a_data);
         let b = tensor_f64(vec![bt as u32, k as u32, n as u32], &b_data);
         let mut params = BTreeMap::new();

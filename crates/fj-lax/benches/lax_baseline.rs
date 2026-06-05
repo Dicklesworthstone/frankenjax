@@ -178,6 +178,64 @@ fn bench_atan2_1m_f64_vec(c: &mut Criterion) {
     });
 }
 
+// 1M tensor ** scalar (x ** 2.5): the ubiquitous scalar-power broadcast,
+// compute-bound on powf — exercises the threaded scalar-broadcast expensive path.
+fn bench_pow_scalar_1m_f64_vec(c: &mut Criterion) {
+    let a: Vec<f64> = (0..1 << 20).map(|i| 1.0 + (i % 97) as f64 * 0.01).collect();
+    let lhs = Value::vector_f64(&a).unwrap();
+    let rhs = Value::scalar_f64(2.5);
+    let p = no_params();
+    c.bench_function("eval/pow_scalar_1m_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Pow, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_pow_scalar_1m_f64_literal_reference(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..1 << 20)
+        .map(|i| Literal::from_f64(1.0 + (i % 97) as f64 * 0.01))
+        .collect();
+    let lhs = Value::Tensor(TensorValue {
+        dtype: DType::F64,
+        shape: Shape {
+            dims: vec![1 << 20],
+        },
+        elements: elements.into(),
+    });
+    let rhs = Value::scalar_f64(2.5);
+    let p = no_params();
+    c.bench_function("eval/pow_scalar_1m_f64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Pow, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_atan2_scalar_1m_f64_vec(c: &mut Criterion) {
+    let a: Vec<f64> = (0..1 << 20).map(|i| (i % 211) as f64 - 105.0).collect();
+    let lhs = Value::vector_f64(&a).unwrap();
+    let rhs = Value::scalar_f64(3.25);
+    let p = no_params();
+    c.bench_function("eval/atan2_scalar_1m_f64_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Atan2, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_atan2_scalar_1m_f64_literal_reference(c: &mut Criterion) {
+    let elements: Vec<Literal> = (0..1 << 20)
+        .map(|i| Literal::from_f64((i % 211) as f64 - 105.0))
+        .collect();
+    let lhs = Value::Tensor(TensorValue {
+        dtype: DType::F64,
+        shape: Shape {
+            dims: vec![1 << 20],
+        },
+        elements: elements.into(),
+    });
+    let rhs = Value::scalar_f64(3.25);
+    let p = no_params();
+    c.bench_function("eval/atan2_scalar_1m_f64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Atan2, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_div_1k_f64_vector(c: &mut Criterion) {
     let data: Vec<f64> = (0..1000).map(|i| (i as f64 + 1.0) * 0.001).collect();
     let lhs = Value::vector_f64(&data).unwrap();
@@ -2620,7 +2678,11 @@ criterion_group!(
     bench_mul_1k_vector,
     bench_add_1k_f64_vector,
     bench_pow_1m_f64_vec,
+    bench_pow_scalar_1m_f64_vec,
+    bench_pow_scalar_1m_f64_literal_reference,
     bench_atan2_1m_f64_vec,
+    bench_atan2_scalar_1m_f64_vec,
+    bench_atan2_scalar_1m_f64_literal_reference,
     bench_div_1k_f64_vector,
     bench_add_64k_f64_vec,
     bench_add_64k_f64_dense_reference,
