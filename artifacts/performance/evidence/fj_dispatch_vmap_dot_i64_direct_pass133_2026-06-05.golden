@@ -1,0 +1,16 @@
+case=dispatch_vmap_dot_i64_paired_vectors_wraps_like_lax
+program=Dot3
+transforms=[Vmap]
+mode=Strict
+lhs_shape=[2,2]
+rhs_shape=[2,2]
+lhs_i64=[9223372036854775807,2,3,4]
+rhs_i64=[2,2,5,6]
+output_dtype=I64
+output_shape=[2]
+output_i64=[2,39]
+evidence_ledger_len=1
+cache_key_prefix=fjx-
+row_order=0,1
+inner_order=0,1
+integer_overflow=wrapping_mul_then_wrapping_add

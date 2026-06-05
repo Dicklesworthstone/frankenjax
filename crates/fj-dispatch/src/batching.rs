@@ -8658,7 +8658,10 @@ mod tests {
     fn assert_eigvecs_close_up_to_sign(dims: &[u32], actual: &[f64], expected: &[f64]) {
         assert_eq!(actual.len(), expected.len());
         let n = *dims.last().unwrap() as usize;
-        assert!(n > 0 && actual.len() % (n * n) == 0, "eigenvector dims {dims:?}");
+        assert!(
+            n > 0 && actual.len().is_multiple_of(n * n),
+            "eigenvector dims {dims:?}"
+        );
         let batch = actual.len() / (n * n);
         for b in 0..batch {
             let base = b * n * n;

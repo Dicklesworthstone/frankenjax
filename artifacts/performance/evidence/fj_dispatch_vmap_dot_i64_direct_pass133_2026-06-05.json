@@ -1,0 +1,81 @@
+{
+  "bead": "frankenjax-2dglv",
+  "recorded_at": "2026-06-05T18:14:30-04:00",
+  "crate": "fj-dispatch",
+  "target": "vmap_dot_i64/paired_vectors",
+  "profile_backed_target": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-dispatch-profile-ts1 cargo bench -p fj-dispatch --bench dispatch_baseline -- --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+    "worker": "ts1",
+    "ci_low_us": 58.421,
+    "median_us": 60.211,
+    "ci_high_us": 61.253,
+    "rank": "top unclaimed non-linalg row after vmap_eigh/vmap_svd/vmap_qr were avoided for peer linalg claims"
+  },
+  "candidate_rebench": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-dispatch-dot-after-ts1 cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 20 --measurement-time 2 --warm-up-time 1 --noplot",
+    "worker": "ts1",
+    "ci_low_us": 51.206,
+    "median_us": 52.388,
+    "ci_high_us": 53.908,
+    "speedup_median": 1.149,
+    "speedup_conservative": 1.084
+  },
+  "score": {
+    "impact": 3,
+    "confidence": 4,
+    "effort": 2,
+    "value": 6.0,
+    "kept": true
+  },
+  "one_lever": "Bypass generic BatchTrace dispatch only for the exact binary Dot jaxpr with two DType::I64 rank-2 tensors, both vmap axes 0, no out_axes override, and no transform tail.",
+  "non_perf_hygiene": "Updated one fj-dispatch test assertion from len % stride == 0 to len.is_multiple_of(stride), preserving the n > 0 guard and satisfying current clippy all-targets.",
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_dispatch_vmap_dot_i64_direct_pass133_2026-06-05.golden",
+    "sha256": "da12c45886448a4d42598d47fc68c8b8d66ec6fff852183778fde105a859dafb",
+    "output_vector_sha256": "a2e852a86458695cacfd131d03bec77cc99f15f7a7aad85d9a7c7ac9cf51ba5f",
+    "wrapping_output": [2, 39]
+  },
+  "isomorphism": {
+    "ordering": "Rows are emitted in ascending batch index order. Within each row, products are accumulated in ascending kk order, matching the paired-vector dot path.",
+    "tie_breaking": "Not applicable: dot has no ties, sorting, equality-based winner selection, or conflict resolution.",
+    "floating_point": "Excluded by guard: the direct path accepts only DType::I64 tensors. All F32, F64, and complex dot cases fall through to the existing path unchanged.",
+    "integer_overflow": "Uses wrapping_mul followed by wrapping_add, preserving the existing I64 dot overflow semantics and the prior paired-dot parity test vector.",
+    "rng": "Unchanged: no RNG primitive, seed, key, or state is read or written.",
+    "fallback": "Any non-exact jaxpr, non-tensor input, non-I64 dtype, non-rank-2 input, shape mismatch, length mismatch, non-axis-0 vmap, out_axes override, or non-I64 literal storage returns None and executes the previous generic path."
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-dispatch-dot-test-ts1 cargo test -p fj-dispatch dispatch_vmap_dot_i64_paired_vectors_wraps_like_lax -- --nocapture",
+      "result": "passed 1 focused dispatch-level wrapping parity test"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-dispatch-dot-tests-ts1 cargo test -p fj-dispatch dot_paired -- --nocapture",
+      "result": "passed 7 focused paired-dot tests"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-dispatch-check-ts1 cargo check -p fj-dispatch --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-dispatch-clippy2-ts1 cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "cargo fmt -p fj-dispatch -- --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check -- crates/fj-dispatch/src/lib.rs crates/fj-dispatch/src/batching.rs",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/lib.rs && ubs crates/fj-dispatch/src/batching.rs",
+      "result": "exit 0 for both; critical issues 0; warnings are existing file-scope inventory"
+    }
+  ],
+  "notes": [
+    "RCH validation remained crate-scoped.",
+    "Higher linalg rows were not claimed because frankenjax-axevw and frankenjax-p1vbf were already in progress under a peer agent.",
+    "The committed runtime lever is entirely safe Rust and does not link C BLAS, MKL, or XLA."
+  ]
+}

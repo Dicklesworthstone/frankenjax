@@ -4,8 +4,9 @@ pub mod batching;
 
 use fj_cache::{CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
-    Atom, CompatibilityMode, Jaxpr, Primitive, Shape, TensorValue, TraceTransformLedger, Transform,
-    TransformCompositionError, Value, verify_transform_composition,
+    Atom, CompatibilityMode, DType, Jaxpr, Literal, Primitive, Shape, TensorValue,
+    TraceTransformLedger, Transform, TransformCompositionError, Value,
+    verify_transform_composition,
 };
 use fj_interpreters::InterpreterError;
 use fj_ledger::{
@@ -794,6 +795,14 @@ fn execute_vmap(
         );
     }
 
+    if tail.is_empty()
+        && out_axes.is_none()
+        && all_axis_zero
+        && let Some(outputs) = execute_vmap_paired_i64_dot_direct(root_jaxpr, args, &in_axes)?
+    {
+        return Ok(outputs);
+    }
+
     let can_use_batch_trace_out_axes =
         out_axes.is_none() || (tail.is_empty() && out_axes_none_batch_independent);
     if tail.is_empty()
@@ -814,6 +823,104 @@ fn execute_vmap(
         &in_axes,
         compile_options,
     )
+}
+
+fn execute_vmap_paired_i64_dot_direct(
+    root_jaxpr: &Jaxpr,
+    args: &[Value],
+    in_axes: &[AxisSpec],
+) -> Result<Option<Vec<Value>>, DispatchError> {
+    if !is_binary_dot_jaxpr(root_jaxpr)
+        || args.len() != 2
+        || in_axes.len() != 2
+        || !in_axes
+            .iter()
+            .all(|axis| matches!(axis, AxisSpec::Batched(0)))
+    {
+        return Ok(None);
+    }
+
+    let (Value::Tensor(lhs), Value::Tensor(rhs)) = (&args[0], &args[1]) else {
+        return Ok(None);
+    };
+    if lhs.dtype != DType::I64
+        || rhs.dtype != DType::I64
+        || lhs.rank() != 2
+        || rhs.rank() != 2
+        || lhs.shape.dims != rhs.shape.dims
+    {
+        return Ok(None);
+    }
+
+    let batch = lhs.shape.dims[0] as usize;
+    let width = lhs.shape.dims[1] as usize;
+    let Some(expected_len) = batch.checked_mul(width) else {
+        return Ok(None);
+    };
+    if lhs.elements.len() != expected_len || rhs.elements.len() != expected_len {
+        return Ok(None);
+    }
+
+    let mut elements = Vec::with_capacity(batch);
+    if let (Some(lhs_values), Some(rhs_values)) =
+        (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
+    {
+        for (lhs_row, rhs_row) in lhs_values
+            .chunks_exact(width)
+            .zip(rhs_values.chunks_exact(width))
+        {
+            let mut sum = 0_i64;
+            for (&left, &right) in lhs_row.iter().zip(rhs_row) {
+                sum = sum.wrapping_add(left.wrapping_mul(right));
+            }
+            elements.push(Literal::I64(sum));
+        }
+    } else {
+        for batch_idx in 0..batch {
+            let offset = batch_idx * width;
+            let mut sum = 0_i64;
+            for kk in 0..width {
+                let Literal::I64(left) = lhs.elements[offset + kk] else {
+                    return Ok(None);
+                };
+                let Literal::I64(right) = rhs.elements[offset + kk] else {
+                    return Ok(None);
+                };
+                sum = sum.wrapping_add(left.wrapping_mul(right));
+            }
+            elements.push(Literal::I64(sum));
+        }
+    }
+
+    let tensor = TensorValue::new(DType::I64, Shape::vector(lhs.shape.dims[0]), elements).map_err(
+        |error| {
+            DispatchError::TransformExecution(TransformExecutionError::TensorBuild(
+                error.to_string(),
+            ))
+        },
+    )?;
+    Ok(Some(vec![Value::Tensor(tensor)]))
+}
+
+fn is_binary_dot_jaxpr(root_jaxpr: &Jaxpr) -> bool {
+    let [input_0, input_1] = root_jaxpr.invars.as_slice() else {
+        return false;
+    };
+    let [output] = root_jaxpr.outvars.as_slice() else {
+        return false;
+    };
+    let [equation] = root_jaxpr.equations.as_slice() else {
+        return false;
+    };
+
+    root_jaxpr.constvars.is_empty()
+        && root_jaxpr.effects.is_empty()
+        && equation.primitive == Primitive::Dot
+        && equation.params.is_empty()
+        && equation.sub_jaxprs.is_empty()
+        && equation.effects.is_empty()
+        && equation.inputs.as_slice() == [Atom::Var(*input_0), Atom::Var(*input_1)]
+        && equation.outputs.as_slice() == [*output]
 }
 
 fn can_use_out_axes_none_batch_trace(
@@ -1590,6 +1697,61 @@ mod tests {
             .map(|literal| literal.as_i64().expect("expected i64 element"))
             .collect::<Vec<_>>();
         assert_eq!(as_i64, vec![2, 3, 4]);
+    }
+
+    #[test]
+    fn dispatch_vmap_dot_i64_paired_vectors_wraps_like_lax() {
+        let lhs = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    fj_core::Literal::I64(i64::MAX),
+                    fj_core::Literal::I64(2),
+                    fj_core::Literal::I64(3),
+                    fj_core::Literal::I64(4),
+                ],
+            )
+            .expect("lhs should build"),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    fj_core::Literal::I64(2),
+                    fj_core::Literal::I64(2),
+                    fj_core::Literal::I64(5),
+                    fj_core::Literal::I64(6),
+                ],
+            )
+            .expect("rhs should build"),
+        );
+
+        let response = dispatch(DispatchRequest {
+            mode: CompatibilityMode::Strict,
+            ledger: ledger(ProgramSpec::Dot3, &[Transform::Vmap]),
+            args: vec![lhs, rhs],
+            backend: "cpu".to_owned(),
+            compile_options: BTreeMap::new(),
+            custom_hook: None,
+            unknown_incompatible_features: vec![],
+        })
+        .expect("vmap dot should dispatch");
+
+        let output = response.outputs[0]
+            .as_tensor()
+            .expect("vmap dot output should be a tensor");
+        assert_eq!(output.dtype, DType::I64);
+        assert_eq!(output.shape.dims, vec![2]);
+        let values = output
+            .elements
+            .iter()
+            .map(|literal| literal.as_i64().expect("expected i64 output"))
+            .collect::<Vec<_>>();
+        assert_eq!(values, vec![2, 39]);
+        assert!(response.cache_key.starts_with("fjx-"));
+        assert_eq!(response.evidence_ledger.len(), 1);
     }
 
     #[test]
