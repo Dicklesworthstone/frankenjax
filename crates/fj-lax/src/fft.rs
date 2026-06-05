@@ -836,6 +836,83 @@ fn mixed_radix_ping(
         return;
     }
 
+    // Specialized radix-3 butterfly. After twiddling the two non-zero sub-DFTs
+    // (u1 = W_nn^s·F1, u2 = W_nn^{2s}·F2), the length-3 DFT of (u0,u1,u2) factors
+    // into one cos/sin pair because W_3^2 = conj(W_3): writing w3 = (c,d) =
+    // roots[big_n/3] (so c = cos(2π/3), d = ±sin(2π/3) carrying the transform's
+    // sign), the three outputs are u0+u1+u2 and (u0 + c·(u1+u2)) ∓ d·i·(u1−u2).
+    // Pulling c,d from the same roots table keeps the inverse sign exact. This
+    // replaces 9 complex mults (3-pass accumulate) with 2 twiddle mults + a real
+    // butterfly per group, and agrees with the direct DFT to floating tolerance.
+    if p == 3 {
+        let (c, d) = roots[big_n / 3]; // W_3 = (cos 2π/3, ±sin 2π/3)
+        let m2 = 2 * m;
+        for s in 0..m {
+            let u0 = scratch[s];
+            let (a1r, a1i) = scratch[m + s];
+            let (a2r, a2i) = scratch[m2 + s];
+            let (t1r, t1i) = roots[s * s_tw]; // W_nn^s
+            let (t2r, t2i) = roots[2 * s * s_tw]; // W_nn^{2s}
+            let u1 = (t1r * a1r - t1i * a1i, t1r * a1i + t1i * a1r);
+            let u2 = (t2r * a2r - t2i * a2i, t2r * a2i + t2i * a2r);
+            let sr = u1.0 + u2.0; // (u1+u2).re
+            let si = u1.1 + u2.1; // (u1+u2).im
+            let dr = u1.0 - u2.0; // (u1-u2).re
+            let di = u1.1 - u2.1; // (u1-u2).im
+            out[s] = (u0.0 + sr, u0.1 + si);
+            let cr = u0.0 + c * sr;
+            let ci = u0.1 + c * si;
+            let xr = d * di; // d·(u1-u2).im
+            let xi = d * dr; // d·(u1-u2).re
+            out[m + s] = (cr - xr, ci + xi);
+            out[m2 + s] = (cr + xr, ci - xi);
+        }
+        return;
+    }
+
+    // Specialized radix-5 butterfly. Twiddle u1..u4, then exploit W_5^4=conj(W_5),
+    // W_5^3=conj(W_5^2): with (c1,d1)=roots[big_n/5] and (c2,d2)=roots[2·big_n/5],
+    // the five outputs collapse into two cos/sin pairs over the conjugate sums
+    // t1=u1+u4, t2=u2+u3 and the conjugate diffs t1d=u1−u4, t2d=u2−u3. Constants
+    // come from the roots table so the inverse sign is exact. Replaces 25 complex
+    // mults with 4 twiddle mults + a real butterfly; tolerance-equal to the DFT.
+    if p == 5 {
+        let (c1, d1) = roots[big_n / 5];
+        let (c2, d2) = roots[2 * (big_n / 5)];
+        let (m2, m3, m4) = (2 * m, 3 * m, 4 * m);
+        for s in 0..m {
+            let u0 = scratch[s];
+            let tw = |r: usize, a: (f64, f64)| {
+                let (tr, ti) = roots[r * s * s_tw];
+                (tr * a.0 - ti * a.1, tr * a.1 + ti * a.0)
+            };
+            let u1 = tw(1, scratch[m + s]);
+            let u2 = tw(2, scratch[m2 + s]);
+            let u3 = tw(3, scratch[m3 + s]);
+            let u4 = tw(4, scratch[m4 + s]);
+            let t1 = (u1.0 + u4.0, u1.1 + u4.1);
+            let t1d = (u1.0 - u4.0, u1.1 - u4.1);
+            let t2 = (u2.0 + u3.0, u2.1 + u3.1);
+            let t2d = (u2.0 - u3.0, u2.1 - u3.1);
+            out[s] = (u0.0 + t1.0 + t2.0, u0.1 + t1.1 + t2.1);
+            // X1/X4 share cos-combo (c1·t1 + c2·t2), differ by cross terms.
+            let ar = u0.0 + c1 * t1.0 + c2 * t2.0;
+            let ai = u0.1 + c1 * t1.1 + c2 * t2.1;
+            let xr = d1 * t1d.1 + d2 * t2d.1;
+            let xi = d1 * t1d.0 + d2 * t2d.0;
+            out[m + s] = (ar - xr, ai + xi);
+            out[m4 + s] = (ar + xr, ai - xi);
+            // X2/X3 share cos-combo (c2·t1 + c1·t2).
+            let br = u0.0 + c2 * t1.0 + c1 * t2.0;
+            let bi = u0.1 + c2 * t1.1 + c1 * t2.1;
+            let yr = d2 * t1d.1 - d1 * t2d.1;
+            let yi = d2 * t1d.0 - d1 * t2d.0;
+            out[m2 + s] = (br - yr, bi + yi);
+            out[m3 + s] = (br + yr, bi - yi);
+        }
+        return;
+    }
+
     for slot in out.iter_mut() {
         *slot = (0.0, 0.0);
     }
