@@ -338,6 +338,60 @@ fn bench_div_1k_f64_vector(c: &mut Criterion) {
 // current path against a contiguous-f64 reference (same clone + add work) to
 // size the achievable win from dense storage. The reference is bench-local
 // (not shipped lib code).
+fn bench_add_broadcast_row_1024x1024_f64(c: &mut Criterion) {
+    // Row broadcast [1024,1024] + [1024] (bias-add / normalization shape): the
+    // dense broadcast path. Inner (last) dim is contiguous for both operands.
+    let n = 1024usize;
+    let mat: Vec<f64> = (0..n * n).map(|i| i as f64 * 1e-4).collect();
+    let row: Vec<f64> = (0..n).map(|i| i as f64 * 2e-4).collect();
+    let lhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            mat,
+        )
+        .unwrap(),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new_f64_values(Shape { dims: vec![n as u32] }, row).unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/add_broadcast_row_1024x1024_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_add_broadcast_col_1024x1024_f64(c: &mut Criterion) {
+    // Column broadcast [1024,1024] + [1024,1]: inner dim contiguous for lhs,
+    // broadcast (stride 0) for rhs.
+    let n = 1024usize;
+    let mat: Vec<f64> = (0..n * n).map(|i| i as f64 * 1e-4).collect();
+    let col: Vec<f64> = (0..n).map(|i| i as f64 * 2e-4).collect();
+    let lhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            mat,
+        )
+        .unwrap(),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, 1],
+            },
+            col,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/add_broadcast_col_1024x1024_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Add, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_add_64k_f64_vec(c: &mut Criterion) {
     let data: Vec<f64> = (0..LARGE_ELEMENTWISE_LEN)
         .map(|i| i as f64 * 0.001)
@@ -3077,6 +3131,8 @@ criterion_group!(
     bench_atan2_scalar_1m_f64_literal_reference,
     bench_div_1k_f64_vector,
     bench_add_64k_f64_vec,
+    bench_add_broadcast_row_1024x1024_f64,
+    bench_add_broadcast_col_1024x1024_f64,
     bench_add_64k_f64_dense_reference,
     bench_add_64k_i64_vec,
     bench_add_64k_i64_literal_reference,

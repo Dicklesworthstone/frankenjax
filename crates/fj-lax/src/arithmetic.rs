@@ -1581,11 +1581,83 @@ fn broadcast_binary_f64(
     if let (Some(lhs_values), Some(rhs_values)) =
         (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
     {
-        let mut odometer = BroadcastOdometer::new(&out_shape.dims, lhs_strides, rhs_strides);
+        let rank = out_shape.dims.len();
         let mut values = Vec::with_capacity(out_count);
-        for _ in 0..out_count {
-            let (lhs_idx, rhs_idx) = odometer.next();
-            values.push(float_op(lhs_values[lhs_idx], rhs_values[rhs_idx]));
+        if rank >= 1 && out_count > 0 {
+            // Contiguous-inner fast path. The generic BroadcastOdometer runs a
+            // branchy per-element carry that defeats autovectorization; instead
+            // iterate the OUTER dims with the same row-major carry, then run a
+            // tight inner loop over the last (contiguous) axis. The (lhs_idx,
+            // rhs_idx) visited per element is identical to the odometer's, so the
+            // gathered operands, the `float_op`, and the order are unchanged —
+            // bit-for-bit identical. Branching on the inner strides lets the
+            // (1,1)/(1,0)/(0,1) hot cases (row/col broadcast, bias-add) vectorize.
+            let inner = out_shape.dims[rank - 1] as usize;
+            let inner_ls = lhs_strides[rank - 1];
+            let inner_rs = rhs_strides[rank - 1];
+            let outer = out_count / inner;
+            let mut coord = vec![0usize; rank.saturating_sub(1)];
+            let mut lb = 0usize;
+            let mut rb = 0usize;
+            for _ in 0..outer {
+                match (inner_ls, inner_rs) {
+                    (1, 1) => {
+                        let l = &lhs_values[lb..lb + inner];
+                        let r = &rhs_values[rb..rb + inner];
+                        for k in 0..inner {
+                            values.push(float_op(l[k], r[k]));
+                        }
+                    }
+                    (1, 0) => {
+                        let l = &lhs_values[lb..lb + inner];
+                        let rv = rhs_values[rb];
+                        for &lv in l {
+                            values.push(float_op(lv, rv));
+                        }
+                    }
+                    (0, 1) => {
+                        let lv = lhs_values[lb];
+                        let r = &rhs_values[rb..rb + inner];
+                        for &rv in r {
+                            values.push(float_op(lv, rv));
+                        }
+                    }
+                    _ => {
+                        for k in 0..inner {
+                            values.push(float_op(
+                                lhs_values[lb + k * inner_ls],
+                                rhs_values[rb + k * inner_rs],
+                            ));
+                        }
+                    }
+                }
+                // Advance the outer odometer over dims[0..rank-1] (row-major),
+                // mirroring BroadcastOdometer's carry exactly.
+                if rank >= 2 {
+                    let mut ax = rank - 2;
+                    loop {
+                        coord[ax] += 1;
+                        lb += lhs_strides[ax];
+                        rb += rhs_strides[ax];
+                        if coord[ax] < out_shape.dims[ax] as usize {
+                            break;
+                        }
+                        coord[ax] = 0;
+                        lb -= lhs_strides[ax] * out_shape.dims[ax] as usize;
+                        rb -= rhs_strides[ax] * out_shape.dims[ax] as usize;
+                        if ax == 0 {
+                            break;
+                        }
+                        ax -= 1;
+                    }
+                }
+            }
+        } else {
+            let mut odometer = BroadcastOdometer::new(&out_shape.dims, lhs_strides, rhs_strides);
+            for _ in 0..out_count {
+                let (lhs_idx, rhs_idx) = odometer.next();
+                values.push(float_op(lhs_values[lhs_idx], rhs_values[rhs_idx]));
+            }
         }
         return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
             out_shape.clone(),
