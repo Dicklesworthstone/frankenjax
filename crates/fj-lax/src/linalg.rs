@@ -2500,42 +2500,21 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
         return (eigenvalues, eigenvectors);
     }
 
-    // For larger matrices, use simple QR iteration (V1: limited to real eigenvalues)
-    let mut t = a.to_vec();
-    // q_total stays purely real: it starts as the identity and is only ever
-    // multiplied by the real orthogonal factor Q from qr_decomposition (whose
-    // imaginary parts are exactly zero). Accumulate it as f64 via the real
-    // `matrix_mul` (2 flops/element) instead of `matrix_mul_complex` (6
-    // flops/element computing guaranteed-zero imaginary parts). The real-part
-    // accumulation is identical (`matrix_mul_complex`'s re = sum(ar*br - ai*bi)
-    // collapses to sum(ar*br) when ai = bi = 0), so the eigenvectors are
-    // bit-for-bit identical.
-    let mut q_total = vec![0.0_f64; n * n];
-    for i in 0..n {
-        q_total[i * n + i] = 1.0;
-    }
+    // For larger matrices, reduce once to Hessenberg form and keep QR
+    // iterations in that form. The previous dense Gram-Schmidt loop rebuilt a
+    // full Q/R factorization and performed two dense matrix multiplies on every
+    // step. Hessenberg + Givens QR performs the same orthogonal-similarity
+    // iteration class, but each step touches only O(n^2) data.
+    let (mut t, mut q_total) = hessenberg_reduction(a, n);
 
     for _iter in 0..100 {
-        let (q, r) = qr_decomposition(&t, n);
+        hessenberg_qr_step(&mut t, &mut q_total, n);
 
-        // T = R * Q. R is upper triangular by construction, so the lower
-        // exact-zero half of this multiply can be skipped without changing
-        // the ascending-k accumulation order for any nonzero term.
-        t = upper_triangular_matrix_mul(&r, &q, n);
-
-        // Accumulate Q (real * real -> real).
-        q_total = matrix_mul(&q_total, &q, n);
-
-        // Check convergence (off-diagonal elements)
-        let mut max_off_diag = 0.0f64;
-        for i in 0..n {
-            for j in 0..n {
-                if i != j {
-                    max_off_diag = max_off_diag.max(t[i * n + j].abs());
-                }
-            }
+        let mut max_subdiag = 0.0f64;
+        for i in 1..n {
+            max_subdiag = max_subdiag.max(t[i * n + i - 1].abs());
         }
-        if max_off_diag < 1e-10 {
+        if max_subdiag < 1e-10 {
             break;
         }
     }
@@ -2545,6 +2524,144 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
     let eigenvectors: Vec<(f64, f64)> = q_total.into_iter().map(|v| (v, 0.0)).collect();
 
     (eigenvalues, eigenvectors)
+}
+
+fn hessenberg_reduction(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
+    let mut h = a.to_vec();
+    let mut q = vec![0.0_f64; n * n];
+    for i in 0..n {
+        q[i * n + i] = 1.0;
+    }
+
+    if n < 3 {
+        return (h, q);
+    }
+
+    for k in 0..n - 2 {
+        let start = k + 1;
+        let len = n - start;
+        let mut norm = 0.0;
+        for row in start..n {
+            let value = h[row * n + k];
+            norm += value * value;
+        }
+        norm = norm.sqrt();
+        if norm <= 1e-15 {
+            continue;
+        }
+
+        let mut v = vec![0.0; len];
+        for row in start..n {
+            v[row - start] = h[row * n + k];
+        }
+        if v[0] >= 0.0 {
+            v[0] += norm;
+        } else {
+            v[0] -= norm;
+        }
+
+        let mut v_norm_sq = 0.0;
+        for value in &v {
+            v_norm_sq += value * value;
+        }
+        if v_norm_sq <= 1e-30 {
+            continue;
+        }
+        let beta = 2.0 / v_norm_sq;
+
+        apply_householder_left(&mut h, n, start, k, &v, beta);
+        apply_householder_right(&mut h, n, 0, start, &v, beta);
+        apply_householder_right(&mut q, n, 0, start, &v, beta);
+
+        for row in start + 1..n {
+            h[row * n + k] = 0.0;
+        }
+    }
+
+    (h, q)
+}
+
+fn apply_householder_left(
+    matrix: &mut [f64],
+    n: usize,
+    row_start: usize,
+    col_start: usize,
+    v: &[f64],
+    beta: f64,
+) {
+    for col in col_start..n {
+        let mut dot = 0.0;
+        for (offset, &v_i) in v.iter().enumerate() {
+            dot += v_i * matrix[(row_start + offset) * n + col];
+        }
+        let scale = beta * dot;
+        for (offset, &v_i) in v.iter().enumerate() {
+            matrix[(row_start + offset) * n + col] -= scale * v_i;
+        }
+    }
+}
+
+fn apply_householder_right(
+    matrix: &mut [f64],
+    n: usize,
+    row_start: usize,
+    col_start: usize,
+    v: &[f64],
+    beta: f64,
+) {
+    for row in row_start..n {
+        let row_base = row * n;
+        let mut dot = 0.0;
+        for (offset, &v_i) in v.iter().enumerate() {
+            dot += matrix[row_base + col_start + offset] * v_i;
+        }
+        let scale = beta * dot;
+        for (offset, &v_i) in v.iter().enumerate() {
+            matrix[row_base + col_start + offset] -= scale * v_i;
+        }
+    }
+}
+
+fn hessenberg_qr_step(h: &mut [f64], q_total: &mut [f64], n: usize) {
+    let mut rotations = Vec::with_capacity(n.saturating_sub(1));
+
+    for i in 0..n - 1 {
+        let diagonal = h[i * n + i];
+        let subdiagonal = h[(i + 1) * n + i];
+        let radius = diagonal.hypot(subdiagonal);
+        let (c, s) = if radius <= 1e-300 {
+            (1.0, 0.0)
+        } else {
+            (diagonal / radius, subdiagonal / radius)
+        };
+        rotations.push((c, s));
+
+        for col in i..n {
+            let top_idx = i * n + col;
+            let bottom_idx = (i + 1) * n + col;
+            let top = h[top_idx];
+            let bottom = h[bottom_idx];
+            h[top_idx] = c * top + s * bottom;
+            h[bottom_idx] = -s * top + c * bottom;
+        }
+        h[(i + 1) * n + i] = 0.0;
+    }
+
+    for (i, (c, s)) in rotations.into_iter().enumerate() {
+        apply_givens_right(h, n, i, c, s);
+        apply_givens_right(q_total, n, i, c, s);
+    }
+}
+
+fn apply_givens_right(matrix: &mut [f64], n: usize, col: usize, c: f64, s: f64) {
+    for row in 0..n {
+        let left_idx = row * n + col;
+        let right_idx = left_idx + 1;
+        let left = matrix[left_idx];
+        let right = matrix[right_idx];
+        matrix[left_idx] = c * left + s * right;
+        matrix[right_idx] = -s * left + c * right;
+    }
 }
 
 fn normalize_vector(v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
@@ -2560,6 +2677,7 @@ fn normalize_vector(v: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
     }
 }
 
+#[cfg(test)]
 fn qr_decomposition(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     // Classical Gram-Schmidt QR (V1). Q is built and consumed column by column,
     // so the columns are kept in contiguous buffers (`q_cols`) and the original
@@ -2608,6 +2726,7 @@ fn qr_decomposition(a: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     (q, r)
 }
 
+#[cfg(test)]
 fn matrix_mul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     // i-k-j order: the inner j-loop streams a contiguous row of B and C rather
     // than the i-j-k order's stride-n walk down a column of B. Each c[i][j]
@@ -2627,6 +2746,7 @@ fn matrix_mul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     c
 }
 
+#[cfg(test)]
 fn upper_triangular_matrix_mul(a: &[f64], b: &[f64], n: usize) -> Vec<f64> {
     let mut c = vec![0.0; n * n];
     for i in 0..n {
@@ -5073,59 +5193,81 @@ mod tests {
     }
 
     #[test]
-    fn eig_qr_iteration_upper_triangular_rq_bit_identical_to_dense_reference() {
+    fn hessenberg_reduction_forms_orthogonal_similarity() {
         let n = 6usize;
         let a: Vec<f64> = (0..n * n)
             .map(|idx| {
-                let i = idx / n;
-                let j = idx % n;
-                if i == j {
-                    n as f64 + i as f64 * 0.25 + 3.0
+                let row = idx / n;
+                let col = idx % n;
+                if row == col {
+                    n as f64 + row as f64 * 0.25 + 3.0
                 } else {
-                    ((i * 5 + j * 7 + 2) % 9) as f64 * 0.125 - 0.5
+                    ((row * 5 + col * 7 + 2) % 9) as f64 * 0.125 - 0.5
                 }
             })
             .collect();
 
-        let (got_values, got_vectors) = eig_qr_iteration(&a, n);
-        let (want_values, want_vectors) = {
-            let mut t = a.clone();
-            let mut q_total = vec![0.0_f64; n * n];
-            for i in 0..n {
-                q_total[i * n + i] = 1.0;
+        let (h, q) = hessenberg_reduction(&a, n);
+        for row in 2..n {
+            for col in 0..row - 1 {
+                assert!(h[row * n + col].abs() <= 1e-12, "H[{row},{col}]");
             }
+        }
 
-            for _iter in 0..100 {
-                let (q, r) = qr_decomposition(&t, n);
-                t = matrix_mul(&r, &q, n);
-                q_total = matrix_mul(&q_total, &q, n);
+        let qt = transpose_square(&q, n);
+        let qt_a = matrix_mul(&qt, &a, n);
+        let qt_a_q = matrix_mul(&qt_a, &q, n);
+        for idx in 0..n * n {
+            assert!(
+                (qt_a_q[idx] - h[idx]).abs() <= 1e-10,
+                "Q^T A Q mismatch at {idx}: {} vs {}",
+                qt_a_q[idx],
+                h[idx]
+            );
+        }
+    }
 
-                let mut max_off_diag = 0.0f64;
-                for i in 0..n {
-                    for j in 0..n {
-                        if i != j {
-                            max_off_diag = max_off_diag.max(t[i * n + j].abs());
-                        }
-                    }
-                }
-                if max_off_diag < 1e-10 {
-                    break;
-                }
-            }
+    #[test]
+    fn eig_qr_iteration_preserves_diagonal_deflation_contract() {
+        let n = 3usize;
+        let a = [
+            7.0, 0.0, 0.0, //
+            0.0, 3.0, 0.0, //
+            0.0, 0.0, -2.0,
+        ];
 
-            let eigenvalues: Vec<(f64, f64)> = (0..n).map(|i| (t[i * n + i], 0.0)).collect();
-            let eigenvectors: Vec<(f64, f64)> = q_total.into_iter().map(|v| (v, 0.0)).collect();
-            (eigenvalues, eigenvectors)
-        };
+        let (values, vectors) = eig_qr_iteration(&a, n);
+        let expected_values: [(f64, f64); 3] = [(7.0, 0.0), (3.0, 0.0), (-2.0, 0.0)];
+        let expected_vectors: [(f64, f64); 9] = [
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (0.0, 0.0),
+            (1.0, 0.0),
+        ];
 
         for idx in 0..n {
-            assert_eq!(got_values[idx].0.to_bits(), want_values[idx].0.to_bits());
-            assert_eq!(got_values[idx].1.to_bits(), want_values[idx].1.to_bits());
+            assert_eq!(values[idx].0.to_bits(), expected_values[idx].0.to_bits());
+            assert_eq!(values[idx].1.to_bits(), expected_values[idx].1.to_bits());
         }
         for idx in 0..n * n {
-            assert_eq!(got_vectors[idx].0.to_bits(), want_vectors[idx].0.to_bits());
-            assert_eq!(got_vectors[idx].1.to_bits(), want_vectors[idx].1.to_bits());
+            assert_eq!(vectors[idx].0.to_bits(), expected_vectors[idx].0.to_bits());
+            assert_eq!(vectors[idx].1.to_bits(), expected_vectors[idx].1.to_bits());
         }
+    }
+
+    fn transpose_square(matrix: &[f64], n: usize) -> Vec<f64> {
+        let mut out = vec![0.0; n * n];
+        for row in 0..n {
+            for col in 0..n {
+                out[col * n + row] = matrix[row * n + col];
+            }
+        }
+        out
     }
 
     // ── Least squares tests ─────────────────────────────────────────

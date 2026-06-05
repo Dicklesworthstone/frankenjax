@@ -1,0 +1,102 @@
+{
+  "bead": "frankenjax-65m9n",
+  "parent_bead": "frankenjax-p1vbf",
+  "pass": 128,
+  "target": "fj-lax linalg/eig_48x48_f64",
+  "profile_backing": {
+    "source": "ready perf bead was absent after p1vbf.24/p1vbf.25 closeout; frankenjax-65m9n was filed from the remaining profiler-evident eig hotspot and the rejected shifted-Hessenberg pass127 evidence.",
+    "prior_rejection": "frankenjax-6fs4h shifted trailing-2x2 Hessenberg QR regressed 11.380 ms -> 11.645 ms on RCH ts1 and was reverted.",
+    "fresh_baseline_before_edit": {
+      "worker": "ts2",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-65m9n-eig-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+      "time_ms_ci_low": 17.525,
+      "time_ms_mid": 17.850,
+      "time_ms_ci_high": 18.067
+    }
+  },
+  "lever": {
+    "kind": "algorithmic eig primitive",
+    "description": "Replace dense n>=3 Eig QR iteration with safe-Rust Householder Hessenberg reduction followed by explicit Givens QR steps on the Hessenberg form, accumulating the orthogonal basis in-place.",
+    "one_lever_scope": [
+      "crates/fj-lax/src/linalg.rs eig_qr_iteration and private helpers",
+      "retired dense QR helpers are compiled only for the existing internal proof tests"
+    ],
+    "not_in_scope": "No BLAS/LAPACK/XLA linkage; no unsafe code; 1x1 and 2x2 analytic Eig paths unchanged."
+  },
+  "baseline": {
+    "worker": "ts1",
+    "code_state": "clean detached worktree at 62e938f9 before this lever",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-65m9n-eig-baseline-ts1 cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "time_ms_ci_low": 11.581,
+    "time_ms_mid": 11.765,
+    "time_ms_ci_high": 11.882
+  },
+  "candidate": {
+    "worker": "ts1",
+    "code_state": "final candidate after test-only dead-code cleanup",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-65m9n-eig-candidate-final cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "time_ms_ci_low": 0.66686,
+    "time_ms_mid": 0.67409,
+    "time_ms_ci_high": 0.68439
+  },
+  "result": {
+    "speedup_midpoint": 17.4532,
+    "speedup_conservative": 16.9216,
+    "score": {
+      "impact": 5,
+      "confidence": 5,
+      "effort": 2,
+      "value": 12.5,
+      "keep_threshold": 2.0,
+      "decision": "keep"
+    }
+  },
+  "isomorphism": {
+    "behavior_unchanged": true,
+    "ordering_tie_breaking": "2x2 analytic path ordering and tie behavior are unchanged. For n>=3, public Eig order remains unspecified and is governed by the existing contract's canonical proof summary. The new diagonal 3x3 unit test keeps exact [7,3,-2] order and identity vectors.",
+    "floating_point": "The n>=3 internal floating-point iteration intentionally changes from dense Gram-Schmidt QR to orthogonal-similarity Hessenberg/Givens QR. This is accepted only under the previously pinned public Primitive::Eig contract; 1x1/2x2 arithmetic is unchanged.",
+    "rng": "No RNG is present in Primitive::Eig.",
+    "golden_contract_sha256": "9b84bf2da55576f8de5832828ae6cb271d82a59dc11212513acd95ec29603791",
+    "golden_output_sha256": "4f85accc348e891face6a47bb9aba2e9d715c1b32877d03b1d6101581efbd459"
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax --lib hessenberg -- --nocapture",
+      "result": "pass",
+      "summary": "1 passed; Hessenberg structure and Q^T A Q similarity checked"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax --lib eig_qr_iteration -- --nocapture",
+      "result": "pass",
+      "summary": "1 passed; 3x3 diagonal deflation order and identity vectors are bit-exact"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-conformance --test linalg_oracle eig -- --nocapture",
+      "result": "pass",
+      "summary": "18 passed; 0 failed; 38 filtered; golden_eig_general_contract_sha256 passed"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "pass"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/linalg.rs",
+      "result": "pass"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs",
+      "result": "blocked_by_pre_existing_formatting",
+      "summary": "The same formatting drift appears in a clean detached HEAD worktree at linalg.rs lines 1316, 3358, and 4139; this lever's git diff whitespace check is clean."
+    },
+    {
+      "command": "ubs crates/fj-lax/src/linalg.rs",
+      "result": "nonzero_existing_file_inventory",
+      "summary": "UBS reports existing unwrap/panic/direct-index inventories across linalg.rs; embedded fmt/clippy/check/test subchecks are clean."
+    }
+  ],
+  "next_primitive": "Reprofile after this keep; with Eig reduced by ~17x, attack the next measured fj-lax linalg residual, likely SVD or Eigh if it rises to the top."
+}

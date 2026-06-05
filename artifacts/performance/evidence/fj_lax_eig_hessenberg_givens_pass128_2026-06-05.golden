@@ -1,0 +1,31 @@
+bead=frankenjax-65m9n
+target=fj-lax linalg/eig_48x48_f64
+lever=safe-Rust Hessenberg reduction plus explicit Givens QR steps for n>=3 Primitive::Eig
+baseline_worker=ts1
+baseline_command=RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-65m9n-eig-baseline-ts1 cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot
+baseline_ms_low=11.581
+baseline_ms_mid=11.765
+baseline_ms_high=11.882
+candidate_worker=ts1
+candidate_command=RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-65m9n-eig-candidate-final cargo bench -p fj-lax --bench lax_baseline -- linalg/eig_48x48_f64 --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot
+candidate_ms_low=0.66686
+candidate_ms_mid=0.67409
+candidate_ms_high=0.68439
+speedup_midpoint=17.4532
+speedup_conservative=16.9216
+score_impact=5
+score_confidence=5
+score_effort=2
+score_value=12.5
+ordering_tie_breaking=2x2 analytic path unchanged; n>=3 public Eig order remains unspecified and the conformance contract canonicalizes proof summaries; diagonal 3x3 deflation keeps exact [7,3,-2] order and identity vectors in the new unit test.
+floating_point=2x2 analytic arithmetic is unchanged; n>=3 moves from dense Gram-Schmidt QR to orthogonal-similarity Hessenberg/Givens QR, so bit patterns are intentionally governed by the public Eig contract rather than old internal dense-QR bits.
+rng=not applicable; Primitive::Eig uses no RNG.
+golden_contract_sha256=9b84bf2da55576f8de5832828ae6cb271d82a59dc11212513acd95ec29603791
+validation_fj_lax_hessenberg=RCH cargo test -p fj-lax --lib hessenberg -- --nocapture: 1 passed
+validation_fj_lax_diagonal=RCH cargo test -p fj-lax --lib eig_qr_iteration -- --nocapture: 1 passed
+validation_conformance=RCH cargo test -p fj-conformance --test linalg_oracle eig -- --nocapture: 18 passed, 0 failed, 38 filtered; golden_eig_general_contract_sha256 passed
+validation_check=RCH cargo check -p fj-lax --all-targets: pass
+validation_clippy=RCH cargo clippy -p fj-lax --all-targets -- -D warnings: pass
+validation_format=rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs still reports pre-existing unrelated formatting drift at lines 1316, 3358, and 4139 in clean HEAD; git diff --check for this lever is clean
+validation_ubs=ubs crates/fj-lax/src/linalg.rs exits nonzero on existing file-wide unwrap/panic/direct-index inventory; embedded fmt/clippy/check/test subchecks are clean
+next_primitive=Reprofile after close; likely next deep linalg primitive is SVD or Eigh residual if it appears above Eig after this Hessenberg/Givens reduction.
