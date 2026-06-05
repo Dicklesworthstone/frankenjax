@@ -1,0 +1,20 @@
+{
+  "pass": 119,
+  "crate": "fj-lax",
+  "outcome": "REJECTED (reverted) — combined k-blocking + threading does not rescue threaded 256^3 matmul; the limiter is work-per-core, not B-bandwidth.",
+  "target": "matmul_2d threaded path at 256^3 (the mid-size window where naive row-threading regresses)",
+  "hypothesis": "256^3 threaded regressed (pass116 ~0.74x) due to shared-L3 B-bandwidth contention (every thread streams all of B). A k-blocked per-thread kernel (kk outermost, KB×n B-panel reused L2-resident across the thread's rows) should cut shared-L3 B traffic ~rows× and let threading scale at 256^3.",
+  "result": {
+    "blocked_threaded_256_ms": 5.8224,
+    "serial_256_ms": 4.6,
+    "speedup_256": 0.79,
+    "blocked_threaded_512_ms": 10.630,
+    "naive_threaded_512_ms": 10.582,
+    "verdict": "256^3 still regresses (~0.79x) WITH blocking; 512^3 unchanged. Blocking gave no benefit."
+  },
+  "diagnosis": "The 256^3 threaded regression is NOT B-bandwidth: it is insufficient work per core. 16.7M FMAs / ~48-core RCH worker ≈ 0.35M FMAs/thread (~0.1ms compute) cannot amortize the ~48-way thread fan-out. k-blocking reduces memory traffic but cannot create more compute, so it doesn't help. 256^3 correctly stays serial (threshold 1<<26 well-placed).",
+  "bit_exactness": "The blocked kernel WAS bit-exact (kk ascending -> globally ascending-l; matmul_2d_threaded_blocked_bit_identical passed for k=200, threads 2/3/5/8). Reverted anyway since net-neutral.",
+  "next_lever": "Packed register MR×NR microkernel (e.g. 4x4 C-tile in registers, written once after the k-loop, with A-panel packing for contiguous strided access) to raise SINGLE-CORE throughput so the unthreadable mid-size window (256^3 single matmul) improves. Target >=2x single-thread at 256^3. Bit-exact via per-output ascending-l tile accumulation.",
+  "tests": "matmul 13/13 (blocked kernel bit-exact before revert); clippy clean. Reverted to HEAD; only the matmul_2d comment + this evidence retained.",
+  "date": "2026-06-04"
+}

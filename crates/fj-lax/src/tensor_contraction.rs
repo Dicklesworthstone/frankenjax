@@ -176,6 +176,16 @@ pub fn matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64>
     // (pass110: single-thread NBxKB cache-blocking REGRESSED ~0.60× and 4-row M
     // register-tiling gave ~1.09× — the serial kernel is already L2-served, so
     // the remaining axis is parallelism.)
+    //
+    // (pass119, REJECTED: a k-blocked threaded kernel — kk outer so each KB×n B
+    // panel is reused L2-resident across a thread's rows — was hypothesized to
+    // rescue threaded 256³ by cutting shared-L3 B traffic. Measured 5.82ms vs
+    // 4.6ms serial = still ~0.79× on the ~48-core RCH worker. The 256³ regression
+    // is NOT B-bandwidth: it is too little work per core (16.7M FMAs / ~48 cores
+    // ≈ 0.35M FMAs/thread) to amortize the thread fan-out, which blocking can't
+    // change. So 256³ correctly stays serial; the threshold below is well-placed.
+    // The next real single-thread lever is a packed register MR×NR microkernel —
+    // see artifacts/performance/evidence/fj_lax_gemm_blocked_threaded_rejected_pass119.)
     const PARALLEL_MIN_OPS: usize = 1 << 26; // ~67M FMAs (~406³); 256³ stays serial
     let ops = m.saturating_mul(k).saturating_mul(n);
     let threads = if ops >= PARALLEL_MIN_OPS {
