@@ -1,0 +1,72 @@
+{
+  "bead": "frankenjax-ifqsv",
+  "status": "rejected_no_source_kept",
+  "target": {
+    "crate": "fj-dispatch",
+    "criterion_benchmark": "dispatch_baseline",
+    "case": "vmap_dot_i64/paired_vectors",
+    "profile_basis": "RCH ts1 full fj-dispatch profile on 2026-06-06 ranked vmap_dot_i64/paired_vectors at 64.293 us [63.087,66.401], behind vmap_eigh and vmap_svd. Eigh had just failed frankenjax-ovzdc; SVD overlapped the IcyGlacier linalg track."
+  },
+  "baseline": {
+    "worker": "ts1",
+    "worktree": "/data/projects/.scratch/frankenjax-vmap-while-20260606-0005",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-dispatch-pass4-profile-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "criterion_us": {
+      "lower": 63.087,
+      "mid": 64.293,
+      "upper": 66.401
+    },
+    "neighbor_rows_us": {
+      "vmap_eigh/batched_matrix_3x3": {
+        "lower": 108.28,
+        "mid": 109.04,
+        "upper": 110.22
+      },
+      "vmap_svd/batched_matrix_3x2": {
+        "lower": 66.627,
+        "mid": 70.456,
+        "upper": 74.072
+      },
+      "vmap_qr/batched_matrix_3x2": {
+        "lower": 46.328,
+        "mid": 47.934,
+        "upper": 49.841
+      }
+    }
+  },
+  "candidate": {
+    "name": "dense_i64_output_buffer",
+    "lever": "Kept the direct paired-i64 vmap dot loop and changed only the output materialization from Vec<Literal> plus TensorValue::new to Vec<i64> plus TensorValue::new_i64_values.",
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-ifqsv-candidate-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "criterion_us": {
+      "lower": 61.762,
+      "mid": 62.526,
+      "upper": 63.548
+    },
+    "midpoint_speedup": 1.0283,
+    "conservative_speedup": 0.9927,
+    "score_decision": "reject",
+    "rejection_reason": "Small midpoint improvement did not clear conservative same-worker proof; Score < 2.0.",
+    "source_kept": false
+  },
+  "behavior_isomorphism": {
+    "source_kept": false,
+    "reason_no_expanded_golden": "The candidate failed the performance keep gate and was removed before commit.",
+    "preserved_surfaces": [
+      "output order remains baseline because no source was kept",
+      "i64 wrapping multiplication and addition remain baseline because no source was kept",
+      "cache-key and evidence ledger behavior remain baseline because no source was kept",
+      "RNG behavior unaffected"
+    ],
+    "compile_gate": {
+      "worker": "ts1",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-ifqsv-check-rch-target rch exec -- cargo check -p fj-dispatch --all-targets",
+      "result": "pass"
+    }
+  },
+  "next_deeper_primitive": {
+    "direction": "Stop tuning the direct dot output wrapper; attack a structurally different primitive such as the batched gather/scatter data movement path or a larger compiled linalg artifact with clear ownership separation.",
+    "target_ratio": ">=1.25x same-worker midpoint with conservative interval not worse than baseline"
+  }
+}
