@@ -1,0 +1,91 @@
+{
+  "bead": "frankenjax-ppad8",
+  "pass": 136,
+  "date": "2026-06-06",
+  "crate": "fj-lax",
+  "target": "linalg/pinv_192x192_f64",
+  "status": "rejected",
+  "profile_basis": "frankenjax-ppad8 was filed after frankenjax-sf71s rejected cyclic-Jacobi row/column micro-tuning. The active hotspot remained the square pseudoinverse benchmark, which computes a Gram matrix and pseudoinverts it through a symmetric cyclic Jacobi eigensolve.",
+  "candidate": {
+    "lever": "Route finite square matrices with n >= 32 through a direct one-sided Jacobi SVD pseudoinverse path, forming A+ = V Sigma^-1 U^T from orthogonalized A V columns and avoiding the Gram A^T A path.",
+    "primitive_family": "safe-Rust numerical linear algebra / direct one-sided Jacobi SVD",
+    "alien_artifact_family": "numerical linear algebra, SVD, matrix methods",
+    "single_lever": true
+  },
+  "benchmark_results": {
+    "baseline_ts1_ms": {
+      "mean": 107.88,
+      "ci_lower": 104.92,
+      "ci_upper": 110.63,
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=.rch-target-ppad8-baseline rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_192x192_f64 --sample-size 10"
+    },
+    "unguarded_candidate_ts1_ms": {
+      "mean": 84.349,
+      "ci_lower": 80.792,
+      "ci_upper": 89.48,
+      "midpoint_speedup_x": 1.28,
+      "conservative_speedup_x": 1.17,
+      "decision": "not keepable: sidecar review found missing non-convergence fallback and NaN rcond behavior drift"
+    },
+    "guarded_candidate_ts1_ms": {
+      "mean": 103.56,
+      "ci_lower": 94.304,
+      "ci_upper": 113.56,
+      "midpoint_speedup_x": 1.04,
+      "conservative_speedup_x": 0.92,
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=.rch-target-ppad8-candidate-guarded rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_192x192_f64 --sample-size 10",
+      "decision": "failed real-win gate after proof-safe fallback guard"
+    }
+  },
+  "proof_review": {
+    "blockers_found": [
+      "The unguarded candidate returned a pseudoinverse even after exhausting ONE_SIDED_JACOBI_MAX_SWEEPS; non-converged retained columns are not guaranteed Moore-Penrose.",
+      "The unguarded candidate changed rcond = NaN behavior by retaining positive components instead of falling through the existing Gram cutoff behavior.",
+      "The initial rank-deficient test only checked A A+ A = A and did not cover A+ A A+ = A+, symmetry of A A+, symmetry of A+ A, or reference equality."
+    ],
+    "guarded_candidate_tests": {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=.rch-target-ppad8-pinv-tests rch exec -- cargo test -p fj-lax --lib pinv_one_sided -- --nocapture",
+      "result": "passed 3/3 on ts1 after adding finite-rcond guard, retained-column orthogonality fallback, direct-vs-Gram proof, NaN-rcond proof, rank-deficient direct-vs-Gram proof, and Moore-Penrose checks"
+    },
+    "golden_output_sha256": [
+      {
+        "case": "full-rank 36x36 tolerance-quantized direct pinv",
+        "digest": "99354c05f1fbbe5cfb3b4fd552f72c20969e930594416c4bca932bda1cb06e85"
+      },
+      {
+        "case": "rank-deficient 36x36 tolerance-quantized direct pinv",
+        "digest": "59fabdec4eb9c18729c05cbe05bfc8dabed8fd3f9985c53a260d5a72ca953a6b"
+      }
+    ],
+    "source_retained": false,
+    "post_rejection_source_check": "git diff -- crates/fj-lax/src/linalg.rs is empty; production and test source hunk removed"
+  },
+  "score": {
+    "impact": 1.0,
+    "confidence": 1.0,
+    "effort": 2.0,
+    "impact_times_confidence_over_effort": 0.5,
+    "threshold": 2.0,
+    "kept": false
+  },
+  "next_primitive": {
+    "recommendation": "Do not continue one-sided Jacobi micro-tuning without a stronger convergence/perf plan. Attack a different primitive: Golub-Kahan bidiagonalization plus QR or divide-and-conquer bidiagonal SVD, with an explicit convergence certificate and fallback before benchmarking.",
+    "target_ratio": ">=2x over the current 107.88 ms ts1 baseline for linalg/pinv_192x192_f64"
+  },
+  "validation": [
+    {
+      "name": "focused_guarded_candidate_proof",
+      "result": "passed 3/3 on RCH ts1 before rejection cleanup"
+    },
+    {
+      "name": "touched_source_reverted",
+      "command": "git diff -- crates/fj-lax/src/linalg.rs",
+      "result": "empty"
+    },
+    {
+      "name": "touched_file_rustfmt",
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs",
+      "result": "passed after cleanup"
+    }
+  ]
+}

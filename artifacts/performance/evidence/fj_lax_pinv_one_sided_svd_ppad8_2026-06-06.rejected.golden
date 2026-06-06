@@ -1,0 +1,12 @@
+frankenjax-ppad8 rejected golden
+target=linalg/pinv_192x192_f64
+lever=direct one-sided Jacobi SVD pseudoinverse for finite square matrices n>=32
+baseline_ts1=107.88ms mean [104.92, 110.63]
+unguarded_candidate_ts1=84.349ms mean [80.792, 89.480], 1.28x midpoint, 1.17x conservative
+guarded_candidate_ts1=103.56ms mean [94.304, 113.56], 1.04x midpoint, 0.92x conservative
+decision=rejected; no source retained
+reason=unguarded candidate was not proof-safe; adding finite-rcond and retained-column convergence fallback erased the credible win
+proof_guarded=RCH ts1 focused pinv_one_sided tests passed 3/3 with direct-vs-Gram, NaN-rcond, and rank-deficient Moore-Penrose checks
+golden_full_rank_quantized=99354c05f1fbbe5cfb3b4fd552f72c20969e930594416c4bca932bda1cb06e85
+golden_rank_deficient_quantized=59fabdec4eb9c18729c05cbe05bfc8dabed8fd3f9985c53a260d5a72ca953a6b
+next_primitive=Golub-Kahan bidiagonalization plus QR or divide-and-conquer bidiagonal SVD with convergence certificate and fallback
