@@ -714,6 +714,10 @@ pub fn eval_primitive_multi(
         // equation).
         Primitive::Slogdet => eval_slogdet(inputs, params),
         Primitive::Eig => eval_eig(inputs, params),
+        // Split → one array per section (jnp.split's list-of-arrays). The single-
+        // output path packs equal sections into one tensor and fails closed on
+        // uneven sizes; the multi-output path returns N tensors, uneven supported.
+        Primitive::Split => crate::tensor_ops::eval_split_multi(inputs, params),
         _ => eval_primitive(primitive, inputs, params).map(|v| vec![v]),
     }
 }
@@ -10967,6 +10971,53 @@ mod tests {
         assert_eq!(t.shape.dims, vec![3, 2]);
         let vals: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
         assert_eq!(vals, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn test_split_multi_uneven_sizes() {
+        // 2×4 matrix, split axis=1 into uneven sizes [1, 3] → two arrays of shapes
+        // [2,1] and [2,3] (jnp.split semantics). The single-output path fails closed
+        // on uneven sizes; eval_primitive_multi must return the N sections.
+        let input = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![2, 4] },
+                (0..8).map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("axis".into(), "1".into());
+        params.insert("sizes".into(), "1,3".into());
+        let out = super::eval_primitive_multi(Primitive::Split, &[input], &params).unwrap();
+        assert_eq!(out.len(), 2, "uneven split must yield 2 sections");
+
+        let s0 = out[0].as_tensor().unwrap();
+        assert_eq!(s0.shape.dims, vec![2, 1]);
+        let v0: Vec<i64> = s0.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+        assert_eq!(v0, vec![0, 4]); // column 0 of each row
+
+        let s1 = out[1].as_tensor().unwrap();
+        assert_eq!(s1.shape.dims, vec![2, 3]);
+        let v1: Vec<i64> = s1.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+        assert_eq!(v1, vec![1, 2, 3, 5, 6, 7]); // columns 1..4 of each row
+    }
+
+    #[test]
+    fn test_split_multi_equal_returns_separate_sections() {
+        // Equal split via the multi-output path returns N separate tensors (not the
+        // single packed [num_sections, …] tensor of the single-output path).
+        let input = Value::vector_i64(&[1, 2, 3, 4, 5, 6]).unwrap();
+        let mut params = BTreeMap::new();
+        params.insert("num_sections".into(), "3".into());
+        let out = super::eval_primitive_multi(Primitive::Split, &[input], &params).unwrap();
+        assert_eq!(out.len(), 3);
+        for (i, expect) in [[1, 2], [3, 4], [5, 6]].iter().enumerate() {
+            let t = out[i].as_tensor().unwrap();
+            assert_eq!(t.shape.dims, vec![2]);
+            let v: Vec<i64> = t.elements.iter().map(|l| l.as_i64().unwrap()).collect();
+            assert_eq!(v, expect.to_vec());
+        }
     }
 
     #[test]

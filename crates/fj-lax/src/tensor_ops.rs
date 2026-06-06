@@ -6184,6 +6184,110 @@ pub(crate) fn eval_split(
     }
 }
 
+/// Multi-output Split: slice the input into one tensor per section along `axis`,
+/// returning `Vec<Value>` (matching `jnp.split`'s list-of-arrays semantics). Unlike
+/// the single-output [`eval_split`] (which packs equal sections into one rectangular
+/// tensor and fails closed on uneven sizes), each section is its own tensor, so
+/// UNEVEN explicit `sizes` are fully supported. This is the path `eval_primitive_multi`
+/// uses, so an N-section split equation yields N outputs (not a single packed tensor).
+pub(crate) fn eval_split_multi(
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<Value>, EvalError> {
+    let primitive = Primitive::Split;
+    if inputs.len() != 1 {
+        return Err(EvalError::ArityMismatch {
+            primitive,
+            expected: 1,
+            actual: inputs.len(),
+        });
+    }
+    let tensor = match &inputs[0] {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "cannot split a scalar".into(),
+            });
+        }
+    };
+
+    let axis = params
+        .get("axis")
+        .map(|raw| {
+            raw.trim().parse::<usize>().map_err(|_| EvalError::Unsupported {
+                primitive,
+                detail: format!("invalid integer in param 'axis': '{raw}'"),
+            })
+        })
+        .transpose()?
+        .unwrap_or(0);
+    let dims = &tensor.shape.dims;
+    let rank = dims.len();
+    if axis >= rank {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("axis {axis} out of range for rank {rank}"),
+        });
+    }
+    let axis_size = dims[axis] as usize;
+
+    let sizes: Vec<usize> = if params.contains_key("sizes") {
+        parse_usize_param(primitive, "sizes", params)?
+    } else if params.contains_key("num_sections") {
+        let num_sections = parse_usize_param(primitive, "num_sections", params)?[0];
+        if num_sections == 0 {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "num_sections must be positive".into(),
+            });
+        }
+        if !axis_size.is_multiple_of(num_sections) {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: format!("axis size {axis_size} not evenly divisible by {num_sections}"),
+            });
+        }
+        vec![axis_size / num_sections; num_sections]
+    } else {
+        vec![axis_size]
+    };
+
+    let total: usize = sizes.iter().sum();
+    if total != axis_size {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("split sizes sum to {total} but axis size is {axis_size}"),
+        });
+    }
+
+    // Row-major slice along `axis`: for each outer index the section is the
+    // contiguous block `[start*inner, (start+len)*inner)` within that outer row.
+    let outer: usize = dims[..axis].iter().map(|&d| d as usize).product();
+    let inner: usize = dims[axis + 1..].iter().map(|&d| d as usize).product();
+    let mut out = Vec::with_capacity(sizes.len());
+    let mut start = 0usize;
+    for &len in &sizes {
+        let mut elements = Vec::with_capacity(outer * len * inner);
+        for o in 0..outer {
+            let base = o * axis_size * inner + start * inner;
+            elements.extend_from_slice(&tensor.elements[base..base + len * inner]);
+        }
+        let mut new_dims = dims.clone();
+        new_dims[axis] = len as u32;
+        out.push(Value::Tensor(
+            TensorValue::new(tensor.dtype, Shape { dims: new_dims }, elements).map_err(|e| {
+                EvalError::Unsupported {
+                    primitive,
+                    detail: e.to_string(),
+                }
+            })?,
+        ));
+        start += len;
+    }
+    Ok(out)
+}
+
 // ── ExpandDims: add a singleton dimension ──────────────────────
 
 pub(crate) fn eval_expand_dims(
