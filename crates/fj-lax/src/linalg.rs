@@ -2882,6 +2882,7 @@ fn complex_eig_qr(a: &[(f64, f64)], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64
     // deflates. The active block is the leading p×p of `t`.
     let mut p = n;
     let mut iters = 0usize;
+    let mut since_deflate = 0usize;
     let max_iters = 100 * n + 100;
     while p > 1 {
         // Deflate when the active block's bottom subdiagonal is negligible.
@@ -2891,28 +2892,45 @@ fn complex_eig_qr(a: &[(f64, f64)], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64
         if sub <= f64::EPSILON * dscale.max(f64::MIN_POSITIVE) {
             t[(p - 1) * n + (p - 2)] = (0.0, 0.0);
             p -= 1;
+            since_deflate = 0;
             continue;
         }
         if iters >= max_iters {
             break; // safety: leave whatever is on the diagonal
         }
         iters += 1;
+        since_deflate += 1;
 
-        // Wilkinson shift: the trailing-2×2 eigenvalue closer to t[p-1][p-1].
         let aa = t[(p - 2) * n + (p - 2)];
         let bb = t[(p - 2) * n + (p - 1)];
         let cc = t[(p - 1) * n + (p - 2)];
         let dd = t[(p - 1) * n + (p - 1)];
-        let mid = (0.5 * (aa.0 + dd.0), 0.5 * (aa.1 + dd.1));
-        let half_diff = (0.5 * (aa.0 - dd.0), 0.5 * (aa.1 - dd.1));
-        let disc = complex_add(complex_mul(half_diff, half_diff), complex_mul(bb, cc));
-        let sq = complex_sqrt(disc);
-        let mu1 = complex_add(mid, sq);
-        let mu2 = complex_sub(mid, sq);
-        let mu = if complex_abs(complex_sub(mu1, dd)) <= complex_abs(complex_sub(mu2, dd)) {
-            mu1
+        let mu = if since_deflate % 10 == 0 {
+            // Exceptional shift: the Wilkinson shift can stagnate (e.g. a nilpotent
+            // trailing 2×2 → shift 0 on an orthogonal/cyclic block, which is QR-
+            // stationary). Inject an off-axis ad-hoc shift keyed to the active
+            // subdiagonal magnitudes to break the symmetry (cf. LAPACK hqr).
+            let s = complex_abs(t[(p - 1) * n + (p - 2)])
+                + if p >= 3 {
+                    complex_abs(t[(p - 2) * n + (p - 3)])
+                } else {
+                    0.0
+                };
+            let s = if s > 0.0 { s } else { 1.0 };
+            complex_add(dd, (0.75 * s, 0.31 * s))
         } else {
-            mu2
+            // Wilkinson shift: the trailing-2×2 eigenvalue closer to t[p-1][p-1].
+            let mid = (0.5 * (aa.0 + dd.0), 0.5 * (aa.1 + dd.1));
+            let half_diff = (0.5 * (aa.0 - dd.0), 0.5 * (aa.1 - dd.1));
+            let disc = complex_add(complex_mul(half_diff, half_diff), complex_mul(bb, cc));
+            let sq = complex_sqrt(disc);
+            let mu1 = complex_add(mid, sq);
+            let mu2 = complex_sub(mid, sq);
+            if complex_abs(complex_sub(mu1, dd)) <= complex_abs(complex_sub(mu2, dd)) {
+                mu1
+            } else {
+                mu2
+            }
         };
 
         // Shifted QR step on the active p×p block: (B − μI) = QR, B ← RQ + μI.
@@ -3168,6 +3186,7 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
         let scale = t[(j - 1) * n + j - 1].abs() + t[j * n + j].abs();
         t[j * n + j - 1].abs() <= f64::EPSILON * scale.max(f64::MIN_POSITIVE)
     };
+    let mut reached_quasi_triangular = false;
     for _iter in 0..(200 * n) {
         hessenberg_qr_step(&mut t, &mut q_total, n);
         let mut converged = true;
@@ -3178,8 +3197,19 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
             }
         }
         if converged {
+            reached_quasi_triangular = true;
             break;
         }
+    }
+
+    // Unshifted real QR cannot reach quasi-triangular form when ≥3 eigenvalues share
+    // a modulus (e.g. cube-roots-of-unity: {1, e^{±2πi/3}}, all |λ|=1) — it would
+    // otherwise return garbage. Fall back to the Wilkinson-shifted complex solver,
+    // which converges per eigenvalue regardless of modulus. (Real eigenvectors for
+    // the common path are produced below via inverse iteration on the original `a`.)
+    if !reached_quasi_triangular {
+        let a_complex: Vec<(f64, f64)> = a.iter().map(|&x| (x, 0.0)).collect();
+        return complex_eig_qr(&a_complex, n);
     }
 
     // Walk the quasi-triangular form: 1×1 → real eigenvalue; an isolated 2×2 block
@@ -4375,6 +4405,20 @@ mod tests {
     /// Ground truth for frankenjax-eig-nonsymmetric-broken-n3-66pmy: build A = H·T·H
     /// with H a symmetric-orthogonal Householder and T block-diagonal — a 1×1 {2}
     /// plus a 2×2 rotation block {±3i}. A is a dense non-symmetric matrix similar to
+#[test]
+    fn real_eig_cube_roots_of_unity_diag() {
+        // Companion of z^3-1: eigenvalues are the cube roots of unity {1, e^{±2πi/3}},
+        // all modulus 1. Real unshifted QR + 2x2-block extraction may fail to separate.
+        let n = 3usize;
+        let a = [0.0,0.0,1.0, 1.0,0.0,0.0, 0.0,1.0,0.0];
+        let (w, _) = eig_qr_iteration(&a, n);
+        let want = [(1.0, 0.0), (-0.5, 0.8660254037844387), (-0.5, -0.8660254037844387)];
+        for &(er,ei) in &want {
+            let f = w.iter().any(|&(wr,wi)| (wr-er).abs()<1e-5 && (wi-ei).abs()<1e-5);
+            assert!(f, "REAL EIG MISSING ({er},{ei}) in {w:?}");
+        }
+    }
+
     #[test]
     fn complex_eig_qr_handles_unit_circle_spectrum() {
         // Eigenvalues {1, i, -1, -i} all have modulus 1: the previous UNSHIFTED QR
