@@ -2890,7 +2890,7 @@ pub(crate) fn eval_slogdet(
 /// (columns orthonormal under the Hermitian inner product) and `R` upper-triangular,
 /// both row-major n×n. Small-n only (the QR-iteration eigensolver re-orthogonalizes
 /// every step, so MGS's conditioning is adequate here).
-fn complex_qr_mgs(a: &[(f64, f64)], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+fn complex_qr_mgs(a: &[ComplexScalar], n: usize) -> EigQrResult {
     let mut q = a.to_vec();
     let mut r = vec![(0.0_f64, 0.0_f64); n * n];
     for j in 0..n {
@@ -2984,7 +2984,7 @@ fn complex_sqrt(z: (f64, f64)) -> (f64, f64) {
 /// are column-major (column k pairs with eigenvalue k). The shift is essential: an
 /// unshifted sweep fails for equal-modulus spectra (e.g. eigenvalues on the unit
 /// circle), where it never converges and returns garbage.
-fn complex_eig_qr(a: &[(f64, f64)], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64)>) {
+fn complex_eig_qr(a: &[ComplexScalar], n: usize) -> EigQrResult {
     if n == 0 {
         return (vec![], vec![]);
     }
@@ -3023,7 +3023,7 @@ fn complex_eig_qr(a: &[(f64, f64)], n: usize) -> (Vec<(f64, f64)>, Vec<(f64, f64
         let bb = t[(p - 2) * n + (p - 1)];
         let cc = t[(p - 1) * n + (p - 2)];
         let dd = t[(p - 1) * n + (p - 1)];
-        let mu = if since_deflate % 10 == 0 {
+        let mu = if since_deflate.is_multiple_of(10) {
             // Exceptional shift: the Wilkinson shift can stagnate (e.g. a nilpotent
             // trailing 2×2 → shift 0 on an orthogonal/cyclic block, which is QR-
             // stationary). Inject an off-axis ad-hoc shift keyed to the active
