@@ -162,6 +162,43 @@ fn index_to_contracted_coords(idx: usize, axes: &[usize], shape: &[usize]) -> Ve
     index_to_coords(idx, &contracted_strides, axes.len())
 }
 
+/// Register-tile dimensions for the GEMM microkernel: `MR` output rows × `NR`
+/// output columns are accumulated together, streamed over `k`.
+const MR: usize = 4;
+const NR: usize = 4;
+
+/// Pack B's full `NR`-wide column panels into panel-major order: panel `jp`
+/// (columns `jp*NR .. jp*NR+NR`) is stored as a contiguous `[k][NR]` block at
+/// `bpack[jp*k*NR ..]`, so `bpack[jp*k*NR + l*NR + jj] == b[l*n + jp*NR + jj]`.
+///
+/// The microkernel reads one panel's k-stream sequentially (stride `NR`) instead
+/// of striding B by `n` (one fresh cache line, half-used, per k-step) — that is
+/// the binding constraint once `k·n` spills L2. Packing reorders *where* each B
+/// value is read from, never the per-element accumulation order, so the product
+/// stays bit-for-bit identical to the strided kernel. Only full panels are packed;
+/// the `n % NR` column remainder is read from `b` directly. O(k·n) one-time cost,
+/// amortized across the O(m·k·n) multiply.
+fn pack_b_panels(b: &[f64], k: usize, n: usize) -> Vec<f64> {
+    let npanels = n / NR;
+    let mut bpack = vec![0.0f64; npanels * k * NR];
+    for jp in 0..npanels {
+        let jbase = jp * NR;
+        let dst_base = jp * k * NR;
+        for l in 0..k {
+            let s = l * n + jbase;
+            bpack[dst_base + l * NR..dst_base + l * NR + NR].copy_from_slice(&b[s..s + NR]);
+        }
+    }
+    bpack
+}
+
+/// `k·n` (B element count) above which B is packed into panel-major order before
+/// the multiply: once B spills L2 (~1 MB f64 = 131072 elems) the strided read in
+/// the microkernel misses on every k-step. Below it B is L2-resident and the pack
+/// (plus its scratch allocation) does not pay — keeps the small/medium GEMM path
+/// byte-for-byte and perf-for-perf unchanged.
+const PACK_B_MIN_KN: usize = 1 << 17;
+
 /// Matrix multiplication as a special case of tensordot.
 ///
 /// Matches `jnp.matmul(a, b)` for 2D arrays.
@@ -215,8 +252,16 @@ fn matmul_2d_with_threads(
     if m == 0 || n == 0 || k == 0 {
         return result;
     }
+    // Pack B's column panels once (shared, read-only across all output rows) when
+    // B spills L2. Bit-identical to the strided read; just sequential instead.
+    let bpack: Option<Vec<f64>> = if k.saturating_mul(n) >= PACK_B_MIN_KN && n >= NR {
+        Some(pack_b_panels(b, k, n))
+    } else {
+        None
+    };
+    let bpack_ref = bpack.as_deref();
     if threads <= 1 {
-        matmul_2d_row_block(a, k, b, n, 0, &mut result);
+        matmul_2d_row_block(a, k, b, bpack_ref, n, 0, &mut result);
         return result;
     }
 
@@ -229,7 +274,7 @@ fn matmul_2d_with_threads(
             let (block, tail) = rest.split_at_mut(chunk_rows * n);
             rest = tail;
             let rs = row_start;
-            scope.spawn(move || matmul_2d_row_block(a, k, b, n, rs, block));
+            scope.spawn(move || matmul_2d_row_block(a, k, b, bpack_ref, n, rs, block));
             row_start += chunk_rows;
         }
     });
@@ -261,12 +306,11 @@ fn matmul_2d_row_block(
     a: &[f64],
     k: usize,
     b: &[f64],
+    bpack: Option<&[f64]>,
     n: usize,
     row_start: usize,
     block: &mut [f64],
 ) {
-    const MR: usize = 4;
-    const NR: usize = 4;
     let rows = block.len() / n;
 
     let mut i = 0;
@@ -284,8 +328,14 @@ fn matmul_2d_row_block(
             let mut c1 = [0.0_f64; NR];
             let mut c2 = [0.0_f64; NR];
             let mut c3 = [0.0_f64; NR];
+            // B source for this k-stream: packed panel (sequential, stride NR) or
+            // the original strided view (stride n). Same values either way.
+            let (bsrc, rstride): (&[f64], usize) = match bpack {
+                Some(bp) => (&bp[(j / NR) * k * NR..], NR),
+                None => (&b[j..], n),
+            };
             for l in 0..k {
-                let brow = &b[l * n + j..l * n + j + NR];
+                let brow = &bsrc[l * rstride..l * rstride + NR];
                 let a0 = a[ar0 + l];
                 let a1 = a[ar1 + l];
                 let a2 = a[ar2 + l];
@@ -647,6 +697,59 @@ mod tests {
         }
         for idx in 0..m * n {
             assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
+        }
+    }
+
+    #[test]
+    fn matmul_2d_packed_bit_identical_to_ijk() {
+        // Dims chosen so k·n = 500·290 = 145000 ≥ PACK_B_MIN_KN (131072): this
+        // exercises the B-panel-packed microkernel path. m=70 and n=290 are NOT
+        // multiples of MR/NR (4), so the MR-row-tile, NR-column-panel, the column
+        // remainder (290 % 4 = 2), and the row remainder (70 % 4 = 2) are all hit.
+        // Packing only reorders where B is read from, never the ascending-l sum,
+        // so the result must equal the textbook i-j-k accumulation bit-for-bit.
+        let (m, k, n) = (70usize, 500usize, 290usize);
+        assert!(k * n >= PACK_B_MIN_KN, "test must trip the pack threshold");
+        let a: Vec<f64> = (0..m * k)
+            .map(|i| (i as f64 * 0.011_31).sin() * 3.0 - 1.0)
+            .collect();
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| (i as f64 * 0.003_77).cos() * 2.0 + 0.5)
+            .collect();
+
+        let got = matmul_2d(&a, m, k, &b, n);
+
+        let mut want = vec![0.0f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for l in 0..k {
+                    sum += a[i * k + l] * b[l * n + j];
+                }
+                want[i * n + j] = sum;
+            }
+        }
+        for idx in 0..m * n {
+            assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
+        }
+    }
+
+    #[test]
+    fn pack_b_panels_layout_matches_source() {
+        // Panel-major pack: bpack[jp*k*NR + l*NR + jj] == b[l*n + jp*NR + jj].
+        let (k, n) = (5usize, 12usize); // 12 % NR == 0, three full panels
+        let b: Vec<f64> = (0..k * n).map(|i| i as f64).collect();
+        let bpack = pack_b_panels(&b, k, n);
+        for jp in 0..n / NR {
+            for l in 0..k {
+                for jj in 0..NR {
+                    assert_eq!(
+                        bpack[jp * k * NR + l * NR + jj],
+                        b[l * n + jp * NR + jj],
+                        "jp={jp} l={l} jj={jj}"
+                    );
+                }
+            }
         }
     }
 
