@@ -1,0 +1,105 @@
+{
+  "schema": "frankenjax.performance.evidence.v1",
+  "date": "2026-06-06",
+  "pass": 147,
+  "status": "rejected",
+  "bead_id": "frankenjax-6srm2",
+  "title": "fj-lax RFFT Bluestein half-spectrum prefix postprocess",
+  "crate": "fj-lax",
+  "target": "eval/rfft_batch_64x1499_bluestein_f64",
+  "skills": [
+    "repeatedly-apply-skill",
+    "extreme-software-optimization",
+    "alien-graveyard",
+    "alien-artifact-coding"
+  ],
+  "source_revision": {
+    "baseline_commit": "2b0895c83a33b9c91cfa5bba50e75bbeae5c2869",
+    "candidate_commit": "2b0895c83a33b9c91cfa5bba50e75bbeae5c2869",
+    "candidate_source_restored": true,
+    "restored_diff_check": "git diff -- crates/fj-lax/src/fft.rs produced no output"
+  },
+  "lever_tested": {
+    "summary": "Add a Bluestein prefix-output helper and route RFFT non-power-of-two rows to compute only the consumed Hermitian half-spectrum during the final chirp/write loop.",
+    "single_lever": true,
+    "safe_rust_only": true,
+    "blas_lapack_mkl_xla": "not used"
+  },
+  "profile_basis": {
+    "previous_bead": "frankenjax-rhlr2",
+    "hotspot": "Prime Bluestein RFFT remained much slower than adjacent mixed-radix RFFT after packed-real extraction was rejected.",
+    "fresh_baseline_command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-6srm2-baseline-2b0895c8-1715 cargo bench -p fj-lax --bench lax_baseline -- rfft_batch_64x1499_bluestein_f64 --sample-size 100"
+  },
+  "benchmarks": {
+    "used_for_decision": {
+      "worker": "ts1",
+      "worktree": "/data/projects/.scratch/frankenjax-6srm2-baseline-2b0895c8-1715",
+      "criterion_sample_size": 100,
+      "baseline": {
+        "target_eval_rfft_batch_64x1499_bluestein_f64_ms": {
+          "lower": 7.0036,
+          "median": 7.0705,
+          "upper": 7.1457
+        },
+        "control_eval_rfft_batch_2048x256_f64_dense_input_ms": {
+          "lower": 4.2867,
+          "median": 4.3628,
+          "upper": 4.4387
+        }
+      },
+      "candidate": {
+        "target_eval_rfft_batch_64x1499_bluestein_f64_ms": {
+          "lower": 7.3674,
+          "median": 7.4987,
+          "upper": 7.6562
+        },
+        "control_eval_rfft_batch_2048x256_f64_dense_input_ms": "not rerun after target failed keep gate"
+      },
+      "delta": {
+        "target_speedup_midpoint": 0.9422,
+        "target_decision": "regression"
+      }
+    },
+    "ignored_cross_worker": {
+      "reason": "RCH ignored the requested ts1 preference from the main worktree and selected vmi1149989, so this reading was not used for keep scoring.",
+      "worker": "vmi1149989",
+      "candidate_target_eval_rfft_batch_64x1499_bluestein_f64_ms": {
+        "lower": 6.4107,
+        "median": 6.5757,
+        "upper": 6.7437
+      }
+    },
+    "superseded_provisional": {
+      "reason": "Earlier same-worker evidence on the older 52dff6a3 baseline showed a small apparent win, but it was superseded by the fresh 2b0895c8 same-path A/B after main advanced.",
+      "baseline_target_median_ms": 7.0856,
+      "candidate_target_median_ms": 6.9476
+    }
+  },
+  "behavior_proof": {
+    "temporary_candidate_test": "bluestein_prefix_matches_full_output_prefix_by_bits",
+    "focused_rch_test": "cargo test -p fj-lax --lib fft -- --nocapture passed 40/40 on the candidate during the proof run",
+    "ordering": "For kept k, the tested lever preserved the same Bluestein convolution, conv iteration order, chirp lookup, and final multiply/add expression order as the full-output path.",
+    "tie_breaking": "not applicable",
+    "floating_point": "No reassociation, FMA substitution, mixed precision, or tolerance widening was introduced in the tested lever.",
+    "rng": "not applicable",
+    "golden_output": "Existing FFT/RFFT golden digest tests passed in the focused proof run; source was restored after the failed performance gate."
+  },
+  "validation": {
+    "format": "rustfmt --edition 2024 --check crates/fj-lax/src/fft.rs passed before source restore",
+    "diff_check": "git diff --check -- crates/fj-lax/src/fft.rs passed before source restore",
+    "source_restored": "git diff -- crates/fj-lax/src/fft.rs empty after rejection"
+  },
+  "score": {
+    "impact": 0,
+    "confidence": 4,
+    "effort": 1,
+    "value": 0.0,
+    "threshold": 2.0,
+    "decision": "reject"
+  },
+  "next_primitive": {
+    "name": "RFFT-specific real-input Bluestein half-spectrum algorithm",
+    "target_ratio": ">=1.2x on eval/rfft_batch_64x1499_bluestein_f64",
+    "direction": "Replace the complex full-spectrum Bluestein row algorithm for real prime RFFT with a real-input/half-spectrum convolution primitive that avoids zero-imaginary work and unused second-half output work while preserving JAX-visible shape, dtype, row order, and golden digest behavior."
+  }
+}

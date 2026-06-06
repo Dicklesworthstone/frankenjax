@@ -1,0 +1,15 @@
+pass: 147
+bead: frankenjax-6srm2
+target: eval/rfft_batch_64x1499_bluestein_f64
+decision: rejected
+worker: ts1
+baseline_commit: 2b0895c83a33b9c91cfa5bba50e75bbeae5c2869
+baseline_target_ms: 7.0036..7.0705..7.1457
+baseline_dense_control_ms: 4.2867..4.3628..4.4387
+candidate_target_ms: 7.3674..7.4987..7.6562
+target_speedup_midpoint: 0.9422
+ignored_cross_worker_candidate_vmi1149989_ms: 6.4107..6.5757..6.7437
+proof: candidate focused fft test passed 40/40 during proof run; prefix kept-k values matched full Bluestein output by bits in the temporary proof test.
+isomorphism: kept-k convolution order, chirp order, final multiply/add expression order, row order, shape, dtype, errors, tie surface, and RNG surface unchanged by the tested lever.
+source_restored: git diff -- crates/fj-lax/src/fft.rs is empty after rejection.
+next_primitive: RFFT-specific real-input Bluestein half-spectrum algorithm, target >=1.2x.
