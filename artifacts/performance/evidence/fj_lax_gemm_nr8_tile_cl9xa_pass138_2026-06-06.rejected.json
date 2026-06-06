@@ -1,0 +1,83 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_gemm_nr8_tile_cl9xa_pass138_2026-06-06",
+  "status": "rejected",
+  "date": "2026-06-06",
+  "agent": "codex",
+  "bead": "frankenjax-cl9xa",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_1024x1024x1024_f64",
+  "skill_pass": "repeatedly-apply-skill pass138 -> extreme-software-optimization",
+  "profile_backing": {
+    "source": "frankenjax-cl9xa notes after B-panel packing and KC-blocked GEMM A/B",
+    "finding": "KC blocking helped RAM-bound 4096^3 but was neutral in the L3-resident 1024^3-2048^3 regime; the remaining binding constraint was MR=NR=4 microkernel L1 arithmetic intensity.",
+    "current_kernel": "MR4xNR4 scalar-register tile with packed-B panel-major reads and ascending-k per-cell accumulation."
+  },
+  "baseline": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 5",
+    "worker": "vmi1156319",
+    "time_ms": {
+      "lower": 74.403,
+      "mid": 76.433,
+      "upper": 78.682
+    },
+    "note": "Initial control only; worker differed from the candidate, so same-worker control below was decisive."
+  },
+  "same_worker_control": {
+    "command": "temporary NR=4 restoration, then rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 5",
+    "worker": "ts1",
+    "time_ms": {
+      "lower": 20.866,
+      "mid": 22.040,
+      "upper": 23.286
+    }
+  },
+  "candidate": {
+    "lever": "Widen the GEMM column register tile from NR=4 to NR=8 while leaving MR=4, packing, threading, and blocked scheduling unchanged.",
+    "source_diff_retained": false,
+    "proof": {
+      "command": "rch exec -- cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+      "worker": "ts1",
+      "result": "pass",
+      "details": "7 matmul_2d tests passed, 1 ignored, including packed, threaded, large, and blocked bit-identity tests."
+    },
+    "rebench": {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 5",
+      "worker": "ts1",
+      "time_ms": {
+        "lower": 21.521,
+        "mid": 23.963,
+        "upper": 28.008
+      }
+    }
+  },
+  "result": {
+    "same_worker_speedup_mid": 0.9198,
+    "same_worker_speedup_conservative": 0.7449,
+    "score": {
+      "impact": 0.0,
+      "confidence": 5.0,
+      "effort": 1.0,
+      "impact_x_confidence_over_effort": 0.0,
+      "keep_threshold": 2.0
+    },
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Candidate kept row-major output and each output cell still accumulated l=0..k-1 in ascending order.",
+    "tie_breaking_unchanged": "N/A: GEMM has no comparison or tie-breaking surface.",
+    "floating_point": "Candidate used the same scalar multiplication and addition sequence per cell; no FMA, mul_add, reassociation, SIMD reduction, mixed precision, or Strassen-style reordering.",
+    "rng": "N/A: matmul_2d consumes no random state.",
+    "golden_outputs": "fj_lax_gemm_nr8_tile_cl9xa_pass138_2026-06-06.rejected.golden.sha256"
+  },
+  "validation": [
+    "RCH candidate bit-identity proof passed on ts1 before rejection.",
+    "Same-worker RCH Criterion rebench rejected the candidate: NR4 control 22.040 ms midpoint vs NR8 candidate 23.963 ms midpoint.",
+    "Production tensor_contraction.rs source restored to NR4; git diff for tensor_contraction.rs is empty."
+  ],
+  "next_primitive": {
+    "name": "Strassen or explicit safe portable-SIMD microkernel with a behavior contract",
+    "reason": "The NR-only register-tile micro-lever failed. The next pass must change the primitive, not keep tuning the same scalar tile.",
+    "target_ratio": ">=2.0 score and a real win on 1024^3-2048^3 GEMM, with tolerance or bit-identity contract proven before commit."
+  }
+}

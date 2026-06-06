@@ -1,0 +1,9 @@
+frankenjax-cl9xa pass138 NR8 column-tile rejection
+target: linalg/matmul_2d_1024x1024x1024_f64
+initial control: vmi1156319 NR4 74.403..76.433..78.682 ms
+same-worker control: ts1 NR4 20.866..22.040..23.286 ms
+candidate: ts1 NR8 21.521..23.963..28.008 ms
+proof: rch cargo test -p fj-lax --lib matmul_2d passed 7 focused tests on ts1
+decision: reject NR8; production tensor_contraction.rs remains at NR4
+isomorphism: row-major output, ascending-k per-cell accumulation, no tie-breaking, no RNG, no FMA/mul_add/reassociation/SIMD reduction
+next primitive: Strassen or explicit safe portable-SIMD microkernel with a behavior contract
