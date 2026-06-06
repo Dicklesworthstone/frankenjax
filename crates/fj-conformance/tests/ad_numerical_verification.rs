@@ -3355,6 +3355,48 @@ fn erf_vjp_numerical() {
     verify_unary_scalar_vjp(Primitive::Erf, 0.0, 1.0, 2e-3, "erf VJP at x=0");
 }
 
+#[test]
+fn erfc_vjp_numerical() {
+    // d/dx erfc(x) = -2/sqrt(pi) * exp(-x^2). Untested grad rule (erf VJP was the only
+    // special-function grad with a numerical check).
+    verify_unary_scalar_vjp(Primitive::Erfc, 0.5, 1.0, 1e-4, "erfc VJP at x=0.5");
+    verify_unary_scalar_vjp(Primitive::Erfc, -0.7, 0.5, 1e-4, "erfc VJP at x=-0.7");
+}
+
+#[test]
+fn erf_inv_vjp_numerical() {
+    // d/dx erfinv(x) = sqrt(pi)/2 * exp(erfinv(x)^2). Subtle (uses erfinv itself).
+    verify_unary_scalar_vjp(Primitive::ErfInv, 0.4, 1.0, 1e-4, "erfinv VJP at x=0.4");
+    verify_unary_scalar_vjp(Primitive::ErfInv, -0.6, 1.0, 1e-4, "erfinv VJP at x=-0.6");
+}
+
+#[test]
+fn lgamma_digamma_vjp_numerical() {
+    // d/dx lgamma(x) = digamma(x); d/dx digamma(x) = polygamma(1, x) = trigamma(x).
+    verify_unary_scalar_vjp(Primitive::Lgamma, 2.5, 1.0, 1e-4, "lgamma VJP at x=2.5");
+    verify_unary_scalar_vjp(Primitive::Lgamma, 0.7, 1.0, 1e-4, "lgamma VJP at x=0.7");
+    verify_unary_scalar_vjp(Primitive::Digamma, 2.5, 1.0, 1e-4, "digamma VJP at x=2.5");
+}
+
+#[test]
+fn bessel_i0e_i1e_vjp_numerical() {
+    // i0e/i1e = e^{-|x|}·I0/I1; the grad rule must get the sign right (these are
+    // even/odd functions). Test both signs away from the x=0 kink.
+    verify_unary_scalar_vjp(Primitive::BesselI0e, 1.5, 1.0, 1e-4, "bessel_i0e VJP at x=1.5");
+    verify_unary_scalar_vjp(Primitive::BesselI0e, -0.8, 1.0, 1e-4, "bessel_i0e VJP at x=-0.8");
+    verify_unary_scalar_vjp(Primitive::BesselI1e, 1.5, 1.0, 1e-4, "bessel_i1e VJP at x=1.5");
+    verify_unary_scalar_vjp(Primitive::BesselI1e, -0.8, 1.0, 1e-4, "bessel_i1e VJP at x=-0.8");
+}
+
+#[test]
+fn igamma_igammac_vjp_numerical() {
+    // igamma(a, x): grad w.r.t. a (igamma_grad_a's dedicated series — the most error-prone)
+    // AND x (x^(a-1)·e^{-x}/Gamma(a)). igammac = 1 - igamma, so its grads are negated.
+    verify_binary_scalar_vjp(Primitive::Igamma, 2.0, 1.5, 1.0, 1e-4, "igamma VJP at (2,1.5)");
+    verify_binary_scalar_vjp(Primitive::Igamma, 3.5, 2.0, 1.0, 1e-4, "igamma VJP at (3.5,2)");
+    verify_binary_scalar_vjp(Primitive::Igammac, 2.0, 1.5, 1.0, 1e-4, "igammac VJP at (2,1.5)");
+}
+
 // ======================== Binary Scalar VJP Numerical Tests (frankenjax-2zy) ========================
 
 /// Finite-difference VJP verification for binary scalar primitives.
