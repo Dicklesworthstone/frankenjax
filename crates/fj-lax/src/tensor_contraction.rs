@@ -167,6 +167,15 @@ fn index_to_contracted_coords(idx: usize, axes: &[usize], shape: &[usize]) -> Ve
 const MR: usize = 4;
 const NR: usize = 4;
 
+/// k-dimension block for the cache-blocked macro-kernel. At KC=256 an [MR×KC] A
+/// tile and a [KC×NR] B panel are ~8 KB each — both stay L1-resident across a
+/// pc-block, so B is reused across all row-tiles and A across all column-panels
+/// from L1 instead of re-streaming B from L3 once per MR-row-tile. The cost is
+/// re-touching C once per pc-block (k/KC passes over the m×n output); KC is sized
+/// so that handful of C passes is far cheaper than the m/MR B re-streams it
+/// replaces.
+const KC: usize = 256;
+
 /// Pack B's full `NR`-wide column panels into panel-major order: panel `jp`
 /// (columns `jp*NR .. jp*NR+NR`) is stored as a contiguous `[k][NR]` block at
 /// `bpack[jp*k*NR ..]`, so `bpack[jp*k*NR + l*NR + jj] == b[l*n + jp*NR + jj]`.
@@ -282,7 +291,7 @@ fn matmul_2d_with_threads(
     };
     let bpack_ref = bpack.as_deref();
     if threads <= 1 {
-        matmul_2d_row_block(a, k, b, bpack_ref, n, 0, &mut result);
+        matmul_2d_dispatch(a, k, b, bpack_ref, n, 0, &mut result);
         return result;
     }
 
@@ -295,11 +304,32 @@ fn matmul_2d_with_threads(
             let (block, tail) = rest.split_at_mut(chunk_rows * n);
             rest = tail;
             let rs = row_start;
-            scope.spawn(move || matmul_2d_row_block(a, k, b, bpack_ref, n, rs, block));
+            scope.spawn(move || matmul_2d_dispatch(a, k, b, bpack_ref, n, rs, block));
             row_start += chunk_rows;
         }
     });
     result
+}
+
+/// Pick the row-block kernel for one thread's slice. With B packed AND `k` deep
+/// enough for the k-blocking to pay (`k > KC`, so C is re-touched only a few
+/// times), use the cache-blocked macro-kernel — it keeps each [MR×KC] A-tile and
+/// [KC×NR] B-panel L1-resident and reused, instead of re-streaming all of B from
+/// L3 per MR-row-tile. Otherwise fall back to the flat packed/strided kernel.
+#[inline]
+fn matmul_2d_dispatch(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: Option<&[f64]>,
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    match bpack {
+        Some(bp) if k > KC => matmul_2d_blocked_row_block(a, k, b, bp, n, row_start, block),
+        _ => matmul_2d_row_block(a, k, b, bpack, n, row_start, block),
+    }
 }
 
 /// Compute a contiguous block of output rows (starting at `row_start`,
@@ -333,28 +363,29 @@ fn matmul_2d_row_block(
     block: &mut [f64],
 ) {
     let rows = block.len() / n;
+    let full_rows = rows / MR * MR;
+    let full_cols = n / NR * NR;
 
-    let mut i = 0;
-    while i + MR <= rows {
-        let ar0 = (row_start + i) * k;
-        let ar1 = ar0 + k;
-        let ar2 = ar1 + k;
-        let ar3 = ar2 + k;
-
-        // Full MR×NR register tiles: NR-wide accumulators per row, streamed over
-        // k. The fixed-length inner `jj` loop unrolls and vectorizes.
-        let mut j = 0;
-        while j + NR <= n {
+    // Full MR×NR tiles. Process one B panel across every row tile in this row
+    // block before advancing to the next panel. Each output element still sees
+    // the identical ascending-`l` accumulation order; the only change is that a
+    // packed KC×NR B stream is reused across row tiles while it is cache-hot.
+    let mut j = 0;
+    while j < full_cols {
+        let (bsrc, rstride): (&[f64], usize) = match bpack {
+            Some(bp) => (&bp[(j / NR) * k * NR..], NR),
+            None => (&b[j..], n),
+        };
+        let mut i = 0;
+        while i < full_rows {
+            let ar0 = (row_start + i) * k;
+            let ar1 = ar0 + k;
+            let ar2 = ar1 + k;
+            let ar3 = ar2 + k;
             let mut c0 = [0.0_f64; NR];
             let mut c1 = [0.0_f64; NR];
             let mut c2 = [0.0_f64; NR];
             let mut c3 = [0.0_f64; NR];
-            // B source for this k-stream: packed panel (sequential, stride NR) or
-            // the original strided view (stride n). Same values either way.
-            let (bsrc, rstride): (&[f64], usize) = match bpack {
-                Some(bp) => (&bp[(j / NR) * k * NR..], NR),
-                None => (&b[j..], n),
-            };
             for l in 0..k {
                 let brow = &bsrc[l * rstride..l * rstride + NR];
                 let a0 = a[ar0 + l];
@@ -373,10 +404,20 @@ fn matmul_2d_row_block(
             block[(i + 1) * n + j..(i + 1) * n + j + NR].copy_from_slice(&c1);
             block[(i + 2) * n + j..(i + 2) * n + j + NR].copy_from_slice(&c2);
             block[(i + 3) * n + j..(i + 3) * n + j + NR].copy_from_slice(&c3);
-            j += NR;
+            i += MR;
         }
-        // Column remainder (n not a multiple of NR): MR scalar accumulators,
-        // same ascending-`l` order.
+        j += NR;
+    }
+
+    // Column remainder (n not a multiple of NR): MR scalar accumulators, same
+    // ascending-`l` order.
+    let mut i = 0;
+    while i < full_rows {
+        let ar0 = (row_start + i) * k;
+        let ar1 = ar0 + k;
+        let ar2 = ar1 + k;
+        let ar3 = ar2 + k;
+        let mut j = full_cols;
         while j < n {
             let mut s0 = 0.0_f64;
             let mut s1 = 0.0_f64;
@@ -411,6 +452,112 @@ fn matmul_2d_row_block(
             }
         }
         i += 1;
+    }
+}
+
+/// Cache-blocked GEMM macro-kernel for one thread's contiguous row-block, with B
+/// already packed into panel-major order (`bpack`, see [`pack_b_panels`]).
+///
+/// Loop order: pc (k in KC chunks) → jp (NR-col panel) → it (MR-row tile). The
+/// packed B panel for `jp`'s pc-block lives at `bpack[jp*k*NR + pc*NR ..]` and is
+/// reused across every row-tile while L1-resident; the [MR×KC] A tile is reused
+/// across panels. C is read-modified-written once per pc-block: each pc-block
+/// LOADS the running C value (or starts at 0 on the first block) and accumulates
+/// its KC products in ascending `l`, so every output element is summed in the
+/// exact ascending-`l` order `(((0 + p0) + p1) + …)` of the textbook kernel — the
+/// pc-blocking never regroups a partial sum, so the product is bit-for-bit
+/// identical to `matmul_2d_row_block` and the i-j-k reference.
+///
+/// The MR/NR remainder border (rows past the last full MR-tile, columns past the
+/// last full NR-panel) is computed once with a single full-`k` ascending sweep —
+/// also bit-identical and negligible in size — so it never enters the pc-loop.
+fn matmul_2d_blocked_row_block(
+    a: &[f64],
+    k: usize,
+    b: &[f64],
+    bpack: &[f64],
+    n: usize,
+    row_start: usize,
+    block: &mut [f64],
+) {
+    let rows = block.len() / n;
+    let full_rows = rows - rows % MR; // rows covered by whole MR-tiles
+    let full_cols = n - n % NR; // cols covered by whole NR-panels
+
+    // Full MR×NR tile region, k-blocked with C carried across pc-blocks.
+    let mut pc = 0;
+    while pc < k {
+        let kc = KC.min(k - pc);
+        let first = pc == 0;
+        let mut j = 0;
+        while j < full_cols {
+            // This panel's pc-block: kc rows of NR, contiguous from the pack.
+            let panel = &bpack[(j / NR) * k * NR + pc * NR..];
+            let mut i = 0;
+            while i < full_rows {
+                let ar0 = (row_start + i) * k + pc;
+                let ar1 = ar0 + k;
+                let ar2 = ar1 + k;
+                let ar3 = ar2 + k;
+                // Seed accumulators from the running C (0 on the first pc-block),
+                // so the kc products continue the ascending sweep in place.
+                let mut c0 = [0.0_f64; NR];
+                let mut c1 = [0.0_f64; NR];
+                let mut c2 = [0.0_f64; NR];
+                let mut c3 = [0.0_f64; NR];
+                if !first {
+                    c0.copy_from_slice(&block[i * n + j..i * n + j + NR]);
+                    c1.copy_from_slice(&block[(i + 1) * n + j..(i + 1) * n + j + NR]);
+                    c2.copy_from_slice(&block[(i + 2) * n + j..(i + 2) * n + j + NR]);
+                    c3.copy_from_slice(&block[(i + 3) * n + j..(i + 3) * n + j + NR]);
+                }
+                for l in 0..kc {
+                    let brow = &panel[l * NR..l * NR + NR];
+                    let a0 = a[ar0 + l];
+                    let a1 = a[ar1 + l];
+                    let a2 = a[ar2 + l];
+                    let a3 = a[ar3 + l];
+                    for jj in 0..NR {
+                        let bv = brow[jj];
+                        c0[jj] += a0 * bv;
+                        c1[jj] += a1 * bv;
+                        c2[jj] += a2 * bv;
+                        c3[jj] += a3 * bv;
+                    }
+                }
+                block[i * n + j..i * n + j + NR].copy_from_slice(&c0);
+                block[(i + 1) * n + j..(i + 1) * n + j + NR].copy_from_slice(&c1);
+                block[(i + 2) * n + j..(i + 2) * n + j + NR].copy_from_slice(&c2);
+                block[(i + 3) * n + j..(i + 3) * n + j + NR].copy_from_slice(&c3);
+                i += MR;
+            }
+            j += NR;
+        }
+        pc += KC;
+    }
+
+    // Border, single full-k ascending sweep (bit-identical, tiny region):
+    //   bottom strip = remainder rows × all cols; right strip = full rows ×
+    //   remainder cols. Disjoint, together exactly the non-full-tile elements.
+    for i in full_rows..rows {
+        let a_row = (row_start + i) * k;
+        for j in 0..n {
+            let mut s = 0.0_f64;
+            for l in 0..k {
+                s += a[a_row + l] * b[l * n + j];
+            }
+            block[i * n + j] = s;
+        }
+    }
+    for i in 0..full_rows {
+        let a_row = (row_start + i) * k;
+        for j in full_cols..n {
+            let mut s = 0.0_f64;
+            for l in 0..k {
+                s += a[a_row + l] * b[l * n + j];
+            }
+            block[i * n + j] = s;
+        }
     }
 }
 
@@ -800,6 +947,40 @@ mod tests {
                 gflops / (p / 1e3),
                 s / p
             );
+        }
+    }
+
+    #[test]
+    fn matmul_2d_blocked_bit_identical_to_ijk() {
+        // k=700 > KC (256) routes matmul_2d through the cache-blocked macro-kernel
+        // and spans THREE pc-blocks (256+256+188), so the C read-accumulate-store
+        // carry is exercised across multiple blocks. m=300 makes ops large enough
+        // to thread, and m,n are non-multiples of MR/NR (4) so the border sweep is
+        // hit too. k*n=182000 >= PACK_B_MIN_KN trips packing. Must equal the
+        // textbook i-j-k accumulation bit-for-bit.
+        let (m, k, n) = (300usize, 700usize, 260usize);
+        assert!(k > super::KC && k * n >= super::PACK_B_MIN_KN);
+        let a: Vec<f64> = (0..m * k)
+            .map(|i| (i as f64 * 0.007_93).sin() * 2.5 - 0.4)
+            .collect();
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| (i as f64 * 0.005_11).cos() * 1.7 + 0.3)
+            .collect();
+
+        let got = matmul_2d(&a, m, k, &b, n);
+
+        let mut want = vec![0.0f64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0;
+                for l in 0..k {
+                    sum += a[i * k + l] * b[l * n + j];
+                }
+                want[i * n + j] = sum;
+            }
+        }
+        for idx in 0..m * n {
+            assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
         }
     }
 
