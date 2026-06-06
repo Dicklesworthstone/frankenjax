@@ -500,13 +500,14 @@ fn oracle_svd_rank_deficient_3x3_reconstructs() {
     let vt = extract_f64_matrix(&result[2]);
     assert_eq!(s.len(), 3);
     assert!(s[0] >= s[1] && s[1] >= s[2], "singular values sorted descending");
-    // The ~zero singular value is only accurate to ~√ε·‖A‖ (≈2.7e-8 here, not ~1e-14)
-    // because the SVD goes through AᵀA, which squares the condition number — a known
-    // accuracy gap vs LAPACK/JAX (frankenjax-svd-ata-small-sv-accuracy). Reconstruction
-    // is unaffected (the tiny σ contributes little), so A is recovered to tolerance.
+    // The exact-zero singular value is recovered to ~ε·‖A‖ (≈1e-15) because the SVD
+    // uses one-sided Jacobi (orthogonalizes A's columns directly). The old AᵀA /
+    // normal-equations path squared the condition number and gave ≈2.7e-8 here, which
+    // this 1e-10 bound provably rejects — a regression guard for the high-relative-
+    // accuracy property (frankenjax-96i7w).
     assert!(
-        s[2] < 1e-6 * s[0],
-        "rank-2 matrix has a ~zero singular value, got {} (s0={})",
+        s[2] < 1e-10,
+        "rank-2 matrix zero singular value should be ~ε·‖A‖, got {} (s0={})",
         s[2],
         s[0]
     );

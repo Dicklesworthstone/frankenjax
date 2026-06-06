@@ -1278,47 +1278,102 @@ fn eval_svd_real(
 ) -> Result<Vec<Value>, EvalError> {
     let k = m.min(n);
 
-    // Step 1: A^T A (n×n symmetric).
-    let mut ata = vec![0.0_f64; n * n];
+    // One-sided Jacobi SVD (Hestenes / Demmel–Veselić). Instead of forming AᵀA —
+    // which squares the condition number and loses half the digits of every small
+    // singular value — we orthogonalize the COLUMNS of A in place by right-side
+    // Jacobi rotations, accumulating V. At convergence W = A·V has orthogonal
+    // columns: σ_i = ‖W[:,i]‖, U[:,i] = W[:,i]/σ_i. Small singular values are then
+    // computed to high *relative* accuracy (≈ε‖A‖, not √ε‖A‖). See bead
+    // frankenjax-96i7w.
+    let mut w = a.to_vec(); // m×n working matrix; its columns become orthogonal.
+    let mut v = vec![0.0_f64; n * n];
     for i in 0..n {
-        for j in i..n {
-            let mut dot = 0.0_f64;
-            for row in 0..m {
-                dot += a[row * n + i] * a[row * n + j];
+        v[i * n + i] = 1.0;
+    }
+
+    let eps = f64::EPSILON;
+    let max_sweeps = 60;
+    for _ in 0..max_sweeps {
+        let mut converged = true;
+        for p in 0..n.saturating_sub(1) {
+            for q in (p + 1)..n {
+                // 2×2 Gram of columns p,q of the current W (never the full AᵀA).
+                let mut alpha = 0.0_f64; // ‖col_p‖²
+                let mut beta = 0.0_f64; //  ‖col_q‖²
+                let mut gamma = 0.0_f64; // col_p · col_q
+                for i in 0..m {
+                    let wip = w[i * n + p];
+                    let wiq = w[i * n + q];
+                    alpha += wip * wip;
+                    beta += wiq * wiq;
+                    gamma += wip * wiq;
+                }
+                // Columns already orthogonal to working precision: skip.
+                if gamma.abs() <= eps * (alpha * beta).sqrt() {
+                    continue;
+                }
+                converged = false;
+                // Symmetric Schur on [[alpha, gamma], [gamma, beta]] (GVL 8.4.1):
+                // smaller root of t² + 2τt − 1 = 0.
+                let tau = (beta - alpha) / (2.0 * gamma);
+                let t = if tau >= 0.0 {
+                    1.0 / (tau + (1.0 + tau * tau).sqrt())
+                } else {
+                    -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                };
+                let c = 1.0 / (1.0 + t * t).sqrt();
+                let s = t * c;
+                // Rotate columns p,q of W: new_p = c·p − s·q, new_q = s·p + c·q.
+                for i in 0..m {
+                    let wip = w[i * n + p];
+                    let wiq = w[i * n + q];
+                    w[i * n + p] = c * wip - s * wiq;
+                    w[i * n + q] = s * wip + c * wiq;
+                }
+                // Accumulate the same rotation into V.
+                for i in 0..n {
+                    let vip = v[i * n + p];
+                    let viq = v[i * n + q];
+                    v[i * n + p] = c * vip - s * viq;
+                    v[i * n + q] = s * vip + c * viq;
+                }
             }
-            ata[i * n + j] = dot;
-            ata[j * n + i] = dot;
+        }
+        if converged {
+            break;
         }
     }
 
-    // Step 2: symmetric eigendecomposition via row-cyclic Jacobi → V, σ².
-    let (eigenvalues, v) = jacobi_eigendecomposition_cyclic(&mut ata, n);
-
-    // Step 3: sort eigenvalues (and V columns) descending.
+    // Column norms of W are the singular values; sort descending.
+    let mut col_norm = vec![0.0_f64; n];
+    for j in 0..n {
+        let mut s2 = 0.0_f64;
+        for i in 0..m {
+            let wij = w[i * n + j];
+            s2 += wij * wij;
+        }
+        col_norm[j] = s2.sqrt();
+    }
     let mut indices: Vec<usize> = (0..n).collect();
-    indices.sort_by(|&a, &b| eigenvalues[b].total_cmp(&eigenvalues[a]));
+    indices.sort_by(|&a, &b| col_norm[b].total_cmp(&col_norm[a]));
 
     let mut sigma = vec![0.0_f64; k];
     let mut v_sorted = vec![0.0_f64; n * n];
+    let mut u = vec![0.0_f64; m * k];
     for (new_col, &old_col) in indices.iter().enumerate() {
-        if new_col < k {
-            sigma[new_col] = eigenvalues[old_col].max(0.0).sqrt();
-        }
         for row in 0..n {
             v_sorted[row * n + new_col] = v[row * n + old_col];
         }
-    }
-
-    // Step 4: U = A V Σ⁻¹ (thin: m×k).
-    let mut u = vec![0.0_f64; m * k];
-    for i in 0..m {
-        for j in 0..k {
-            if sigma[j] > f64::EPSILON * 1e4 {
-                let mut val = 0.0_f64;
-                for col in 0..n {
-                    val += a[i * n + col] * v_sorted[col * n + j];
+        if new_col < k {
+            let sg = col_norm[old_col];
+            sigma[new_col] = sg;
+            // U[:,i] = W[:,i]/σ_i; a numerically-zero σ leaves the column zero
+            // (full_matrices later fills an orthonormal basis), matching the prior
+            // A·V·Σ⁻¹ guard.
+            if sg > f64::EPSILON * 1e4 {
+                for row in 0..m {
+                    u[row * k + new_col] = w[row * n + old_col] / sg;
                 }
-                u[i * k + j] = val / sigma[j];
             }
         }
     }
