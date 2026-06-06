@@ -1,0 +1,46 @@
+{
+  "pass": 143,
+  "bead": "frankenjax-jhgap",
+  "status": "rejected",
+  "target": "crates/fj-lax/src/threefry.rs random_uniform",
+  "benchmark": "random/uniform_1m_f64",
+  "baseline": {
+    "source": "RCH ts1 profile recorded in bead frankenjax-jhgap before the lever",
+    "worker": "ts1",
+    "low_ms": 9.351,
+    "mid_ms": 9.433,
+    "high_ms": 9.54
+  },
+  "candidate": {
+    "source": "rch exec -- cargo bench -p fj-lax --bench lax_baseline random/uniform_1m_f64 -- --quiet",
+    "worker": "vmi1264463",
+    "low_ms": 20.409,
+    "mid_ms": 23.531,
+    "high_ms": 27.018
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 0.9,
+    "effort": 1.0,
+    "value": 0.0,
+    "reason": "candidate midpoint was 2.50x slower than the ts1 baseline; even as a cross-worker result this is a clear regression, not a keepable win"
+  },
+  "lever_tested": "Partition the independent ThreeFry counter range into scoped-thread contiguous chunks for large random_uniform counts.",
+  "isomorphism": {
+    "rng_order": "Each element i used the same ThreeFry key and counter [0, i] as the scalar path.",
+    "floating_point": "The candidate used the same 23-bit mantissa extraction and minval + unit * scale formula per element.",
+    "tie_breaking": "No ordering or tie-breaking surface changed.",
+    "result": "Behavior proof passed, but the lever was not retained because performance regressed."
+  },
+  "proof": {
+    "command": "rch exec -- cargo test -p fj-lax --lib threefry -- --nocapture",
+    "worker": "ts1",
+    "result": "75 passed; 0 failed; 1078 filtered out",
+    "golden_sha256": {
+      "threefry_generated_bits": "e96748ed0520e1648d412ffe3ccddbf966b23fd0828824e0d924e2fa7108c8f5",
+      "random_normal_threaded": "982d444c8f93dd7331fff1e2141e40ee967f6698a7a12cbeef104d38b6c6c29b"
+    }
+  },
+  "decision": "Rejected and source restored; git diff for crates/fj-lax/src/threefry.rs is empty.",
+  "next_primitive": "Attack a fused ThreeFry-to-normal stream / distribution-specific generator that eliminates intermediate uniform allocation and repeated scalar transform overhead, target >=1.4x on random/normal_1m_f64."
+}
