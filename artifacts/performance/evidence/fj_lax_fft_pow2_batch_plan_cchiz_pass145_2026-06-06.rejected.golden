@@ -1,0 +1,28 @@
+frankenjax-cchiz pass145 rejected: BatchFftPlan::Pow2 Radix2Plan reuse
+
+baseline-ts1:
+  eval/fft_1009_prime_complex128 = [127.09 us, 128.33 us, 129.77 us]
+  eval/fft_batch_2048x256_complex128 = [9.7791 ms, 10.506 ms, 10.939 ms]
+  eval/fft_batch_2048x256_complex128_dense_input = [7.1073 ms, 7.5395 ms, 8.2187 ms]
+  eval/rfft_batch_64x1500_mixed_f64 = [1.7683 ms, 1.8826 ms, 2.0432 ms]
+  eval/rfft_batch_64x1499_bluestein_f64 = [9.8610 ms, 10.731 ms, 11.611 ms]
+  eval/rfft_batch_2048x256_f64 = [7.7211 ms, 7.9224 ms, 8.3375 ms]
+  eval/rfft_batch_2048x256_f64_dense_input = [5.3638 ms, 5.5244 ms, 5.7199 ms]
+  eval/irfft_batch_2048x256_complex128 = [4.8020 ms, 4.9444 ms, 5.1284 ms]
+
+candidate-ts1:
+  eval/fft_1009_prime_complex128 = [176.74 us, 183.56 us, 191.12 us]
+  eval/fft_batch_2048x256_complex128 = [10.370 ms, 10.559 ms, 10.740 ms]
+  eval/fft_batch_2048x256_complex128_dense_input = [5.8586 ms, 6.6339 ms, 7.3790 ms]
+  eval/rfft_batch_2048x256_f64 = [7.8057 ms, 8.1736 ms, 9.0169 ms]
+  eval/rfft_batch_2048x256_f64_dense_input = [6.3120 ms, 7.1592 ms, 9.0498 ms]
+  eval/irfft_batch_2048x256_complex128 = [5.1572 ms, 5.3489 ms, 5.5131 ms]
+
+proof-before-rejection:
+  rch remote ts1: cargo test -p fj-lax --lib fft -- --nocapture
+  result: 40 passed, including batch_pow2_plan_matches_legacy_radix2_bits,
+          radix2_plan_matches_unplanned_path_by_bits, fft_golden_output_digest,
+          half_length_rfft_golden_output_digest, threaded batch FFT/RFFT/IRFFT tests
+
+source-state:
+  rejected hunk manually removed; git diff -- crates/fj-lax/src/fft.rs is empty
