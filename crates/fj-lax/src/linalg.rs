@@ -2668,20 +2668,63 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
     // iteration class, but each step touches only O(n^2) data.
     let (mut t, mut q_total) = hessenberg_reduction(a, n);
 
-    for _iter in 0..100 {
+    // Unshifted Hessenberg QR drives `t` to real Schur (quasi-triangular) form:
+    // negligible subdiagonals separate 1×1 real blocks from isolated 2×2 blocks
+    // (complex-conjugate pairs, whose subdiagonal keeps a fixed nonzero magnitude
+    // because the pair shares a modulus). Iterate until quasi-triangular — no two
+    // *consecutive* non-negligible subdiagonals, which would be an unconverged ≥3×3
+    // coupled block — then read eigenvalues off the 1×1/2×2 blocks. Reading only the
+    // diagonal (the previous behaviour) silently dropped every complex eigenvalue
+    // (frankenjax-eig-nonsymmetric-broken-n3-66pmy).
+    //
+    // `subdiag_negligible(t, j)` tests the subdiagonal linking blocks j-1 and j
+    // against the LAPACK-style relative criterion |t[j,j-1]| ≤ ε·(|t[j-1,j-1]|+|t[j,j]|).
+    let subdiag_negligible = |t: &[f64], j: usize| -> bool {
+        let scale = t[(j - 1) * n + j - 1].abs() + t[j * n + j].abs();
+        t[j * n + j - 1].abs() <= f64::EPSILON * scale.max(f64::MIN_POSITIVE)
+    };
+    for _iter in 0..(200 * n) {
         hessenberg_qr_step(&mut t, &mut q_total, n);
-
-        let mut max_subdiag = 0.0f64;
-        for i in 1..n {
-            max_subdiag = max_subdiag.max(t[i * n + i - 1].abs());
+        let mut converged = true;
+        for j in 2..n {
+            if !subdiag_negligible(&t, j) && !subdiag_negligible(&t, j - 1) {
+                converged = false;
+                break;
+            }
         }
-        if max_subdiag < 1e-10 {
+        if converged {
             break;
         }
     }
 
-    // Extract eigenvalues from diagonal
-    let eigenvalues: Vec<(f64, f64)> = (0..n).map(|i| (t[i * n + i], 0.0)).collect();
+    // Walk the quasi-triangular form: 1×1 → real eigenvalue; an isolated 2×2 block
+    // → its eigenvalue pair (real or complex-conjugate) via the trace/discriminant
+    // formula — which is exact for the block regardless of its internal convergence,
+    // so accuracy depends only on the *separating* subdiagonals being negligible.
+    let mut eigenvalues: Vec<(f64, f64)> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        if i + 1 < n && !subdiag_negligible(&t, i + 1) {
+            let (a00, a01) = (t[i * n + i], t[i * n + i + 1]);
+            let (a10, a11) = (t[(i + 1) * n + i], t[(i + 1) * n + i + 1]);
+            let trace = a00 + a11;
+            let det = a00 * a11 - a01 * a10;
+            let disc = trace * trace - 4.0 * det;
+            if disc >= 0.0 {
+                let r = disc.sqrt();
+                eigenvalues.push(((trace + r) / 2.0, 0.0));
+                eigenvalues.push(((trace - r) / 2.0, 0.0));
+            } else {
+                let im = (-disc).sqrt() / 2.0;
+                eigenvalues.push((trace / 2.0, im));
+                eigenvalues.push((trace / 2.0, -im));
+            }
+            i += 2;
+        } else {
+            eigenvalues.push((t[i * n + i], 0.0));
+            i += 1;
+        }
+    }
     let eigenvectors: Vec<(f64, f64)> = q_total.into_iter().map(|v| (v, 0.0)).collect();
 
     (eigenvalues, eigenvectors)
@@ -3829,6 +3872,47 @@ mod tests {
             }
             let (o, c) = (median_ms(t_old), median_ms(t_new));
             println!("complex_jacobi n={n}: maxpivot {o:.3}ms | cyclic {c:.3}ms | speedup {:.2}x", o / c);
+        }
+    }
+
+    /// Ground truth for frankenjax-eig-nonsymmetric-broken-n3-66pmy: build A = H·T·H
+    /// with H a symmetric-orthogonal Householder and T block-diagonal — a 1×1 {2}
+    /// plus a 2×2 rotation block {±3i}. A is a dense non-symmetric matrix similar to
+    /// T, so eig must recover the spectrum {2, 3i, -3i}. The pre-fix kernel read only
+    /// the diagonal and returned ≈{2,0,0}, dropping the complex pair.
+    #[test]
+    fn eig_qr_recovers_complex_eigenvalues_n3() {
+        let n = 3;
+        let t = [2.0, 0.0, 0.0, 0.0, 0.0, -3.0, 0.0, 3.0, 0.0];
+        let v = [1.0, 2.0, -1.0];
+        let vtv = 6.0_f64;
+        let mut h = [0.0_f64; 9];
+        for r in 0..n {
+            for c in 0..n {
+                let id = if r == c { 1.0 } else { 0.0 };
+                h[r * n + c] = id - 2.0 / vtv * v[r] * v[c];
+            }
+        }
+        let matmul3 = |x: &[f64; 9], y: &[f64; 9]| -> [f64; 9] {
+            let mut out = [0.0_f64; 9];
+            for r in 0..n {
+                for c in 0..n {
+                    let mut s = 0.0;
+                    for k in 0..n {
+                        s += x[r * n + k] * y[k * n + c];
+                    }
+                    out[r * n + c] = s;
+                }
+            }
+            out
+        };
+        let a = matmul3(&matmul3(&h, &t), &h);
+        let (w, _v) = eig_qr_iteration(&a, n);
+        for &(er, ei) in &[(2.0, 0.0), (0.0, 3.0), (0.0, -3.0)] {
+            let found = w
+                .iter()
+                .any(|&(wr, wi)| (wr - er).abs() < 1e-7 && (wi - ei).abs() < 1e-7);
+            assert!(found, "missing eigenvalue ({er},{ei}) in {w:?}");
         }
     }
 
