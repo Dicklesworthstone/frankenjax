@@ -1,0 +1,51 @@
+{
+  "bead": "frankenjax-sf71s",
+  "date": "2026-06-05",
+  "crate": "fj-lax",
+  "target": "linalg/pinv_192x192_f64",
+  "decision": "rejected",
+  "profile_basis": "Post-Cholesky linalg profile identified linalg/pinv_192x192_f64 as the top fj-lax row. Focused RCH baseline and candidate both ran on ts1.",
+  "tested_lever": "Replace jacobi_eigendecomposition_cyclic's two full row/column passes per rotation with a symmetry-preserving off-block mirror update while keeping the same sweep order, apq skip, Schur coefficients, exact p/q annihilation, tolerance, and V update.",
+  "reason_rejected": "The candidate preserved the intended algorithm shape but regressed the profile-backed benchmark. Source was restored with apply_patch; no production code from this lever is retained.",
+  "results": {
+    "initial_baseline_stdout": {
+      "worker": "ts1",
+      "mean_ms": 103.84,
+      "ci_lower_ms": 103.17,
+      "ci_upper_ms": 104.56,
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=.rch-target-sf71s-baseline rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_192x192_f64'"
+    },
+    "candidate": {
+      "worker": "ts1",
+      "mean_ms": 119.05,
+      "ci_lower_ms": 115.63,
+      "ci_upper_ms": 122.45,
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=.rch-target-sf71s-candidate rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_192x192_f64'"
+    },
+    "restored_baseline": {
+      "worker": "ts1",
+      "mean_ms": 111.49,
+      "ci_lower_ms": 109.30,
+      "ci_upper_ms": 113.86,
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=.rch-target-sf71s-restored rch exec -- cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_192x192_f64'"
+    },
+    "candidate_vs_restored_speedup_x": 0.936,
+    "candidate_vs_initial_speedup_x": 0.872
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 4.0,
+    "effort": 2.0,
+    "impact_times_confidence_over_effort": 0.0,
+    "kept": false
+  },
+  "isomorphism": {
+    "status": "not promoted to full proof because the perf gate failed",
+    "source_restored": true
+  },
+  "next_primitive": {
+    "direction": "Replace the Gram-matrix cyclic-Jacobi pinv path rather than micro-tuning it.",
+    "candidate": "direct one-sided Jacobi SVD or Golub-Kahan bidiagonalization for pinv/SVD so square pinv avoids forming A^T A and reduces condition-number squaring.",
+    "target_ratio": "2x+ on linalg/pinv_192x192_f64 with JAX tolerance proof and rcond/rank-deficient guard coverage"
+  }
+}
