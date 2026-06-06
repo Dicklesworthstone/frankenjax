@@ -1341,23 +1341,62 @@ fn rfft_rows_into(
         return;
     }
 
+    // Non-power-of-two (Bluestein / mixed-radix) path. The transform is full-complex
+    // regardless of the real input, so we PACK ROWS IN PAIRS into one complex signal
+    // z = x_a + i·x_b and run a single length-`fft_length` transform per pair, halving
+    // the number of (dominant-cost) transforms. Each real spectrum is recovered from
+    // the conjugate symmetry of the packed transform Z (N = fft_length):
+    //   X_a[k] = (Z[k] + conj(Z[(N−k) mod N])) / 2,
+    //   X_b[k] = (Z[k] − conj(Z[(N−k) mod N])) / (2i).
+    // A leftover odd row is transformed directly. This is tolerance-equal to the
+    // per-row path (only extra pack/unpack rounding); non-pow2 transforms are not
+    // bit-frozen (golden FFT digests are pow2-only). Pairing stays within this
+    // row-block, so threading partition / row order / determinism are unchanged.
+    let n = fft_length;
     let mut padded = vec![(0.0, 0.0); fft_length];
     let mut transformed = Vec::with_capacity(fft_length);
     let mut scratch = BluesteinScratch::default();
     let mut mixed_scratch = Vec::new();
-    for r in 0..rows {
-        let start = (row_start + r) * input_last;
-        let batch_slice = &elements[start..start + input_last];
-        padded[..copy_len].copy_from_slice(&batch_slice[..copy_len]);
+
+    let mut r = 0;
+    while r + 1 < rows {
+        let start_a = (row_start + r) * input_last;
+        let start_b = (row_start + r + 1) * input_last;
+        for j in 0..copy_len {
+            // Real input ⇒ imaginary parts are zero; pack row a → real, row b → imag.
+            padded[j] = (elements[start_a + j].0, elements[start_b + j].0);
+        }
         padded[copy_len..].fill((0.0, 0.0));
         match plan {
-            Some(plan) => plan.apply_into(
-                &padded,
-                &mut scratch,
-                &mut mixed_scratch,
-                false,
-                &mut transformed,
-            ),
+            Some(plan) => {
+                plan.apply_into(&padded, &mut scratch, &mut mixed_scratch, false, &mut transformed)
+            }
+            None => fft_1d_into(&padded, &mut transformed),
+        }
+
+        let (blk_a, blk_b) =
+            out_blk[r * out_last..(r + 2) * out_last].split_at_mut(out_last);
+        for k in 0..out_last {
+            let nk = if k == 0 { 0 } else { n - k };
+            let (zr, zi) = transformed[k];
+            let (zr_nk, zi_nk) = transformed[nk];
+            // conj(Z[nk]) = (zr_nk, −zi_nk).
+            blk_a[k] = (0.5 * (zr + zr_nk), 0.5 * (zi - zi_nk));
+            // (Z[k] − conj(Z[nk]))/(2i): d = (dr, di) ⇒ d/(2i) = (di/2, −dr/2).
+            let dr = zr - zr_nk;
+            let di = zi + zi_nk;
+            blk_b[k] = (0.5 * di, -0.5 * dr);
+        }
+        r += 2;
+    }
+    if r < rows {
+        let start = (row_start + r) * input_last;
+        padded[..copy_len].copy_from_slice(&elements[start..start + copy_len]);
+        padded[copy_len..].fill((0.0, 0.0));
+        match plan {
+            Some(plan) => {
+                plan.apply_into(&padded, &mut scratch, &mut mixed_scratch, false, &mut transformed)
+            }
             None => fft_1d_into(&padded, &mut transformed),
         }
         out_blk[r * out_last..r * out_last + out_last].copy_from_slice(&transformed[..out_last]);
@@ -2288,6 +2327,38 @@ mod tests {
         let elems = extract_complex_elements(&result);
         assert_eq!(elems.len(), 3);
         assert_complex_close(&elems, &[(10.0, 0.0), (-2.0, 2.0), (-2.0, 0.0)], 1e-10);
+    }
+
+    #[test]
+    fn rfft_paired_batch_matches_per_row_nonpow2() {
+        // Non-power-of-two length (7 ⇒ Bluestein) with an ODD batch count (5) so both
+        // the row-pairing path and the leftover single-row tail run. Each row's
+        // spectrum must equal the independent single-row RFFT to tolerance — the
+        // isomorphism guard for the paired non-pow2 batch path.
+        let rows = 5usize;
+        let n = 7usize;
+        let data: Vec<f64> = (0..rows * n)
+            .map(|i| (((i * 13 + 1) % 9) as f64) - 4.0)
+            .collect();
+        let batched = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape {
+                    dims: vec![rows as u32, n as u32],
+                },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let out = eval_rfft(&[batched], &BTreeMap::new()).unwrap();
+        let got = extract_complex_elements(&out);
+        let out_last = n / 2 + 1;
+        for r in 0..rows {
+            let row = make_real_vector(&data[r * n..(r + 1) * n]);
+            let row_out = eval_rfft(&[row], &BTreeMap::new()).unwrap();
+            let row_got = extract_complex_elements(&row_out);
+            assert_complex_close(&got[r * out_last..(r + 1) * out_last], &row_got, 1e-12);
+        }
     }
 
     #[test]
