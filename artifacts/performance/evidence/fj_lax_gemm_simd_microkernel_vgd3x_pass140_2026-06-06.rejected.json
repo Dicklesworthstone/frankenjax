@@ -1,0 +1,98 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_gemm_simd_microkernel_vgd3x_pass140_2026-06-06",
+  "status": "rejected",
+  "date": "2026-06-06",
+  "agent": "codex",
+  "bead": "frankenjax-vgd3x",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_1024x1024x1024_f64 and linalg/matmul_2d_2048x2048x2048_f64",
+  "skill_pass": "repeatedly-apply-skill pass140 -> extreme-software-optimization",
+  "profile_backing": {
+    "source": "frankenjax-vgd3x after NR8 rejection",
+    "finding": "NR8 scalar tile regressed on same-worker ts1; the next candidates were safe portable-SIMD f64 lanes or Strassen/recursive GEMM behind a Dot tolerance contract.",
+    "prior_same_worker_control": {
+      "worker": "ts1",
+      "source": "fj_lax_gemm_nr8_tile_cl9xa_pass138_2026-06-06.rejected.json",
+      "time_ms": {
+        "lower": 20.866,
+        "mid": 22.040,
+        "upper": 23.286
+      }
+    }
+  },
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-vgd3x-pass139-baseline-1024 cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "worker": "vmi1264463",
+    "time_ms": {
+      "lower": 338.75,
+      "mid": 485.73,
+      "upper": 668.73
+    },
+    "decision_note": "Recorded as required pre-change baseline but not used for keep scoring because RCH ignored worker preference and the interval was too noisy for comparison with ts1 candidate runs."
+  },
+  "candidate": {
+    "lever": "Replace the full NR=4 output-column panel update with safe std::simd f64x4 lane accumulators while preserving one lane per output column and ascending-k accumulation.",
+    "source_diff_retained": false,
+    "proof": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-vgd3x-pass139-proof cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+      "worker": "ts1",
+      "result": "pass",
+      "details": "7 matmul_2d tests passed, 1 ignored, including packed, threaded, large, and blocked bit-identity tests."
+    },
+    "rebench_1024": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-vgd3x-pass139-candidate-1024 cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "ts1",
+      "time_ms": {
+        "lower": 19.529,
+        "mid": 21.447,
+        "upper": 23.246
+      },
+      "speedup_vs_prior_same_worker_mid": 1.0277,
+      "conservative_speedup": 0.8976,
+      "decision_note": "Intervals overlap the prior NR4 same-worker control; this is not a confident real win."
+    },
+    "rebench_2048": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-vgd3x-pass139-candidate-2048 cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "ts1",
+      "time_ms": {
+        "lower": 245.53,
+        "mid": 274.65,
+        "upper": 301.88
+      },
+      "comparison_note": "Did not prove a blocked-path win over pass138's ts1 gated baseline of 146.62ms midpoint; also exposed RCH shared-worker source retrieval drift, so the safe decision is reject and restore source."
+    }
+  },
+  "result": {
+    "score": {
+      "impact": 0.0,
+      "confidence": 4.0,
+      "effort": 1.5,
+      "impact_x_confidence_over_effort": 0.0,
+      "keep_threshold": 2.0
+    },
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Candidate kept row-major output order.",
+    "tie_breaking_unchanged": "N/A: GEMM has no comparison or tie-breaking surface.",
+    "floating_point": "Candidate assigned one SIMD lane per output column and kept l=0..k-1 accumulation in order with separate multiply and add. It introduced no horizontal reduction, reassociation, mixed precision, or mul_add call.",
+    "rng": "N/A: matmul_2d consumes no random state.",
+    "golden_outputs": "fj_lax_gemm_simd_microkernel_vgd3x_pass140_2026-06-06.rejected.golden.sha256"
+  },
+  "validation": [
+    "RCH focused matmul proof passed before perf rejection.",
+    "sha256sum -c artifacts/performance/evidence/fj_lax_gemm_simd_microkernel_vgd3x_pass140_2026-06-06.rejected.golden.sha256 passed.",
+    "Production tensor_contraction.rs source restored; git diff for crates/fj-lax/src/tensor_contraction.rs is empty."
+  ],
+  "next_primitive": {
+    "name": "Strassen/recursive GEMM behind Dot tolerance contract",
+    "reason": "Safe SIMD lane-level arithmetic failed to establish a real keep. The next pass must change algorithmic structure rather than tune the current scalar/packed microkernel.",
+    "target_ratio": ">=1.3x on 1024^3-2048^3 Dot large-matrix path with explicit JAX-oracle tolerance proof; matmul_2d internal bit-identity path remains unchanged."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_gemm_simd_microkernel_vgd3x_pass140_2026-06-06.rejected.golden",
+    "sha256": "2ea200b4960ed9a1c5e244ffc545c91cdddceb27a101fdcafece6e0c5503e231",
+    "sha256_check": "sha256sum -c artifacts/performance/evidence/fj_lax_gemm_simd_microkernel_vgd3x_pass140_2026-06-06.rejected.golden.sha256"
+  }
+}

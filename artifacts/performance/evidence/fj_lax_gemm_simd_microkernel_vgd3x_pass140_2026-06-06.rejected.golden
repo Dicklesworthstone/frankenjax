@@ -1,0 +1,11 @@
+schema=frankenjax.performance_golden.v1
+bead=frankenjax-vgd3x
+pass=140
+status=rejected
+lever=safe portable-SIMD f64x4 lanes for GEMM full NR panels
+ordering=row-major output unchanged
+per_cell_fp_order=each output lane kept ascending-k accumulation with separate multiply and add; no horizontal reduction, no reassociation, no mixed precision, no RNG, no tie-breaking surface
+proof=RCH ts1 cargo test -p fj-lax --lib matmul_2d passed 7 focused tests, 1 ignored timing test
+score=0.0; 1024^3 candidate overlapped control and 2048^3 evidence did not prove a blocked-path win
+decision=reject_and_restore_source
+next_primitive=Strassen/recursive GEMM behind the Dot tolerance contract, with matmul_2d internal bit-identity tests kept on the existing path
