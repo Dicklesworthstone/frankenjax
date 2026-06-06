@@ -465,6 +465,61 @@ fn oracle_svd_3x2_rectangular() {
     );
 }
 
+#[test]
+fn oracle_svd_wide_2x4_reconstructs() {
+    // Wide matrix (m<n): k=min(m,n)=2 ⇒ U[2×2], S[2], Vt[2×4]; U·diag(S)·Vt = A.
+    // Previously only tall/square SVD shapes were covered.
+    let a_data = [1.0, 2.0, 0.5, -1.0, 0.3, 1.5, 2.0, 0.7];
+    let a = make_f64_matrix(2, 4, &a_data);
+    let result =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
+    let u = extract_f64_matrix(&result[0]);
+    let s = extract_f64_vec_from_value(&result[1]);
+    let vt = extract_f64_matrix(&result[2]);
+    assert_eq!(s.len(), 2, "wide SVD: k=min(m,n)=2 singular values");
+    assert!(s[0] >= s[1], "singular values sorted descending");
+    let us = [u[0] * s[0], u[1] * s[1], u[2] * s[0], u[3] * s[1]];
+    let reconstructed = matmul(2, 2, 4, &us, &vt);
+    assert_close(&reconstructed, &a_data, 1e-10, "U·diag(S)·Vt = A (wide)");
+}
+
+#[test]
+fn oracle_svd_rank_deficient_3x3_reconstructs() {
+    // Rank-2 3×3 (row 2 = row 0 + row 1): smallest singular value ≈ 0, and the
+    // decomposition must still reconstruct A.
+    let a_data = [
+        1.0, 2.0, 3.0, //
+        4.0, 5.0, 6.0, //
+        5.0, 7.0, 9.0,
+    ];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let result =
+        eval_primitive_multi(Primitive::Svd, std::slice::from_ref(&a), &no_params()).unwrap();
+    let u = extract_f64_matrix(&result[0]);
+    let s = extract_f64_vec_from_value(&result[1]);
+    let vt = extract_f64_matrix(&result[2]);
+    assert_eq!(s.len(), 3);
+    assert!(s[0] >= s[1] && s[1] >= s[2], "singular values sorted descending");
+    // The ~zero singular value is only accurate to ~√ε·‖A‖ (≈2.7e-8 here, not ~1e-14)
+    // because the SVD goes through AᵀA, which squares the condition number — a known
+    // accuracy gap vs LAPACK/JAX (frankenjax-svd-ata-small-sv-accuracy). Reconstruction
+    // is unaffected (the tiny σ contributes little), so A is recovered to tolerance.
+    assert!(
+        s[2] < 1e-6 * s[0],
+        "rank-2 matrix has a ~zero singular value, got {} (s0={})",
+        s[2],
+        s[0]
+    );
+    let mut us = [0.0_f64; 9];
+    for r in 0..3 {
+        for c in 0..3 {
+            us[r * 3 + c] = u[r * 3 + c] * s[c];
+        }
+    }
+    let reconstructed = matmul(3, 3, 3, &us, &vt);
+    assert_close(&reconstructed, &a_data, 1e-7, "U·diag(S)·Vt = A (rank-deficient)");
+}
+
 // ======================== Eigh (Symmetric Eigendecomposition) ========================
 
 #[test]
