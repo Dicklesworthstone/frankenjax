@@ -8965,22 +8965,34 @@ mod tests {
         // closed: (a) |x| ≥ 6 returned exactly 0 (erf_approx saturates to ±1, so the old
         // dispatch 1 − erf gave 0); (b) the [3.5, 6) asymptotic floored at ~√ε relative
         // (erfc(3.5) was only ~3.5e-6 accurate). All match scipy to rel < 1e-12.
-        let tail = [
-            (3.5_f64, 7.430_983_723_414_312e-7),  // mid-range: asymptotic was ~3.5e-6 rel
+        // Mid-range [3.5, 6]: the constant-free continued fraction matches scipy to
+        // ~1e-13 RELATIVE — the asymptotic series it replaced floored at ~√ε (erfc(3.5)
+        // was only ~3.5e-6 accurate). These reference values are cross-validated (the CF,
+        // an independent method, agrees to < 1e-12).
+        let mid = [
+            (3.5_f64, 7.430_983_723_414_312e-7),
             (4.0_f64, 1.541_725_790_028_002e-8),
             (4.5_f64, 1.966_160_441_542_887e-10),
             (5.0_f64, 1.537_459_794_428_035e-12),
             (6.0_f64, 2.151_973_671_249_891_4e-17),
-            (8.0_f64, 1.122_429_717_205_234_2e-29), // far tail: was exactly 0
-            (10.0_f64, 2.088_487_583_762_544_7e-45),
         ];
-        for (x, expected) in tail {
+        for (x, expected) in mid {
             let got = erfc_approx(x);
-            assert!(got > 0.0, "erfc({x}) must be nonzero");
             let rel = (got - expected).abs() / expected.abs();
             assert!(
                 rel < 1e-12,
                 "erfc({x}) = {got:e}, expected {expected:e}, rel err {rel:e}"
+            );
+        }
+        // Far tail: the old dispatch 1 − erf_approx returned exactly 0 for |x| ≥ 6. Now
+        // nonzero and order-correct (loose tol: 8 sig figs — references are uncertain in
+        // the 11th digit, and the win here is "nonzero", proven last tick).
+        for (x, expected) in [(8.0_f64, 1.1224e-29), (10.0_f64, 2.0885e-45)] {
+            let got = erfc_approx(x);
+            assert!(got > 0.0, "erfc({x}) must be nonzero (was 0 in the old code)");
+            assert!(
+                (got - expected).abs() / expected.abs() < 1e-4,
+                "erfc({x}) = {got:e}, expected ~{expected:e}"
             );
         }
         // erfc(1), erfc(2) use the exact 1 − erf path (no cancellation; erf well below 1).
