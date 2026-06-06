@@ -6908,6 +6908,31 @@ fn tensor_value<'a>(value: &'a Value, context: &'static str) -> Result<&'a Tenso
 // ── Linear algebra matrix helpers ──────────────────────────────────
 
 /// Extract row-major f64 matrix data from a rank-2 tensor Value.
+/// Like [`extract_matrix_f64`] but also accepts a rank-1 vector, treated as an
+/// `n×1` column. Used by the `solve` VJP so a vector right-hand side
+/// (`jnp.linalg.solve(A, b)` with 1-D `b`) is differentiable, not just a matrix
+/// `B`. Returns `(rows, cols, row-major data)`.
+fn extract_rhs_f64(v: &Value) -> Result<(usize, usize, Vec<f64>), AdError> {
+    let t = v
+        .as_tensor()
+        .ok_or_else(|| AdError::EvalFailed("expected tensor, got scalar".to_owned()))?;
+    let data: Vec<f64> = t
+        .elements
+        .iter()
+        .map(|lit| {
+            lit.as_f64()
+                .ok_or_else(|| AdError::EvalFailed("non-numeric element".to_owned()))
+        })
+        .collect::<Result<_, _>>()?;
+    match t.rank() {
+        1 => Ok((t.shape.dims[0] as usize, 1, data)),
+        2 => Ok((t.shape.dims[0] as usize, t.shape.dims[1] as usize, data)),
+        r => Err(AdError::EvalFailed(format!(
+            "solve operand must be rank-1 or rank-2, got rank-{r}"
+        ))),
+    }
+}
+
 fn extract_matrix_f64(v: &Value) -> Result<(usize, usize, Vec<f64>), AdError> {
     let t = v
         .as_tensor()
@@ -7154,11 +7179,13 @@ fn solve_vjp(
     // Recompute X = A\B
     let x = eval_primitive(Primitive::Solve, inputs, params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-    let (n, nx, x_data) = extract_matrix_f64(&x)?;
+    // `extract_rhs_f64` accepts a rank-1 vector (n×1), so the common
+    // `solve(A, b)` with a 1-D `b` is differentiable (previously errored).
+    let (n, nx, x_data) = extract_rhs_f64(&x)?;
     // Only the cotangent's dimensions are needed for the shape check; the data
     // itself is fed to the adjoint solve via `g.clone()` below, so the matrix
     // payload is intentionally dropped here.
-    let (gm, gn, _) = extract_matrix_f64(g)?;
+    let (gm, gn, _) = extract_rhs_f64(g)?;
     if gm != n || gn != nx {
         return Err(AdError::EvalFailed(
             "gradient shape doesn't match solve output".to_owned(),
@@ -7180,7 +7207,7 @@ fn solve_vjp(
     // Solve A^T z = g for z (this gives dB = z)
     let z = eval_primitive(Primitive::Solve, &[at_val, g.clone()], params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-    let (_, _, z_data) = extract_matrix_f64(&z)?;
+    let (_, _, z_data) = extract_rhs_f64(&z)?;
 
     // dA = -z @ x^T
     let xt = transpose_f64(n, nx, &x_data);
@@ -7298,10 +7325,12 @@ fn solve_jvp(
     let x = eval_primitive(Primitive::Solve, primals, params)
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
 
+    // `extract_rhs_f64` accepts a rank-1 vector (n×1), so `solve(A, b)` with a 1-D
+    // `b` is differentiable in forward mode too (previously errored).
     let (_, _, da_data) = extract_matrix_f64(&tangents[0])?;
-    let (_, _, x_data) = extract_matrix_f64(&x)?;
-    let (n, nx, _) = extract_matrix_f64(&primals[1])?;
-    let (_, _, db_data) = extract_matrix_f64(&tangents[1])?;
+    let (_, _, x_data) = extract_rhs_f64(&x)?;
+    let (n, nx, _) = extract_rhs_f64(&primals[1])?;
+    let (_, _, db_data) = extract_rhs_f64(&tangents[1])?;
 
     // dA @ X
     let da_x = matmul_f64(n, n, nx, &da_data, &x_data);
@@ -7313,7 +7342,21 @@ fn solve_jvp(
         .map(|(&db, &dax)| db - dax)
         .collect();
 
-    let rhs_val = build_matrix_f64(n, nx, &rhs)?;
+    // Build rhs with `b`'s own shape (rank-1 vector or rank-2 matrix) so the
+    // forward-mode tangent dX matches the primal output X's shape.
+    let b_shape = primals[1]
+        .as_tensor()
+        .ok_or_else(|| AdError::EvalFailed("solve b must be a tensor".to_owned()))?
+        .shape
+        .clone();
+    let rhs_val = Value::Tensor(
+        TensorValue::new(
+            DType::F64,
+            b_shape,
+            rhs.iter().map(|&v| Literal::from_f64(v)).collect(),
+        )
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?,
+    );
 
     // dX = A \ rhs
     eval_primitive(Primitive::Solve, &[primals[0].clone(), rhs_val], params)

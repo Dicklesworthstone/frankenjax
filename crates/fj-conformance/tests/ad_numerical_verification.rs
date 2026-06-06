@@ -214,6 +214,142 @@ fn cholesky_vjp_numerical_2x2() {
     assert_gradients_close(&analytical, &numerical, 1e-4, "Cholesky VJP");
 }
 
+// ======================== Det / Slogdet / Solve VJP ========================
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn det_vjp_numerical_3x3() {
+    // ∂det/∂A = det(A)·inv(A)ᵀ. Well-conditioned non-symmetric 3×3.
+    let a_data = [2.0, 0.3, -0.1, 0.4, 3.0, 0.2, -0.2, 0.1, 2.5];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let det_out = eval_primitive(Primitive::Det, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+    let g = Value::scalar_f64(1.0);
+    let vjp = fj_ad::vjp(
+        Primitive::Det,
+        std::slice::from_ref(&a),
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&det_out),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp[0]);
+
+    let eps = 1e-6;
+    let mut numerical = [0.0; 9];
+    for idx in 0..9 {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let dp = eval_primitive(Primitive::Det, &[make_f64_matrix(3, 3, &plus)], &BTreeMap::new())
+            .unwrap();
+        let dm = eval_primitive(Primitive::Det, &[make_f64_matrix(3, 3, &minus)], &BTreeMap::new())
+            .unwrap();
+        numerical[idx] = (extract_f64_scalar(&dp) - extract_f64_scalar(&dm)) / (2.0 * eps);
+    }
+    assert_gradients_close(&analytical, &numerical, 1e-5, "Det VJP");
+}
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn slogdet_vjp_numerical_3x3() {
+    // ∂logabsdet/∂A = inv(A)ᵀ (the sign output's cotangent contributes 0 for real A).
+    let a_data = [2.0, 0.3, -0.1, 0.4, 3.0, 0.2, -0.2, 0.1, 2.5];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let outs =
+        eval_primitive_multi(Primitive::Slogdet, std::slice::from_ref(&a), &BTreeMap::new()).unwrap();
+    // Cotangents: (sign → 0, logabsdet → 1).
+    let g = [Value::scalar_f64(0.0), Value::scalar_f64(1.0)];
+    let vjp = fj_ad::vjp(
+        Primitive::Slogdet,
+        std::slice::from_ref(&a),
+        &g,
+        &outs,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let analytical = extract_f64_vec(&vjp[0]);
+
+    let eps = 1e-6;
+    let mut numerical = [0.0; 9];
+    for idx in 0..9 {
+        let mut plus = a_data.to_vec();
+        plus[idx] += eps;
+        let mut minus = a_data.to_vec();
+        minus[idx] -= eps;
+        let lp = eval_primitive_multi(
+            Primitive::Slogdet,
+            &[make_f64_matrix(3, 3, &plus)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let lm = eval_primitive_multi(
+            Primitive::Slogdet,
+            &[make_f64_matrix(3, 3, &minus)],
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        // loss = 1·logabsdet (output index 1).
+        numerical[idx] =
+            (extract_f64_scalar(&lp[1]) - extract_f64_scalar(&lm[1])) / (2.0 * eps);
+    }
+    assert_gradients_close(&analytical, &numerical, 1e-5, "Slogdet VJP");
+}
+
+#[test]
+#[allow(clippy::needless_range_loop)]
+fn solve_vjp_numerical_3x3() {
+    // x = A⁻¹b. ∂L/∂A = −A⁻ᵀ ḡ xᵀ, ∂L/∂b = A⁻ᵀ ḡ. Checked w.r.t. both A and b.
+    let a_data = [4.0, 1.0, 0.5, 0.2, 5.0, 1.0, 0.3, 0.4, 6.0];
+    let b_data = [1.0, 2.0, 3.0];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let b = make_f64_vector(&b_data);
+    let x = eval_primitive(Primitive::Solve, &[a.clone(), b.clone()], &BTreeMap::new()).unwrap();
+    let g_data = [1.0, -0.5, 0.7];
+    let g = make_f64_vector(&g_data);
+    let vjp = fj_ad::vjp(
+        Primitive::Solve,
+        &[a.clone(), b.clone()],
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&x),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let grad_a = extract_f64_vec(&vjp[0]);
+    let grad_b = extract_f64_vec(&vjp[1]);
+
+    let eps = 1e-6;
+    let loss = |av: &Value, bv: &Value| -> f64 {
+        let xx = eval_primitive(Primitive::Solve, &[av.clone(), bv.clone()], &BTreeMap::new())
+            .unwrap();
+        extract_f64_vec(&xx)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(xi, gi)| xi * gi)
+            .sum()
+    };
+    let mut num_a = [0.0; 9];
+    for idx in 0..9 {
+        let mut p = a_data.to_vec();
+        p[idx] += eps;
+        let mut m = a_data.to_vec();
+        m[idx] -= eps;
+        num_a[idx] =
+            (loss(&make_f64_matrix(3, 3, &p), &b) - loss(&make_f64_matrix(3, 3, &m), &b)) / (2.0 * eps);
+    }
+    let mut num_b = [0.0; 3];
+    for idx in 0..3 {
+        let mut p = b_data.to_vec();
+        p[idx] += eps;
+        let mut m = b_data.to_vec();
+        m[idx] -= eps;
+        num_b[idx] =
+            (loss(&a, &make_f64_vector(&p)) - loss(&a, &make_f64_vector(&m))) / (2.0 * eps);
+    }
+    assert_gradients_close(&grad_a, &num_a, 1e-5, "Solve VJP w.r.t. A");
+    assert_gradients_close(&grad_b, &num_b, 1e-5, "Solve VJP w.r.t. b");
+}
+
 // ======================== TriangularSolve VJP ========================
 
 #[test]
