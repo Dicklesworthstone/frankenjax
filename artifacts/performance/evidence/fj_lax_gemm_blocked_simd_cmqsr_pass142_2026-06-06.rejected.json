@@ -1,0 +1,52 @@
+{
+  "artifact": "fj_lax_gemm_blocked_simd_cmqsr_pass142_2026-06-06.rejected",
+  "bead": "frankenjax-cmqsr",
+  "skill_pass": "repeatedly-apply-skill pass142 -> extreme-software-optimization",
+  "status": "rejected",
+  "score": {
+    "impact": 0,
+    "confidence": 5,
+    "effort": 2,
+    "value": 0.0,
+    "formula": "Impact x Confidence / Effort"
+  },
+  "profile_basis": {
+    "source": "post-frankenjax-vgd3x RCH profile after flat GEMM SIMD landed",
+    "target": "linalg/matmul_2d_2048x2048x2048_f64",
+    "baseline_ms": {
+      "worker": "ts1",
+      "median": 114.60,
+      "ci": [112.37, 116.94]
+    }
+  },
+  "candidate": {
+    "lever": "Use std::simd::Simd<f64,4> lane accumulators in matmul_2d_blocked_row_block full MRxNR panels, seeding lanes from the running C value on non-first KC blocks.",
+    "proof": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-cmqsr-blocked-simd-test-20260606 cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+      "result": "passed: 7 tests, 1 ignored timing test"
+    },
+    "benchmark": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-cmqsr-blocked-simd-bench-20260606 cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "ts1",
+      "median_ms": 129.30,
+      "ci_ms": [119.87, 138.31]
+    },
+    "speedup": {
+      "midpoint": 0.886,
+      "conservative": 0.812
+    }
+  },
+  "isomorphism_attempt": {
+    "ordering": "The candidate preserved pc-block order and ascending k order per output cell.",
+    "floating_point": "The candidate used independent output-column lanes with no horizontal reductions, reassociation, mul_add calls, FMA forcing, mixed precision, BLAS, LAPACK, MKL, XLA, or unsafe code.",
+    "tie_breaking": "No comparator/tie behavior exists for GEMM.",
+    "rng": "No RNG surface exists."
+  },
+  "decision": {
+    "reason": "Same-worker Criterion regressed from 114.60 ms to 129.30 ms.",
+    "source_restored": true,
+    "production_diff_retained": false,
+    "golden_output_sha256": "ea3454dca2676ffc12627333a5c8561a269671cbd1e9bb737553c332e8ad3e34"
+  },
+  "next_target": "Stop lane-only tuning of the KC-blocked path. Next GEMM primitive should be packed-A/register blocking, recursive/cache-oblivious Dot under an explicit tolerance contract, or communication-avoiding GEMM after proving the behavior contract."
+}

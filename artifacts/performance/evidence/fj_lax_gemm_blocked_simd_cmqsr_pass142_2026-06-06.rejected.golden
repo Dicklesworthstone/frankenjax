@@ -1,0 +1,16 @@
+artifact=fj_lax_gemm_blocked_simd_cmqsr_pass142_2026-06-06.rejected
+bead=frankenjax-cmqsr
+target=linalg/matmul_2d_2048x2048x2048_f64
+baseline_worker=ts1
+baseline_mid_ms=114.60
+baseline_ci_ms=[112.37,116.94]
+candidate_mid_ms=129.30
+candidate_ci_ms=[119.87,138.31]
+speedup_mid=0.886x
+speedup_conservative=0.812x
+score=0.0
+lever_rejected=KC-blocked full-panel std::simd f64x4 lane accumulators seeded from running C
+isomorphism_attempt=per-output-cell pc and k order preserved; lanes independent output columns; no horizontal reductions, mul_add, FMA forcing, reassociation, tie-breaking, or RNG
+proof=RCH ts1 cargo test -p fj-lax --lib matmul_2d passed 7 tests and 1 ignored before rejection
+decision=source restored; no production blocked-path SIMD hunk retained
+next_primitive=blocked path needs a different primitive than lane-only SIMD: packed-A/register blocking, recursive/cache-oblivious Dot under a tolerance contract, or communication-avoiding GEMM after a separate behavior contract
