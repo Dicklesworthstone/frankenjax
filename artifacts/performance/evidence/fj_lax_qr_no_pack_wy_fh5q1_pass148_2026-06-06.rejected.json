@@ -1,0 +1,46 @@
+{
+  "bead": "frankenjax-fh5q1",
+  "pass": 148,
+  "date": "2026-06-06",
+  "crate": "fj-lax",
+  "target": "linalg/qr_1024x1024_f64",
+  "lever": "compact-WY large real QR with QR-local no-pack single-thread panel apply",
+  "decision": "rejected",
+  "score": 0.0,
+  "source_retained": false,
+  "baseline": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(qr_128x128_f64|qr_1024x1024_f64|matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "rows": {
+      "linalg/qr_128x128_f64": {"low": "667.56 us", "mid": "684.39 us", "high": "696.91 us"},
+      "linalg/qr_1024x1024_f64": {"low": "124.89 ms", "mid": "137.86 ms", "high": "150.94 ms"},
+      "linalg/matmul_2d_256x256x256_f64": {"low": "1.6506 ms", "mid": "1.8840 ms", "high": "2.3412 ms"},
+      "linalg/matmul_2d_512x512x512_f64": {"low": "7.2892 ms", "mid": "7.5897 ms", "high": "7.9523 ms"}
+    }
+  },
+  "proof": {
+    "worker": "vmi1156319",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-proof cargo test -p fj-lax --lib qr -- --nocapture",
+    "result": "27 passed; 0 failed; 1136 filtered out",
+    "golden_sha256": "b9dd4bff3ede8c8506360a9ba6db927b666090b62a1d88a7e413f1e44efd19b5",
+    "existing_small_qr_digest": "6119fc5cf4759d8cdcd9c34d89a79de89d205203730814fc06aa52bf57ff262b"
+  },
+  "candidate": {
+    "worker": "vmi1156319",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(qr_128x128_f64|qr_1024x1024_f64|matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "rows": {
+      "linalg/qr_128x128_f64": {"low": "606.58 us", "mid": "620.38 us", "high": "642.70 us"},
+      "linalg/qr_1024x1024_f64": {"low": "3.0440 s", "mid": "3.1293 s", "high": "3.2175 s"},
+      "linalg/matmul_2d_256x256x256_f64": {"low": "4.8166 ms", "mid": "5.3680 ms", "high": "6.1054 ms"},
+      "linalg/matmul_2d_512x512x512_f64": {"low": "52.318 ms", "mid": "56.548 ms", "high": "61.241 ms"}
+    }
+  },
+  "isomorphism": {
+    "ordering_preserved": "Small k < 256 stayed on the existing scalar path; large path changed reflector grouping, so exact large-QR FP order was not claimed.",
+    "tie_breaking_unchanged": "No pivoting, comparisons, or rank decisions were introduced.",
+    "floating_point": "Small QR bit-golden preserved; large QR invariant proof passed but the candidate failed the performance gate.",
+    "rng": "N/A"
+  },
+  "rejection_reason": "Target QR row regressed from a 137.86 ms baseline family to 3.1293 s candidate; source was restored before commit.",
+  "next_primitive": "Stop no-pack compact-WY apply for QR. Attack a different QR primitive: communication-avoiding/tall-skinny blocked QR or a cache-oblivious panel algorithm with a true register-tiled update and an explicit large-QR tolerance contract; target >=2.0 score on linalg/qr_1024x1024_f64."
+}

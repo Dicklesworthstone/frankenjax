@@ -1,0 +1,43 @@
+frankenjax-fh5q1 pass148 rejected golden/proof transcript
+target: linalg/qr_1024x1024_f64
+lever: compact-WY large real QR with a QR-local no-pack single-thread panel apply
+source result: rejected and restored; no production/test hunk retained
+
+baseline command:
+RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(qr_128x128_f64|qr_1024x1024_f64|matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot
+baseline worker: ts1
+baseline rows:
+linalg/qr_128x128_f64 [667.56 us 684.39 us 696.91 us]
+linalg/qr_1024x1024_f64 [124.89 ms 137.86 ms 150.94 ms]
+linalg/matmul_2d_256x256x256_f64 [1.6506 ms 1.8840 ms 2.3412 ms]
+linalg/matmul_2d_512x512x512_f64 [7.2892 ms 7.5897 ms 7.9523 ms]
+
+candidate proof command:
+RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-proof cargo test -p fj-lax --lib qr -- --nocapture
+candidate proof worker: vmi1156319
+candidate proof result: 27 passed; 0 failed; 1136 filtered out
+included proofs:
+- linalg::tests::qr_real_path_golden_output_digest ok
+- linalg::tests::qr_real_fast_path_bit_identical_to_complex_zero_imag_path ok
+- linalg::tests::qr_real_zero_input_preserves_complex_zero_imag_path_bits ok
+- linalg::tests::qr_tiled_reflector_bit_identical_to_scalar_column_loop ok
+- linalg::tests::qr_blocked_reconstructs_and_orthonormal_large ok
+existing small-real-QR golden digest: 6119fc5cf4759d8cdcd9c34d89a79de89d205203730814fc06aa52bf57ff262b
+
+candidate benchmark command:
+RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(qr_128x128_f64|qr_1024x1024_f64|matmul_2d_256x256x256_f64|matmul_2d_512x512x512_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot
+candidate worker: vmi1156319
+candidate rows:
+linalg/qr_128x128_f64 [606.58 us 620.38 us 642.70 us]
+linalg/qr_1024x1024_f64 [3.0440 s 3.1293 s 3.2175 s]
+linalg/matmul_2d_256x256x256_f64 [4.8166 ms 5.3680 ms 6.1054 ms]
+linalg/matmul_2d_512x512x512_f64 [52.318 ms 56.548 ms 61.241 ms]
+
+decision:
+Score 0.0. The target QR row regressed catastrophically: 137.86 ms baseline family to 3.1293 s candidate. Even allowing for cross-worker baseline/candidate mismatch, the lever is orders slower than the scalar per-reflector QR path, so the code was restored and the bead is closed as rejected.
+
+isomorphism notes for attempted lever:
+- Ordering preserved: small k < 256 stayed on the existing scalar path; large path changed reflector grouping, so exact FP bit order was intentionally not claimed for large QR.
+- Tie-breaking unchanged: no comparisons, pivoting, or rank decisions were introduced.
+- Floating-point: small QR bit-golden preserved; large QR had invariant proof only (A=QR and Q^TQ=I to 1e-9) and failed the performance gate.
+- RNG seeds: N/A.
