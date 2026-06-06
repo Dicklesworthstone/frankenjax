@@ -3896,30 +3896,41 @@ pub(crate) fn erfc_approx(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
     }
+    if x.is_infinite() {
+        // erfc(+∞) = 0, erfc(−∞) = 2 (the continued fraction below would give ∞·0 = NaN).
+        return if x > 0.0 { 0.0 } else { 2.0 };
+    }
     let ax = x.abs();
     if ax < 3.5 {
         return 1.0 - erf_approx(x);
     }
-    let x2 = ax * ax;
-    let mut term = 1.0_f64;
-    let mut sum = 1.0_f64;
-    let mut prev_abs = f64::INFINITY;
-    let mut n = 1.0_f64;
-    loop {
-        // tₙ = tₙ₋₁ · −(2n−1)/(2x²)
-        term *= -(2.0 * n - 1.0) / (2.0 * x2);
-        let mag = term.abs();
-        if mag > prev_abs {
-            break; // asymptotic series began to diverge
+    // |x| ≥ 3.5: Laplace continued fraction (DLMF 7.9.3), evaluated by modified Lentz —
+    //   √π·e^{x²}·erfc(x) = 1/(x + (1/2)/(x + 1/(x + (3/2)/(x + 2/(x + …))))),
+    // i.e. the CF a₁/(b₁ + a₂/(b₂ + …)) with bⱼ = x, a₁ = 1, aⱼ = (j−1)/2 for j ≥ 2.
+    // Constant-free and accurate to ~1e-15 across the whole tail, unlike the asymptotic
+    // series whose relative error floored at ~√ε near x = 3.5. erfc(−x) = 2 − erfc(x).
+    const TINY: f64 = 1e-300;
+    let mut f = TINY;
+    let mut c = f;
+    let mut d = 0.0_f64;
+    for j in 1..=300 {
+        let aj = if j == 1 { 1.0 } else { (j - 1) as f64 / 2.0 };
+        d = ax + aj * d;
+        if d.abs() < TINY {
+            d = TINY;
         }
-        sum += term;
-        prev_abs = mag;
-        if mag <= f64::EPSILON || n > 100.0 {
+        d = 1.0 / d;
+        c = ax + aj / c;
+        if c.abs() < TINY {
+            c = TINY;
+        }
+        let delta = c * d;
+        f *= delta;
+        if (delta - 1.0).abs() < f64::EPSILON {
             break;
         }
-        n += 1.0;
     }
-    let erfc_pos = (-x2).exp() / (ax * std::f64::consts::PI.sqrt()) * sum;
+    let erfc_pos = (-ax * ax).exp() / std::f64::consts::PI.sqrt() * f;
     if x >= 0.0 {
         erfc_pos
     } else {
@@ -8949,21 +8960,26 @@ mod tests {
 
     #[test]
     fn erfc_approx_far_tail_accurate() {
-        // THE FIX: the old dispatch erfc = 1 − erf_approx(x) returned exactly 0 for
-        // |x| ≥ 6 (erf_approx saturates to ±1 there); the direct asymptotic recovers the
-        // true tail, matching scipy/XLA. (The [3.5, 6) range is unchanged — erf_approx
-        // already used the same asymptotic there, ~√ε-floored, a pre-existing limit.)
-        let far_tail = [
+        // The erfc tail (|x| ≥ 3.5) is now a constant-free Laplace continued fraction,
+        // accurate to ~1e-14 RELATIVE across the whole tail. Two distinct prior gaps are
+        // closed: (a) |x| ≥ 6 returned exactly 0 (erf_approx saturates to ±1, so the old
+        // dispatch 1 − erf gave 0); (b) the [3.5, 6) asymptotic floored at ~√ε relative
+        // (erfc(3.5) was only ~3.5e-6 accurate). All match scipy to rel < 1e-12.
+        let tail = [
+            (3.5_f64, 7.430_983_723_414_312e-7),  // mid-range: asymptotic was ~3.5e-6 rel
+            (4.0_f64, 1.541_725_790_028_002e-8),
+            (4.5_f64, 1.966_160_441_542_887e-10),
+            (5.0_f64, 1.537_459_794_428_035e-12),
             (6.0_f64, 2.151_973_671_249_891_4e-17),
-            (8.0_f64, 1.122_429_717_205_234_2e-29),
+            (8.0_f64, 1.122_429_717_205_234_2e-29), // far tail: was exactly 0
             (10.0_f64, 2.088_487_583_762_544_7e-45),
         ];
-        for (x, expected) in far_tail {
+        for (x, expected) in tail {
             let got = erfc_approx(x);
-            assert!(got > 0.0, "erfc({x}) must be nonzero (was 0 in the old code)");
+            assert!(got > 0.0, "erfc({x}) must be nonzero");
             let rel = (got - expected).abs() / expected.abs();
             assert!(
-                rel < 1e-8,
+                rel < 1e-12,
                 "erfc({x}) = {got:e}, expected {expected:e}, rel err {rel:e}"
             );
         }
