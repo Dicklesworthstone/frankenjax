@@ -165,7 +165,7 @@ fn index_to_contracted_coords(idx: usize, axes: &[usize], shape: &[usize]) -> Ve
 /// Register-tile dimensions for the GEMM microkernel: `MR` output rows × `NR`
 /// output columns are accumulated together, streamed over `k`.
 const MR: usize = 4;
-const NR: usize = 8;
+const NR: usize = 4;
 
 /// k-dimension block for the cache-blocked macro-kernel. At KC=256 an [MR×KC] A
 /// tile and a [KC×NR] B panel are ~8 KB each — both stay L1-resident across a
