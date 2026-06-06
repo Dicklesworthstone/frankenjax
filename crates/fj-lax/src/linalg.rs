@@ -1175,7 +1175,9 @@ pub(crate) fn eval_svd(
     }
 
     // Step 2: Eigendecompose A^H A via Jacobi rotations → V, eigenvalues σ²
-    let (eigenvalues, v) = complex_jacobi_eigendecomposition(&mut aha, n);
+    // (row-cyclic sweeps, O(n³·sweeps) vs the max-pivot kernel's O(n⁴); same spectrum
+    // to machine precision, and Step 3 re-sorts so iteration order is unobservable)
+    let (eigenvalues, v) = complex_jacobi_eigendecomposition_cyclic(&mut aha, n);
 
     // Step 3: Sort eigenvalues (and corresponding V columns) in descending order
     let mut indices: Vec<usize> = (0..n).collect();
@@ -1450,6 +1452,11 @@ fn jacobi_eigendecomposition_cyclic(a: &mut [f64], n: usize) -> (Vec<f64>, Vec<f
 
 /// Complex Jacobi eigendecomposition of a Hermitian n×n matrix.
 /// Returns (eigenvalues, eigenvectors) where eigenvalues are real and eigenvectors are complex.
+///
+/// Reference (max-pivot) kernel: production paths use the faster
+/// [`complex_jacobi_eigendecomposition_cyclic`]; this is retained for the cyclic
+/// kernel's parity + A/B timing tests (and is itself the bit-for-bit correctness anchor).
+#[allow(dead_code)]
 fn complex_jacobi_eigendecomposition(
     a: &mut [(f64, f64)],
     n: usize,
@@ -1567,6 +1574,127 @@ fn complex_jacobi_eigendecomposition(
             // V'[i][q] = −s·V[i][p] + c·e^{-iφ}·V[i][q]
             v[i * n + q] =
                 complex_add(complex_mul((-s, 0.0), vp[i]), complex_mul(c_phase_conj, vq[i]));
+        }
+    }
+
+    let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i].0).collect();
+    (eigenvalues, v)
+}
+
+/// Row-cyclic complex (Hermitian) Jacobi eigendecomposition — the complex twin of
+/// [`jacobi_eigendecomposition_cyclic`]. The classic [`complex_jacobi_eigendecomposition`]
+/// scans all O(n²) off-diagonals to pick the largest pivot before every rotation
+/// (O(n⁴) overall, dominating complex eigh / thin-SVD at n≈48); this sweeps the upper
+/// triangle in fixed (p,q) order and converges in a handful of sweeps (O(n³·sweeps)).
+/// It applies the *same* corrected per-pivot unitary `U = D·G`, so it converges to the
+/// same Hermitian spectrum to machine precision (both callers re-sort, so the iteration
+/// order is unobservable). Verified by `complex_jacobi_cyclic_matches_maxpivot`.
+fn complex_jacobi_eigendecomposition_cyclic(
+    a: &mut [(f64, f64)],
+    n: usize,
+) -> (Vec<f64>, Vec<(f64, f64)>) {
+    let zero = (0.0, 0.0);
+    let one = (1.0, 0.0);
+
+    let mut v = vec![zero; n * n];
+    for i in 0..n {
+        v[i * n + i] = one;
+    }
+    if n <= 1 {
+        let eigenvalues: Vec<f64> = (0..n).map(|i| a[i * n + i].0).collect();
+        return (eigenvalues, v);
+    }
+
+    let tol = f64::EPSILON * 1e2;
+    let max_sweeps = 100;
+
+    for _ in 0..max_sweeps {
+        // Convergence: largest |a_pq|, p<q, below tol.
+        let mut off_max = 0.0_f64;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                off_max = off_max.max(complex_abs(a[p * n + q]));
+            }
+        }
+        if off_max < tol {
+            break;
+        }
+
+        for p in 0..(n - 1) {
+            for q in (p + 1)..n {
+                let apq = a[p * n + q];
+                let apq_abs = complex_abs(apq);
+                if apq_abs == 0.0 {
+                    continue; // already annihilated (pinned to exact zero below)
+                }
+                let app = a[p * n + p].0;
+                let aqq = a[q * n + q].0;
+
+                let phase = if apq_abs > f64::EPSILON {
+                    complex_div(apq, (apq_abs, 0.0))
+                } else {
+                    one
+                };
+                let theta = if (app - aqq).abs() < f64::EPSILON {
+                    std::f64::consts::FRAC_PI_4
+                } else {
+                    0.5 * (2.0 * apq_abs / (app - aqq)).atan()
+                };
+                let (s, c) = theta.sin_cos();
+
+                // Corrected combined unitary U = D·G (see complex_jacobi_eigendecomposition):
+                //   U = [[c, -s], [s·e^{-iφ}, c·e^{-iφ}]].
+                let phase_conj = complex_conj(phase);
+                let s_phase = complex_mul((s, 0.0), phase);
+                let c_phase = complex_mul((c, 0.0), phase);
+                let s_phase_conj = complex_mul((s, 0.0), phase_conj);
+                let c_phase_conj = complex_mul((c, 0.0), phase_conj);
+
+                // Uᴴ from the left.
+                let row_p: Vec<_> = (0..n).map(|j| a[p * n + j]).collect();
+                let row_q: Vec<_> = (0..n).map(|j| a[q * n + j]).collect();
+                for j in 0..n {
+                    a[p * n + j] =
+                        complex_add(complex_mul((c, 0.0), row_p[j]), complex_mul(s_phase, row_q[j]));
+                    a[q * n + j] = complex_add(
+                        complex_mul((-s, 0.0), row_p[j]),
+                        complex_mul(c_phase, row_q[j]),
+                    );
+                }
+
+                // U from the right.
+                let col_p: Vec<_> = (0..n).map(|i| a[i * n + p]).collect();
+                let col_q: Vec<_> = (0..n).map(|i| a[i * n + q]).collect();
+                for i in 0..n {
+                    a[i * n + p] = complex_add(
+                        complex_mul((c, 0.0), col_p[i]),
+                        complex_mul(s_phase_conj, col_q[i]),
+                    );
+                    a[i * n + q] = complex_add(
+                        complex_mul((-s, 0.0), col_p[i]),
+                        complex_mul(c_phase_conj, col_q[i]),
+                    );
+                }
+
+                a[p * n + p] = (a[p * n + p].0, 0.0);
+                a[q * n + q] = (a[q * n + q].0, 0.0);
+                a[p * n + q] = zero;
+                a[q * n + p] = zero;
+
+                // V ← V U.
+                let vp: Vec<_> = (0..n).map(|i| v[i * n + p]).collect();
+                let vq: Vec<_> = (0..n).map(|i| v[i * n + q]).collect();
+                for i in 0..n {
+                    v[i * n + p] = complex_add(
+                        complex_mul((c, 0.0), vp[i]),
+                        complex_mul(s_phase_conj, vq[i]),
+                    );
+                    v[i * n + q] = complex_add(
+                        complex_mul((-s, 0.0), vp[i]),
+                        complex_mul(c_phase_conj, vq[i]),
+                    );
+                }
+            }
         }
     }
 
@@ -2109,7 +2237,9 @@ pub(crate) fn eval_eigh(
             (vec![lambda1, lambda2], v)
         } else {
             let mut a_work = a;
-            complex_jacobi_eigendecomposition(&mut a_work, m)
+            // Row-cyclic sweeps (O(m³·sweeps)) instead of the max-pivot kernel's
+            // O(m⁴); same Hermitian spectrum to machine precision, sorted below.
+            complex_jacobi_eigendecomposition_cyclic(&mut a_work, m)
         };
 
         // Sort eigenvalues in ascending order (JAX convention for eigh)
@@ -3623,6 +3753,82 @@ mod tests {
                 off < 1e-9 && diag < 1e-9,
                 "n={n} not diagonalized: off={off:e} diag={diag:e}"
             );
+        }
+    }
+
+    #[test]
+    fn complex_jacobi_cyclic_matches_maxpivot() {
+        // The row-cyclic kernel (production) must match the max-pivot reference
+        // spectrum (both now correct → same true eigenvalues, sorted) and itself
+        // diagonalize H. Isomorphism proof for routing complex eigh/SVD to cyclic.
+        for &n in &[2usize, 3, 4, 8, 20, 33] {
+            let h = hermitian_test_matrix(n);
+            let (mut w_ref, _) = complex_jacobi_eigendecomposition(&mut h.clone(), n);
+            let (w_cyc, v_cyc) = complex_jacobi_eigendecomposition_cyclic(&mut h.clone(), n);
+
+            let mut w_cyc_s = w_cyc.clone();
+            w_ref.sort_by(f64::total_cmp);
+            w_cyc_s.sort_by(f64::total_cmp);
+            for (r, c) in w_ref.iter().zip(w_cyc_s.iter()) {
+                assert!((r - c).abs() < 1e-9, "n={n} spectrum {r} vs {c}");
+            }
+
+            // Cyclic must diagonalize: Vᴴ H V = diag(w_cyc).
+            let mut hv = vec![(0.0_f64, 0.0_f64); n * n];
+            for r in 0..n {
+                for col in 0..n {
+                    let mut acc = (0.0, 0.0);
+                    for j in 0..n {
+                        acc = complex_add(acc, complex_mul(h[r * n + j], v_cyc[j * n + col]));
+                    }
+                    hv[r * n + col] = acc;
+                }
+            }
+            let mut off = 0.0_f64;
+            for a2 in 0..n {
+                for b in 0..n {
+                    if a2 == b {
+                        continue;
+                    }
+                    let mut acc = (0.0, 0.0);
+                    for i in 0..n {
+                        acc = complex_add(
+                            acc,
+                            complex_mul(complex_conj(v_cyc[i * n + a2]), hv[i * n + b]),
+                        );
+                    }
+                    off = off.max(complex_abs(acc));
+                }
+            }
+            assert!(off < 1e-9, "n={n} cyclic not diagonal: off={off:e}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn complex_jacobi_cyclic_ab_timing() {
+        use std::time::Instant;
+        fn median_ms(mut v: Vec<f64>) -> f64 {
+            v.sort_by(f64::total_cmp);
+            v[v.len() / 2]
+        }
+        for &n in &[48usize, 96, 160] {
+            let h = hermitian_test_matrix(n);
+            let _ = complex_jacobi_eigendecomposition(&mut h.clone(), n);
+            let _ = complex_jacobi_eigendecomposition_cyclic(&mut h.clone(), n);
+            let (mut t_old, mut t_new) = (Vec::new(), Vec::new());
+            for _ in 0..5 {
+                let mut a = h.clone();
+                let t = Instant::now();
+                let _ = complex_jacobi_eigendecomposition(&mut a, n);
+                t_old.push(t.elapsed().as_secs_f64() * 1e3);
+                let mut a = h.clone();
+                let t = Instant::now();
+                let _ = complex_jacobi_eigendecomposition_cyclic(&mut a, n);
+                t_new.push(t.elapsed().as_secs_f64() * 1e3);
+            }
+            let (o, c) = (median_ms(t_old), median_ms(t_new));
+            println!("complex_jacobi n={n}: maxpivot {o:.3}ms | cyclic {c:.3}ms | speedup {:.2}x", o / c);
         }
     }
 
