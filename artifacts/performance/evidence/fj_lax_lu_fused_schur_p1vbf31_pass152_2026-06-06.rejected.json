@@ -1,0 +1,145 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_lu_fused_schur_p1vbf31_pass152_2026-06-06",
+  "status": "rejected",
+  "date": "2026-06-06",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-p1vbf.31",
+  "crate": "fj-lax",
+  "target": "linalg/lu_1024x1024_f64",
+  "skill_pass": "repeatedly-apply-skill pass152 -> extreme-software-optimization",
+  "profile_backing": {
+    "route_profile_worker": "vmi1149989",
+    "route_profile_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-post-p151-reprofile cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_1024x1024x1024_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "route_top_rows_ms": {
+      "lu_1024x1024_f64": [
+        41.219,
+        43.812,
+        47.290
+      ],
+      "cholesky_1024x1024_f64": [
+        61.090,
+        72.636,
+        80.864
+      ],
+      "matmul_2d_1024x1024x1024_f64": [
+        41.186,
+        44.475,
+        48.159
+      ]
+    }
+  },
+  "focused_baseline": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1149989 RCH_WORKERS=vmi1149989 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf31-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(lu_1024x1024_f64|cholesky_1024x1024_f64|matmul_2d_1024x1024x1024_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "worker": "vmi1149989",
+    "time_ms": {
+      "lu_1024x1024_f64": [
+        41.953,
+        43.860,
+        46.651
+      ],
+      "cholesky_1024x1024_f64": [
+        44.930,
+        47.709,
+        53.447
+      ],
+      "matmul_2d_1024x1024x1024_f64": [
+        48.335,
+        52.094,
+        56.202
+      ]
+    }
+  },
+  "candidate": {
+    "lever": "fused in-place LU trailing Schur update",
+    "description": "Replaced the existing L21 copy, U12 copy, matmul_2d product, and product subtract pass with an LU-local row-chunked Schur update. The candidate updated disjoint trailing rows in place, used 4-lane portable SIMD across columns, and accumulated every output element over panel columns t=0..jb in ascending order before subtracting once.",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "proof_test": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1149989 RCH_WORKERS=vmi1149989 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf31-proof cargo test -p fj-lax --lib lu -- --nocapture",
+      "worker": "vmi1149989",
+      "result": "pass",
+      "details": "58 tests passed in candidate state, including lu_blocked_path_reconstructs_and_matches_scalar and lu_real_fast_path_bit_identical_to_complex_zero_imag_path. A first compile attempt failed because the read-only split prefix was still typed as &mut [f64]; that borrow shape was fixed before the passing proof run."
+    },
+    "rebench": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1149989 RCH_WORKERS=vmi1149989 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf31-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(lu_1024x1024_f64|cholesky_1024x1024_f64|matmul_2d_1024x1024x1024_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+      "worker": "vmi1149989",
+      "time_ms": {
+        "lu_1024x1024_f64": [
+          52.438,
+          54.250,
+          55.686
+        ],
+        "cholesky_1024x1024_f64": [
+          41.736,
+          43.159,
+          44.591
+        ],
+        "matmul_2d_1024x1024x1024_f64": [
+          32.092,
+          34.342,
+          36.852
+        ]
+      },
+      "speedup_vs_focused_baseline_mid": 0.8085,
+      "conservative_speedup_low_over_high": 0.7534
+    }
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate left pivot scan order, whole-row swaps, panel factorization, and U12 forward solve unchanged. The temporary fused Schur update accumulated each A22 cell over panel columns t=0..jb in ascending order, then performed one subtract into the same cell.",
+    "tie_breaking": "Partial-pivot comparison used the same strict greater-than scan and row order; candidate could only perturb later trailing values through a numerically equivalent blocked update, matching the existing blocked-LU tolerance contract.",
+    "floating_point": "Candidate used separate multiplication and addition in the same per-cell t order; SIMD lanes were independent columns with no horizontal reduction, no mul_add call, no mixed precision, and no reassociation within a cell.",
+    "rng": "N/A: LU consumes no random state.",
+    "errors": "No public error path changed in candidate state; final production source was restored.",
+    "golden_sha256": "1b6b7f03f59f83dd6f19bdd49313a1c88f430ed7c4af5520c616dd911ce294a0"
+  },
+  "validation": [
+    {
+      "command": "RCH fixed-worker cargo test -p fj-lax --lib lu -- --nocapture",
+      "result": "pass in candidate state"
+    },
+    {
+      "command": "RCH fixed-worker Criterion target and guard benches",
+      "result": "candidate regressed LU1024 and was rejected"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/linalg.rs",
+      "result": "empty after manual restore"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_lu_fused_schur_p1vbf31_pass152_2026-06-06.rejected.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "alien_source": {
+    "primitive_family": "communication-reducing dense linear algebra update",
+    "applied_slice": "Tried eliminating L21, U12, and product scratch materialization for LU's right-looking Schur update.",
+    "outcome": "Data-motion reduction alone lost to the existing packed/threaded GEMM microkernel at LU1024. Do not repeat direct fused Schur-loop variants without a fundamentally different kernel."
+  },
+  "next_primitive": {
+    "target": "Reprofile restored source, then attack a different linalg primitive: blocked Cholesky full Schur update if cholesky_1024x1024_f64 remains top, or eig values-only Hessenberg reduction if eig re-emerges.",
+    "target_ratio": ">=1.15x on the next fixed-worker top linalg row",
+    "reason": "The fused LU loop preserved behavior but failed the Score>=2.0 gate. The next pass must shift primitive family instead of micro-tuning the same direct LU Schur update.",
+    "proof_obligations": [
+      "fixed-worker baseline first",
+      "one lever only",
+      "ordering, tie-breaking, floating-point, and RNG isomorphism notes",
+      "golden sha256 verification",
+      "restore and record rejection if same-worker Criterion does not clear Score>=2.0"
+    ]
+  }
+}
