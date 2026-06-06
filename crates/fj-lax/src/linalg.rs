@@ -2622,6 +2622,43 @@ fn eval_solve_complex(
     Ok(Value::Tensor(tensor))
 }
 
+/// Complex determinant via LU with partial pivoting: the product of the complex
+/// pivots times `(-1)^(row swaps)`. Returns `(0,0)` for a singular matrix (a zero
+/// pivot). `n == 0` gives the empty-product `1`.
+fn complex_det(a: &[(f64, f64)], n: usize) -> (f64, f64) {
+    let mut m = a.to_vec();
+    let mut det = (1.0_f64, 0.0_f64);
+    for col in 0..n {
+        let mut piv = col;
+        let mut best = complex_abs(m[col * n + col]);
+        for r in (col + 1)..n {
+            let mag = complex_abs(m[r * n + col]);
+            if mag > best {
+                best = mag;
+                piv = r;
+            }
+        }
+        if piv != col {
+            for c in 0..n {
+                m.swap(col * n + c, piv * n + c);
+            }
+            det = (-det.0, -det.1);
+        }
+        let pivot = m[col * n + col];
+        det = complex_mul(det, pivot);
+        if complex_abs(pivot) == 0.0 {
+            return (0.0, 0.0); // singular
+        }
+        for r in (col + 1)..n {
+            let factor = complex_div(m[r * n + col], pivot);
+            for c in (col + 1)..n {
+                m[r * n + c] = complex_sub(m[r * n + c], complex_mul(factor, m[col * n + c]));
+            }
+        }
+    }
+    det
+}
+
 /// Evaluate matrix determinant.
 ///
 /// Input: A square matrix [n, n]
@@ -2640,12 +2677,24 @@ pub(crate) fn eval_det(
         });
     }
 
-    let (m, n, a, _dtype) = extract_complex_matrix(primitive, &inputs[0])?;
+    let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
     if m != n {
         return Err(EvalError::TypeMismatch {
             primitive,
             detail: "det requires square matrix",
         });
+    }
+
+    // Complex input → complex determinant (the real-part-only path below would be
+    // silently wrong). Output keeps the input's complex dtype.
+    if matches!(dtype, DType::Complex64 | DType::Complex128) {
+        let (re, im) = complex_det(&a, n);
+        let lit = if dtype == DType::Complex64 {
+            Literal::from_complex64(re as f32, im as f32)
+        } else {
+            Literal::from_complex128(re, im)
+        };
+        return Ok(Value::Scalar(lit));
     }
 
     let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
@@ -2671,12 +2720,38 @@ pub(crate) fn eval_slogdet(
         });
     }
 
-    let (m, n, a, _dtype) = extract_complex_matrix(primitive, &inputs[0])?;
+    let (m, n, a, dtype) = extract_complex_matrix(primitive, &inputs[0])?;
     if m != n {
         return Err(EvalError::TypeMismatch {
             primitive,
             detail: "slogdet requires square matrix",
         });
+    }
+
+    // Complex input → complex sign + real logabsdet. For det = r·e^{iθ},
+    // sign = e^{iθ} = det/|det| (0 if singular) and logabsdet = ln|det| (−∞ if
+    // singular). The real-part-only path below would be silently wrong.
+    if matches!(dtype, DType::Complex64 | DType::Complex128) {
+        let (re, im) = complex_det(&a, n);
+        let mag = re.hypot(im);
+        let logabsdet = mag.ln();
+        let (sre, sim) = if mag > 0.0 {
+            (re / mag, im / mag)
+        } else {
+            (0.0, 0.0)
+        };
+        let (sign_lit, log_val) = if dtype == DType::Complex64 {
+            (
+                Literal::from_complex64(sre as f32, sim as f32),
+                Value::Scalar(Literal::from_f32(logabsdet as f32)),
+            )
+        } else {
+            (
+                Literal::from_complex128(sre, sim),
+                Value::scalar_f64(logabsdet),
+            )
+        };
+        return Ok(vec![Value::Scalar(sign_lit), log_val]);
     }
 
     let a_real: Vec<f64> = a.iter().map(|(re, _im)| *re).collect();
@@ -6064,7 +6139,14 @@ mod tests {
         // C64 + C64 → C64; shape [2].
         assert_eq!(t.dtype, DType::Complex64);
         assert_eq!(t.shape.dims, vec![2]);
-        let got: Vec<(f64, f64)> = t.elements.iter().map(|l| l.as_complex64().unwrap()).collect();
+        let got: Vec<(f64, f64)> = t
+            .elements
+            .iter()
+            .map(|l| {
+                let (re, im) = l.as_complex64().unwrap();
+                (f64::from(re), f64::from(im))
+            })
+            .collect();
         for (g, w) in got.iter().zip(&[(1.0, -1.0), (2.0, -2.0)]) {
             assert!((g.0 - w.0).abs() < 1e-5 && (g.1 - w.1).abs() < 1e-5, "got {got:?}");
         }
@@ -6123,6 +6205,49 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn eval_det_and_slogdet_complex_closed_form() {
+        // det(diag(1+i, 1+i)) = (1+i)^2 = 2i; and an upper-triangular case
+        // det([[2+i,3-i],[0,1+2i]]) = (2+i)(1+2i) = 5i (off-diagonal irrelevant).
+        let mk = |data: &[(f64, f64)]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::Complex128,
+                    Shape { dims: vec![2, 2] },
+                    data.iter().map(|&(r, i)| Literal::from_complex128(r, i)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let diag = mk(&[(1.0, 1.0), (0.0, 0.0), (0.0, 0.0), (1.0, 1.0)]);
+        let tri = mk(&[(2.0, 1.0), (3.0, -1.0), (0.0, 0.0), (1.0, 2.0)]);
+
+        for (a, want) in [(&diag, (0.0, 2.0)), (&tri, (0.0, 5.0))] {
+            let Value::Scalar(lit) = eval_det(std::slice::from_ref(a), &BTreeMap::new()).unwrap()
+            else {
+                panic!("det scalar");
+            };
+            let (re, im) = lit.as_complex128().unwrap();
+            assert!(
+                (re - want.0).abs() < 1e-10 && (im - want.1).abs() < 1e-10,
+                "det = ({re},{im}), want {want:?}"
+            );
+        }
+
+        // slogdet(diag) : sign = 2i/|2i| = i, logabsdet = ln 2.
+        let out = eval_slogdet(&[diag], &BTreeMap::new()).unwrap();
+        let Value::Scalar(sl) = &out[0] else {
+            panic!("sign scalar");
+        };
+        let (sre, sim) = sl.as_complex128().unwrap();
+        let Value::Scalar(ll) = &out[1] else {
+            panic!("logabsdet scalar");
+        };
+        let lad = ll.as_f64().unwrap();
+        assert!((sre - 0.0).abs() < 1e-12 && (sim - 1.0).abs() < 1e-12, "sign ({sre},{sim})");
+        assert!((lad - 2.0_f64.ln()).abs() < 1e-12, "logabsdet {lad}");
     }
 
     #[test]
