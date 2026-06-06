@@ -180,13 +180,19 @@ fn extract_matrix(
 /// their input dtype but storing F64Bits — a dtype/element invariant
 /// violation.
 fn matrix_to_value(m: usize, n: usize, data: &[f64], dtype: DType) -> Result<Value, EvalError> {
+    let shape = Shape {
+        dims: vec![m as u32, n as u32],
+    };
+    if dtype == DType::F64 {
+        let tensor =
+            TensorValue::new_f64_values(shape, data.to_vec()).map_err(EvalError::InvalidTensor)?;
+        return Ok(Value::Tensor(tensor));
+    }
+
     let elements: Vec<Literal> = data
         .iter()
         .map(|&v| linalg_literal_from_f64(dtype, v))
         .collect();
-    let shape = Shape {
-        dims: vec![m as u32, n as u32],
-    };
     let tensor = TensorValue::new(dtype, shape, elements).map_err(EvalError::InvalidTensor)?;
     Ok(Value::Tensor(tensor))
 }

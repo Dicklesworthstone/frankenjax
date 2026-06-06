@@ -1,0 +1,110 @@
+{
+  "bead": "frankenjax-fh5q1",
+  "crate": "fj-lax",
+  "target": "qr_1024x1024_f64",
+  "base_commit": "776c441d0014ed2c8c7437584bb717f0cf6bc8f5",
+  "worker": "ts1",
+  "profile_backed_hotspot": {
+    "source": "qr_1024x1024_f64 criterion profile and bead frankenjax-fh5q1",
+    "finding": "QR arithmetic candidates repeatedly lost to the scalar reflector path; the residual kept QR hot path included F64 result materialization through per-element Literal allocation."
+  },
+  "lever": {
+    "name": "dense_f64_linalg_output_fast_path",
+    "description": "matrix_to_value now emits F64 linalg results with TensorValue::new_f64_values, avoiding per-element Literal allocation for DType::F64 outputs. F32/F16/BF16 conversion paths are unchanged.",
+    "changed_files": [
+      "crates/fj-lax/src/linalg.rs"
+    ]
+  },
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-clean-baseline-776c441d cargo bench -p fj-lax --bench lax_baseline -- qr_1024x1024_f64 --sample-size 100",
+    "worker": "ts1",
+    "median_ms": 86.037,
+    "ci_ms": [
+      85.299,
+      86.795
+    ]
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-dense-f64-output cargo bench -p fj-lax --bench lax_baseline -- qr_1024x1024_f64 --sample-size 100",
+    "worker": "ts1",
+    "median_ms": 46.254,
+    "ci_ms": [
+      45.697,
+      46.832
+    ],
+    "speedup": 1.8601
+  },
+  "rebased_after_confirmation": {
+    "commit": "f9cb032a",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-fh5q1-rebased-dense-f64-output cargo bench -p fj-lax --bench lax_baseline -- qr_1024x1024_f64 --sample-size 100",
+    "worker": "ts1",
+    "median_ms": 39.752,
+    "ci_ms": [
+      37.842,
+      41.859
+    ],
+    "speedup_vs_original_baseline": 2.1643
+  },
+  "score": {
+    "impact": 5,
+    "confidence": 4,
+    "effort": 1,
+    "value": 20,
+    "decision": "keep"
+  },
+  "isomorphism_proof": {
+    "ordering": "All QR arithmetic loops, factorization order, tie handling, and branch conditions are unchanged.",
+    "floating_point": "No floating-point operation is added, removed, reordered, or fused. The change only switches final F64 tensor construction from Vec<Literal> to dense F64 storage.",
+    "rng": "No random inputs or random state are involved.",
+    "dtype_scope": "DType::F64 takes the dense constructor; non-F64 dtype conversions still use linalg_literal_from_f64 exactly as before.",
+    "observable_value": "LiteralBuffer-backed F64 tensors iterate as the same Literal::F64 values, preserving golden-output behavior."
+  },
+  "golden_output": {
+    "test": "qr_real_path_golden_output_digest",
+    "sha256": "6119fc5cf4759d8cdcd9c34d89a79de89d205203730814fc06aa52bf57ff262b"
+  },
+  "validation": [
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax qr_ -- --nocapture",
+      "worker": "ts1",
+      "result": "pass before rebase: 17 passed, 0 failed, 1145 filtered; pass after rebase: 17 passed, 0 failed, 1147 filtered"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo test -p fj-lax linalg::tests -- --nocapture",
+      "worker": "ts1",
+      "result": "pass: 97 passed, 0 failed, 1 ignored, 1064 filtered"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo check -p fj-lax --all-targets",
+      "worker": "ts1",
+      "result": "pass"
+    },
+    {
+      "command": "RCH_FORCE_REMOTE=1 rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "worker": "ts1",
+      "result": "failed on the candidate and clean base with the same pre-existing linalg.rs lints: two type_complexity lints on complex QR/eig tuple returns and one manual_is_multiple_of lint"
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "name": "compact_wy_scalar_no_pack",
+      "median_ms": 1508.3,
+      "reason": "Correct but far slower than scalar reflector baseline."
+    },
+    {
+      "name": "compact_wy_full_q_simd_no_pack",
+      "median_ms": 745.03,
+      "reason": "Correct but slower than scalar reflector baseline."
+    },
+    {
+      "name": "r_blocked_scalar_q",
+      "median_ms": 356.79,
+      "reason": "Correct but slower than scalar reflector baseline."
+    },
+    {
+      "name": "scalar_tile_16",
+      "median_ms": 85.638,
+      "reason": "Correct but improvement was below keep threshold and confidence intervals overlapped baseline."
+    }
+  ]
+}
