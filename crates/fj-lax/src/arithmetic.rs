@@ -748,23 +748,65 @@ fn complex_sinc(input: (f64, f64)) -> (f64, f64) {
 }
 
 fn complex_erf(z: (f64, f64)) -> (f64, f64) {
-    let two_over_sqrt_pi = 2.0 / std::f64::consts::PI.sqrt();
-    let mut result = z;
-    let mut z_power = z;
-    let z_squared = complex_mul(z, z);
-    let neg_z_squared = (-z_squared.0, -z_squared.1);
-    let mut n_factorial = 1.0_f64;
-    for n in 1..50 {
-        z_power = complex_mul(z_power, neg_z_squared);
-        n_factorial *= n as f64;
-        let denom = n_factorial * (2 * n + 1) as f64;
-        let term = (z_power.0 / denom, z_power.1 / denom);
-        result = complex_add(result, term);
-        if term.0.abs() < 1e-15 && term.1.abs() < 1e-15 {
-            break;
-        }
+    // erf is odd — reduce to Re(z) ≥ 0 so the large-|z| asymptotic branch (valid for
+    // |arg z| < 3π/4) always applies after the reduction.
+    if z.0 < 0.0 {
+        let e = complex_erf((-z.0, -z.1));
+        return (-e.0, -e.1);
     }
-    (result.0 * two_over_sqrt_pi, result.1 * two_over_sqrt_pi)
+    let two_over_sqrt_pi = 2.0 / std::f64::consts::PI.sqrt();
+    let mag_sq = z.0 * z.0 + z.1 * z.1;
+    if mag_sq < 16.0 {
+        // |z| < 4: Maclaurin series erf(z) = (2/√π) Σ_{n≥0} (−1)ⁿ z^{2n+1}/(n!(2n+1)).
+        // Accurate for small |z|; catastrophic cancellation only bites past |z|≈4, where
+        // the asymptotic branch below takes over (the old code ran this series for ALL z,
+        // returning garbage once the alternating terms dwarfed the ~O(1) result).
+        let mut result = z;
+        let mut z_power = z;
+        let z_squared = complex_mul(z, z);
+        let neg_z_squared = (-z_squared.0, -z_squared.1);
+        let mut n_factorial = 1.0_f64;
+        for n in 1..60 {
+            z_power = complex_mul(z_power, neg_z_squared);
+            n_factorial *= n as f64;
+            let denom = n_factorial * (2 * n + 1) as f64;
+            let term = (z_power.0 / denom, z_power.1 / denom);
+            result = complex_add(result, term);
+            if term.0.abs() < 1e-17 && term.1.abs() < 1e-17 {
+                break;
+            }
+        }
+        return (result.0 * two_over_sqrt_pi, result.1 * two_over_sqrt_pi);
+    }
+    // |z| ≥ 4, Re(z) ≥ 0: erf(z) = 1 − erfc(z) with the asymptotic expansion
+    //   erfc(z) ~ e^{−z²}/(z√π) · Σ_{k≥0} (−1)ᵏ (2k−1)!! / (2z²)ᵏ.
+    // The series is divergent (asymptotic) — truncate at the smallest term.
+    let z2 = complex_mul(z, z);
+    let exp_neg_z2 = complex_exp((-z2.0, -z2.1));
+    let inv_2z2 = complex_reciprocal((2.0 * z2.0, 2.0 * z2.1));
+    let mut zpow = (1.0_f64, 0.0_f64); // (1/(2z²))ᵏ
+    let mut sum = (1.0_f64, 0.0_f64); // k = 0 term
+    let mut prev_mag = 1.0_f64;
+    let mut dfact = 1.0_f64; // (2k−1)!!
+    let mut sign = -1.0_f64;
+    for k in 1..=40 {
+        dfact *= (2 * k - 1) as f64;
+        zpow = complex_mul(zpow, inv_2z2);
+        let tk = (sign * dfact * zpow.0, sign * dfact * zpow.1);
+        let tmag = tk.0 * tk.0 + tk.1 * tk.1;
+        if tmag > prev_mag {
+            break; // asymptotic series began to diverge — stop at the smallest term
+        }
+        sum = complex_add(sum, tk);
+        prev_mag = tmag;
+        sign = -sign;
+    }
+    let sqrt_pi = std::f64::consts::PI.sqrt();
+    let erfc = complex_mul(
+        complex_mul(exp_neg_z2, complex_reciprocal((z.0 * sqrt_pi, z.1 * sqrt_pi))),
+        sum,
+    );
+    (1.0 - erfc.0, -erfc.1)
 }
 
 fn complex_erfc(z: (f64, f64)) -> (f64, f64) {
@@ -8860,6 +8902,40 @@ mod tests {
         assert_eq!(t.shape.dims, vec![2, 3]);
         let vals = extract_f64_vec(&Value::Tensor(t));
         assert_eq!(vals, vec![3.0, 4.0, 5.0, 6.0, 8.0, 10.0]);
+    }
+
+    #[test]
+    fn complex_erf_large_argument_accurate() {
+        // The old Maclaurin-only complex_erf returned garbage for |z|≳5 (alternating
+        // terms dwarf the ~O(1) result). The asymptotic-erfc branch fixes it. Real-axis
+        // values must match the known real erf; the new branch (|z|≥4) is exercised by
+        // erf(4), erf(5), and the complex consistency checks.
+        let cases: [((f64, f64), (f64, f64)); 4] = [
+            ((3.0, 0.0), (0.999_977_909_503, 0.0)), // Maclaurin branch boundary
+            ((4.0, 0.0), (0.999_999_984_583, 0.0)), // asymptotic branch
+            ((5.0, 0.0), (1.0, 0.0)),               // erfc(5) ≈ 1.5e-12
+            ((6.0, 0.0), (1.0, 0.0)),
+        ];
+        for ((re, im), (ere, eim)) in cases {
+            let got = complex_erf((re, im));
+            assert!(
+                (got.0 - ere).abs() < 1e-9 && (got.1 - eim).abs() < 1e-9,
+                "erf({re}+{im}i) = {got:?}, expected ({ere}, {eim})"
+            );
+        }
+        // erf is odd and conjugate-symmetric — both must hold on the asymptotic branch.
+        let z = (4.5, 1.2);
+        let ez = complex_erf(z);
+        let enz = complex_erf((-z.0, -z.1));
+        assert!(
+            (enz.0 + ez.0).abs() < 1e-9 && (enz.1 + ez.1).abs() < 1e-9,
+            "erf(-z) = -erf(z) failed: ez={ez:?} enz={enz:?}"
+        );
+        let ecz = complex_erf((z.0, -z.1));
+        assert!(
+            (ecz.0 - ez.0).abs() < 1e-9 && (ecz.1 + ez.1).abs() < 1e-9,
+            "erf(conj z) = conj(erf z) failed: ez={ez:?} ecz={ecz:?}"
+        );
     }
 
     #[test]
