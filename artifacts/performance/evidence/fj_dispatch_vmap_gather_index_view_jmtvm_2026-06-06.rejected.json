@@ -1,0 +1,56 @@
+{
+  "bead": "frankenjax-jmtvm",
+  "status": "rejected_no_source_kept",
+  "target": {
+    "crate": "fj-dispatch",
+    "criterion_benchmark": "dispatch_baseline",
+    "case": "vmap_gather/batched_operand_batched_indices",
+    "profile_basis": "RCH ts1 full fj-dispatch profile on 2026-06-06 measured vmap_gather/batched_operand_batched_indices at 21.138 us [20.431,22.539]."
+  },
+  "baseline": {
+    "worker": "ts1",
+    "worktree": "/data/projects/.scratch/frankenjax-vmap-while-20260606-0005",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-dispatch-pass4-profile-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "criterion_us": {
+      "lower": 20.431,
+      "mid": 21.138,
+      "upper": 22.539
+    }
+  },
+  "candidate": {
+    "name": "zero_copy_prepared_gather_indices",
+    "lever": "Changed PreparedGatherIndices to borrow tensor index slices instead of cloning tensor.elements.to_vec(); scalar indices stayed owned.",
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-jmtvm-candidate-rch-target rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_gather/batched_operand_batched_indices --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "criterion_us": {
+      "lower": 21.429,
+      "mid": 24.276,
+      "upper": 26.245
+    },
+    "midpoint_speedup": 0.8707,
+    "conservative_speedup": 0.7785,
+    "score_decision": "reject",
+    "rejection_reason": "Same-worker RCH rebench regressed the target row; Score < 2.0.",
+    "source_kept": false
+  },
+  "behavior_isomorphism": {
+    "source_kept": false,
+    "reason_no_expanded_golden": "The candidate failed the performance keep gate and was removed before commit.",
+    "preserved_surfaces": [
+      "batch order remains baseline because no source was kept",
+      "index-mode error behavior remains baseline because no source was kept",
+      "fill/drop semantics remain baseline because no source was kept",
+      "output dtype and shape remain baseline because no source was kept",
+      "cache-key and evidence ledger behavior remain baseline because no source was kept"
+    ],
+    "compile_gate": {
+      "worker": "ts1",
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=/data/tmp/frankenjax-jmtvm-check-rch-target rch exec -- cargo check -p fj-dispatch --all-targets",
+      "result": "pass"
+    }
+  },
+  "next_deeper_primitive": {
+    "direction": "Do not continue with PreparedGatherIndices ownership/view tweaks; attack a different data-movement structure such as direct dense-I64 gather/scatter kernels or a compiled linalg artifact with clear non-overlap.",
+    "target_ratio": ">=1.25x same-worker midpoint with conservative interval not worse than baseline"
+  }
+}
