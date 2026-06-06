@@ -1315,30 +1315,15 @@ pub(crate) fn eval_svd(
     Ok(vec![u_val, s_val, vh_val])
 }
 
-/// Real-SVD fast path: a contiguous-f64, cyclic-Jacobi replacement for the
-/// complex `eval_svd` kernel when the input is real. Produces a valid SVD
-/// (thin: U m×k, Vᵀ k×n; full_matrices: U m×m, Vᵀ n×n) whose singular values
-/// match the complex path to machine precision; U/Vᵀ are equal up to the SVD's
-/// intrinsic per-column sign/rotation freedom. Verified by reconstruction +
-/// spectrum parity rather than bit-identity (see the `svd_real_fast_path_*`
-/// tests). For full_matrices, U's k economy columns are extended to an m×m
-/// orthonormal basis via real Gram–Schmidt (`extend_orthogonal_columns`).
-fn eval_svd_real(
-    m: usize,
-    n: usize,
-    a: &[f64],
-    dtype: DType,
-    full_matrices: bool,
-) -> Result<Vec<Value>, EvalError> {
+/// Core real thin SVD via one-sided Jacobi (Hestenes / Demmel–Veselić). Orthogonalize
+/// the COLUMNS of A in place by right-side Jacobi rotations, accumulating V; never form
+/// AᵀA, so small singular values keep high *relative* accuracy (≈ε‖A‖, not √ε‖A‖). At
+/// convergence W = A·V has orthogonal columns. Returns `(sigma[k], u[m*k], v[n*n])` with
+/// σ descending, `U[:,i] = W[:,i]/σ_i` (a numerically-zero σ leaves that U column zero),
+/// and V the full n×n right singular vectors as columns. Shared by `eval_svd_real` and
+/// the SVD-based pseudoinverse `pinv_svd` (beads frankenjax-96i7w, -4kx6m).
+fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let k = m.min(n);
-
-    // One-sided Jacobi SVD (Hestenes / Demmel–Veselić). Instead of forming AᵀA —
-    // which squares the condition number and loses half the digits of every small
-    // singular value — we orthogonalize the COLUMNS of A in place by right-side
-    // Jacobi rotations, accumulating V. At convergence W = A·V has orthogonal
-    // columns: σ_i = ‖W[:,i]‖, U[:,i] = W[:,i]/σ_i. Small singular values are then
-    // computed to high *relative* accuracy (≈ε‖A‖, not √ε‖A‖). See bead
-    // frankenjax-96i7w.
     let mut w = a.to_vec(); // m×n working matrix; its columns become orthogonal.
     let mut v = vec![0.0_f64; n * n];
     for i in 0..n {
@@ -1421,9 +1406,6 @@ fn eval_svd_real(
         if new_col < k {
             let sg = col_norm[old_col];
             sigma[new_col] = sg;
-            // U[:,i] = W[:,i]/σ_i; a numerically-zero σ leaves the column zero
-            // (full_matrices later fills an orthonormal basis), matching the prior
-            // A·V·Σ⁻¹ guard.
             if sg > f64::EPSILON * 1e4 {
                 for row in 0..m {
                     u[row * k + new_col] = w[row * n + old_col] / sg;
@@ -1431,6 +1413,27 @@ fn eval_svd_real(
             }
         }
     }
+
+    (sigma, u, v_sorted)
+}
+
+/// Real-SVD fast path: a contiguous-f64, cyclic-Jacobi replacement for the
+/// complex `eval_svd` kernel when the input is real. Produces a valid SVD
+/// (thin: U m×k, Vᵀ k×n; full_matrices: U m×m, Vᵀ n×n) whose singular values
+/// match the complex path to machine precision; U/Vᵀ are equal up to the SVD's
+/// intrinsic per-column sign/rotation freedom. Verified by reconstruction +
+/// spectrum parity rather than bit-identity (see the `svd_real_fast_path_*`
+/// tests). For full_matrices, U's k economy columns are extended to an m×m
+/// orthonormal basis via real Gram–Schmidt (`extend_orthogonal_columns`).
+fn eval_svd_real(
+    m: usize,
+    n: usize,
+    a: &[f64],
+    dtype: DType,
+    full_matrices: bool,
+) -> Result<Vec<Value>, EvalError> {
+    let k = m.min(n);
+    let (sigma, u, v_sorted) = one_sided_jacobi_svd_real(m, n, a);
 
     // For full_matrices, extend U's k economy columns to an m×m orthonormal
     // basis (real Gram–Schmidt); thin keeps the m×k economy U.
@@ -3829,17 +3832,14 @@ pub fn inv(a: &[f64], n: usize) -> Option<Vec<f64>> {
 
 /// Compute the Moore-Penrose pseudoinverse, matching `jnp.linalg.pinv(a, rcond)`.
 ///
-/// Uses the symmetric eigendecomposition of the smaller Gram matrix (`AᵀA` when
-/// `m >= n`, else `AAᵀ`): the eigenvalues are the squared singular values, so
-/// `A⁺ = (AᵀA)⁺ Aᵀ` (resp. `Aᵀ (AAᵀ)⁺`) where the Gram pseudoinverse drops every
-/// eigenvalue `λ` with singular value `√λ <= rcond·σ_max` (i.e. `λ <= rcond²·λ_max`),
-/// exactly as JAX's SVD-based `pinv` truncates small singular values.
-///
-/// The previous `(AᵀA)⁻¹ Aᵀ` normal-equations form (a) ignored `rcond` entirely,
-/// (b) returned all-zeros for rank-deficient inputs (because `inv(AᵀA)` failed on
-/// the singular Gram matrix) where JAX returns the true pseudoinverse, and
-/// (c) squared the condition number. For full-rank inputs the result is the same
-/// unique Moore-Penrose inverse.
+/// Two paths: a low-rank QR shortcut ([`pinv_m_ge_n_low_rank_qr`]) for tall, genuinely
+/// low-rank inputs, else the general SVD form ([`pinv_svd`]) `A⁺ = V Σ⁺ Uᵀ` with the
+/// rcond cutoff `σ_i > rcond·σ_max` applied to the true singular values — exactly JAX's
+/// definition. The SVD is the high-relative-accuracy one-sided Jacobi kernel, so small
+/// singular values (and their `1/σ` weights) stay accurate for ill-conditioned A. The
+/// earlier Gram form (`AᵀA` / `AAᵀ` eigendecomposition, `1/λ = 1/σ²`) squared the
+/// condition number, giving small σ only √ε relative accuracy; results agree for
+/// well-conditioned inputs but the SVD form is correct near the cutoff.
 pub fn pinv(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
     if m == 0 || n == 0 {
         return vec![0.0; n * m];
@@ -3852,7 +3852,7 @@ pub fn pinv(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
         return result;
     }
 
-    pinv_gram(a, m, n, rcond)
+    pinv_svd(a, m, n, rcond)
 }
 
 const PINV_LOW_RANK_MIN_DIM: usize = 16;
@@ -4058,91 +4058,41 @@ fn low_rank_qr_pinv_result(
     result
 }
 
-fn pinv_gram(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
-    if m >= n {
-        // Gram matrix G = AᵀA (n×n, symmetric PSD).
-        let mut g = vec![0.0; n * n];
-        for i in 0..n {
-            for j in 0..n {
-                let mut sum = 0.0;
-                for k in 0..m {
-                    sum += a[k * n + i] * a[k * n + j];
-                }
-                g[i * n + j] = sum;
-            }
-        }
-        let g_pinv = gram_pseudoinverse(&mut g, n, rcond);
-        // A⁺ = G⁺ Aᵀ  (n×m): result[r][col] = Σ_c G⁺[r][c]·Aᵀ[c][col] = Σ_c G⁺[r][c]·a[col][c]
-        let mut result = vec![0.0; n * m];
-        for r in 0..n {
-            for col in 0..m {
-                let mut sum = 0.0;
-                for c in 0..n {
-                    sum += g_pinv[r * n + c] * a[col * n + c];
-                }
-                result[r * m + col] = sum;
-            }
-        }
-        result
-    } else {
-        // Gram matrix G = AAᵀ (m×m, symmetric PSD).
-        let mut g = vec![0.0; m * m];
-        for i in 0..m {
-            for j in 0..m {
-                let mut sum = 0.0;
-                for k in 0..n {
-                    sum += a[i * n + k] * a[j * n + k];
-                }
-                g[i * m + j] = sum;
-            }
-        }
-        let g_pinv = gram_pseudoinverse(&mut g, m, rcond);
-        // A⁺ = Aᵀ G⁺  (n×m): result[r][col] = Σ_c Aᵀ[r][c]·G⁺[c][col] = Σ_c a[c][r]·G⁺[c][col]
-        let mut result = vec![0.0; n * m];
-        for r in 0..n {
-            for col in 0..m {
-                let mut sum = 0.0;
-                for c in 0..m {
-                    sum += a[c * n + r] * g_pinv[c * m + col];
-                }
-                result[r * m + col] = sum;
-            }
-        }
-        result
-    }
-}
-
-/// Pseudoinverse of a symmetric PSD `d×d` Gram matrix via Jacobi
-/// eigendecomposition: `G⁺ = Σ_i (1/λ_i) vᵢ vᵢᵀ` over eigenvalues with
-/// `√λ_i > rcond·√λ_max` (singular-value cutoff, matching JAX). `g` is consumed
-/// (overwritten by the eigensolver).
-fn gram_pseudoinverse(g: &mut [f64], d: usize, rcond: f64) -> Vec<f64> {
-    // Row-cyclic Jacobi (O(d³·sweeps)) instead of the classic max-pivot kernel
-    // (O(d⁴): an O(d²) off-diagonal scan before every rotation). The output
-    // G⁺ = Σ_i (1/λ_i) vᵢ vᵢᵀ sums over ALL eigenpairs, so it is invariant to the
-    // eigenpair order the two solvers emit; both converge to the same spectrum to
-    // machine precision, so pinv/lstsq stay tolerance-equal. Mirrors the SVD/eigh
-    // real fast paths, which already use this kernel.
-    let (lambdas, v) = jacobi_eigendecomposition_cyclic(g, d);
-    let lambda_max = lambdas.iter().copied().fold(0.0_f64, f64::max);
-    // √λ_i > rcond·√λ_max  ⇔  λ_i > rcond²·λ_max
-    let cutoff = rcond * rcond * lambda_max;
-    let mut g_pinv = vec![0.0; d * d];
-    for i in 0..d {
-        if lambdas[i] > cutoff && lambdas[i] > 0.0 {
-            let inv_l = 1.0 / lambdas[i];
-            for r in 0..d {
-                let vri = v[r * d + i];
-                if vri == 0.0 {
+/// SVD-based Moore–Penrose pseudoinverse, matching JAX's definition
+/// `A⁺ = V diag(σ_i⁻¹ for σ_i > rcond·σ_max, else 0) Uᵀ`. Uses the high-relative-
+/// accuracy one-sided Jacobi SVD ([`one_sided_jacobi_svd_real`]), so the rcond cutoff
+/// acts on the TRUE singular values and the 1/σ weights stay accurate for
+/// ill-conditioned inputs. The former AᵀA-Gram form computed `1/λ = 1/σ²` from squared
+/// eigenvalues, giving small singular values only √ε relative accuracy — which propagated
+/// into pinv (and lstsq) for ill-conditioned A. Algebraically equivalent for
+/// well-conditioned inputs, more accurate near the cutoff, and JAX-exact.
+fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
+    let k = m.min(n);
+    let (sigma, u, v) = one_sided_jacobi_svd_real(m, n, a);
+    // σ descending ⇒ σ_max = sigma[0]. JAX/NumPy cutoff: drop σ ≤ rcond·σ_max. A
+    // non-finite rcond yields a NaN cutoff, so every σ is dropped (σ > NaN is false) and
+    // the pseudoinverse is the zero matrix — matching the prior Gram behaviour.
+    let sigma_max = sigma.first().copied().unwrap_or(0.0);
+    let cutoff = rcond.abs() * sigma_max;
+    // A⁺[i][j] = Σ_{l: σ_l > cutoff} V[i,l] · (1/σ_l) · U[j,l]   (n×m).
+    let mut result = vec![0.0_f64; n * m];
+    for l in 0..k {
+        let sg = sigma[l];
+        if sg > cutoff && sg > 0.0 {
+            let inv = 1.0 / sg;
+            for i in 0..n {
+                let vil = v[i * n + l];
+                if vil == 0.0 {
                     continue;
                 }
-                for c in 0..d {
-                    g_pinv[r * d + c] += inv_l * vri * v[c * d + i];
+                let vil_inv = vil * inv;
+                for j in 0..m {
+                    result[i * m + j] += vil_inv * u[j * k + l];
                 }
             }
         }
     }
-    g_pinv
+    result
 }
 
 // ── Norms ───────────────────────────────────────────────────────────
@@ -6189,6 +6139,54 @@ mod tests {
     }
 
     // ── Pseudoinverse tests ─────────────────────────────────────────
+
+    #[test]
+    fn pinv_ill_conditioned_2x2_svd_accurate() {
+        // A = U Σ Vᵀ with Σ = diag(1, 1e-6) and non-axis-aligned rotations, so the
+        // small singular value lives in a rotated direction. The SVD-based pinv recovers
+        // A⁺ = V Σ⁻¹ Uᵀ to full relative accuracy. The former AᵀA-Gram path lost ~√ε in
+        // the small σ: forming AᵀA perturbs σ_min²=1e-12 by ~ε ⇒ ~2e-4 relative error in
+        // σ_min ⇒ ~200 absolute error in the ~1e6 pinv entries — which a 1e-7 relative
+        // bound rejects. Golden proof of the one-sided-Jacobi accuracy propagating to
+        // pinv/lstsq (frankenjax-96i7w follow-on).
+        let (th, ph) = (0.6_f64, 1.1_f64);
+        let (ct, st) = (th.cos(), th.sin());
+        let (cp, sp) = (ph.cos(), ph.sin());
+        let vmat = [ct, -st, st, ct]; // V (columns are right singular vectors)
+        let umat = [cp, -sp, sp, cp]; // U
+        let sig = [1.0_f64, 1e-6_f64];
+        let mut a = [0.0_f64; 4];
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut acc = 0.0;
+                for l in 0..2 {
+                    acc += umat[i * 2 + l] * sig[l] * vmat[j * 2 + l];
+                }
+                a[i * 2 + j] = acc;
+            }
+        }
+        // Analytic A⁺ = V Σ⁻¹ Uᵀ.
+        let mut expected = [0.0_f64; 4];
+        for i in 0..2 {
+            for j in 0..2 {
+                let mut acc = 0.0;
+                for l in 0..2 {
+                    acc += vmat[i * 2 + l] * (1.0 / sig[l]) * umat[j * 2 + l];
+                }
+                expected[i * 2 + j] = acc;
+            }
+        }
+        let got = pinv(&a, 2, 2, 2.0 * f64::EPSILON);
+        for idx in 0..4 {
+            let rel = (got[idx] - expected[idx]).abs() / expected[idx].abs().max(1.0);
+            assert!(
+                rel < 1e-7,
+                "pinv[{idx}] rel err {rel}: got {}, expected {}",
+                got[idx],
+                expected[idx]
+            );
+        }
+    }
 
     #[test]
     fn pinv_square_invertible() {
