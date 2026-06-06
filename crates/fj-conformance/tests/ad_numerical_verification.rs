@@ -3397,6 +3397,40 @@ fn igamma_igammac_vjp_numerical() {
     verify_binary_scalar_vjp(Primitive::Igammac, 2.0, 1.5, 1.0, 1e-4, "igammac VJP at (2,1.5)");
 }
 
+#[test]
+fn betainc_vjp_a_b_grads_nan_not_silent_zero() {
+    // JAX raises "Betainc gradient with respect to a and b not supported"; fj-lax's
+    // monolithic VJP emits NaN for da/db — VISIBLE, not a silently-wrong 0 — while keeping
+    // the JAX-supported x-grad exact: d/dx I_x(a,b) = x^{a-1}(1-x)^{b-1}/B(a,b).
+    let a = Value::scalar_f64(2.0);
+    let b = Value::scalar_f64(3.0);
+    let x = Value::scalar_f64(0.4);
+    let g = Value::scalar_f64(1.0);
+    let params = BTreeMap::new();
+    let out =
+        eval_primitive(Primitive::Betainc, &[a.clone(), b.clone(), x.clone()], &params).unwrap();
+    let vjp = fj_ad::vjp(
+        Primitive::Betainc,
+        &[a, b, x],
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    assert!(
+        extract_f64_scalar(&vjp[0]).is_nan(),
+        "betainc d/da must be NaN (JAX raises 'not supported'), got {}",
+        extract_f64_scalar(&vjp[0])
+    );
+    assert!(
+        extract_f64_scalar(&vjp[1]).is_nan(),
+        "betainc d/db must be NaN (JAX raises 'not supported')"
+    );
+    // B(2,3) = Γ(2)Γ(3)/Γ(5) = 1·2/24 = 1/12; dx = 0.4·0.6²/(1/12) = 0.144·12 = 1.728.
+    let dx = extract_f64_scalar(&vjp[2]);
+    assert!((dx - 1.728).abs() < 1e-6, "betainc d/dx = {dx}, expected 1.728");
+}
+
 // ======================== Binary Scalar VJP Numerical Tests (frankenjax-2zy) ========================
 
 /// Finite-difference VJP verification for binary scalar primitives.

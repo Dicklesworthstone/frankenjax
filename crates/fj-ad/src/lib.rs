@@ -2136,8 +2136,13 @@ pub fn vjp(
             Ok(vec![value_mul(g, &neg_da)?, value_mul(g, &neg_dx)?])
         }
         Primitive::Betainc => {
-            // d/da, d/db: complex, return zeros
-            // d/dx I_x(a,b) = x^{a-1} * (1-x)^{b-1} / B(a,b)
+            // JAX (lax.special) registers `betainc_grad_not_implemented` for the a and b
+            // tangents — it RAISES "Betainc gradient with respect to a and b not supported"
+            // — and `betainc_gradx` for x. fj-lax's monolithic VJP can't selectively raise
+            // while still serving the supported x-grad, so it emits NaN (not a silently-
+            // wrong 0) for da/db: discarded when a/b are constants (the x-only case JAX
+            // supports), but a VISIBLE NaN if a/b are actually differentiated (the case JAX
+            // rejects). d/dx I_x(a,b) = x^{a-1} * (1-x)^{b-1} / B(a,b).
             let a = &inputs[0];
             let b = &inputs[1];
             let x = &inputs[2];
@@ -2161,7 +2166,10 @@ pub fn vjp(
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let numer = value_mul(&x_pow, &omx_pow)?;
             let dx = value_div(&numer, &beta)?;
-            Ok(vec![zeros_like(a), zeros_like(b), value_mul(g, &dx)?])
+            // NaN-poison the unsupported a/b grads (0·NaN = NaN, shape-matched).
+            let nan_a = value_mul(&zeros_like(a), &scalar_constant_matching_dtype(f64::NAN, a))?;
+            let nan_b = value_mul(&zeros_like(b), &scalar_constant_matching_dtype(f64::NAN, b))?;
+            Ok(vec![nan_a, nan_b, value_mul(g, &dx)?])
         }
         Primitive::Zeta => {
             // Hurwitz zeta ζ(x, q) has two inputs but no differentiation rule
