@@ -2608,6 +2608,93 @@ pub(crate) fn eval_eig(
     Ok(vec![w_val, v_val])
 }
 
+/// Solve `M x = b` for a complex n×n `M` (row-major) and complex `b` via Gaussian
+/// elimination with partial pivoting (`M`/`b` are overwritten). A pivot that
+/// underflows the matrix scale is nudged to `ε·scale`, so the solve never divides
+/// by zero: for inverse iteration `M = A − λI` is intentionally near-singular and
+/// the resulting large-norm solution is exactly the (un-normalized) eigenvector.
+fn complex_linear_solve(m: &mut [(f64, f64)], b: &mut [(f64, f64)], n: usize) -> Vec<(f64, f64)> {
+    let scale = m.iter().map(|z| complex_abs(*z)).fold(0.0_f64, f64::max);
+    let tiny = (f64::EPSILON * scale).max(f64::MIN_POSITIVE);
+    for col in 0..n {
+        // Partial pivot: largest-magnitude entry in this column at/below the diagonal.
+        let mut piv = col;
+        let mut best = complex_abs(m[col * n + col]);
+        for r in (col + 1)..n {
+            let mag = complex_abs(m[r * n + col]);
+            if mag > best {
+                best = mag;
+                piv = r;
+            }
+        }
+        if piv != col {
+            for c in 0..n {
+                m.swap(col * n + c, piv * n + c);
+            }
+            b.swap(col, piv);
+        }
+        let mut pivot = m[col * n + col];
+        if complex_abs(pivot) < tiny {
+            pivot = (tiny, 0.0);
+            m[col * n + col] = pivot;
+        }
+        for r in (col + 1)..n {
+            let factor = complex_div(m[r * n + col], pivot);
+            for c in col..n {
+                m[r * n + c] = complex_sub(m[r * n + c], complex_mul(factor, m[col * n + c]));
+            }
+            b[r] = complex_sub(b[r], complex_mul(factor, b[col]));
+        }
+    }
+    let mut x = vec![(0.0_f64, 0.0_f64); n];
+    for col in (0..n).rev() {
+        let mut s = b[col];
+        for c in (col + 1)..n {
+            s = complex_sub(s, complex_mul(m[col * n + c], x[c]));
+        }
+        let mut pivot = m[col * n + col];
+        if complex_abs(pivot) < tiny {
+            pivot = (tiny, 0.0);
+        }
+        x[col] = complex_div(s, pivot);
+    }
+    x
+}
+
+/// Eigenvector for eigenvalue `lambda` of the real n×n matrix `a` (row-major) by
+/// two steps of inverse iteration on `A − λI`. Works for real and complex `lambda`
+/// (for a real `A` and a real seed, a conjugate eigenvalue automatically yields the
+/// conjugate eigenvector). Returns a unit-norm complex vector; relies on `lambda`
+/// being an accurate eigenvalue so `A − λI` is near-singular and inverse iteration
+/// converges in 1–2 steps.
+fn eig_eigenvector(a: &[f64], n: usize, lambda: (f64, f64)) -> Vec<(f64, f64)> {
+    let mut vec_x = vec![(1.0, 0.0); n];
+    for _ in 0..2 {
+        let mut m: Vec<(f64, f64)> = (0..n * n)
+            .map(|idx| {
+                let e = (a[idx], 0.0);
+                if idx / n == idx % n {
+                    complex_sub(e, lambda)
+                } else {
+                    e
+                }
+            })
+            .collect();
+        let mut b = vec_x.clone();
+        let x = complex_linear_solve(&mut m, &mut b, n);
+        let norm = x
+            .iter()
+            .map(|z| complex_abs(*z).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        if !norm.is_finite() || norm == 0.0 {
+            break;
+        }
+        vec_x = x.iter().map(|z| (z.0 / norm, z.1 / norm)).collect();
+    }
+    vec_x
+}
+
 /// QR iteration for general eigendecomposition.
 ///
 /// Simple implementation for V1 correctness. Uses basic QR iteration without
@@ -2725,7 +2812,19 @@ fn eig_qr_iteration(a: &[f64], n: usize) -> EigQrResult {
             i += 1;
         }
     }
-    let eigenvectors: Vec<(f64, f64)> = q_total.into_iter().map(|v| (v, 0.0)).collect();
+
+    // Eigenvectors of the ORIGINAL `a` (the QR iteration's Schur vectors are not
+    // eigenvectors unless T is diagonal). One eigenvalue → one column, paired by
+    // index, via inverse iteration on A − λI. The accumulated `q_total` is no longer
+    // needed for vectors (the QR sweep still uses it as scratch).
+    let _ = &q_total;
+    let mut eigenvectors = vec![(0.0_f64, 0.0_f64); n * n];
+    for (col, &lambda) in eigenvalues.iter().enumerate() {
+        let vk = eig_eigenvector(a, n, lambda);
+        for row in 0..n {
+            eigenvectors[row * n + col] = vk[row];
+        }
+    }
 
     (eigenvalues, eigenvectors)
 }
@@ -3907,13 +4006,88 @@ mod tests {
             out
         };
         let a = matmul3(&matmul3(&h, &t), &h);
-        let (w, _v) = eig_qr_iteration(&a, n);
+        let (w, v) = eig_qr_iteration(&a, n);
         for &(er, ei) in &[(2.0, 0.0), (0.0, 3.0), (0.0, -3.0)] {
             let found = w
                 .iter()
                 .any(|&(wr, wi)| (wr - er).abs() < 1e-7 && (wi - ei).abs() < 1e-7);
             assert!(found, "missing eigenvalue ({er},{ei}) in {w:?}");
         }
+        // Eigenvector residual A·v[:,k] = w[k]·v[:,k] (v column-major in row-major).
+        assert_eig_residual_complex(&a, n, &w, &v, 1e-7);
+    }
+
+    /// A·v[:,k] − w[k]·v[:,k] ≈ 0 for each column k, with `v[row*n+col]` the
+    /// eigenvector for `w[col]` (the layout eval_eig emits). Mirrors the conformance
+    /// `assert_eig_residual` but local to fj-lax's `(re,im)` tuples.
+    fn assert_eig_residual_complex(
+        a: &[f64],
+        n: usize,
+        w: &[(f64, f64)],
+        v: &[(f64, f64)],
+        tol: f64,
+    ) {
+        for col in 0..n {
+            let norm: f64 = (0..n)
+                .map(|row| complex_abs(v[row * n + col]).powi(2))
+                .sum::<f64>()
+                .sqrt();
+            assert!(norm > 1e-12, "eigenvector column {col} is zero");
+            for row in 0..n {
+                let mut av = (0.0_f64, 0.0_f64);
+                for k in 0..n {
+                    av = complex_add(av, complex_mul((a[row * n + k], 0.0), v[k * n + col]));
+                }
+                let lv = complex_mul(w[col], v[row * n + col]);
+                let res = complex_abs(complex_sub(av, lv));
+                assert!(res <= tol, "residual {res} at ({row},{col}) > {tol}; w={:?}", w[col]);
+            }
+        }
+    }
+
+    #[test]
+    fn eig_qr_eigenvector_residual_n4_mixed() {
+        // 4×4 with a real eigenvalue, a repeated real, and a complex pair: T =
+        // diag-blocks {5} {-1} and rotation {1±2i}; A = H·T·H with a 4-vector
+        // Householder. Checks both eigenvalues and A·v = λ·v residual.
+        let n = 4;
+        let t = [
+            5.0, 0.0, 0.0, 0.0, //
+            0.0, -1.0, 0.0, 0.0, //
+            0.0, 0.0, 1.0, -2.0, //
+            0.0, 0.0, 2.0, 1.0,
+        ];
+        let vv = [1.0_f64, -2.0, 1.0, 3.0];
+        let vtv: f64 = vv.iter().map(|x| x * x).sum();
+        let mut h = [0.0_f64; 16];
+        for r in 0..n {
+            for c in 0..n {
+                let id = if r == c { 1.0 } else { 0.0 };
+                h[r * n + c] = id - 2.0 / vtv * vv[r] * vv[c];
+            }
+        }
+        let matmul4 = |x: &[f64; 16], y: &[f64; 16]| -> [f64; 16] {
+            let mut out = [0.0_f64; 16];
+            for r in 0..n {
+                for c in 0..n {
+                    let mut s = 0.0;
+                    for k in 0..n {
+                        s += x[r * n + k] * y[k * n + c];
+                    }
+                    out[r * n + c] = s;
+                }
+            }
+            out
+        };
+        let a = matmul4(&matmul4(&h, &t), &h);
+        let (w, v) = eig_qr_iteration(&a, n);
+        for &(er, ei) in &[(5.0, 0.0), (-1.0, 0.0), (1.0, 2.0), (1.0, -2.0)] {
+            assert!(
+                w.iter().any(|&(wr, wi)| (wr - er).abs() < 1e-6 && (wi - ei).abs() < 1e-6),
+                "missing eigenvalue ({er},{ei}) in {w:?}"
+            );
+        }
+        assert_eig_residual_complex(&a, n, &w, &v, 1e-6);
     }
 
     fn make_matrix(m: usize, n: usize, data: &[f64]) -> Value {
