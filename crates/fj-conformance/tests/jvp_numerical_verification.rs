@@ -333,6 +333,56 @@ fn eigh_jvp_numerical() {
     assert_close(&dw_analytical, &dw_numerical, 1e-4, "Eigh JVP eigenvalues");
 }
 
+#[test]
+fn eig_jvp_self_consistency_3x3() {
+    // Forward-mode through non-symmetric eig. Differentiating A·V = V·diag(λ) gives
+    //   dA·V + A·dV = dV·diag(λ) + V·diag(dλ),
+    // which the JVP (dλ, dV) must satisfy exactly — a convention-/order-free check.
+    // A has a complex-conjugate eigenvalue pair {1±i} plus a real eigenvalue {3}.
+    let a_data = [1.0, -1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 3.0];
+    let da_data = [0.1, 0.02, -0.03, 0.04, 0.15, 0.01, 0.02, -0.01, 0.2];
+    let a = make_f64_matrix(3, 3, &a_data);
+    let da = make_f64_matrix(3, 3, &da_data);
+
+    let jaxpr = Jaxpr::new(
+        vec![VarId(1)],
+        vec![],
+        vec![VarId(2), VarId(3)],
+        vec![Equation {
+            primitive: Primitive::Eig,
+            inputs: smallvec![Atom::Var(VarId(1))],
+            outputs: smallvec![VarId(2), VarId(3)],
+            params: BTreeMap::new(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        }],
+    );
+    let res = fj_ad::jvp(&jaxpr, std::slice::from_ref(&a), std::slice::from_ref(&da)).unwrap();
+    let lam = extract_complex_vec(&res.primals[0]);
+    let v = extract_complex_vec(&res.primals[1]);
+    let dlam = extract_complex_vec(&res.tangents[0]);
+    let dv = extract_complex_vec(&res.tangents[1]);
+
+    let n = 3usize;
+    let cm = |a: (f64, f64), b: (f64, f64)| (a.0 * b.0 - a.1 * b.1, a.0 * b.1 + a.1 * b.0);
+    let ca = |a: (f64, f64), b: (f64, f64)| (a.0 + b.0, a.1 + b.1);
+    for i in 0..n {
+        for j in 0..n {
+            let mut lhs = (0.0_f64, 0.0_f64);
+            for k in 0..n {
+                lhs = ca(lhs, cm((da_data[i * n + k], 0.0), v[k * n + j]));
+                lhs = ca(lhs, cm((a_data[i * n + k], 0.0), dv[k * n + j]));
+            }
+            let rhs = ca(cm(dv[i * n + j], lam[j]), cm(v[i * n + j], dlam[j]));
+            let (dr, di) = (lhs.0 - rhs.0, lhs.1 - rhs.1);
+            assert!(
+                dr.abs() < 1e-7 && di.abs() < 1e-7,
+                "Eig JVP self-consistency ({i},{j}): lhs={lhs:?} rhs={rhs:?}"
+            );
+        }
+    }
+}
+
 // ======================== QR JVP ========================
 
 #[test]
