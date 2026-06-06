@@ -1,0 +1,31 @@
+{
+  "bead": "frankenjax-9p65w",
+  "status": "rejected",
+  "source_kept": false,
+  "target": "fj-ad ad/grad_sum_x2_plus_x_1k",
+  "lever": "Order-preserving single-slot helper for duplicate Mul VJP cotangent accumulation.",
+  "baseline": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-9p65w-baseline-$(date +%s) cargo bench -p fj-ad --bench ad_baseline -- 'ad/grad_sum_x2_plus_x_1k' --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+    "interval_us": [8.4128, 8.4509, 8.55]
+  },
+  "proof": {
+    "golden_sha_test": "cargo test -p fj-ad grad_sum_x2_plus_x_1k_golden_sha256 -- --nocapture",
+    "worker": "ts1",
+    "result": "passed"
+  },
+  "after_runs": [
+    {
+      "worker": "vmi1227854",
+      "interval_us": [6.4773, 6.6707, 6.7857],
+      "comparable_to_baseline": false
+    },
+    {
+      "worker": "vmi1149989",
+      "interval_us": [6.3834, 6.6267, 6.7674],
+      "comparable_to_baseline": false
+    }
+  ],
+  "rejection_reason": "RCH did not provide a same-worker after run despite worker preference env vars. Cross-worker after runs are not acceptable keep evidence, so the source change was reverted.",
+  "next_attack": "If revisited, get a same-worker baseline/after pair first or move deeper to a compiled reverse-mode vector-reduction primitive with an explicit profile target."
+}
