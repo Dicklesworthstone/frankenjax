@@ -236,7 +236,9 @@ pub fn eval_primitive(
         Primitive::Log => eval_log(primitive, inputs),
         Primitive::Log2 => eval_unary_elementwise_parallel(primitive, inputs, f64::log2),
         Primitive::Exp2 => eval_unary_elementwise_parallel(primitive, inputs, f64::exp2),
-        Primitive::Sinc => eval_unary_elementwise(primitive, inputs, |x| {
+        // Sinc carries a sin + div per element (compute-bound), so thread it like
+        // the other transcendentals instead of the serial path.
+        Primitive::Sinc => eval_unary_elementwise_parallel(primitive, inputs, |x| {
             if x == 0.0 {
                 1.0
             } else {

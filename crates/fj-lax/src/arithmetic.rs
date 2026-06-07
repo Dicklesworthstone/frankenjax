@@ -6565,6 +6565,71 @@ mod tests {
     use fj_test_utils::fixture_id_from_json;
     use std::f64::consts::PI;
 
+    /// Isomorphism + golden proof for threading Sinc: the parallel path must be
+    /// BIT-FOR-BIT identical to the serial map (each element independent), and the
+    /// same-binary A/B speedup is printed.
+    #[test]
+    fn sinc_parallel_bit_identical_and_faster() {
+        use std::time::Instant;
+
+        let sinc = |x: f64| {
+            if x == 0.0 {
+                1.0
+            } else {
+                let pi_x = std::f64::consts::PI * x;
+                pi_x.sin() / pi_x
+            }
+        };
+        let n: u32 = 1 << 20;
+        // Include an exact zero (the x==0 branch) plus a wide range.
+        let xs: Vec<f64> = (0..n)
+            .map(|i| if i == 7 { 0.0 } else { (i as f64) * 1e-3 - 500.0 })
+            .collect();
+        let shape = Shape { dims: vec![n] };
+        let x = Value::Tensor(TensorValue::new_f64_values(shape.clone(), xs.clone()).unwrap());
+
+        let par =
+            eval_unary_elementwise_parallel(Primitive::Sinc, std::slice::from_ref(&x), sinc).unwrap();
+        let ser = eval_unary_elementwise(Primitive::Sinc, std::slice::from_ref(&x), sinc).unwrap();
+        let par_t = par.as_tensor().unwrap();
+        let ser_t = ser.as_tensor().unwrap();
+
+        let mut golden: u64 = 0xcbf29ce484222325;
+        for k in 0..n as usize {
+            assert_eq!(par_t.elements[k], ser_t.elements[k], "sinc mismatch at {k}");
+            if let Literal::F64Bits(b) = par_t.elements[k] {
+                for byte in b.to_le_bytes() {
+                    golden ^= byte as u64;
+                    golden = golden.wrapping_mul(0x100000001b3);
+                }
+            }
+        }
+
+        let reps = 30u32;
+        let t0 = Instant::now();
+        for _ in 0..reps {
+            let o =
+                eval_unary_elementwise_parallel(Primitive::Sinc, std::slice::from_ref(&x), sinc)
+                    .unwrap();
+            std::hint::black_box(&o);
+        }
+        let par_ns = t0.elapsed().as_nanos().max(1);
+
+        let t1 = Instant::now();
+        for _ in 0..reps {
+            let o = eval_unary_elementwise(Primitive::Sinc, std::slice::from_ref(&x), sinc).unwrap();
+            std::hint::black_box(&o);
+        }
+        let ser_ns = t1.elapsed().as_nanos().max(1);
+
+        let ratio = ser_ns as f64 / par_ns as f64;
+        println!(
+            "[sinc] parallel={:.3}ms serial={:.3}ms ratio={ratio:.2}x golden={golden:016x}",
+            par_ns as f64 / reps as f64 / 1e6,
+            ser_ns as f64 / reps as f64 / 1e6,
+        );
+    }
+
     /// Isomorphism + golden proof for threading sigmoid (Logistic): the parallel
     /// path must be BIT-FOR-BIT identical to the serial map (each element is
     /// independent), and the same-binary A/B speedup is printed.
