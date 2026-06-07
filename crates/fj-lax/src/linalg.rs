@@ -4152,6 +4152,12 @@ fn low_rank_qr_pinv_result(
 fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
     let k = m.min(n);
     let (sigma, u, v) = one_sided_jacobi_svd_real(m, n, a);
+    let mut u_cols = vec![0.0_f64; k * m];
+    for l in 0..k {
+        for j in 0..m {
+            u_cols[l * m + j] = u[j * k + l];
+        }
+    }
     // σ descending ⇒ σ_max = sigma[0]. JAX/NumPy cutoff: drop σ ≤ rcond·σ_max. A
     // non-finite rcond yields a NaN cutoff, so every σ is dropped (σ > NaN is false) and
     // the pseudoinverse is the zero matrix — matching the prior Gram behaviour.
@@ -4170,7 +4176,7 @@ fn pinv_svd(a: &[f64], m: usize, n: usize, rcond: f64) -> Vec<f64> {
                 }
                 let vil_inv = vil * inv;
                 for j in 0..m {
-                    result[i * m + j] += vil_inv * u[j * k + l];
+                    result[i * m + j] += vil_inv * u_cols[l * m + j];
                 }
             }
         }
@@ -6379,6 +6385,72 @@ mod tests {
     }
 
     // ── Pseudoinverse tests ─────────────────────────────────────────
+
+    #[test]
+    fn pinv_svd_column_major_reconstruction_matches_row_major_bits() {
+        let (m, n) = (6usize, 4usize);
+        let a: Vec<f64> = (0..m * n)
+            .map(|idx| {
+                let x = idx as f64;
+                (x * 0.125).sin() + (x * 0.03125).cos()
+            })
+            .collect();
+        let rcond = 1e-15;
+        let k = m.min(n);
+        let (sigma, u, v) = one_sided_jacobi_svd_real(m, n, &a);
+        let sigma_max = sigma.first().copied().unwrap_or(0.0);
+        let cutoff = rcond * sigma_max;
+
+        let mut row_major_result = vec![0.0_f64; n * m];
+        for l in 0..k {
+            let sg = sigma[l];
+            if sg > cutoff && sg > 0.0 {
+                let inv = 1.0 / sg;
+                for i in 0..n {
+                    let vil = v[i * n + l];
+                    if vil == 0.0 {
+                        continue;
+                    }
+                    let vil_inv = vil * inv;
+                    for j in 0..m {
+                        row_major_result[i * m + j] += vil_inv * u[j * k + l];
+                    }
+                }
+            }
+        }
+
+        let mut u_cols = vec![0.0_f64; k * m];
+        for l in 0..k {
+            for j in 0..m {
+                u_cols[l * m + j] = u[j * k + l];
+            }
+        }
+        let mut col_major_result = vec![0.0_f64; n * m];
+        for l in 0..k {
+            let sg = sigma[l];
+            if sg > cutoff && sg > 0.0 {
+                let inv = 1.0 / sg;
+                for i in 0..n {
+                    let vil = v[i * n + l];
+                    if vil == 0.0 {
+                        continue;
+                    }
+                    let vil_inv = vil * inv;
+                    for j in 0..m {
+                        col_major_result[i * m + j] += vil_inv * u_cols[l * m + j];
+                    }
+                }
+            }
+        }
+
+        for (idx, (&old, &new)) in row_major_result.iter().zip(&col_major_result).enumerate() {
+            assert_eq!(
+                old.to_bits(),
+                new.to_bits(),
+                "pinv reconstruction bit drift at {idx}: old={old:?} new={new:?}"
+            );
+        }
+    }
 
     #[test]
     fn pinv_ill_conditioned_2x2_svd_accurate() {

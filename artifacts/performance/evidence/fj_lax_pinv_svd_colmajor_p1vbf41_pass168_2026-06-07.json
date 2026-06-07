@@ -1,0 +1,126 @@
+{
+  "artifact": "fj_lax_pinv_svd_colmajor_p1vbf41_pass168_2026-06-07",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-p1vbf.41",
+  "pass": 168,
+  "date": "2026-06-07",
+  "status": "kept",
+  "profile_backed_target": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/ --warm-up-time 1 --measurement-time 3 --sample-size 10",
+    "worker": "ts1",
+    "top_rows_ms": [
+      {
+        "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+        "low": 112.43,
+        "median": 117.02,
+        "high": 123.28
+      },
+      {
+        "bench": "linalg/pinv_256x128_f64",
+        "low": 60.159,
+        "median": 60.827,
+        "high": 61.341
+      },
+      {
+        "bench": "linalg/cholesky_1024x1024_f64",
+        "low": 52.89,
+        "median": 53.405,
+        "high": 54.187
+      },
+      {
+        "bench": "linalg/lu_1024x1024_f64",
+        "low": 49.931,
+        "median": 51.101,
+        "high": 52.691
+      }
+    ],
+    "route": "After repeated rejected GEMM B-pack/layout families, pivot to the profile-backed top non-GEMM linalg row under frankenjax-p1vbf."
+  },
+  "lever": {
+    "summary": "pinv_svd now transposes the already-computed row-major U once into column-major scratch before reconstruction, so each singular vector is read contiguously inside the existing l/i/j update order.",
+    "files": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "single_change": true,
+    "alien_primitive": "data-layout / loop-nest locality transformation for numerical linear algebra",
+    "safe_rust": true
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_256x128_f64 --warm-up-time 1 --measurement-time 5 --sample-size 10",
+      "worker": "ts1",
+      "low_ms": 64.889,
+      "median_ms": 66.864,
+      "high_ms": 68.778
+    },
+    "after": {
+      "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_256x128_f64 --warm-up-time 1 --measurement-time 5 --sample-size 10",
+      "worker": "ts1",
+      "low_ms": 58.658,
+      "median_ms": 59.129,
+      "high_ms": 59.744
+    },
+    "median_speedup": 1.1308,
+    "conservative_speedup": 1.0861,
+    "score": {
+      "impact": 3,
+      "confidence": 4,
+      "effort": 2,
+      "value": 6.0
+    }
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "one_sided_jacobi_svd_real still uses the same Jacobi pair order, row iteration order, V accumulation, singular-value total_cmp sorting, and rcond cutoff. pinv_svd result updates still run l outer, i middle, j inner.",
+    "tie_breaking_unchanged": "Singular-value sorting and all zero-value skips are unchanged.",
+    "floating_point": "Each U scalar is copied unchanged from u[j*k+l] to u_cols[l*m+j]. The update remains result[i*m+j] += (v[i*n+l] * (1/sigma[l])) * U[j,l], so the multiplication/addition sequence per result element is identical.",
+    "rng": "No RNG surface.",
+    "error_surface": "Empty-shape behavior, rcond NaN cutoff behavior, dtype/shape/error behavior, and low-rank QR fallback boundaries are unchanged.",
+    "nan_surface": "NaN/signed-zero handling follows the same SVD factors and the same reconstruction arithmetic."
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_lax_pinv_svd_colmajor_p1vbf41_pass168_2026-06-07.golden",
+    "sha256": "dfa3b668333d0dd4bc3c850452ef090c8da885fc5a1e0358a4584208f66eb6fb",
+    "proof_tests": [
+      "pinv_svd_column_major_reconstruction_matches_row_major_bits",
+      "pinv_ill_conditioned_2x2_svd_accurate",
+      "pinv_low_rank_qr_rejects_nan_rcond",
+      "pinv_square_invertible",
+      "pinv_low_rank_qr_rejects_full_rank_matrix",
+      "pinv_tall_matrix",
+      "pinv_low_rank_qr_satisfies_moore_penrose_identities",
+      "pinv_rank_deficient_satisfies_moore_penrose"
+    ]
+  },
+  "validation": [
+    {
+      "command": "rch exec -- cargo test -p fj-lax --lib pinv -- --nocapture",
+      "worker": "ts1",
+      "result": "passed: 8 tests, 0 failed, 1168 filtered out"
+    },
+    {
+      "command": "rch exec -- cargo check -p fj-lax --all-targets",
+      "worker": "ts1",
+      "result": "passed"
+    },
+    {
+      "command": "rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "worker": "ts1",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs",
+      "result": "failed on pre-existing unrelated linalg.rs formatting outside this pass; no whole-file formatting was applied"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/linalg.rs",
+      "result": "exit 1 for pre-existing file-wide inventory; UBS fmt/clippy/check/test-build sections were clean and no unsafe blocks were reported"
+    }
+  ],
+  "fallback": "If a future pinv parity regression appears, revert this commit to restore row-major U reads in pinv_svd reconstruction.",
+  "next_profile_note": "Re-profile fj-lax linalg after landing because pinv_256x128 reconstruction cost changed."
+}
