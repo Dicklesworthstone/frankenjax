@@ -8397,17 +8397,28 @@ fn jvp_rule(
         Primitive::Tile => ep_p(Primitive::Tile, &[tangents[0].clone()], params),
         Primitive::Concatenate => ep_p(Primitive::Concatenate, tangents, params),
         Primitive::Gather => {
-            // Gather: tangent follows same indexing from tangent source
+            // d gather(operand, idx) = gather(d_operand, idx): the operand TANGENT
+            // is gathered at the PRIMAL indices. The indices are integer (zero
+            // tangent), so passing the index tangent gathered at index 0 for every
+            // output. Use the primal indices for every non-operand input.
             let mut inputs = vec![tangents[0].clone()];
-            if tangents.len() > 1 {
-                inputs.extend_from_slice(&tangents[1..]);
+            if primals.len() > 1 {
+                inputs.extend_from_slice(&primals[1..]);
             }
             ep_p(Primitive::Gather, &inputs, params)
         }
         Primitive::Scatter => {
+            // d scatter(operand, idx, updates) = scatter(d_operand, idx, d_updates):
+            // the indices are fixed (integer, zero tangent); only operand and
+            // updates carry tangents. Previously the zero index tangent scattered
+            // at index 0. Use the primal indices, tangents for operand and updates.
             let mut inputs = vec![tangents[0].clone()];
-            if tangents.len() > 1 {
-                inputs.extend_from_slice(&tangents[1..]);
+            for k in 1..primals.len() {
+                if k == 1 {
+                    inputs.push(primals[1].clone());
+                } else {
+                    inputs.push(tangents[k].clone());
+                }
             }
             ep_p(Primitive::Scatter, &inputs, params)
         }
@@ -13650,6 +13661,23 @@ mod tests {
             vec![1.0, 1.0],
             "conv JVP must be conv(dL,R)+conv(L,dR), not conv(dL,dR)"
         );
+    }
+
+    #[test]
+    fn test_gather_scatter_jvp_use_primal_indices_not_index_tangent() {
+        use fj_core::{DType, Literal, Primitive, Shape, TensorValue};
+        let f = |v: &[f64]| Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![v.len() as u32] }, v.to_vec()).unwrap());
+        let idx = |v: &[i64]| Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![v.len() as u32] }, v.iter().map(|&x| Literal::I64(x)).collect()).unwrap());
+        // gather: operand[4], indices=[2,0], d_op=[1,2,3,4] => gather(d_op,[2,0])=[3,1].
+        let mut gp = BTreeMap::new();
+        gp.insert("slice_sizes".to_owned(), "1".to_owned());
+        let jvp = jvp_rule(Primitive::Gather, &[f(&[10.0, 20.0, 30.0, 40.0]), idx(&[2, 0])], &[f(&[1.0, 2.0, 3.0, 4.0]), idx(&[0, 0])], &gp).unwrap();
+        assert_eq!(tensor_f64_values(&jvp), vec![3.0, 1.0], "gather JVP must use primal indices");
+        // scatter: operand[3]=0, idx=[2], updates[1]=7, d_op=[0.1,0.2,0.3], d_upd=5 => [0.1,0.2,5.0].
+        let updates = f(&[7.0]);
+        let d_upd = f(&[5.0]);
+        let sjvp = jvp_rule(Primitive::Scatter, &[f(&[0.0, 0.0, 0.0]), idx(&[2]), updates], &[f(&[0.1, 0.2, 0.3]), idx(&[0]), d_upd], &BTreeMap::new()).unwrap();
+        assert_eq!(tensor_f64_values(&sjvp), vec![0.1, 0.2, 5.0], "scatter JVP must scatter at primal indices");
     }
 
     #[test]
