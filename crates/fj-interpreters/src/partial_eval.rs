@@ -529,6 +529,28 @@ fn infer_equation_output_avals(
     }
 }
 
+/// Parse a `new_dtype`/`dtype` param string into a `DType`, mirroring
+/// fj-trace's `parse_dtype_name` (the authoritative trace parser, so the
+/// accepted spellings stay in lockstep). Returns None on an unknown name —
+/// callers fall back to a shape/dtype-preserving default (staging is
+/// best-effort and must not panic on a residual it can't precisely type).
+fn dtype_from_name(raw: &str) -> Option<DType> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "bf16" | "bfloat16" => Some(DType::BF16),
+        "f16" | "float16" => Some(DType::F16),
+        "f32" | "float32" => Some(DType::F32),
+        "f64" | "float64" => Some(DType::F64),
+        "i32" => Some(DType::I32),
+        "i64" => Some(DType::I64),
+        "u32" => Some(DType::U32),
+        "u64" => Some(DType::U64),
+        "bool" => Some(DType::Bool),
+        "complex64" => Some(DType::Complex64),
+        "complex128" => Some(DType::Complex128),
+        _ => None,
+    }
+}
+
 fn infer_equation_output_aval(
     eqn: &Equation,
     first_input: &AbstractValue,
@@ -743,6 +765,36 @@ fn infer_equation_output_aval(
                 shape: Shape::vector(length),
             }
         }
+        // dtype-changing, shape-preserving unary ops: the catch-all kept the
+        // INPUT dtype, so a staged residual carried the wrong element type.
+        ConvertElementType | BitcastConvertType => {
+            let dtype = eqn
+                .params
+                .get("new_dtype")
+                .and_then(|s| dtype_from_name(s))
+                .unwrap_or(first_input.dtype);
+            AbstractValue {
+                dtype,
+                shape: first_input.shape.clone(),
+            }
+        }
+        // Real/Imag: complex operand → its real component dtype.
+        Real | Imag => {
+            let dtype = match first_input.dtype {
+                DType::Complex64 => DType::F32,
+                DType::Complex128 => DType::F64,
+                other => other,
+            };
+            AbstractValue {
+                dtype,
+                shape: first_input.shape.clone(),
+            }
+        }
+        // Unary predicates always produce Bool.
+        IsFinite | IsNan | IsInf | Signbit => AbstractValue {
+            dtype: DType::Bool,
+            shape: first_input.shape.clone(),
+        },
         // ExpandDims: insert a size-1 axis (normalize a negative axis against
         // rank+1, matching numpy/jnp expand_dims and fj-trace). Without this the
         // catch-all returned the INPUT shape — a residual typed one rank too low.
@@ -3779,5 +3831,43 @@ mod tests {
         .unwrap();
         assert_eq!(out.shape.dims, vec![4]);
         assert_eq!(out.dtype, DType::I64);
+
+        // ConvertElementType: dtype from "new_dtype", shape preserved (catch-all
+        // wrongly kept the input dtype).
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::ConvertElementType, &[("new_dtype", "i32")]),
+            &av(&[2, 3], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.dtype, DType::I32);
+        assert_eq!(out.shape.dims, vec![2, 3]);
+
+        // Real of Complex128 -> F64 (shape preserved).
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::Real, &[]),
+            &av(&[4], DType::Complex128),
+        )
+        .unwrap();
+        assert_eq!(out.dtype, DType::F64);
+        assert_eq!(out.shape.dims, vec![4]);
+
+        // Imag of Complex64 -> F32.
+        let out =
+            infer_equation_output_aval(&eqn(Primitive::Imag, &[]), &av(&[2], DType::Complex64))
+                .unwrap();
+        assert_eq!(out.dtype, DType::F32);
+
+        // Unary predicates -> Bool, shape preserved.
+        for prim in [
+            Primitive::IsFinite,
+            Primitive::IsNan,
+            Primitive::IsInf,
+            Primitive::Signbit,
+        ] {
+            let out =
+                infer_equation_output_aval(&eqn(prim, &[]), &av(&[2, 2], DType::F32)).unwrap();
+            assert_eq!(out.dtype, DType::Bool, "{prim:?} must be Bool");
+            assert_eq!(out.shape.dims, vec![2, 2]);
+        }
     }
 }
