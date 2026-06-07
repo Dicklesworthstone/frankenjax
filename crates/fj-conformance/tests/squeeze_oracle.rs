@@ -68,6 +68,19 @@ fn squeeze_params(dimensions: &[usize]) -> BTreeMap<String, String> {
     p
 }
 
+fn squeeze_params_i64(dimensions: &[i64]) -> BTreeMap<String, String> {
+    let mut p = BTreeMap::new();
+    p.insert(
+        "dimensions".to_string(),
+        dimensions
+            .iter()
+            .map(|x| x.to_string())
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    p
+}
+
 fn no_params() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
@@ -174,6 +187,53 @@ fn oracle_squeeze_explicit_partial() {
     let input = make_i64_tensor(&[1, 2, 1], vec![1, 2]);
     let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params(&[0])).unwrap();
     assert_eq!(extract_shape(&result), vec![2, 1]);
+}
+
+// ======================== Negative-axis Dimensions ========================
+
+#[test]
+fn oracle_squeeze_explicit_negative_last() {
+    // lax.squeeze canonicalizes -1 against input rank: [3, 1] dim=-1 -> [3].
+    let input = make_i64_tensor(&[3, 1], vec![1, 2, 3]);
+    let result =
+        eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-1])).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+    assert_eq!(extract_i64_vec(&result), vec![1, 2, 3]);
+}
+
+#[test]
+fn oracle_squeeze_explicit_negative_first() {
+    // [1, 3] dim=-2 -> [3] (canonicalizes to axis 0).
+    let input = make_i64_tensor(&[1, 3], vec![1, 2, 3]);
+    let result =
+        eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-2])).unwrap();
+    assert_eq!(extract_shape(&result), vec![3]);
+}
+
+#[test]
+fn oracle_squeeze_explicit_negative_multiple() {
+    // [1, 2, 1, 3] dims=(-4, -2) -> [2, 3].
+    let input = make_i64_tensor(&[1, 2, 1, 3], (1..=6).collect());
+    let result =
+        eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-4, -2])).unwrap();
+    assert_eq!(extract_shape(&result), vec![2, 3]);
+    assert_eq!(extract_i64_vec(&result), (1..=6).collect::<Vec<_>>());
+}
+
+#[test]
+fn oracle_squeeze_negative_out_of_range_rejected() {
+    // dim=-3 on a rank-2 tensor canonicalizes to -1 (out of range) -> error.
+    let input = make_i64_tensor(&[1, 3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-3]));
+    assert!(result.is_err(), "out-of-range negative dim must error");
+}
+
+#[test]
+fn oracle_squeeze_negative_non_unit_rejected() {
+    // dim=-1 selects axis 1 of [1, 3], which has size 3 != 1 -> error.
+    let input = make_i64_tensor(&[1, 3], vec![1, 2, 3]);
+    let result = eval_primitive(Primitive::Squeeze, &[input], &squeeze_params_i64(&[-1]));
+    assert!(result.is_err(), "squeezing a non-unit dim must error");
 }
 
 // ======================== Scalar and 1D Tests ========================

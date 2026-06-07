@@ -6035,8 +6035,28 @@ pub(crate) fn eval_squeeze(
         Value::Tensor(tensor) => {
             let dims = &tensor.shape.dims;
 
-            let squeeze_dims = if params.contains_key("dimensions") {
-                parse_usize_param(primitive, "dimensions", params)?
+            let squeeze_dims: Vec<usize> = if params.contains_key("dimensions") {
+                // Parse as i64 so a negative (end-relative) dimension is normalized
+                // against the input rank, matching lax.squeeze's
+                // `canonicalize_axis(i, ndim)`. A usize parse rejected e.g.
+                // dimensions=-1 (squeeze the trailing dim), a common usage.
+                let rank = dims.len() as i64;
+                parse_i64_param(primitive, "dimensions", params)?
+                    .into_iter()
+                    .map(|d| {
+                        let norm = if d < 0 { d + rank } else { d };
+                        if norm < 0 || norm >= rank {
+                            return Err(EvalError::Unsupported {
+                                primitive,
+                                detail: format!(
+                                    "dimension {d} out of range for rank {}",
+                                    dims.len()
+                                ),
+                            });
+                        }
+                        Ok(norm as usize)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
             } else {
                 // If no dimensions specified, squeeze all size-1 dims
                 dims.iter()

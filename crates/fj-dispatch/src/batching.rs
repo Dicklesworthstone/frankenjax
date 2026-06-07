@@ -2503,13 +2503,27 @@ fn batch_squeeze(
             .filter(|&(_, &dim)| dim == 1)
             .map(|(axis, _)| axis)
             .collect::<Vec<_>>(),
-        Some(raw) => parse_usize_list(raw, "dimensions")?
-            .into_iter()
-            .map(|dim| {
-                dim.checked_add(1)
-                    .ok_or_else(|| BatchError::EvalError("squeeze dimension overflow".to_owned()))
-            })
-            .collect::<Result<Vec<_>, _>>()?,
+        // Parse as i64 so a negative (end-relative) dimension is handled. The
+        // batch axis is prepended at the FRONT, so map each logical dimension to
+        // its physical axis in the batched tensor: a non-negative dimension shifts
+        // +1, while a negative (end-relative) one resolves to tensor_rank + dim
+        // (both land strictly past the batch axis at index 0).
+        Some(raw) => {
+            let tensor_rank = tensor.shape.dims.len() as i64;
+            parse_i64_list(raw, "dimensions")?
+                .into_iter()
+                .map(|dim| {
+                    let physical = if dim >= 0 { dim + 1 } else { tensor_rank + dim };
+                    if physical < 1 || physical >= tensor_rank {
+                        return Err(BatchError::EvalError(format!(
+                            "squeeze dimension {dim} out of range for per-element rank {}",
+                            tensor_rank - 1
+                        )));
+                    }
+                    Ok(physical as usize)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
     };
 
     if squeeze_dims.is_empty() {
@@ -11484,6 +11498,33 @@ mod tests {
         assert_eq!(result.batch_dim, Some(0));
         let tensor = result.value.as_tensor().unwrap();
         // Result: [2, 2] (batch=2, squeezed_len=2)
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_batch_trace_squeeze_negative_axis() {
+        // vmap(lambda x: squeeze(x, -1)) over a batch of [2, 1] matrices.
+        // Input shape: [2, 2, 1] (batch_dim=0); per-element [2, 1], dim=-1
+        // resolves to the trailing per-element axis → physical axis 2 → [2].
+        let data: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0];
+        let input = BatchTracer::batched(
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: vec![2, 2, 1],
+                    },
+                    data.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            ),
+            0,
+        );
+        let params = BTreeMap::from([("dimensions".to_owned(), "-1".to_owned())]);
+        let result = apply_batch_rule(Primitive::Squeeze, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
         assert_eq!(tensor.shape.dims, vec![2, 2]);
         assert_eq!(extract_f64_vec(&result.value), vec![1.0, 2.0, 3.0, 4.0]);
     }

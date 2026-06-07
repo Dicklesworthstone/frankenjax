@@ -1021,7 +1021,26 @@ impl SimpleTraceContext {
                             value: raw.to_owned(),
                         });
                     }
-                    parse_usize_list(primitive, "dimensions", raw)?
+                    // Parse as i64 so a negative (end-relative) dimension is
+                    // normalized against the input rank, matching lax.squeeze's
+                    // `canonicalize_axis(i, ndim)`.
+                    let rank = dims.len() as i64;
+                    parse_i64_list(primitive, "dimensions", raw)?
+                        .into_iter()
+                        .map(|d| {
+                            let norm = if d < 0 { d + rank } else { d };
+                            if norm < 0 || norm >= rank {
+                                return Err(TraceError::ShapeInferenceFailed {
+                                    primitive,
+                                    detail: format!(
+                                        "dimension {d} out of range for rank {}",
+                                        dims.len()
+                                    ),
+                                });
+                            }
+                            Ok(norm as usize)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
                 } else {
                     dims.iter()
                         .enumerate()
