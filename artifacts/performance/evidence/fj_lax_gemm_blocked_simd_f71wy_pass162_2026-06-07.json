@@ -1,0 +1,123 @@
+{
+  "artifact": "fj_lax_gemm_blocked_simd_f71wy_pass162_2026-06-07",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-f71wy",
+  "pass": 162,
+  "date": "2026-06-07",
+  "status": "kept",
+  "profile_backed_target": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-profile-pass162 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_256x128_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_2048x2048x2048_f64)' --sample-size 10 --warm-up-time 1 --measurement-time 5",
+    "worker": "ts1",
+    "top_rows_ms": [
+      {
+        "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+        "low": 106.09,
+        "median": 109.51,
+        "high": 112.15
+      },
+      {
+        "bench": "linalg/pinv_256x128_f64",
+        "low": 60.261,
+        "median": 61.128,
+        "high": 62.049
+      },
+      {
+        "bench": "linalg/cholesky_1024x1024_f64",
+        "low": 53.963,
+        "median": 54.615,
+        "high": 55.292
+      },
+      {
+        "bench": "linalg/lu_1024x1024_f64",
+        "low": 51.396,
+        "median": 52.302,
+        "high": 53.027
+      }
+    ]
+  },
+  "lever": {
+    "summary": "The KC-blocked GEMM full-tile microkernel now uses Simd<f64,8> accumulators for each MR row instead of scalar NR arrays.",
+    "files": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "single_change": true,
+    "alien_primitive": "safe-Rust register-blocked GEMM microkernel vectorization",
+    "safe_rust": true
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-f71wy-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_2048x2048x2048_f64' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+      "worker": "ts1",
+      "low_ms": 128.81,
+      "median_ms": 142.09,
+      "high_ms": 156.23
+    },
+    "after": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-f71wy-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_2048x2048x2048_f64' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+      "worker": "ts1",
+      "low_ms": 101.99,
+      "median_ms": 103.99,
+      "high_ms": 106.36
+    },
+    "median_speedup": 1.3664,
+    "conservative_speedup": 1.2109,
+    "score": {
+      "impact": 4,
+      "confidence": 4,
+      "effort": 2,
+      "value": 8.0
+    }
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "Thread row ownership, pc-block order, j-panel order, i-tile order, and ascending inner-l traversal are unchanged.",
+    "tie_breaking_unchanged": "GEMM has no pivot or tie-breaking surface; output row-major element order is unchanged.",
+    "floating_point": "Each output lane still applies additions in the same l order, seeded from the running C value at each pc block. SIMD changes lane representation only; it introduces no horizontal reductions, reordered sums, mixed precision, or new FMA surface beyond the existing flat SIMD GEMM path.",
+    "rng": "No RNG surface.",
+    "error_surface": "matmul_2d public shape contract, empty-dimension behavior, row partitioning, and output layout are unchanged.",
+    "nan_surface": "NaN and signed-zero propagation follow the same per-element arithmetic order, covered by special-value and release-mode bit-identity tests."
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_lax_gemm_blocked_simd_f71wy_pass162_2026-06-07.golden",
+    "sha256": "3462dba3ff49e680b2135f51f2d5b99f50af71aea1b63232863a983a9bf6f3ac",
+    "proof_tests": [
+      "matmul_2d_blocked_bit_identical_to_ijk",
+      "matmul_2d_packed_nr8_golden_output_digest",
+      "matmul_2d_special_values_bit_identical_to_ijk",
+      "matmul_2d_threaded_bit_identical",
+      "matmul_2d_large_bit_identical_to_ijk"
+    ]
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-f71wy-test cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+      "result": "passed: 9 tests, 0 failed, 1 ignored, 1165 filtered out"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-f71wy-release-test cargo test -p fj-lax --release --lib matmul_2d -- --nocapture",
+      "result": "passed: 9 tests, 0 failed, 1 ignored, 1165 filtered out"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-f71wy-check cargo check -p fj-lax --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-f71wy-clippy cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/tensor_contraction.rs",
+      "result": "passed with exit 0; UBS reported pre-existing file-wide warning inventory, while fmt/clippy/check/test-build sections were clean and no unsafe blocks were reported"
+    }
+  ],
+  "fallback": "If a future GEMM parity or performance regression appears, revert this commit to restore scalar NR arrays in matmul_2d_blocked_row_block.",
+  "next_profile_note": "Re-profile linalg after this keep because GEMM2048 moved from top row to a lower-cost shape."
+}

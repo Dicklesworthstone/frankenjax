@@ -1,0 +1,14 @@
+fj_lax_gemm_blocked_simd_f71wy_pass162_2026-06-07
+project=frankenjax
+crate=fj-lax
+bead=frankenjax-f71wy
+target=linalg/matmul_2d_2048x2048x2048_f64
+lever=Simd<f64,8> accumulators for the KC-blocked MRxNR GEMM microkernel
+golden_digest_test=matmul_2d_packed_nr8_golden_output_digest + matmul_2d_blocked_bit_identical_to_ijk + release-mode matmul_2d focused suite
+profile_ts1_ms=106.09..109.51..112.15
+baseline_ts1_ms=128.81..142.09..156.23
+after_ts1_ms=101.99..103.99..106.36
+median_speedup=1.3664
+conservative_speedup=1.2109
+score=8.0
+isomorphism=Thread row ownership, pc-block order, j-panel order, i-tile order, ascending inner-l accumulation per output lane, C seed/writeback continuation, packed-B layout, packed-A layout, row-major output, dtype/shape/error behavior, NaN surface, tie behavior, and RNG absence are preserved; only the full-tile blocked microkernel accumulator representation changes from scalar NR arrays to lane-wise Simd<f64,8>.
