@@ -3888,6 +3888,12 @@ pub fn vjp(
                 .get("exponent")
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(1);
+            // x^0 = 1 is constant -> grad 0. Match JAX's _integer_pow_jvp, which
+            // short-circuits y==0 to zeros; the generic n*x^(n-1) rule would form
+            // 0 * x^(-1) = 0 * inf = NaN at x == 0.
+            if n == 0 {
+                return Ok(vec![zeros_like(&inputs[0])]);
+            }
             // Anchor `n` to the cotangent's dtype so F32/BF16/F16/Complex
             // inputs don't get widened through F64 constant promotion.
             let n_val = scalar_constant_matching_dtype(f64::from(n), g);
@@ -8426,6 +8432,11 @@ fn jvp_rule(
                 .get("exponent")
                 .and_then(|s| s.trim().parse().ok())
                 .unwrap_or(1);
+            // x^0 = 1 is constant -> tangent 0. Match JAX's _integer_pow_jvp
+            // (y==0 -> zeros); n*x^(n-1) would be 0 * inf = NaN at x == 0.
+            if n == 0 {
+                return Ok(zeros_like(&primals[0]));
+            }
             let n_val = scalar_constant_matching_dtype(f64::from(n), &tangents[0]);
             let mut nm1_params = params.clone();
             nm1_params.insert("exponent".into(), (n - 1).to_string());
@@ -10535,6 +10546,41 @@ mod tests {
         let grads = vjp_single(Primitive::IntegerPow, &[input], &g, &params).expect("vjp");
         let grad = grads[0].as_f64_scalar().expect("scalar");
         assert!((grad - 108.0).abs() < 1e-10, "got {grad}");
+    }
+
+    #[test]
+    fn test_integer_pow_n0_grad_is_zero_not_nan() {
+        // x^0 = 1 is constant, so d/dx = 0 everywhere. The generic n*x^(n-1) rule
+        // forms 0 * x^(-1) = 0 * inf = NaN at x=0; JAX's _integer_pow_jvp
+        // short-circuits y==0 to zeros. Check both VJP and JVP at x=0.
+        let mut params = BTreeMap::new();
+        params.insert("exponent".into(), "0".into());
+
+        let grads = vjp_single(
+            Primitive::IntegerPow,
+            &[Value::scalar_f64(0.0)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        let vjp_grad = grads[0].as_f64_scalar().expect("scalar");
+        assert!(
+            vjp_grad.is_finite() && vjp_grad.abs() < 1e-12,
+            "VJP grad of x^0 at 0 must be 0, got {vjp_grad}"
+        );
+
+        let jvp = jvp_rule(
+            Primitive::IntegerPow,
+            &[Value::scalar_f64(0.0)],
+            &[Value::scalar_f64(1.0)],
+            &params,
+        )
+        .expect("jvp");
+        let jvp_t = jvp.as_f64_scalar().expect("scalar");
+        assert!(
+            jvp_t.is_finite() && jvp_t.abs() < 1e-12,
+            "JVP tangent of x^0 at 0 must be 0, got {jvp_t}"
+        );
     }
 
     #[test]
