@@ -1,0 +1,12 @@
+frankenjax-jwkcc pass169 rejected MR6 exact-order register microkernel
+target: linalg/matmul_2d_2048x2048x2048_f64
+profile_after_ed0v4_ts1: [70.643, 71.487, 73.182] ms
+focused_baseline_ts1: [73.159, 73.665, 74.577] ms
+candidate_ts1: [167.05, 171.57, 177.03] ms
+median_speedup: 0.4294x
+conservative_speedup: 0.4133x
+score: 0.0
+proof: RCH ts1 cargo test -p fj-lax --lib matmul_2d -- --nocapture passed 9 tests with 1 ignored in candidate state
+isomorphism: per-output ascending-k accumulation, row ownership, row-major output, packed-B bytes, dtype/shape/error behavior, tie surface, and RNG surface preserved
+decision: source restored; MR6 rejected because register pressure/spills outweighed B-vector reuse
+next: reprofile restored source and attack a different primitive, not MR widening

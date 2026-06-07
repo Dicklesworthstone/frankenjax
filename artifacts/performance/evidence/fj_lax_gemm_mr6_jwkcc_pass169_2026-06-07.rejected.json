@@ -1,0 +1,50 @@
+{
+  "bead": "frankenjax-jwkcc",
+  "pass": 169,
+  "date": "2026-06-07",
+  "crate": "fj-lax",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "profile_target": {
+    "worker": "ts1",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-after-ed0v4-profile cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(matmul_2d_2048x2048x2048_f64|cholesky_1024x1024_f64|lu_1024x1024_f64|pinv_256x128_f64|qr_1024x1024_f64|eig_48x48_f64)' --sample-size 10 --warm-up-time 1 --measurement-time 3",
+    "matmul_2048_ms": [70.643, 71.487, 73.182],
+    "pinv_256x128_ms": [55.932, 57.285, 58.896],
+    "cholesky_1024_ms": [51.784, 52.308, 52.943],
+    "lu_1024_ms": [51.258, 51.964, 52.652],
+    "qr_1024_ms": [34.705, 37.398, 43.781],
+    "eig_48_ms": [31.189, 32.363, 34.002]
+  },
+  "lever": "Widen the exact-order GEMM row tile from MR=4 to MR=6 so each loaded B vector is reused across six output rows.",
+  "baseline": {
+    "worker": "ts1",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-jwkcc-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_2048x2048x2048_f64' --sample-size 10 --warm-up-time 1 --measurement-time 3",
+    "ms": [73.159, 73.665, 74.577]
+  },
+  "candidate": {
+    "worker": "ts1",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-jwkcc-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_2048x2048x2048_f64' --sample-size 10 --warm-up-time 1 --measurement-time 3",
+    "ms": [167.05, 171.57, 177.03]
+  },
+  "result": {
+    "median_speedup": 0.4294,
+    "conservative_speedup": 0.4133,
+    "score": 0.0,
+    "decision": "rejected",
+    "reason": "MR6 preserved behavior but more than doubled runtime, consistent with register pressure/spills outweighing B-vector reuse."
+  },
+  "proof": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-jwkcc-proof cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "result": "9 passed, 0 failed, 1 ignored",
+    "isomorphism": [
+      "per-output ascending-k accumulation preserved",
+      "row ownership preserved",
+      "row-major output order preserved",
+      "packed-B bytes unchanged",
+      "dtype, shape, and error behavior unchanged",
+      "tie surface unchanged",
+      "RNG surface absent and unchanged"
+    ]
+  },
+  "source_state": "restored",
+  "golden_sha256": "54ad76991474125d263434e046a3af23753ebd375d3ea2598d632e891b83ae0f"
+}
