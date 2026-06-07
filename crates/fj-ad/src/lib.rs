@@ -5010,6 +5010,93 @@ fn vjp_reduce_window(
     Ok(vec![Value::Tensor(grad_tensor)])
 }
 
+/// ReduceWindow JVP for MAX/MIN pooling.
+///
+/// Max/min pooling is a SELECTION, not a linear map: the output tangent at each
+/// window must be the operand tangent AT the primal's arg-extremum position —
+/// the SAME position `vjp_reduce_window` scatters the cotangent to — NOT the
+/// windowed extremum of the tangent (which is what `ep_p(ReduceWindow, [dx])`
+/// computes). This mirrors JAX's `_select_and_gather_add` jvp for reduce-window
+/// max/min. Sum reduction is linear (`d rw(x) = rw(dx)`) and stays on `ep_p`.
+fn jvp_reduce_window_select(
+    primals: &[Value],
+    tangents: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, AdError> {
+    let input_tensor = match &primals[0] {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => return Ok(tangents[0].clone()),
+    };
+    let tan_tensor = match &tangents[0] {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => return Ok(tangents[0].clone()),
+    };
+    let rank = input_tensor.shape.rank();
+
+    // Window geometry: parsed identically to vjp_reduce_window / the fj-lax
+    // forward pass.
+    let window_dims: Vec<usize> = params
+        .get("window_dimensions")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![2; rank]);
+    let strides: Vec<usize> = params
+        .get("window_strides")
+        .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+        .unwrap_or_else(|| vec![1; rank]);
+    let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
+    let want_max = reduce_op == "max";
+
+    let input_dims: Vec<usize> = input_tensor.shape.dims.iter().map(|d| *d as usize).collect();
+
+    // Output geometry from the primal forward pass — matches fj-lax exactly
+    // (including any padding the manual loop would otherwise re-derive).
+    let primal_out = eval_primitive(Primitive::ReduceWindow, &[primals[0].clone()], params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    let out_tensor = match &primal_out {
+        Value::Tensor(t) => t,
+        Value::Scalar(_) => return Ok(tangents[0].clone()),
+    };
+    let out_dims: Vec<usize> = out_tensor.shape.dims.iter().map(|d| *d as usize).collect();
+    let total_output = ad_checked_usize_product("reduce_window output", &out_dims)?;
+
+    let input_vals: Vec<f64> = input_tensor.elements.iter().map(|e| e.as_f64().unwrap_or(0.0)).collect();
+    let tan_elems: Vec<Literal> = tan_tensor.elements.iter().cloned().collect();
+    let zero = literal_from_f64_for_dtype(tan_tensor.dtype, 0.0);
+    let mut out_elems: Vec<Literal> = vec![zero; total_output];
+
+    let win_total = ad_checked_usize_product("reduce_window window", &window_dims)?;
+    let mut out_idx = vec![0usize; rank];
+    for out_flat in 0..total_output {
+        // Find the same arg-extremum the VJP routes the cotangent to (strict
+        // comparison → ties keep the FIRST window position, matching the VJP so
+        // the JVP/VJP stay exact transposes).
+        let mut best_flat: Option<usize> = None;
+        let mut best_val = if want_max { f64::NEG_INFINITY } else { f64::INFINITY };
+        let mut win_idx = vec![0usize; rank];
+        for _ in 0..win_total {
+            if let Some(flat_idx) =
+                compute_flat_index(&out_idx, &win_idx, &strides, &input_dims, rank)?
+            {
+                let val = input_vals[flat_idx];
+                let is_better = if want_max { val > best_val } else { val < best_val };
+                if is_better {
+                    best_val = val;
+                    best_flat = Some(flat_idx);
+                }
+            }
+            increment_nd_index(&mut win_idx, &window_dims);
+        }
+        if let Some(idx) = best_flat {
+            out_elems[out_flat] = tan_elems[idx];
+        }
+        increment_nd_index(&mut out_idx, &out_dims);
+    }
+
+    let out = TensorValue::new(tan_tensor.dtype, out_tensor.shape.clone(), out_elems)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    Ok(Value::Tensor(out))
+}
+
 /// Compute the flat input index for a given output position and window offset.
 /// Returns None if the position is out of bounds.
 fn compute_flat_index(
@@ -8633,7 +8720,17 @@ fn jvp_rule(
             ep(Primitive::Select, &[x_is_zero, tangents[1].clone(), zeros])
         }
 
-        Primitive::ReduceWindow => ep_p(Primitive::ReduceWindow, &[tangents[0].clone()], params),
+        Primitive::ReduceWindow => {
+            // Sum reduction is linear: d rw_sum(x) = rw_sum(dx). Max/min pooling
+            // is a SELECTION — the output tangent must follow the primal's
+            // arg-extremum (gather), not re-reduce the tangent.
+            let reduce_op = params.get("reduce_op").map(|s| s.as_str()).unwrap_or("sum");
+            if reduce_op == "max" || reduce_op == "min" {
+                jvp_reduce_window_select(primals, tangents, params)
+            } else {
+                ep_p(Primitive::ReduceWindow, &[tangents[0].clone()], params)
+            }
+        }
 
         // Collective operations (pmap-only, not differentiable outside pmap context)
         Primitive::Psum
@@ -16112,6 +16209,110 @@ mod tests {
                 analytical_vals[i],
                 numerical
             );
+        }
+    }
+
+    // ── ReduceWindow JVP tests (max/min pooling = selection, not linear) ──
+
+    fn f64_tensor_1d(vals: &[f64]) -> Value {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![vals.len() as u32] },
+                vals.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    }
+
+    #[test]
+    fn test_reduce_window_max_jvp_gathers_primal_argmax() {
+        // Max-pool, window=2 stride=1 over x=[1,5,3,2,4]:
+        //   primal out = [5,5,3,4]; arg-max input positions = [1,1,2,4].
+        // The JVP must GATHER the tangent at those primal positions, NOT take the
+        // windowed-max of the tangent. With dx=[0.1,0.2,0.3,0.4,0.5]:
+        //   correct (gather)   = [dx1,dx1,dx2,dx4] = [0.2,0.2,0.3,0.5]
+        //   old/buggy (re-max) = [max(.1,.2),max(.2,.3),max(.3,.4),max(.4,.5)]
+        //                      = [0.2,0.3,0.4,0.5]  (wrong at positions 1 and 2)
+        let x = f64_tensor_1d(&[1.0, 5.0, 3.0, 2.0, 4.0]);
+        let dx = f64_tensor_1d(&[0.1, 0.2, 0.3, 0.4, 0.5]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "2".into());
+        params.insert("window_strides".into(), "1".into());
+        params.insert("reduce_op".into(), "max".into());
+
+        let jvp = jvp_rule(Primitive::ReduceWindow, &[x], &[dx], &params).unwrap();
+        let vals = tensor_f64_values(&jvp);
+        let want = [0.2, 0.2, 0.3, 0.5];
+        assert_eq!(vals.len(), want.len(), "got {vals:?}");
+        for (a, b) in vals.iter().zip(want) {
+            assert!((a - b).abs() < 1e-12, "max-pool JVP must gather: got {vals:?}");
+        }
+    }
+
+    #[test]
+    fn test_reduce_window_min_jvp_gathers_primal_argmin() {
+        // Min-pool, window=2 stride=1 over x=[5,1,3,4,2]:
+        //   primal out = [1,1,3,2]; arg-min positions = [1,1,2,4].
+        // dx=[0.1,0.2,0.3,0.4,0.5] → gather = [0.2,0.2,0.3,0.5].
+        let x = f64_tensor_1d(&[5.0, 1.0, 3.0, 4.0, 2.0]);
+        let dx = f64_tensor_1d(&[0.1, 0.2, 0.3, 0.4, 0.5]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "2".into());
+        params.insert("window_strides".into(), "1".into());
+        params.insert("reduce_op".into(), "min".into());
+
+        let jvp = jvp_rule(Primitive::ReduceWindow, &[x], &[dx], &params).unwrap();
+        let vals = tensor_f64_values(&jvp);
+        for (a, b) in vals.iter().zip([0.2, 0.2, 0.3, 0.5]) {
+            assert!((a - b).abs() < 1e-12, "min-pool JVP must gather: got {vals:?}");
+        }
+    }
+
+    #[test]
+    fn test_reduce_window_max_jvp_vjp_are_transposes() {
+        // Transpose duality for the (linear-jacobian) max-pool: for random probes
+        // u (input space) and v (output space), <J·u, v> == <u, Jᵀ·v>. The fix
+        // makes the JVP (gather) the exact transpose of the VJP (scatter); the
+        // old re-reduce JVP broke this identity at non-uniform tangents.
+        let x = f64_tensor_1d(&[1.0, 5.0, 3.0, 2.0, 4.0, 0.5]);
+        let u = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+        let v = [1.3, -0.7, 2.1, 0.9, -1.1]; // window=2 stride=1 → 5 outputs
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "2".into());
+        params.insert("window_strides".into(), "1".into());
+        params.insert("reduce_op".into(), "max".into());
+
+        let ju = tensor_f64_values(
+            &jvp_rule(Primitive::ReduceWindow, &[x.clone()], &[f64_tensor_1d(&u)], &params).unwrap(),
+        );
+        let lhs: f64 = ju.iter().zip(v).map(|(a, b)| a * b).sum();
+
+        let jtv = vjp_single(Primitive::ReduceWindow, &[x], &f64_tensor_1d(&v), &params).unwrap();
+        let jtv_vals = tensor_f64_values(&jtv[0]);
+        let rhs: f64 = jtv_vals.iter().zip(u).map(|(a, b)| a * b).sum();
+
+        assert!(
+            (lhs - rhs).abs() < 1e-12,
+            "max-pool JVP/VJP not transposes: <Ju,v>={lhs}, <u,Jᵀv>={rhs}"
+        );
+    }
+
+    #[test]
+    fn test_reduce_window_sum_jvp_still_linear() {
+        // Sum reduction stays linear: d rw_sum(x) = rw_sum(dx). Guard that the
+        // max/min routing didn't disturb the sum path.
+        let dx = f64_tensor_1d(&[0.1, 0.2, 0.3, 0.4, 0.5]);
+        let mut params = BTreeMap::new();
+        params.insert("window_dimensions".into(), "2".into());
+        params.insert("window_strides".into(), "1".into());
+        params.insert("reduce_op".into(), "sum".into());
+
+        let x = f64_tensor_1d(&[9.0, 8.0, 7.0, 6.0, 5.0]); // primal irrelevant for sum
+        let jvp = tensor_f64_values(&jvp_rule(Primitive::ReduceWindow, &[x], &[dx], &params).unwrap());
+        // windowed sums of dx: [.3,.5,.7,.9]
+        for (a, b) in jvp.iter().zip([0.3, 0.5, 0.7, 0.9]) {
+            assert!((a - b).abs() < 1e-12, "sum JVP must stay linear: got {jvp:?}");
         }
     }
 
