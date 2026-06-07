@@ -1209,6 +1209,34 @@ fn eval_binary_elementwise_complex(
                     }
                 }
 
+                // Dense same-shape fast path for the CHEAP complex binary ops
+                // (Add/Sub/Div, plus any non-Complex128 Mul that skipped the
+                // dtype-specialized path above). These are arithmetic-light, so
+                // the per-`Literal` unpack (4 f64 from bits) + repack dominates;
+                // reading the packed (re,im) slices and applying
+                // `apply_complex_binary` straight into dense complex storage
+                // removes it. `apply_complex_binary` is exactly what
+                // `complex_binary_literal_op` delegates to, and
+                // `new_complex_values` applies the same `out_dtype` narrowing,
+                // so this is bit-for-bit identical to the per-`Literal` loop
+                // below (same proof as the Mul and broadcast dense paths). Serial
+                // (no threads): these ops are memory-bound, where fan-out regresses.
+                if let (Some(a), Some(b)) = (
+                    lhs.elements.as_complex_slice(),
+                    rhs.elements.as_complex_slice(),
+                ) {
+                    let n = a.len();
+                    let mut out: Vec<(f64, f64)> = Vec::with_capacity(n);
+                    for i in 0..n {
+                        out.push(apply_complex_binary(primitive, a[i], b[i])?);
+                    }
+                    return Ok(Value::Tensor(TensorValue::new_complex_values(
+                        out_dtype,
+                        lhs.shape.clone(),
+                        out,
+                    )?));
+                }
+
                 let mut elements = Vec::with_capacity(lhs.elements.len());
                 for (left, right) in lhs
                     .elements
@@ -6444,6 +6472,97 @@ mod tests {
     use super::*;
     use fj_test_utils::fixture_id_from_json;
     use std::f64::consts::PI;
+
+    /// Isomorphism + golden proof for the same-shape dense complex Add/Sub/Div
+    /// fast path: every output element must be BIT-FOR-BIT identical to the old
+    /// per-`Literal` loop (`complex_binary_literal_op`), and the same-binary A/B
+    /// timing is printed (run with `--nocapture`). Bit-identity is a strictly
+    /// stronger proof than a digest match; a dependency-free rolling checksum of
+    /// the dense output is also printed as the golden record.
+    #[test]
+    fn complex_addsubdiv_dense_path_bit_identical_to_literal() {
+        use std::time::Instant;
+
+        let n: u32 = 1 << 20; // 1,048,576 complex elements
+        let a_pairs: Vec<(f64, f64)> = (0..n)
+            .map(|i| (i as f64 * 0.5 - 3.0, i as f64 * -0.25 + 1.0))
+            .collect();
+        let b_pairs: Vec<(f64, f64)> = (0..n)
+            .map(|i| (i as f64 * 0.125 + 2.0, i as f64 * 0.75 - 4.0))
+            .collect();
+        let shape = Shape { dims: vec![n] };
+
+        let va = Value::Tensor(
+            TensorValue::new_complex_values(DType::Complex128, shape.clone(), a_pairs.clone())
+                .unwrap(),
+        );
+        let vb = Value::Tensor(
+            TensorValue::new_complex_values(DType::Complex128, shape.clone(), b_pairs.clone())
+                .unwrap(),
+        );
+
+        // Reference Literal buffers for the OLD per-`Literal` path.
+        let lit_a: Vec<Literal> = a_pairs
+            .iter()
+            .map(|&(r, i)| Literal::Complex128Bits(r.to_bits(), i.to_bits()))
+            .collect();
+        let lit_b: Vec<Literal> = b_pairs
+            .iter()
+            .map(|&(r, i)| Literal::Complex128Bits(r.to_bits(), i.to_bits()))
+            .collect();
+
+        let reps = 30u32;
+        let out_dtype = DType::Complex128;
+        for op in [Primitive::Add, Primitive::Sub, Primitive::Div] {
+            // NEW dense path output.
+            let dense = eval_binary_elementwise_complex(op, &[va.clone(), vb.clone()]).unwrap();
+            let dense_t = dense.as_tensor().unwrap();
+
+            // OLD per-`Literal` path output (the loop the dense path replaced).
+            let mut ref_elems = Vec::with_capacity(n as usize);
+            for (l, r) in lit_a.iter().copied().zip(lit_b.iter().copied()) {
+                ref_elems.push(complex_binary_literal_op(op, l, r, out_dtype).unwrap());
+            }
+
+            // Isomorphism: bit-for-bit identical, every element.
+            let mut golden: u64 = 0xcbf29ce484222325; // FNV-1a offset basis
+            for (k, re) in ref_elems.iter().enumerate() {
+                assert_eq!(dense_t.elements[k], *re, "op {op:?} bit mismatch at {k}");
+                if let Literal::Complex128Bits(rb, ib) = dense_t.elements[k] {
+                    for byte in rb.to_le_bytes().iter().chain(ib.to_le_bytes().iter()) {
+                        golden ^= *byte as u64;
+                        golden = golden.wrapping_mul(0x100000001b3);
+                    }
+                }
+            }
+
+            // Same-binary A/B timing.
+            let t0 = Instant::now();
+            for _ in 0..reps {
+                let out = eval_binary_elementwise_complex(op, &[va.clone(), vb.clone()]).unwrap();
+                std::hint::black_box(&out);
+            }
+            let dense_ns = t0.elapsed().as_nanos().max(1);
+
+            let t1 = Instant::now();
+            for _ in 0..reps {
+                let mut elements = Vec::with_capacity(n as usize);
+                for (l, r) in lit_a.iter().copied().zip(lit_b.iter().copied()) {
+                    elements.push(complex_binary_literal_op(op, l, r, out_dtype).unwrap());
+                }
+                let out = TensorValue::new(out_dtype, shape.clone(), elements).unwrap();
+                std::hint::black_box(&out);
+            }
+            let lit_ns = t1.elapsed().as_nanos().max(1);
+
+            let ratio = lit_ns as f64 / dense_ns as f64;
+            println!(
+                "[complex {op:?}] dense={:.3}ms literal={:.3}ms ratio={ratio:.2}x golden={golden:016x}",
+                dense_ns as f64 / reps as f64 / 1e6,
+                lit_ns as f64 / reps as f64 / 1e6,
+            );
+        }
+    }
 
     /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
     /// `vector_i64` input (folds two i64 slices) must produce element-for-element
