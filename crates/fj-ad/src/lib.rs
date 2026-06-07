@@ -926,8 +926,10 @@ fn log_replace_zero(x: &Value) -> Result<Value, AdError> {
     let zero = scalar_constant_matching_dtype(0.0, x);
     let is_zero = eval_primitive(Primitive::Eq, &[x.clone(), zero], &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-    let one = scalar_constant_matching_dtype(1.0, x);
-    let safe_base = value_select(&is_zero, &one, x)?;
+    // Replace zero with one BEFORE the log. The replacement must match x's shape
+    // (ones_like, not a scalar): eval_select has no (Tensor, Scalar, Tensor) arm,
+    // so a scalar `1` here errored for a tensor base.
+    let safe_base = value_select(&is_zero, &ones_like(x), x)?;
     eval_primitive(
         Primitive::Log,
         std::slice::from_ref(&safe_base),
@@ -10943,6 +10945,40 @@ mod tests {
         .expect("vjp");
         let v1 = g1[0].as_f64_scalar().expect("scalar");
         assert!(v1.is_finite(), "I1e'(1) must be finite, got {v1}");
+    }
+
+    #[test]
+    fn test_pow_grad_tensor_base_does_not_error() {
+        // grad of a**b with a TENSOR base. The exponent gradient uses
+        // log_replace_zero(a), which built select(is_zero[Tensor], 1_scalar,
+        // a[Tensor]) = (Tensor, Scalar, Tensor) — an arm eval_select rejects.
+        // da = b * a^(b-1); for a=[2,3], b=2 => [4,6].
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2] }, vec![2.0, 3.0]).unwrap(),
+        );
+        let b = Value::scalar_f64(2.0);
+        let g = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2] }, vec![1.0, 1.0]).unwrap(),
+        );
+        let grads = vjp_single(Primitive::Pow, &[a, b], &g, &BTreeMap::new())
+            .expect("pow VJP with a tensor base must not error");
+        assert_eq!(tensor_f64_values(&grads[0]), vec![4.0, 6.0], "da = b*a^(b-1)");
+
+        // JVP too: tangents (da=ones, db=0) => d(a^b) = b*a^(b-1)*da = [4,6].
+        let a2 = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2] }, vec![2.0, 3.0]).unwrap(),
+        );
+        let da = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2] }, vec![1.0, 1.0]).unwrap(),
+        );
+        let jvp = jvp_rule(
+            Primitive::Pow,
+            &[a2, Value::scalar_f64(2.0)],
+            &[da, Value::scalar_f64(0.0)],
+            &BTreeMap::new(),
+        )
+        .expect("pow JVP with a tensor base must not error");
+        assert_eq!(tensor_f64_values(&jvp), vec![4.0, 6.0], "d(a^b) = b*a^(b-1)*da");
     }
 
     #[test]
