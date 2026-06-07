@@ -1623,6 +1623,65 @@ fn try_accumulate_repeated_mul_vjp(
     Ok(true)
 }
 
+/// Reduce a cotangent back to `target` shape by summing over the broadcast axes
+/// (numpy/JAX rules: sum the leading extra axes, and any axis where `target` has
+/// size 1 but the cotangent does not). A no-op when shapes already match.
+///
+/// fj-trace emits implicit-broadcast binary equations (`a[M,N] + b[N]` is a
+/// single Add, not broadcast_in_dim + add), so the elementwise VJPs return an
+/// output-shaped cotangent for the smaller operand. A cotangent must live in the
+/// dual space of its input, so the reverse pass collapses it here.
+fn unbroadcast_cotangent_to(value: Value, target: &Shape) -> Result<Value, AdError> {
+    let cur_shape = match &value {
+        // A scalar cotangent is already minimal; nothing to reduce.
+        Value::Scalar(_) => return Ok(value),
+        Value::Tensor(t) => t.shape.clone(),
+    };
+    if &cur_shape == target {
+        return Ok(value);
+    }
+    let cur_rank = cur_shape.rank();
+    let tgt_rank = target.rank();
+    let lead = cur_rank.saturating_sub(tgt_rank);
+    let mut reduce_axes: Vec<usize> = (0..lead).collect();
+    for i in 0..tgt_rank {
+        if target.dims[i] == 1 && cur_shape.dims[lead + i] != 1 {
+            reduce_axes.push(lead + i);
+        }
+    }
+
+    // Sum one axis at a time from highest to lowest so indices stay stable.
+    let mut current = value;
+    for &axis in reduce_axes.iter().rev() {
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), axis.to_string());
+        current = eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&current), &params)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    }
+
+    // ReduceSum drops the reduced axes; reshape to exactly `target` to recover
+    // any kept size-1 axes (and the scalar case).
+    let out_shape = match &current {
+        Value::Scalar(_) => Shape::scalar(),
+        Value::Tensor(t) => t.shape.clone(),
+    };
+    if &out_shape != target {
+        let mut params = BTreeMap::new();
+        params.insert(
+            "shape".to_owned(),
+            target
+                .dims
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+        current = eval_primitive(Primitive::Reshape, std::slice::from_ref(&current), &params)
+            .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    }
+    Ok(current)
+}
+
 fn backward(
     tape: &Tape,
     output_var: VarId,
@@ -1681,10 +1740,18 @@ fn backward(
             }
         };
 
-        for (var_id, cot) in entry.inputs.iter().zip(cotangents) {
+        for (i, (var_id, cot)) in entry.inputs.iter().zip(cotangents).enumerate() {
             if var_id.0 == u32::MAX {
                 continue; // literal sentinel
             }
+            // Collapse any broadcast: a cotangent must match its input's shape,
+            // but implicit-broadcast elementwise ops return an output-shaped
+            // cotangent for the smaller operand. No-op when shapes already match.
+            let target_shape = match &entry.input_values[i] {
+                Value::Scalar(_) => Shape::scalar(),
+                Value::Tensor(t) => t.shape.clone(),
+            };
+            let cot = unbroadcast_cotangent_to(cot, &target_shape)?;
             adjoints.add_or_insert(*var_id, cot)?;
         }
     }
@@ -10662,6 +10729,38 @@ mod tests {
         let v05 = g05[0].as_f64_scalar().expect("scalar");
         let want = -4.0 / std::f64::consts::PI;
         assert!((v05 - want).abs() < 1e-6, "sinc'(0.5): got {v05}, want {want}");
+    }
+
+    #[test]
+    fn test_grad_broadcasting_add_unbroadcasts_bias() {
+        // out = a[2,3] + b[3]  (b broadcast over rows). fj-trace emits this as a
+        // single implicit-broadcast Add equation, so the reverse pass must sum
+        // b's cotangent over the broadcast axis. With a ones cotangent, grad_b =
+        // [2,2,2] (shape [3]) — NOT a [2,3]-shaped all-ones grad.
+        let jaxpr = make_binary_jaxpr(Primitive::Add);
+        let a = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2, 3] }, vec![1.0; 6]).unwrap(),
+        );
+        let b = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![3] }, vec![10.0, 20.0, 30.0]).unwrap(),
+        );
+        let cotangent = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2, 3] }, vec![1.0; 6]).unwrap(),
+        );
+        let grads = grad_jaxpr_with_cotangent(&jaxpr, &[a, b], &cotangent).expect("grad");
+
+        let ga = grads[0].as_tensor().expect("grad_a tensor");
+        assert_eq!(ga.shape.dims, vec![2, 3], "grad_a shape");
+
+        let gb = grads[1].as_tensor().expect("grad_b tensor");
+        assert_eq!(
+            gb.shape.dims,
+            vec![3],
+            "grad_b must be unbroadcast to [3], got {:?}",
+            gb.shape.dims
+        );
+        let gb_vals = tensor_f64_values(&grads[1]);
+        assert_eq!(gb_vals, vec![2.0, 2.0, 2.0], "grad_b summed over rows");
     }
 
     #[test]
