@@ -12433,6 +12433,35 @@ mod tests {
     }
 
     #[test]
+    fn multi_input_vjp_returns_one_cotangent_per_input() {
+        // A VJP must return one cotangent per input whenever a NON-differentiable
+        // input is not last; otherwise a gradient lands on the wrong input. This
+        // is exactly the scatter bug (ey33s, P0): grad_updates landed on the
+        // middle indices slot and the updates input got no gradient. Guard the
+        // at-risk multi-input ops here.
+        use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
+        let f = |v: &[f64]| Value::Tensor(TensorValue::new_f64_values(Shape { dims: vec![v.len() as u32] }, v.to_vec()).unwrap());
+        let ii = |v: &[i64]| Value::Tensor(TensorValue::new(DType::I64, Shape { dims: vec![v.len() as u32] }, v.iter().map(|&x| Literal::I64(x)).collect()).unwrap());
+        let bb = |v: &[bool]| Value::Tensor(TensorValue::new_bool_values(Shape { dims: vec![v.len() as u32] }, v.to_vec()).unwrap());
+        let g2 = f(&[1.0, 1.0]);
+        let no = BTreeMap::new();
+        // scatter: [operand, indices(MIDDLE, non-diff), updates] -> 3
+        assert_eq!(vjp_single(Primitive::Scatter, &[f(&[0.0, 0.0, 0.0]), ii(&[1]), f(&[5.0])], &f(&[1.0, 1.0, 1.0]), &no).unwrap().len(), 3, "scatter");
+        // select: [cond(FIRST, non-diff), x, y] -> 3
+        assert_eq!(vjp_single(Primitive::Select, &[bb(&[true, false]), f(&[1.0, 2.0]), f(&[3.0, 4.0])], &g2, &no).unwrap().len(), 3, "select");
+        // select_n: [index(FIRST, non-diff), case0, case1] -> 3
+        assert_eq!(vjp_single(Primitive::SelectN, &[ii(&[0, 1]), f(&[1.0, 2.0]), f(&[3.0, 4.0])], &g2, &no).unwrap().len(), 3, "select_n");
+        // cond: [pred(FIRST, non-diff), true, false] -> 3
+        assert_eq!(vjp_single(Primitive::Cond, &[Value::scalar_bool(true), Value::scalar_f64(5.0), Value::scalar_f64(10.0)], &Value::scalar_f64(1.0), &no).unwrap().len(), 3, "cond");
+        // fma: [a, b, c] all differentiable -> 3
+        assert_eq!(vjp_single(Primitive::Fma, &[f(&[1.0, 2.0]), f(&[3.0, 4.0]), f(&[5.0, 6.0])], &g2, &no).unwrap().len(), 3, "fma");
+        // concatenate: variadic, 3 inputs -> 3
+        let mut cp = BTreeMap::new();
+        cp.insert("dimension".to_owned(), "0".to_owned());
+        assert_eq!(vjp_single(Primitive::Concatenate, &[f(&[1.0]), f(&[2.0]), f(&[3.0])], &f(&[1.0, 1.0, 1.0]), &cp).unwrap().len(), 3, "concatenate");
+    }
+
+    #[test]
     fn vjp_scatter_zeros_overwritten_positions() {
         // Scatter overwrites operand[1,:] with updates[0,:].
         // The operand gradient should be zero at the overwritten positions.
