@@ -1399,7 +1399,15 @@ pub(crate) fn eval_svd(
 /// the SVD-based pseudoinverse `pinv_svd` (beads frankenjax-96i7w, -4kx6m).
 fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
     let k = m.min(n);
-    let mut w = a.to_vec(); // m×n working matrix; its columns become orthogonal.
+    // Store W column-major because Jacobi sweeps stream columns p/q repeatedly.
+    // Each dot and rotation still visits rows in ascending order, preserving the
+    // arithmetic order of the former row-major implementation.
+    let mut w = vec![0.0_f64; m * n]; // n columns, each length m.
+    for row in 0..m {
+        for col in 0..n {
+            w[col * m + row] = a[row * n + col];
+        }
+    }
     let mut v = vec![0.0_f64; n * n];
     for i in 0..n {
         v[i * n + i] = 1.0;
@@ -1416,8 +1424,8 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
                 let mut beta = 0.0_f64; //  ‖col_q‖²
                 let mut gamma = 0.0_f64; // col_p · col_q
                 for i in 0..m {
-                    let wip = w[i * n + p];
-                    let wiq = w[i * n + q];
+                    let wip = w[p * m + i];
+                    let wiq = w[q * m + i];
                     alpha += wip * wip;
                     beta += wiq * wiq;
                     gamma += wip * wiq;
@@ -1439,10 +1447,10 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
                 let s = t * c;
                 // Rotate columns p,q of W: new_p = c·p − s·q, new_q = s·p + c·q.
                 for i in 0..m {
-                    let wip = w[i * n + p];
-                    let wiq = w[i * n + q];
-                    w[i * n + p] = c * wip - s * wiq;
-                    w[i * n + q] = s * wip + c * wiq;
+                    let wip = w[p * m + i];
+                    let wiq = w[q * m + i];
+                    w[p * m + i] = c * wip - s * wiq;
+                    w[q * m + i] = s * wip + c * wiq;
                 }
                 // Accumulate the same rotation into V.
                 for i in 0..n {
@@ -1463,7 +1471,7 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
     for j in 0..n {
         let mut s2 = 0.0_f64;
         for i in 0..m {
-            let wij = w[i * n + j];
+            let wij = w[j * m + i];
             s2 += wij * wij;
         }
         col_norm[j] = s2.sqrt();
@@ -1483,7 +1491,7 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
             sigma[new_col] = sg;
             if sg > f64::EPSILON * 1e4 {
                 for row in 0..m {
-                    u[row * k + new_col] = w[row * n + old_col] / sg;
+                    u[row * k + new_col] = w[old_col * m + row] / sg;
                 }
             }
         }
@@ -5102,6 +5110,60 @@ mod tests {
                     a_lower[idx].to_bits(),
                     (((idx % 19) as f64 - 9.0) * 0.125).to_bits(),
                     "upper Schur entry [{p},{q}] should be untouched"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn one_sided_jacobi_svd_real_reconstructs_tall_profile_shape() {
+        let (m, n) = (18usize, 9usize);
+        let data: Vec<f64> = (0..m * n)
+            .map(|idx| {
+                let row = idx / n;
+                let col = idx % n;
+                let off_diag = (((row * 17 + col * 31) % 13) as f64 - 6.0) * 0.01;
+                if row == col {
+                    4.0 + col as f64 + off_diag
+                } else {
+                    off_diag + (row as f64) * 0.001
+                }
+            })
+            .collect();
+        let (sigma, u, v) = one_sided_jacobi_svd_real(m, n, &data);
+
+        for row in 0..m {
+            for col in 0..n {
+                let mut reconstructed = 0.0;
+                for axis in 0..n {
+                    reconstructed += u[row * n + axis] * sigma[axis] * v[col * n + axis];
+                }
+                assert!(
+                    (reconstructed - data[row * n + col]).abs() < 1e-9,
+                    "reconstruction[{row},{col}] = {reconstructed}, expected {}",
+                    data[row * n + col]
+                );
+            }
+        }
+
+        for left in 0..n {
+            for right in 0..n {
+                let mut u_dot = 0.0;
+                let mut v_dot = 0.0;
+                for row in 0..m {
+                    u_dot += u[row * n + left] * u[row * n + right];
+                }
+                for row in 0..n {
+                    v_dot += v[row * n + left] * v[row * n + right];
+                }
+                let expected = if left == right { 1.0 } else { 0.0 };
+                assert!(
+                    (u_dot - expected).abs() < 1e-9,
+                    "U dot[{left},{right}] = {u_dot}, expected {expected}"
+                );
+                assert!(
+                    (v_dot - expected).abs() < 1e-9,
+                    "V dot[{left},{right}] = {v_dot}, expected {expected}"
                 );
             }
         }

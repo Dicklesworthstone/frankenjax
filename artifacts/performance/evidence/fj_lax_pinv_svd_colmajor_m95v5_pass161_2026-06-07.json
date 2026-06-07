@@ -1,0 +1,117 @@
+{
+  "artifact": "fj_lax_pinv_svd_colmajor_m95v5_pass161_2026-06-07",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-m95v5",
+  "pass": 161,
+  "date": "2026-06-07",
+  "status": "kept",
+  "profile_backed_target": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-profile-pass161 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_256x128_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_2048x2048x2048_f64)' --sample-size 10 --warm-up-time 1 --measurement-time 5",
+    "worker": "ts1",
+    "top_rows_ms": [
+      {
+        "bench": "linalg/pinv_256x128_f64",
+        "low": 123.37,
+        "median": 124.47,
+        "high": 125.21
+      },
+      {
+        "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+        "low": 98.821,
+        "median": 99.983,
+        "high": 101.27
+      },
+      {
+        "bench": "linalg/cholesky_1024x1024_f64",
+        "low": 88.959,
+        "median": 94.968,
+        "high": 101.34
+      }
+    ]
+  },
+  "lever": {
+    "summary": "The private W work buffer in one_sided_jacobi_svd_real is now column-major, matching the column-streaming Jacobi sweep access pattern used by pinv_svd.",
+    "files": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "single_change": true,
+    "alien_primitive": "data-layout / loop-nest locality transformation for numerical linear algebra",
+    "safe_rust": true
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-m95v5-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_256x128_f64' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+      "worker": "ts1",
+      "low_ms": 101.87,
+      "median_ms": 102.82,
+      "high_ms": 104.03
+    },
+    "after": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-m95v5-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_256x128_f64' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+      "worker": "ts1",
+      "low_ms": 59.421,
+      "median_ms": 59.879,
+      "high_ms": 60.323
+    },
+    "median_speedup": 1.7171,
+    "conservative_speedup": 1.6887,
+    "score": {
+      "impact": 5,
+      "confidence": 4,
+      "effort": 2,
+      "value": 10.0
+    }
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "The Jacobi pair order p,q and every row loop inside alpha/beta/gamma dot products and W rotations still run in ascending order.",
+    "tie_breaking_unchanged": "Singular-value sorting remains total_cmp over the same computed column norms; no new pivot or tie rule was introduced.",
+    "floating_point": "For each scalar update, the operand values and accumulation order are unchanged. The only change is W addressing: col * m + row instead of row * n + col.",
+    "rng": "No RNG surface.",
+    "error_surface": "pinv shape, empty-matrix, rcond cutoff, dtype, and fallback behavior are unchanged.",
+    "nan_surface": "NaN propagation follows the same pair/row traversal and arithmetic operations as the prior row-major work buffer."
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_lax_pinv_svd_colmajor_m95v5_pass161_2026-06-07.golden",
+    "sha256": "f2ecb968d7bc0ff1cd26d4f9db1296285b5cc42d832e0f5fcb99fc8c04b4dc45",
+    "proof_tests": [
+      "one_sided_jacobi_svd_real_reconstructs_tall_profile_shape",
+      "svd_real_fast_path_matches_complex_spectrum_and_reconstructs",
+      "pinv_ill_conditioned_2x2_svd_accurate",
+      "pinv_low_rank_qr_satisfies_moore_penrose_identities",
+      "pinv_rank_deficient_satisfies_moore_penrose"
+    ]
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-m95v5-test cargo test -p fj-lax --lib svd -- --nocapture",
+      "result": "passed: 8 tests, 0 failed, 1167 filtered out"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-m95v5-pinv-test cargo test -p fj-lax --lib pinv -- --nocapture",
+      "result": "passed: 7 tests, 0 failed, 1168 filtered out"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-m95v5-check cargo check -p fj-lax --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-m95v5-clippy cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs",
+      "result": "failed on pre-existing unrelated linalg.rs formatting outside this pass; no whole-file formatting was applied"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/linalg.rs",
+      "result": "exit 1 for pre-existing file-wide inventory, including test panic macros, unwrap/expect, direct indexing, and asserts; UBS fmt/clippy/check/test-build sections were clean and no unsafe blocks were reported"
+    }
+  ],
+  "fallback": "If a future SVD or pinv parity regression appears, revert this commit to restore row-major W storage in one_sided_jacobi_svd_real.",
+  "next_profile_note": "Re-profile linalg after this keep because pinv_256x128 is no longer the same bottleneck shape."
+}
