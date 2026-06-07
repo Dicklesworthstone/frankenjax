@@ -1,0 +1,43 @@
+frankenjax-a7sf0 pass173 rejected lower-packed Cholesky workspace
+
+Target:
+- Crate: fj-lax
+- Benchmark: linalg/cholesky_1024x1024_f64
+- Profile route: GEMM2048 remained top, but direct matmul_2d is under the closed bit-exact ascending-k contract from frankenjax-p1vbf.39. Exact-order GEMM micro/layout families were already in rejection streak, so this pass attacked the next structural non-GEMM primitive from pass172: lower-packed Cholesky private workspace.
+
+Candidate lever:
+- Store the private Cholesky work matrix in packed lower-triangular storage.
+- Keep public output materialized as row-major lower-triangular L with strict upper zeros.
+- Reuse the existing diagonal block order, panel solve order, and lower-only Schur update order.
+
+Behavior proof:
+- RCH candidate-state focused test command: cargo test -p fj-lax --lib cholesky -- --nocapture
+- RCH worker: vmi1149989
+- Result: pass, 13 tests passed.
+- New proof coverage in candidate state compared packed-lower Schur updates against the previous row-major lower update and the full-GEMM lower-triangle reference on consumed entries.
+- Ordering preserved: diagonal blocks still advance left-to-right, panel rows remain ascending, and lower-triangle Schur entries are updated in the same p/q/c loop order.
+- Tie-breaking: not applicable; Cholesky has no comparison tie-breaking.
+- Floating point: no mixed precision, no RNG, no tolerance contract change, and no public error-path change. The candidate changed only private addressing/storage for the Schur complement and preserved the scalar arithmetic sequence for each consumed lower-triangle entry.
+- RNG: not applicable.
+- Source restored: git diff -- crates/fj-lax/src/linalg.rs is empty after rejection.
+
+Same-worker RCH benchmark gate:
+- Official same-worker basis: vmi1149989.
+- Old-source baseline command: cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(cholesky_1024x1024_f64|cholesky_512x512_f64|lu_1024x1024_f64)' --sample-size 12 --warm-up-time 1 --measurement-time 5 --noplot
+- Old-source baseline:
+  - cholesky_512x512_f64: 9.7408..10.136..10.469 ms
+  - cholesky_1024x1024_f64: 52.388..57.753..68.652 ms
+  - lu_1024x1024_f64 guard: 44.916..53.418..61.878 ms
+- Candidate rebench command: cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(cholesky_1024x1024_f64|cholesky_512x512_f64|lu_1024x1024_f64)' --sample-size 12 --warm-up-time 1 --measurement-time 5 --noplot
+- Candidate rebench:
+  - cholesky_512x512_f64: 11.876..19.175..24.512 ms
+  - cholesky_1024x1024_f64: 71.534..79.414..87.514 ms
+  - lu_1024x1024_f64 guard: 63.534..67.287..72.169 ms
+- Median speedup for target: 57.753 / 79.414 = 0.7272x.
+- Conservative speedup for target: 52.388 / 87.514 = 0.5986x.
+- Score: Impact 0.0 x Confidence 5.0 / Effort 2.0 = 0.0, below keep threshold 2.0.
+
+Decision:
+- Reject and restore source.
+- Do not commit lower-packed Cholesky workspace.
+- Next primitive: stop private packed-lower workspace as a Cholesky lever. Reprofile restored source and attack a deeper non-GEMM structural primitive, such as communication-avoiding/recursive Cholesky panel scheduling with an explicit bit-order proof, blocked LU/QR structure if it ranks higher, or behavior-contract work where FP reordering is required.

@@ -1,0 +1,190 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_cholesky_packed_lower_a7sf0_pass173_2026-06-07",
+  "status": "rejected",
+  "date": "2026-06-07",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-a7sf0",
+  "crate": "fj-lax",
+  "target": "linalg/cholesky_1024x1024_f64",
+  "skill_pass": "repeatedly-apply-skill pass173 -> extreme-software-optimization",
+  "profile_backing": {
+    "full_profile_command": "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-pass173-profile cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(cholesky_1024x1024_f64|cholesky_512x512_f64|lu_1024x1024_f64|qr_1024x1024_f64|pinv_256x128_f64|matmul_2d_2048x2048x2048_f64)' --sample-size 10 --warm-up-time 1 --measurement-time 3 --noplot",
+    "full_profile_worker": "vmi1264463",
+    "top_rows": [
+      {
+        "name": "linalg/matmul_2d_2048x2048x2048_f64",
+        "time_ms": [
+          1706.5,
+          2127.6,
+          2543.5
+        ]
+      },
+      {
+        "name": "linalg/lu_1024x1024_f64",
+        "time_ms": [
+          538.11,
+          651.93,
+          776.8
+        ]
+      },
+      {
+        "name": "linalg/cholesky_1024x1024_f64",
+        "time_ms": [
+          293.59,
+          386.06,
+          481.75
+        ]
+      },
+      {
+        "name": "linalg/qr_1024x1024_f64",
+        "time_ms": [
+          142.3,
+          166.33,
+          192.69
+        ]
+      },
+      {
+        "name": "linalg/pinv_256x128_f64",
+        "time_ms": [
+          98.597,
+          112.56,
+          127.4
+        ]
+      }
+    ],
+    "route_reason": "GEMM2048 remained top, but frankenjax-p1vbf.39 closed recursive/Strassen-style FP-reordered GEMM under the current bit-exact ascending-k direct-matmul contract. Exact-order GEMM micro/layout families were already in rejection streak, so pass173 attacked the next structural non-GEMM primitive named by pass172: Cholesky lower-packed private workspace."
+  },
+  "focused_baseline": {
+    "command": "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-a7sf0-old-pair2 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(cholesky_1024x1024_f64|cholesky_512x512_f64|lu_1024x1024_f64)' --sample-size 12 --warm-up-time 1 --measurement-time 5 --noplot",
+    "worker": "vmi1149989",
+    "time_ms": {
+      "cholesky_512x512_f64": [
+        9.7408,
+        10.136,
+        10.469
+      ],
+      "cholesky_1024x1024_f64": [
+        52.388,
+        57.753,
+        68.652
+      ],
+      "lu_1024x1024_f64_guard": [
+        44.916,
+        53.418,
+        61.878
+      ]
+    },
+    "source_state": "restored old source; crates/fj-lax/src/linalg.rs diff empty before this baseline run"
+  },
+  "candidate": {
+    "lever": "lower-packed private workspace for blocked real Cholesky",
+    "description": "Stored the private Cholesky work matrix as packed lower-triangular storage, copied only lower input entries into that workspace, performed diagonal factorization, panel solve, and Schur update through lower-packed indexing, then materialized public row-major L at the boundary.",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "proof_test": {
+      "command": "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-a7sf0-test cargo test -p fj-lax --lib cholesky -- --nocapture",
+      "worker": "vmi1149989",
+      "result": "pass",
+      "details": "13 focused Cholesky tests passed in candidate state, including packed-lower Schur update comparison against the previous row-major lower update and full-GEMM lower-triangle reference."
+    },
+    "rebench": {
+      "command": "rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-a7sf0-candidate-pair1 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(cholesky_1024x1024_f64|cholesky_512x512_f64|lu_1024x1024_f64)' --sample-size 12 --warm-up-time 1 --measurement-time 5 --noplot",
+      "worker": "vmi1149989",
+      "time_ms": {
+        "cholesky_512x512_f64": [
+          11.876,
+          19.175,
+          24.512
+        ],
+        "cholesky_1024x1024_f64": [
+          71.534,
+          79.414,
+          87.514
+        ],
+        "lu_1024x1024_f64_guard": [
+          63.534,
+          67.287,
+          72.169
+        ]
+      },
+      "speedup_vs_focused_baseline_mid": 0.7272,
+      "speedup_vs_focused_baseline_conservative": 0.5986
+    },
+    "diagnostic_runs_not_used_for_gate": [
+      {
+        "state": "candidate",
+        "worker": "vmi1156319",
+        "cholesky_1024x1024_f64_ms": [
+          162.78,
+          174.32,
+          185.8
+        ],
+        "reason": "no same-worker old-source pair"
+      },
+      {
+        "state": "old_source",
+        "worker": "vmi1167313",
+        "cholesky_1024x1024_f64_ms": [
+          146.77,
+          167.89,
+          191.28
+        ],
+        "reason": "no same-worker candidate pair"
+      }
+    ]
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate preserved diagonal block order, panel row order, lower-triangle p/q traversal, and c=0..jb contribution order for each consumed lower-triangle Schur entry. Public L materialization remained row-major lower-triangular with strict upper zeros.",
+    "tie_breaking": "N/A: Cholesky has no comparison tie-breaking behavior.",
+    "floating_point": "Candidate changed private addressing/storage only. It introduced no mixed precision, FMA, reduction tree change, tolerance contract, or public NaN/signed-zero policy change for consumed lower-triangle entries.",
+    "rng": "N/A: Cholesky consumes no random state.",
+    "errors": "No public dtype/shape/error surface changed in candidate state.",
+    "golden_sha256": "be263e5f05ab24f0330e5e2d0c53258d81d310f69ee3df11cad0bf55cc72920e"
+  },
+  "validation": [
+    {
+      "command": "git diff -- crates/fj-lax/src/linalg.rs",
+      "result": "empty after source restore"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/linalg.rs artifacts/performance/evidence/fj_lax_cholesky_packed_lower_a7sf0_pass173_2026-06-07.rejected.json artifacts/performance/evidence/fj_lax_cholesky_packed_lower_a7sf0_pass173_2026-06-07.rejected.golden artifacts/performance/evidence/fj_lax_cholesky_packed_lower_a7sf0_pass173_2026-06-07.rejected.golden.sha256",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_cholesky_packed_lower_a7sf0_pass173_2026-06-07.rejected.golden.sha256",
+      "result": "pass"
+    }
+  ],
+  "alien_source": {
+    "primary_sources": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.5",
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md#9.6",
+      "/data/projects/alien_cs_graveyard/high_level_summary_of_frankensuite_planned_and_implemented_features_and_concepts.md#0.7"
+    ],
+    "primitive_family": "packed triangular storage and communication-avoiding dense factorization",
+    "applied_slice": "Tested packed lower-triangular private storage for blocked Cholesky after q-lane SIMD lower-SYRK regressed."
+  },
+  "next_primitive": {
+    "target": "reprofile restored source and attack a deeper non-GEMM linalg primitive",
+    "reason": "Lower-packed private workspace increased index arithmetic and cache behavior did not clear the gate. Do not repeat this workspace family; move to a different structural primitive such as communication-avoiding/recursive Cholesky panel scheduling with explicit bit-order proof, blocked LU/QR structure if it ranks higher, or behavior-contract work where FP reordering is required.",
+    "target_ratio": ">=2.0x on the next profile-backed hotspot",
+    "proof_obligations": [
+      "observable output order unchanged",
+      "floating-point operation order unchanged unless a separate behavior-contract bead admits tolerance",
+      "no RNG, tie-breaking, dtype/shape/error change",
+      "golden sha256 passes before close"
+    ],
+    "fallback_trigger": "Reject and restore source if same-worker RCH Criterion data fails Score>=2.0."
+  }
+}
