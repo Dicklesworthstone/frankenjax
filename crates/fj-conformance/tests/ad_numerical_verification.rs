@@ -491,6 +491,134 @@ fn dot_general_vjp_noncanonical_operand_order() {
     assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "DotGeneral VJP grad_rhs (non-canonical)");
 }
 
+#[test]
+fn conv_vjp_strided_numerical() {
+    // Conv VJP under STRIDE>1 — the error-prone path (grad_lhs is a strided/
+    // transposed conv, grad_rhs sub-samples the input). The existing in-crate
+    // conv_vjp test only checks shapes with stride 1, so the strided gradient was
+    // never value-verified. lhs=[N,W,Cin]=[1,5,1], rhs=[K,Cin,Cout]=[2,1,1],
+    // strides=2, valid → out=[1,2,1]. Compare both grads to central differences.
+    let t = |dims: Vec<u32>, data: &[f64]| {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    };
+    let lhs_data = [1.0, 2.0, 3.0, 4.0, 5.0];
+    let rhs_data = [0.5, -0.25];
+    let lhs = t(vec![1, 5, 1], &lhs_data);
+    let rhs = t(vec![2, 1, 1], &rhs_data);
+
+    let mut params = BTreeMap::new();
+    params.insert("strides".to_string(), "2".to_string());
+    params.insert("padding".to_string(), "VALID".to_string());
+
+    let out = eval_primitive(Primitive::Conv, &[lhs.clone(), rhs.clone()], &params).unwrap();
+    let g_data = [1.3, -0.7]; // out shape [1,2,1]
+    let g = t(vec![1, 2, 1], &g_data);
+
+    let vjp = fj_ad::vjp(
+        Primitive::Conv,
+        &[lhs.clone(), rhs.clone()],
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    let grad_lhs = extract_f64_vec(&vjp[0]);
+    let grad_rhs = extract_f64_vec(&vjp[1]);
+
+    let eps = 1e-6;
+    let loss = |lv: &Value, rv: &Value| -> f64 {
+        let o = eval_primitive(Primitive::Conv, &[lv.clone(), rv.clone()], &params).unwrap();
+        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+    };
+    let mut num_lhs = vec![0.0; lhs_data.len()];
+    for idx in 0..lhs_data.len() {
+        let (mut p, mut m) = (lhs_data.to_vec(), lhs_data.to_vec());
+        p[idx] += eps;
+        m[idx] -= eps;
+        num_lhs[idx] = (loss(&t(vec![1, 5, 1], &p), &rhs) - loss(&t(vec![1, 5, 1], &m), &rhs)) / (2.0 * eps);
+    }
+    let mut num_rhs = vec![0.0; rhs_data.len()];
+    for idx in 0..rhs_data.len() {
+        let (mut p, mut m) = (rhs_data.to_vec(), rhs_data.to_vec());
+        p[idx] += eps;
+        m[idx] -= eps;
+        num_rhs[idx] = (loss(&lhs, &t(vec![2, 1, 1], &p)) - loss(&lhs, &t(vec![2, 1, 1], &m))) / (2.0 * eps);
+    }
+    assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "Conv VJP grad_lhs (stride 2)");
+    assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "Conv VJP grad_rhs (stride 2)");
+}
+
+#[test]
+fn conv2d_vjp_same_padding_numerical() {
+    // 2D conv VJP with SAME padding — the CNN-typical config and the trickiest
+    // gradient routing (asymmetric pad must be mirrored into grad_lhs). lhs=
+    // [N,H,W,Cin]=[1,3,3,1], rhs=[KH,KW,Cin,Cout]=[2,2,1,1], SAME → out=[1,3,3,1].
+    let t = |dims: Vec<u32>, data: &[f64]| {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    };
+    let lhs_data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+    let rhs_data = [0.5, -0.25, 0.75, -1.0];
+    let lhs = t(vec![1, 3, 3, 1], &lhs_data);
+    let rhs = t(vec![2, 2, 1, 1], &rhs_data);
+
+    let mut params = BTreeMap::new();
+    params.insert("strides".to_string(), "1".to_string());
+    params.insert("padding".to_string(), "SAME".to_string());
+
+    let out = eval_primitive(Primitive::Conv, &[lhs.clone(), rhs.clone()], &params).unwrap();
+    let g_data = [1.0, -0.5, 0.7, 0.3, -1.1, 0.9, 0.2, -0.4, 0.6]; // out [1,3,3,1]
+    let g = t(vec![1, 3, 3, 1], &g_data);
+
+    let vjp = fj_ad::vjp(
+        Primitive::Conv,
+        &[lhs.clone(), rhs.clone()],
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    let grad_lhs = extract_f64_vec(&vjp[0]);
+    let grad_rhs = extract_f64_vec(&vjp[1]);
+
+    let eps = 1e-6;
+    let loss = |lv: &Value, rv: &Value| -> f64 {
+        let o = eval_primitive(Primitive::Conv, &[lv.clone(), rv.clone()], &params).unwrap();
+        extract_f64_vec(&o).iter().zip(g_data.iter()).map(|(o, g)| o * g).sum()
+    };
+    let mut num_lhs = vec![0.0; lhs_data.len()];
+    for idx in 0..lhs_data.len() {
+        let (mut p, mut m) = (lhs_data.to_vec(), lhs_data.to_vec());
+        p[idx] += eps;
+        m[idx] -= eps;
+        num_lhs[idx] =
+            (loss(&t(vec![1, 3, 3, 1], &p), &rhs) - loss(&t(vec![1, 3, 3, 1], &m), &rhs)) / (2.0 * eps);
+    }
+    let mut num_rhs = vec![0.0; rhs_data.len()];
+    for idx in 0..rhs_data.len() {
+        let (mut p, mut m) = (rhs_data.to_vec(), rhs_data.to_vec());
+        p[idx] += eps;
+        m[idx] -= eps;
+        num_rhs[idx] =
+            (loss(&lhs, &t(vec![2, 2, 1, 1], &p)) - loss(&lhs, &t(vec![2, 2, 1, 1], &m))) / (2.0 * eps);
+    }
+    assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "Conv2D VJP grad_lhs (SAME)");
+    assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "Conv2D VJP grad_rhs (SAME)");
+}
+
 // ======================== TriangularSolve VJP ========================
 
 #[test]
