@@ -1,0 +1,25 @@
+frankenjax fj-lax pass172 frankenjax-ea94k rejected
+target: linalg/cholesky_1024x1024_f64, cholesky_schur_update_lower_rows lower-SYRK update
+route profile: post-pass171 RCH linalg profile on vmi1264463:
+  matmul2048 [951.84 ms, 1.1738 s, 1.4279 s]
+  cholesky1024 [555.98, 728.80, 921.47] ms
+  lu1024 [431.45, 549.35, 675.51] ms
+  matmul1024 [157.84, 193.82, 230.26] ms
+  pinv256 [114.10, 139.36, 168.48] ms
+route decision: GEMM remained top but exact-order GEMM micro/layout families were in a rejection streak; selected top structural non-GEMM Cholesky row.
+lever tested: safe-Rust std::simd 4-lane/register-blocked q-side lower-SYRK dot update, preserving c=0..jb order per lower-triangle entry and scalar tail.
+baseline: RCH Criterion on vmi1264463, linalg/cholesky_1024x1024_f64 [197.47, 257.33, 328.71] ms
+candidate: RCH Criterion on vmi1264463, linalg/cholesky_1024x1024_f64 [329.20, 444.44, 550.60] ms
+speedup: median 0.5790x, conservative low/high 0.3586x
+score: 0.0, rejected
+proof before rejection:
+  RCH cargo test -p fj-lax --lib cholesky -- --nocapture: 14 passed, 0 failed on vmi1149989
+  included cholesky_lower_syrk_simd_matches_scalar_reference_bits, proving bit-exact parity of the candidate hunk before perf rejection
+restore proof:
+  source hunk manually restored with apply_patch
+  git diff -- crates/fj-lax/src/linalg.rs: empty
+  git diff --check: passed
+isomorphism notes:
+  candidate preserved p row order, q output order, c=0..jb accumulation order per lower-triangle entry, lower-only update surface, dtype/shape/error behavior, NaN/signed-zero propagation, and RNG absence.
+decision: reject because same-worker candidate regressed materially.
+next primitive: stop q-lane SYRK vectorization; attack lower-packed Cholesky workspace / recursive lower-triangle storage to reduce full-matrix bandwidth and cache footprint while preserving public row-major L materialization.

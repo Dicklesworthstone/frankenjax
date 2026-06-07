@@ -1,0 +1,143 @@
+{
+  "schema": "frankenjax.performance.evidence.v1",
+  "artifact": "fj_lax_cholesky_syrk_ea94k_pass172_2026-06-07.rejected",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-ea94k",
+  "pass": 172,
+  "date": "2026-06-07",
+  "status": "rejected",
+  "safe_rust": true,
+  "external_blas": false,
+  "source_restored": true,
+  "target": {
+    "benchmark": "linalg/cholesky_1024x1024_f64",
+    "function": "cholesky_schur_update_lower_rows",
+    "file": "crates/fj-lax/src/linalg.rs"
+  },
+  "profile_route": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-pass171-postprofile cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(matmul_2d_2048x2048x2048_f64|lu_1024x1024_f64|cholesky_1024x1024_f64|matmul_2d_1024x1024x1024_f64|pinv_256x128_f64|qr_1024x1024_f64|eig_48x48_f64)' --warm-up-time 1 --measurement-time 3 --sample-size 10",
+    "worker": "vmi1264463",
+    "rows": [
+      {
+        "benchmark": "linalg/matmul_2d_2048x2048x2048_f64",
+        "unit": "ms",
+        "low": 951.84,
+        "median": 1173.8,
+        "high": 1427.9
+      },
+      {
+        "benchmark": "linalg/cholesky_1024x1024_f64",
+        "unit": "ms",
+        "low": 555.98,
+        "median": 728.80,
+        "high": 921.47
+      },
+      {
+        "benchmark": "linalg/lu_1024x1024_f64",
+        "unit": "ms",
+        "low": 431.45,
+        "median": 549.35,
+        "high": 675.51
+      },
+      {
+        "benchmark": "linalg/matmul_2d_1024x1024x1024_f64",
+        "unit": "ms",
+        "low": 157.84,
+        "median": 193.82,
+        "high": 230.26
+      },
+      {
+        "benchmark": "linalg/pinv_256x128_f64",
+        "unit": "ms",
+        "low": 114.10,
+        "median": 139.36,
+        "high": 168.48
+      },
+      {
+        "benchmark": "linalg/qr_1024x1024_f64",
+        "unit": "ms",
+        "low": 118.50,
+        "median": 214.40,
+        "high": 394.04
+      },
+      {
+        "benchmark": "linalg/eig_48x48_f64",
+        "unit": "ms",
+        "low": 70.360,
+        "median": 84.387,
+        "high": 102.89
+      }
+    ],
+    "justification": "GEMM2048 remained top but exact-order GEMM micro/layout families were in a rejection streak; selected the top structural non-GEMM Cholesky row."
+  },
+  "lever": {
+    "summary": "Tested a 4-lane safe-Rust std::simd/register-blocked q-side lower-SYRK dot update for cholesky_schur_update_lower_rows.",
+    "one_lever": true,
+    "changed_files": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "decision": "rejected after same-worker regression; source restored"
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1264463 RCH_WORKERS=vmi1264463 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RCH_WORKER,RCH_WORKERS rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-ea94k-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/cholesky_1024x1024_f64 --warm-up-time 1 --measurement-time 3 --sample-size 10",
+      "worker": "vmi1264463",
+      "benchmark": "linalg/cholesky_1024x1024_f64",
+      "unit": "ms",
+      "low": 197.47,
+      "median": 257.33,
+      "high": 328.71
+    },
+    "candidate": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1264463 RCH_WORKERS=vmi1264463 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RCH_WORKER,RCH_WORKERS rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-ea94k-candidate cargo bench -p fj-lax --bench lax_baseline -- linalg/cholesky_1024x1024_f64 --warm-up-time 1 --measurement-time 3 --sample-size 10",
+      "worker": "vmi1264463",
+      "benchmark": "linalg/cholesky_1024x1024_f64",
+      "unit": "ms",
+      "low": 329.20,
+      "median": 444.44,
+      "high": 550.60
+    },
+    "speedup": {
+      "median": 0.5790,
+      "conservative_low_over_high": 0.3586
+    },
+    "score": {
+      "impact": 0,
+      "confidence": 4,
+      "effort": 2,
+      "value": 0.0,
+      "gate": ">=2.0"
+    }
+  },
+  "isomorphism_proof_before_rejection": {
+    "ordering": "Candidate preserved p row order, q output order, and c=0..jb accumulation order per lower-triangle entry.",
+    "floating_point": "Each lane accumulated dot += p_row[c] * q_row[c] in ascending c order; no reassociation across c was introduced.",
+    "surface": "Lower-only update surface, dtype, shape, error behavior, NaN/signed-zero propagation, and RNG absence were unchanged.",
+    "proof_test": "cholesky_lower_syrk_simd_matches_scalar_reference_bits"
+  },
+  "validation": [
+    {
+      "name": "focused Cholesky proof before rejection",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-ea94k-proof cargo test -p fj-lax --lib cholesky -- --nocapture",
+      "worker": "vmi1149989",
+      "result": "passed: 14 passed, 0 failed, 1165 filtered out"
+    },
+    {
+      "name": "source restore diff",
+      "command": "git diff -- crates/fj-lax/src/linalg.rs",
+      "result": "empty"
+    },
+    {
+      "name": "diff whitespace",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_cholesky_syrk_ea94k_pass172_2026-06-07.rejected.golden",
+    "sha256": "a127311e260ca83b139c99db61a3d17ad1a1ce81e0ab563625a3e85512ffc3a7",
+    "checksum_path": "artifacts/performance/evidence/fj_lax_cholesky_syrk_ea94k_pass172_2026-06-07.rejected.golden.sha256"
+  },
+  "next_primitive": "Stop q-lane SYRK vectorization. Attack lower-packed Cholesky workspace / recursive lower-triangle storage to reduce full-matrix bandwidth and cache footprint while preserving public row-major L materialization."
+}
