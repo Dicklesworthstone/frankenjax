@@ -1408,6 +1408,9 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
             w[col * m + row] = a[row * n + col];
         }
     }
+    // Store V column-major for the same reason as W: every Jacobi rotation
+    // streams two V columns p/q. The public sorted V returned below is still
+    // materialized row-major.
     let mut v = vec![0.0_f64; n * n];
     for i in 0..n {
         v[i * n + i] = 1.0;
@@ -1454,10 +1457,10 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
                 }
                 // Accumulate the same rotation into V.
                 for i in 0..n {
-                    let vip = v[i * n + p];
-                    let viq = v[i * n + q];
-                    v[i * n + p] = c * vip - s * viq;
-                    v[i * n + q] = s * vip + c * viq;
+                    let vip = v[p * n + i];
+                    let viq = v[q * n + i];
+                    v[p * n + i] = c * vip - s * viq;
+                    v[q * n + i] = s * vip + c * viq;
                 }
             }
         }
@@ -1484,7 +1487,7 @@ fn one_sided_jacobi_svd_real(m: usize, n: usize, a: &[f64]) -> (Vec<f64>, Vec<f6
     let mut u = vec![0.0_f64; m * k];
     for (new_col, &old_col) in indices.iter().enumerate() {
         for row in 0..n {
-            v_sorted[row * n + new_col] = v[row * n + old_col];
+            v_sorted[row * n + new_col] = v[old_col * n + row];
         }
         if new_col < k {
             let sg = col_norm[old_col];
@@ -5172,6 +5175,141 @@ mod tests {
                     "V dot[{left},{right}] = {v_dot}, expected {expected}"
                 );
             }
+        }
+    }
+
+    fn one_sided_jacobi_svd_real_rowmajor_v_reference(
+        m: usize,
+        n: usize,
+        a: &[f64],
+    ) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let k = m.min(n);
+        let mut w = vec![0.0_f64; m * n];
+        for row in 0..m {
+            for col in 0..n {
+                w[col * m + row] = a[row * n + col];
+            }
+        }
+        let mut v = vec![0.0_f64; n * n];
+        for i in 0..n {
+            v[i * n + i] = 1.0;
+        }
+
+        let eps = f64::EPSILON;
+        let max_sweeps = 60;
+        for _ in 0..max_sweeps {
+            let mut converged = true;
+            for p in 0..n.saturating_sub(1) {
+                for q in (p + 1)..n {
+                    let mut alpha = 0.0_f64;
+                    let mut beta = 0.0_f64;
+                    let mut gamma = 0.0_f64;
+                    for i in 0..m {
+                        let wip = w[p * m + i];
+                        let wiq = w[q * m + i];
+                        alpha += wip * wip;
+                        beta += wiq * wiq;
+                        gamma += wip * wiq;
+                    }
+                    if gamma.abs() <= eps * (alpha * beta).sqrt() {
+                        continue;
+                    }
+                    converged = false;
+                    let tau = (beta - alpha) / (2.0 * gamma);
+                    let t = if tau >= 0.0 {
+                        1.0 / (tau + (1.0 + tau * tau).sqrt())
+                    } else {
+                        -1.0 / (-tau + (1.0 + tau * tau).sqrt())
+                    };
+                    let c = 1.0 / (1.0 + t * t).sqrt();
+                    let s = t * c;
+                    for i in 0..m {
+                        let wip = w[p * m + i];
+                        let wiq = w[q * m + i];
+                        w[p * m + i] = c * wip - s * wiq;
+                        w[q * m + i] = s * wip + c * wiq;
+                    }
+                    for i in 0..n {
+                        let vip = v[i * n + p];
+                        let viq = v[i * n + q];
+                        v[i * n + p] = c * vip - s * viq;
+                        v[i * n + q] = s * vip + c * viq;
+                    }
+                }
+            }
+            if converged {
+                break;
+            }
+        }
+
+        let mut col_norm = vec![0.0_f64; n];
+        for j in 0..n {
+            let mut s2 = 0.0_f64;
+            for i in 0..m {
+                let wij = w[j * m + i];
+                s2 += wij * wij;
+            }
+            col_norm[j] = s2.sqrt();
+        }
+        let mut indices: Vec<usize> = (0..n).collect();
+        indices.sort_by(|&a, &b| col_norm[b].total_cmp(&col_norm[a]));
+
+        let mut sigma = vec![0.0_f64; k];
+        let mut v_sorted = vec![0.0_f64; n * n];
+        let mut u = vec![0.0_f64; m * k];
+        for (new_col, &old_col) in indices.iter().enumerate() {
+            for row in 0..n {
+                v_sorted[row * n + new_col] = v[row * n + old_col];
+            }
+            if new_col < k {
+                let sg = col_norm[old_col];
+                sigma[new_col] = sg;
+                if sg > f64::EPSILON * 1e4 {
+                    for row in 0..m {
+                        u[row * k + new_col] = w[old_col * m + row] / sg;
+                    }
+                }
+            }
+        }
+
+        (sigma, u, v_sorted)
+    }
+
+    #[test]
+    fn one_sided_jacobi_svd_real_column_major_v_matches_row_major_bits() {
+        let (m, n) = (11usize, 7usize);
+        let data: Vec<f64> = (0..m * n)
+            .map(|idx| {
+                let row = idx / n;
+                let col = idx % n;
+                let base = ((row * 23 + col * 29) % 17) as f64 - 8.0;
+                base * 0.025 + (row as f64 * 0.003) - (col as f64 * 0.007)
+            })
+            .collect();
+
+        let (old_sigma, old_u, old_v) = one_sided_jacobi_svd_real_rowmajor_v_reference(m, n, &data);
+        let (new_sigma, new_u, new_v) = one_sided_jacobi_svd_real(m, n, &data);
+
+        for (idx, (&old, &new)) in old_sigma.iter().zip(&new_sigma).enumerate() {
+            assert_eq!(
+                old.to_bits(),
+                new.to_bits(),
+                "sigma bit drift at {idx}: old={old:?} new={new:?}"
+            );
+        }
+        for (idx, (&old, &new)) in old_u.iter().zip(&new_u).enumerate() {
+            assert_eq!(
+                old.to_bits(),
+                new.to_bits(),
+                "U bit drift at {idx}: old={old:?} new={new:?}"
+            );
+        }
+        for (idx, (&old, &new)) in old_v.iter().zip(&new_v).enumerate() {
+            assert_eq!(
+                old.to_bits(),
+                new.to_bits(),
+                "V bit drift at {idx}: old={old:?} new={new:?}"
+            );
         }
     }
 

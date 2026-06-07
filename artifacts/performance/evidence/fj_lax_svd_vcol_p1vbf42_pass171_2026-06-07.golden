@@ -1,0 +1,30 @@
+frankenjax fj-lax pass171 frankenjax-p1vbf.42
+target: linalg/pinv_256x128_f64, private one_sided_jacobi_svd_real V rotation workspace
+route profile: restored-source RCH linalg profile on vmi1264463 after frankenjax-7c19n rejection:
+  matmul2048 [1.6109, 2.0813, 2.6471] s
+  lu1024 [375.40, 503.01, 634.53] ms
+  cholesky1024 [327.12, 424.47, 524.13] ms
+  matmul1024 [201.36, 252.30, 310.27] ms
+  pinv256 [123.80, 168.70, 232.02] ms
+route decision: GEMM remained top, but bit-exact GEMM layout/schedule families were in a rejection streak; selected top non-repeat SVD/pinv private-layout target.
+lever: store the private Jacobi V workspace column-major, stream V columns p/q contiguously, then materialize the public sorted V row-major at the function boundary.
+baseline: RCH Criterion on vmi1156319, linalg/pinv_256x128_f64 [103.55, 109.40, 114.51] ms
+candidate: RCH Criterion on vmi1156319, linalg/pinv_256x128_f64 [88.632, 91.554, 95.843] ms
+speedup: median 1.1949x, conservative low/high 1.0804x
+score: Impact 3 * Confidence 4 / Effort 2 = 6.0, kept
+behavior proof:
+  Jacobi sweep count, pair order, and p/q rotation order unchanged.
+  W column updates and V rotation scalar equations unchanged; only private V address mapping changed.
+  Singular value norms, total_cmp descending sort, tie behavior, and cutoff logic unchanged.
+  Public sigma, U, and V layouts remain row-major at the API boundary.
+  Floating-point expression order per V element is unchanged: c*vip - s*viq and s*vip + c*viq.
+  DType, shape, error behavior, NaN/signed-zero propagation, and RNG absence unchanged.
+proof commands:
+  RCH cargo test -p fj-lax --lib one_sided_jacobi -- --nocapture: 2 passed, 0 failed on yto
+  RCH cargo test -p fj-lax --lib pinv -- --nocapture: 8 passed, 0 failed on yto
+  RCH cargo check -p fj-lax --all-targets: passed on vmi1167313
+  RCH cargo clippy -p fj-lax --all-targets -- -D warnings: passed on vmi1149989
+  git diff --check: passed
+  rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs: remaining diffs are pre-existing unrelated linalg.rs formatting regions, not the new SVD hunk
+  ubs crates/fj-lax/src/linalg.rs: ran; known broad inventory remains, no unsafe blocks, fmt/clippy/check/test-build clean
+next profile note: reprofile after landing; if GEMM exact-order remains blocked by rejection streak, attack the next profile-backed structural primitive instead of another B-pack/KC micro-retune.
