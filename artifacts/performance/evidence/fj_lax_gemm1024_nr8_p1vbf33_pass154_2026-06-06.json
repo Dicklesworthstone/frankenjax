@@ -1,0 +1,75 @@
+{
+  "bead": "frankenjax-p1vbf.33",
+  "artifact": "fj_lax_gemm1024_nr8_p1vbf33_pass154_2026-06-06",
+  "worker": "ts1",
+  "commit_base": "0becc06c542af1086954aece43b298ba254ab31e",
+  "landed_parent": "17892a56e2f26962947fbdae7f66fc2b43674825",
+  "rebase_note": "After measurement, this commit rebased cleanly over arithmetic-only fj-lax perf commits 0cec991f, 3d49a8cb, and 17892a56; none touched tensor_contraction.rs or the GEMM benchmark target.",
+  "profile_backing": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-post-zoxtq-reprofile-0becc cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_1024x1024x1024_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "target": "linalg/matmul_2d_1024x1024x1024_f64",
+    "profile_ms": [61.885, 69.799, 78.049],
+    "routing_note": "The broad 10-sample linalg profile ranked GEMM1024 first. The target-specific 80-sample baseline was lower but still valid as the before-run for the claimed profile-backed GEMM lever."
+  },
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf33-gemm1024-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 80 --measurement-time 5 --warm-up-time 1 --noplot",
+    "ms": [20.988, 21.456, 21.948],
+    "outliers": "1 high severe among 80 measurements"
+  },
+  "lever": {
+    "file": "crates/fj-lax/src/tensor_contraction.rs",
+    "summary": "Widen the packed-B register microkernel from MRx4 to MRx8 output columns, halving column-panel count for full-panel GEMM while keeping each output element's k-loop unchanged.",
+    "changes": [
+      "NR changed from 4 to 8",
+      "Simd alias widened from F64x4 to F64xN",
+      "packed panel layout test fixture adjusted from n=12 to n=24",
+      "golden output digest test added for packed NR-wide GEMM"
+    ]
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf33-gemm1024-nr8-after cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_1024x1024x1024_f64 --sample-size 80 --measurement-time 5 --warm-up-time 1 --noplot",
+    "ms": [19.217, 19.502, 19.809],
+    "outliers": "2 high mild among 80 measurements"
+  },
+  "speedup": {
+    "median": 1.1001948518100708,
+    "conservative_low_over_high": 1.0595184007269423
+  },
+  "score": {
+    "impact": 3.0,
+    "confidence": 4.0,
+    "effort": 2.0,
+    "score": 6.0,
+    "threshold": 2.0,
+    "decision": "keep"
+  },
+  "isomorphism": {
+    "ordering": "Every output element is still produced by one row-block worker and accumulates l=0..k in ascending order. Widening NR only computes more independent columns per vector; it does not reassociate a single cell's sum.",
+    "tie_breaking": "No comparisons or tie-breaking in matmul_2d.",
+    "floating_point": "No new mixed precision, reductions, or FMA-dependent regrouping. Existing and new matmul_2d bit tests assert to_bits equality with the textbook i-j-k reference, including special values.",
+    "rng": "No random state is read or written.",
+    "errors": "Public slice/indexing/error behavior is unchanged; input dimensions and zero-size behavior are untouched."
+  },
+  "proof": {
+    "tests": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf33-nr8-tests-final cargo test -p fj-lax matmul_2d -- --nocapture",
+      "result": "passed: 9 tests, 1 ignored timing test, 1157 filtered out",
+      "coverage": [
+        "basic matmul",
+        "textbook i-j-k bit identity",
+        "special-value bit identity",
+        "threaded bit identity",
+        "large bit identity",
+        "packed bit identity",
+        "blocked bit identity",
+        "packed NR8 golden output digest"
+      ]
+    },
+    "golden_output_sha256": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+    "golden_artifact_sha256": "dd19b65495369b57b72db34627d276e8396344a8cf3b93801e8904aea2acd05c",
+    "check": "RCH ts1 cargo check -p fj-lax --all-targets passed",
+    "clippy": "RCH ts1 cargo clippy -p fj-lax --all-targets -- -D warnings passed after the final test addition",
+    "format": "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs passed; crate-wide cargo fmt --check remains blocked by pre-existing formatting drift in arithmetic.rs, linalg.rs, lib.rs, and tensor_ops.rs outside this lever"
+  },
+  "next_profile_hint": "Reprofile after landing; the precise GEMM1024 baseline is now about 19.5 ms, so Cholesky/LU may again outrank GEMM unless the broader linalg profile says otherwise."
+}

@@ -165,8 +165,8 @@ fn index_to_contracted_coords(idx: usize, axes: &[usize], shape: &[usize]) -> Ve
 /// Register-tile dimensions for the GEMM microkernel: `MR` output rows × `NR`
 /// output columns are accumulated together, streamed over `k`.
 const MR: usize = 4;
-const NR: usize = 4;
-type F64x4 = std::simd::Simd<f64, NR>;
+const NR: usize = 8;
+type F64xN = std::simd::Simd<f64, NR>;
 
 /// k-dimension block for the cache-blocked macro-kernel. At KC=256 an [MR×KC] A
 /// tile and a [KC×NR] B panel are ~8 KB each — both stay L1-resident across a
@@ -416,21 +416,23 @@ fn matmul_2d_row_block(
             let ar1 = ar0 + k;
             let ar2 = ar1 + k;
             let ar3 = ar2 + k;
-            let mut c0 = F64x4::splat(0.0);
-            let mut c1 = F64x4::splat(0.0);
-            let mut c2 = F64x4::splat(0.0);
-            let mut c3 = F64x4::splat(0.0);
+            let mut c0 = F64xN::splat(0.0);
+            let mut c1 = F64xN::splat(0.0);
+            let mut c2 = F64xN::splat(0.0);
+            let mut c3 = F64xN::splat(0.0);
             for l in 0..k {
                 let brow = &bsrc[l * rstride..l * rstride + NR];
-                let bv = F64x4::from_array([brow[0], brow[1], brow[2], brow[3]]);
+                let bv = F64xN::from_array([
+                    brow[0], brow[1], brow[2], brow[3], brow[4], brow[5], brow[6], brow[7],
+                ]);
                 let a0 = a[ar0 + l];
                 let a1 = a[ar1 + l];
                 let a2 = a[ar2 + l];
                 let a3 = a[ar3 + l];
-                c0 += F64x4::splat(a0) * bv;
-                c1 += F64x4::splat(a1) * bv;
-                c2 += F64x4::splat(a2) * bv;
-                c3 += F64x4::splat(a3) * bv;
+                c0 += F64xN::splat(a0) * bv;
+                c1 += F64xN::splat(a1) * bv;
+                c2 += F64xN::splat(a2) * bv;
+                c3 += F64xN::splat(a3) * bv;
             }
             block[i * n + j..i * n + j + NR].copy_from_slice(c0.as_array());
             block[(i + 1) * n + j..(i + 1) * n + j + NR].copy_from_slice(c1.as_array());
@@ -797,8 +799,8 @@ mod tests {
     fn matmul_2d_special_values_bit_identical_to_ijk() {
         // Diagnostic for the conv dense-vs-literal regression: matmul_2d must equal
         // the textbook ascending-l accumulation bit-for-bit even with -0.0/±Inf/NaN
-        // present (the conv tests inject these). m=8,k=12,n=8 exercises the full
-        // MR×NR SIMD panel (n%4==0, no remainder, k<KC unblocked).
+        // present (the conv tests inject these). m=8,k=12,n=8 exercises one full
+        // MR×NR SIMD panel with no column remainder and k<KC unblocked.
         let (m, k, n) = (8usize, 12usize, 8usize);
         let special = |i: usize| -> f64 {
             match i % 11 {
@@ -972,8 +974,8 @@ mod tests {
     fn matmul_2d_packed_bit_identical_to_ijk() {
         // Dims chosen so k·n = 500·290 = 145000 ≥ PACK_B_MIN_KN (131072): this
         // exercises the B-panel-packed microkernel path. m=70 and n=290 are NOT
-        // multiples of MR/NR (4), so the MR-row-tile, NR-column-panel, the column
-        // remainder (290 % 4 = 2), and the row remainder (70 % 4 = 2) are all hit.
+        // multiples of MR/NR, so the MR-row-tile, NR-column-panel, column
+        // remainder, and row remainder paths are all hit.
         // Packing only reorders where B is read from, never the ascending-l sum,
         // so the result must equal the textbook i-j-k accumulation bit-for-bit.
         let (m, k, n) = (70usize, 500usize, 290usize);
@@ -1056,7 +1058,7 @@ mod tests {
         // read-accumulate-store carry is exercised across multiple blocks. Force
         // four row-slice threads and B packing so this proof covers the blocked
         // kernel directly even when production gating routes smaller matrices to
-        // the flat packed path. m,n are non-multiples of MR/NR (4), so the border
+        // the flat packed path. m,n are non-multiples of MR/NR, so the border
         // sweep is hit too. Must equal textbook i-j-k bit-for-bit.
         let (m, k, n) = (301usize, 700usize, 262usize);
         assert!(k > super::KC && k * n >= super::PACK_B_MIN_KN);
@@ -1098,7 +1100,7 @@ mod tests {
     #[test]
     fn pack_b_panels_layout_matches_source() {
         // Panel-major pack: bpack[jp*k*NR + l*NR + jj] == b[l*n + jp*NR + jj].
-        let (k, n) = (5usize, 12usize); // 12 % NR == 0, three full panels
+        let (k, n) = (5usize, 24usize); // 24 % NR == 0, three full panels
         let b: Vec<f64> = (0..k * n).map(|i| i as f64).collect();
         let bpack = pack_b_panels(&b, k, n);
         for jp in 0..n / NR {
@@ -1112,6 +1114,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn matmul_2d_packed_nr8_golden_output_digest() -> Result<(), Box<dyn std::error::Error>> {
+        let (m, k, n) = (12usize, 512usize, 320usize);
+        assert!(k * n >= PACK_B_MIN_KN, "test must trip packed-B path");
+        assert_eq!(n % NR, 0, "test must cover full NR-wide panels");
+        let a: Vec<f64> = (0..m * k)
+            .map(|i| (i as f64 * 0.006_31).sin() * 1.7 - 0.2)
+            .collect();
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| (i as f64 * 0.004_73).cos() * 2.1 + 0.4)
+            .collect();
+
+        let got = matmul_2d(&a, m, k, &b, n);
+        let output_bits: Vec<u64> = got.iter().map(|value| value.to_bits()).collect();
+        let digest = fj_test_utils::fixture_id_from_json(&output_bits)?;
+        assert_eq!(
+            digest, "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+            "packed NR-wide matmul output digest changed"
+        );
+        Ok(())
     }
 
     #[test]

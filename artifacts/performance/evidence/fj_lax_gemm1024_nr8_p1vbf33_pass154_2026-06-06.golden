@@ -1,0 +1,10 @@
+frankenjax-p1vbf.33 pass154 GEMM NR8 golden
+worker=ts1
+target=linalg/matmul_2d_1024x1024x1024_f64
+baseline_ms=[20.988,21.456,21.948]
+after_ms=[19.217,19.502,19.809]
+median_speedup=1.1001948518100708
+conservative_speedup=1.0595184007269423
+golden_output_sha256=e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a
+proof_tests=RCH ts1 cargo test -p fj-lax matmul_2d -- --nocapture passed 9/9, 1 ignored
+proof_gates=RCH ts1 cargo check -p fj-lax --all-targets passed; RCH ts1 cargo clippy -p fj-lax --all-targets -- -D warnings passed; rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs passed
