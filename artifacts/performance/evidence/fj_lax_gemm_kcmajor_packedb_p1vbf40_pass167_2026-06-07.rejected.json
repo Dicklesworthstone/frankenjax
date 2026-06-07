@@ -1,0 +1,60 @@
+{
+  "schema": "frankenjax.performance.rejection.v1",
+  "bead_id": "frankenjax-p1vbf.40",
+  "pass": 167,
+  "created_utc": "2026-06-07T18:49:00Z",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "profile_basis": {
+    "bead_profile_worker": "vmi1293453",
+    "bead_profile_gemm2048_ms": [483.42, 536.8, 582.49],
+    "focused_baseline_worker": "ts1",
+    "focused_baseline_ms": [114.33, 116.07, 117.7]
+  },
+  "lever": {
+    "name": "KC-major packed-B layout for blocked GEMM",
+    "changed_paths": ["crates/fj-lax/src/tensor_contraction.rs"],
+    "description": "pack B for the blocked path as [pc-block][NR-panel][kc-row][NR-lane] so each pc sweep streams contiguous B panel chunks",
+    "rejected_family": "blocked GEMM B-pack layout retuning"
+  },
+  "isomorphism": {
+    "row_ownership": "unchanged",
+    "output_layout": "row-major unchanged",
+    "contracted_index_order": "per-output ascending-k unchanged",
+    "floating_point_reassociation": "none",
+    "nan_signed_zero_surface": "to_bits contract preserved in focused tests",
+    "tie_breaking": "no tie-breaking surface",
+    "rng": "no RNG surface",
+    "errors": "dtype/shape/error behavior unchanged"
+  },
+  "proof": {
+    "command": "rch exec -- cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "worker": "ts1",
+    "result": "9 passed, 1 ignored",
+    "coverage": [
+      "basic matmul",
+      "ascending-k bit identity",
+      "special values bit identity",
+      "threaded bit identity",
+      "packed bit identity",
+      "large bit identity",
+      "blocked bit identity",
+      "packed NR8 golden digest"
+    ]
+  },
+  "benchmark": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --warm-up-time 1 --measurement-time 3 --sample-size 10",
+    "worker": "ts1",
+    "baseline_ms": [114.33, 116.07, 117.7],
+    "candidate_ms": [131.21, 137.82, 146.3],
+    "median_speedup": 0.8422,
+    "conservative_speedup": 0.7815,
+    "score": 0.0
+  },
+  "decision": {
+    "kept": false,
+    "reason": "same-worker benchmark regressed; Score < 2.0",
+    "source_restored": true,
+    "source_diff_after_restore": "git diff -- crates/fj-lax/src/tensor_contraction.rs is empty"
+  },
+  "next_route": "Reprofile restored source and pivot to a different primitive; if GEMM still dominates, change algorithmic contract/structure rather than repacking the same blocked B stream again."
+}
