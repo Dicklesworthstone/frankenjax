@@ -1,0 +1,13 @@
+fj_lax_cholesky_lower_schur_zu5kh_pass160_2026-06-07
+project=frankenjax
+crate=fj-lax
+bead=frankenjax-zu5kh
+target=linalg/cholesky_1024x1024_f64
+lever=lower-triangle-only symmetric Schur update for blocked Cholesky
+golden_digest_test=cholesky_lower_schur_update_matches_full_gemm_on_consumed_triangle + cholesky_blocked_matches_scalar_and_reconstructs
+baseline_ts1_ms=106.28..117.61..130.30
+after_ts1_ms=89.706..92.497..95.659
+median_speedup=1.2715
+conservative_speedup=1.1103
+score=8.0
+isomorphism=diagonal block factorization, panel solve order, consumed lower-triangle Schur entries, ascending panel-column dot order, dtype/shape/error behavior, NaN surface, strict-upper zeroing, and RNG absence preserved; only unused upper-triangle Schur entries are skipped.

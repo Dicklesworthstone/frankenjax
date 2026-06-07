@@ -328,6 +328,80 @@ fn cholesky_real_scalar(m: usize, a: &[f64]) -> Vec<f64> {
     l
 }
 
+/// Minimum scalar products before the Cholesky lower-triangle Schur update pays
+/// for scoped-thread fan-out.
+const CHOLESKY_SCHUR_PARALLEL_MIN_OPS: usize = 1 << 20;
+/// Keep enough rows per worker that thread spawn overhead stays amortized.
+const CHOLESKY_SCHUR_MIN_ROWS_PER_THREAD: usize = 32;
+
+/// Apply the Cholesky trailing update `A22 -= L21 * L21^T` only to the lower
+/// triangle. Later panels read only those lower-triangle entries, and the strict
+/// upper triangle is zeroed before returning.
+fn cholesky_schur_update_lower(
+    a: &mut [f64],
+    n: usize,
+    base: usize,
+    l21: &[f64],
+    rem: usize,
+    jb: usize,
+) {
+    let products = rem.saturating_mul(rem + 1) / 2;
+    let ops = products.saturating_mul(jb);
+    let max_threads = rem.div_ceil(CHOLESKY_SCHUR_MIN_ROWS_PER_THREAD);
+    let available = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let threads = if ops >= CHOLESKY_SCHUR_PARALLEL_MIN_OPS {
+        available.min(max_threads).max(1)
+    } else {
+        1
+    };
+
+    if threads <= 1 {
+        cholesky_schur_update_lower_rows(&mut a[base * n..], n, base, l21, jb, 0, rem);
+        return;
+    }
+
+    let rows_per = rem.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest = &mut a[base * n..];
+        let mut p_start = 0usize;
+        while p_start < rem {
+            let chunk_rows = rows_per.min(rem - p_start);
+            let (chunk, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            scope.spawn(move || {
+                cholesky_schur_update_lower_rows(chunk, n, base, l21, jb, p_start, chunk_rows);
+            });
+            p_start += chunk_rows;
+        }
+    });
+}
+
+fn cholesky_schur_update_lower_rows(
+    rows: &mut [f64],
+    n: usize,
+    base: usize,
+    l21: &[f64],
+    jb: usize,
+    p_start: usize,
+    row_count: usize,
+) {
+    for local_p in 0..row_count {
+        let p = p_start + local_p;
+        let p_row = &l21[p * jb..p * jb + jb];
+        let a_row = &mut rows[local_p * n..local_p * n + n];
+        for q in 0..=p {
+            let q_row = &l21[q * jb..q * jb + jb];
+            let mut dot = 0.0_f64;
+            for c in 0..jb {
+                dot += p_row[c] * q_row[c];
+            }
+            a_row[base + q] -= dot;
+        }
+    }
+}
+
 /// Block size for the right-looking Cholesky panel.
 const CHOLESKY_BLOCK_SIZE: usize = 128;
 /// Matrices at least this large use the blocked Cholesky; below it the scalar
@@ -382,22 +456,13 @@ fn cholesky_real_blocked(n: usize, a_in: &[f64]) -> Vec<f64> {
 
             // (c) Trailing symmetric update A22 -= L21 · L21ᵀ via blocked GEMM.
             let mut l21 = vec![0.0_f64; rem * jb];
-            let mut l21t = vec![0.0_f64; jb * rem];
             for p in 0..rem {
                 for c in 0..jb {
                     let v = a[(j + jb + p) * n + (j + c)];
                     l21[p * jb + c] = v;
-                    l21t[c * rem + p] = v;
                 }
             }
-            let prod = matmul_2d(&l21, rem, jb, &l21t, rem);
-            for p in 0..rem {
-                let row = (j + jb + p) * n + (j + jb);
-                let pr = p * rem;
-                for q in 0..rem {
-                    a[row + q] -= prod[pr + q];
-                }
-            }
+            cholesky_schur_update_lower(&mut a, n, j + jb, &l21, rem, jb);
         }
 
         j += jb;
@@ -4985,6 +5050,58 @@ mod tests {
                     (acc - a[i * n + j]).abs() <= 1e-9 * scale,
                     "reconstruction[{i}][{j}] {acc} vs {}",
                     a[i * n + j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cholesky_lower_schur_update_matches_full_gemm_on_consumed_triangle() {
+        let rem = 9usize;
+        let jb = 7usize;
+        let n = 13usize;
+        let base = 4usize;
+        let mut a_full: Vec<f64> = (0..n * n)
+            .map(|idx| ((idx % 19) as f64 - 9.0) * 0.125)
+            .collect();
+        let mut a_lower = a_full.clone();
+        let l21: Vec<f64> = (0..rem * jb)
+            .map(|idx| ((idx % 11) as f64 - 5.0) * 0.25)
+            .collect();
+        let mut l21t = vec![0.0_f64; jb * rem];
+        for p in 0..rem {
+            for c in 0..jb {
+                l21t[c * rem + p] = l21[p * jb + c];
+            }
+        }
+
+        let prod = matmul_2d(&l21, rem, jb, &l21t, rem);
+        for p in 0..rem {
+            let row = (base + p) * n + base;
+            let pr = p * rem;
+            for q in 0..rem {
+                a_full[row + q] -= prod[pr + q];
+            }
+        }
+        cholesky_schur_update_lower(&mut a_lower, n, base, &l21, rem, jb);
+
+        for p in 0..rem {
+            for q in 0..=p {
+                let idx = (base + p) * n + base + q;
+                assert_eq!(
+                    a_lower[idx].to_bits(),
+                    a_full[idx].to_bits(),
+                    "lower Schur entry [{p},{q}] diverged"
+                );
+            }
+        }
+        for p in 0..rem {
+            for q in (p + 1)..rem {
+                let idx = (base + p) * n + base + q;
+                assert_eq!(
+                    a_lower[idx].to_bits(),
+                    (((idx % 19) as f64 - 9.0) * 0.125).to_bits(),
+                    "upper Schur entry [{p},{q}] should be untouched"
                 );
             }
         }

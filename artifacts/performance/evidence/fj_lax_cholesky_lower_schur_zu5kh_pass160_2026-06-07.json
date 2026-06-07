@@ -1,0 +1,110 @@
+{
+  "artifact": "fj_lax_cholesky_lower_schur_zu5kh_pass160_2026-06-07",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-zu5kh",
+  "pass": 160,
+  "date": "2026-06-07",
+  "status": "kept",
+  "profile_backed_target": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-profile-pass160 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_256x128_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_2048x2048x2048_f64)' --sample-size 10 --warm-up-time 1 --measurement-time 5",
+    "worker": "ts1",
+    "top_rows_ms": [
+      {
+        "bench": "linalg/cholesky_1024x1024_f64",
+        "low": 119.25,
+        "median": 121.50,
+        "high": 126.40
+      },
+      {
+        "bench": "linalg/pinv_256x128_f64",
+        "low": 110.58,
+        "median": 113.26,
+        "high": 119.61
+      },
+      {
+        "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+        "low": 104.69,
+        "median": 106.73,
+        "high": 110.28
+      }
+    ]
+  },
+  "lever": {
+    "summary": "Blocked Cholesky now applies A22 -= L21 * L21^T only to lower-triangle entries consumed by later panels.",
+    "files": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "single_change": true,
+    "alien_primitive": "symmetric rank-k / lower-triangle-only Schur update",
+    "safe_rust": true
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-zu5kh-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/cholesky_1024x1024_f64' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+      "worker": "ts1",
+      "low_ms": 106.28,
+      "median_ms": 117.61,
+      "high_ms": 130.30
+    },
+    "after": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-zu5kh-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/cholesky_1024x1024_f64' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+      "worker": "ts1",
+      "low_ms": 89.706,
+      "median_ms": 92.497,
+      "high_ms": 95.659
+    },
+    "median_speedup": 1.2715,
+    "conservative_speedup": 1.1103,
+    "score": {
+      "impact": 4,
+      "confidence": 4,
+      "effort": 2,
+      "value": 8.0
+    }
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "The diagonal block factorization and panel solve loops are unchanged. Each consumed Schur entry still accumulates panel columns in ascending c order.",
+    "tie_breaking_unchanged": "No comparisons, pivots, or tie-breaking decisions were introduced or reordered.",
+    "floating_point": "For lower-triangle entries consumed by subsequent panels, multiply-add order matches the prior full GEMM product. Strict upper-triangle Schur entries are skipped because Cholesky never consumes them and zeroes them before return.",
+    "rng": "No RNG surface.",
+    "error_surface": "Shape, dtype, non-square, complex, and non-positive-definite error paths are unchanged.",
+    "nan_surface": "Consumed lower-triangle NaN propagation follows the same ascending dot-product order as before."
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_lax_cholesky_lower_schur_zu5kh_pass160_2026-06-07.golden",
+    "sha256": "2d4e2185e82faee371572306cb38a9bbba51dd972facb7401b0b61cac96e62ac",
+    "proof_tests": [
+      "cholesky_lower_schur_update_matches_full_gemm_on_consumed_triangle",
+      "cholesky_blocked_matches_scalar_and_reconstructs"
+    ]
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-zu5kh-test cargo test -p fj-lax --lib cholesky -- --nocapture",
+      "result": "passed: 13 tests, 0 failed, 1161 filtered out"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-zu5kh-check cargo check -p fj-lax --all-targets",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-zu5kh-clippy cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs",
+      "result": "failed on pre-existing unrelated linalg.rs formatting outside this pass; no whole-file formatting was applied"
+    },
+    {
+      "command": "ubs crates/fj-lax/src/linalg.rs",
+      "result": "exit 1 for pre-existing file-wide inventory, including test panic macros, unwrap/expect, and direct indexing; UBS fmt/clippy/check/test-build sections were clean and no unsafe blocks were reported"
+    }
+  ],
+  "fallback": "If a future parity regression appears, revert this commit to restore full trailing-matrix GEMM Schur updates.",
+  "next_profile_note": "Re-profile linalg after this keep because Cholesky is no longer the same bottleneck shape."
+}
