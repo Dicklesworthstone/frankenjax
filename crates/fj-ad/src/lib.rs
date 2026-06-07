@@ -850,6 +850,21 @@ fn value_neg(a: &Value) -> Result<Value, AdError> {
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
+/// Replace exact zeros in `x` with one, leaving all other elements unchanged.
+/// Used to keep `numer / x` finite where `numer` is also zero at x==0 — e.g.
+/// sinc'(0) = 0 from the (cos(pi x) - sinc(x))/x form, which is 0/0 at x=0.
+/// Mirrors JAX's `_replace_zero` / custom-grad handling.
+fn replace_zero_with_one(x: &Value) -> Result<Value, AdError> {
+    let mask = eval_primitive(Primitive::Eq, &[x.clone(), zeros_like(x)], &BTreeMap::new())
+        .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    eval_primitive(
+        Primitive::Select,
+        &[mask, ones_like(x), x.clone()],
+        &BTreeMap::new(),
+    )
+    .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 fn value_div(a: &Value, b: &Value) -> Result<Value, AdError> {
     eval_primitive(Primitive::Div, &[a.clone(), b.clone()], &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -1848,7 +1863,10 @@ pub fn vjp(
             let sinc_x = eval_primitive(Primitive::Sinc, std::slice::from_ref(x), params)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             let numer = value_sub(&cos_pi_x, &sinc_x)?;
-            let deriv = value_div(&numer, x)?;
+            // sinc'(0) = 0: numer is exactly 0 at x=0, so dividing by a
+            // zero-replaced denominator gives 0 (not 0/0 = NaN), matching JAX's
+            // custom sinc grad. For x != 0 the denominator is unchanged.
+            let deriv = value_div(&numer, &replace_zero_with_one(x)?)?;
             Ok(vec![value_mul(g, &deriv)?])
         }
         Primitive::Sqrt => {
@@ -7637,7 +7655,9 @@ fn jvp_rule(
             let cos_pi_x = ep(Primitive::Cos, &[pi_x])?;
             let sinc_x = ep(Primitive::Sinc, &[x.clone()])?;
             let numer = ep(Primitive::Sub, &[cos_pi_x, sinc_x])?;
-            let deriv = ep(Primitive::Div, &[numer, x.clone()])?;
+            // sinc'(0) = 0: numer is exactly 0 at x=0, so divide by a zero-replaced
+            // denominator to avoid 0/0 = NaN (matches JAX's custom sinc grad).
+            let deriv = ep(Primitive::Div, &[numer, replace_zero_with_one(x)?])?;
             ep(Primitive::Mul, &[deriv, dx.clone()])
         }
 
@@ -10586,6 +10606,46 @@ mod tests {
             jvp_t.is_finite() && jvp_t.abs() < 1e-12,
             "JVP tangent of x^0 at 0 must be 0, got {jvp_t}"
         );
+    }
+
+    #[test]
+    fn test_sinc_grad_at_zero_is_zero_not_nan() {
+        // sinc is even and smooth, so sinc'(0) = 0. The (cos(pi x) - sinc(x))/x
+        // form is 0/0 = NaN at x=0; JAX's custom sinc grad is finite (0.0) there.
+        let params = BTreeMap::new();
+
+        let grads = vjp_single(
+            Primitive::Sinc,
+            &[Value::scalar_f64(0.0)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        let vg = grads[0].as_f64_scalar().expect("scalar");
+        assert!(vg.is_finite() && vg.abs() < 1e-12, "VJP sinc'(0) must be 0, got {vg}");
+
+        let jvp = jvp_rule(
+            Primitive::Sinc,
+            &[Value::scalar_f64(0.0)],
+            &[Value::scalar_f64(1.0)],
+            &params,
+        )
+        .expect("jvp");
+        let jg = jvp.as_f64_scalar().expect("scalar");
+        assert!(jg.is_finite() && jg.abs() < 1e-12, "JVP sinc'(0) must be 0, got {jg}");
+
+        // Sanity: a nonzero point is unchanged. sinc'(x) = (cos(pi x) - sinc(x))/x;
+        // at x=0.5: sinc(0.5)=2/pi, cos(pi/2)=0 => sinc'(0.5) = -(2/pi)/0.5 = -4/pi.
+        let g05 = vjp_single(
+            Primitive::Sinc,
+            &[Value::scalar_f64(0.5)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        let v05 = g05[0].as_f64_scalar().expect("scalar");
+        let want = -4.0 / std::f64::consts::PI;
+        assert!((v05 - want).abs() < 1e-6, "sinc'(0.5): got {v05}, want {want}");
     }
 
     #[test]
