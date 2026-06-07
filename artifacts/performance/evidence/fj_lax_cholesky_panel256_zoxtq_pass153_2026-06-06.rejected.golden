@@ -1,0 +1,6 @@
+frankenjax-zoxtq rejected Cholesky panel-width proof
+worker=ts1
+baseline_cholesky_1024x1024_f64_ms=[54.524,55.442,56.465]
+candidate_panel256_cholesky_1024x1024_f64_ms=[68.519,69.272,70.052]
+proof=RCH ts1 cargo test -p fj-lax --lib cholesky -- --nocapture passed 12/12 in candidate state
+restored_linalg_rs_sha256=1b995cb1a7298a0591446ed9ba089926f665745b32eb6af791e35b0b5663b840

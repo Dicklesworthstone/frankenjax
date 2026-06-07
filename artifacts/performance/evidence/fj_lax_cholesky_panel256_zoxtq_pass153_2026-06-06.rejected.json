@@ -1,0 +1,89 @@
+{
+  "artifact_schema": "frankenjax.performance.rejected.v1",
+  "bead": "frankenjax-zoxtq",
+  "pass": 153,
+  "date": "2026-06-06",
+  "crate": "fj-lax",
+  "target": "linalg/cholesky_1024x1024_f64",
+  "worker": "ts1",
+  "profile_route": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-post-p152-reprofile-a030 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_1024x1024x1024_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "cholesky_1024x1024_f64_ms": [52.267, 54.642, 57.350],
+    "lu_1024x1024_f64_ms": [51.689, 53.789, 55.855],
+    "qr_1024x1024_f64_ms": [34.825, 35.438, 36.677],
+    "matmul_2d_1024x1024x1024_f64_ms": [23.180, 27.994, 39.649]
+  },
+  "alien_primitive": "Communication-avoiding dense linear algebra: wider cache-aware panels that reduce panel count and push large Schur updates into packed BLAS-3 kernels.",
+  "lever": "change CHOLESKY_BLOCK_SIZE from 128 to 256",
+  "decision": "rejected",
+  "score": {
+    "impact": 0.0,
+    "confidence": 1.0,
+    "effort": 1.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "gate": "keep only Score >= 2.0"
+  },
+  "baseline": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-zoxtq-baseline-a030 cargo bench -p fj-lax --bench lax_baseline -- linalg/cholesky_1024x1024_f64 --sample-size 100",
+    "cholesky_1024x1024_f64_ms": {
+      "low": 54.524,
+      "median": 55.442,
+      "high": 56.465
+    },
+    "outliers": "6 high mild, 4 high severe"
+  },
+  "proof": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 rch exec -- cargo test -p fj-lax --lib cholesky -- --nocapture",
+    "result": "12 passed, 0 failed, 1153 filtered out",
+    "coverage": [
+      "cholesky_2x2_identity",
+      "cholesky_2x2_spd",
+      "cholesky_3x3_spd",
+      "cholesky_f64_dense_output_matches_literal_materialization",
+      "cholesky_not_positive_definite_returns_nan",
+      "cholesky_non_square_rejected",
+      "cholesky_roundtrip_llt",
+      "cholesky_real_fast_path_bit_identical_to_complex_path",
+      "cholesky_real_fast_path_preserves_f32_dtype_and_shape",
+      "triangular_solve_cholesky_roundtrip",
+      "cholesky_blocked_matches_scalar_and_reconstructs"
+    ]
+  },
+  "after_same_worker": {
+    "worker": "ts1",
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-zoxtq-after-panel256 cargo bench -p fj-lax --bench lax_baseline -- linalg/cholesky_1024x1024_f64 --sample-size 100",
+    "cholesky_1024x1024_f64_ms": {
+      "low": 68.519,
+      "median": 69.272,
+      "high": 70.052
+    },
+    "outliers": "5 high mild, 2 high severe",
+    "target_speedup": 0.8004,
+    "conservative_speedup": 0.7783
+  },
+  "rejection_reason": "Wider 256-column panels regressed Cholesky1024 on the fixed worker; the larger scalar panel/solve work outweighed fewer and packed Schur updates.",
+  "isomorphism": {
+    "ordering": "Small matrices below CHOLESKY_BLOCK_THRESHOLD were unchanged. Candidate changed only the blocked panel partition for large matrices; diagonal factorization, panel solve, Schur update arithmetic, and final strict-upper zeroing used the same code inside each panel.",
+    "tie_breaking": "Cholesky has no pivot search or tie-breaking.",
+    "floating_point": "Large blocked Cholesky is tolerance-validated, not bit-identical; the candidate proof suite verified scalar parity within tolerance and L*L^T reconstruction before rejection. No FMA, mixed precision, or unsafe code was introduced.",
+    "rng": "Not applicable."
+  },
+  "golden": {
+    "path": "artifacts/performance/evidence/fj_lax_cholesky_panel256_zoxtq_pass153_2026-06-06.rejected.golden",
+    "sha256": "be4619c32b0fa3904bbbe193450b55ddc00da8ef0551568f35d9db541f7a9050"
+  },
+  "source_state": {
+    "restored": true,
+    "linalg_rs_sha256": "1b995cb1a7298a0591446ed9ba089926f665745b32eb6af791e35b0b5663b840",
+    "diff": "git diff -- crates/fj-lax/src/linalg.rs is empty"
+  },
+  "validation": [
+    "git diff --check passed after source restoration",
+    "rustfmt --edition 2024 --check crates/fj-lax/src/linalg.rs remains blocked by pre-existing formatting drift outside this lever",
+    "focused RCH ts1 Cholesky tests passed on the candidate before rejection",
+    "source restored to baseline; no code lever kept"
+  ],
+  "next_primitive": "Do not continue panel-width retuning. The next Cholesky attempt should replace the Schur update primitive itself: a safe-Rust packed symmetric rank-k/register-tiled kernel that avoids full rem*rem product materialization while keeping vectorized MRxNR accumulation, or reprofile and route to LU/eig if they outrank Cholesky. Target >=1.2x on the selected fixed-worker hotspot."
+}
