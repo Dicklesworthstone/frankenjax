@@ -1,0 +1,51 @@
+{
+  "artifact_version": 1,
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-gemm-fullk-sweep-c3pgz",
+  "pass": 165,
+  "date": "2026-06-07",
+  "status": "rejected",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "profile_backed_target": {
+    "source": "fresh restored-source linalg profile after pass164",
+    "profile_worker": "ts1",
+    "profile_ms": [100.59, 103.92, 109.57],
+    "baseline_worker": "ts1",
+    "baseline_ms": [97.070, 100.57, 105.75],
+    "criterion_args": "--sample-size 20 --warm-up-time 2 --measurement-time 10"
+  },
+  "lever": {
+    "summary": "Route the 2048-sized packed-B GEMM to the existing full-k single-sweep packed path instead of the KC-blocked C-carry path",
+    "files_touched_during_candidate": ["crates/fj-lax/src/tensor_contraction.rs"],
+    "source_restored": true,
+    "diff_after_restore": "empty for crates/fj-lax/src/tensor_contraction.rs"
+  },
+  "isomorphism_proof": {
+    "ordering": "Both routes own disjoint output rows and accumulate each output element over k in ascending order; the candidate only changed whether the existing flat packed full-k path or KC-blocked path was selected.",
+    "tie_breaking": "No comparisons or tie-breaking behavior in matmul_2d.",
+    "floating_point": "No FMA insertion, mixed precision, horizontal reduction, or reassociation per output element; focused bit-identity tests cover packed, threaded, large, blocked, and golden digest paths.",
+    "rng": "No RNG surface in matmul_2d.",
+    "golden_sha256_file": "artifacts/performance/evidence/fj_lax_gemm_fullk_sweep_c3pgz_pass165_2026-06-07.rejected.golden.sha256"
+  },
+  "validation": {
+    "test_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-c3pgz-test cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "test_worker": "ts1",
+    "test_result": "candidate passed: 9 passed, 0 failed, 1 ignored, 1165 filtered out"
+  },
+  "benchmark": {
+    "baseline_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-c3pgz-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_2048' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+    "after_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-c3pgz-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/matmul_2d_2048' --sample-size 20 --warm-up-time 2 --measurement-time 10",
+    "worker": "ts1",
+    "baseline_ms": [97.070, 100.57, 105.75],
+    "after_ms": [103.03, 105.24, 107.35],
+    "median_speedup": 0.9556,
+    "conservative_speedup": 0.9042,
+    "score": 0.0
+  },
+  "decision": {
+    "keep": false,
+    "reason": "The full-k single-sweep gate regressed the same-worker target from 100.57 ms median to 105.24 ms median. Source was restored.",
+    "next_primitive": "Stop threshold-style full-k routing for GEMM2048. The next GEMM swing should be a behavior-contract bead for FP-tolerant recursive or Strassen-style GEMM, or a fresh profile-backed pivot to the next linalg row if GEMM no longer dominates."
+  }
+}

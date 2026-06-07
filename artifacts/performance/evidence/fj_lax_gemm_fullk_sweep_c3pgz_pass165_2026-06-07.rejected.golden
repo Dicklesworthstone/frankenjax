@@ -1,0 +1,10 @@
+bead=frankenjax-gemm-fullk-sweep-c3pgz
+pass=165
+target=linalg/matmul_2d_2048x2048x2048_f64
+worker=ts1
+lever=single-sweep packed full-k GEMM gate for 2048^3
+baseline_median_ms=100.57
+after_median_ms=105.24
+median_speedup=0.9556
+conservative_speedup=0.9042
+decision=rejected_regression_source_restored
