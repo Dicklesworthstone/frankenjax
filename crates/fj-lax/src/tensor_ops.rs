@@ -6348,8 +6348,17 @@ pub(crate) fn eval_expand_dims(
         });
     }
 
-    let axis_vec = parse_usize_param(primitive, "axis", params)?;
-    let axis = axis_vec[0];
+    // Parse as i64 so a negative (end-relative) axis is normalized against the
+    // OUTPUT rank (input rank + 1), matching numpy/jnp expand_dims. A usize parse
+    // rejected e.g. axis=-1 (insert a trailing dim), the most common usage.
+    let raw_axis: i64 = params
+        .get("axis")
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "invalid axis param for expand_dims".to_owned(),
+        })?;
 
     match &inputs[0] {
         Value::Scalar(lit) => {
@@ -6379,12 +6388,14 @@ pub(crate) fn eval_expand_dims(
         }
         Value::Tensor(tensor) => {
             let rank = tensor.shape.dims.len();
-            if axis > rank {
+            let norm = if raw_axis < 0 { raw_axis + rank as i64 + 1 } else { raw_axis };
+            if norm < 0 || norm > rank as i64 {
                 return Err(EvalError::Unsupported {
                     primitive,
-                    detail: format!("axis {axis} out of range for rank {rank} (max is {rank})"),
+                    detail: format!("axis {raw_axis} out of range for rank {rank} (max is {rank})"),
                 });
             }
+            let axis = norm as usize;
 
             let mut new_dims = tensor.shape.dims.clone();
             new_dims.insert(axis, 1);

@@ -1193,21 +1193,26 @@ impl SimpleTraceContext {
                         value: raw_axis.to_owned(),
                     });
                 }
-                let axis_list = parse_usize_list(primitive, "axis", raw_axis)?;
-                let axis = axis_list.first().copied().ok_or_else(|| {
-                    TraceError::InvalidPrimitiveParam {
+                let rank = inputs[0].shape.rank();
+                // Parse as i64 to normalize a negative (end-relative) axis against
+                // the OUTPUT rank (input rank + 1), matching numpy/jnp expand_dims.
+                let raw = raw_axis
+                    .split(',')
+                    .next()
+                    .and_then(|s| s.trim().parse::<i64>().ok())
+                    .ok_or_else(|| TraceError::InvalidPrimitiveParam {
                         primitive,
                         key: "axis",
                         value: raw_axis.to_owned(),
-                    }
-                })?;
-                let rank = inputs[0].shape.rank();
-                if axis > rank {
+                    })?;
+                let norm = if raw < 0 { raw + rank as i64 + 1 } else { raw };
+                if norm < 0 || norm > rank as i64 {
                     return Err(TraceError::ShapeInferenceFailed {
                         primitive,
-                        detail: format!("axis {axis} out of range for rank {rank} (max is {rank})"),
+                        detail: format!("axis {raw} out of range for rank {rank} (max is {rank})"),
                     });
                 }
+                let axis = norm as usize;
                 let mut new_dims = inputs[0].shape.dims.clone();
                 new_dims.insert(axis, 1);
                 Ok(vec![ShapedArray {

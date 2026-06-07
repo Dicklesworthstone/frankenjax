@@ -150,6 +150,23 @@ fn oracle_expand_dims_2d_axis2() {
 }
 
 #[test]
+fn oracle_expand_dims_2d_negative_axis() {
+    use std::collections::BTreeMap;
+    // Negative axes normalize against the OUTPUT rank (numpy/jnp expand_dims):
+    // [2,3] axis=-1 -> [2,3,1]; axis=-3 -> [1,2,3]. (Was rejected: usize parse.)
+    let mut p_neg1 = BTreeMap::new();
+    p_neg1.insert("axis".to_string(), "-1".to_string());
+    let r1 = eval_primitive(Primitive::ExpandDims, &[make_i64_tensor(&[2, 3], vec![1, 2, 3, 4, 5, 6])], &p_neg1).unwrap();
+    assert_eq!(extract_shape(&r1), vec![2, 3, 1]);
+    assert_eq!(extract_i64_vec(&r1), vec![1, 2, 3, 4, 5, 6]);
+
+    let mut p_neg3 = BTreeMap::new();
+    p_neg3.insert("axis".to_string(), "-3".to_string());
+    let r2 = eval_primitive(Primitive::ExpandDims, &[make_i64_tensor(&[2, 3], vec![1, 2, 3, 4, 5, 6])], &p_neg3).unwrap();
+    assert_eq!(extract_shape(&r2), vec![1, 2, 3]);
+}
+
+#[test]
 fn oracle_expand_dims_2d_square() {
     // [3, 3] -> [1, 3, 3]
     let input = make_i64_tensor(&[3, 3], (1..=9).collect());

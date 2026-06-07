@@ -2546,17 +2546,30 @@ fn batch_expand_dims(
         .as_tensor()
         .ok_or_else(|| BatchError::BatchDimMoveError("expected tensor for expand_dims".into()))?;
     let per_elem_rank = tensor.shape.rank().saturating_sub(1);
-    let logical_axis = parse_param_usize_list(params, "axis")?
-        .first()
-        .copied()
-        .ok_or_else(|| BatchError::EvalError("empty list for param 'axis'".to_owned()))?;
-
+    // Parse the per-element axis as i64 and normalize a negative (end-relative)
+    // axis against the per-element OUTPUT rank, then shift +1 for the prepended
+    // batch axis. A usize parse rejected axis=-1.
+    let raw_axis: i64 = params
+        .get("axis")
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .ok_or_else(|| BatchError::EvalError("invalid axis param for expand_dims".to_owned()))?;
     let physical_axis = if per_elem_rank == 0 {
+        // Per-element scalar: the single new dim lands right after the batch axis
+        // (the logical axis is immaterial — output is always [batch, 1]).
         1
     } else {
-        logical_axis
-            .checked_add(1)
-            .ok_or_else(|| BatchError::EvalError("expand_dims axis overflow".to_owned()))?
+        // Normalize a negative (end-relative) axis against the per-element OUTPUT
+        // rank, then shift +1 for the prepended batch axis. A usize parse rejected
+        // axis=-1.
+        let out_rank = per_elem_rank + 1;
+        let logical_axis = if raw_axis < 0 { raw_axis + out_rank as i64 } else { raw_axis };
+        if logical_axis < 0 || logical_axis as usize >= out_rank {
+            return Err(BatchError::EvalError(format!(
+                "expand_dims axis {raw_axis} out of range for per-element output rank {out_rank}"
+            )));
+        }
+        logical_axis as usize + 1
     };
 
     let mut new_params = params.clone();
