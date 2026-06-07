@@ -505,15 +505,76 @@ pub fn dce_jaxpr(jaxpr: &Jaxpr, used_outputs: &[bool]) -> (Jaxpr, Vec<bool>) {
 /// Comparison primitives always output Bool. Reductions honour the "axes" param.
 /// Shape-manipulation ops (Reshape, Slice, Transpose) parse their params.
 /// Dot always produces a scalar.
+/// Right-aligned numpy broadcast of two dim lists (missing axes treated as 1).
+/// Correct for compatible shapes; best-effort (max) otherwise.
+fn broadcast_dims(a: &[u32], b: &[u32]) -> Vec<u32> {
+    let n = a.len().max(b.len());
+    (0..n)
+        .map(|i| {
+            let ad = if i + a.len() < n { 1 } else { a[i + a.len() - n] };
+            let bd = if i + b.len() < n { 1 } else { b[i + b.len() - n] };
+            ad.max(bd)
+        })
+        .collect()
+}
+
+/// BroadcastedIota takes NO inputs — its aval comes entirely from params.
+fn infer_broadcasted_iota_aval(eqn: &Equation) -> AbstractValue {
+    let dims: Vec<u32> = eqn
+        .params
+        .get("shape")
+        .map(|s| {
+            s.split(',')
+                .filter_map(|d| d.trim().parse::<u32>().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    let dtype = eqn
+        .params
+        .get("dtype")
+        .and_then(|s| dtype_from_name(s))
+        .unwrap_or(DType::I64);
+    AbstractValue {
+        dtype,
+        shape: Shape { dims },
+    }
+}
+
+/// Complex(re, im): dtype (F32,F32)→Complex64 else Complex128; shape = broadcast.
+fn infer_complex_aval(input_avals: &[AbstractValue]) -> AbstractValue {
+    let dtype = match (
+        input_avals.first().map(|v| v.dtype),
+        input_avals.get(1).map(|v| v.dtype),
+    ) {
+        (Some(DType::F32), Some(DType::F32)) => DType::Complex64,
+        _ => DType::Complex128,
+    };
+    let a = input_avals.first().map(|v| v.shape.dims.as_slice()).unwrap_or(&[]);
+    let b = input_avals.get(1).map(|v| v.shape.dims.as_slice()).unwrap_or(&[]);
+    AbstractValue {
+        dtype,
+        shape: Shape {
+            dims: broadcast_dims(a, b),
+        },
+    }
+}
+
 fn infer_equation_output_avals(
     eqn: &Equation,
     input_avals: &[AbstractValue],
 ) -> Result<Vec<AbstractValue>, PartialEvalError> {
+    use fj_core::Primitive::*;
+
+    // BroadcastedIota takes NO inputs, so it must be typed before the
+    // first-input guard below (which would otherwise return an empty aval list).
+    if eqn.primitive == BroadcastedIota {
+        return Ok(vec![infer_broadcasted_iota_aval(eqn); eqn.outputs.len()]);
+    }
+
     let Some(first_input) = input_avals.first() else {
         return Ok(vec![]);
     };
 
-    use fj_core::Primitive::*;
     match eqn.primitive {
         Qr => Ok(infer_qr_output_avals(first_input, eqn)),
         Svd => Ok(infer_svd_output_avals(first_input, eqn)),
@@ -522,6 +583,9 @@ fn infer_equation_output_avals(
         Eig => Ok(infer_eig_output_avals(first_input)),
         TopK => Ok(infer_topk_output_avals(first_input, eqn)),
         Solve => Ok(infer_solve_output_avals(input_avals)),
+        // Complex is binary — the dtype/shape depend on BOTH inputs, which the
+        // single-input infer_equation_output_aval can't see.
+        Complex => Ok(vec![infer_complex_aval(input_avals); eqn.outputs.len()]),
         _ => {
             let out_aval = infer_equation_output_aval(eqn, first_input)?;
             Ok(vec![out_aval; eqn.outputs.len()])
@@ -869,6 +933,67 @@ fn infer_equation_output_aval(
             AbstractValue {
                 dtype: DType::I64,
                 shape,
+            }
+        }
+        // Tile: out_dims[i] = in_dims[i] * reps[i] (reps length == rank); a scalar
+        // tiles to a vector of length reps[0]. Catch-all kept the input shape.
+        Tile => {
+            let reps: Vec<u32> = eqn
+                .params
+                .get("reps")
+                .map(|s| {
+                    s.split(',')
+                        .filter_map(|r| r.trim().parse::<u32>().ok())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let in_dims = &first_input.shape.dims;
+            let dims: Vec<u32> = if in_dims.is_empty() {
+                match reps.first().copied() {
+                    None | Some(1) => Vec::new(),
+                    Some(r) => vec![r],
+                }
+            } else if reps.len() == in_dims.len() {
+                in_dims
+                    .iter()
+                    .zip(&reps)
+                    .map(|(&d, &r)| d.saturating_mul(r))
+                    .collect()
+            } else {
+                in_dims.clone() // best-effort on a reps/rank mismatch
+            };
+            AbstractValue {
+                dtype: first_input.dtype,
+                shape: Shape { dims },
+            }
+        }
+        // OneHot: insert a num_classes axis (default last; negative normalized
+        // against the output rank); output dtype from "dtype" (default F64). The
+        // catch-all kept the index shape AND its integer dtype.
+        OneHot => {
+            let num_classes: u32 = eqn
+                .params
+                .get("num_classes")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or(0);
+            let dtype = eqn
+                .params
+                .get("dtype")
+                .and_then(|s| dtype_from_name(s))
+                .unwrap_or(DType::F64);
+            let mut out_dims = first_input.shape.dims.clone();
+            let output_rank = out_dims.len() + 1;
+            let raw_axis: i64 = eqn
+                .params
+                .get("axis")
+                .and_then(|s| s.trim().parse().ok())
+                .unwrap_or((output_rank - 1) as i64);
+            let norm = if raw_axis < 0 { raw_axis + output_rank as i64 } else { raw_axis };
+            let axis = norm.clamp(0, (output_rank - 1) as i64) as usize;
+            out_dims.insert(axis, num_classes);
+            AbstractValue {
+                dtype,
+                shape: Shape { dims: out_dims },
             }
         }
         // Most element-wise ops preserve dtype and shape
@@ -3869,5 +3994,77 @@ mod tests {
             assert_eq!(out.dtype, DType::Bool, "{prim:?} must be Bool");
             assert_eq!(out.shape.dims, vec![2, 2]);
         }
+
+        // Tile [2,3] reps=2,3 -> [4,9]; scalar reps=4 -> [4].
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::Tile, &[("reps", "2,3")]),
+            &av(&[2, 3], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![4, 9]);
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::Tile, &[("reps", "4")]),
+            &av(&[], DType::F64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![4]);
+
+        // OneHot [2] num_classes=5 default axis -> [2,5] dtype F64 (catch-all kept
+        // the [2] index shape and its dtype).
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::OneHot, &[("num_classes", "5")]),
+            &av(&[2], DType::I64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![2, 5]);
+        assert_eq!(out.dtype, DType::F64);
+        // axis=0 -> [5,2].
+        let out = infer_equation_output_aval(
+            &eqn(Primitive::OneHot, &[("num_classes", "5"), ("axis", "0")]),
+            &av(&[2], DType::I64),
+        )
+        .unwrap();
+        assert_eq!(out.shape.dims, vec![5, 2]);
+
+        // Plural-fn paths: BroadcastedIota (0 inputs) + Complex (binary).
+        fn eqn_n(prim: Primitive, outs: usize, params: &[(&str, &str)]) -> Equation {
+            let mut p = BTreeMap::new();
+            for (k, v) in params {
+                p.insert((*k).to_string(), (*v).to_string());
+            }
+            Equation {
+                primitive: prim,
+                inputs: smallvec![],
+                outputs: (0..outs).map(|i| VarId(i as u32 + 1)).collect(),
+                params: p,
+                effects: vec![],
+                sub_jaxprs: vec![],
+            }
+        }
+
+        // BroadcastedIota shape=3,4 dtype=f32 -> [3,4] F32.
+        let outs = infer_equation_output_avals(
+            &eqn_n(Primitive::BroadcastedIota, 1, &[("shape", "3,4"), ("dtype", "f32")]),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(outs[0].shape.dims, vec![3, 4]);
+        assert_eq!(outs[0].dtype, DType::F32);
+
+        // Complex(f32,f32) -> Complex64; broadcast [3,1] with [4] -> [3,4].
+        let outs = infer_equation_output_avals(
+            &eqn_n(Primitive::Complex, 1, &[]),
+            &[av(&[3, 1], DType::F32), av(&[4], DType::F32)],
+        )
+        .unwrap();
+        assert_eq!(outs[0].dtype, DType::Complex64);
+        assert_eq!(outs[0].shape.dims, vec![3, 4]);
+        // (f64,f64) -> Complex128.
+        let outs = infer_equation_output_avals(
+            &eqn_n(Primitive::Complex, 1, &[]),
+            &[av(&[2], DType::F64), av(&[2], DType::F64)],
+        )
+        .unwrap();
+        assert_eq!(outs[0].dtype, DType::Complex128);
     }
 }
