@@ -980,6 +980,8 @@ fn lu_factor_real_blocked(lu: &mut [f64], m: usize, n: usize) -> (Vec<i64>, Vec<
     let mut pivots: Vec<i64> = (0..k as i64).collect();
     let mut perm: Vec<i64> = (0..m as i64).collect();
     let nb = LU_BLOCK_SIZE;
+    let mut l21 = Vec::with_capacity(m.saturating_mul(nb));
+    let mut u12 = Vec::with_capacity(nb.saturating_mul(n));
 
     let mut j = 0;
     while j < k {
@@ -1045,18 +1047,20 @@ fn lu_factor_real_blocked(lu: &mut [f64], m: usize, n: usize) -> (Vec<i64>, Vec<
         let rows_below = m - panel_end;
         let cols_right = n - panel_end.min(n);
         if rows_below > 0 && cols_right > 0 {
-            let mut l21 = vec![0.0_f64; rows_below * jb];
+            l21.clear();
             for p in 0..rows_below {
                 let src = (panel_end + p) * n + j;
-                let dst = p * jb;
-                l21[dst..dst + jb].copy_from_slice(&lu[src..src + jb]);
+                l21.extend_from_slice(&lu[src..src + jb]);
             }
-            let mut u12 = vec![0.0_f64; jb * cols_right];
+            debug_assert_eq!(l21.len(), rows_below * jb);
+
+            u12.clear();
             for t in 0..jb {
                 let src = (j + t) * n + panel_end;
-                let dst = t * cols_right;
-                u12[dst..dst + cols_right].copy_from_slice(&lu[src..src + cols_right]);
+                u12.extend_from_slice(&lu[src..src + cols_right]);
             }
+            debug_assert_eq!(u12.len(), jb * cols_right);
+
             let prod = matmul_2d(&l21, rows_below, jb, &u12, cols_right);
             for p in 0..rows_below {
                 let row = (panel_end + p) * n + panel_end;
@@ -5697,6 +5701,57 @@ mod tests {
             residual < 1e-7,
             "blocked P·A = L·U residual too large: {residual}"
         );
+    }
+
+    #[test]
+    fn lu_blocked_path_golden_output_digest() -> Result<(), Box<dyn std::error::Error>> {
+        let n = LU_BLOCK_THRESHOLD;
+        let mut a = vec![0.0f64; n * n];
+        for i in 0..n {
+            for jc in 0..n {
+                a[i * n + jc] = if i == jc {
+                    (n as f64) + (i as f64) * 0.25 + 7.0
+                } else {
+                    (((i * 19 + jc * 23 + 11) % 37) as f64 - 18.0) * 0.03125
+                };
+            }
+        }
+
+        let result = eval_lu(&[make_matrix(n, n, &a)], &BTreeMap::new())?;
+        let mut output_words = Vec::new();
+        for value in &result {
+            let Value::Tensor(tensor) = value else {
+                return Err("LU output must be tensors".into());
+            };
+            match tensor.dtype {
+                DType::F64 => {
+                    output_words.push(0xf64f_64f6_4f64_f64f);
+                    for &literal in &tensor.elements {
+                        let Some(value) = literal.as_f64() else {
+                            return Err("LU matrix output must contain f64 literals".into());
+                        };
+                        output_words.push(value.to_bits());
+                    }
+                }
+                DType::I32 => {
+                    output_words.push(0x1321_1321_1321_1321);
+                    for &literal in &tensor.elements {
+                        let Some(value) = literal.as_i64() else {
+                            return Err("LU index output must contain integer literals".into());
+                        };
+                        output_words.push(value as u64);
+                    }
+                }
+                _ => return Err("unexpected LU output dtype".into()),
+            }
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&output_words)?;
+        assert_eq!(
+            digest, "4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91",
+            "blocked LU golden output digest changed"
+        );
+        Ok(())
     }
 
     #[test]

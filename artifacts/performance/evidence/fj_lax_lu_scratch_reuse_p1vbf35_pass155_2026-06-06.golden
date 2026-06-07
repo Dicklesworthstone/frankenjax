@@ -1,0 +1,10 @@
+frankenjax-p1vbf.35 pass155 LU scratch reuse golden
+worker=ts1
+target=linalg/lu_1024x1024_f64
+baseline_ms=[71.216,77.821,84.661]
+after_ms=[51.674,52.313,52.952]
+median_speedup=1.4876034637661766
+conservative_speedup=1.3449161504759026
+golden_output_sha256=4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91
+proof_tests=RCH ts1 cargo test -p fj-lax lu_ -- --nocapture passed 15/15
+proof_gates=RCH ts1 cargo check -p fj-lax --all-targets passed; RCH ts1 cargo clippy -p fj-lax --all-targets -- -D warnings passed after separate arithmetic clippy hygiene; git diff --check passed; rustfmt for linalg.rs remains blocked by pre-existing unrelated drift

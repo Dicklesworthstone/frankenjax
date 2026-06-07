@@ -1,0 +1,79 @@
+{
+  "bead": "frankenjax-p1vbf.35",
+  "artifact": "fj_lax_lu_scratch_reuse_p1vbf35_pass155_2026-06-06",
+  "worker": "ts1",
+  "commit_base": "8e2db477",
+  "profile_backing": {
+    "broad_command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-post-p1vbf33-reprofile-8e2db477 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_1024x1024x1024_f64)' --sample-size 10 --measurement-time 3 --warm-up-time 1 --noplot",
+    "focused_lu_command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf34-lu-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 80 --measurement-time 5 --warm-up-time 1 --noplot",
+    "target": "linalg/lu_1024x1024_f64",
+    "focused_lu_ms": [
+      71.216,
+      77.821,
+      84.661
+    ],
+    "routing_note": "The broad profile put Cholesky first, but an 80-sample Cholesky rerun normalized to [52.064, 52.570, 53.084] ms. The 80-sample LU baseline was [71.216, 77.821, 84.661] ms, making LU the focused target."
+  },
+  "baseline": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf34-lu-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 80 --measurement-time 5 --warm-up-time 1 --noplot",
+    "ms": [
+      71.216,
+      77.821,
+      84.661
+    ]
+  },
+  "lever": {
+    "file": "crates/fj-lax/src/linalg.rs",
+    "summary": "Reuse LU blocked-path L21/U12 panel scratch buffers across panels and fill them with extend_from_slice instead of allocating and zero-filling fresh Vecs before overwriting every element.",
+    "alien_graveyard_primitive": "Region/arena-style scratch reuse and allocation-churn elimination for hot loops."
+  },
+  "after": {
+    "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf35-lu-scratch-after cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 80 --measurement-time 5 --warm-up-time 1 --noplot",
+    "ms": [
+      51.674,
+      52.313,
+      52.952
+    ],
+    "outliers": "3 high/low mild among 80 measurements"
+  },
+  "speedup": {
+    "median": 1.4876034637661766,
+    "conservative_low_over_high": 1.3449161504759026
+  },
+  "score": {
+    "impact": 4.0,
+    "confidence": 4.0,
+    "effort": 1.0,
+    "score": 16.0,
+    "threshold": 2.0,
+    "decision": "keep"
+  },
+  "isomorphism": {
+    "ordering": "Panel factorization, pivot scan order, U12 solve order, matmul_2d Schur product order, and final A22 subtraction order are unchanged. Only scratch allocation/fill mechanics changed before matmul_2d receives the same row-major L21/U12 values.",
+    "tie_breaking": "Partial pivoting still uses strict greater-than in ascending row order; the lever does not touch pivot scans or row swaps.",
+    "floating_point": "No arithmetic expression, accumulation order, FMA use, precision, or NaN/signed-zero operation changed. The same f64 values are copied into the same packed panel slices before the existing matmul_2d call.",
+    "rng": "No random state is read or written.",
+    "errors": "Input validation, singular/near-zero behavior, and public output layout are unchanged."
+  },
+  "proof": {
+    "tests": {
+      "command": "RCH_FORCE_REMOTE=1 RCH_WORKER=ts1 RCH_WORKERS=ts1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- env CARGO_TARGET_DIR=/data/tmp/rch-frankenjax-p1vbf35-lu-tests cargo test -p fj-lax lu_ -- --nocapture",
+      "result": "passed: 15 tests, 1156 filtered out",
+      "coverage": [
+        "small LU identity/roundtrip",
+        "blocked LU reconstructs and matches scalar on diagonal-dominant matrix",
+        "real fast path bit-identical to complex zero-imag path",
+        "blocked LU golden output digest"
+      ]
+    },
+    "golden_output_sha256": "4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91",
+    "golden_artifact_sha256": "af0199488c844f5bd17ead6575b8886cbd6f05a0d78a01987ff094369bcf7308",
+    "check": "RCH ts1 cargo check -p fj-lax --all-targets passed",
+    "clippy": "RCH ts1 cargo clippy -p fj-lax --all-targets -- -D warnings passed after a separate arithmetic.rs clippy hygiene patch for upstream test warnings",
+    "format": "git diff --check passed; rustfmt --edition 2024 --check on linalg.rs/arithmetic.rs remains blocked by pre-existing unrelated formatting drift outside the committed hunks"
+  },
+  "related_hygiene": {
+    "file": "crates/fj-lax/src/arithmetic.rs",
+    "summary": "Separate clippy hygiene patch for upstream arithmetic test warnings: introduced a PredicateCase alias and replaced cloned single-element argument slices with std::slice::from_ref."
+  }
+}
