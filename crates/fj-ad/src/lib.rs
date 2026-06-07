@@ -865,6 +865,37 @@ fn replace_zero_with_one(x: &Value) -> Result<Value, AdError> {
     .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
 
+/// d/dx bessel_i1e(x), guarded at tiny |x| exactly as JAX's `_bessel_i1e_jvp`.
+/// The naive `I0e(x) - I1e(x)*(sign(x) + 1/x)` is `0 * inf = NaN` at x==0, but
+/// the limit is 1/2 (since `I1e(x)/x -> 1/2`). JAX computes the formula on a
+/// `safe_x` (tiny x replaced by eps) and `select`s 0.5 where `|x| <= eps`.
+fn bessel_i1e_deriv(x: &Value) -> Result<Value, AdError> {
+    let ev = |p: Primitive, args: &[Value]| -> Result<Value, AdError> {
+        eval_primitive(p, args, &BTreeMap::new()).map_err(|e| AdError::EvalFailed(e.to_string()))
+    };
+    let eps_val = match x.dtype() {
+        DType::F32 => f64::from(f32::EPSILON),
+        _ => f64::EPSILON,
+    };
+    let eps_full = value_mul(&ones_like(x), &scalar_constant_matching_dtype(eps_val, x))?;
+    let half_full = value_mul(&ones_like(x), &scalar_constant_matching_dtype(0.5, x))?;
+
+    let abs_x = ev(Primitive::Abs, std::slice::from_ref(x))?;
+    let not_tiny = ev(Primitive::Gt, &[abs_x, eps_full.clone()])?;
+    let safe_x = ev(Primitive::Select, &[not_tiny.clone(), x.clone(), eps_full])?;
+
+    let i0e = ev(Primitive::BesselI0e, std::slice::from_ref(&safe_x))?;
+    // y = I1e(x) at the ORIGINAL x (JAX uses the primal output here).
+    let i1e = ev(Primitive::BesselI1e, std::slice::from_ref(x))?;
+    let sign_safe = ev(Primitive::Sign, std::slice::from_ref(&safe_x))?;
+    let recip_safe = ev(Primitive::Reciprocal, std::slice::from_ref(&safe_x))?;
+    let coeff = value_add(&sign_safe, &recip_safe)?;
+    let term = value_mul(&i1e, &coeff)?;
+    let formula = value_sub(&i0e, &term)?;
+    // For |x| <= eps the formula is discarded in favour of the exact limit 0.5.
+    ev(Primitive::Select, &[not_tiny, formula, half_full])
+}
+
 fn value_div(a: &Value, b: &Value) -> Result<Value, AdError> {
     eval_primitive(Primitive::Div, &[a.clone(), b.clone()], &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
@@ -2213,19 +2244,9 @@ pub fn vjp(
             Ok(vec![value_mul(g, &deriv)?])
         }
         Primitive::BesselI1e => {
-            // d/dx I1e(x) = I0e(x) - I1e(x) * (1/x + sign(x))
-            let x = &inputs[0];
-            let i0e = eval_primitive(Primitive::BesselI0e, inputs, params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let i1e = eval_primitive(Primitive::BesselI1e, inputs, params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let sign_x = eval_primitive(Primitive::Sign, std::slice::from_ref(x), params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let recip_x = eval_primitive(Primitive::Reciprocal, std::slice::from_ref(x), params)
-                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let coeff = value_add(&recip_x, &sign_x)?;
-            let i1e_coeff = value_mul(&i1e, &coeff)?;
-            let deriv = value_sub(&i0e, &i1e_coeff)?;
+            // d/dx I1e(x) = I0e(x) - I1e(x) * (1/x + sign(x)); = 1/2 at x=0
+            // (the naive form is 0*inf = NaN there). Guarded to match JAX.
+            let deriv = bessel_i1e_deriv(&inputs[0])?;
             Ok(vec![value_mul(g, &deriv)?])
         }
         Primitive::Div => {
@@ -7978,17 +7999,10 @@ fn jvp_rule(
             ep(Primitive::Mul, &[deriv, dx.clone()])
         }
         Primitive::BesselI1e => {
-            // d/dx I1e(x) = I0e(x) - I1e(x) * (1/x + sign(x))
-            let x = &primals[0];
-            let dx = &tangents[0];
-            let i0e = ep(Primitive::BesselI0e, &[x.clone()])?;
-            let i1e = ep(Primitive::BesselI1e, &[x.clone()])?;
-            let sign_x = ep(Primitive::Sign, &[x.clone()])?;
-            let recip_x = ep(Primitive::Reciprocal, &[x.clone()])?;
-            let coeff = ep(Primitive::Add, &[recip_x, sign_x])?;
-            let i1e_coeff = ep(Primitive::Mul, &[i1e, coeff])?;
-            let deriv = ep(Primitive::Sub, &[i0e, i1e_coeff])?;
-            ep(Primitive::Mul, &[deriv, dx.clone()])
+            // d/dx I1e(x) = I0e(x) - I1e(x) * (1/x + sign(x)); = 1/2 at x=0
+            // (the naive form is 0*inf = NaN there). Guarded to match JAX.
+            let deriv = bessel_i1e_deriv(&primals[0])?;
+            ep(Primitive::Mul, &[deriv, tangents[0].clone()])
         }
 
         // ── Binary ops with quotient rule ──
@@ -10646,6 +10660,45 @@ mod tests {
         let v05 = g05[0].as_f64_scalar().expect("scalar");
         let want = -4.0 / std::f64::consts::PI;
         assert!((v05 - want).abs() < 1e-6, "sinc'(0.5): got {v05}, want {want}");
+    }
+
+    #[test]
+    fn test_bessel_i1e_grad_at_zero_is_half_not_nan() {
+        // I1e(x) = e^{-|x|} I1(x); I1e(x)/x -> 1/2 as x->0, so I1e'(0) = 1/2.
+        // The naive I0e(x) - I1e(x)*(sign(x)+1/x) is 0 * inf = NaN at x=0; JAX's
+        // _bessel_i1e_jvp selects 0.5 where |x| <= eps.
+        let params = BTreeMap::new();
+
+        let grads = vjp_single(
+            Primitive::BesselI1e,
+            &[Value::scalar_f64(0.0)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        let vg = grads[0].as_f64_scalar().expect("scalar");
+        assert!((vg - 0.5).abs() < 1e-9, "VJP I1e'(0) must be 0.5, got {vg}");
+
+        let jvp = jvp_rule(
+            Primitive::BesselI1e,
+            &[Value::scalar_f64(0.0)],
+            &[Value::scalar_f64(1.0)],
+            &params,
+        )
+        .expect("jvp");
+        let jg = jvp.as_f64_scalar().expect("scalar");
+        assert!((jg - 0.5).abs() < 1e-9, "JVP I1e'(0) must be 0.5, got {jg}");
+
+        // Sanity: a nonzero point is unchanged and finite.
+        let g1 = vjp_single(
+            Primitive::BesselI1e,
+            &[Value::scalar_f64(1.0)],
+            &Value::scalar_f64(1.0),
+            &params,
+        )
+        .expect("vjp");
+        let v1 = g1[0].as_f64_scalar().expect("scalar");
+        assert!(v1.is_finite(), "I1e'(1) must be finite, got {v1}");
     }
 
     #[test]
