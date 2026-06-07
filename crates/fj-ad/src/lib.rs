@@ -1668,7 +1668,7 @@ fn unbroadcast_cotangent_to(value: Value, target: &Shape) -> Result<Value, AdErr
     if &out_shape != target {
         let mut params = BTreeMap::new();
         params.insert(
-            "shape".to_owned(),
+            "new_shape".to_owned(),
             target
                 .dims
                 .iter()
@@ -2688,7 +2688,7 @@ pub fn vjp(
             if current_shape != input_shape {
                 let mut reshape_params = BTreeMap::new();
                 reshape_params.insert(
-                    "shape".into(),
+                    "new_shape".into(),
                     input_shape
                         .dims
                         .iter()
@@ -10732,6 +10732,59 @@ mod tests {
     }
 
     #[test]
+    fn test_grad_broadcasting_mul_sub_div_values() {
+        // Value-correctness of the broadcasting binary VJPs (not just shape):
+        // each rule computes g * other_operand at the BROADCAST shape, then the
+        // reverse pass sums the smaller operand's cotangent over the broadcast
+        // axis. a[2,3], b[3], ones cotangent.
+        let a_vals = vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
+        let b_vals = vec![10.0, 20.0, 30.0];
+        let mk = |dims: Vec<u32>, vals: &[f64]| {
+            Value::Tensor(
+                TensorValue::new_f64_values(Shape { dims }, vals.to_vec()).unwrap(),
+            )
+        };
+        let a = mk(vec![2, 3], &a_vals);
+        let b = mk(vec![3], &b_vals);
+        let ones = mk(vec![2, 3], &vec![1.0; 6]);
+
+        // Mul: grad_a = b (broadcast), grad_b = sum_rows(a) = [1+4, 2+5, 3+6].
+        let gm = grad_jaxpr_with_cotangent(&make_binary_jaxpr(Primitive::Mul), &[a.clone(), b.clone()], &ones).unwrap();
+        assert_eq!(tensor_f64_values(&gm[0]), vec![10.0, 20.0, 30.0, 10.0, 20.0, 30.0]);
+        assert_eq!(gm[1].as_tensor().unwrap().shape.dims, vec![3]);
+        assert_eq!(tensor_f64_values(&gm[1]), vec![5.0, 7.0, 9.0], "grad_b = sum over rows of a");
+
+        // Sub: grad_a = g (ones), grad_b = -sum(g) over rows = [-2,-2,-2].
+        let gs = grad_jaxpr_with_cotangent(&make_binary_jaxpr(Primitive::Sub), &[a.clone(), b.clone()], &ones).unwrap();
+        assert_eq!(tensor_f64_values(&gs[0]), vec![1.0; 6]);
+        assert_eq!(tensor_f64_values(&gs[1]), vec![-2.0, -2.0, -2.0]);
+
+        // Div: grad_a = 1/b (broadcast); grad_b = -sum_rows(a)/b^2.
+        let gd = grad_jaxpr_with_cotangent(&make_binary_jaxpr(Primitive::Div), &[a, b], &ones).unwrap();
+        let ga = tensor_f64_values(&gd[0]);
+        let want_ga = vec![0.1, 0.05, 1.0 / 30.0, 0.1, 0.05, 1.0 / 30.0];
+        for (got, want) in ga.iter().zip(&want_ga) {
+            assert!((got - want).abs() < 1e-12, "div grad_a: got {got}, want {want}");
+        }
+        let gb = tensor_f64_values(&gd[1]);
+        let want_gb = vec![-5.0 / 100.0, -7.0 / 400.0, -9.0 / 900.0];
+        assert_eq!(gd[1].as_tensor().unwrap().shape.dims, vec![3]);
+        for (got, want) in gb.iter().zip(&want_gb) {
+            assert!((got - want).abs() < 1e-12, "div grad_b: got {got}, want {want}");
+        }
+
+        // Size-1 axis (keepdims) unbroadcast: a[1,3] + b[2,3]. grad_a sums the
+        // broadcast axis 0 but RESHAPES back to [1,3] (not [3]) — exercises the
+        // reshape-to-target path of unbroadcast_cotangent_to.
+        let a1 = mk(vec![1, 3], &vec![1.0, 2.0, 3.0]);
+        let b2 = mk(vec![2, 3], &b_vals.iter().chain([40.0, 50.0, 60.0].iter()).copied().collect::<Vec<_>>());
+        let ga = grad_jaxpr_with_cotangent(&make_binary_jaxpr(Primitive::Add), &[a1, b2], &ones).unwrap();
+        assert_eq!(ga[0].as_tensor().unwrap().shape.dims, vec![1, 3], "grad_a keepdims shape");
+        assert_eq!(tensor_f64_values(&ga[0]), vec![2.0, 2.0, 2.0], "grad_a summed over axis 0");
+        assert_eq!(ga[1].as_tensor().unwrap().shape.dims, vec![2, 3]);
+    }
+
+    #[test]
     fn test_grad_broadcasting_add_unbroadcasts_bias() {
         // out = a[2,3] + b[3]  (b broadcast over rows). fj-trace emits this as a
         // single implicit-broadcast Add equation, so the reverse pass must sum
@@ -11904,6 +11957,29 @@ mod tests {
             (grad_val - 6.0).abs() < 1e-10,
             "scalar broadcast VJP should sum all: got {grad_val}"
         );
+    }
+
+    #[test]
+    fn vjp_broadcast_size1_axis_reshapes_to_keepdim_shape() {
+        // BroadcastInDim [1,3] -> [2,3] (input axis 0 has size 1, broadcast to 2).
+        // The VJP sums output axis 0 -> [3] then must RESHAPE back to the [1,3]
+        // input shape. Regression: that reshape passed the wrong param name
+        // ("shape" instead of "new_shape") and errored "missing new_shape".
+        use fj_core::{Shape, TensorValue};
+        let input = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![1, 3] }, vec![1.0, 2.0, 3.0]).unwrap(),
+        );
+        let mut params = BTreeMap::new();
+        params.insert("shape".into(), "2,3".into());
+        params.insert("broadcast_dimensions".into(), "0,1".into());
+        let g = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![2, 3] }, vec![1.0; 6]).unwrap(),
+        );
+        let grads = vjp_single(Primitive::BroadcastInDim, &[input], &g, &params)
+            .expect("broadcast VJP with size-1 axis must not error on reshape");
+        let gt = grads[0].as_tensor().expect("grad tensor");
+        assert_eq!(gt.shape.dims, vec![1, 3], "grad must keep the size-1 axis");
+        assert_eq!(tensor_f64_values(&grads[0]), vec![2.0, 2.0, 2.0]);
     }
 
     #[test]
