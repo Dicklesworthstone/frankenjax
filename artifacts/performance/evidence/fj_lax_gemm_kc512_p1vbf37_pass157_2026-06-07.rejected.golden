@@ -1,0 +1,10 @@
+bead=frankenjax-p1vbf.37
+pass=157
+target=linalg/matmul_2d_2048x2048x2048_f64
+worker=vmi1227854
+lever=KC 256 -> 512 in blocked packed-B GEMM macro-kernel
+baseline_median_ms=507.00
+after_median_ms=854.03
+median_speedup=0.5937
+conservative_speedup=0.5220
+decision=rejected_source_restored
