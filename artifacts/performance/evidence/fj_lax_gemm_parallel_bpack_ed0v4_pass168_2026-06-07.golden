@@ -1,0 +1,17 @@
+bead=frankenjax-ed0v4
+pass=168
+target=linalg/matmul_2d_2048x2048x2048_f64
+profile_worker=vmi1149989
+profile_ms=789.63..820.45..859.20
+focused_pre_edit_baseline_vmi1149989_ms=593.69..634.13..683.95
+same_worker=ts1
+restored_baseline_ms=105.49..109.98..114.79
+candidate_ms=75.890..77.126..78.164
+median_speedup=1.4260x
+conservative_speedup=1.3496x
+score=16.0
+decision=kept
+proof=rch_ts1_focused_matmul_9_passed_1_ignored
+isomorphism=packed_bytes_identical_row_ownership_row_major_ascending_k_fp_order_dtype_shape_errors_rng_ties_unchanged
+validation=rustfmt_diff_check_rch_check_rch_clippy_ubs_exit0
+next=post_landing_reprofile

@@ -1,0 +1,76 @@
+{
+  "schema": "frankenjax.performance.keep.v1",
+  "bead_id": "frankenjax-ed0v4",
+  "pass": 168,
+  "created_utc": "2026-06-07T19:14:00Z",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "profile_basis": {
+    "restored_source_profile_worker": "vmi1149989",
+    "profile_rows_ms": {
+      "matmul_2d_2048x2048x2048_f64": [789.63, 820.45, 859.2],
+      "cholesky_1024x1024_f64": [123.11, 136.66, 150.92],
+      "lu_1024x1024_f64": [106.73, 114.17, 119.6],
+      "pinv_256x128_f64": [77.508, 83.177, 87.909],
+      "qr_1024x1024_f64": [57.789, 59.582, 61.306],
+      "eig_48x48_f64": [46.672, 48.828, 51.515]
+    },
+    "focused_pre_edit_baseline_worker": "vmi1149989",
+    "focused_pre_edit_baseline_ms": [593.69, 634.13, 683.95],
+    "same_worker_restored_baseline_worker": "ts1",
+    "same_worker_restored_baseline_ms": [105.49, 109.98, 114.79]
+  },
+  "lever": {
+    "name": "parallel B-panel packing",
+    "changed_paths": ["crates/fj-lax/src/tensor_contraction.rs"],
+    "description": "split the large B-panel packing copy across disjoint NR-panel ranges using the existing bounded matmul thread budget",
+    "primitive_family": "parallelized packing/data-motion primitive"
+  },
+  "isomorphism": {
+    "packed_bytes": "identical panel-major [panel][k][NR] bytes; direct layout test now exercises the parallel path",
+    "row_ownership": "unchanged",
+    "output_layout": "row-major unchanged",
+    "contracted_index_order": "per-output ascending-k unchanged",
+    "floating_point_reassociation": "none",
+    "nan_signed_zero_surface": "to_bits contract preserved in focused tests",
+    "tie_breaking": "no tie-breaking surface",
+    "rng": "no RNG surface",
+    "errors": "dtype/shape/error behavior unchanged"
+  },
+  "proof": {
+    "command": "rch exec -- cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "worker": "ts1",
+    "result": "9 passed, 1 ignored",
+    "coverage": [
+      "parallel pack layout bytes",
+      "basic matmul",
+      "ascending-k bit identity",
+      "special values bit identity",
+      "threaded bit identity",
+      "packed bit identity",
+      "large bit identity",
+      "blocked bit identity",
+      "packed NR8 golden digest"
+    ]
+  },
+  "benchmark": {
+    "command": "rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --sample-size 10 --warm-up-time 1 --measurement-time 3",
+    "worker": "ts1",
+    "baseline_ms": [105.49, 109.98, 114.79],
+    "candidate_ms": [75.89, 77.126, 78.164],
+    "median_speedup": 1.426,
+    "conservative_speedup": 1.3496,
+    "score": 16.0
+  },
+  "validation": {
+    "rustfmt": "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs passed",
+    "diff_check": "git diff --check -- crates/fj-lax/src/tensor_contraction.rs passed",
+    "cargo_check": "RCH ts1 cargo check -p fj-lax --all-targets passed",
+    "clippy": "RCH ts1 cargo clippy -p fj-lax --all-targets -- -D warnings passed",
+    "ubs": "ubs crates/fj-lax/src/tensor_contraction.rs exited 0; file-wide pre-existing warning inventory remains"
+  },
+  "decision": {
+    "kept": true,
+    "reason": "same-worker median speedup 1.4260x and conservative speedup 1.3496x clear Score >= 2.0"
+  },
+  "next_route": "Reprofile after landing; if GEMM remains top, avoid B-pack layout retuning and look for a deeper exact-order parallel/data-motion primitive or unlock FP-tolerant recursive kernels through explicit contract work."
+}

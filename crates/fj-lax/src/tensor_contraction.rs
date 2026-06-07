@@ -195,17 +195,40 @@ const KC: usize = 256;
 /// stays bit-for-bit identical to the strided kernel. Only full panels are packed;
 /// the `n % NR` column remainder is read from `b` directly. O(k·n) one-time cost,
 /// amortized across the O(m·k·n) multiply.
-fn pack_b_panels(b: &[f64], k: usize, n: usize) -> Vec<f64> {
-    let npanels = n / NR;
-    let mut bpack = vec![0.0f64; npanels * k * NR];
-    for jp in 0..npanels {
-        let jbase = jp * NR;
-        let dst_base = jp * k * NR;
+fn pack_b_panel_range(b: &[f64], k: usize, n: usize, start_panel: usize, out: &mut [f64]) {
+    let panel_elems = k * NR;
+    for (offset, panel) in out.chunks_exact_mut(panel_elems).enumerate() {
+        let jbase = (start_panel + offset) * NR;
         for l in 0..k {
-            let s = l * n + jbase;
-            bpack[dst_base + l * NR..dst_base + l * NR + NR].copy_from_slice(&b[s..s + NR]);
+            let src = l * n + jbase;
+            panel[l * NR..l * NR + NR].copy_from_slice(&b[src..src + NR]);
         }
     }
+}
+
+fn pack_b_panels(b: &[f64], k: usize, n: usize, threads: usize) -> Vec<f64> {
+    let npanels = n / NR;
+    let mut bpack = vec![0.0f64; npanels * k * NR];
+    if threads <= 1 || npanels <= 1 {
+        pack_b_panel_range(b, k, n, 0, &mut bpack);
+        return bpack;
+    }
+
+    let workers = threads.min(npanels);
+    let panel_elems = k * NR;
+    let panels_per_worker = npanels.div_ceil(workers);
+    std::thread::scope(|scope| {
+        let mut rest = bpack.as_mut_slice();
+        let mut start_panel = 0usize;
+        while start_panel < npanels {
+            let panels = panels_per_worker.min(npanels - start_panel);
+            let elems = panels * panel_elems;
+            let (chunk, tail) = rest.split_at_mut(elems);
+            rest = tail;
+            scope.spawn(move || pack_b_panel_range(b, k, n, start_panel, chunk));
+            start_panel += panels;
+        }
+    });
     bpack
 }
 
@@ -319,9 +342,9 @@ fn matmul_2d_with_threads(
         return result;
     }
     // Pack B's column panels once (shared, read-only across all output rows) when
-    // B spills L2. Bit-identical to the strided read; just sequential instead.
+    // B spills L2. Bit-identical to the strided read; just panel-contiguous.
     let bpack: Option<Vec<f64>> = if plan.pack_b && n >= NR {
-        Some(pack_b_panels(b, k, n))
+        Some(pack_b_panels(b, k, n, plan.threads))
     } else {
         None
     };
@@ -1138,7 +1161,7 @@ mod tests {
         // Panel-major pack: bpack[jp*k*NR + l*NR + jj] == b[l*n + jp*NR + jj].
         let (k, n) = (5usize, 24usize); // 24 % NR == 0, three full panels
         let b: Vec<f64> = (0..k * n).map(|i| i as f64).collect();
-        let bpack = pack_b_panels(&b, k, n);
+        let bpack = pack_b_panels(&b, k, n, 3);
         for jp in 0..n / NR {
             for l in 0..k {
                 for jj in 0..NR {
@@ -1148,6 +1171,27 @@ mod tests {
                         "jp={jp} l={l} jj={jj}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn pack_b_panels_parallel_matches_serial_bits() {
+        let (k, n) = (17usize, 72usize); // nine full NR panels
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| (i as f64 * 0.013_7).sin() * 3.0 - 0.25)
+            .collect();
+        let serial = pack_b_panels(&b, k, n, 1);
+
+        for threads in [2usize, 3, 4, 7, 16] {
+            let parallel = pack_b_panels(&b, k, n, threads);
+            assert_eq!(parallel.len(), serial.len(), "threads={threads}");
+            for (idx, (got, want)) in parallel.iter().zip(serial.iter()).enumerate() {
+                assert_eq!(
+                    got.to_bits(),
+                    want.to_bits(),
+                    "threads={threads} packed-B bit mismatch at {idx}"
+                );
             }
         }
     }
