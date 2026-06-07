@@ -3736,40 +3736,16 @@ pub fn vjp(
                             });
                         }
 
-                        // Inverse permutation: unsort the gradient.
-                        // For tied values, use the symmetric subgradient by averaging the
-                        // tied gradient slice before routing back.
-                        let mut sorted_pos = 0usize;
-                        while sorted_pos < axis_dim {
-                            let group_start = sorted_pos;
-                            let current_val = indexed[group_start].1;
-                            sorted_pos += 1;
-
-                            while sorted_pos < axis_dim {
-                                let next_val = indexed[sorted_pos].1;
-                                let same_bucket = current_val.partial_cmp(&next_val).is_none()
-                                    || matches!(
-                                        current_val.partial_cmp(&next_val),
-                                        Some(std::cmp::Ordering::Equal)
-                                    );
-                                if !same_bucket {
-                                    break;
-                                }
-                                sorted_pos += 1;
-                            }
-
-                            let group_end = sorted_pos;
-                            let mut grad_sum = 0.0_f64;
-                            for pos in group_start..group_end {
-                                let g_flat = base + pos * axis_stride;
-                                grad_sum += g_vals[g_flat];
-                            }
-                            let grad_share = grad_sum / (group_end - group_start) as f64;
-
-                            for &(orig_idx, _) in indexed.iter().take(group_end).skip(group_start) {
-                                let result_flat = base + orig_idx * axis_stride;
-                                result[result_flat] = grad_share;
-                            }
+                        // Inverse permutation: route each sorted position's gradient
+                        // back to the original index it came from. Tied values keep
+                        // the stable-sort order (ascending original index), matching
+                        // JAX's sort transpose (scatter by the argsort permutation,
+                        // no averaging) and making this the EXACT transpose of the
+                        // sort JVP (which gathers the tangent by the same argsort).
+                        // Averaging tied gradients would break that JVP/VJP duality.
+                        for (sorted_pos, &(orig_idx, _)) in indexed.iter().enumerate() {
+                            result[base + orig_idx * axis_stride] =
+                                g_vals[base + sorted_pos * axis_stride];
                         }
                     }
 
@@ -14504,11 +14480,12 @@ mod tests {
     }
 
     #[test]
-    fn sort_vjp_averages_tied_gradients() {
-        // x = [2, 1, 1], sorted = [1, 1, 2]
-        // g(sorted) = [3, 9, 6]
-        // Tied 1s share mean gradient (3+9)/2 = 6
-        // grad_x = [6, 6, 6]
+    fn sort_vjp_routes_tied_gradients_by_stable_permutation() {
+        // x = [2, 1, 1], stable sort -> [1, 1, 2] via permutation [1, 2, 0]
+        // (the two 1s keep ascending original index). g(sorted) = [3, 9, 6].
+        // JAX scatters by the inverse permutation (NO averaging) — the exact
+        // transpose of the sort JVP: grad_x[1]=g[0]=3, grad_x[2]=g[1]=9,
+        // grad_x[0]=g[2]=6  =>  grad_x = [6, 3, 9].
         let x = Value::Tensor(
             TensorValue::new(
                 DType::F64,
@@ -14536,7 +14513,33 @@ mod tests {
 
         let grads = vjp_single(Primitive::Sort, &[x], &g, &BTreeMap::new()).unwrap();
         let result = tensor_f64_values(&grads[0]);
-        assert_eq!(result, vec![6.0, 6.0, 6.0]);
+        assert_eq!(result, vec![6.0, 3.0, 9.0]);
+    }
+
+    #[test]
+    fn sort_jvp_vjp_are_transposes_at_ties() {
+        // The sort JVP gathers the tangent by argsort(primal); the VJP scatters
+        // the cotangent by the inverse argsort. They must be exact transposes, so
+        // <J·u, v> == <u, Jᵀ·v> for the linear sort jacobian J, even with ties.
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4] }, vec![2.0, 1.0, 2.0, 1.0]).unwrap(),
+        );
+        let u = vec![0.3, -0.7, 1.1, 0.5]; // probe tangent
+        let v = vec![1.3, 0.2, -0.9, 0.4]; // probe cotangent
+        let params = BTreeMap::new();
+        let du = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4] }, u.clone()).unwrap(),
+        );
+        let jvp = jvp_rule(Primitive::Sort, &[x.clone()], &[du], &params).unwrap();
+        let ju = tensor_f64_values(&jvp);
+        let gv = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4] }, v.clone()).unwrap(),
+        );
+        let vjp = vjp_single(Primitive::Sort, &[x], &gv, &params).unwrap();
+        let jtv = tensor_f64_values(&vjp[0]);
+        let lhs: f64 = ju.iter().zip(&v).map(|(a, b)| a * b).sum();
+        let rhs: f64 = u.iter().zip(&jtv).map(|(a, b)| a * b).sum();
+        assert!((lhs - rhs).abs() < 1e-12, "<Ju,v>={lhs} != <u,Jᵀv>={rhs}");
     }
 
     #[test]
