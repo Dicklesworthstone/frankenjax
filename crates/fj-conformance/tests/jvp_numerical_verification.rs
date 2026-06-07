@@ -338,6 +338,79 @@ fn conv_jvp_numerical() {
     assert_close(&analytical_tangent, &numerical, 1e-5, "Conv JVP");
 }
 
+// ======================== DotGeneral JVP ========================
+
+#[test]
+fn dot_general_jvp_numerical() {
+    // DotGeneral is BILINEAR like Conv: d dot_general = dot_general(dA, B) +
+    // dot_general(A, dB). Exercise the full machinery — a BATCHED matmul with a
+    // batch dim, a contracting dim, and free dims — so a JVP that dropped a term
+    // or mishandled the dimension_numbers under perturbation is caught. This op
+    // was absent from the numerical suites (the same coverage gap that hid the
+    // conv(dL,dR) bug). lhs=[B,M,K]=[2,2,3], rhs=[B,K,N]=[2,3,2] → out=[2,2,2].
+    let t3 = |dims: Vec<u32>, data: &[f64]| {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    };
+    let lhs = t3(
+        vec![2, 2, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
+    );
+    let rhs = t3(
+        vec![2, 3, 2],
+        &[1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0, 1.0, 0.0],
+    );
+    let dlhs = t3(
+        vec![2, 2, 3],
+        &[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2],
+    );
+    let drhs = t3(
+        vec![2, 3, 2],
+        &[0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
+    );
+
+    let mut params = BTreeMap::new();
+    params.insert("lhs_contracting_dims".to_string(), "2".to_string());
+    params.insert("rhs_contracting_dims".to_string(), "1".to_string());
+    params.insert("lhs_batch_dims".to_string(), "0".to_string());
+    params.insert("rhs_batch_dims".to_string(), "0".to_string());
+
+    let jaxpr = make_two_input_jaxpr(Primitive::DotGeneral, params.clone());
+    let jvp_result = fj_ad::jvp(
+        &jaxpr,
+        &[lhs.clone(), rhs.clone()],
+        &[dlhs.clone(), drhs.clone()],
+    )
+    .unwrap();
+    let analytical_tangent = extract_f64_vec(&jvp_result.tangents[0]);
+
+    let eps = 1e-6;
+    let l_plus = perturb(&lhs, &dlhs, eps);
+    let r_plus = perturb(&rhs, &drhs, eps);
+    let l_minus = perturb(&lhs, &dlhs, -eps);
+    let r_minus = perturb(&rhs, &drhs, -eps);
+
+    let out_plus = eval_primitive_multi(Primitive::DotGeneral, &[l_plus, r_plus], &params).unwrap();
+    let out_minus =
+        eval_primitive_multi(Primitive::DotGeneral, &[l_minus, r_minus], &params).unwrap();
+    let vals_plus = extract_f64_vec(&out_plus[0]);
+    let vals_minus = extract_f64_vec(&out_minus[0]);
+
+    let numerical: Vec<f64> = vals_plus
+        .iter()
+        .zip(vals_minus.iter())
+        .map(|(p, m)| (p - m) / (2.0 * eps))
+        .collect();
+
+    assert_close(&analytical_tangent, &numerical, 1e-5, "DotGeneral JVP");
+}
+
 // ======================== Eigh JVP ========================
 
 #[test]

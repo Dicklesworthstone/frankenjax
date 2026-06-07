@@ -1507,8 +1507,14 @@ fn dot_general_vjp(
         .collect();
 
     let mut d_lhs_params = BTreeMap::new();
-    let g_contracting: Vec<usize> =
-        (lhs_batch.len()..lhs_batch.len() + lhs_free_dims.len()).collect();
+    // The forward output is laid out [batch, lhs_free, rhs_free], so the
+    // cotangent g's RHS-FREE dims sit at [nb+nlf .. nb+nlf+nrf]. grad_lhs
+    // contracts THOSE (against rhs's free dims), NOT g's lhs_free dims — using
+    // the lhs_free range here contracted the wrong axes (size-masked into a
+    // silently-wrong gradient whenever |lhs_free| == |rhs_free|).
+    let g_contracting: Vec<usize> = (lhs_batch.len() + lhs_free_dims.len()
+        ..lhs_batch.len() + lhs_free_dims.len() + rhs_free_dims.len())
+        .collect();
     let rhs_new_contracting: Vec<usize> = rhs_free_dims.clone();
     d_lhs_params.insert(
         "lhs_contracting_dims".to_string(),

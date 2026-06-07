@@ -350,6 +350,82 @@ fn solve_vjp_numerical_3x3() {
     assert_gradients_close(&grad_b, &num_b, 1e-5, "Solve VJP w.r.t. b");
 }
 
+// ======================== DotGeneral VJP ========================
+
+#[test]
+fn dot_general_vjp_numerical() {
+    // DotGeneral's VJP transposes the contraction back onto each operand across
+    // batch/contracting/free dims — easy to get subtly wrong, and it was absent
+    // from the numerical suites. Verify a BATCHED matmul (lhs=[B,M,K]=[2,2,3],
+    // rhs=[B,K,N]=[2,3,2] → out=[B,M,N]=[2,2,2]) against central differences of
+    // the cotangent-induced loss w.r.t. BOTH operands.
+    let t3 = |dims: Vec<u32>, data: &[f64]| {
+        Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims },
+                data.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        )
+    };
+    let lhs_data = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0];
+    let rhs_data = [1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 0.0, 0.0, 2.0, 1.0, 0.0];
+    let lhs = t3(vec![2, 2, 3], &lhs_data);
+    let rhs = t3(vec![2, 3, 2], &rhs_data);
+
+    let mut params = BTreeMap::new();
+    params.insert("lhs_contracting_dims".to_string(), "2".to_string());
+    params.insert("rhs_contracting_dims".to_string(), "1".to_string());
+    params.insert("lhs_batch_dims".to_string(), "0".to_string());
+    params.insert("rhs_batch_dims".to_string(), "0".to_string());
+
+    let out = eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &params).unwrap();
+    let g_data = [1.0, -0.5, 0.7, 0.3, -1.1, 0.9, 0.2, -0.4];
+    let g = t3(vec![2, 2, 2], &g_data);
+
+    let vjp = fj_ad::vjp(
+        Primitive::DotGeneral,
+        &[lhs.clone(), rhs.clone()],
+        std::slice::from_ref(&g),
+        std::slice::from_ref(&out),
+        &params,
+    )
+    .unwrap();
+    let grad_lhs = extract_f64_vec(&vjp[0]);
+    let grad_rhs = extract_f64_vec(&vjp[1]);
+
+    let eps = 1e-6;
+    let loss = |lv: &Value, rv: &Value| -> f64 {
+        let o = eval_primitive(Primitive::DotGeneral, &[lv.clone(), rv.clone()], &params).unwrap();
+        extract_f64_vec(&o)
+            .iter()
+            .zip(g_data.iter())
+            .map(|(oi, gi)| oi * gi)
+            .sum()
+    };
+    let mut num_lhs = vec![0.0; lhs_data.len()];
+    for idx in 0..lhs_data.len() {
+        let mut p = lhs_data.to_vec();
+        p[idx] += eps;
+        let mut m = lhs_data.to_vec();
+        m[idx] -= eps;
+        num_lhs[idx] = (loss(&t3(vec![2, 2, 3], &p), &rhs) - loss(&t3(vec![2, 2, 3], &m), &rhs))
+            / (2.0 * eps);
+    }
+    let mut num_rhs = vec![0.0; rhs_data.len()];
+    for idx in 0..rhs_data.len() {
+        let mut p = rhs_data.to_vec();
+        p[idx] += eps;
+        let mut m = rhs_data.to_vec();
+        m[idx] -= eps;
+        num_rhs[idx] = (loss(&lhs, &t3(vec![2, 3, 2], &p)) - loss(&lhs, &t3(vec![2, 3, 2], &m)))
+            / (2.0 * eps);
+    }
+    assert_gradients_close(&grad_lhs, &num_lhs, 1e-5, "DotGeneral VJP w.r.t. lhs");
+    assert_gradients_close(&grad_rhs, &num_rhs, 1e-5, "DotGeneral VJP w.r.t. rhs");
+}
+
 // ======================== TriangularSolve VJP ========================
 
 #[test]
