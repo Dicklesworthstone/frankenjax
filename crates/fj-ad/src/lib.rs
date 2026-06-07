@@ -1474,6 +1474,37 @@ fn dot_vjp(inputs: &[Value], g: &Value) -> Result<Vec<Value>, AdError> {
     }
 }
 
+/// Transpose a dot_general VJP result from its natural contraction layout
+/// `[batch, free, contract]` back to the OPERAND's actual dim order.
+///
+/// `dim_order[p]` is the operand's original dim index occupying result position
+/// `p`. When that is already the identity (the operand was in canonical
+/// `[batch, free, contract]` order) the value is returned untouched, so the
+/// common jnp.matmul/einsum case stays transpose-free and bit-identical.
+fn transpose_grad_to_operand_order(
+    value: Value,
+    dim_order: &[usize],
+    rank: usize,
+) -> Result<Value, AdError> {
+    if dim_order.len() == rank && dim_order.iter().enumerate().all(|(p, &d)| p == d) {
+        return Ok(value);
+    }
+    // perm[d] = result position holding operand dim d → Transpose moves it home.
+    let mut perm = vec![0usize; rank];
+    for (p, &d) in dim_order.iter().enumerate() {
+        if d < rank {
+            perm[d] = p;
+        }
+    }
+    let mut t_params = BTreeMap::new();
+    t_params.insert(
+        "permutation".to_string(),
+        perm.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","),
+    );
+    eval_primitive(Primitive::Transpose, &[value], &t_params)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 fn dot_general_vjp(
     inputs: &[Value],
     g: &Value,
@@ -1554,6 +1585,19 @@ fn dot_general_vjp(
         &d_lhs_params,
     )
     .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    // d_lhs comes out laid out [lhs_batch, lhs_free, lhs_contract]; restore lhs's
+    // actual dim order. The contract block follows ascending rhs-contracting
+    // position (paired back to the matching lhs-contracting dim).
+    let mut rhs_contract_pairs: Vec<(usize, usize)> =
+        rhs_contracting.iter().copied().enumerate().map(|(j, d)| (d, j)).collect();
+    rhs_contract_pairs.sort_by_key(|&(d, _)| d);
+    let lhs_dim_order: Vec<usize> = lhs_batch
+        .iter()
+        .copied()
+        .chain(lhs_free_dims.iter().copied())
+        .chain(rhs_contract_pairs.iter().map(|&(_, j)| lhs_contracting[j]))
+        .collect();
+    let d_lhs = transpose_grad_to_operand_order(d_lhs, &lhs_dim_order, lhs_rank)?;
 
     let mut d_rhs_params = BTreeMap::new();
     let lhs_new_contracting: Vec<usize> = lhs_free_dims.clone();
@@ -1597,6 +1641,19 @@ fn dot_general_vjp(
         &d_rhs_params,
     )
     .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+    // d_rhs comes out laid out [rhs_batch, rhs_contract, rhs_free]; restore rhs's
+    // actual dim order. The contract block follows ascending lhs-contracting
+    // position (paired back to the matching rhs-contracting dim).
+    let mut lhs_contract_pairs: Vec<(usize, usize)> =
+        lhs_contracting.iter().copied().enumerate().map(|(j, d)| (d, j)).collect();
+    lhs_contract_pairs.sort_by_key(|&(d, _)| d);
+    let rhs_dim_order: Vec<usize> = rhs_batch
+        .iter()
+        .copied()
+        .chain(lhs_contract_pairs.iter().map(|&(_, j)| rhs_contracting[j]))
+        .chain(rhs_free_dims.iter().copied())
+        .collect();
+    let d_rhs = transpose_grad_to_operand_order(d_rhs, &rhs_dim_order, rhs_rank)?;
 
     Ok(vec![d_lhs, d_rhs])
 }
