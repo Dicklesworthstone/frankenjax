@@ -3168,7 +3168,15 @@ pub fn vjp(
             .map(|v| vec![v])
         }
         Primitive::BitcastConvertType => Ok(vec![zeros_like(&inputs[0])]),
-        Primitive::ReducePrecision => Ok(vec![g.clone()]),
+        Primitive::ReducePrecision => {
+            // JAX models reduce_precision as linear: its transpose applies
+            // reduce_precision to the cotangent (deflinear(.., lambda t:
+            // reduce_precision(t))), so the gradient is rounded to the reduced
+            // precision — not the identity.
+            let rounded = eval_primitive(Primitive::ReducePrecision, std::slice::from_ref(g), params)
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            Ok(vec![rounded])
+        }
         Primitive::DynamicUpdateSlice => {
             // VJP: g_operand = g with update region zeroed out,
             //       g_update = slice of g at the start positions.
@@ -8364,7 +8372,11 @@ fn jvp_rule(
             let primal_out = ep_p(Primitive::BitcastConvertType, primals, params)?;
             Ok(zeros_like(&primal_out))
         }
-        Primitive::ReducePrecision => Ok(tangents[0].clone()),
+        // reduce_precision is linear; JAX applies it to the tangent (deflinear),
+        // rounding the gradient to the reduced precision (not the identity).
+        Primitive::ReducePrecision => {
+            ep_p(Primitive::ReducePrecision, &[tangents[0].clone()], params)
+        }
         Primitive::DynamicUpdateSlice => ep_p(Primitive::DynamicUpdateSlice, tangents, params),
         Primitive::Cumsum => ep_p(Primitive::Cumsum, &[tangents[0].clone()], params),
         Primitive::Cumprod => cumprod_jvp_value(&primals[0], &tangents[0], params),
@@ -10726,6 +10738,35 @@ mod tests {
         )
         .unwrap();
         assert!((j2.as_f64_scalar().unwrap() - ln2).abs() < 1e-12, "xlog1py JVP");
+    }
+
+    #[test]
+    fn test_reduce_precision_grad_rounds_like_jax_deflinear() {
+        // JAX registers reduce_precision as LINEAR via
+        //   deflinear(reduce_precision_p, lambda t: [reduce_precision(t)])
+        // so its VJP/JVP APPLY reduce_precision to the cotangent/tangent — the
+        // gradient is rounded to the reduced precision. fj-ad returned the
+        // identity (full-precision gradient), diverging from JAX.
+        let mut params = BTreeMap::new();
+        params.insert("exponent_bits".to_owned(), "8".to_owned());
+        params.insert("mantissa_bits".to_owned(), "2".to_owned());
+        let x = Value::scalar_f64(0.0);
+        let g = Value::scalar_f64(1.3);
+
+        // Expected: reduce_precision(g). Compute it so the test tracks fj-lax's
+        // exact rounding, and confirm it actually changes 1.3 (meaningful test).
+        let rounded =
+            eval_primitive(Primitive::ReducePrecision, std::slice::from_ref(&g), &params).unwrap();
+        let want = rounded.as_f64_scalar().unwrap();
+        assert!((want - 1.3).abs() > 1e-6, "reduce_precision should round 1.3, got {want}");
+
+        let grads = vjp_single(Primitive::ReducePrecision, &[x.clone()], &g, &params).unwrap();
+        let got = grads[0].as_f64_scalar().unwrap();
+        assert!((got - want).abs() < 1e-12, "VJP must round the cotangent: got {got}, want {want}");
+
+        let jvp = jvp_rule(Primitive::ReducePrecision, &[x], &[g.clone()], &params).unwrap();
+        let jgot = jvp.as_f64_scalar().unwrap();
+        assert!((jgot - want).abs() < 1e-12, "JVP must round the tangent: got {jgot}, want {want}");
     }
 
     #[test]
