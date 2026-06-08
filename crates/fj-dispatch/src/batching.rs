@@ -306,9 +306,44 @@ fn harmonize_ternary(
                 Some(bd) => move_batch_dim_to_front(&c.value, bd)?,
                 None => broadcast_unbatched(&c.value, batch_size, 0)?,
             };
+            // Align the three operands' LOGICAL (non-batch) ranks so a lower-rank
+            // bound (e.g. clamp's scalar min/max harmonized to [batch]) broadcasts
+            // against a higher-rank operand ([batch, ...inner]) from the RIGHT,
+            // instead of mis-aligning the batch axis against a logical axis. Equal-
+            // rank operands (the Select contract, and same-shape Clamp) are
+            // unchanged. Same mixed-rank fix as the binary elementwise path.
+            let (a_val, b_val, c_val) =
+                align_batched_ternary_logical_ranks(a_val, b_val, c_val)?;
             Ok((a_val, b_val, c_val, Some(0)))
         }
     }
+}
+
+/// Pad the three batched-at-0 operands so they share the maximum logical
+/// (non-batch) rank, inserting size-1 axes right after the batch axis of any
+/// lower-rank operand. This lets a lower-rank bound broadcast against a
+/// higher-rank operand from the right (the broadcast the unbatched op performed).
+/// Equal-rank operands are returned unchanged. See [`align_batched_logical_ranks`].
+fn align_batched_ternary_logical_ranks(
+    a: Value,
+    b: Value,
+    c: Value,
+) -> Result<(Value, Value, Value), BatchError> {
+    let rank_of = |v: &Value| match v {
+        Value::Tensor(t) => t.shape.rank(),
+        Value::Scalar(_) => 0,
+    };
+    let max_rank = rank_of(&a).max(rank_of(&b)).max(rank_of(&c));
+    let pad = |v: Value| -> Result<Value, BatchError> {
+        match &v {
+            Value::Tensor(t) if t.shape.rank() < max_rank && !t.shape.dims.is_empty() => {
+                let count = max_rank - t.shape.rank();
+                insert_unit_axes_after_batch(&v, t, count)
+            }
+            _ => Ok(v),
+        }
+    };
+    Ok((pad(a)?, pad(b)?, pad(c)?))
 }
 
 // ── Per-Primitive Batching Rules ───────────────────────────────────
@@ -7846,6 +7881,33 @@ mod tests {
             extract_i64_vec(&result2.value),
             vec![101, 102, 103, 210, 220, 230]
         );
+    }
+
+    #[test]
+    fn test_batch_clamp_vector_operand_scalar_bounds() {
+        // vmap(|x| clamp(2, x, 5)) over a batched VECTOR operand [batch, n] with
+        // scalar (unbatched constant) bounds. The bounds harmonize to [batch] and
+        // must broadcast against the [batch, n] operand — the ternary version of
+        // the mixed-rank vmap broadcast (clamp allows scalar min/max).
+        let min = BatchTracer::unbatched(Value::scalar_i64(2));
+        let operand = BatchTracer::batched(make_i64_matrix(2, 3, &[1, 2, 3, 10, 20, 30]), 0);
+        let max = BatchTracer::unbatched(Value::scalar_i64(5));
+        let result =
+            apply_batch_rule(Primitive::Clamp, &[min, operand, max], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        assert_eq!(result.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
+        // lane0 [1,2,3] -> [2,2,3]; lane1 [10,20,30] -> [5,5,5].
+        assert_eq!(extract_i64_vec(&result.value), vec![2, 2, 3, 5, 5, 5]);
+
+        // Per-lane batched scalar bounds (each lane its own min/max) must align too.
+        let min2 = BatchTracer::batched(make_i64_vector(&[0, 12]), 0);
+        let operand2 = BatchTracer::batched(make_i64_matrix(2, 3, &[1, 2, 3, 10, 20, 30]), 0);
+        let max2 = BatchTracer::batched(make_i64_vector(&[2, 25]), 0);
+        let result2 =
+            apply_batch_rule(Primitive::Clamp, &[min2, operand2, max2], &BTreeMap::new()).unwrap();
+        assert_eq!(result2.value.as_tensor().unwrap().shape.dims, vec![2, 3]);
+        // lane0 clamp[0,2]: [1,2,2]; lane1 clamp[12,25]: [12,20,25].
+        assert_eq!(extract_i64_vec(&result2.value), vec![1, 2, 2, 12, 20, 25]);
     }
 
     #[test]
