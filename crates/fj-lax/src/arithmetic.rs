@@ -4832,7 +4832,7 @@ pub(crate) fn eval_betainc(primitive: Primitive, inputs: &[Value]) -> Result<Val
 fn eval_ternary_elementwise(
     primitive: Primitive,
     inputs: &[Value],
-    op: impl Fn(f64, f64, f64) -> f64,
+    op: impl Fn(f64, f64, f64) -> f64 + Sync,
 ) -> Result<Value, EvalError> {
     let a_val = &inputs[0];
     let b_val = &inputs[1];
@@ -4885,19 +4885,60 @@ fn eval_ternary_elementwise(
     let b_strides = broadcast_strides(&t_b.shape, &out_shape);
     let x_strides = broadcast_strides(&t_x.shape, &out_shape);
 
-    let mut elements = Vec::with_capacity(total_elements);
-    let mut multi = Vec::with_capacity(out_shape.rank());
-
-    for flat in 0..total_elements {
-        flat_to_multi_into(flat, &out_strides, &mut multi);
-        let a_idx = broadcast_flat_index(&multi, &a_strides);
-        let b_idx = broadcast_flat_index(&multi, &b_strides);
-        let x_idx = broadcast_flat_index(&multi, &x_strides);
-
+    let rank = out_shape.rank();
+    let eval_at = |flat: usize, multi: &mut Vec<usize>| -> f64 {
+        flat_to_multi_into(flat, &out_strides, multi);
+        let a_idx = broadcast_flat_index(multi, &a_strides);
+        let b_idx = broadcast_flat_index(multi, &b_strides);
+        let x_idx = broadcast_flat_index(multi, &x_strides);
         let a_f = t_a.elements[a_idx].as_f64().unwrap_or(0.0);
         let b_f = t_b.elements[b_idx].as_f64().unwrap_or(0.0);
         let x_f = t_x.elements[x_idx].as_f64().unwrap_or(0.0);
-        elements.push(Literal::from_f64(op(a_f, b_f, x_f)));
+        op(a_f, b_f, x_f)
+    };
+
+    // Threaded fast path: betainc is the most compute-bound special function
+    // (per element: a continued fraction plus three lgamma evaluations), so the
+    // serial map left it single-threaded while its cheaper binary peers
+    // (igamma/igammac/zeta) are already parallelized. Each output element is an
+    // independent evaluation over its broadcast indices, so threading is
+    // BIT-IDENTICAL to the serial loop (same op, same indices, same order within
+    // each slot). Gated to the same work threshold as the binary expensive path.
+    if total_elements >= EXPENSIVE_BINARY_PARALLEL_MIN {
+        let threads = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1)
+            .min(total_elements);
+        if threads > 1 {
+            let mut out = vec![0.0_f64; total_elements];
+            let eval_ref = &eval_at;
+            let chunk = total_elements.div_ceil(threads);
+            std::thread::scope(|scope| {
+                let mut rest: &mut [f64] = out.as_mut_slice();
+                let mut start = 0usize;
+                while start < total_elements {
+                    let len = chunk.min(total_elements - start);
+                    let (blk, tail) = rest.split_at_mut(len);
+                    rest = tail;
+                    let base = start;
+                    scope.spawn(move || {
+                        let mut multi = Vec::with_capacity(rank);
+                        for (i, slot) in blk.iter_mut().enumerate() {
+                            *slot = eval_ref(base + i, &mut multi);
+                        }
+                    });
+                    start += len;
+                }
+            });
+            let elements: Vec<Literal> = out.into_iter().map(Literal::from_f64).collect();
+            return Ok(Value::Tensor(TensorValue::new(DType::F64, out_shape, elements)?));
+        }
+    }
+
+    let mut elements = Vec::with_capacity(total_elements);
+    let mut multi = Vec::with_capacity(rank);
+    for flat in 0..total_elements {
+        elements.push(Literal::from_f64(eval_at(flat, &mut multi)));
     }
 
     Ok(Value::Tensor(TensorValue::new(
@@ -6599,6 +6640,40 @@ mod tests {
     use super::*;
     use fj_test_utils::fixture_id_from_json;
     use std::f64::consts::PI;
+
+    #[test]
+    fn betainc_threaded_bit_identical_to_serial() {
+        // The threaded eval_ternary_elementwise path (engaged above the work
+        // threshold) must be BIT-FOR-BIT identical to the per-element serial
+        // betainc_approx — each output element is an independent evaluation, so
+        // splitting the range across threads cannot change any bit.
+        let n = (EXPENSIVE_BINARY_PARALLEL_MIN + 777) as u32; // above the threshold
+        let a = 2.5_f64;
+        let b = 3.5_f64;
+        let xs: Vec<f64> = (0..n).map(|i| (i as f64 + 0.5) / n as f64).collect(); // (0,1)
+        let x_tensor = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![n] },
+                xs.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let out = eval_betainc(
+            Primitive::Betainc,
+            &[Value::scalar_f64(a), Value::scalar_f64(b), x_tensor],
+        )
+        .unwrap();
+        let got = out.as_tensor().unwrap();
+        for (i, &x) in xs.iter().enumerate() {
+            let expected = betainc_approx(a, b, x);
+            assert_eq!(
+                got.elements[i].as_f64().unwrap().to_bits(),
+                expected.to_bits(),
+                "betainc threaded != serial at i={i} (x={x})"
+            );
+        }
+    }
 
     #[test]
     fn complex_pow_negative_integer_exponent_no_overflow() {
