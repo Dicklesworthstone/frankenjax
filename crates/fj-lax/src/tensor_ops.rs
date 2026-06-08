@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 
 use fj_core::{DType, Literal, LiteralBuffer, Primitive, Shape, TensorValue, Value};
+use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -5175,6 +5176,44 @@ fn conv_float_literal_from_f64(dtype: DType, value: f64) -> Literal {
     }
 }
 
+/// Extract a real-float conv operand's elements as f64 (F64 borrowed; F32/BF16/F16
+/// promoted losslessly), or None for non-real-float literals. The generic conv
+/// loop accumulates in f64 over these exact promotions and rounds to the output
+/// dtype, so an im2col+GEMM on these values + rounding back is bit-identical.
+fn conv_real_elements_as_f64(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        return Some(Cow::Borrowed(values));
+    }
+    let mut out = Vec::with_capacity(tensor.elements.len());
+    for literal in &tensor.elements {
+        match literal {
+            Literal::F64Bits(_) | Literal::F32Bits(_) | Literal::BF16Bits(_) | Literal::F16Bits(_) => {
+                out.push(literal.as_f64()?);
+            }
+            _ => return None,
+        }
+    }
+    Some(Cow::Owned(out))
+}
+
+/// Build a conv output tensor from f64 accumulators, rounding each to `out_dtype`
+/// with `conv_float_literal_from_f64` (F64 keeps the dense new_f64_values path).
+fn conv_real_output_from_f64(
+    out_dtype: DType,
+    dims: Vec<u32>,
+    out: Vec<f64>,
+) -> Result<Value, EvalError> {
+    let shape = Shape { dims };
+    if out_dtype == DType::F64 {
+        return Ok(Value::Tensor(TensorValue::new_f64_values(shape, out)?));
+    }
+    let elements: Vec<Literal> = out
+        .iter()
+        .map(|&v| conv_float_literal_from_f64(out_dtype, v))
+        .collect();
+    Ok(Value::Tensor(TensorValue::new(out_dtype, shape, elements)?))
+}
+
 fn conv_literal_from_complex(dtype: DType, re: f64, im: f64) -> Literal {
     match dtype {
         DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
@@ -5296,10 +5335,15 @@ fn eval_conv_1d(
     // independent output morsels; each output element still performs its own
     // inner reduction in the same serial k/ci order.
     if !is_complex
-        && out_dtype == DType::F64
-        && let (Some(lhs_src), Some(rhs_src)) =
-            (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+        && matches!(out_dtype, DType::F64 | DType::F32 | DType::BF16 | DType::F16)
+        && let (Some(lhs_cow), Some(rhs_cow)) =
+            (conv_real_elements_as_f64(lhs), conv_real_elements_as_f64(rhs))
     {
+        // Re-borrow as &[f64] so the threaded morsel closures below can capture a
+        // (Copy) slice reference rather than moving the Cow. The Cow owns the
+        // (possibly promoted) data for the lifetime of this block.
+        let lhs_src: &[f64] = &lhs_cow;
+        let rhs_src: &[f64] = &rhs_cow;
         if batch > 0 {
             (batch - 1)
                 .checked_mul(width_c_in)
@@ -5341,12 +5385,11 @@ fn eval_conv_1d(
                 }
             }
             let out = matmul_2d(&col, num_rows, kdim, rhs_src, c_out);
-            return Ok(Value::Tensor(TensorValue::new_f64_values(
-                Shape {
-                    dims: vec![batch as u32, out_w as u32, c_out as u32],
-                },
+            return conv_real_output_from_f64(
+                out_dtype,
+                vec![batch as u32, out_w as u32, c_out as u32],
                 out,
-            )?));
+            );
         }
 
         let threads = conv_morsel_threads(total, conv_ops);
@@ -5425,12 +5468,11 @@ fn eval_conv_1d(
             }
         }
 
-        return Ok(Value::Tensor(TensorValue::new_f64_values(
-            Shape {
-                dims: vec![batch as u32, out_w as u32, c_out as u32],
-            },
+        return conv_real_output_from_f64(
+            out_dtype,
+            vec![batch as u32, out_w as u32, c_out as u32],
             out,
-        )?));
+        );
     }
 
     for n in 0..batch {
@@ -5585,16 +5627,17 @@ fn eval_conv_2d(
 
     let is_complex = matches!(out_dtype, DType::Complex64 | DType::Complex128);
 
-    // Dense F64 fast path: read both operands straight from their contiguous f64
-    // backings, bypassing the per-multiply Literal materialization + match in the
-    // innermost conv loop. Bit-identical to the generic non-complex path — same
-    // index math, same ascending kh/kw/ci accumulation order, same `*`/`+`, and
-    // the same from_f64 output (out_dtype == F64; for dense f64,
-    // src[idx] == as_f64().unwrap_or(0.0)). Falls through otherwise.
+    // Dense real-float fast path (F64/F32/BF16/F16): read both operands as f64
+    // (F64 borrowed; f32/bf16/f16 promoted losslessly), bypassing the per-multiply
+    // Literal materialization + match in the innermost conv loop. Bit-identical to
+    // the generic non-complex path — same index math, same ascending kh/kw/ci
+    // accumulation order in f64, same `*`/`+`, same `conv_float_literal_from_f64`
+    // rounding to out_dtype. f32 is the default ML dtype, so this routes the core
+    // CNN op through the im2col + GEMM kernel instead of the scalar loop.
     if !is_complex
-        && out_dtype == DType::F64
+        && matches!(out_dtype, DType::F64 | DType::F32 | DType::BF16 | DType::F16)
         && let (Some(lhs_src), Some(rhs_src)) =
-            (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+            (conv_real_elements_as_f64(lhs), conv_real_elements_as_f64(rhs))
     {
         // im2col + GEMM fast path. The kernel `rhs_src` is laid out
         // [KH,KW,Cin,Cout] row-major, which is exactly the [(KH·KW·Cin) × Cout]
@@ -5645,13 +5688,12 @@ fn eval_conv_2d(
                 }
             }
             let num_rows = total / c_out;
-            let out = matmul_2d(&col, num_rows, kdim, rhs_src, c_out);
-            return Ok(Value::Tensor(TensorValue::new_f64_values(
-                Shape {
-                    dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
-                },
+            let out = matmul_2d(&col, num_rows, kdim, rhs_src.as_ref(), c_out);
+            return conv_real_output_from_f64(
+                out_dtype,
+                vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
                 out,
-            )?));
+            );
         }
 
         let mut out = Vec::with_capacity(total);
@@ -5699,12 +5741,11 @@ fn eval_conv_2d(
                 }
             }
         }
-        return Ok(Value::Tensor(TensorValue::new_f64_values(
-            Shape {
-                dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
-            },
+        return conv_real_output_from_f64(
+            out_dtype,
+            vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
             out,
-        )?));
+        );
     }
 
     for n in 0..batch {
@@ -6637,6 +6678,107 @@ mod tests {
             .iter()
             .map(|&(k, v)| (k.to_owned(), v.to_owned()))
             .collect()
+    }
+
+    #[test]
+    fn conv2d_f32_im2col_gemm_bit_identical_to_reference() {
+        // f32 conv2d (default ML dtype) now routes through the im2col + GEMM path
+        // (promote f32->f64, GEMM, round to f32). Sized above CONV_IM2COL_MIN_OPS to
+        // exercise the GEMM path. Must be bit-for-bit identical to the textbook
+        // ascending-(kh,kw,ci) reference: f64 accumulation of exact f32 products,
+        // then (sum as f32).
+        let (h, w, c_in, c_out, kh, kw) = (20usize, 20usize, 4usize, 8usize, 3usize, 3usize);
+        let xf: Vec<f32> = (0..h * w * c_in)
+            .map(|i| (i as f32 * 0.011).sin() * 1.3 - 0.2)
+            .collect();
+        let kf: Vec<f32> = (0..kh * kw * c_in * c_out)
+            .map(|i| (i as f32 * 0.017).cos() * 0.9 + 0.1)
+            .collect();
+        let mk32 = |dims: Vec<u32>, data: &[f32]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims },
+                    data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let out = eval_conv(
+            Primitive::Conv,
+            &[
+                mk32(vec![1, h as u32, w as u32, c_in as u32], &xf),
+                mk32(vec![kh as u32, kw as u32, c_in as u32, c_out as u32], &kf),
+            ],
+            &params(&[("padding", "valid"), ("strides", "1")]),
+        )
+        .unwrap();
+        let (out_h, out_w) = (h - kh + 1, w - kw + 1);
+        let Value::Tensor(t) = out else { panic!("expected tensor") };
+        assert_eq!(t.dtype, DType::F32);
+        assert_eq!(t.shape.dims, vec![1, out_h as u32, out_w as u32, c_out as u32]);
+        let got: Vec<u32> = t
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::F32Bits(b) => *b,
+                o => panic!("unexpected {o:?}"),
+            })
+            .collect();
+        let mut want = Vec::new();
+        for oh in 0..out_h {
+            for ow in 0..out_w {
+                for co in 0..c_out {
+                    let mut acc = 0.0f64;
+                    for dh in 0..kh {
+                        for dw in 0..kw {
+                            for ci in 0..c_in {
+                                let lv = xf[((oh + dh) * w + (ow + dw)) * c_in + ci] as f64;
+                                let kv = kf[((dh * kw + dw) * c_in + ci) * c_out + co] as f64;
+                                acc += lv * kv;
+                            }
+                        }
+                    }
+                    want.push((acc as f32).to_bits());
+                }
+            }
+        }
+        assert_eq!(got, want, "f32 conv2d must be bit-identical to the f64-accum reference");
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_f32_conv2d() {
+        use std::time::Instant;
+        let run = |b: usize, h: usize, c_in: usize, c_out: usize, k: usize| {
+            let x: Vec<f32> = (0..b * h * h * c_in).map(|i| (i % 7) as f32 * 0.5).collect();
+            let ker: Vec<f32> = (0..k * k * c_in * c_out).map(|i| (i % 5) as f32 * 0.25).collect();
+            let mk = |dims: Vec<u32>, data: &[f32]| {
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F32,
+                        Shape { dims },
+                        data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                    )
+                    .unwrap(),
+                )
+            };
+            let inputs = [
+                mk(vec![b as u32, h as u32, h as u32, c_in as u32], &x),
+                mk(vec![k as u32, k as u32, c_in as u32, c_out as u32], &ker),
+            ];
+            let p = params(&[("padding", "valid"), ("strides", "1")]);
+            let _ = eval_conv(Primitive::Conv, &inputs, &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                let _ = eval_conv(Primitive::Conv, &inputs, &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            println!("BENCH f32 conv2d [{b},{h},{h},{c_in}]*[{k},{k},{c_in},{c_out}]: {:.4}ms", best * 1e3);
+        };
+        run(8, 32, 16, 32, 3);
+        run(4, 28, 32, 64, 3);
     }
 
     #[test]
