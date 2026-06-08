@@ -5846,6 +5846,25 @@ pub(crate) fn eval_conv(
         });
     }
 
+    // lhs_dilation (input dilation = transposed / fractionally-strided conv):
+    // conceptually inserts (L-1) zeros between input elements along each spatial axis,
+    // then runs an ordinary conv. Implemented by materializing the zero-dilated input
+    // and recursing with lhs_dilation stripped — exact by definition, and it composes
+    // with stride / rhs_dilation / grouping / padding for free (the recursion runs the
+    // full conv over the dilated input). Done before the param-reject guard.
+    let num_spatial = lhs_rank - 2;
+    let lhs_dils = parse_conv_lhs_dilation(primitive, params, num_spatial)?;
+    if lhs_dils.iter().any(|&l| l > 1) {
+        let dilated = dilate_conv_lhs(primitive, lhs, &lhs_dils)?;
+        let mut inner = params.clone();
+        inner.remove("lhs_dilation");
+        return eval_conv(
+            primitive,
+            &[Value::Tensor(dilated), Value::Tensor(rhs.clone())],
+            &inner,
+        );
+    }
+
     let padding = parse_conv_padding(primitive, params)?;
     reject_unsupported_conv_params(primitive, params)?;
 
@@ -5854,6 +5873,100 @@ pub(crate) fn eval_conv(
     } else {
         eval_conv_2d(primitive, lhs, rhs, params, padding)
     }
+}
+
+/// Parse `lhs_dilation` as `num_spatial` per-axis factors (>= 1). Absent → all 1s;
+/// a single value broadcasts to every spatial axis; otherwise the list length must
+/// equal `num_spatial`.
+fn parse_conv_lhs_dilation(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+    num_spatial: usize,
+) -> Result<Vec<usize>, EvalError> {
+    let Some(raw) = params.get("lhs_dilation") else {
+        return Ok(vec![1; num_spatial]);
+    };
+    let parts: Vec<&str> = raw.split(',').map(str::trim).collect();
+    let factors: Vec<usize> = parts
+        .iter()
+        .map(|p| parse_positive_stride(primitive, Some(p)))
+        .collect::<Result<_, _>>()?;
+    if factors.len() == 1 {
+        Ok(vec![factors[0]; num_spatial])
+    } else if factors.len() == num_spatial {
+        Ok(factors)
+    } else {
+        Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "lhs_dilation {raw:?} must have 1 or {num_spatial} entries for a rank-{} conv",
+                num_spatial + 2
+            ),
+        })
+    }
+}
+
+/// Build the zero-dilated conv input for `lhs_dilation`: for layout `[N, S0.., C]`,
+/// insert `(L_i - 1)` zeros between elements along spatial axis `i`, giving spatial
+/// extent `(S_i - 1)*L_i + 1`. Real and complex dtypes both get a dtype-correct zero
+/// fill; each original element is scattered to its dilated position.
+fn dilate_conv_lhs(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    lhs_dils: &[usize],
+) -> Result<TensorValue, EvalError> {
+    let dims = &lhs.shape.dims;
+    let rank = dims.len();
+    let num_spatial = rank - 2;
+    let mut new_dims = dims.clone();
+    for (i, &l) in lhs_dils.iter().enumerate().take(num_spatial) {
+        let s = dims[1 + i] as usize;
+        let eff = if s == 0 { 0 } else { (s - 1) * l + 1 };
+        new_dims[1 + i] = u32::try_from(eff).map_err(|_| EvalError::Unsupported {
+            primitive,
+            detail: "lhs_dilation output dimension exceeds u32::MAX".to_owned(),
+        })?;
+    }
+    let new_total = new_dims
+        .iter()
+        .try_fold(1usize, |acc, &d| acc.checked_mul(d as usize))
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "lhs_dilation output element count overflow".to_owned(),
+        })?;
+
+    let zero = if matches!(lhs.dtype, DType::Complex64 | DType::Complex128) {
+        conv_literal_from_complex(lhs.dtype, 0.0, 0.0)
+    } else {
+        conv_float_literal_from_f64(lhs.dtype, 0.0)
+    };
+    let mut out = vec![zero; new_total];
+
+    let out_strides = checked_row_major_strides(primitive, "lhs_dilation", &new_dims)?;
+    let in_total = lhs.elements.len();
+    let mut coord = vec![0usize; rank];
+    for in_flat in 0..in_total {
+        let mut out_flat = 0usize;
+        for ax in 0..rank {
+            let mapped = if ax >= 1 && ax <= num_spatial {
+                coord[ax] * lhs_dils[ax - 1]
+            } else {
+                coord[ax]
+            };
+            out_flat += mapped * out_strides[ax];
+        }
+        out[out_flat] = lhs.elements[in_flat];
+        // row-major odometer over the input dims (last axis fastest).
+        for ax in (0..rank).rev() {
+            coord[ax] += 1;
+            if coord[ax] < dims[ax] as usize {
+                break;
+            }
+            coord[ax] = 0;
+        }
+    }
+
+    TensorValue::new(lhs.dtype, Shape { dims: new_dims }, out).map_err(EvalError::from)
 }
 
 /// fj-lax conv implements stride + padding (VALID/SAME/SAME_LOWER) on the default
@@ -5866,24 +5979,9 @@ fn reject_unsupported_conv_params(
     primitive: Primitive,
     params: &BTreeMap<String, String>,
 ) -> Result<(), EvalError> {
-    // Dilation params are comma-separated per-spatial-dim factors; the no-op value is
-    // all 1s (or absent).
-    let has_nondefault_dilation = |key: &str| -> bool {
-        params
-            .get(key)
-            .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
-    };
-    // rhs_dilation (atrous/dilated kernel) IS supported by eval_conv_2d; conv_1d
-    // still rejects it explicitly (see eval_conv_1d). lhs_dilation (input dilation,
-    // i.e. transposed/fractionally-strided conv) is not implemented anywhere.
-    if has_nondefault_dilation("lhs_dilation") {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail:
-                "conv lhs_dilation is not supported (fj-lax conv implements stride + padding + rhs_dilation)"
-                    .to_owned(),
-        });
-    }
+    // rhs_dilation (atrous/dilated kernel) and lhs_dilation (input dilation /
+    // transposed conv) ARE supported (lhs_dilation via input zero-insertion in
+    // eval_conv); conv_1d handles its own rhs_dilation/feature_group_count rejection.
     // Grouping counts: the no-op value is 1 (or absent). feature_group_count IS
     // supported by eval_conv_2d (grouped/depthwise conv); conv_1d rejects it
     // explicitly. batch_group_count is not implemented anywhere.
@@ -8537,19 +8635,125 @@ mod tests {
     }
 
     #[test]
+    fn conv_lhs_dilation_matches_explicitly_dilated_input() {
+        // lhs_dilation (transposed conv): inserting (L-1) zeros between input elements
+        // then convolving must equal a plain conv over an INDEPENDENTLY hand-built
+        // zero-dilated input (bit-for-bit, finite f64). Covers 2D (VALID + SAME) and 1D.
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+
+        // ── 2D ──
+        let (h, w, c_in, c_out, kh, kw, lh, lw) = (5usize, 4, 2, 3, 2, 2, 2, 3);
+        let xf: Vec<f64> = (0..h * w * c_in)
+            .map(|i| (i as f64 * 0.031).sin() * 1.3 - 0.2)
+            .collect();
+        let kf: Vec<f64> = (0..kh * kw * c_in * c_out)
+            .map(|i| (i as f64 * 0.013).cos() * 0.7 + 0.1)
+            .collect();
+        let kernel = mk(vec![kh as u32, kw as u32, c_in as u32, c_out as u32], &kf);
+        // Hand-built dilated input [1, eff_h, eff_w, c_in].
+        let (eff_h, eff_w) = ((h - 1) * lh + 1, (w - 1) * lw + 1);
+        let mut dilated = vec![0.0f64; eff_h * eff_w * c_in];
+        for ih in 0..h {
+            for iw in 0..w {
+                for ci in 0..c_in {
+                    dilated[((ih * lh) * eff_w + (iw * lw)) * c_in + ci] =
+                        xf[(ih * w + iw) * c_in + ci];
+                }
+            }
+        }
+        let lhs2 = mk(vec![1, h as u32, w as u32, c_in as u32], &xf);
+        let dlhs2 = mk(vec![1, eff_h as u32, eff_w as u32, c_in as u32], &dilated);
+        for pad in ["valid", "same"] {
+            let via_dil = eval_conv(
+                Primitive::Conv,
+                &[lhs2.clone(), kernel.clone()],
+                &params(&[("padding", pad), ("strides", "1"), ("lhs_dilation", "2,3")]),
+            )
+            .unwrap();
+            let via_plain = eval_conv(
+                Primitive::Conv,
+                &[dlhs2.clone(), kernel.clone()],
+                &params(&[("padding", pad), ("strides", "1")]),
+            )
+            .unwrap();
+            assert_eq!(
+                extract_shape(&via_dil),
+                extract_shape(&via_plain),
+                "2D lhs_dilation {pad} shape"
+            );
+            assert_eq!(
+                bits(&via_dil),
+                bits(&via_plain),
+                "2D lhs_dilation {pad} values"
+            );
+        }
+
+        // ── 1D ──
+        let (w1, ci1, co1, kw1, l1) = (6usize, 2, 3, 2, 3);
+        let x1: Vec<f64> = (0..w1 * ci1)
+            .map(|i| (i as f64 * 0.027).cos() * 0.9 - 0.1)
+            .collect();
+        let k1: Vec<f64> = (0..kw1 * ci1 * co1)
+            .map(|i| (i as f64 * 0.019).sin() * 0.5 + 0.2)
+            .collect();
+        let kern1 = mk(vec![kw1 as u32, ci1 as u32, co1 as u32], &k1);
+        let eff_w1 = (w1 - 1) * l1 + 1;
+        let mut dil1 = vec![0.0f64; eff_w1 * ci1];
+        for iw in 0..w1 {
+            for ci in 0..ci1 {
+                dil1[(iw * l1) * ci1 + ci] = x1[iw * ci1 + ci];
+            }
+        }
+        let via_dil = eval_conv(
+            Primitive::Conv,
+            &[mk(vec![1, w1 as u32, ci1 as u32], &x1), kern1.clone()],
+            &params(&[
+                ("padding", "valid"),
+                ("strides", "1"),
+                ("lhs_dilation", "3"),
+            ]),
+        )
+        .unwrap();
+        let via_plain = eval_conv(
+            Primitive::Conv,
+            &[mk(vec![1, eff_w1 as u32, ci1 as u32], &dil1), kern1],
+            &params(&[("padding", "valid"), ("strides", "1")]),
+        )
+        .unwrap();
+        assert_eq!(
+            extract_shape(&via_dil),
+            extract_shape(&via_plain),
+            "1D lhs_dilation shape"
+        );
+        assert_eq!(bits(&via_dil), bits(&via_plain), "1D lhs_dilation values");
+    }
+
+    #[test]
     fn conv_rejects_unimplemented_dilation_and_grouping() {
         // Unsupported conv_general_dilated params must fail loudly rather than be
-        // silently ignored. For 1D conv: lhs_dilation (input dilation),
-        // feature_group_count, batch_group_count, and a multi-value rhs_dilation
-        // (1D has one spatial dim) are all unimplemented. (1D rhs_dilation with a
-        // single factor IS supported — see conv2d_rhs_dilation_matches_*.)
+        // silently ignored. Still unimplemented: batch_group_count (any rank), 1D
+        // feature_group_count with an inconsistent kernel (channel mismatch), and a
+        // multi-value rhs_dilation for 1D (one spatial dim). rhs_dilation,
+        // lhs_dilation, and feature_group_count (2D) are all supported now.
         let mk = |dims: Vec<u32>, data: &[f64]| {
             Value::Tensor(TensorValue::new_f64_values(Shape { dims }, data.to_vec()).unwrap())
         };
         let lhs = mk(vec![1, 5, 2], &[0.0; 10]); // [N=1, W=5, Cin=2]
         let rhs = mk(vec![3, 2, 2], &[0.0; 12]); // [K=3, Cin=2, Cout=2]
         for (key, val) in [
-            ("lhs_dilation", "2"),
             ("rhs_dilation", "1,2"),
             ("feature_group_count", "2"),
             ("batch_group_count", "2"),
