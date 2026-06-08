@@ -1946,9 +1946,11 @@ fn complex_projection_vjp_vector_lifts_real_cotangents() {
         &BTreeMap::new(),
     )
     .unwrap();
+    // JAX `imag_p` transpose is complex(0, neg(g)) — `jax.grad(jnp.imag)` returns
+    // -1j, the conjugate cotangent convention. So grad = complex(0, -g).
     assert_complex_gradients_close(
         &extract_complex_vec(&imag_vjp[0]),
-        &[(0.0, 3.0), (0.0, -4.5)],
+        &[(0.0, -3.0), (0.0, 4.5)],
         1e-10,
         "Imag vector VJP",
     );
@@ -1974,9 +1976,11 @@ fn complex_constructor_vjp_vector_splits_cotangent_components() {
         1e-10,
         "Complex constructor vector VJP real component",
     );
+    // JAX `complex_p` transpose grad_im = imag(neg(g)) = -imag(g) (conjugate
+    // cotangent convention). For g=[(7,-11),(-13,17)]: -imag = [11, -17].
     assert_gradients_close(
         &extract_f64_vec(&vjp_result[1]),
-        &[-11.0, 17.0],
+        &[11.0, -17.0],
         1e-10,
         "Complex constructor vector VJP imaginary component",
     );

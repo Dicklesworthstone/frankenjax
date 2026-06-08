@@ -2538,9 +2538,16 @@ pub fn vjp(
             Ok(vec![da, db])
         }
         Primitive::Complex => {
+            // JAX `_complex_transpose_rule`: grad_re = real(g), grad_im =
+            // imag(neg(g)) = -imag(g). The negation comes from JAX's conjugate
+            // cotangent convention for complex AD (`jax.grad` returns conj(∇)).
+            // The previous +imag(g) gave the imaginary-part gradient the wrong
+            // sign vs JAX.
             let g_real = eval_primitive(Primitive::Real, std::slice::from_ref(g), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
-            let g_imag = eval_primitive(Primitive::Imag, std::slice::from_ref(g), &BTreeMap::new())
+            let imag = eval_primitive(Primitive::Imag, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let g_imag = eval_primitive(Primitive::Neg, std::slice::from_ref(&imag), &BTreeMap::new())
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?;
             Ok(vec![g_real, g_imag])
         }
@@ -2556,9 +2563,14 @@ pub fn vjp(
             ])
         }
         Primitive::Imag => {
-            let zero = zeros_like(g);
+            // JAX `imag_p` transpose: complex(0, neg(g)). The previous complex(0, g)
+            // gave the gradient the wrong sign vs JAX's conjugate cotangent
+            // convention (see the Complex VJP above).
+            let neg_g = eval_primitive(Primitive::Neg, std::slice::from_ref(g), &BTreeMap::new())
+                .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+            let zero = zeros_like(&neg_g);
             Ok(vec![
-                eval_primitive(Primitive::Complex, &[zero, g.clone()], &BTreeMap::new())
+                eval_primitive(Primitive::Complex, &[zero, neg_g], &BTreeMap::new())
                     .map_err(|e| AdError::EvalFailed(e.to_string()))?,
             ])
         }
@@ -11669,8 +11681,9 @@ mod tests {
         )
         .expect("vjp");
         let (re, im) = scalar_complex128(&grads[0]);
+        // JAX imag_p transpose = complex(0, -g): grad = complex(0, -5).
         assert!(re.abs() < 1e-10);
-        assert!((im - 5.0).abs() < 1e-10);
+        assert!((im + 5.0).abs() < 1e-10);
     }
 
     #[test]
@@ -11682,8 +11695,10 @@ mod tests {
             &BTreeMap::new(),
         )
         .expect("vjp");
+        // JAX complex_p transpose = [real(g), -imag(g)] for g=(7,-11):
+        // grad = [7, -(-11)] = [7, 11].
         assert!((grads[0].as_f64_scalar().expect("scalar") - 7.0).abs() < 1e-10);
-        assert!((grads[1].as_f64_scalar().expect("scalar") + 11.0).abs() < 1e-10);
+        assert!((grads[1].as_f64_scalar().expect("scalar") - 11.0).abs() < 1e-10);
     }
 
     #[test]
