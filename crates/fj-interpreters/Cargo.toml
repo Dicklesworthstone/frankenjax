@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 fj-core = { path = "../fj-core" }
 fj-lax = { path = "../fj-lax" }
+fj-trace = { path = "../fj-trace" }
 rustc-hash = { workspace = true }
 
 [dev-dependencies]

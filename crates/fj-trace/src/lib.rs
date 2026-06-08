@@ -4498,6 +4498,22 @@ pub fn simulate_nested_trace_contexts(
     })
 }
 
+/// Authoritative, context-free shape/dtype inference for ONE primitive equation.
+///
+/// This is the single source of truth that tracing uses; it is exposed so that
+/// downstream staging (fj-interpreters `partial_eval`) can delegate to it instead
+/// of maintaining a second, perennially-drifting copy. `inputs` are the operand
+/// avals, `params` the equation params; returns one [`ShapedArray`] per output.
+/// Returns `Err` on malformed params / shape mismatches (callers that must not
+/// fail — like best-effort residual typing — can fall back on `Err`).
+pub fn infer_output_avals(
+    primitive: Primitive,
+    inputs: &[ShapedArray],
+    params: &BTreeMap<String, String>,
+) -> Result<Vec<ShapedArray>, TraceError> {
+    SimpleTraceContext::infer_primitive_output_avals(primitive, inputs, params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

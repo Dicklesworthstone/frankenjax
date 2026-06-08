@@ -1031,6 +1031,7 @@ dependencies = [
  "fj-core",
  "fj-lax",
  "fj-test-utils",
+ "fj-trace",
  "proptest",
  "rustc-hash",
  "serde",

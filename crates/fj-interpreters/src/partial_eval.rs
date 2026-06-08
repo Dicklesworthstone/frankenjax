@@ -646,11 +646,51 @@ fn infer_equation_output_avals(
         // contracting/batch dimension_numbers params), so it likewise needs the
         // multi-input path. The catch-all typed a residual matmul as the LHS.
         DotGeneral => Ok(vec![infer_dot_general_aval(eqn, input_avals); eqn.outputs.len()]),
+        // Gather/Conv/ReduceWindow have output geometry that depends on the
+        // dimension_numbers / window params (and, for Gather/Conv, on a second
+        // operand) — too involved to re-derive here without drifting from the
+        // eval. Delegate to fj-trace's `infer_output_avals`, the SAME authoritative
+        // inference tracing uses, so staging and tracing agree by construction.
+        // On Err (params fj-trace validates and rejects) fall back to the local
+        // best-effort path, which never fails (staging must not panic/error).
+        Gather | Conv | ReduceWindow => {
+            match delegate_infer_to_trace(eqn, input_avals) {
+                Some(avals) => Ok(avals),
+                None => {
+                    let out_aval = infer_equation_output_aval(eqn, first_input)?;
+                    Ok(vec![out_aval; eqn.outputs.len()])
+                }
+            }
+        }
         _ => {
             let out_aval = infer_equation_output_aval(eqn, first_input)?;
             Ok(vec![out_aval; eqn.outputs.len()])
         }
     }
+}
+
+/// Delegate a residual equation's aval inference to fj-trace's authoritative
+/// `infer_output_avals` (the single source of truth that tracing uses), bridging
+/// `fj_core::AbstractValue` ↔ `fj_trace::ShapedArray` (both are `{dtype, shape}`).
+/// Returns `None` on any inference error or output-arity mismatch so the caller
+/// can fall back to local best-effort typing — residual staging must never fail.
+fn delegate_infer_to_trace(
+    eqn: &Equation,
+    input_avals: &[AbstractValue],
+) -> Option<Vec<AbstractValue>> {
+    let trace_inputs: Vec<fj_trace::ShapedArray> = input_avals
+        .iter()
+        .map(|av| fj_trace::ShapedArray { dtype: av.dtype, shape: av.shape.clone() })
+        .collect();
+    let out = fj_trace::infer_output_avals(eqn.primitive, &trace_inputs, &eqn.params).ok()?;
+    if out.len() != eqn.outputs.len() {
+        return None;
+    }
+    Some(
+        out.into_iter()
+            .map(|sa| AbstractValue { dtype: sa.dtype, shape: sa.shape })
+            .collect(),
+    )
 }
 
 /// Parse a `new_dtype`/`dtype` param string into a `DType`, mirroring
@@ -3499,6 +3539,61 @@ mod tests {
                     "argsort output is I64 index data, not the input's F64"
                 );
                 assert_eq!(result.residual_avals[0].shape.dims, vec![5]);
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_reduce_window_delegates_window_geometry() {
+        run_logged_test(
+            "test_pe_typed_reduce_window_delegates_window_geometry",
+            &("pe", "typed", "reduce_window"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // reduce_window(a(known F64 [4,4]), window 2x2 stride 2x2 VALID)
+                //   = v3([2,2], known) -> add(v3, b(unknown [2,2])) = v4. The window
+                // geometry is delegated to fj-trace's authoritative inference; the
+                // single-input catch-all used to keep the [4,4] input shape.
+                let mut rw_params = BTreeMap::new();
+                rw_params.insert("window_dimensions".to_owned(), "2,2".to_owned());
+                rw_params.insert("window_strides".to_owned(), "2,2".to_owned());
+                rw_params.insert("padding".to_owned(), "valid".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::ReduceWindow,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: rw_params,
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue { dtype: DType::F64, shape: Shape { dims: vec![4, 4] } },
+                    AbstractValue { dtype: DType::F64, shape: Shape { dims: vec![2, 2] } },
+                ];
+                let result =
+                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                assert!(!result.residual_avals.is_empty());
+                assert_eq!(
+                    result.residual_avals[0].shape.dims,
+                    vec![2, 2],
+                    "reduce_window 2x2/stride2 VALID over [4,4] should produce [2,2]"
+                );
                 Ok(vec![])
             },
         );
