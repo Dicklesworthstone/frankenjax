@@ -1,0 +1,14 @@
+frankenjax-uh7ar kept golden
+pass: 185
+target: linalg/qr_1024x1024_f64
+worker: fmd
+baseline_ms: 26.804..26.872..27.145
+candidate_ms: 25.899..26.353..26.466
+median_speedup: 1.019694
+conservative_speedup: 1.012771
+score: 3.0
+decision: keep, one source lever
+lever: QR_REFLECTOR_COL_TILE 8 -> 16
+proof: RCH cargo test -p fj-lax --lib qr -- --nocapture passed 26/26 with 1 ignored on fmd; RCH cargo check -p fj-lax --all-targets passed on fmd; RCH cargo clippy -p fj-lax --all-targets -- -D warnings passed on fmd; cargo fmt --check --package fj-lax and git diff --check passed.
+ubs: ubs crates/fj-lax/src/linalg.rs exited nonzero from pre-existing linalg.rs inventory; no unsafe blocks were found and its fmt/clippy/check/test-build sections were clean.
+isomorphism: each output column still computes dot products over v rows in ascending row_offset order, scales by tau once, and applies row updates in ascending row_offset order. The lever only handles more adjacent columns per row scan. QR reflector order, Q reverse-application order, diagonal phase normalization, R lower-zeroing, dtype/shape/error behavior, signed-zero/NaN behavior, tie/order behavior, and RNG absence are unchanged.

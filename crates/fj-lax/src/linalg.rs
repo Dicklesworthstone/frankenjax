@@ -929,7 +929,7 @@ fn qr_reflector_offset(rows: usize, reflector: usize) -> usize {
     reflector * rows - (reflector * reflector.saturating_sub(1)) / 2
 }
 
-const QR_REFLECTOR_COL_TILE: usize = 8;
+const QR_REFLECTOR_COL_TILE: usize = 16;
 
 fn apply_real_householder_columns(
     matrix: &mut [f64],

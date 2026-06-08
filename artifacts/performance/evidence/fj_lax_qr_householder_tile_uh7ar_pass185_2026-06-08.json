@@ -1,0 +1,95 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "project": "frankenjax",
+  "bead": "frankenjax-uh7ar",
+  "pass": 185,
+  "skill_loop": "repeatedly-apply-skill/extreme-software-optimization",
+  "status": "kept",
+  "date": "2026-06-08",
+  "target": {
+    "crate": "fj-lax",
+    "benchmark": "linalg/qr_1024x1024_f64",
+    "profile_backed": true,
+    "profile_note": "fresh RCH fmd linalg profile after pass184 ranked qr1024 at 26.804..26.872..27.145 ms behind GEMM, pinv, and LU; no open ready perf beads existed"
+  },
+  "source": {
+    "files_changed": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "lever": "widen QR_REFLECTOR_COL_TILE from 8 to 16 in apply_real_householder_columns",
+    "production_source_kept": true
+  },
+  "benchmarks": {
+    "tool": "criterion via rch",
+    "worker": "fmd",
+    "baseline_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-pass185-profile cargo bench -p fj-lax --bench lax_baseline -- linalg/ --quick --noplot",
+    "candidate_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-uh7ar-candidate cargo bench -p fj-lax --bench lax_baseline -- linalg/qr_1024x1024_f64 --quick --noplot",
+    "baseline_ms": {
+      "low": 26.804,
+      "median": 26.872,
+      "high": 27.145
+    },
+    "candidate_ms": {
+      "low": 25.899,
+      "median": 26.353,
+      "high": 26.466
+    },
+    "median_speedup": 1.019694,
+    "conservative_speedup": 1.012771,
+    "intervals_non_overlapping": true,
+    "score": 3.0
+  },
+  "behavior_proof": {
+    "isomorphism": [
+      "Each affected column still accumulates dot products over v rows in ascending row_offset order",
+      "Each affected column still multiplies its dot by tau exactly once before updates",
+      "Each affected column still applies row updates in ascending row_offset order",
+      "Only the number of adjacent columns handled per row scan changes",
+      "QR reflector creation order unchanged",
+      "Q reverse-application order unchanged",
+      "diagonal phase normalization unchanged",
+      "R lower-zeroing unchanged",
+      "dtype/shape/error behavior unchanged",
+      "signed-zero/NaN behavior unchanged",
+      "RNG absent"
+    ],
+    "tests": [
+      {
+        "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-uh7ar-test cargo test -p fj-lax --lib qr -- --nocapture",
+        "worker": "fmd",
+        "result": "passed 26/26 with 1 ignored"
+      },
+      {
+        "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-uh7ar-check cargo check -p fj-lax --all-targets",
+        "worker": "fmd",
+        "result": "passed"
+      },
+      {
+        "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-uh7ar-clippy cargo clippy -p fj-lax --all-targets -- -D warnings",
+        "worker": "fmd",
+        "result": "passed"
+      },
+      {
+        "command": "cargo fmt --check --package fj-lax",
+        "result": "passed"
+      },
+      {
+        "command": "git diff --check",
+        "result": "passed"
+      },
+      {
+        "command": "ubs crates/fj-lax/src/linalg.rs",
+        "result": "nonzero from pre-existing broad linalg.rs inventory; no unsafe blocks and fmt/clippy/check/test-build sections clean"
+      }
+    ],
+    "golden": {
+      "path": "artifacts/performance/evidence/fj_lax_qr_householder_tile_uh7ar_pass185_2026-06-08.golden",
+      "sha256": "972018ac56de40c73d4136ffbb81c47af5f2f6c49bae3e8a7f2149a2553ac204"
+    }
+  },
+  "decision": {
+    "keep_threshold": "Score >= 2.0",
+    "result": "Keep. Same-worker fmd intervals are non-overlapping and the lever is a one-line bit-preserving QR layout change.",
+    "next_route": "Reprofile after landing. If GEMM remains top, route exact-order GEMM to another structural cache primitive or file the required FP tolerance contract for recursive/communication-avoiding GEMM; otherwise attack the next ranked LU/SVD primitive."
+  }
+}
