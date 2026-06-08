@@ -3595,6 +3595,78 @@ mod tests {
     }
 
     #[test]
+    fn delegation_stays_live_for_common_staged_ops() {
+        // GUARD for the structural single-source-of-truth (commits 3ac6dab0 /
+        // 8b46a23d): partial_eval now delegates residual aval inference to
+        // fj-trace's authoritative `infer_output_avals` for EVERY op, falling back
+        // to the local best-effort arms ONLY when fj-trace returns Err. If fj-trace
+        // ever regresses to erroring on a COMMON op, delegation would silently drop
+        // to the crude fallback and the two-layers drift could creep back. This
+        // asserts delegation returns Some (i.e. fj-trace handled it) for a
+        // representative op of each arity/shape class, with a couple of exact-shape
+        // spot checks — so a silent fallback regression fails loudly here.
+        let av = |dtype: DType, dims: Vec<u32>| AbstractValue { dtype, shape: Shape { dims } };
+        let eqn = |primitive: Primitive, params: &[(&str, &str)]| Equation {
+            primitive,
+            inputs: smallvec![],
+            outputs: smallvec![VarId(0)],
+            params: params
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+            effects: vec![],
+            sub_jaxprs: vec![],
+        };
+        let f64v = |dims: Vec<u32>| av(DType::F64, dims);
+
+        // (label, eqn, input avals) — every one must delegate (Some).
+        let cases: Vec<(&str, Equation, Vec<AbstractValue>)> = vec![
+            ("exp", eqn(Primitive::Exp, &[]), vec![f64v(vec![3])]),
+            ("add", eqn(Primitive::Add, &[]), vec![f64v(vec![3]), f64v(vec![3])]),
+            (
+                "reduce_sum",
+                eqn(Primitive::ReduceSum, &[("axes", "0")]),
+                vec![f64v(vec![2, 3])],
+            ),
+            (
+                "reshape",
+                eqn(Primitive::Reshape, &[("new_shape", "6")]),
+                vec![f64v(vec![2, 3])],
+            ),
+            (
+                "transpose",
+                eqn(Primitive::Transpose, &[("permutation", "1,0")]),
+                vec![f64v(vec![2, 3])],
+            ),
+            (
+                "expand_dims",
+                eqn(Primitive::ExpandDims, &[("axis", "-1")]),
+                vec![f64v(vec![3])],
+            ),
+            ("argsort", eqn(Primitive::Argsort, &[("axis", "0")]), vec![f64v(vec![5])]),
+        ];
+        for (label, equation, avals) in &cases {
+            assert!(
+                delegate_infer_to_trace(equation, avals).is_some(),
+                "delegation to fj-trace must stay live for '{label}' (silent fallback = drift risk)"
+            );
+        }
+
+        // Exact spot checks: delegation produces the authoritative shapes/dtypes.
+        let argsort = delegate_infer_to_trace(&cases[6].1, &cases[6].2).unwrap();
+        assert_eq!(argsort[0].dtype, DType::I64, "argsort indices are I64");
+        let dot = delegate_infer_to_trace(
+            &eqn(
+                Primitive::DotGeneral,
+                &[("lhs_contracting_dims", "1"), ("rhs_contracting_dims", "0")],
+            ),
+            &[f64v(vec![2, 3]), f64v(vec![3, 4])],
+        )
+        .expect("dot_general delegates");
+        assert_eq!(dot[0].shape.dims, vec![2, 4], "dot_general [2,3]·[3,4]→[2,4]");
+    }
+
+    #[test]
     fn test_pe_typed_broadcast_in_dim_uses_target_shape() {
         run_logged_test(
             "test_pe_typed_broadcast_in_dim_uses_target_shape",
