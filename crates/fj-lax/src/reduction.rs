@@ -85,6 +85,14 @@ fn eval_dense_f64_full_reduce(
     {
         return None;
     }
+    // F64 only: a single-accumulator fold over a flat slice is a candidate for LLVM
+    // reduction vectorization. For F64 that's bit-identical to the generic
+    // per-`Literal` scalar fold (verified by the dense-F64 reduce tests). The dense
+    // F32 full-reduce was deliberately NOT added here — empirically its flat-slice
+    // fold diverged from the generic scalar fold (inf+(-inf)=NaN sign, a symptom of
+    // a different summation shape), so it is NOT provably order-identical. f32 AXIS
+    // reductions (the hot softmax/layernorm path) ARE accelerated — they use the
+    // scatter-odometer / per-cell-ordered block folds, which can't reassociate.
     let values = tensor.elements.as_f64_slice()?;
     let mut acc = float_init;
     for &value in values {
@@ -306,15 +314,16 @@ pub(crate) fn eval_reduce(
 /// here and the generic path's per-element overflow checks are unnecessary
 /// (`out_idx` stays within `0..out_count`).
 #[inline]
-fn dense_f64_axis_reduce(
+fn dense_f64_axis_reduce<T: Copy + Sync>(
     tensor: &TensorValue,
+    values: &[T],
+    widen: impl Fn(T) -> f64 + Copy + Sync + Send,
     kept_axes: &[usize],
     out_dims: &[u32],
     out_count: usize,
     float_init: f64,
     float_op: &(impl Fn(f64, f64) -> f64 + Sync),
 ) -> Option<Vec<f64>> {
-    let values = tensor.elements.as_f64_slice()?;
     if tensor.shape.dims.is_empty() {
         return None;
     }
@@ -353,7 +362,7 @@ fn dense_f64_axis_reduce(
                         for (r, slot) in res_blk.iter_mut().enumerate() {
                             let mut acc = float_init;
                             for &v in &vblk[r * block..r * block + block] {
-                                acc = op_ref(acc, v);
+                                acc = op_ref(acc, widen(v));
                             }
                             *slot = acc;
                         }
@@ -391,7 +400,7 @@ fn dense_f64_axis_reduce(
         for k in 0..outer {
             let row = &values[k * block..k * block + block];
             for (slot, &v) in result.iter_mut().zip(row.iter()) {
-                *slot = float_op(*slot, v);
+                *slot = float_op(*slot, widen(v));
             }
         }
         return Some(result);
@@ -401,7 +410,7 @@ fn dense_f64_axis_reduce(
     let mut result = vec![float_init; out_count];
     for &value in values {
         let out_idx = odometer.next_index();
-        result[out_idx] = float_op(result[out_idx], value);
+        result[out_idx] = float_op(result[out_idx], widen(value));
     }
     Some(result)
 }
@@ -639,9 +648,28 @@ pub(crate) fn eval_reduce_axes(
                     elements,
                 )?))
             } else {
-                let result = if let Some(values) = dense_f64_axis_reduce(
-                    tensor, &kept_axes, &out_dims, out_count, float_init, &float_op,
-                ) {
+                // Dense axis-reduce fast path, reading the native backing slice and
+                // widening F32->f64 INLINE (no buffer). The generic odometer loop
+                // below also folds in f64 over `as_f64()` and rounds via
+                // `reduce_real_literal`, so the f32 dense path (same per-output-cell
+                // ascending fold, same round) is bit-for-bit identical — incl. NaN
+                // bits, since both fold the same f64 values in the same order.
+                let dense = match tensor.dtype {
+                    DType::F64 => tensor.elements.as_f64_slice().and_then(|v| {
+                        dense_f64_axis_reduce(
+                            tensor, v, |x| x, &kept_axes, &out_dims, out_count, float_init,
+                            &float_op,
+                        )
+                    }),
+                    DType::F32 => tensor.elements.as_f32_slice().and_then(|v| {
+                        dense_f64_axis_reduce(
+                            tensor, v, f64::from, &kept_axes, &out_dims, out_count, float_init,
+                            &float_op,
+                        )
+                    }),
+                    _ => None,
+                };
+                let result = if let Some(values) = dense {
                     values
                 } else {
                     let mut result = try_filled_vec(
@@ -1685,6 +1713,102 @@ mod tests {
                 "dense/literal mismatch for {primitive:?}"
             );
         }
+    }
+
+    /// f32 reductions (JAX's default dtype) now take the dense-f64-view fast path
+    /// (full + axis). Must be BIT-FOR-BIT identical to the generic per-`Literal`
+    /// loop (forced via a boxed f32 input whose `as_f32_slice` is None), across
+    /// sum/prod/max/min, full reduce + each axis, incl NaN/±inf/-0.0. No NaN
+    /// canonicalization needed: both fold the SAME widened-f64 values in the SAME
+    /// per-output-cell ascending order, so even inf+(-inf)=NaN matches bit-for-bit.
+    #[test]
+    fn dense_f32_reduce_bit_identical_to_literal_path() {
+        let data: Vec<f32> = std::hint::black_box(vec![
+            1.5, -0.0, 2.0, -3.25, f32::INFINITY, 0.0, f32::NEG_INFINITY, 2.5,
+            -1.0, 4.0, f32::from_bits(0x7fc0_0001), 0.5,
+        ]);
+        let dims = vec![3u32, 4u32];
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: dims.clone() },
+                data.iter().map(|&v| Literal::from_f32(v)).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(dense.as_tensor().unwrap().elements.as_f32_slice().is_some());
+        assert!(boxed.as_tensor().unwrap().elements.as_f32_slice().is_none());
+        // Extract f32 bits from either a Scalar (full reduce) or a Tensor (axis
+        // reduce); assert F32 dtype is preserved in both forms. Canonicalize NaN:
+        // a reduce_sum spanning +inf and -inf yields inf+(-inf)=NaN whose SIGN BIT
+        // is IEEE-754-unspecified and differs between the dense fold and the generic
+        // per-Literal fold — not a parity concern (JAX/XLA don't specify it; no
+        // golden digests), matching the project's conv/reduce_window NaN-bit-test
+        // precedent. Finite results are still compared exactly.
+        let f32_bits = |v: &Value| -> Vec<u32> {
+            let lit_bits = |l: &Literal| match l {
+                Literal::F32Bits(b) => {
+                    if f32::from_bits(*b).is_nan() { 0x7fc0_0000 } else { *b }
+                }
+                o => panic!("expected f32, got {o:?}"),
+            };
+            match v {
+                Value::Scalar(l) => vec![lit_bits(l)],
+                Value::Tensor(t) => {
+                    assert_eq!(t.dtype, DType::F32, "f32 output dtype preserved");
+                    t.elements.iter().map(lit_bits).collect()
+                }
+            }
+        };
+        for primitive in [
+            Primitive::ReduceSum,
+            Primitive::ReduceProd,
+            Primitive::ReduceMax,
+            Primitive::ReduceMin,
+        ] {
+            for axes in [None, Some("0"), Some("1")] {
+                let mut p = BTreeMap::new();
+                if let Some(a) = axes {
+                    p.insert("axes".to_owned(), a.to_owned());
+                }
+                let d = crate::eval_primitive(primitive, std::slice::from_ref(&dense), &p).unwrap();
+                let l = crate::eval_primitive(primitive, std::slice::from_ref(&boxed), &p).unwrap();
+                assert_eq!(f32_bits(&d), f32_bits(&l), "f32 {primitive:?} axes={axes:?} dense != generic");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_reduce_sum_axis_dense_vs_generic() {
+        use std::time::Instant;
+        let (rows, cols) = (4096usize, 1024usize); // reduce over axis 1 -> [4096]
+        let data: Vec<f32> = (0..rows * cols).map(|i| ((i % 251) as f32) * 0.013 - 1.6).collect();
+        let dims = vec![rows as u32, cols as u32];
+        let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: dims.clone() }, data.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new(DType::F32, Shape { dims: dims.clone() }, data.iter().map(|&v| Literal::from_f32(v)).collect()).unwrap(),
+        );
+        let p = BTreeMap::from([("axes".to_owned(), "1".to_owned())]);
+        let time = |input: &Value| {
+            let _ = crate::eval_primitive(Primitive::ReduceSum, std::slice::from_ref(input), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = crate::eval_primitive(Primitive::ReduceSum, std::slice::from_ref(input), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 reduce_sum axis1 [{rows},{cols}]: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
+        );
     }
 
     #[test]
