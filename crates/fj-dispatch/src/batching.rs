@@ -11654,6 +11654,35 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_trace_expand_dims_negative_axis() {
+        // Regression: vmap over expand_dims with a NEGATIVE (end-relative) axis.
+        // batch_expand_dims normalizes the axis against the per-element OUTPUT rank
+        // and only then shifts +1 past the prepended batch axis — a plain usize
+        // parse used to reject "-1" outright. Per-element [3] with axis=-1 inserts
+        // a trailing unit dim → per-element [3,1], overall [batch=2, 3, 1].
+        let input = BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params = BTreeMap::from([("axis".to_owned(), "-1".to_owned())]);
+        let result = apply_batch_rule(Primitive::ExpandDims, &[input], &params).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3, 1]);
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        );
+
+        // axis=-2 inserts BEFORE the per-element axis → per-element [1,3],
+        // overall [batch=2, 1, 3]. Confirms normalization is against the
+        // per-element output rank (2), not the full batched rank.
+        let input2 =
+            BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let params2 = BTreeMap::from([("axis".to_owned(), "-2".to_owned())]);
+        let result2 = apply_batch_rule(Primitive::ExpandDims, &[input2], &params2).unwrap();
+        assert_eq!(result2.batch_dim, Some(0));
+        assert_eq!(result2.value.as_tensor().unwrap().shape.dims, vec![2, 1, 3]);
+    }
+
+    #[test]
     fn test_batch_trace_concatenate_unbatched_inputs() {
         // Two unbatched vectors concatenated should remain unbatched
         let a = BatchTracer::unbatched(make_f64_vector(&[1.0, 2.0]));
