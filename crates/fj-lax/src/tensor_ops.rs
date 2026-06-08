@@ -5884,19 +5884,19 @@ fn reject_unsupported_conv_params(
                     .to_owned(),
         });
     }
-    // Grouping counts: the no-op value is 1 (or absent).
+    // Grouping counts: the no-op value is 1 (or absent). feature_group_count IS
+    // supported by eval_conv_2d (grouped/depthwise conv); conv_1d rejects it
+    // explicitly. batch_group_count is not implemented anywhere.
     let has_nondefault_count = |key: &str| -> bool {
         params
             .get(key)
             .is_some_and(|v| !matches!(v.trim(), "" | "1"))
     };
-    for key in ["feature_group_count", "batch_group_count"] {
-        if has_nondefault_count(key) {
-            return Err(EvalError::Unsupported {
-                primitive,
-                detail: format!("conv {key} > 1 (grouped/depthwise conv) is not supported"),
-            });
-        }
+    if has_nondefault_count("batch_group_count") {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "conv batch_group_count > 1 is not supported".to_owned(),
+        });
     }
     Ok(())
 }
@@ -6031,6 +6031,29 @@ fn eval_conv_1d(
         });
     }
 
+    // rhs_dilation and feature_group_count for 1D conv are not implemented here yet
+    // (eval_conv_2d implements 2D atrous + grouped conv); reject loudly BEFORE the
+    // shape check — a grouped 1D kernel legitimately has Cin/G channels, so the
+    // channel check would otherwise mask the unsupported-param error.
+    if params
+        .get("rhs_dilation")
+        .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
+    {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "conv rhs_dilation is not yet supported for 1D conv".into(),
+        });
+    }
+    if params
+        .get("feature_group_count")
+        .is_some_and(|v| !matches!(v.trim(), "" | "1"))
+    {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "conv feature_group_count is not yet supported for 1D conv".into(),
+        });
+    }
+
     let batch = lhs.shape.dims[0] as usize;
     let width = lhs.shape.dims[1] as usize;
     let c_in = lhs.shape.dims[2] as usize;
@@ -6043,18 +6066,6 @@ fn eval_conv_1d(
         return Err(EvalError::Unsupported {
             primitive,
             detail: format!("channel mismatch: lhs c_in={c_in}, rhs c_in={rhs_c_in}"),
-        });
-    }
-
-    // rhs_dilation for 1D conv is not implemented here yet (eval_conv_2d implements
-    // 2D atrous conv); reject loudly rather than silently ignore it.
-    if params
-        .get("rhs_dilation")
-        .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
-    {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail: "conv rhs_dilation is not yet supported for 1D conv".into(),
         });
     }
 
@@ -6339,6 +6350,159 @@ fn eval_conv_1d(
 /// Below it the im2col buffer allocation + copy isn't worth it.
 const CONV_IM2COL_MIN_OPS: usize = 1 << 16;
 
+/// Grouped/depthwise 2D conv (feature_group_count > 1). Each output channel `co`
+/// belongs to group `g = co / (Cout/G)` and convolves only that group's `Cin/G`
+/// input channels (`lhs` channels `[g*rhs_c_in .. (g+1)*rhs_c_in)`) with the kernel
+/// slice `rhs[:,:,:,co]` (kernel c_in dim is `rhs_c_in == Cin/G`). Direct loop
+/// (real f64-accum or complex), same ascending (kh,kw,ci) order and zero-padding as
+/// the ungrouped path — so it equals a per-group ungrouped conv concatenated over
+/// output channels (proved in conv2d_feature_group_count_matches_ungrouped_groups).
+#[allow(clippy::too_many_arguments)]
+fn eval_conv_2d_grouped(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    group_count: usize,
+    batch: usize,
+    height: usize,
+    width: usize,
+    c_in: usize,
+    kernel_h: usize,
+    kernel_w: usize,
+    rhs_c_in: usize,
+    c_out: usize,
+    stride_h: usize,
+    stride_w: usize,
+    dil_h: usize,
+    dil_w: usize,
+    out_h: usize,
+    out_w: usize,
+    pad_top: usize,
+    pad_left: usize,
+) -> Result<Value, EvalError> {
+    let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
+    let cout_per_group = c_out / group_count;
+    let total = batch
+        .checked_mul(out_h)
+        .and_then(|v| v.checked_mul(out_w))
+        .and_then(|v| v.checked_mul(c_out))
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: "grouped conv output size overflow".into(),
+        })?;
+    let width_c_in = width * c_in;
+    let height_width_c_in = height * width_c_in;
+    // Kernel layout [KH, KW, rhs_c_in, Cout].
+    let rhs_c_in_c_out = rhs_c_in * c_out;
+    let kw_rhs_c_in_c_out = kernel_w * rhs_c_in_c_out;
+    let out_dims = vec![batch as u32, out_h as u32, out_w as u32, c_out as u32];
+
+    if matches!(out_dtype, DType::Complex64 | DType::Complex128) {
+        let mut elements = Vec::with_capacity(total);
+        for n in 0..batch {
+            let n_off = n * height_width_c_in;
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let in_ch_base = (co / cout_per_group) * rhs_c_in;
+                        let (mut acc_re, mut acc_im) = (0.0_f64, 0.0_f64);
+                        for kh in 0..kernel_h {
+                            let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                            let h_oob = in_h < 0 || (in_h as usize) >= height;
+                            let h_off = if h_oob {
+                                0
+                            } else {
+                                (in_h as usize) * width_c_in
+                            };
+                            for kw in 0..kernel_w {
+                                let in_w =
+                                    (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                                let w_oob = in_w < 0 || (in_w as usize) >= width;
+                                let oob = h_oob || w_oob;
+                                let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
+                                for ci in 0..rhs_c_in {
+                                    let rhs_idx = kh * kw_rhs_c_in_c_out
+                                        + kw * rhs_c_in_c_out
+                                        + ci * c_out
+                                        + co;
+                                    let (lre, lim) = if oob {
+                                        (0.0, 0.0)
+                                    } else {
+                                        literal_as_complex(
+                                            &lhs.elements
+                                                [n_off + h_off + in_w_off + in_ch_base + ci],
+                                        )
+                                    };
+                                    let (rre, rim) = literal_as_complex(&rhs.elements[rhs_idx]);
+                                    acc_re += lre * rre - lim * rim;
+                                    acc_im += lre * rim + lim * rre;
+                                }
+                            }
+                        }
+                        elements.push(conv_literal_from_complex(out_dtype, acc_re, acc_im));
+                    }
+                }
+            }
+        }
+        return Ok(Value::Tensor(TensorValue::new(
+            out_dtype,
+            Shape { dims: out_dims },
+            elements,
+        )?));
+    }
+
+    let (Some(lhs_cow), Some(rhs_cow)) = (
+        conv_real_elements_as_f64(lhs),
+        conv_real_elements_as_f64(rhs),
+    ) else {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: "grouped conv requires real-float or complex operands".into(),
+        });
+    };
+    let lhs_src: &[f64] = &lhs_cow;
+    let rhs_src: &[f64] = &rhs_cow;
+    let mut out = Vec::with_capacity(total);
+    for n in 0..batch {
+        let n_off = n * height_width_c_in;
+        for oh in 0..out_h {
+            for ow in 0..out_w {
+                for co in 0..c_out {
+                    let in_ch_base = (co / cout_per_group) * rhs_c_in;
+                    let mut acc = 0.0_f64;
+                    for kh in 0..kernel_h {
+                        let in_h = (oh * stride_h + kh * dil_h) as isize - pad_top as isize;
+                        let h_oob = in_h < 0 || (in_h as usize) >= height;
+                        let h_off = if h_oob {
+                            0
+                        } else {
+                            (in_h as usize) * width_c_in
+                        };
+                        for kw in 0..kernel_w {
+                            let in_w = (ow * stride_w + kw * dil_w) as isize - pad_left as isize;
+                            let w_oob = in_w < 0 || (in_w as usize) >= width;
+                            let oob = h_oob || w_oob;
+                            let in_w_off = if w_oob { 0 } else { (in_w as usize) * c_in };
+                            for ci in 0..rhs_c_in {
+                                let rhs_idx =
+                                    kh * kw_rhs_c_in_c_out + kw * rhs_c_in_c_out + ci * c_out + co;
+                                let lhs_val = if oob {
+                                    0.0
+                                } else {
+                                    lhs_src[n_off + h_off + in_w_off + in_ch_base + ci]
+                                };
+                                acc += lhs_val * rhs_src[rhs_idx];
+                            }
+                        }
+                    }
+                    out.push(acc);
+                }
+            }
+        }
+    }
+    conv_real_output_from_f64(out_dtype, out_dims, out)
+}
+
 fn eval_conv_2d(
     primitive: Primitive,
     lhs: &TensorValue,
@@ -6366,10 +6530,25 @@ fn eval_conv_2d(
     let rhs_c_in = rhs.shape.dims[2] as usize;
     let c_out = rhs.shape.dims[3] as usize;
 
-    if c_in != rhs_c_in {
+    // feature_group_count (grouped / depthwise conv): the input channels split into
+    // G groups; the kernel's c_in dim is Cin/G, and output channel `co` belongs to
+    // group `co / (Cout/G)`, convolving only its group's input channels. G==1 is
+    // ordinary conv (rhs_c_in == c_in).
+    let group_count = parse_conv_group_count(primitive, params)?;
+    if c_in != group_count * rhs_c_in {
         return Err(EvalError::Unsupported {
             primitive,
-            detail: format!("channel mismatch: lhs c_in={c_in}, rhs c_in={rhs_c_in}"),
+            detail: format!(
+                "channel mismatch: lhs c_in={c_in} != feature_group_count={group_count} * rhs c_in={rhs_c_in}"
+            ),
+        });
+    }
+    if !c_out.is_multiple_of(group_count) {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!(
+                "conv c_out={c_out} must be divisible by feature_group_count={group_count}"
+            ),
         });
     }
 
@@ -6384,6 +6563,35 @@ fn eval_conv_2d(
 
     let (out_h, pad_top) = compute_output_and_pad(height, eff_kernel_h, stride_h, padding);
     let (out_w, pad_left) = compute_output_and_pad(width, eff_kernel_w, stride_w, padding);
+
+    // Grouped/depthwise conv (G>1): each group is an independent conv over its own
+    // Cin/G input channels and Cout/G output channels. Routed to a dedicated direct
+    // path (the G==1 im2col matrix would have the wrong shape); the G==1 fast paths
+    // below are left untouched.
+    if group_count > 1 {
+        return eval_conv_2d_grouped(
+            primitive,
+            lhs,
+            rhs,
+            group_count,
+            batch,
+            height,
+            width,
+            c_in,
+            kernel_h,
+            kernel_w,
+            rhs_c_in,
+            c_out,
+            stride_h,
+            stride_w,
+            dil_h,
+            dil_w,
+            out_h,
+            out_w,
+            pad_top,
+            pad_left,
+        );
+    }
 
     let out_dtype = promote_dtype(lhs.dtype, rhs.dtype);
     let total = batch
@@ -6722,6 +6930,28 @@ fn parse_dilation_pair(
             Ok((d, d))
         }
     }
+}
+
+/// Parse `feature_group_count` (grouped / depthwise conv) as a positive integer;
+/// absent or "1" means ordinary (ungrouped) conv.
+fn parse_conv_group_count(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<usize, EvalError> {
+    let Some(raw) = params.get("feature_group_count") else {
+        return Ok(1);
+    };
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(1);
+    }
+    t.parse::<usize>()
+        .ok()
+        .filter(|&g| g >= 1)
+        .ok_or_else(|| EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid feature_group_count {raw:?}"),
+        })
 }
 
 fn compute_output_and_pad(
@@ -7836,6 +8066,100 @@ mod tests {
         assert!(
             format!("{err:?}").contains("rhs_dilation"),
             "1D conv must reject rhs_dilation"
+        );
+    }
+
+    #[test]
+    fn conv2d_feature_group_count_matches_ungrouped_groups() {
+        // Grouped conv: output channel co (group g = co/(Cout/G)) convolves only
+        // input channels [g*Cin/G .. (g+1)*Cin/G) with kernel[:,:,:,co]. Validate
+        // against a direct grouped f64 reference (bit-exact). Covers a general group
+        // (G=3) and the depthwise case (G=Cin=Cout).
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        // (h, w, c_in, c_out, kh, kw, G)
+        for &(h, w, c_in, c_out, kh, kw, g) in &[
+            (8usize, 7usize, 6usize, 9usize, 3usize, 2usize, 3usize), // general grouped
+            (6, 6, 4, 4, 3, 3, 4),                                    // depthwise (G=Cin=Cout)
+        ] {
+            let rhs_c_in = c_in / g;
+            let cpg = c_out / g;
+            let xf: Vec<f64> = (0..h * w * c_in)
+                .map(|i| (i as f64 * 0.021).sin() * 1.4 - 0.25)
+                .collect();
+            let kf: Vec<f64> = (0..kh * kw * rhs_c_in * c_out)
+                .map(|i| (i as f64 * 0.017).cos() * 0.7 + 0.15)
+                .collect();
+            let out = eval_conv(
+                Primitive::Conv,
+                &[
+                    mk(vec![1, h as u32, w as u32, c_in as u32], &xf),
+                    mk(
+                        vec![kh as u32, kw as u32, rhs_c_in as u32, c_out as u32],
+                        &kf,
+                    ),
+                ],
+                &params(&[
+                    ("padding", "valid"),
+                    ("strides", "1"),
+                    ("feature_group_count", &g.to_string()),
+                ]),
+            )
+            .unwrap();
+            let (out_h, out_w) = (h - kh + 1, w - kw + 1);
+            let t = out.as_tensor().unwrap();
+            assert_eq!(
+                t.shape.dims,
+                vec![1, out_h as u32, out_w as u32, c_out as u32],
+                "grouped conv shape G={g}"
+            );
+            let got: Vec<u64> = t
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect();
+            let mut want = Vec::new();
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let in_ch_base = (co / cpg) * rhs_c_in;
+                        let mut acc = 0.0f64;
+                        for a in 0..kh {
+                            for b in 0..kw {
+                                for ci in 0..rhs_c_in {
+                                    let lv =
+                                        xf[((oh + a) * w + (ow + b)) * c_in + (in_ch_base + ci)];
+                                    let kv = kf[((a * kw + b) * rhs_c_in + ci) * c_out + co];
+                                    acc += lv * kv;
+                                }
+                            }
+                        }
+                        want.push(acc.to_bits());
+                    }
+                }
+            }
+            assert_eq!(
+                got, want,
+                "grouped conv G={g} must match direct grouped reference"
+            );
+        }
+
+        // 1D conv still rejects feature_group_count loudly.
+        let lhs1 = mk(vec![1, 6, 4], &[0.0; 24]);
+        let k1 = mk(vec![3, 2, 4], &[0.0; 24]); // [K, Cin/G=2, Cout=4]
+        let err = eval_conv(
+            Primitive::Conv,
+            &[lhs1, k1],
+            &params(&[("padding", "valid"), ("feature_group_count", "2")]),
+        )
+        .unwrap_err();
+        assert!(
+            format!("{err:?}").contains("feature_group_count"),
+            "1D conv must reject feature_group_count"
         );
     }
 
