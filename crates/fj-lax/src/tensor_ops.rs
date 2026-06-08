@@ -5207,6 +5207,14 @@ fn conv_real_output_from_f64(
     if out_dtype == DType::F64 {
         return Ok(Value::Tensor(TensorValue::new_f64_values(shape, out)?));
     }
+    // Dense f32 output: emit dense `f32` storage instead of boxed `Literal`s so
+    // the conv result feeds downstream f32 elementwise (bias-add/activation)
+    // densely without re-boxing. Bit-identical: `conv_float_literal_from_f64(F32,
+    // v)` == `Literal::from_f32(v as f32)`, exactly what `new_f32_values` stores.
+    if out_dtype == DType::F32 {
+        let values: Vec<f32> = out.iter().map(|&v| v as f32).collect();
+        return Ok(Value::Tensor(TensorValue::new_f32_values(shape, values)?));
+    }
     let elements: Vec<Literal> = out
         .iter()
         .map(|&v| conv_float_literal_from_f64(out_dtype, v))
@@ -6744,6 +6752,40 @@ mod tests {
             }
         }
         assert_eq!(got, want, "f32 conv2d must be bit-identical to the f64-accum reference");
+    }
+
+    /// f32 conv2d now emits DENSE f32 storage so the output feeds downstream f32
+    /// elementwise (bias-add/activation) densely. Verify `as_f32_slice`-backed.
+    #[test]
+    fn f32_conv2d_emits_dense_f32_storage() {
+        let (h, w, c_in, c_out, kh, kw) = (20usize, 20usize, 4usize, 8usize, 3usize, 3usize);
+        let xf: Vec<f32> = (0..h * w * c_in).map(|i| (i as f32 * 0.011).sin()).collect();
+        let kf: Vec<f32> = (0..kh * kw * c_in * c_out).map(|i| (i as f32 * 0.017).cos()).collect();
+        let mk32 = |dims: Vec<u32>, data: &[f32]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims },
+                    data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let out = eval_conv(
+            Primitive::Conv,
+            &[
+                mk32(vec![1, h as u32, w as u32, c_in as u32], &xf),
+                mk32(vec![kh as u32, kw as u32, c_in as u32, c_out as u32], &kf),
+            ],
+            &params(&[("padding", "valid"), ("strides", "1")]),
+        )
+        .unwrap();
+        let Value::Tensor(t) = out else { panic!("expected tensor") };
+        assert_eq!(t.dtype, DType::F32);
+        assert!(
+            t.elements.as_f32_slice().is_some(),
+            "f32 conv2d output must be dense-f32-backed (not boxed Literals)"
+        );
     }
 
     #[test]

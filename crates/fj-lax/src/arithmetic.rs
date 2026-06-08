@@ -5990,6 +5990,14 @@ fn general_real_tensordot(
         // from_f64(v) == F64Bits(v.to_bits()), so this matches new_f64_values exactly.
         return Ok(Some(Value::Tensor(TensorValue::new_f64_values(shape, values)?)));
     }
+    // Dense f32 output: emit dense `f32` storage so the GEMM result feeds
+    // downstream f32 elementwise (bias-add/activation) densely without re-boxing
+    // into per-`Literal`. Bit-identical: `real_literal_from_f64(F32, v)` ==
+    // `Literal::from_f32(v as f32)`, exactly what `new_f32_values` stores.
+    if out_dtype == DType::F32 {
+        let values: Vec<f32> = values.iter().map(|&v| v as f32).collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_f32_values(shape, values)?)));
+    }
     let elements: Vec<Literal> = values
         .iter()
         .map(|&v| real_literal_from_f64(out_dtype, v))
@@ -8280,6 +8288,113 @@ mod tests {
             }
         }
         assert_eq!(got, want, "f32 matmul must be bit-identical to the f64-accum reference");
+    }
+
+    /// f32 dot_general now emits DENSE f32 storage (not boxed `Literal`s) so the
+    /// GEMM result feeds downstream f32 elementwise densely. Verify the output is
+    /// `as_f32_slice`-backed AND bit-identical to the boxed reference.
+    #[test]
+    fn f32_dot_general_emits_dense_f32_storage() {
+        let mk32 = |dims: Vec<u32>, data: &[f32]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims },
+                    data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let (m, k, n) = (6usize, 5usize, 7usize);
+        let af: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.021).sin() * 1.1).collect();
+        let bf: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.017).cos() * 0.9).collect();
+        let params = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        let Value::Tensor(out) = eval_dot_general(
+            &[mk32(vec![m as u32, k as u32], &af), mk32(vec![k as u32, n as u32], &bf)],
+            &params,
+        )
+        .unwrap() else {
+            panic!("expected tensor");
+        };
+        assert_eq!(out.dtype, DType::F32);
+        assert!(
+            out.elements.as_f32_slice().is_some(),
+            "f32 dot_general output must be dense-f32-backed (not boxed Literals)"
+        );
+        // Values still bit-identical to the f64-accum reference.
+        let got = out.elements.as_f32_slice().unwrap();
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0.0f64;
+                for l in 0..k {
+                    s += af[i * k + l] as f64 * bf[l * n + j] as f64;
+                }
+                assert_eq!(got[i * n + j].to_bits(), (s as f32).to_bits(), "mismatch at {i},{j}");
+            }
+        }
+    }
+
+    /// End-to-end win of dense f32 dot output: a `(A@B) + bias` block. Before this
+    /// change the matmul emitted boxed `Literal`s, so the bias-add fell to the slow
+    /// per-`Literal` broadcast loop; now it stays dense (broadcast_binary_f32).
+    /// A/B in the same binary: the matmul cost is common to both; only the bias-add
+    /// path differs (boxed dot output vs dense dot output).
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_matmul_biasadd_pipeline_dense_vs_boxed() {
+        use std::time::Instant;
+        let (m, k, n) = (4096usize, 512usize, 512usize);
+        let mk32 = |dims: Vec<u32>, data: &[f32]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims },
+                    data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let a = mk32(vec![m as u32, k as u32], &(0..m * k).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect::<Vec<_>>());
+        let b = mk32(vec![k as u32, n as u32], &(0..k * n).map(|i| (i % 77) as f32 * 0.01).collect::<Vec<_>>());
+        let bias_data: Vec<f32> = (0..n).map(|i| (i % 31) as f32 * 0.1).collect();
+        let bias_dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, bias_data.clone()).unwrap());
+        let bias_boxed = mk32(vec![n as u32], &bias_data);
+        let params = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        // matmul time (common to both worlds) + dense result for downstream.
+        let dot = || eval_dot_general(&[a.clone(), b.clone()], &params).unwrap();
+        let dense_res = dot();
+        assert!(dense_res.as_tensor().unwrap().elements.as_f32_slice().is_some());
+        // boxed copy of the matmul result (simulates the pre-change boxed output).
+        let boxed_res = {
+            let t = dense_res.as_tensor().unwrap();
+            let lits: Vec<Literal> = t.elements.as_f32_slice().unwrap().iter().map(|&v| Literal::from_f32(v)).collect();
+            Value::Tensor(TensorValue::new(DType::F32, t.shape.clone(), lits).unwrap())
+        };
+        let time = |f: &dyn Fn()| {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let t_dot = time(&|| { let _ = dot(); });
+        let t_ba_boxed = time(&|| { let _ = crate::eval_primitive(Primitive::Add, &[boxed_res.clone(), bias_boxed.clone()], &BTreeMap::new()).unwrap(); });
+        let t_ba_dense = time(&|| { let _ = crate::eval_primitive(Primitive::Add, &[dense_res.clone(), bias_dense.clone()], &BTreeMap::new()).unwrap(); });
+        let before = t_dot + t_ba_boxed;
+        let after = t_dot + t_ba_dense;
+        println!(
+            "BENCH f32 (A@B)+bias [{m},{k}]@[{k},{n}]: matmul={:.3}ms | boxed-ba={:.3}ms dense-ba={:.3}ms | pipeline before={:.3}ms after={:.3}ms speedup={:.2}x",
+            t_dot * 1e3, t_ba_boxed * 1e3, t_ba_dense * 1e3, before * 1e3, after * 1e3, before / after
+        );
     }
 
     #[test]
