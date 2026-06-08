@@ -1,0 +1,115 @@
+{
+  "artifact": "fj_lax_pinv_simd_rotations_glfd9_pass185_2026-06-08",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-glfd9",
+  "pass": 185,
+  "date": "2026-06-08",
+  "status": "rejected",
+  "source_restored_after_rejection": true,
+  "profile_backed_target": {
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-profile-p1vbf50 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_256x128_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_2048x2048x2048_f64|matmul_2d_1024x1024x1024_f64)' --quick --noplot",
+    "worker": "fmd",
+    "top_rows_ms": [
+      {
+        "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+        "low": 186.63,
+        "median": 188.64,
+        "high": 196.68
+      },
+      {
+        "bench": "linalg/pinv_256x128_f64",
+        "low": 38.308,
+        "median": 38.719,
+        "high": 40.365
+      },
+      {
+        "bench": "linalg/lu_1024x1024_f64",
+        "low": 34.917,
+        "median": 34.974,
+        "high": 35.205
+      },
+      {
+        "bench": "linalg/matmul_2d_1024x1024x1024_f64",
+        "low": 28.273,
+        "median": 28.75,
+        "high": 28.869
+      },
+      {
+        "bench": "linalg/qr_1024x1024_f64",
+        "low": 27.844,
+        "median": 27.973,
+        "high": 28.487
+      }
+    ],
+    "selection_note": "After GEMM KC512 failed the keep gate, pinv_256x128_f64 was the top non-GEMM fj-lax linalg row with profile evidence on the same RCH worker."
+  },
+  "lever": {
+    "summary": "Use portable SIMD for the contiguous W and V column rotation loops inside one_sided_jacobi_svd_real.",
+    "files": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "single_change": true,
+    "alien_primitive": "portable SIMD lane grouping for numerical linear-algebra rotation kernels",
+    "safe_rust": true,
+    "decision": "Rejected because the measured same-worker win did not clear Score >= 2.0."
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-glfd9-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_256x128_f64 --quick --noplot",
+      "worker": "fmd",
+      "low_ms": 38.54,
+      "median_ms": 38.63,
+      "high_ms": 38.653
+    },
+    "candidate": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-glfd9-after cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_256x128_f64 --quick --noplot",
+      "worker": "fmd",
+      "low_ms": 37.849,
+      "median_ms": 37.882,
+      "high_ms": 37.89
+    },
+    "median_speedup": 1.01975,
+    "conservative_speedup": 1.01715,
+    "score": {
+      "impact": 2,
+      "confidence": 3.5,
+      "effort": 5,
+      "value": 1.4,
+      "threshold": 2.0
+    }
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "The Jacobi pair order p,q, convergence checks, dot products, norm reductions, and singular-value sorting still run in the same order. The SIMD candidate only grouped independent per-row W/V rotation updates after c and s were already computed.",
+    "tie_breaking_unchanged": "Singular-value ordering and total_cmp tie behavior were unchanged; the candidate introduced no new pivot or sort key.",
+    "floating_point": "Schur coefficient formulas and all dot/norm reductions were unchanged. The W/V rotation update for each element used the same multiply/sub/add expressions; lane grouping changed scheduling only for independent elements in private contiguous buffers.",
+    "rng": "No RNG surface.",
+    "error_surface": "pinv shape, dtype, rcond cutoff, empty-matrix, and fallback behavior were unchanged.",
+    "nan_surface": "NaN propagation followed the same Jacobi pair traversal and scalar formulas."
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_lax_pinv_simd_rotations_glfd9_pass185_2026-06-08.golden",
+    "sha256": "07a0ea9109fdc8d9950a01088f56a2e60707a7a2b2733c73428b68c201d1fdf6",
+    "prior_pinv_svd_colmajor_digest": "646497ffdc9a13f758b8db6bb07b729fc3e583275c45d3a418b417f028448fb6",
+    "proof_tests": [
+      "pinv",
+      "one_sided_jacobi_svd_real"
+    ]
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-glfd9-test cargo test -p fj-lax --lib pinv -- --nocapture",
+      "result": "passed: 8 tests, 0 failed"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-glfd9-svd-test cargo test -p fj-lax --lib one_sided_jacobi_svd_real -- --nocapture",
+      "result": "passed: 2 tests, 0 failed"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/linalg.rs",
+      "result": "empty after rejection restore"
+    }
+  ],
+  "fallback": "No runtime fallback is needed because no source lever was shipped. The recorded candidate should not be retried as a micro-lever unless a future profile shows the rotation loops dominate under a different implementation.",
+  "next_profile_note": "A rejected micro-lever on Jacobi rotations routes the next pass toward an algorithmically different primitive: blocked/parallel Jacobi pair scheduling, communication-avoiding SVD/QR assembly, or a different top linalg row proven by the next RCH profile."
+}

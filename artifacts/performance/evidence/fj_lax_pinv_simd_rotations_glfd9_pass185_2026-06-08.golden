@@ -1,0 +1,15 @@
+fj_lax_pinv_simd_rotations_glfd9_pass185_2026-06-08
+project=frankenjax
+crate=fj-lax
+bead=frankenjax-glfd9
+target=linalg/pinv_256x128_f64
+lever=portable SIMD for contiguous W/V Jacobi rotation loops inside one_sided_jacobi_svd_real
+decision=rejected_score_below_gate_source_restored
+golden_digest_test=pinv + one_sided_jacobi_svd_real proof suite
+prior_pinv_svd_colmajor_digest=646497ffdc9a13f758b8db6bb07b729fc3e583275c45d3a418b417f028448fb6
+baseline_fmd_ms=38.540..38.630..38.653
+candidate_fmd_ms=37.849..37.882..37.890
+median_speedup=1.01975
+conservative_speedup=1.01715
+score=1.4
+isomorphism=Jacobi pair order, Schur coefficient formulas, convergence tests, dot and norm reduction order, W/V column rotation element order, singular-value sort and tie behavior, dtype/shape/error behavior, NaN surface, and RNG absence were preserved. The candidate changed only per-element rotation lane grouping for contiguous private buffers and was not shipped.
