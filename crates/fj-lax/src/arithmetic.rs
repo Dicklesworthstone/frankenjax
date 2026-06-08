@@ -5,7 +5,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::EvalError;
-use crate::tensor_contraction::{batched_matmul_2d, batched_matmul_2d_f32_in, matmul_2d};
+use crate::tensor_contraction::{
+    batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f32_in, matmul_2d,
+};
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Expensive per-element cost amortizes the thread fan-out at a lower element
@@ -6544,6 +6546,35 @@ fn general_real_tensordot(
             return Ok(Some(Value::Scalar(Literal::from_f32(values[0]))));
         }
         return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            values,
+        )?)));
+    }
+
+    // NATIVE BF16 path (mixed-precision: BF16 in, f64 accumulate, BF16 out): out_dtype
+    // BF16 means both operands are BF16. When both perms are the identity and both are
+    // dense-BF16-backed, feed the u16 slices straight to the mixed-precision GEMM —
+    // skips the u16->f64 promote alloc (4x bytes) and streams B at a QUARTER of f64's
+    // bytes. BIT-IDENTICAL to promote+f64-GEMM+round (see batched_matmul_2d_bf16_in);
+    // also yields a dense BF16 output. f16/non-identity-perm BF16 fall through to promote.
+    if out_dtype == DType::BF16
+        && lhs.dtype == DType::BF16
+        && rhs.dtype == DType::BF16
+        && is_identity_perm(&lhs_perm)
+        && is_identity_perm(&rhs_perm)
+        && let (Some(a16), Some(b16)) = (
+            lhs.elements.as_half_float_slice(),
+            rhs.elements.as_half_float_slice(),
+        )
+    {
+        let values = batched_matmul_2d_bf16_in(a16, batch, m, k, b16, n);
+        if output_dims.is_empty() {
+            return Ok(Some(Value::Scalar(Literal::BF16Bits(values[0]))));
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            DType::BF16,
             Shape {
                 dims: output_dims.to_vec(),
             },
