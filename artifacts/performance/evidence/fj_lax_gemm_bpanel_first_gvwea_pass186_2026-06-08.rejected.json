@@ -1,0 +1,126 @@
+{
+  "artifact": "fj_lax_gemm_bpanel_first_gvwea_pass186_2026-06-08",
+  "project": "frankenjax",
+  "crate": "fj-lax",
+  "bead": "frankenjax-gvwea",
+  "pass": 186,
+  "date": "2026-06-08",
+  "status": "rejected",
+  "source_restored_after_rejection": true,
+  "profile_backed_target": {
+    "fresh_profile_command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-profile-pass186 cargo bench -p fj-lax --bench lax_baseline -- 'linalg/(eig_48x48_f64|eigh_48x48_f64|cholesky_1024x1024_f64|qr_1024x1024_f64|pinv_256x128_f64|pinv_192x192_f64|lu_1024x1024_f64|svd_48x48_f64|svd_48x48_full_f64|matmul_2d_2048x2048x2048_f64|matmul_2d_1024x1024x1024_f64)' --quick --noplot",
+    "fresh_profile_worker": "vmi1227854",
+    "fresh_top_rows_ms": [
+      {
+        "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+        "low": 859.26,
+        "median": 872.28,
+        "high": 924.36
+      },
+      {
+        "bench": "linalg/lu_1024x1024_f64",
+        "low": 131.78,
+        "median": 139.78,
+        "high": 141.77
+      },
+      {
+        "bench": "linalg/matmul_2d_1024x1024x1024_f64",
+        "low": 105.5,
+        "median": 105.87,
+        "high": 105.96
+      },
+      {
+        "bench": "linalg/cholesky_1024x1024_f64",
+        "low": 81.388,
+        "median": 100.38,
+        "high": 105.12
+      },
+      {
+        "bench": "linalg/pinv_256x128_f64",
+        "low": 47.685,
+        "median": 49.003,
+        "high": 49.332
+      }
+    ],
+    "bead_profile_worker": "vmi1293453",
+    "bead_profile_target_ms": [
+      301.9,
+      321.97,
+      346.13
+    ],
+    "selection_note": "GEMM2048 remained the top fj-lax linalg row. Recent GEMM KC/MR/two-panel and row-morsel families had rejected evidence, so this pass tested a distinct B-panel-first communication traversal while preserving exact per-cell k order."
+  },
+  "lever": {
+    "summary": "Temporarily swapped the KC-blocked macro-kernel's inner traversal from row-tile-first to B-panel-first within each row/column superpanel, reusing one packed B panel across row tiles before advancing to the next panel.",
+    "files": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "single_change": true,
+    "alien_primitive": "vectorized execution + morsel-driven parallelism / communication-avoiding cache-local traversal",
+    "safe_rust": true,
+    "decision": "Rejected because same-worker Criterion regressed; source restored."
+  },
+  "benchmarks": {
+    "baseline": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1227854 RCH_WORKERS=vmi1227854 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-gvwea-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --quick --noplot",
+      "requested_worker": "vmi1227854",
+      "actual_worker": "vmi1156319",
+      "low_ms": 601.56,
+      "median_ms": 606.64,
+      "high_ms": 626.97
+    },
+    "candidate": {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1156319 RCH_WORKERS=vmi1156319 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-gvwea-after cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --quick --noplot",
+      "actual_worker": "vmi1156319",
+      "low_ms": 635.25,
+      "median_ms": 636.8,
+      "high_ms": 643.04
+    },
+    "median_speedup": 0.952638,
+    "conservative_speedup": 0.935494,
+    "score": {
+      "impact": 0,
+      "confidence": 5,
+      "effort": 2,
+      "value": 0.0,
+      "threshold": 2.0
+    }
+  },
+  "isomorphism_proof": {
+    "ordering_preserved": "The candidate preserved pc block order and the ascending l loop inside every output accumulator. It changed only traversal across independent output tiles within one row/column superpanel.",
+    "tie_breaking_unchanged": "No comparison or tie-breaking surface.",
+    "floating_point": "Each C[i,j] accumulator consumed the same sequence of a[i,l] * b[l,j] terms with the same separate multiply and add operations. No FMA, horizontal reduction, mixed precision, or partial-sum merge was introduced.",
+    "rng": "No RNG surface.",
+    "error_surface": "Input lengths, dimensions, dtype behavior, zero-size handling, remainder coverage, and row/thread ownership were unchanged.",
+    "golden_output": "matmul_2d_packed_nr8_golden_output_digest passed with digest e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a."
+  },
+  "golden": {
+    "file": "artifacts/performance/evidence/fj_lax_gemm_bpanel_first_gvwea_pass186_2026-06-08.rejected.golden",
+    "sha256": "32ad98a678e7f7f1193ae1c26f020c6687c13d748d49706c1a2b8cc297d76dd7",
+    "golden_output_sha256": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+    "proof_tests": [
+      "matmul_2d_basic",
+      "matmul_2d_into_matches_allocating_path",
+      "matmul_2d_ikj_bit_identical_to_ijk",
+      "matmul_2d_special_values_bit_identical_to_ijk",
+      "matmul_2d_threaded_bit_identical",
+      "matmul_2d_large_bit_identical_to_ijk",
+      "matmul_2d_packed_bit_identical_to_ijk",
+      "matmul_2d_blocked_bit_identical_to_ijk",
+      "pack_b_panels_parallel_matches_serial_bits",
+      "matmul_2d_packed_nr8_golden_output_digest"
+    ]
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1156319 RCH_WORKERS=vmi1156319 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-gvwea-test cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+      "result": "passed: 10 tests, 0 failed, 1 ignored, 1177 filtered out"
+    },
+    {
+      "command": "git diff -- crates/fj-lax/src/tensor_contraction.rs",
+      "result": "empty after rejection restore"
+    }
+  ],
+  "fallback": "No runtime fallback is needed because no source lever was shipped. Do not repeat row-tile/panel traversal swaps without a new profile showing a changed bottleneck.",
+  "next_profile_note": "The next GEMM route should leave exact-order traversal micro-schedules and attack either an explicit Strassen/recursive Dot tolerance contract, or move to the next profiled non-GEMM row with a different algorithmic primitive."
+}

@@ -1,0 +1,17 @@
+fj_lax_gemm_bpanel_first_gvwea_pass186_2026-06-08
+project=frankenjax
+crate=fj-lax
+bead=frankenjax-gvwea
+target=linalg/matmul_2d_2048x2048x2048_f64
+lever=B-panel-first traversal inside the existing KC-blocked packed-B GEMM macro-kernel
+decision=rejected_score_below_gate_source_restored
+profile_vmi1227854_ms=859.26..872.28..924.36
+bead_profile_vmi1293453_ms=301.90..321.97..346.13
+baseline_vmi1156319_ms=601.56..606.64..626.97
+candidate_vmi1156319_ms=635.25..636.80..643.04
+median_speedup=0.952638
+conservative_speedup=0.935494
+score=0.0
+golden_digest_test=matmul_2d_packed_nr8_golden_output_digest
+golden_output_sha256=e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a
+isomorphism=The candidate preserved pc order, row/thread ownership, B/A packed values, each output cell's scalar accumulator, and ascending-l product order; it only swapped independent row-tile and B-panel traversal within a row/column superpanel. Source was restored after the performance gate failed.
