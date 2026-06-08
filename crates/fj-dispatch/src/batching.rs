@@ -1065,15 +1065,84 @@ fn batch_dot_general(
 ) -> Result<BatchTracer, BatchError> {
     let a = &inputs[0];
     let b = &inputs[1];
-    if let (Some(bd_a), Some(bd_b)) = (a.batch_dim, b.batch_dim) {
-        let a_val = move_batch_dim_to_front(&a.value, bd_a)?;
-        let b_val = move_batch_dim_to_front(&b.value, bd_b)?;
-        let new_params = dot_general_params_with_prepended_batch(params);
-        let result = eval_primitive(Primitive::DotGeneral, &[a_val, b_val], &new_params)
-            .map_err(|e| BatchError::EvalError(e.to_string()))?;
-        return Ok(BatchTracer::batched(result, 0));
+    match (a.batch_dim, b.batch_dim) {
+        // Both batched: prepend the vmap axis as a NEW batch dim of the contraction.
+        (Some(bd_a), Some(bd_b)) => {
+            let a_val = move_batch_dim_to_front(&a.value, bd_a)?;
+            let b_val = move_batch_dim_to_front(&b.value, bd_b)?;
+            let new_params = dot_general_params_with_prepended_batch(params);
+            let result = eval_primitive(Primitive::DotGeneral, &[a_val, b_val], &new_params)
+                .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            Ok(BatchTracer::batched(result, 0))
+        }
+        // Only LHS batched: the vmap axis becomes a new LHS FREE dim. dot_general
+        // output is [lhs_batch ++ lhs_free ++ rhs_free]; the prepended axis (lhs dim
+        // 0) is the SMALLEST lhs_free index, so it lands first among lhs_free — at
+        // output position |lhs_batch|. Move it to the front. Single matmul over the
+        // batch instead of the per-slice loop.
+        (Some(bd_a), None) => {
+            let a_val = move_batch_dim_to_front(&a.value, bd_a)?;
+            let new_params = dot_general_params_shift_one(params, true);
+            let result =
+                eval_primitive(Primitive::DotGeneral, &[a_val, b.value.clone()], &new_params)
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            let pos = dot_dim_count(params, "lhs_batch_dims");
+            let result = move_batch_dim_to_front(&result, pos)?;
+            Ok(BatchTracer::batched(result, 0))
+        }
+        // Only RHS batched: the vmap axis becomes a new RHS FREE dim, landing first
+        // among rhs_free — at output position |lhs_batch| + |lhs_free| =
+        // (lhs_rank - |lhs_contracting|). Move it to the front.
+        (None, Some(bd_b)) => {
+            let b_val = move_batch_dim_to_front(&b.value, bd_b)?;
+            let new_params = dot_general_params_shift_one(params, false);
+            let result =
+                eval_primitive(Primitive::DotGeneral, &[a.value.clone(), b_val], &new_params)
+                    .map_err(|e| BatchError::EvalError(e.to_string()))?;
+            let lhs_rank = a.value.as_tensor().map_or(0, |t| t.shape.rank());
+            let pos = lhs_rank.saturating_sub(dot_dim_count(params, "lhs_contracting_dims"));
+            let result = move_batch_dim_to_front(&result, pos)?;
+            Ok(BatchTracer::batched(result, 0))
+        }
+        (None, None) => batch_passthrough_leading(Primitive::DotGeneral, inputs, params),
     }
-    batch_passthrough_leading(Primitive::DotGeneral, inputs, params)
+}
+
+/// Number of dimension indices listed in a dot_general dimension-numbers param.
+fn dot_dim_count(params: &BTreeMap<String, String>, key: &str) -> usize {
+    params
+        .get(key)
+        .map_or(0, |s| s.split(',').filter(|x| !x.trim().is_empty()).count())
+}
+
+/// Rewrite dot_general dimension_numbers for a vmap axis prepended at position 0
+/// on ONE operand only: that operand's contracting and batch dim indices shift +1
+/// (the vmap axis becomes a new FREE dim of it); the other operand is unchanged.
+fn dot_general_params_shift_one(
+    params: &BTreeMap<String, String>,
+    shift_lhs: bool,
+) -> BTreeMap<String, String> {
+    let shifted = |key: &str| -> String {
+        let dims: Vec<usize> = params
+            .get(key)
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|x| x.trim().parse::<usize>().ok())
+                    .map(|d| d + 1)
+                    .collect()
+            })
+            .unwrap_or_default();
+        format_csv(&dims)
+    };
+    let mut new_params = params.clone();
+    if shift_lhs {
+        new_params.insert("lhs_contracting_dims".to_owned(), shifted("lhs_contracting_dims"));
+        new_params.insert("lhs_batch_dims".to_owned(), shifted("lhs_batch_dims"));
+    } else {
+        new_params.insert("rhs_contracting_dims".to_owned(), shifted("rhs_contracting_dims"));
+        new_params.insert("rhs_batch_dims".to_owned(), shifted("rhs_batch_dims"));
+    }
+    new_params
 }
 
 /// Rewrite dot_general dimension_numbers for a vmap axis prepended at position 0:
@@ -8026,6 +8095,76 @@ mod tests {
     }
 
     #[test]
+    fn test_batch_dot_general_single_operand_matches_per_slice() {
+        // The single-operand-batched dot_general routing (vmap axis -> a free dim)
+        // must be bit-for-bit identical to the per-slice passthrough it replaces,
+        // across the placement variants: rhs-batched, lhs-batched, and a matrix
+        // operand with a leading vmap free dim.
+        let check = |a: BatchTracer, b: BatchTracer, params: &BTreeMap<String, String>, label: &str| {
+            let routed =
+                apply_batch_rule(Primitive::DotGeneral, &[a.clone(), b.clone()], params).unwrap();
+            let per_slice =
+                batch_passthrough_leading(Primitive::DotGeneral, &[a, b], params).unwrap();
+            assert_eq!(routed.batch_dim, per_slice.batch_dim, "{label}: batch_dim");
+            assert_eq!(
+                routed.value.as_tensor().unwrap().shape.dims,
+                per_slice.value.as_tensor().unwrap().shape.dims,
+                "{label}: shape"
+            );
+            assert_eq!(
+                extract_f64_vec(&routed.value),
+                extract_f64_vec(&per_slice.value),
+                "{label}: values"
+            );
+        };
+        let mk = |dims: &[u32]| {
+            let n: usize = dims.iter().map(|&d| d as usize).product();
+            let data: Vec<f64> = (0..n).map(|i| (i % 11) as f64 * 0.5 - 1.0).collect();
+            make_f64_tensor(dims, &data)
+        };
+
+        // vmap(W @ x): W unbatched [3,4], x batched [5,4] (per-example vector [4]).
+        // contract W:1 with x:0 -> per lane [3]; result [5,3]. (None, Some).
+        let p1 = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        check(
+            BatchTracer::unbatched(mk(&[3, 4])),
+            BatchTracer::batched(mk(&[5, 4]), 0),
+            &p1,
+            "rhs-batched W@x",
+        );
+
+        // vmap(x @ W): x batched [5,4] (per-example [4]), W unbatched [4,3].
+        // contract x:0 with W:0 -> per lane [3]; result [5,3]. (Some, None).
+        let p2 = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "0".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        check(
+            BatchTracer::batched(mk(&[5, 4]), 0),
+            BatchTracer::unbatched(mk(&[4, 3])),
+            &p2,
+            "lhs-batched x@W",
+        );
+
+        // vmap over lhs of a matmul: A batched [5,2,4] (per-example [2,4]), B [4,3].
+        // contract A:1 with B:0 -> per lane [2,3]; result [5,2,3]. (Some, None) with
+        // a multi-dim free placement (vmap free dim precedes the m free dim).
+        let p3 = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        check(
+            BatchTracer::batched(mk(&[5, 2, 4]), 0),
+            BatchTracer::unbatched(mk(&[4, 3])),
+            &p3,
+            "lhs-batched A@B",
+        );
+    }
+
+    #[test]
     #[ignore = "benchmark: run with --ignored --nocapture"]
     fn bench_batch_dot_general_vs_per_slice() {
         use std::time::Instant;
@@ -8073,6 +8212,41 @@ mod tests {
         run(128, 32);
         run(64, 64);
         run(16, 128);
+
+        // Single-operand: vmap(W @ x) — W unbatched [m,k], x batched [batch,k].
+        let run_single = |batch: usize, m: usize, k: usize| {
+            let w = make_f64_tensor(&[m as u32, k as u32], &vec![0.5; m * k]);
+            let x_data: Vec<f64> = (0..batch * k).map(|i| (i % 5) as f64 * 0.25).collect();
+            let w_t = BatchTracer::unbatched(w);
+            let x_t = BatchTracer::batched(make_f64_tensor(&[batch as u32, k as u32], &x_data), 0);
+            let reps = 40;
+            let _ = batch_dot_general(&[w_t.clone(), x_t.clone()], &params).unwrap();
+            let mut new_min = f64::MAX;
+            for _ in 0..reps {
+                let t = Instant::now();
+                let _ = batch_dot_general(&[w_t.clone(), x_t.clone()], &params).unwrap();
+                new_min = new_min.min(t.elapsed().as_secs_f64());
+            }
+            let mut old_min = f64::MAX;
+            for _ in 0..reps {
+                let t = Instant::now();
+                let _ = batch_passthrough_leading(
+                    Primitive::DotGeneral,
+                    &[w_t.clone(), x_t.clone()],
+                    &params,
+                )
+                .unwrap();
+                old_min = old_min.min(t.elapsed().as_secs_f64());
+            }
+            println!(
+                "BENCH vmap(W@x) batch={batch} m={m} k={k}: per_slice={:.4}ms batched={:.4}ms speedup={:.2}x",
+                old_min * 1e3,
+                new_min * 1e3,
+                old_min / new_min
+            );
+        };
+        run_single(1024, 32, 32);
+        run_single(4096, 16, 16);
     }
 
     #[test]
