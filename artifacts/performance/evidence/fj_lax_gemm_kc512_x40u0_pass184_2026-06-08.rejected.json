@@ -1,0 +1,67 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "pass": 184,
+  "bead": "frankenjax-x40u0",
+  "crate": "fj-lax",
+  "status": "rejected",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "profile_backing": {
+    "source": "Post-p1vbf.50 RCH fmd fj-lax linalg profile with no ready br perf beads available.",
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-pass184-profile cargo bench -p fj-lax --bench lax_baseline -- linalg --quick --noplot",
+    "hot_rows_ms": {
+      "linalg/matmul_2d_2048x2048x2048_f64": [186.63, 188.64, 196.68],
+      "linalg/pinv_256x128_f64": [38.308, 38.719, 40.365],
+      "linalg/lu_1024x1024_f64": [34.917, 34.974, 35.205],
+      "linalg/matmul_2d_1024x1024x1024_f64": [28.273, 28.750, 28.869],
+      "linalg/qr_1024x1024_f64": [27.844, 27.973, 28.487]
+    }
+  },
+  "lever": {
+    "kind": "communication/cache tile-size change",
+    "description": "Raise blocked GEMM KC from 256 to 512 to reduce C carry read/write passes from eight to four for k=2048 while preserving each output element's ascending-k product order.",
+    "alien_primitive": "communication-aware dense linear algebra tiling",
+    "files_touched_during_candidate": ["crates/fj-lax/src/tensor_contraction.rs"],
+    "source_restored_after_rejection": true,
+    "not_in_scope": "No MR/NR register tile change, no adjacent-panel unrolling, no Strassen/recursive reassociation, no thread partitioning change."
+  },
+  "baseline": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-x40u0-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --quick --noplot",
+    "time_ms": [217.59, 218.24, 220.85],
+    "median_ms": 218.24
+  },
+  "candidate": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-x40u0-after cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --quick --noplot",
+    "time_ms": [235.98, 240.06, 241.08],
+    "median_ms": 240.06
+  },
+  "delta": {
+    "median_speedup": 0.90911,
+    "conservative_speedup": 0.90256,
+    "score": 0.0,
+    "score_formula": "Impact x Confidence / Effort",
+    "keep_gate": "Score >= 2.0",
+    "decision": "Reject: larger KC reduced C pass count but lost locality enough to regress the same-worker focused Criterion row."
+  },
+  "behavior_proof": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-x40u0-test cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "result": "10 passed; 0 failed; 1 ignored",
+    "golden_output_sha256": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+    "golden_artifact": "artifacts/performance/evidence/fj_lax_gemm_kc512_x40u0_pass184_2026-06-08.golden",
+    "golden_file_sha256": "f9323e68cb840c0df04561ec9b140bc2a515463c6ab130834ffc9a4842139218",
+    "isomorphism": [
+      "Candidate preserved B panel packing layout and A pack layout; only the pc-block length changed.",
+      "Each output element still accumulated products in ascending k order with C carry values stored and reloaded exactly between pc blocks.",
+      "Candidate preserved row/thread partitioning, MR/NR tile coverage, border/remainder coverage, dtype/shape/error surface, and RNG absence.",
+      "No source change is shipped after rejection; final tree behavior is bit-for-bit the pre-candidate behavior."
+    ]
+  },
+  "next_route": {
+    "primitive": "materially different GEMM primitive beyond KC-size tuning",
+    "target_ratio": ">= 1.10x against the profile-backed GEMM2048 row",
+    "notes": "Do not repeat KC enlargement or register-panel widening. Next GEMM attempt should attack a different surface such as output-write avoidance in GEMM callers, thread scheduling/affinity with same-run A/B, or an explicit parity-contract bead for algorithms that would otherwise alter floating-point association."
+  }
+}
