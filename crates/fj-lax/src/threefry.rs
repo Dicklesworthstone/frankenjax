@@ -846,7 +846,9 @@ pub fn random_geometric(key: PRNGKey, count: usize, p: f64) -> Vec<u64> {
         return vec![1; count];
     }
     let uniforms = random_uniform(key, count, 0.0, 1.0);
-    let log_1_minus_p = (1.0 - p).ln();
+    // JAX uses log1p(-p); (1.0 - p).ln() loses up to ~|p| relative precision for
+    // small p (1-p rounds near 1.0 before ln), while (-p).ln_1p() is exact.
+    let log_1_minus_p = (-p).ln_1p();
     uniforms
         .into_iter()
         .map(|u| {

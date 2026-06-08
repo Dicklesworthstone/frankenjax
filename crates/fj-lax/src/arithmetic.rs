@@ -4771,9 +4771,12 @@ pub(crate) fn betainc_approx(a: f64, b: f64, x: f64) -> f64 {
         return f64::NAN;
     }
 
+    // JAX's betainc uses `log1p(-x)` for the b·log(1-x) term (lax/special.py),
+    // which stays accurate as x→0 where `(1.0 - x).ln()` loses precision to the
+    // rounding of `1 - x` near 1.0.
     let bt = (lgamma_approx(a + b) - lgamma_approx(a) - lgamma_approx(b)
         + a * x.ln()
-        + b * (1.0 - x).ln())
+        + b * (-x).ln_1p())
     .exp();
 
     if x < (a + 1.0) / (a + b + 2.0) {
