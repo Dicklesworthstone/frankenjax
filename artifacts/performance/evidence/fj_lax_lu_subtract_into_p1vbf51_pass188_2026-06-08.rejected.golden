@@ -1,0 +1,13 @@
+bead=frankenjax-p1vbf.51
+target=linalg/lu_1024x1024_f64
+decision=rejected
+lever=subtract-into packed Schur GEMM sink
+golden_output_digest=4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91
+proof=RCH lu_blocked_path_golden_output_digest passed; RCH lu_blocked_path_reconstructs_and_matches_scalar passed
+same_worker=vmi1153651
+baseline_ms=[324.97,471.31,693.37]
+candidate_ms=[333.51,462.44,616.37]
+median_speedup=1.019180866707
+conservative_speedup=0.527232019728
+score=0.0
+next_route=communication-avoiding LU or panel-layout primitive

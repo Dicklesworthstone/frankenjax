@@ -1,0 +1,74 @@
+{
+  "bead": "frankenjax-p1vbf.51",
+  "pass": 188,
+  "date": "2026-06-08",
+  "crate": "fj-lax",
+  "target": "linalg/lu_1024x1024_f64",
+  "lever": "subtract-into packed Schur GEMM sink",
+  "one_lever": true,
+  "decision": "rejected",
+  "score": 0.0,
+  "score_gate": "Score >= 2.0 required to keep",
+  "profile_backed_target": {
+    "source": "bead frankenjax-p1vbf.51",
+    "hotspot": "blocked LU1024 Schur update in fj-lax",
+    "reason": "candidate targets materialized product allocation/readback in the LU Schur update identified by prior LU1024 profile routing"
+  },
+  "baseline": {
+    "tool": "RCH Criterion",
+    "worker": "vmi1153651",
+    "job": "29878602124231417",
+    "command": "RCH_BUILD_SLOTS=1 RCH_TEST_SLOTS=1 RCH_CHECK_SLOTS=1 RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=300 RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TERM_COLOR=never cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 4 --noplot",
+    "interval_ms": [324.97, 471.31, 693.37],
+    "outliers": "1 high severe outlier"
+  },
+  "candidate": {
+    "tool": "RCH Criterion",
+    "worker": "vmi1153651",
+    "job": "29878602124231431",
+    "command": "RCH_BUILD_SLOTS=1 RCH_TEST_SLOTS=1 RCH_CHECK_SLOTS=1 RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=300 RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TERM_COLOR=never cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 4 --noplot",
+    "interval_ms": [333.51, 462.44, 616.37],
+    "outliers": "1 high mild outlier"
+  },
+  "result": {
+    "median_speedup": 1.019180866707,
+    "conservative_speedup_low_over_high": 0.527232019728,
+    "reason_rejected": "same-worker intervals overlap heavily; median movement is only 1.019x and conservative speedup is 0.527x, so confidence is too low and Score < 2.0"
+  },
+  "behavior_proof": {
+    "subtract_exact_tests": {
+      "worker": "vmi1167313",
+      "job": "29878602124231455",
+      "command": "RCH_TEST_SLOTS=1 RCH_BUILD_SLOTS=1 RCH_CHECK_SLOTS=1 RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=300 RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TERM_COLOR=never cargo test -p fj-lax --lib matmul_2d_sub -- --nocapture",
+      "result": "3 passed, 0 failed, 0 ignored, 1222 filtered out"
+    },
+    "lu_golden_tests": {
+      "worker": "vmi1156319",
+      "job": "29878602124231456",
+      "command": "RCH_TEST_SLOTS=1 RCH_BUILD_SLOTS=1 RCH_CHECK_SLOTS=1 RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=300 RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TERM_COLOR=never cargo test -p fj-lax --lib lu_blocked_path -- --nocapture",
+      "result": "2 passed, 0 failed, 0 ignored, 1223 filtered out",
+      "golden_output_digest": "4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91"
+    },
+    "first_smoke": {
+      "worker": "vmi1153651",
+      "job": "29878602124231450",
+      "command": "RCH_TEST_SLOTS=1 RCH_BUILD_SLOTS=1 RCH_CHECK_SLOTS=1 RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=300 RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TERM_COLOR=never cargo test -p fj-lax --lib matmul_2d_sub_into_matches_product_subtraction_bits -- --nocapture",
+      "result": "1 passed, 0 failed, 0 ignored, 1224 filtered out"
+    },
+    "golden_file": "fj_lax_lu_subtract_into_p1vbf51_pass188_2026-06-08.rejected.golden",
+    "golden_file_sha256": "48188d6b63ae863de8c62252af23723f389d82cce377970f14b83873ec236193"
+  },
+  "isomorphism": [
+    "pivot scan order unchanged",
+    "strict-greater pivot tie-breaking unchanged",
+    "row swaps unchanged",
+    "panel factorization order unchanged",
+    "U12 solve order unchanged",
+    "per-output GEMM product accumulation stayed ascending in the shared inner dimension for the tested direct subtract kernels",
+    "final Schur update semantics stayed one subtraction per output cell",
+    "dtype, shape, and error behavior unchanged",
+    "RNG absent"
+  ],
+  "source_state": "candidate source restored; no code kept",
+  "next_route": "communication-avoiding LU, tournament-pivot paneling, or panel-layout primitive that changes blocked-decomposition memory traffic rather than another Schur subtraction micro-lever"
+}
