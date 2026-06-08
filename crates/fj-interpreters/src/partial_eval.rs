@@ -559,6 +559,62 @@ fn infer_complex_aval(input_avals: &[AbstractValue]) -> AbstractValue {
     }
 }
 
+/// DotGeneral output aval, mirroring fj-trace's `infer_dot_general`: the output
+/// shape is `[lhs batch dims] ++ [lhs free dims] ++ [rhs free dims]` and the
+/// dtype is the promotion of the two operand dtypes. DotGeneral needs BOTH
+/// operands, so it lives in the multi-input dispatcher (like Complex/Solve);
+/// the single-input catch-all previously typed a residual matmul with the LHS
+/// shape, one rank-pair too wide. Falls back to the first input aval when the
+/// arity is wrong (best-effort: staging must not panic on a malformed residual).
+fn infer_dot_general_aval(eqn: &Equation, input_avals: &[AbstractValue]) -> AbstractValue {
+    let (Some(lhs), Some(rhs)) = (input_avals.first(), input_avals.get(1)) else {
+        return input_avals
+            .first()
+            .cloned()
+            .unwrap_or(AbstractValue { dtype: DType::F64, shape: Shape::scalar() });
+    };
+
+    let parse_dims = |key: &str| -> Vec<usize> {
+        eqn.params
+            .get(key)
+            .map(|s| {
+                s.trim_matches(|c| c == '[' || c == ']')
+                    .split(',')
+                    .filter(|x| !x.trim().is_empty())
+                    .filter_map(|x| x.trim().parse::<usize>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let lhs_contracting = parse_dims("lhs_contracting_dims");
+    let rhs_contracting = parse_dims("rhs_contracting_dims");
+    let lhs_batch = parse_dims("lhs_batch_dims");
+    let rhs_batch = parse_dims("rhs_batch_dims");
+
+    let mut out_dims: Vec<u32> = Vec::new();
+    for &b in &lhs_batch {
+        if let Some(&d) = lhs.shape.dims.get(b) {
+            out_dims.push(d);
+        }
+    }
+    for (i, &d) in lhs.shape.dims.iter().enumerate() {
+        if !lhs_contracting.contains(&i) && !lhs_batch.contains(&i) {
+            out_dims.push(d);
+        }
+    }
+    for (i, &d) in rhs.shape.dims.iter().enumerate() {
+        if !rhs_contracting.contains(&i) && !rhs_batch.contains(&i) {
+            out_dims.push(d);
+        }
+    }
+
+    let dtype = fj_lax::promote_dtype_public(lhs.dtype, rhs.dtype);
+    AbstractValue {
+        dtype,
+        shape: Shape { dims: out_dims },
+    }
+}
+
 fn infer_equation_output_avals(
     eqn: &Equation,
     input_avals: &[AbstractValue],
@@ -586,6 +642,10 @@ fn infer_equation_output_avals(
         // Complex is binary — the dtype/shape depend on BOTH inputs, which the
         // single-input infer_equation_output_aval can't see.
         Complex => Ok(vec![infer_complex_aval(input_avals); eqn.outputs.len()]),
+        // DotGeneral's output shape/dtype depend on BOTH operands (and the
+        // contracting/batch dimension_numbers params), so it likewise needs the
+        // multi-input path. The catch-all typed a residual matmul as the LHS.
+        DotGeneral => Ok(vec![infer_dot_general_aval(eqn, input_avals); eqn.outputs.len()]),
         _ => {
             let out_aval = infer_equation_output_aval(eqn, first_input)?;
             Ok(vec![out_aval; eqn.outputs.len()])
@@ -1059,6 +1119,13 @@ fn infer_equation_output_aval(
                 }
             }
         }
+        // Argsort: shape is preserved but the output is ALWAYS I64 index data;
+        // the catch-all kept the input's float dtype, mistyping a residual sort.
+        // (Plain Sort preserves both dtype and shape, so it stays on the default.)
+        Argsort => AbstractValue {
+            dtype: DType::I64,
+            shape: first_input.shape.clone(),
+        },
         // Most element-wise ops preserve dtype and shape
         _ => first_input.clone(),
     };
@@ -3322,6 +3389,116 @@ mod tests {
                     vec![3, 2],
                     "transpose [2,3] with perm [1,0] should produce [3,2]"
                 );
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_dot_general_contracts_to_matmul_shape() {
+        run_logged_test(
+            "test_pe_typed_dot_general_contracts_to_matmul_shape",
+            &("pe", "typed", "dot_general"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // lhs(known [2,3]) ·_{1,0} rhs(known [3,4]) = v4([2,4], known) ->
+                //   add(v4, c(unknown [2,4])) = v5. The dot output is residualized
+                //   into the unknown partition; its aval must be [2,4], not the LHS
+                //   [2,3] the single-input catch-all used to return.
+                let mut dot_params = BTreeMap::new();
+                dot_params.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
+                dot_params.insert("rhs_contracting_dims".to_owned(), "0".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2), VarId(3)],
+                    vec![],
+                    vec![VarId(5)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::DotGeneral,
+                            inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: dot_params,
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(4)), Atom::Var(VarId(3))],
+                            outputs: smallvec![VarId(5)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue { dtype: DType::F64, shape: Shape { dims: vec![2, 3] } },
+                    AbstractValue { dtype: DType::F64, shape: Shape { dims: vec![3, 4] } },
+                    AbstractValue { dtype: DType::F64, shape: Shape { dims: vec![2, 4] } },
+                ];
+                let result =
+                    partial_eval_jaxpr_typed(&jaxpr, &[false, false, true], Some(&in_avals))
+                        .unwrap();
+                assert!(!result.residual_avals.is_empty());
+                assert_eq!(
+                    result.residual_avals[0].shape.dims,
+                    vec![2, 4],
+                    "dot_general [2,3]·[3,4] contracting (1,0) should produce [2,4]"
+                );
+                assert_eq!(result.residual_avals[0].dtype, DType::F64);
+                Ok(vec![])
+            },
+        );
+    }
+
+    #[test]
+    fn test_pe_typed_argsort_residual_is_i64() {
+        run_logged_test(
+            "test_pe_typed_argsort_residual_is_i64",
+            &("pe", "typed", "argsort"),
+            fj_test_utils::TestMode::Strict,
+            || {
+                // argsort(a(known, F64, [5])) = v3(I64, known) -> add(v3, b(unknown,
+                // I64, [5])) = v4. The residualized argsort output must be I64 index
+                // data; the catch-all used to copy the input's F64 dtype.
+                let mut sort_params = BTreeMap::new();
+                sort_params.insert("axis".to_owned(), "0".to_owned());
+                let jaxpr = Jaxpr::new(
+                    vec![VarId(1), VarId(2)],
+                    vec![],
+                    vec![VarId(4)],
+                    vec![
+                        Equation {
+                            primitive: Primitive::Argsort,
+                            inputs: smallvec![Atom::Var(VarId(1))],
+                            outputs: smallvec![VarId(3)],
+                            params: sort_params,
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                        Equation {
+                            primitive: Primitive::Add,
+                            inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(2))],
+                            outputs: smallvec![VarId(4)],
+                            params: BTreeMap::new(),
+                            effects: vec![],
+                            sub_jaxprs: vec![],
+                        },
+                    ],
+                );
+                let in_avals = vec![
+                    AbstractValue { dtype: DType::F64, shape: Shape { dims: vec![5] } },
+                    AbstractValue { dtype: DType::I64, shape: Shape { dims: vec![5] } },
+                ];
+                let result =
+                    partial_eval_jaxpr_typed(&jaxpr, &[false, true], Some(&in_avals)).unwrap();
+                assert!(!result.residual_avals.is_empty());
+                assert_eq!(
+                    result.residual_avals[0].dtype,
+                    DType::I64,
+                    "argsort output is I64 index data, not the input's F64"
+                );
+                assert_eq!(result.residual_avals[0].shape.dims, vec![5]);
                 Ok(vec![])
             },
         );
