@@ -1,0 +1,85 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "project": "frankenjax",
+  "bead": "frankenjax-p1vbf.47",
+  "status": "rejected",
+  "date": "2026-06-08",
+  "agent": "IcyGlacier",
+  "skill_loop": {
+    "requested_skill": "/repeatedly-apply-skill",
+    "inner_skill": "/extreme-software-optimization",
+    "pass": 180,
+    "fallback": "self-applied because the Agent tool is unavailable in this Codex session"
+  },
+  "profile_target": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-profile-pass180 cargo bench -p fj-lax --bench lax_baseline -- linalg --quick --noplot",
+    "top_hotspot": "linalg/matmul_2d_2048x2048x2048_f64",
+    "time_ms": {
+      "lower": 193.42,
+      "median": 194.11,
+      "upper": 196.87
+    },
+    "ranking_note": "Top fj-lax linalg profile row; next rows were pinv/lu/qr/cholesky at 23-39 ms on the same profile."
+  },
+  "lever": {
+    "name": "MR8 register tile for packed blocked matmul",
+    "file": "crates/fj-lax/src/tensor_contraction.rs",
+    "description": "Temporarily widened the existing safe-Rust GEMM microkernel row register tile from MR=4 to MR=8 in the flat and k-blocked packed paths.",
+    "alien_primitive": "communication/cache-aware register-blocked GEMM microkernel tuning",
+    "one_lever_only": true
+  },
+  "baseline": {
+    "worker": "vmi1293453",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1293453 RCH_WORKERS=vmi1293453 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-p1vbf47-baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --quick --noplot",
+    "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+    "time_ms": {
+      "lower": 297.51,
+      "median": 307.42,
+      "upper": 309.90
+    }
+  },
+  "candidate": {
+    "worker": "vmi1293453",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1293453 RCH_WORKERS=vmi1293453 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-p1vbf47-after cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --quick --noplot",
+    "bench": "linalg/matmul_2d_2048x2048x2048_f64",
+    "time_ms": {
+      "lower": 306.85,
+      "median": 318.00,
+      "upper": 320.79
+    }
+  },
+  "score": {
+    "median_speedup": 0.966730,
+    "conservative_speedup": 0.927437,
+    "impact": 0.0,
+    "confidence": 1.0,
+    "effort": 1.0,
+    "impact_x_confidence_div_effort": 0.0,
+    "threshold": 2.0,
+    "decision": "reject"
+  },
+  "behavior_proof": {
+    "candidate_tests_passed": true,
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1293453 RCH_WORKERS=vmi1293453 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-p1vbf47-test cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "result": "10 passed, 0 failed, 1 ignored, 1175 filtered out",
+    "golden_digest": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+    "isomorphism": [
+      "Each output element kept ascending-k product accumulation in the candidate state.",
+      "B-panel packing layout was unchanged.",
+      "Thread partitioning stayed row-disjoint.",
+      "Column and row remainder coverage stayed disjoint and complete.",
+      "Dtype, shape, error, tie-breaking, and RNG surfaces were unchanged.",
+      "No horizontal reductions or reassociation were introduced."
+    ]
+  },
+  "source_state": {
+    "source_restored": true,
+    "post_restore_diff": "git diff -- crates/fj-lax/src/tensor_contraction.rs is empty",
+    "post_restore_checks": [
+      "git diff --check -- crates/fj-lax/src/tensor_contraction.rs",
+      "rustfmt --edition 2024 --check crates/fj-lax/src/tensor_contraction.rs"
+    ]
+  },
+  "next_route": "Do not repeat MR row-tile widening on this kernel. Reprofile current main and route GEMM work to a materially different primitive, such as output-write avoidance in Schur callers, thread-affinity/scheduling, or a parity-contract bead for recursive/Strassen-style accumulation if the oracle permits tolerance rather than bit identity."
+}
