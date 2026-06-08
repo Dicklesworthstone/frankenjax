@@ -525,10 +525,14 @@ pub(crate) fn eval_reshape(
                 tensor.shape.clone(),
             )?;
 
-            Ok(Value::Tensor(TensorValue::new(
+            // Reshape is metadata-only — the element sequence is unchanged. Clone
+            // the backing buffer (a cheap Arc bump; dense/concat storage preserved)
+            // and re-tag the shape, instead of `to_vec()` which materializes the
+            // whole buffer into a fresh `Vec<Literal>` (24B/elem) and re-analyzes.
+            Ok(Value::Tensor(TensorValue::new_with_literal_buffer(
                 tensor.dtype,
                 Shape { dims },
-                tensor.elements.to_vec(),
+                tensor.elements.clone(),
             )?))
         }
     }
@@ -6731,11 +6735,14 @@ pub(crate) fn eval_squeeze(
                 // All dims squeezed — return scalar
                 Ok(Value::Scalar(tensor.elements[0]))
             } else {
+                // Squeeze is metadata-only: clone the backing buffer (cheap Arc
+                // bump; dense/concat storage preserved) rather than materializing
+                // the whole buffer via `to_vec()`.
                 Ok(Value::Tensor(
-                    TensorValue::new(
+                    TensorValue::new_with_literal_buffer(
                         tensor.dtype,
                         Shape { dims: new_dims },
-                        tensor.elements.to_vec(),
+                        tensor.elements.clone(),
                     )
                     .map_err(|e| EvalError::Unsupported {
                         primitive,
@@ -6860,11 +6867,14 @@ pub(crate) fn eval_split(
                         new_dims.push(d);
                     }
                 }
+                // Equal split is a pure reshape (adds a leading num_sections dim) —
+                // metadata-only. Clone the backing buffer (cheap Arc bump;
+                // dense/concat storage preserved) rather than `to_vec()`.
                 Ok(Value::Tensor(
-                    TensorValue::new(
+                    TensorValue::new_with_literal_buffer(
                         tensor.dtype,
                         Shape { dims: new_dims },
-                        tensor.elements.to_vec(),
+                        tensor.elements.clone(),
                     )
                     .map_err(|e| EvalError::Unsupported {
                         primitive,
@@ -7078,11 +7088,13 @@ pub(crate) fn eval_expand_dims(
             let mut new_dims = tensor.shape.dims.clone();
             new_dims.insert(axis, 1);
 
+            // Expand_dims is metadata-only: clone the backing buffer (cheap Arc
+            // bump; dense/concat storage preserved) rather than `to_vec()`.
             Ok(Value::Tensor(
-                TensorValue::new(
+                TensorValue::new_with_literal_buffer(
                     tensor.dtype,
                     Shape { dims: new_dims },
-                    tensor.elements.to_vec(),
+                    tensor.elements.clone(),
                 )
                 .map_err(|e| EvalError::Unsupported {
                     primitive,
@@ -7920,6 +7932,136 @@ mod tests {
         let p = params(&[("new_shape", "6")]);
         let result = eval_reshape(&[x], &p).unwrap();
         assert_eq!(extract_shape(&result), vec![6]);
+    }
+
+    #[test]
+    fn metadata_reshape_ops_preserve_dense_storage_and_values() {
+        // reshape/squeeze/expand_dims/split are metadata-only — they must keep the
+        // dense backing (NOT re-box into Vec<Literal>) and leave element bits
+        // unchanged. Verify against dense f32 and i64 inputs for each op.
+        let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+
+        let f32d: Vec<f32> = (0..24).map(|i| i as f32 * 0.5 - 3.0).collect();
+        let i64d: Vec<i64> = (0..24).map(|i| i as i64 - 7).collect();
+        let f32_src = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![4, 6] }, f32d.clone()).unwrap(),
+        );
+        let i64_src = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![4, 6] }, i64d.clone()).unwrap(),
+        );
+        let expect_f32: Vec<Literal> = f32d.iter().copied().map(Literal::from_f32).collect();
+        let expect_i64: Vec<Literal> = i64d.iter().copied().map(Literal::I64).collect();
+
+        // reshape [4,6] -> [2,12]
+        let r = eval_reshape(
+            std::slice::from_ref(&f32_src),
+            &params(&[("new_shape", "2,12")]),
+        )
+        .unwrap();
+        assert_eq!(extract_shape(&r), vec![2, 12]);
+        assert!(
+            r.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+            "reshape stays dense f32"
+        );
+        assert_eq!(lits(&r), expect_f32, "reshape values");
+        let r = eval_reshape(
+            std::slice::from_ref(&i64_src),
+            &params(&[("new_shape", "24")]),
+        )
+        .unwrap();
+        assert!(
+            r.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+            "reshape stays dense i64"
+        );
+        assert_eq!(lits(&r), expect_i64, "reshape i64 values");
+
+        // squeeze: [1,24] -> [24]
+        let f32_1x24 = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![1, 24] }, f32d.clone()).unwrap(),
+        );
+        let s = eval_squeeze(
+            std::slice::from_ref(&f32_1x24),
+            &params(&[("dimensions", "0")]),
+        )
+        .unwrap();
+        assert_eq!(extract_shape(&s), vec![24]);
+        assert!(
+            s.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+            "squeeze stays dense"
+        );
+        assert_eq!(lits(&s), expect_f32, "squeeze values");
+
+        // expand_dims: [4,6] -> [4,1,6]
+        let e =
+            eval_expand_dims(std::slice::from_ref(&f32_src), &params(&[("axis", "1")])).unwrap();
+        assert_eq!(extract_shape(&e), vec![4, 1, 6]);
+        assert!(
+            e.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+            "expand_dims stays dense"
+        );
+        assert_eq!(lits(&e), expect_f32, "expand_dims values");
+
+        // split [4,6] into 2 sections on axis 0 -> [2,2,6]
+        let sp = eval_split(
+            std::slice::from_ref(&f32_src),
+            &params(&[("axis", "0"), ("num_sections", "2")]),
+        )
+        .unwrap();
+        assert_eq!(extract_shape(&sp), vec![2, 2, 6]);
+        assert!(
+            sp.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+            "split stays dense"
+        );
+        assert_eq!(lits(&sp), expect_f32, "split values");
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_reshape_metadata_clone_vs_to_vec() {
+        use std::time::Instant;
+        // Direct same-binary A/B of the lever: the OLD path materialized the whole
+        // buffer (to_vec -> Vec<Literal>) and re-analyzed via TensorValue::new; the
+        // NEW path clones the backing buffer (Arc bump) via new_with_literal_buffer.
+        let n = 1usize << 22; // 4M f32
+        let data: Vec<f32> = (0..n).map(|i| (i as f32) * 1e-3 - 2000.0).collect();
+        let src = TensorValue::new_f32_values(
+            Shape {
+                dims: vec![n as u32],
+            },
+            data,
+        )
+        .unwrap();
+        let new_shape = Shape {
+            dims: vec![2048, 2048],
+        };
+        // OLD path: materialize to Vec<Literal> then re-analyze.
+        let mut old = f64::MAX;
+        for _ in 0..20 {
+            let t = Instant::now();
+            let out =
+                TensorValue::new(DType::F32, new_shape.clone(), src.elements.to_vec()).unwrap();
+            old = old.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&out);
+        }
+        // NEW path: clone the backing buffer (Arc bump).
+        let mut new = f64::MAX;
+        for _ in 0..20 {
+            let t = Instant::now();
+            let out = TensorValue::new_with_literal_buffer(
+                DType::F32,
+                new_shape.clone(),
+                src.elements.clone(),
+            )
+            .unwrap();
+            new = new.min(t.elapsed().as_secs_f64());
+            std::hint::black_box(&out);
+        }
+        println!(
+            "BENCH reshape metadata n={n}: old(to_vec+new)={:.4}ms new(clone)={:.4}ms speedup={:.2}x",
+            old * 1e3,
+            new * 1e3,
+            old / new
+        );
     }
 
     #[test]
