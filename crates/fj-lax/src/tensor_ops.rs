@@ -2025,7 +2025,7 @@ fn eval_scatter_dense(
 ) -> Result<Option<Value>, EvalError> {
     let primitive = Primitive::Scatter;
     macro_rules! scatter_typed {
-        ($op:expr, $upd:expr, $ctor:path, $add_fn:expr) => {{
+        ($op:expr, $upd:expr, $ctor:expr, $add_fn:expr) => {{
             let mut out = $op.to_vec();
             let upd_src = $upd;
             for (i, &raw_idx) in index_vals.iter().enumerate() {
@@ -2110,6 +2110,44 @@ fn eval_scatter_dense(
     {
         scatter_typed!(op, upd, TensorValue::new_i64_values, |a: i64, b: i64| a
             .wrapping_add(b));
+    }
+    // Dense BF16/F16 scatter (half-precision embedding update). bf16 is the dominant
+    // training dtype. Overwrite is a contiguous u16-bit copy; scatter-ADD routes the
+    // two half-float bit patterns through the SAME `binary_literal_op` Add the generic
+    // path uses (widen u16 -> f64, add, round back to half), so it is bit-for-bit
+    // identical including repeated-index accumulation and NaN. The `new_half_float_values`
+    // ctor takes a dtype, so the macro's ctor arg is a closure.
+    if matches!(operand.dtype, DType::BF16 | DType::F16)
+        && let (Some(op), Some(upd)) = (
+            operand.elements.as_half_float_slice(),
+            updates.elements.as_half_float_slice(),
+        )
+    {
+        let dt = operand.dtype;
+        let half_lit = |bits: u16| -> Literal {
+            if dt == DType::BF16 {
+                Literal::BF16Bits(bits)
+            } else {
+                Literal::F16Bits(bits)
+            }
+        };
+        scatter_typed!(
+            op,
+            upd,
+            |shape, out| TensorValue::new_half_float_values(dt, shape, out),
+            |a: u16, b: u16| -> u16 {
+                match binary_literal_op(
+                    half_lit(a),
+                    half_lit(b),
+                    Primitive::Add,
+                    &|x: i64, y: i64| x.wrapping_add(y),
+                    &|x: f64, y: f64| x + y,
+                ) {
+                    Ok(Literal::BF16Bits(x) | Literal::F16Bits(x)) => x,
+                    _ => 0,
+                }
+            }
+        );
     }
     Ok(None)
 }
@@ -9394,6 +9432,90 @@ mod tests {
             generic * 1e3,
             dense_t * 1e3,
             generic / dense_t
+        );
+    }
+
+    /// Dense BF16/F16 scatter (overwrite + scatter-ADD) must be BIT-FOR-BIT identical
+    /// to the generic per-`Literal` path, incl. repeated-index accumulation (15) and
+    /// OOB (99), across fill_or_drop/clip and NaN/±inf/±0 bit patterns. scatter-add
+    /// matches because the dense path routes through the same `binary_literal_op` Add.
+    #[test]
+    fn dense_half_float_scatter_matches_literal_path() {
+        let (rows, cols) = (16usize, 24usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idxs = [0_i64, 3, 15, 99, 1, 15]; // 99 OOB, 15 repeated -> add accumulates
+        let n_upd = idxs.len();
+        let idx = Value::vector_i64(&idxs).unwrap();
+        let upd_dims = vec![n_upd as u32, cols as u32];
+        for dtype in [DType::BF16, DType::F16] {
+            let mk_lit = |b: u16| if dtype == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+            let opr: Vec<u16> = (0..rows * cols)
+                .map(|i| match i % 11 {
+                    0 => 0x7f80, // +inf-ish (bf16 +inf=0x7f80)
+                    1 => 0xff80,
+                    2 => 0x8000, // -0
+                    3 => 0x7fc1, // NaN
+                    _ => (i as u16).wrapping_mul(53).wrapping_add(17),
+                })
+                .collect();
+            let updr: Vec<u16> = (0..n_upd * cols).map(|i| (i as u16).wrapping_mul(97).wrapping_add(3)).collect();
+            let mk = |d: &[u16], dm: &[u32], dense: bool| {
+                if dense {
+                    Value::Tensor(TensorValue::new_half_float_values(dtype, Shape { dims: dm.to_vec() }, d.to_vec()).unwrap())
+                } else {
+                    Value::Tensor(TensorValue::new(dtype, Shape { dims: dm.to_vec() }, d.iter().copied().map(mk_lit).collect()).unwrap())
+                }
+            };
+            let bits = |v: &Value| -> Vec<u16> {
+                v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                    o => panic!("expected half-float, got {o:?}"),
+                }).collect()
+            };
+            for mode in ["overwrite", "add"] {
+                for imode in ["fill_or_drop", "clip"] {
+                    let p = params(&[("mode", mode), ("index_mode", imode)]);
+                    let d = super::eval_scatter(&[mk(&opr, &dims, true), idx.clone(), mk(&updr, &upd_dims, true)], &p).unwrap();
+                    let l = super::eval_scatter(&[mk(&opr, &dims, false), idx.clone(), mk(&updr, &upd_dims, false)], &p).unwrap();
+                    assert_eq!(d.as_tensor().unwrap().dtype, dtype, "{dtype:?} scatter dtype {mode} {imode}");
+                    assert_eq!(bits(&d), bits(&l), "{dtype:?} scatter mode={mode} imode={imode}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_bf16_embedding_scatter_overwrite_dense_vs_generic() {
+        use std::time::Instant;
+        let (vocab, dim) = (50000usize, 256usize);
+        let batch = 8192usize;
+        let zeros: Vec<u16> = vec![0u16; vocab * dim];
+        let updates: Vec<u16> = (0..batch * dim).map(|i| (i as u16).wrapping_mul(40503).wrapping_add(7)).collect();
+        let op_dims = vec![vocab as u32, dim as u32];
+        let upd_dims = vec![batch as u32, dim as u32];
+        let dense_op = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, Shape { dims: op_dims.clone() }, zeros.clone()).unwrap());
+        let boxed_op = Value::Tensor(TensorValue::new(DType::BF16, Shape { dims: op_dims.clone() }, zeros.iter().copied().map(Literal::BF16Bits).collect()).unwrap());
+        let dense_upd = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, Shape { dims: upd_dims.clone() }, updates.clone()).unwrap());
+        let boxed_upd = Value::Tensor(TensorValue::new(DType::BF16, Shape { dims: upd_dims.clone() }, updates.iter().copied().map(Literal::BF16Bits).collect()).unwrap());
+        let idx: Vec<i64> = (0..batch as i64).map(|i| (i * 7919) % vocab as i64).collect();
+        let idx_v = Value::vector_i64(&idx).unwrap();
+        let p = params(&[("mode", "overwrite"), ("index_mode", "clip")]);
+        let time = |op: &Value, upd: &Value| {
+            let _ = super::eval_scatter(&[op.clone(), idx_v.clone(), upd.clone()], &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                let _ = super::eval_scatter(&[op.clone(), idx_v.clone(), upd.clone()], &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed_op, &boxed_upd);
+        let dense_t = time(&dense_op, &dense_upd);
+        println!(
+            "BENCH bf16 embedding scatter-overwrite [{vocab},{dim}] x {batch}: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
         );
     }
 
