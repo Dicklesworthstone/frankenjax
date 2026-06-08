@@ -6149,6 +6149,24 @@ pub(crate) fn eval_rev(
                         .map_err(EvalError::InvalidTensor)?,
                 ));
             }
+            // f32 (JAX's default dtype) and BF16/F16 (half-precision) reuse the same
+            // generic `rev_gather<T>` kernel over their typed backings — copying the
+            // reversed elements into dense output, avoiding the full-buffer Literal
+            // materialization + boxed output of the generic `as_slice` path below.
+            if let Some(src) = tensor.elements.as_f32_slice() {
+                let out = rev_gather(src, dims, &strides, &reversed, total);
+                return Ok(Value::Tensor(
+                    TensorValue::new_f32_values(tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
+            if let Some(src) = tensor.elements.as_half_float_slice() {
+                let out = rev_gather(src, dims, &strides, &reversed, total);
+                return Ok(Value::Tensor(
+                    TensorValue::new_half_float_values(tensor.dtype, tensor.shape.clone(), out)
+                        .map_err(EvalError::InvalidTensor)?,
+                ));
+            }
             if let Some(src) = tensor.elements.as_i64_slice() {
                 let out = rev_gather(src, dims, &strides, &reversed, total);
                 return Ok(Value::Tensor(
@@ -7846,6 +7864,59 @@ mod tests {
             ivals(&eval_rev(std::slice::from_ref(&i_dense), &p).unwrap()),
             ivals(&eval_rev(std::slice::from_ref(&i_lit), &p).unwrap()),
             "i64 rev dense vs generic"
+        );
+
+        // f32 dense path vs generic (the default ML dtype), bit-identical + dense out.
+        let f32d: Vec<f32> = (0..n).map(|i| (i as f32) * 0.25 - 2.0).collect();
+        let f32_dense = Value::Tensor(TensorValue::new_f32_values(shape.clone(), f32d.clone()).unwrap());
+        let f32_lit = Value::Tensor(TensorValue::new(DType::F32, shape.clone(), f32d.iter().copied().map(Literal::from_f32).collect()).unwrap());
+        let f32bits = |v: &Value| -> Vec<u32> {
+            v.as_tensor().unwrap().elements.iter().map(|l| match l { Literal::F32Bits(b) => *b, o => panic!("{o:?}") }).collect()
+        };
+        let d = eval_rev(std::slice::from_ref(&f32_dense), &p).unwrap();
+        assert_eq!(f32bits(&d), f32bits(&eval_rev(std::slice::from_ref(&f32_lit), &p).unwrap()), "f32 rev");
+        assert!(d.as_tensor().unwrap().elements.as_f32_slice().is_some(), "f32 rev output dense");
+
+        // bf16 + f16 dense path vs generic.
+        for dtype in [DType::BF16, DType::F16] {
+            let raw: Vec<u16> = (0..n).map(|i| (i as u16).wrapping_mul(71).wrapping_add(5)).collect();
+            let mk_lit = |b: u16| if dtype == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+            let hf_dense = Value::Tensor(TensorValue::new_half_float_values(dtype, shape.clone(), raw.clone()).unwrap());
+            let hf_lit = Value::Tensor(TensorValue::new(dtype, shape.clone(), raw.iter().copied().map(mk_lit).collect()).unwrap());
+            let hfbits = |v: &Value| -> Vec<u16> {
+                v.as_tensor().unwrap().elements.iter().map(|l| match l { Literal::BF16Bits(b) | Literal::F16Bits(b) => *b, o => panic!("{o:?}") }).collect()
+            };
+            let d = eval_rev(std::slice::from_ref(&hf_dense), &p).unwrap();
+            assert_eq!(hfbits(&d), hfbits(&eval_rev(std::slice::from_ref(&hf_lit), &p).unwrap()), "{dtype:?} rev");
+            assert!(d.as_tensor().unwrap().elements.as_half_float_slice().is_some(), "{dtype:?} rev output dense");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_rev_dense_vs_boxed() {
+        use std::time::Instant;
+        let (rows, cols) = (2048usize, 2048usize);
+        let data: Vec<f32> = (0..rows * cols).map(|i| ((i % 251) as f32) * 0.013 - 1.6).collect();
+        let shape = Shape { dims: vec![rows as u32, cols as u32] };
+        let dense = Value::Tensor(TensorValue::new_f32_values(shape.clone(), data.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::F32, shape.clone(), data.iter().copied().map(Literal::from_f32).collect()).unwrap());
+        let p = params(&[("axes", "1")]);
+        let time = |x: &Value| {
+            let _ = eval_rev(std::slice::from_ref(x), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_rev(std::slice::from_ref(x), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 rev axis1 [{rows},{cols}]: boxed(materialize+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
         );
     }
 
