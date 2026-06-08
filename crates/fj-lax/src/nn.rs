@@ -103,21 +103,25 @@ pub fn gelu(x: &[f64]) -> Vec<f64> {
 
 /// ELU (Exponential Linear Unit): x if x > 0 else alpha * (exp(x) - 1)
 ///
-/// Matches `jax.nn.elu(x, alpha)`.
+/// Matches `jax.nn.elu(x, alpha)`, which uses `expm1` (not `exp(x) - 1`) so the
+/// negative branch stays accurate near `x = 0` — `exp(x) - 1` loses ~`|x|`
+/// relative precision there from the cancellation, while `expm1(x)` is exact.
 #[must_use]
 pub fn elu(x: &[f64], alpha: f64) -> Vec<f64> {
     x.iter()
-        .map(|&v| if v > 0.0 { v } else { alpha * (v.exp() - 1.0) })
+        .map(|&v| if v > 0.0 { v } else { alpha * v.exp_m1() })
         .collect()
 }
 
 /// CELU (Continuously-differentiable ELU): max(x, 0) + min(0, alpha * (exp(x/alpha) - 1))
 ///
-/// Matches `jax.nn.celu(x, alpha)`.
+/// Matches `jax.nn.celu(x, alpha)`: `max(x, 0) + alpha * expm1(min(x, 0) / alpha)`
+/// (JAX uses `expm1`, accurate near `x = 0`, where `exp(x/alpha) - 1` would lose
+/// precision to cancellation).
 #[must_use]
 pub fn celu(x: &[f64], alpha: f64) -> Vec<f64> {
     x.iter()
-        .map(|&v| v.max(0.0) + (alpha * ((v / alpha).exp() - 1.0)).min(0.0))
+        .map(|&v| v.max(0.0) + alpha * (v.min(0.0) / alpha).exp_m1())
         .collect()
 }
 
@@ -127,13 +131,14 @@ pub fn celu(x: &[f64], alpha: f64) -> Vec<f64> {
 /// - alpha ≈ 1.6732632423543772
 /// - scale ≈ 1.0507009873554805
 ///
-/// Matches `jax.nn.selu(x)`.
+/// Matches `jax.nn.selu(x) = scale * elu(x, alpha)`. Uses `expm1` for the
+/// negative branch (as JAX's `elu` does), accurate near `x = 0`.
 #[must_use]
 pub fn selu(x: &[f64]) -> Vec<f64> {
     const ALPHA: f64 = 1.6732632423543772;
     const SCALE: f64 = 1.0507009873554805;
     x.iter()
-        .map(|&v| SCALE * if v > 0.0 { v } else { ALPHA * (v.exp() - 1.0) })
+        .map(|&v| SCALE * if v > 0.0 { v } else { ALPHA * v.exp_m1() })
         .collect()
 }
 
@@ -383,6 +388,39 @@ mod tests {
         let y = elu(&x, 1.0);
         // elu(-1) = exp(-1) - 1 ≈ -0.632
         assert!(approx_eq(y[0], (-1.0_f64).exp() - 1.0, 1e-10));
+    }
+
+    #[test]
+    fn test_elu_celu_selu_use_expm1_for_negative_branch() {
+        // JAX's elu/celu/selu use expm1 in the negative branch so it stays
+        // accurate near x=0 (exp(x)-1 loses ~|x| relative precision to
+        // cancellation). Guard bit-identity to the expm1 form across magnitudes;
+        // a revert to exp(x)-1 would differ for small |x|.
+        const ALPHA: f64 = 1.6732632423543772;
+        const SCALE: f64 = 1.0507009873554805;
+        for &x in &[-1e-12, -1e-8, -1e-4, -0.5, -3.0] {
+            assert_eq!(elu(&[x], 1.0)[0].to_bits(), x.exp_m1().to_bits(), "elu({x})");
+            assert_eq!(
+                elu(&[x], 2.0)[0].to_bits(),
+                (2.0 * x.exp_m1()).to_bits(),
+                "elu({x}, alpha=2)"
+            );
+            assert_eq!(
+                selu(&[x])[0].to_bits(),
+                (SCALE * (ALPHA * x.exp_m1())).to_bits(),
+                "selu({x})"
+            );
+            assert_eq!(celu(&[x], 1.0)[0].to_bits(), x.exp_m1().to_bits(), "celu({x})");
+        }
+        // And the expm1 form is strictly more accurate than exp(x)-1 near 0:
+        // elu(-1e-10) should be ~-1e-10; the naive form is off by ~1e-16.
+        let x = -1e-10_f64;
+        let elu_val = elu(&[x], 1.0)[0];
+        let naive = x.exp() - 1.0;
+        assert!(
+            (elu_val - x).abs() < (naive - x).abs(),
+            "expm1 form must be more accurate than exp-1: expm1={elu_val}, naive={naive}"
+        );
     }
 
     #[test]
