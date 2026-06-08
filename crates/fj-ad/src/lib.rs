@@ -15093,6 +15093,36 @@ mod tests {
     }
 
     #[test]
+    fn scan_vjp_mul_tensor_carry() {
+        // All prior scan VJP tests use a SCALAR carry; this exercises the
+        // tensor-carry path (slice_shape Some, per-element body_op broadcast).
+        // init=[2,3], xs=[[1,1],[2,2]] (2 steps, each a [2] slice), body_op=mul:
+        //   carry: [2,3] -> [2,3] -> [4,6]; output=[4,6].
+        // grad_init[i] = prod_step(xs[step][i]) = [1*2, 1*2] = [2,2].
+        // grad_xs[s][i] = init[i] * prod_{t!=s}(xs[t][i]):
+        //   xs[0] -> [2*2, 3*2] = [4,6];  xs[1] -> [2*1, 3*1] = [2,3].
+        use fj_core::{DType, Literal, Shape, TensorValue};
+        let init = Value::vector_f64(&[2.0, 3.0]).unwrap();
+        let xs = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: vec![2, 2] },
+                vec![
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(1.0),
+                    Literal::from_f64(2.0),
+                    Literal::from_f64(2.0),
+                ],
+            )
+            .unwrap(),
+        );
+        let g = Value::vector_f64(&[1.0, 1.0]).unwrap();
+        let grads = vjp_single(Primitive::Scan, &[init, xs], &g, &scan_params("mul")).unwrap();
+        assert_eq!(tensor_f64_values(&grads[0]), vec![2.0, 2.0], "grad_init");
+        assert_eq!(tensor_f64_values(&grads[1]), vec![4.0, 6.0, 2.0, 3.0], "grad_xs");
+    }
+
+    #[test]
     fn scan_vjp_max_ties_split_through_carry_chain() {
         // Two max ties split the cotangent first between carry/xs[1], then
         // between init/xs[0] through the propagated carry cotangent.
