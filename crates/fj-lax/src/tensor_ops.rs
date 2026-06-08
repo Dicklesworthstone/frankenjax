@@ -7189,6 +7189,37 @@ pub(crate) fn eval_tile(
                     detail: "tile result element count overflows u64".into(),
                 })?;
 
+            // Dense fast paths: tile straight off the typed backing with bulk
+            // `extend_from_slice` (memcpy) into dense output, avoiding the full
+            // input `Vec<Literal>` materialization (`tensor.elements` deref) AND
+            // the boxed output. Same block-copy order as `tile_recursive` -> bit
+            // -for-bit identical. Falls through to the Literal path for other dtypes.
+            macro_rules! dense_tile {
+                ($slice:expr, $ctor:expr) => {{
+                    let mut out = Vec::with_capacity(new_count as usize);
+                    tile_recursive_dense($slice, &tensor.shape.dims, &reps, 0, &mut out);
+                    return Ok(Value::Tensor($ctor(
+                        Shape {
+                            dims: new_dims.clone(),
+                        },
+                        out,
+                    )?));
+                }};
+            }
+            if let Some(s) = tensor.elements.as_f64_slice() {
+                dense_tile!(s, TensorValue::new_f64_values);
+            }
+            if let Some(s) = tensor.elements.as_f32_slice() {
+                dense_tile!(s, TensorValue::new_f32_values);
+            }
+            if let Some(s) = tensor.elements.as_half_float_slice() {
+                let dt = tensor.dtype;
+                dense_tile!(s, |sh, o| TensorValue::new_half_float_values(dt, sh, o));
+            }
+            if let Some(s) = tensor.elements.as_i64_slice() {
+                dense_tile!(s, TensorValue::new_i64_values);
+            }
+
             let mut result = Vec::with_capacity(new_count as usize);
             tile_recursive(&tensor.elements, &tensor.shape.dims, &reps, 0, &mut result);
 
@@ -7196,6 +7227,43 @@ pub(crate) fn eval_tile(
                 TensorValue::new(tensor.dtype, Shape { dims: new_dims }, result)
                     .map_err(EvalError::InvalidTensor)?,
             ))
+        }
+    }
+}
+
+/// Dense, type-generic sibling of [`tile_recursive`]: tiles a contiguous typed
+/// slice into `out` via bulk `extend_from_slice` (memcpy for `Copy` elements),
+/// using the identical block-copy traversal so the result is bit-for-bit the same
+/// element sequence as the `Literal` path — for any backing type (f64/f32/half/i64).
+fn tile_recursive_dense<T: Copy>(
+    src: &[T],
+    dims: &[u32],
+    reps: &[usize],
+    depth: usize,
+    out: &mut Vec<T>,
+) {
+    if depth == dims.len() {
+        return;
+    }
+    let dim = dims[depth] as usize;
+    let rep = reps[depth];
+    let stride: usize = dims[depth + 1..].iter().map(|&d| d as usize).product();
+    if depth == dims.len() - 1 {
+        for _ in 0..rep {
+            out.extend_from_slice(&src[..dim]);
+        }
+    } else {
+        for _ in 0..rep {
+            for i in 0..dim {
+                let start = i * stride;
+                tile_recursive_dense(
+                    &src[start..start + stride],
+                    &dims[depth + 1..],
+                    &reps[depth + 1..],
+                    0,
+                    out,
+                );
+            }
         }
     }
 }
@@ -10605,6 +10673,163 @@ mod tests {
         let p = params(&[("reps", "1")]);
         let result = eval_tile(&[x], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![1.0, 2.0]);
+    }
+
+    #[test]
+    fn dense_tile_matches_literal_path_and_stays_dense() {
+        // Dense f64/f32/bf16/f16/i64 tile must be BIT-FOR-BIT identical to the
+        // boxed per-`Literal` path AND keep dense output. Multi-axis reps exercise
+        // the recursive block-copy traversal (both leaf and interior depths).
+        let (rows, cols) = (3usize, 4usize);
+        let dims = vec![rows as u32, cols as u32];
+        let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+        for p in [
+            params(&[("reps", "2,3")]),
+            params(&[("reps", "1,4")]),
+            params(&[("reps", "5,1")]),
+        ] {
+            let f64d: Vec<f64> = (0..rows * cols).map(|i| i as f64 * 0.5 - 3.0).collect();
+            let dense = Value::Tensor(
+                TensorValue::new_f64_values(Shape { dims: dims.clone() }, f64d.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: dims.clone() },
+                    f64d.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            );
+            let d = eval_tile(std::slice::from_ref(&dense), &p).unwrap();
+            let l = eval_tile(std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(extract_shape(&d), extract_shape(&l), "f64 tile shape");
+            assert_eq!(lits(&d), lits(&l), "f64 tile");
+            assert!(
+                d.as_tensor().unwrap().elements.as_f64_slice().is_some(),
+                "f64 tile dense"
+            );
+
+            let f32d: Vec<f32> = (0..rows * cols).map(|i| i as f32 * 0.25 - 1.0).collect();
+            let dense = Value::Tensor(
+                TensorValue::new_f32_values(Shape { dims: dims.clone() }, f32d.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims: dims.clone() },
+                    f32d.iter().copied().map(Literal::from_f32).collect(),
+                )
+                .unwrap(),
+            );
+            let d = eval_tile(std::slice::from_ref(&dense), &p).unwrap();
+            let l = eval_tile(std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(lits(&d), lits(&l), "f32 tile");
+            assert!(
+                d.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+                "f32 tile dense"
+            );
+
+            for dtype in [DType::BF16, DType::F16] {
+                let raw: Vec<u16> = (0..rows * cols)
+                    .map(|i| (i as u16).wrapping_mul(67).wrapping_add(5))
+                    .collect();
+                let mk_lit = move |b: u16| {
+                    if dtype == DType::BF16 {
+                        Literal::BF16Bits(b)
+                    } else {
+                        Literal::F16Bits(b)
+                    }
+                };
+                let dense = Value::Tensor(
+                    TensorValue::new_half_float_values(
+                        dtype,
+                        Shape { dims: dims.clone() },
+                        raw.clone(),
+                    )
+                    .unwrap(),
+                );
+                let boxed = Value::Tensor(
+                    TensorValue::new(
+                        dtype,
+                        Shape { dims: dims.clone() },
+                        raw.iter().copied().map(mk_lit).collect(),
+                    )
+                    .unwrap(),
+                );
+                let d = eval_tile(std::slice::from_ref(&dense), &p).unwrap();
+                let l = eval_tile(std::slice::from_ref(&boxed), &p).unwrap();
+                assert_eq!(lits(&d), lits(&l), "{dtype:?} tile");
+                assert!(
+                    d.as_tensor()
+                        .unwrap()
+                        .elements
+                        .as_half_float_slice()
+                        .is_some(),
+                    "{dtype:?} tile dense"
+                );
+            }
+
+            let i64d: Vec<i64> = (0..(rows * cols) as i64).map(|i| i - 6).collect();
+            let dense = Value::Tensor(
+                TensorValue::new_i64_values(Shape { dims: dims.clone() }, i64d.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape { dims: dims.clone() },
+                    i64d.iter().copied().map(Literal::I64).collect(),
+                )
+                .unwrap(),
+            );
+            let d = eval_tile(std::slice::from_ref(&dense), &p).unwrap();
+            let l = eval_tile(std::slice::from_ref(&boxed), &p).unwrap();
+            assert_eq!(lits(&d), lits(&l), "i64 tile");
+            assert!(
+                d.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+                "i64 tile dense"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_tile_f32_dense_vs_boxed() {
+        use std::time::Instant;
+        let (rows, cols) = (2048usize, 512usize); // tile to [2048, 2048] (reps 1,4)
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i % 251) as f32) * 0.013 - 1.6)
+            .collect();
+        let dims = vec![rows as u32, cols as u32];
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: dims.clone() },
+                data.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("reps", "1,4")]);
+        let time = |x: &Value| {
+            let _ = eval_tile(std::slice::from_ref(x), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_tile(std::slice::from_ref(x), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH tile f32 [{rows},{cols}]x(1,4): boxed(materialize+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
     }
 
     // ── Squeeze ──
