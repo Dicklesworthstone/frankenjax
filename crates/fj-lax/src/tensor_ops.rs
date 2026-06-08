@@ -6031,19 +6031,10 @@ fn eval_conv_1d(
         });
     }
 
-    // rhs_dilation and feature_group_count for 1D conv are not implemented here yet
-    // (eval_conv_2d implements 2D atrous + grouped conv); reject loudly BEFORE the
-    // shape check — a grouped 1D kernel legitimately has Cin/G channels, so the
-    // channel check would otherwise mask the unsupported-param error.
-    if params
-        .get("rhs_dilation")
-        .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
-    {
-        return Err(EvalError::Unsupported {
-            primitive,
-            detail: "conv rhs_dilation is not yet supported for 1D conv".into(),
-        });
-    }
+    // feature_group_count for 1D conv is not implemented yet (eval_conv_2d does 2D
+    // grouped conv); reject loudly BEFORE the shape check — a grouped 1D kernel
+    // legitimately has Cin/G channels, so the channel check would otherwise mask the
+    // unsupported-param error. rhs_dilation (atrous) IS implemented below.
     if params
         .get("feature_group_count")
         .is_some_and(|v| !matches!(v.trim(), "" | "1"))
@@ -6070,6 +6061,11 @@ fn eval_conv_1d(
     }
 
     let stride = parse_positive_stride(primitive, params.get("strides").map(String::as_str))?;
+    // rhs_dilation (atrous): a dilation `d` spaces kernel taps `d` apart, so the
+    // kernel's effective extent is `(k-1)*d+1` (used for the output size and SAME-pad
+    // geometry) and tap `k` reads input position `w*stride + k*d - pad`.
+    let dil = parse_conv_1d_dilation(primitive, params)?;
+    let eff_kernel_w = (kernel_w - 1) * dil + 1;
 
     let (out_w, pad_left) = if width == 0 {
         // Empty input produces empty output with no padding
@@ -6079,7 +6075,7 @@ fn eval_conv_1d(
             ConvPadding::Same | ConvPadding::SameLower => {
                 let out_w = width.div_ceil(stride);
                 // out_w >= 1 since width >= 1 and stride >= 1
-                let pad_total = ((out_w - 1) * stride + kernel_w).saturating_sub(width);
+                let pad_total = ((out_w - 1) * stride + eff_kernel_w).saturating_sub(width);
                 let pad_low = if padding == ConvPadding::SameLower {
                     pad_total.div_ceil(2)
                 } else {
@@ -6087,7 +6083,7 @@ fn eval_conv_1d(
                 };
                 (out_w, pad_low)
             }
-            ConvPadding::Valid => (conv_valid_output_dim(width, kernel_w, stride), 0),
+            ConvPadding::Valid => (conv_valid_output_dim(width, eff_kernel_w, stride), 0),
         }
     };
 
@@ -6175,7 +6171,7 @@ fn eval_conv_1d(
                 for w in 0..out_w {
                     let row_base = (n * out_w + w) * kdim;
                     for k in 0..kernel_w {
-                        let in_pos = (w * stride + k) as isize - pad_left as isize;
+                        let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
                         if in_pos < 0 || (in_pos as usize) >= width {
                             continue;
                         }
@@ -6217,7 +6213,7 @@ fn eval_conv_1d(
 
                             let mut acc = 0.0_f64;
                             for k in 0..kernel_w {
-                                let in_pos = (w * stride + k) as isize - pad_left as isize;
+                                let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
                                 let oob = in_pos < 0 || (in_pos as usize) >= width;
                                 let lhs_base = if oob {
                                     0
@@ -6251,7 +6247,7 @@ fn eval_conv_1d(
                     for co in 0..c_out {
                         let mut acc = 0.0_f64;
                         for k in 0..kernel_w {
-                            let in_pos = (w * stride + k) as isize - pad_left as isize;
+                            let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
                             let oob = in_pos < 0 || (in_pos as usize) >= width;
                             for ci in 0..c_in {
                                 let rhs_idx = k * c_in_c_out + ci * c_out + co;
@@ -6290,7 +6286,7 @@ fn eval_conv_1d(
                     let mut acc_re = 0.0_f64;
                     let mut acc_im = 0.0_f64;
                     for k in 0..kernel_w {
-                        let in_pos = (w * stride + k) as isize - pad_left as isize;
+                        let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
                         let oob = in_pos < 0 || (in_pos as usize) >= width;
                         for ci in 0..c_in {
                             let rhs_idx = k * c_in_c_out + ci * c_out + co;
@@ -6313,7 +6309,7 @@ fn eval_conv_1d(
                 } else {
                     let mut acc = 0.0_f64;
                     for k in 0..kernel_w {
-                        let in_pos = (w * stride + k) as isize - pad_left as isize;
+                        let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
                         let oob = in_pos < 0 || (in_pos as usize) >= width;
                         for ci in 0..c_in {
                             let rhs_idx = k * c_in_c_out + ci * c_out + co;
@@ -6930,6 +6926,27 @@ fn parse_dilation_pair(
             Ok((d, d))
         }
     }
+}
+
+/// Parse `rhs_dilation` for 1D conv as a single per-spatial-dim factor (>= 1).
+/// Absent or "1" means no dilation; a multi-value list is rejected (1D has one
+/// spatial dim).
+fn parse_conv_1d_dilation(
+    primitive: Primitive,
+    params: &BTreeMap<String, String>,
+) -> Result<usize, EvalError> {
+    let Some(raw) = params.get("rhs_dilation") else {
+        return Ok(1);
+    };
+    let mut parts = raw.split(',');
+    let first = parts.next().unwrap_or("1");
+    if parts.next().is_some() {
+        return Err(EvalError::Unsupported {
+            primitive,
+            detail: format!("invalid 1D conv rhs_dilation {raw:?} (expected a single factor)"),
+        });
+    }
+    parse_positive_stride(primitive, Some(first))
 }
 
 /// Parse `feature_group_count` (grouped / depthwise conv) as a positive integer;
@@ -8051,21 +8068,53 @@ mod tests {
             );
         }
 
-        // 1D conv still rejects rhs_dilation loudly (not silently ignored).
-        let lhs1 = mk(vec![1, w as u32, c_in as u32], &xf[..w * c_in]);
-        let k1 = mk(
-            vec![kw as u32, c_in as u32, c_out as u32],
-            &kf[..kw * c_in * c_out],
-        );
-        let err = eval_conv(
+        // 1D conv rhs_dilation: bit-identical to a direct dilated 1D reference.
+        let d1 = 2usize;
+        let x1: Vec<f64> = xf[..w * c_in].to_vec();
+        let k1d: Vec<f64> = kf[..kw * c_in * c_out].to_vec();
+        let lhs1 = mk(vec![1, w as u32, c_in as u32], &x1);
+        let k1 = mk(vec![kw as u32, c_in as u32, c_out as u32], &k1d);
+        let out1 = eval_conv(
             Primitive::Conv,
             &[lhs1, k1],
-            &params(&[("padding", "valid"), ("rhs_dilation", "2")]),
+            &params(&[
+                ("padding", "valid"),
+                ("strides", "1"),
+                ("rhs_dilation", "2"),
+            ]),
         )
-        .unwrap_err();
-        assert!(
-            format!("{err:?}").contains("rhs_dilation"),
-            "1D conv must reject rhs_dilation"
+        .unwrap();
+        let eff_kw1 = (kw - 1) * d1 + 1;
+        let ow1 = w - eff_kw1 + 1;
+        let t1 = out1.as_tensor().unwrap();
+        assert_eq!(
+            t1.shape.dims,
+            vec![1, ow1 as u32, c_out as u32],
+            "1D dilated shape"
+        );
+        let got1: Vec<u64> = t1
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::F64Bits(b) => *b,
+                o => panic!("unexpected {o:?}"),
+            })
+            .collect();
+        let mut want1 = Vec::new();
+        for ow in 0..ow1 {
+            for co in 0..c_out {
+                let mut acc = 0.0f64;
+                for k in 0..kw {
+                    for ci in 0..c_in {
+                        acc += x1[(ow + k * d1) * c_in + ci] * k1d[(k * c_in + ci) * c_out + co];
+                    }
+                }
+                want1.push(acc.to_bits());
+            }
+        }
+        assert_eq!(
+            got1, want1,
+            "1D dilated conv must match direct dilated reference"
         );
     }
 
@@ -8308,16 +8357,17 @@ mod tests {
 
     #[test]
     fn conv_rejects_unimplemented_dilation_and_grouping() {
-        // fj-lax conv does stride + padding only. Unsupported conv_general_dilated
-        // params (dilation, grouping) must fail loudly — silently ignoring e.g.
-        // rhs_dilation would return a wrong (undilated) result for the same shape.
+        // Unsupported conv_general_dilated params must fail loudly rather than be
+        // silently ignored. For 1D conv: lhs_dilation (input dilation),
+        // feature_group_count, batch_group_count, and a multi-value rhs_dilation
+        // (1D has one spatial dim) are all unimplemented. (1D rhs_dilation with a
+        // single factor IS supported — see conv2d_rhs_dilation_matches_*.)
         let mk = |dims: Vec<u32>, data: &[f64]| {
             Value::Tensor(TensorValue::new_f64_values(Shape { dims }, data.to_vec()).unwrap())
         };
         let lhs = mk(vec![1, 5, 2], &[0.0; 10]); // [N=1, W=5, Cin=2]
         let rhs = mk(vec![3, 2, 2], &[0.0; 12]); // [K=3, Cin=2, Cout=2]
         for (key, val) in [
-            ("rhs_dilation", "2"),
             ("lhs_dilation", "2"),
             ("rhs_dilation", "1,2"),
             ("feature_group_count", "2"),
