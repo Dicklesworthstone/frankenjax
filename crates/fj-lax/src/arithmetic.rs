@@ -2842,13 +2842,55 @@ pub(crate) fn eval_unary_elementwise_parallel(
             )?));
         }
     }
-    // Only F64 is threaded: it has a dense `as_f64_slice()` backing, so the op is
-    // compute-bound. F32/BF16/F16 are stored per-`Literal` (a 16-byte boxed enum),
-    // which makes even a heavy special function MEMORY-bandwidth-bound — measured
-    // threading speedup was ~1x–2x and bandwidth-fragile (can regress, per the
-    // "memory-bound ops regress when threaded" rule). The real lever for fast F32
-    // elementwise is DENSE F32 storage in fj-core (like the dense-f64 path), not
-    // threading the boxed-Literal map. Do not re-add a per-Literal threaded path.
+    // DENSE F32 path: f32 is JAX's DEFAULT float dtype, so threading f32
+    // transcendentals (activations: exp/tanh/erf/gelu, …) is the hottest ML path.
+    // Now that fj-core has dense `as_f32_slice()` backing, the op is COMPUTE-bound
+    // (no per-`Literal` materialization), so threading scales — unlike the old
+    // boxed-`Literal` f32 map, which was memory-bandwidth-bound (~1x–2x). Each
+    // element promotes f32->f64 (lossless), runs `op` in f64, rounds back with
+    // `as f32`, and emits dense f32 — BIT-IDENTICAL to the serial per-`Literal`
+    // loop in `eval_unary_elementwise` (which does `literal.as_f64().map(op)` then
+    // `from_f32(mapped as f32)`), since f32->f64 is exact and the rounding matches.
+    if let [Value::Tensor(tensor)] = inputs
+        && tensor.dtype == DType::F32
+        && let Some(src) = tensor.elements.as_f32_slice()
+    {
+        const PARALLEL_MIN_ELEMS: usize = 1 << 18; // 262_144 — match the f64 threshold
+        let n = src.len();
+        let threads = if n >= PARALLEL_MIN_ELEMS {
+            work_scaled_threads(n)
+        } else {
+            1
+        };
+        if threads > 1 {
+            let mut out = vec![0.0f32; n];
+            let chunk = n.div_ceil(threads);
+            let op_ref = &op;
+            std::thread::scope(|scope| {
+                let mut rest: &mut [f32] = out.as_mut_slice();
+                let mut start = 0usize;
+                while start < n {
+                    let len = chunk.min(n - start);
+                    let (blk, tail) = rest.split_at_mut(len);
+                    rest = tail;
+                    let s = start;
+                    scope.spawn(move || {
+                        for (i, o) in blk.iter_mut().enumerate() {
+                            *o = op_ref(src[s + i] as f64) as f32;
+                        }
+                    });
+                    start += len;
+                }
+            });
+            return Ok(Value::Tensor(TensorValue::new_f32_values(
+                tensor.shape.clone(),
+                out,
+            )?));
+        }
+    }
+    // Below the threading threshold, or non-dense storage: serial per-`Literal`
+    // map (still correct, just not threaded). BF16/F16 stay here (no dense backing
+    // yet) — they remain memory-bandwidth-bound, so threading wouldn't help.
     eval_unary_elementwise(primitive, inputs, op)
 }
 
@@ -10595,6 +10637,91 @@ mod tests {
         }
         // also spot-check vs a direct reference value
         assert_eq!(parallel[0].to_bits(), lgamma_approx(data[0]).to_bits());
+    }
+
+    /// Dense-f32 threaded elementwise (`as_f32_slice`-backed `new_f32_values`
+    /// input) must be BIT-FOR-BIT identical to the serial per-`Literal` f32 map
+    /// (`Literals`-backed input falls to `eval_unary_elementwise`). f32->f64 is
+    /// exact and both round with `as f32`, so no bit can differ.
+    #[test]
+    fn f32_exp_dense_threaded_bit_identical_to_serial() {
+        let n = 300_000usize; // > 1<<18 -> threaded f32 path
+        let data: Vec<f32> = (0..n)
+            .map(|i| ((i % 4001) as f32 - 2000.0) * 0.001)
+            .collect();
+        // Dense f32 storage -> engages the threaded `as_f32_slice` path.
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        // Literals-backed -> `as_f32_slice` returns None -> serial per-Literal map.
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![n as u32] },
+                data.iter().map(|&v| Literal::from_f32(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let par = eval_exp(Primitive::Exp, std::slice::from_ref(&dense)).unwrap();
+        let ser = eval_exp(Primitive::Exp, std::slice::from_ref(&boxed)).unwrap();
+        let par_t = par.as_tensor().unwrap();
+        let ser_t = ser.as_tensor().unwrap();
+        assert_eq!(par_t.dtype, DType::F32);
+        assert_eq!(ser_t.dtype, DType::F32);
+        let bits = |l: &Literal| match l {
+            Literal::F32Bits(b) => *b,
+            o => panic!("expected f32, got {o:?}"),
+        };
+        for idx in 0..n {
+            assert_eq!(
+                bits(&par_t.elements[idx]),
+                bits(&ser_t.elements[idx]),
+                "f32 exp dense-threaded != serial at {idx}"
+            );
+            // and vs the direct reference: op in f64, round `as f32`.
+            assert_eq!(
+                bits(&par_t.elements[idx]),
+                (f64::exp(data[idx] as f64) as f32).to_bits(),
+                "f32 exp != reference at {idx}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_exp_dense_vs_serial() {
+        use std::time::Instant;
+        let n = 1usize << 20; // 1.05M elements
+        let data: Vec<f32> = (0..n).map(|i| ((i % 4001) as f32 - 2000.0) * 0.001).collect();
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![n as u32] }, data.clone()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: vec![n as u32] },
+                data.iter().map(|&v| Literal::from_f32(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let timeit = |input: &Value| {
+            let _ = eval_exp(Primitive::Exp, std::slice::from_ref(input)).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_exp(Primitive::Exp, std::slice::from_ref(input)).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let serial = timeit(&boxed);
+        let threaded = timeit(&dense);
+        println!(
+            "BENCH f32 exp n={n}: serial(per-Literal)={:.4}ms dense-threaded={:.4}ms speedup={:.2}x",
+            serial * 1e3,
+            threaded * 1e3,
+            serial / threaded
+        );
     }
 
     /// Erf and Cbrt were routed onto the threaded transcendental path; a large

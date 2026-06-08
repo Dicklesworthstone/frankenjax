@@ -984,6 +984,15 @@ enum LiteralBufferStorage {
         values: Arc<Vec<f64>>,
         literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
     },
+    /// Dense `f32` storage. f32 is JAX's DEFAULT float dtype, so a packed
+    /// `&[f32]` slice (`as_f32_slice`) lets the hottest ML paths (f32 elementwise
+    /// transcendentals, threaded activations) avoid per-element `Literal`
+    /// materialization. Materializing back via `Literal::from_f32(v)` is
+    /// bit-identical because the stored `f32` IS the logical value.
+    F32 {
+        values: Arc<Vec<f32>>,
+        literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
+    },
     I64 {
         values: Arc<Vec<i64>>,
         literals: Arc<OnceLock<Arc<Vec<Literal>>>>,
@@ -1034,6 +1043,16 @@ impl LiteralBuffer {
     pub fn from_f64_values(values: Vec<f64>) -> Self {
         Self {
             storage: LiteralBufferStorage::F64 {
+                values: Arc::new(values),
+                literals: Arc::new(OnceLock::new()),
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn from_f32_values(values: Vec<f32>) -> Self {
+        Self {
+            storage: LiteralBufferStorage::F32 {
                 values: Arc::new(values),
                 literals: Arc::new(OnceLock::new()),
             },
@@ -1143,6 +1162,9 @@ impl LiteralBuffer {
             LiteralBufferStorage::F64 { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::from_f64).collect()))
                 .as_slice(),
+            LiteralBufferStorage::F32 { values, literals } => literals
+                .get_or_init(|| Arc::new(values.iter().copied().map(Literal::from_f32).collect()))
+                .as_slice(),
             LiteralBufferStorage::I64 { values, literals } => literals
                 .get_or_init(|| Arc::new(values.iter().copied().map(Literal::I64).collect()))
                 .as_slice(),
@@ -1192,11 +1214,23 @@ impl LiteralBuffer {
         match &self.storage {
             LiteralBufferStorage::Literals(_) => None,
             LiteralBufferStorage::F64 { values, .. } => Some(values.as_slice()),
+            LiteralBufferStorage::F32 { .. } => None,
             LiteralBufferStorage::I64 { .. } => None,
             LiteralBufferStorage::Bool { .. } => None,
             LiteralBufferStorage::Complex { .. } => None,
             LiteralBufferStorage::RepeatedPatches { .. } => None,
             LiteralBufferStorage::Concat { .. } => None,
+        }
+    }
+
+    /// Borrow the dense `f32` storage as a packed `&[f32]` slice, if this buffer
+    /// is `f32`-backed. Returns `None` for `Literal`-backed or non-`f32` buffers
+    /// (callers fall back to per-element extraction).
+    #[must_use]
+    pub fn as_f32_slice(&self) -> Option<&[f32]> {
+        match &self.storage {
+            LiteralBufferStorage::F32 { values, .. } => Some(values.as_slice()),
+            _ => None,
         }
     }
 
@@ -1228,6 +1262,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::I64 { values, .. } => Some(values.as_slice()),
             LiteralBufferStorage::Literals(_)
             | LiteralBufferStorage::F64 { .. }
+            | LiteralBufferStorage::F32 { .. }
             | LiteralBufferStorage::Bool { .. }
             | LiteralBufferStorage::Complex { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
@@ -1241,6 +1276,7 @@ impl LiteralBuffer {
             LiteralBufferStorage::Bool { values, .. } => Some(values.as_slice()),
             LiteralBufferStorage::Literals(_)
             | LiteralBufferStorage::F64 { .. }
+            | LiteralBufferStorage::F32 { .. }
             | LiteralBufferStorage::I64 { .. }
             | LiteralBufferStorage::Complex { .. }
             | LiteralBufferStorage::RepeatedPatches { .. }
@@ -1253,6 +1289,7 @@ impl LiteralBuffer {
         match &self.storage {
             LiteralBufferStorage::Literals(elements) => elements.len(),
             LiteralBufferStorage::F64 { values, .. } => values.len(),
+            LiteralBufferStorage::F32 { values, .. } => values.len(),
             LiteralBufferStorage::I64 { values, .. } => values.len(),
             LiteralBufferStorage::Bool { values, .. } => values.len(),
             LiteralBufferStorage::Complex { values, .. } => values.len(),
@@ -1275,6 +1312,7 @@ impl LiteralBuffer {
         if matches!(
             self.storage,
             LiteralBufferStorage::F64 { .. }
+                | LiteralBufferStorage::F32 { .. }
                 | LiteralBufferStorage::I64 { .. }
                 | LiteralBufferStorage::Bool { .. }
                 | LiteralBufferStorage::Complex { .. }
@@ -1288,6 +1326,7 @@ impl LiteralBuffer {
         match &mut self.storage {
             LiteralBufferStorage::Literals(elements) => Arc::make_mut(elements),
             LiteralBufferStorage::F64 { .. }
+            | LiteralBufferStorage::F32 { .. }
             | LiteralBufferStorage::I64 { .. }
             | LiteralBufferStorage::Bool { .. }
             | LiteralBufferStorage::Complex { .. }
@@ -1330,6 +1369,12 @@ impl Clone for LiteralBuffer {
             },
             LiteralBufferStorage::F64 { values, literals } => Self {
                 storage: LiteralBufferStorage::F64 {
+                    values: Arc::clone(values),
+                    literals: Arc::clone(literals),
+                },
+            },
+            LiteralBufferStorage::F32 { values, literals } => Self {
+                storage: LiteralBufferStorage::F32 {
                     values: Arc::clone(values),
                     literals: Arc::clone(literals),
                 },
@@ -1472,6 +1517,20 @@ impl IntoIterator for LiteralBuffer {
                     .iter()
                     .copied()
                     .map(Literal::from_f64)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+            }
+            LiteralBufferStorage::F32 { values, literals } => {
+                if let Some(materialized) = literals.get() {
+                    return Arc::try_unwrap(Arc::clone(materialized))
+                        .unwrap_or_else(|elements| (*elements).clone())
+                        .into_iter();
+                }
+
+                values
+                    .iter()
+                    .copied()
+                    .map(Literal::from_f32)
                     .collect::<Vec<_>>()
                     .into_iter()
             }
@@ -1689,6 +1748,30 @@ impl TensorValue {
             dtype: DType::F64,
             shape,
             elements: LiteralBuffer::from_f64_values(values),
+        })
+    }
+
+    /// Build an `f32` tensor from dense `f32` values, backed by the packed
+    /// [`LiteralBuffer::from_f32_values`] storage (no per-element `Literal`
+    /// materialization). Lets f32-heavy ops borrow a `&[f32]` slice and emit
+    /// dense outputs.
+    pub fn new_f32_values(shape: Shape, values: Vec<f32>) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != values.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: values.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype: DType::F32,
+            shape,
+            elements: LiteralBuffer::from_f32_values(values),
         })
     }
 
@@ -6041,6 +6124,60 @@ mod tests {
         let lit = Literal::from_complex128(1.0, 2.0);
         assert!(lit.as_f64().is_none());
         assert!(lit.as_i64().is_none());
+    }
+
+    #[test]
+    fn dense_f32_literal_buffer_preserves_slice_api_and_cow() {
+        // Dense f32 storage must present the same `Literal` API as the boxed
+        // form, materializing via `Literal::from_f32` bit-for-bit (including a
+        // signaling-NaN payload and -0.0), and fall back to literal storage on
+        // mutation (COW).
+        let snan = f32::from_bits(0x7fc0_0001);
+        let mut buffer = LiteralBuffer::from_f32_values(vec![1.25, -0.0, snan]);
+        let expected = vec![
+            Literal::from_f32(1.25),
+            Literal::from_f32(-0.0),
+            Literal::from_f32(snan),
+        ];
+
+        assert_eq!(buffer.len(), 3);
+        assert!(!buffer.is_empty());
+        assert_eq!(buffer.as_f32_slice().expect("dense f32 values").len(), 3);
+        assert!(buffer.as_f64_slice().is_none(), "f32 storage is not f64-backed");
+        assert_eq!(buffer.as_slice(), expected.as_slice());
+        assert_eq!(buffer.to_vec(), expected);
+        assert_eq!(buffer[1], Literal::from_f32(-0.0));
+        assert_eq!(format!("{buffer:?}"), format!("{:?}", expected));
+        assert_eq!(
+            serde_json::to_string(&buffer).expect("serialize dense f32 buffer"),
+            serde_json::to_string(&expected).expect("serialize literal vec")
+        );
+
+        let owned = buffer.clone().into_iter().collect::<Vec<_>>();
+        assert_eq!(owned, expected);
+        assert_eq!(buffer, expected);
+
+        let original = buffer.clone();
+        buffer[0] = Literal::from_f32(9.0);
+        assert_eq!(original.as_slice(), expected.as_slice());
+        assert_eq!(buffer[0], Literal::from_f32(9.0));
+        assert!(
+            buffer.as_f32_slice().is_none(),
+            "mutating dense f32 storage should materialize to literal storage"
+        );
+    }
+
+    #[test]
+    fn dense_f32_tensor_value_new_f32_values_roundtrips() {
+        let data: Vec<f32> = vec![0.0, -1.5, 3.25, f32::from_bits(0x7f80_0000)]; // incl +inf
+        let t = TensorValue::new_f32_values(Shape::vector(4), data.clone()).unwrap();
+        assert_eq!(t.dtype, DType::F32);
+        assert_eq!(t.elements.as_f32_slice().expect("dense"), data.as_slice());
+        for (i, &v) in data.iter().enumerate() {
+            assert_eq!(t.elements[i], Literal::from_f32(v));
+        }
+        // element-count mismatch is rejected like the other dense constructors.
+        assert!(TensorValue::new_f32_values(Shape::vector(2), vec![1.0]).is_err());
     }
 
     #[test]
