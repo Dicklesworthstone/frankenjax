@@ -1,0 +1,10 @@
+frankenjax-fxavi rejected golden proof
+target: fj-lax linalg/lu_1024x1024_f64
+candidate: fused blocked LU Schur update without L21/U12/prod temporaries
+proof command: RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax_fxavi_proof_candidate cargo test -p fj-lax --lib lu -- --nocapture
+proof worker: vmi1153651
+proof result: 63 passed, 0 failed, 0 ignored, 1127 filtered out
+golden test: linalg::tests::lu_blocked_path_golden_output_digest
+golden digest: 4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91
+isomorphism: pivot scan order unchanged; strict-greater tie-breaking unchanged; row swaps unchanged; L11 solve order unchanged; each Schur output product accumulated in ascending panel-column order; one final subtraction per output; dtype/shape/error behavior unchanged; RNG absent.
+decision: rejected by same-worker performance gate, source restored.

@@ -1,0 +1,50 @@
+{
+  "bead": "frankenjax-fxavi",
+  "pass": 187,
+  "date": "2026-06-08",
+  "crate": "fj-lax",
+  "target": "linalg/lu_1024x1024_f64",
+  "lever": "fused blocked LU Schur update without materialized L21/U12/product buffers",
+  "decision": "rejected",
+  "score": 0.0,
+  "score_gate": "Score >= 2.0 required to keep",
+  "profile_backed_target": {
+    "source": "bead frankenjax-fxavi",
+    "row": "linalg/lu_1024x1024_f64 [131.78, 139.78, 141.77] ms on vmi1227854 profile"
+  },
+  "baseline": {
+    "worker": "ts2",
+    "command": "RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax_fxavi_bench_baseline cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 4 --noplot",
+    "interval_ms": [68.268, 69.627, 71.570]
+  },
+  "candidate": {
+    "worker": "ts2",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=ts2 RCH_WORKERS=ts2 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax_fxavi_bench_candidate cargo bench -p fj-lax --bench lax_baseline -- linalg/lu_1024x1024_f64 --sample-size 10 --warm-up-time 1 --measurement-time 4 --noplot",
+    "interval_ms": [72.698, 73.682, 75.278]
+  },
+  "result": {
+    "median_speedup": 0.9449662061290409,
+    "conservative_speedup": 0.9068785036796939,
+    "candidate_vs_baseline_median_slowdown": 1.0582389015755382
+  },
+  "proof": {
+    "worker": "vmi1153651",
+    "command": "RCH_REQUIRE_REMOTE=1 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax_fxavi_proof_candidate cargo test -p fj-lax --lib lu -- --nocapture",
+    "result": "63 passed, 0 failed, 0 ignored, 1127 filtered out",
+    "golden_digest": "4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91",
+    "golden_file": "fj_lax_lu_fused_schur_fxavi_pass187_2026-06-08.rejected.golden",
+    "golden_file_sha256": "c773586fff1e8402aea6363545c6a9675b033e1c55468ac5f1cb37c9a097704a"
+  },
+  "isomorphism": [
+    "pivot scan order unchanged",
+    "strict-greater pivot tie-breaking unchanged",
+    "row swaps unchanged",
+    "L11 solve order unchanged",
+    "per-output Schur product accumulated in ascending panel-column order",
+    "single final subtraction per Schur output unchanged",
+    "dtype, shape, and error behavior unchanged",
+    "RNG absent"
+  ],
+  "source_state": "candidate source restored; git diff for crates/fj-lax/src/linalg.rs is empty",
+  "next_route": "do not repeat direct fused Schur update. Attack a deeper LU primitive next: communication-avoiding recursive LU or a panel-layout algorithm that changes memory traffic at the blocked decomposition level while preserving the LU proof contract."
+}
