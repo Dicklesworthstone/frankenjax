@@ -1921,6 +1921,23 @@ fn broadcast_binary_tensors(
         return Ok(value);
     }
 
+    // BF16/F16 dense broadcast fast path (same-half operands; mixed -> F32 generic).
+    if matches!(lhs.dtype, DType::BF16 | DType::F16)
+        && lhs.dtype == rhs.dtype
+        && let Some(value) = broadcast_binary_half_float(
+            lhs,
+            rhs,
+            &out_shape,
+            out_count,
+            &out_strides,
+            &lhs_strides,
+            &rhs_strides,
+            float_op,
+        )?
+    {
+        return Ok(value);
+    }
+
     // I64⊗I64 dense broadcast fast path: for I64 operands binary_literal_op
     // returns Literal::I64(int_op(a, b)) and promote_dtype(I64, I64) == I64, so
     // a dense int_op fold over the broadcast-gathered i64 values is identical.
@@ -2341,6 +2358,113 @@ fn broadcast_binary_f32(
         }
     }
     Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+        out_shape.clone(),
+        values,
+    )?)))
+}
+
+/// Dense BF16/F16 broadcast fast path: mirrors [`broadcast_binary_f32`] (same
+/// broadcast index math / contiguous-inner carry) but gathers `as_half_float_slice`,
+/// computes each output via [`half_binary_apply`] (widen u16->f64, `float_op`, round via
+/// `from_{bf16,f16}_f64`), and emits dense half-float. Only same-half operands take this
+/// path (mixed BF16+F16->F32 is handled by the generic path). Bit-identical to the
+/// boxed per-`Literal` broadcast since both use the identical widen/round conversions.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "mirrors broadcast_binary_f32's explicit stride/shape signature"
+)]
+fn broadcast_binary_half_float(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    out_shape: &Shape,
+    out_count: usize,
+    out_strides: &[usize],
+    lhs_strides: &[usize],
+    rhs_strides: &[usize],
+    float_op: &impl Fn(f64, f64) -> f64,
+) -> Result<Option<Value>, EvalError> {
+    if lhs.dtype != rhs.dtype {
+        return Ok(None); // mixed BF16+F16 -> F32, handled by the generic path
+    }
+    let dt = lhs.dtype;
+    let (Some(lhs_values), Some(rhs_values)) = (
+        lhs.elements.as_half_float_slice(),
+        rhs.elements.as_half_float_slice(),
+    ) else {
+        return Ok(None);
+    };
+    let _ = out_strides;
+    let op = |l: u16, r: u16| half_binary_apply(dt, l, r, float_op);
+    let rank = out_shape.dims.len();
+    let mut values = Vec::with_capacity(out_count);
+    if rank >= 1 && out_count > 0 {
+        let inner = out_shape.dims[rank - 1] as usize;
+        let inner_ls = lhs_strides[rank - 1];
+        let inner_rs = rhs_strides[rank - 1];
+        let outer = out_count / inner;
+        let mut coord = vec![0usize; rank.saturating_sub(1)];
+        let mut lb = 0usize;
+        let mut rb = 0usize;
+        for _ in 0..outer {
+            match (inner_ls, inner_rs) {
+                (1, 1) => {
+                    let l = &lhs_values[lb..lb + inner];
+                    let r = &rhs_values[rb..rb + inner];
+                    for k in 0..inner {
+                        values.push(op(l[k], r[k]));
+                    }
+                }
+                (1, 0) => {
+                    let l = &lhs_values[lb..lb + inner];
+                    let rv = rhs_values[rb];
+                    for &lv in l {
+                        values.push(op(lv, rv));
+                    }
+                }
+                (0, 1) => {
+                    let lv = lhs_values[lb];
+                    let r = &rhs_values[rb..rb + inner];
+                    for &rv in r {
+                        values.push(op(lv, rv));
+                    }
+                }
+                _ => {
+                    for k in 0..inner {
+                        values.push(op(
+                            lhs_values[lb + k * inner_ls],
+                            rhs_values[rb + k * inner_rs],
+                        ));
+                    }
+                }
+            }
+            if rank >= 2 {
+                let mut ax = rank - 2;
+                loop {
+                    coord[ax] += 1;
+                    lb += lhs_strides[ax];
+                    rb += rhs_strides[ax];
+                    if coord[ax] < out_shape.dims[ax] as usize {
+                        break;
+                    }
+                    coord[ax] = 0;
+                    lb -= lhs_strides[ax] * out_shape.dims[ax] as usize;
+                    rb -= rhs_strides[ax] * out_shape.dims[ax] as usize;
+                    if ax == 0 {
+                        break;
+                    }
+                    ax -= 1;
+                }
+            }
+        }
+    } else {
+        let mut odometer = BroadcastOdometer::new(&out_shape.dims, lhs_strides, rhs_strides);
+        for _ in 0..out_count {
+            let (lhs_idx, rhs_idx) = odometer.next();
+            values.push(op(lhs_values[lhs_idx], rhs_values[rhs_idx]));
+        }
+    }
+    Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+        dt,
         out_shape.clone(),
         values,
     )?)))
@@ -10143,6 +10267,102 @@ mod tests {
                     out_bits(&from_boxed),
                     "{prim:?} {dt:?} dense != boxed"
                 );
+            }
+        }
+    }
+
+    /// Isomorphism proof for the dense BF16/F16 broadcast binary fast path: a
+    /// bias-add `[N,C] + [C]` (and `[C] + [N,C]`) on dense half-float must equal the
+    /// boxed-`Literal` broadcast bit-for-bit, for Add/Sub/Mul/Div.
+    #[test]
+    fn dense_half_float_broadcast_bit_identical_to_literal() {
+        use fj_core::{DType, Shape, TensorValue};
+        let (rows, cols) = (64usize, 80usize);
+        let half_bits = |dt: DType, x: f64| -> u16 {
+            match if dt == DType::BF16 {
+                Literal::from_bf16_f64(x)
+            } else {
+                Literal::from_f16_f64(x)
+            } {
+                Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                other => panic!("expected half-float literal, got {other:?}"),
+            }
+        };
+        let out_bits = |v: &Value| -> Vec<u16> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                    other => panic!("expected half-float, got {other:?}"),
+                })
+                .collect()
+        };
+        for dt in [DType::BF16, DType::F16] {
+            let mat_bits: Vec<u16> = (0..rows * cols)
+                .map(|i| half_bits(dt, (i as f64 * 0.013).sin() * 2.0))
+                .collect();
+            // strictly positive bias keeps Div clean
+            let bias_bits: Vec<u16> = (0..cols)
+                .map(|j| half_bits(dt, (j as f64 * 0.07).cos() * 1.5 + 2.0))
+                .collect();
+            let mk = |dims: Vec<u32>, bits: &[u16], dense: bool| {
+                let shape = Shape { dims };
+                if dense {
+                    Value::Tensor(
+                        TensorValue::new_half_float_values(dt, shape, bits.to_vec()).unwrap(),
+                    )
+                } else {
+                    let lits: Vec<Literal> = bits
+                        .iter()
+                        .map(|&b| {
+                            if dt == DType::BF16 {
+                                Literal::BF16Bits(b)
+                            } else {
+                                Literal::F16Bits(b)
+                            }
+                        })
+                        .collect();
+                    Value::Tensor(TensorValue::new(dt, shape, lits).unwrap())
+                }
+            };
+            let mat_d = mk(vec![rows as u32, cols as u32], &mat_bits, true);
+            let bias_d = mk(vec![cols as u32], &bias_bits, true);
+            assert!(
+                mat_d
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_some(),
+                "input must be dense half-float to exercise the fast path"
+            );
+            let mat_b = mk(vec![rows as u32, cols as u32], &mat_bits, false);
+            let bias_b = mk(vec![cols as u32], &bias_bits, false);
+            for prim in [
+                Primitive::Add,
+                Primitive::Sub,
+                Primitive::Mul,
+                Primitive::Div,
+            ] {
+                // both broadcast orientations: [N,C] op [C] and [C] op [N,C]
+                for (l_d, r_d, l_b, r_b) in [
+                    (&mat_d, &bias_d, &mat_b, &bias_b),
+                    (&bias_d, &mat_d, &bias_b, &mat_b),
+                ] {
+                    let from_dense =
+                        crate::eval_primitive(prim, &[l_d.clone(), r_d.clone()], &BTreeMap::new())
+                            .unwrap();
+                    let from_boxed =
+                        crate::eval_primitive(prim, &[l_b.clone(), r_b.clone()], &BTreeMap::new())
+                            .unwrap();
+                    assert_eq!(
+                        out_bits(&from_dense),
+                        out_bits(&from_boxed),
+                        "{prim:?} {dt:?} broadcast dense != boxed"
+                    );
+                }
             }
         }
     }

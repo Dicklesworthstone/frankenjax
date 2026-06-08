@@ -2984,6 +2984,77 @@ fn bench_bf16_mul_2m_boxed(c: &mut Criterion) {
     });
 }
 
+// BF16 bias-add broadcast [4096,512] + [512] (2.1M out): dense half-float broadcast fast
+// path vs the boxed per-`Literal` broadcast (same-invocation A/B). bias-add after a matmul
+// is the ubiquitous NN pattern.
+fn bench_bf16_biasadd_dense(c: &mut Criterion) {
+    let (rows, cols) = (4096usize, 512usize);
+    let shape_m = Shape {
+        dims: vec![rows as u32, cols as u32],
+    };
+    let shape_b = Shape {
+        dims: vec![cols as u32],
+    };
+    let mat = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::BF16,
+            shape_m,
+            bf16_bits_vec(rows * cols, |i| (i as f64 * 0.0013).sin() * 2.0),
+        )
+        .unwrap(),
+    );
+    let bias = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::BF16,
+            shape_b,
+            bf16_bits_vec(cols, |j| (j as f64 * 0.07).cos() + 1.5),
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/biasadd_bf16_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Add, &[mat.clone(), bias.clone()], &p))
+    });
+}
+
+fn bench_bf16_biasadd_boxed(c: &mut Criterion) {
+    let (rows, cols) = (4096usize, 512usize);
+    let mat = {
+        let lits: Vec<Literal> = (0..rows * cols)
+            .map(|i| Literal::from_bf16_f64((i as f64 * 0.0013).sin() * 2.0))
+            .collect();
+        Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                Shape {
+                    dims: vec![rows as u32, cols as u32],
+                },
+                lits,
+            )
+            .unwrap(),
+        )
+    };
+    let bias = {
+        let lits: Vec<Literal> = (0..cols)
+            .map(|j| Literal::from_bf16_f64((j as f64 * 0.07).cos() + 1.5))
+            .collect();
+        Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                Shape {
+                    dims: vec![cols as u32],
+                },
+                lits,
+            )
+            .unwrap(),
+        )
+    };
+    let p = no_params();
+    c.bench_function("eval/biasadd_bf16_boxed", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Add, &[mat.clone(), bias.clone()], &p))
+    });
+}
+
 fn bench_complex_expm1_1k(c: &mut Criterion) {
     let input = complex_vector(1000);
     let p = no_params();
@@ -3786,6 +3857,8 @@ criterion_group!(
     bench_bf16_exp2_256k_boxed,
     bench_bf16_mul_2m_dense,
     bench_bf16_mul_2m_boxed,
+    bench_bf16_biasadd_dense,
+    bench_bf16_biasadd_boxed,
     bench_complex_expm1_1k,
     bench_complex_exp_256k_dense,
     bench_complex_pow_256k_dense,
