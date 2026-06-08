@@ -4624,6 +4624,28 @@ fn batch_cond(
         None => broadcast_unbatched(&inputs[2].value, batch_size, 0)?,
     };
 
+    // Broadcast the [batch] predicate across the branches' inner dims so Select's
+    // equal-shape contract (pred.shape == on_true.shape == on_false.shape) holds.
+    // JAX broadcasts the cond predicate to the output shape; without this,
+    // vmap(cond) over NON-scalar branch values failed with a "select requires all
+    // inputs to have the same shape" error (the predicate is [batch] but the
+    // branches are [batch, ...inner]). Broadcast maps the predicate's single
+    // (batch) axis to output axis 0; the inner axes are new broadcast dims.
+    let pred = match (pred.as_tensor(), on_true.as_tensor()) {
+        (Some(p), Some(t)) if p.shape != t.shape => {
+            let mut bcast_params = BTreeMap::new();
+            bcast_params.insert("shape".to_owned(), format_csv(&t.shape.dims));
+            bcast_params.insert("broadcast_dimensions".to_owned(), "0".to_owned());
+            eval_primitive(
+                Primitive::BroadcastInDim,
+                std::slice::from_ref(&pred),
+                &bcast_params,
+            )
+            .map_err(|e| BatchError::EvalError(e.to_string()))?
+        }
+        _ => pred,
+    };
+
     // Use Select(pred, on_true, on_false) for vectorized per-element selection
     let result = eval_primitive(Primitive::Select, &[pred, on_true, on_false], params)
         .map_err(|e| BatchError::EvalError(e.to_string()))?;
@@ -9249,6 +9271,32 @@ mod tests {
         .unwrap();
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(extract_i64_vec(&result.value), vec![7, -1, 9]);
+    }
+
+    #[test]
+    fn test_batch_trace_cond_batched_predicate_nonscalar_branches() {
+        // vmap(cond) with a batched scalar predicate but NON-scalar branch values:
+        // pred [2] selecting between two [2,3] arrays per batch row. The batched
+        // predicate must be broadcast to the branch shape before Select (JAX
+        // broadcasts the cond predicate to the output shape); otherwise Select's
+        // equal-shape contract fails (pred [2] vs operands [2,3]).
+        let pred = BatchTracer::batched(make_i64_vector(&[1, 0]), 0);
+        let on_true =
+            BatchTracer::batched(make_f64_matrix(2, 3, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]), 0);
+        let on_false = BatchTracer::batched(
+            make_f64_matrix(2, 3, &[10.0, 20.0, 30.0, 40.0, 50.0, 60.0]),
+            0,
+        );
+        let result =
+            apply_batch_rule(Primitive::Cond, &[pred, on_true, on_false], &BTreeMap::new()).unwrap();
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.shape.dims, vec![2, 3]);
+        // row0 pred=1 -> on_true row; row1 pred=0 -> on_false row.
+        assert_eq!(
+            extract_f64_vec(&result.value),
+            vec![1.0, 2.0, 3.0, 40.0, 50.0, 60.0]
+        );
     }
 
     #[test]
