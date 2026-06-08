@@ -711,11 +711,15 @@ fn next_after_f64(x: f64, toward: f64) -> f64 {
 /// Generate samples from a Cauchy distribution.
 ///
 /// Matches `jax.random.cauchy(key, shape)`.
-/// Uses inverse transform: X = tan(pi * (U - 0.5))
+///
+/// JAX `_cauchy`: `tan(pi * (U - 0.5))` over `U ~ uniform(minval=finfo.eps,
+/// maxval=1)` — the eps lower bound (f32 eps in JAX's default f32 mode) keeps U
+/// off 0 so `tan` never hits the asymptote at U=0. The previous code sampled
+/// `uniform(0, 1)`, a different (and slightly wider) domain than JAX.
 #[must_use]
 pub fn random_cauchy(key: PRNGKey, count: usize) -> Vec<f64> {
-    let uniforms = random_uniform(key, count, 0.0, 1.0);
-    uniforms
+    let eps = f64::from(f32::EPSILON);
+    random_uniform(key, count, eps, 1.0)
         .into_iter()
         .map(|u| (std::f64::consts::PI * (u - 0.5)).tan())
         .collect()
@@ -724,31 +728,34 @@ pub fn random_cauchy(key: PRNGKey, count: usize) -> Vec<f64> {
 /// Generate samples from a Pareto distribution.
 ///
 /// Matches `jax.random.pareto(key, b, shape)` where b is the shape parameter.
-/// Uses inverse transform: X = U^(-1/b)
+///
+/// JAX `_pareto`: `exp(exponential(key, shape) / b)`. The previous
+/// `U^(-1/b)` = `exp(-ln(U)/b)` sampled the OPPOSITE tail of JAX's
+/// `exp(-log1p(-U)/b)` = `(1-U)^(-1/b)` (statistically valid but a different
+/// RNG sequence — the same class as the exponential/laplace parity fixes), and
+/// its `U.max(1e-30)` clamp was an ad-hoc guard JAX does not have. Reusing
+/// `random_exponential` (already JAX's `-log1p(-U)`, finite at U=0) is exact.
 #[must_use]
 pub fn random_pareto(key: PRNGKey, count: usize, b: f64) -> Vec<f64> {
-    let uniforms = random_uniform(key, count, 0.0, 1.0);
-    uniforms
+    random_exponential(key, count, 1.0)
         .into_iter()
-        .map(|u| {
-            let clamped = u.max(1e-30);
-            clamped.powf(-1.0 / b)
-        })
+        .map(|e| (e / b).exp())
         .collect()
 }
 
 /// Generate Weibull-distributed random samples.
 ///
 /// Matches `jax.random.weibull_min(key, scale, concentration, shape)`.
-/// Uses inverse transform: X = scale * (-ln(U))^(1/concentration)
+///
+/// JAX `_weibull_min`: `power(-log1p(-U), 1/concentration) * scale` over
+/// `U ~ uniform(0, 1)`. `-log1p(-U)` is exactly an Exponential(1) sample, so we
+/// reuse `random_exponential` (same uniform domain) for an exact match. The
+/// previous `(-ln(U))^(1/c)` used the opposite tail and a `U.max(1e-30)` clamp
+/// JAX lacks (log1p is finite at U=0, so no clamp is needed).
 pub fn random_weibull(key: PRNGKey, count: usize, scale: f64, concentration: f64) -> Vec<f64> {
-    let uniforms = random_uniform(key, count, 0.0, 1.0);
-    uniforms
+    random_exponential(key, count, 1.0)
         .into_iter()
-        .map(|u| {
-            let clamped = u.max(1e-30);
-            scale * (-clamped.ln()).powf(1.0 / concentration)
-        })
+        .map(|e| scale * e.powf(1.0 / concentration))
         .collect()
 }
 
@@ -827,7 +834,13 @@ pub fn random_dirichlet(key: PRNGKey, count: usize, alpha: &[f64]) -> Vec<f64> {
 /// Generate geometrically-distributed random samples.
 ///
 /// Matches `jax.random.geometric(key, p, shape)`.
-/// Uses inverse transform: X = ceil(ln(U) / ln(1-p))
+///
+/// JAX `_geometric`: `floor(log(U) / log1p(-p)) + 1`. The previous code used
+/// `ceil(ln(U) / ln(1-p))`, which equals `floor(..)+1` for non-integer ratios
+/// but diverges by one whenever the ratio lands exactly on an integer. `ln(1-p)`
+/// equals JAX's `log1p(-p)`. The `U.max(1e-30)` guard only affects the
+/// measure-zero `U==0` draw (the smallest f32 uniform is ~2^-23), keeping the
+/// `u64` cast finite; JAX would overflow there.
 pub fn random_geometric(key: PRNGKey, count: usize, p: f64) -> Vec<u64> {
     if p <= 0.0 || p >= 1.0 {
         return vec![1; count];
@@ -838,7 +851,7 @@ pub fn random_geometric(key: PRNGKey, count: usize, p: f64) -> Vec<u64> {
         .into_iter()
         .map(|u| {
             let clamped = u.max(1e-30);
-            (clamped.ln() / log_1_minus_p).ceil().max(1.0) as u64
+            ((clamped.ln() / log_1_minus_p).floor() + 1.0).max(1.0) as u64
         })
         .collect()
 }
