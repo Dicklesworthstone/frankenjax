@@ -1,0 +1,6 @@
+golden_output_digest=e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a
+baseline_ms=323.59,355.18,393.82
+candidate_ms=317.40,333.22,352.69
+median_speedup=1.0659
+conservative_speedup_low_over_high=0.9175
+score=0.0

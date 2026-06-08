@@ -1,0 +1,47 @@
+{
+  "bead": "frankenjax-a9wbu",
+  "pass": 178,
+  "status": "rejected",
+  "target": {
+    "crate": "fj-lax",
+    "benchmark": "linalg/matmul_2d_2048x2048x2048_f64",
+    "profile_source": "post-frankenjax-p1vbf.46 RCH fmd linalg profile",
+    "profile_interval_ms": [202.57, 206.51, 210.8]
+  },
+  "lever": {
+    "name": "exact-order row/column macro-panel scheduler",
+    "one_lever": true,
+    "source_change": "temporarily grouped bounded MR row-tile bands with bounded NR column-panel bands inside each pc-block",
+    "kept_in_source": false,
+    "reason_rejected": "Matched-worker Criterion intervals overlapped and median speedup missed the bead's >=1.15x target; source was restored."
+  },
+  "matched_benchmark": {
+    "tool": "rch exec -- cargo bench -p fj-lax --bench lax_baseline",
+    "worker": "vmi1293453",
+    "baseline_ms": [323.59, 355.18, 393.82],
+    "candidate_ms": [317.4, 333.22, 352.69],
+    "median_speedup": 1.0659,
+    "conservative_speedup_low_over_high": 0.9175,
+    "score": 0.0
+  },
+  "behavior_proof": {
+    "tool": "rch exec",
+    "worker": "vmi1293453",
+    "command": "cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+    "result": "10 passed, 0 failed, 1 ignored",
+    "golden_output_digest": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a"
+  },
+  "isomorphism": {
+    "output_order": "row-major output ownership unchanged",
+    "floating_point": "candidate preserved the same ascending-k accumulation loop for every output element",
+    "tie_breaking": "no comparisons or ties in GEMM path",
+    "rng": "no RNG surface",
+    "errors": "input assertions and panic surface unchanged"
+  },
+  "next_primitive": {
+    "name": "contiguous-row GEMM microkernel with B superpanel streaming",
+    "source": "alien-graveyard cache locality and tiled SIMD primitive",
+    "target_ratio": ">= 1.15x on same-worker GEMM2048",
+    "constraint": "preserve ascending-k accumulation per output; change C traversal to row-contiguous bands and use B superpanels to bound rereads"
+  }
+}
