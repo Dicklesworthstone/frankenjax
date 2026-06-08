@@ -5593,6 +5593,88 @@ fn rank2_f64_any_orientation_matmul(
     )?)))
 }
 
+/// Permute a contiguous row-major f64 tensor of shape `orig_dims` so output axis
+/// `i` is original axis `perm[i]`, returning the permuted contiguous buffer.
+/// O(n·rank). Used to reshape an arbitrary contraction into a 2-D GEMM.
+fn permute_f64(data: &[f64], orig_dims: &[usize], perm: &[usize]) -> Vec<f64> {
+    let rank = orig_dims.len();
+    let mut orig_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        orig_strides[i] = orig_strides[i + 1] * orig_dims[i + 1];
+    }
+    let new_dims: Vec<usize> = perm.iter().map(|&p| orig_dims[p]).collect();
+    let mut new_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        new_strides[i] = new_strides[i + 1] * new_dims[i + 1];
+    }
+    let n = data.len();
+    let mut out = vec![0.0_f64; n];
+    for (out_flat, slot) in out.iter_mut().enumerate() {
+        let mut rem = out_flat;
+        let mut orig_flat = 0usize;
+        for ax in 0..rank {
+            let idx = rem / new_strides[ax];
+            rem -= idx * new_strides[ax];
+            orig_flat += idx * orig_strides[perm[ax]];
+        }
+        *slot = data[orig_flat];
+    }
+    out
+}
+
+/// General NO-BATCH f64 dot_general (any rank, any number of contracting dims) as
+/// a single GEMM: permute lhs to `[free..., contract...]` and rhs to
+/// `[contract..., free...]` (collapsing each group to one axis), matmul_2d, and
+/// the `[lhs_free_size, rhs_free_size]` output is already the dot_general order
+/// `[lhs_free dims ++ rhs_free dims]`. Replaces the generic strided loop for
+/// rank>2 tensordots and multi-contracting-dim contractions. Bit-identical: same
+/// products summed over the contracting index in ascending order. f64 only.
+fn general_nobatch_f64_tensordot(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    lhs_contracting: &[usize],
+    rhs_contracting: &[usize],
+    lhs_free_dims: &[usize],
+    rhs_free_dims: &[usize],
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    if lhs.dtype != DType::F64 || rhs.dtype != DType::F64 {
+        return Ok(None);
+    }
+    let lhs_dims: Vec<usize> = lhs.shape.dims.iter().map(|&d| d as usize).collect();
+    let rhs_dims: Vec<usize> = rhs.shape.dims.iter().map(|&d| d as usize).collect();
+    let m: usize = lhs_free_dims.iter().map(|&d| lhs_dims[d]).product();
+    let k: usize = lhs_contracting.iter().map(|&d| lhs_dims[d]).product();
+    let n: usize = rhs_free_dims.iter().map(|&d| rhs_dims[d]).product();
+    // Contracting sizes must match group-for-group (also validated upstream).
+    let rk: usize = rhs_contracting.iter().map(|&d| rhs_dims[d]).product();
+    if rk != k {
+        return Ok(None);
+    }
+    let (Some(lhs_v), Some(rhs_v)) = (dot_f64_elements(lhs), dot_f64_elements(rhs)) else {
+        return Ok(None);
+    };
+    // lhs -> [free (ascending) ++ contract (paired order)] = [m, k] row-major.
+    let mut lhs_perm: Vec<usize> = lhs_free_dims.to_vec();
+    lhs_perm.extend_from_slice(lhs_contracting);
+    // rhs -> [contract (paired order) ++ free (ascending)] = [k, n] row-major.
+    let mut rhs_perm: Vec<usize> = rhs_contracting.to_vec();
+    rhs_perm.extend_from_slice(rhs_free_dims);
+    let a = permute_f64(&lhs_v, &lhs_dims, &lhs_perm);
+    let b = permute_f64(&rhs_v, &rhs_dims, &rhs_perm);
+    let values = matmul_2d(&a, m, k, &b, n);
+    if output_dims.is_empty() {
+        // Full contraction (e.g. vector·vector) -> scalar, matching the other paths.
+        return Ok(Some(Value::Scalar(Literal::from_f64(values[0]))));
+    }
+    Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        values,
+    )?)))
+}
+
 fn dot_f64_elements(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
     if let Some(values) = tensor.elements.as_f64_slice() {
         return Some(Cow::Borrowed(values));
@@ -5963,6 +6045,26 @@ pub(crate) fn eval_dot_general(
         &rhs_free_dims,
         &output_dims,
     )? {
+        return Ok(value);
+    }
+
+    // General NO-BATCH f64 tensordot (any rank, any #contracting dims) as a single
+    // reshape-to-GEMM: permute to [free,contract]/[contract,free] and matmul_2d,
+    // instead of the generic strided loop. Covers rank>2 tensordots (e.g.
+    // einsum 'abk,kcd->abcd') and multi-contracting-dim rank-2 contractions.
+    // Bit-identical (same products, ascending contracting index).
+    if lhs_batch.is_empty()
+        && rhs_batch.is_empty()
+        && let Some(value) = general_nobatch_f64_tensordot(
+            lhs,
+            rhs,
+            &lhs_contracting,
+            &rhs_contracting,
+            &lhs_free_dims,
+            &rhs_free_dims,
+            &output_dims,
+        )?
+    {
         return Ok(value);
     }
 
@@ -7715,6 +7817,96 @@ mod tests {
     }
 
     #[test]
+    fn general_nobatch_tensordot_bit_identical_to_reference() {
+        // Rank>2 and multi-contracting-dim no-batch contractions now route through
+        // general_nobatch_f64_tensordot (permute + matmul_2d). Each must be
+        // bit-for-bit identical to the textbook ascending-(flattened-k) reference.
+        let bits = |v: &Value| -> Vec<u64> {
+            let Value::Tensor(t) = v else { panic!("expected tensor") };
+            t.elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        let mk = |len: usize, salt: f64| -> Vec<f64> {
+            (0..len).map(|i| (i as f64 * salt).sin() * 1.7 - 0.3).collect()
+        };
+
+        // (1) rank-3 single contract: A[2,3,4]·B[4,5] contract A:2,B:0 -> [2,3,5].
+        let a = mk(2 * 3 * 4, 0.013);
+        let b = mk(4 * 5, 0.019);
+        let p = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "2".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        let got = eval_dot_general(&[tensor_f64(vec![2, 3, 4], &a), tensor_f64(vec![4, 5], &b)], &p)
+            .unwrap();
+        let mut want = vec![0.0f64; 2 * 3 * 5];
+        for i in 0..2 {
+            for j in 0..3 {
+                for l in 0..5 {
+                    let mut s = 0.0;
+                    for kk in 0..4 {
+                        s += a[(i * 3 + j) * 4 + kk] * b[kk * 5 + l];
+                    }
+                    want[(i * 3 + j) * 5 + l] = s;
+                }
+            }
+        }
+        assert_eq!(bits(&got), want.iter().map(|w| w.to_bits()).collect::<Vec<_>>(), "rank3");
+
+        // (2) multi-contract: A[2,3,4]·B[3,4,5] contract (A:1,2)/(B:0,1) -> [2,5].
+        let a = mk(2 * 3 * 4, 0.011);
+        let b = mk(3 * 4 * 5, 0.017);
+        let p = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1,2".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0,1".to_owned()),
+        ]);
+        let got =
+            eval_dot_general(&[tensor_f64(vec![2, 3, 4], &a), tensor_f64(vec![3, 4, 5], &b)], &p)
+                .unwrap();
+        let mut want = vec![0.0f64; 2 * 5];
+        for i in 0..2 {
+            for l in 0..5 {
+                let mut s = 0.0;
+                for j in 0..3 {
+                    for kk in 0..4 {
+                        s += a[(i * 3 + j) * 4 + kk] * b[(j * 4 + kk) * 5 + l];
+                    }
+                }
+                want[i * 5 + l] = s;
+            }
+        }
+        assert_eq!(bits(&got), want.iter().map(|w| w.to_bits()).collect::<Vec<_>>(), "multi");
+
+        // (3) rank-3 transposed: A[2,4,3]·B[5,4] contract A:1,B:1 -> [2,3,5].
+        let a = mk(2 * 4 * 3, 0.023);
+        let b = mk(5 * 4, 0.029);
+        let p = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "1".to_owned()),
+        ]);
+        let got = eval_dot_general(&[tensor_f64(vec![2, 4, 3], &a), tensor_f64(vec![5, 4], &b)], &p)
+            .unwrap();
+        let mut want = vec![0.0f64; 2 * 3 * 5];
+        for i in 0..2 {
+            for j in 0..3 {
+                for l in 0..5 {
+                    let mut s = 0.0;
+                    for kk in 0..4 {
+                        s += a[(i * 4 + kk) * 3 + j] * b[l * 4 + kk];
+                    }
+                    want[(i * 3 + j) * 5 + l] = s;
+                }
+            }
+        }
+        assert_eq!(bits(&got), want.iter().map(|w| w.to_bits()).collect::<Vec<_>>(), "rank3-T");
+    }
+
+    #[test]
     fn batched_dot_general_small_fastpath_bit_identical_to_reference() {
         // After lowering BATCHED_FASTPATH_MIN_OPS, a small batched matmul
         // (batch=64,m=k=n=4 → 4096 FMAs: above the new 1<<10 floor, below the old
@@ -7764,6 +7956,40 @@ mod tests {
         for (g, w) in got.iter().zip(want.iter()) {
             assert_eq!(*g, w.to_bits(), "fast-path batched matmul must be bit-identical");
         }
+    }
+
+    #[test]
+    #[ignore = "benchmark: run with --ignored --nocapture"]
+    fn bench_general_nobatch_tensordot() {
+        use std::time::Instant;
+        // Rank-3 tensordot A[m1,m2,k]·B[k,n] -> [m1,m2,n] and a multi-contract case.
+        let run = |label: &str, ld: Vec<u32>, rd: Vec<u32>, lc: &str, rc: &str| {
+            let ln: usize = ld.iter().map(|&d| d as usize).product();
+            let rn: usize = rd.iter().map(|&d| d as usize).product();
+            let a: Vec<f64> = (0..ln).map(|i| (i % 7) as f64 * 0.5).collect();
+            let b: Vec<f64> = (0..rn).map(|i| (i % 5) as f64 * 0.25).collect();
+            let params = BTreeMap::from([
+                ("lhs_contracting_dims".to_owned(), lc.to_owned()),
+                ("rhs_contracting_dims".to_owned(), rc.to_owned()),
+            ]);
+            let inputs = [tensor_f64(ld, &a), tensor_f64(rd, &b)];
+            let _ = eval_dot_general(&inputs, &params).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_dot_general(&inputs, &params).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            println!("BENCH {label}: {:.4}ms", best * 1e3);
+        };
+        run("rank3 A[64,64,64]·B[64,64]", vec![64, 64, 64], vec![64, 64], "2", "0");
+        run(
+            "multi A[64,8,8]·B[8,8,64]",
+            vec![64, 8, 8],
+            vec![8, 8, 64],
+            "1,2",
+            "0,1",
+        );
     }
 
     #[test]
