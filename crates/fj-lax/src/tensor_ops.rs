@@ -1381,6 +1381,43 @@ pub(crate) fn eval_pad(
             out,
         )?));
     }
+    // f32 (JAX's default dtype) and BF16/F16 reuse the same generic
+    // `pad_copy_rows<T>`/`pad_fill_place<T>` kernels over their typed backings —
+    // a fast typed fill of the pad value + dense placement, avoiding the input
+    // Literal materialization + boxed output. Bit-identical (the typed pad value
+    // is the pad_literal's exact bit pattern: f32::from_bits / the raw u16).
+    if let (Some(src), Literal::F32Bits(pb)) =
+        (operand.elements.as_f32_slice(), pad_literal)
+    {
+        let pad = f32::from_bits(pb);
+        let out = if row_copyable {
+            pad_copy_rows(src, pad, out_total, rank, in_dims, &lows, &out_strides)
+        } else {
+            pad_fill_place(
+                src, pad, out_total, rank, in_dims, &lows, &interiors, &out_dims, &out_strides,
+            )
+        };
+        return Ok(Value::Tensor(TensorValue::new_f32_values(
+            Shape { dims: out_dims },
+            out,
+        )?));
+    }
+    if let (Some(src), Literal::BF16Bits(pb) | Literal::F16Bits(pb)) =
+        (operand.elements.as_half_float_slice(), pad_literal)
+    {
+        let out = if row_copyable {
+            pad_copy_rows(src, pb, out_total, rank, in_dims, &lows, &out_strides)
+        } else {
+            pad_fill_place(
+                src, pb, out_total, rank, in_dims, &lows, &interiors, &out_dims, &out_strides,
+            )
+        };
+        return Ok(Value::Tensor(TensorValue::new_half_float_values(
+            operand.dtype,
+            Shape { dims: out_dims },
+            out,
+        )?));
+    }
 
     // Generic Literal path.
     let mut out_elements = vec![pad_literal; out_total];
@@ -7757,6 +7794,74 @@ mod tests {
         let p = params(&[("start_indices", "0"), ("limit_indices", "2")]);
         let result = eval_slice(&[x], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![10.0, 20.0]);
+    }
+
+    /// Dense pad (f32/bf16/f16) must be BIT-FOR-BIT identical to the boxed
+    /// per-`Literal` path AND keep dense output, for both the row-copyable case
+    /// (low padding only) and the per-element placement case (interior dilation).
+    #[test]
+    fn dense_pad_matches_literal_path_and_stays_dense() {
+        let (rows, cols) = (6usize, 4usize);
+        let dims = vec![rows as u32, cols as u32];
+        let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+        for p in [
+            params(&[("padding_low", "1,2"), ("padding_high", "2,1"), ("padding_interior", "0,0")]), // row-copyable
+            params(&[("padding_low", "1,0"), ("padding_high", "0,1"), ("padding_interior", "1,2")]), // interior dilation
+            params(&[("padding_low", "-1,0"), ("padding_high", "0,-1"), ("padding_interior", "0,0")]), // crop
+        ] {
+            // f32
+            let f32d: Vec<f32> = (0..rows * cols).map(|i| i as f32 * 0.5 - 2.0).collect();
+            let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: dims.clone() }, f32d.clone()).unwrap());
+            let boxed = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: dims.clone() }, f32d.iter().copied().map(Literal::from_f32).collect()).unwrap());
+            let pv = Value::Scalar(Literal::from_f32(-9.5));
+            let d = eval_pad(&[dense, pv.clone()], &p).unwrap();
+            let l = eval_pad(&[boxed, pv], &p).unwrap();
+            assert_eq!(extract_shape(&d), extract_shape(&l), "f32 pad shape");
+            assert_eq!(lits(&d), lits(&l), "f32 pad values");
+            assert!(d.as_tensor().unwrap().elements.as_f32_slice().is_some(), "f32 pad output dense");
+
+            // bf16 + f16
+            for dtype in [DType::BF16, DType::F16] {
+                let raw: Vec<u16> = (0..rows * cols).map(|i| (i as u16).wrapping_mul(91).wrapping_add(3)).collect();
+                let mk_lit = move |b: u16| if dtype == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+                let dense = Value::Tensor(TensorValue::new_half_float_values(dtype, Shape { dims: dims.clone() }, raw.clone()).unwrap());
+                let boxed = Value::Tensor(TensorValue::new(dtype, Shape { dims: dims.clone() }, raw.iter().copied().map(mk_lit).collect()).unwrap());
+                let pv = Value::Scalar(mk_lit(0x7fc0));
+                let d = eval_pad(&[dense, pv.clone()], &p).unwrap();
+                let l = eval_pad(&[boxed, pv], &p).unwrap();
+                assert_eq!(lits(&d), lits(&l), "{dtype:?} pad values");
+                assert!(d.as_tensor().unwrap().elements.as_half_float_slice().is_some(), "{dtype:?} pad output dense");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_pad_dense_vs_boxed() {
+        use std::time::Instant;
+        let (rows, cols) = (4000usize, 1000usize);
+        let data: Vec<f32> = (0..rows * cols).map(|i| ((i % 251) as f32) * 0.013 - 1.6).collect();
+        let dims = vec![rows as u32, cols as u32];
+        let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: dims.clone() }, data.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: dims.clone() }, data.iter().copied().map(Literal::from_f32).collect()).unwrap());
+        let p = params(&[("padding_low", "1,1"), ("padding_high", "1,1"), ("padding_interior", "0,0")]);
+        let pv = Value::Scalar(Literal::from_f32(0.0));
+        let time = |x: &Value| {
+            let _ = eval_pad(&[x.clone(), pv.clone()], &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_pad(&[x.clone(), pv.clone()], &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 pad [{rows},{cols}]+1 border: boxed(materialize+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
+        );
     }
 
     /// Dense contiguous slice (f64/f32/bf16/f16/i64) must be BIT-FOR-BIT identical
