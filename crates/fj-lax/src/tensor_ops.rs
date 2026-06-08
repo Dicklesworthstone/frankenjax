@@ -3969,7 +3969,51 @@ pub(crate) fn eval_one_hot(
                 class_stride,
             ),
         ),
-        // Dtypes without dense storage (I32/U32/U64/F32/F16/BF16/Complex): still
+        // f32 (JAX's default dtype) + BF16/F16 dense fill+scatter over the typed
+        // backing -> dense output. The typed on/off values are the exact bits of
+        // `literal_for(...)` for that dtype, so materialization is bit-identical.
+        DType::F32 => TensorValue::new_f32_values(
+            Shape { dims: out_dims },
+            one_hot_scatter(
+                on_value as f32,
+                off_value as f32,
+                total,
+                &indices,
+                nc,
+                input_rank,
+                &input_strides,
+                &in_to_out_stride,
+                class_stride,
+            ),
+        ),
+        DType::BF16 | DType::F16 => {
+            let to_bits = |v: f64| -> u16 {
+                match if dtype == DType::BF16 {
+                    Literal::from_bf16_f64(v)
+                } else {
+                    Literal::from_f16_f64(v)
+                } {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                    _ => 0,
+                }
+            };
+            TensorValue::new_half_float_values(
+                dtype,
+                Shape { dims: out_dims },
+                one_hot_scatter(
+                    to_bits(on_value),
+                    to_bits(off_value),
+                    total,
+                    &indices,
+                    nc,
+                    input_rank,
+                    &input_strides,
+                    &in_to_out_stride,
+                    class_stride,
+                ),
+            )
+        }
+        // Dtypes without dense storage (I32/U32/U64/Complex): still
         // fill+scatter, but over Literals (matching literal_for exactly).
         _ => TensorValue::new(
             dtype,
@@ -8336,6 +8380,75 @@ mod tests {
         assert_eq!(vals[4], 0.0);
         assert_eq!(vals[5], 1.0);
         assert_eq!(vals[10], 1.0);
+    }
+
+    /// Dense f32/bf16/f16 one_hot must keep dense output and equal the f64 reference
+    /// (default on/off 1.0/0.0 are exact in every float dtype, so `as_f64` matches).
+    /// Covers a 2D index input + an out-of-range index (that row stays all-off).
+    #[test]
+    fn dense_one_hot_f32_half_matches_f64_and_stays_dense() {
+        let indices = Value::Tensor(
+            TensorValue::new_i64_values(Shape { dims: vec![2, 3] }, vec![0, 1, 5, 2, 3, 1]).unwrap(),
+        );
+        let f64bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor().unwrap().elements.iter().map(|l| l.as_f64().unwrap().to_bits()).collect()
+        };
+        let reference = f64bits(
+            &eval_one_hot(std::slice::from_ref(&indices), &params(&[("num_classes", "4"), ("dtype", "f64")])).unwrap(),
+        );
+        for dt in ["f32", "bf16", "f16"] {
+            let r = eval_one_hot(
+                std::slice::from_ref(&indices),
+                &params(&[("num_classes", "4"), ("dtype", dt)]),
+            )
+            .unwrap();
+            assert_eq!(f64bits(&r), reference, "{dt} one_hot values");
+            let t = r.as_tensor().unwrap();
+            if dt == "f32" {
+                assert!(t.elements.as_f32_slice().is_some(), "f32 one_hot dense");
+            } else {
+                assert!(t.elements.as_half_float_slice().is_some(), "{dt} one_hot dense");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_one_hot_dense_vs_boxed() {
+        use std::time::Instant;
+        let (batch, nc) = (8192usize, 1024usize); // [batch] -> [batch, nc]
+        let idxs: Vec<i64> = (0..batch as i64).map(|i| (i * 7919) % nc as i64).collect();
+        let indices = Value::Tensor(TensorValue::new_i64_values(Shape { dims: vec![batch as u32] }, idxs.clone()).unwrap());
+        let p = params(&[("num_classes", &nc.to_string()), ("dtype", "f32")]);
+        let total = batch * nc;
+        let shape = Shape { dims: vec![batch as u32, nc as u32] };
+        let timeit = |f: &dyn Fn()| {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        // boxed (old path): Literal fill-off + scatter-on, boxed output.
+        let boxed = timeit(&|| {
+            let mut out = vec![Literal::from_f32(0.0); total];
+            for (i, &idx) in idxs.iter().enumerate() {
+                if idx >= 0 && (idx as usize) < nc {
+                    out[i * nc + idx as usize] = Literal::from_f32(1.0);
+                }
+            }
+            let _ = TensorValue::new(DType::F32, shape.clone(), out).unwrap();
+        });
+        let dense = timeit(&|| {
+            let _ = eval_one_hot(std::slice::from_ref(&indices), &p).unwrap();
+        });
+        println!(
+            "BENCH f32 one_hot [{batch}]->[{batch},{nc}]: boxed(Literal fill+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            boxed * 1e3, dense * 1e3, boxed / dense
+        );
     }
 
     #[test]
