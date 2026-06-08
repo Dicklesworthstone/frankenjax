@@ -1863,6 +1863,50 @@ pub(crate) fn eval_gather(
         {
             dense_contiguous_gather!(src, i64::MIN, TensorValue::new_i64_values);
         }
+        // Dense BF16/F16 gather (half-precision embedding lookup — bf16 is the
+        // dominant training dtype). Pure contiguous u16-bit copy, bit-identical to
+        // the generic per-`Literal` copy. The `new_half_float_values` ctor takes a
+        // dtype, so this can't use the path-only `dense_contiguous_gather!` macro;
+        // the loop mirrors it exactly. OOB fill = bits of `gather_fill_literal`.
+        if matches!(operand.dtype, DType::BF16 | DType::F16)
+            && let Some(src) = operand.elements.as_half_float_slice()
+        {
+            let fill: u16 = match gather_fill_literal(operand.dtype) {
+                Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                _ => 0,
+            };
+            let mut out: Vec<u16> = Vec::with_capacity(total);
+            for &resolved_idx in &resolved {
+                let Some(idx) = resolved_idx else {
+                    out.extend(std::iter::repeat_n(fill, slice_elems));
+                    continue;
+                };
+                let base_offset =
+                    idx.checked_mul(slice_elems)
+                        .ok_or_else(|| EvalError::Unsupported {
+                            primitive,
+                            detail: "gather base offset overflows usize".to_owned(),
+                        })?;
+                let end = base_offset.checked_add(slice_elems).ok_or_else(|| {
+                    EvalError::Unsupported {
+                        primitive,
+                        detail: "gather contiguous slice end overflows usize".to_owned(),
+                    }
+                })?;
+                if end > src.len() {
+                    return Err(EvalError::Unsupported {
+                        primitive,
+                        detail: "gather contiguous slice exceeds operand element count".to_owned(),
+                    });
+                }
+                out.extend_from_slice(&src[base_offset..end]);
+            }
+            return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                operand.dtype,
+                Shape { dims: out_dims },
+                out,
+            )?));
+        }
 
         for &resolved_idx in &resolved {
             let Some(idx) = resolved_idx else {
@@ -9513,6 +9557,84 @@ mod tests {
             generic * 1e3,
             dense_t * 1e3,
             generic / dense_t
+        );
+    }
+
+    /// Dense BF16/F16 gather (half-precision embedding lookup) must be BIT-FOR-BIT
+    /// identical to the generic per-`Literal` copy, across clip + fill_or_drop (OOB
+    /// index 999 exercises the half-float NaN fill = gather_fill_literal bits).
+    #[test]
+    fn dense_half_float_gather_contiguous_matches_literal_path() {
+        let (rows, cols) = (32usize, 40usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idx = Value::vector_i64(&[0, 5, 31, 999, 1, 7, 31, 0, 12, 999]).unwrap();
+        // raw u16 bit patterns spanning specials (0,-0,~1,NaN,inf) and varied values.
+        let raw: Vec<u16> = (0..rows * cols)
+            .map(|i| match i % 7 {
+                0 => 0x0000,
+                1 => 0x8000,
+                2 => 0x3f80,
+                3 => 0x7fc1,
+                4 => 0x7f80,
+                _ => (i as u16).wrapping_mul(37).wrapping_add(11),
+            })
+            .collect();
+        for dtype in [DType::BF16, DType::F16] {
+            let mk_lit = |b: u16| if dtype == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+            for mode in ["clip", "fill_or_drop"] {
+                let params = params(&[("slice_sizes", "1,40"), ("index_mode", mode)]);
+                let dense = Value::Tensor(
+                    TensorValue::new_half_float_values(dtype, Shape { dims: dims.clone() }, raw.clone()).unwrap(),
+                );
+                let boxed = Value::Tensor(
+                    TensorValue::new(dtype, Shape { dims: dims.clone() }, raw.iter().copied().map(mk_lit).collect()).unwrap(),
+                );
+                assert!(dense.as_tensor().unwrap().elements.as_half_float_slice().is_some());
+                assert!(boxed.as_tensor().unwrap().elements.as_half_float_slice().is_none());
+                let bits = |v: &Value| -> Vec<u16> {
+                    v.as_tensor().unwrap().elements.iter().map(|l| match l {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => *b,
+                        o => panic!("expected half-float, got {o:?}"),
+                    }).collect()
+                };
+                let d = super::eval_gather(&[dense, idx.clone()], &params).unwrap();
+                let l = super::eval_gather(&[boxed, idx.clone()], &params).unwrap();
+                assert_eq!(d.as_tensor().unwrap().dtype, dtype, "{dtype:?} gather dtype mode={mode}");
+                assert_eq!(bits(&d), bits(&l), "{dtype:?} gather mode={mode}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_bf16_embedding_gather_dense_vs_generic() {
+        use std::time::Instant;
+        let (vocab, dim) = (50000usize, 256usize);
+        let batch = 8192usize;
+        let raw: Vec<u16> = (0..vocab * dim).map(|i| (i as u16).wrapping_mul(40503).wrapping_add(7)).collect();
+        let dims = vec![vocab as u32, dim as u32];
+        let dense = Value::Tensor(TensorValue::new_half_float_values(DType::BF16, Shape { dims: dims.clone() }, raw.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new(DType::BF16, Shape { dims: dims.clone() }, raw.iter().copied().map(Literal::BF16Bits).collect()).unwrap(),
+        );
+        let idx: Vec<i64> = (0..batch as i64).map(|i| (i * 7919) % vocab as i64).collect();
+        let idx_v = Value::vector_i64(&idx).unwrap();
+        let p = params(&[("slice_sizes", "1,256"), ("index_mode", "clip")]);
+        let time = |operand: &Value| {
+            let _ = super::eval_gather(&[operand.clone(), idx_v.clone()], &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = super::eval_gather(&[operand.clone(), idx_v.clone()], &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH bf16 embedding gather [{vocab},{dim}] x {batch} rows: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
         );
     }
 
