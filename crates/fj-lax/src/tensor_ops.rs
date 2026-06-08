@@ -777,26 +777,45 @@ pub(crate) fn eval_broadcast_in_dim(
 
     match &inputs[0] {
         Value::Scalar(lit) => {
-            // Broadcast scalar to target shape.
+            // Broadcast scalar to target shape. Emit DENSE storage for the common
+            // numeric dtypes (a typed fill of the value — `jnp.zeros`/`full`/bias-init
+            // hit this) instead of a `Vec<Literal>` of `total` 24-byte enums. Output
+            // materializes to the same Literals, so it is bit-for-bit identical.
             let total = checked_shape_element_count(primitive, "broadcast_in_dim", &target_dims)?;
-            let elements = vec![*lit; total];
-            let dtype = match lit {
-                Literal::I64(_) => DType::I64,
-                Literal::U32(_) => DType::U32,
-                Literal::U64(_) => DType::U64,
-                Literal::BF16Bits(_) => DType::BF16,
-                Literal::F16Bits(_) => DType::F16,
-                Literal::F32Bits(_) => DType::F32,
-                Literal::F64Bits(_) => DType::F64,
-                Literal::Bool(_) => DType::Bool,
-                Literal::Complex64Bits(..) => DType::Complex64,
-                Literal::Complex128Bits(..) => DType::Complex128,
-            };
-            Ok(Value::Tensor(TensorValue::new(
-                dtype,
-                Shape { dims: target_dims },
-                elements,
-            )?))
+            let shape = Shape { dims: target_dims };
+            match lit {
+                Literal::F64Bits(b) => Ok(Value::Tensor(TensorValue::new_f64_values(
+                    shape,
+                    vec![f64::from_bits(*b); total],
+                )?)),
+                Literal::F32Bits(b) => Ok(Value::Tensor(TensorValue::new_f32_values(
+                    shape,
+                    vec![f32::from_bits(*b); total],
+                )?)),
+                Literal::BF16Bits(b) => Ok(Value::Tensor(TensorValue::new_half_float_values(
+                    DType::BF16,
+                    shape,
+                    vec![*b; total],
+                )?)),
+                Literal::F16Bits(b) => Ok(Value::Tensor(TensorValue::new_half_float_values(
+                    DType::F16,
+                    shape,
+                    vec![*b; total],
+                )?)),
+                Literal::I64(v) => Ok(Value::Tensor(TensorValue::new_i64_values(
+                    shape,
+                    vec![*v; total],
+                )?)),
+                Literal::Bool(v) => Ok(Value::Tensor(TensorValue::new_bool_values(
+                    shape,
+                    vec![*v; total],
+                )?)),
+                // U32/U64/Complex have no dense storage variant: boxed fill.
+                Literal::U32(_) => Ok(Value::Tensor(TensorValue::new(DType::U32, shape, vec![*lit; total])?)),
+                Literal::U64(_) => Ok(Value::Tensor(TensorValue::new(DType::U64, shape, vec![*lit; total])?)),
+                Literal::Complex64Bits(..) => Ok(Value::Tensor(TensorValue::new(DType::Complex64, shape, vec![*lit; total])?)),
+                Literal::Complex128Bits(..) => Ok(Value::Tensor(TensorValue::new(DType::Complex128, shape, vec![*lit; total])?)),
+            }
         }
         Value::Tensor(tensor) => {
             let broadcast_dims = if params.contains_key("broadcast_dimensions") {
@@ -920,6 +939,29 @@ pub(crate) fn eval_broadcast_in_dim(
                     src,
                 );
                 return Ok(Value::Tensor(TensorValue::new_bool_values(
+                    Shape { dims: target_dims },
+                    out,
+                )?));
+            }
+            // f32 (JAX's default dtype) and BF16/F16 reuse the same generic
+            // `broadcast_replicate<T>` kernel over their typed backings, emitting
+            // dense output — avoiding the input Literal materialization + boxed
+            // output of the generic path below. Pure replication, bit-identical.
+            if let Some(src) = tensor.elements.as_f32_slice() {
+                let out = broadcast_replicate(
+                    total, out_rank, &target_dims, &out_to_in, in_dims, &in_strides, src,
+                );
+                return Ok(Value::Tensor(TensorValue::new_f32_values(
+                    Shape { dims: target_dims },
+                    out,
+                )?));
+            }
+            if let Some(src) = tensor.elements.as_half_float_slice() {
+                let out = broadcast_replicate(
+                    total, out_rank, &target_dims, &out_to_in, in_dims, &in_strides, src,
+                );
+                return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                    tensor.dtype,
                     Shape { dims: target_dims },
                     out,
                 )?));
@@ -7794,6 +7836,74 @@ mod tests {
         let p = params(&[("start_indices", "0"), ("limit_indices", "2")]);
         let result = eval_slice(&[x], &p).unwrap();
         assert_eq!(extract_f64_vec(&result), vec![10.0, 20.0]);
+    }
+
+    /// Dense broadcast_in_dim (f32/bf16/f16) — both the tensor-replication path and
+    /// the scalar fill — must be BIT-FOR-BIT identical to the boxed per-`Literal`
+    /// path AND keep dense output.
+    #[test]
+    fn dense_broadcast_in_dim_matches_literal_path_and_stays_dense() {
+        let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+        // Tensor broadcast: [3] -> [4,3] (broadcast_dimensions=[1]).
+        let p_tensor = params(&[("shape", "4,3"), ("broadcast_dimensions", "1")]);
+        // Scalar broadcast: scalar -> [5,6].
+        let p_scalar = params(&[("shape", "5,6")]);
+
+        // f32
+        let f32d: Vec<f32> = vec![1.5, -0.0, 3.25];
+        let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![3] }, f32d.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![3] }, f32d.iter().copied().map(Literal::from_f32).collect()).unwrap());
+        let d = eval_broadcast_in_dim(std::slice::from_ref(&dense), &p_tensor).unwrap();
+        let l = eval_broadcast_in_dim(std::slice::from_ref(&boxed), &p_tensor).unwrap();
+        assert_eq!(lits(&d), lits(&l), "f32 tensor broadcast");
+        assert!(d.as_tensor().unwrap().elements.as_f32_slice().is_some(), "f32 broadcast output dense");
+        // f32 scalar fill
+        let ds = eval_broadcast_in_dim(&[Value::Scalar(Literal::from_f32(-2.5))], &p_scalar).unwrap();
+        assert_eq!(ds.as_tensor().unwrap().dtype, DType::F32);
+        assert!(ds.as_tensor().unwrap().elements.as_f32_slice().is_some(), "f32 scalar broadcast dense");
+        assert_eq!(lits(&ds), vec![Literal::from_f32(-2.5); 30]);
+
+        // bf16 + f16
+        for dtype in [DType::BF16, DType::F16] {
+            let raw: Vec<u16> = vec![0x3f80, 0x8000, 0x7fc1];
+            let mk_lit = move |b: u16| if dtype == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+            let dense = Value::Tensor(TensorValue::new_half_float_values(dtype, Shape { dims: vec![3] }, raw.clone()).unwrap());
+            let boxed = Value::Tensor(TensorValue::new(dtype, Shape { dims: vec![3] }, raw.iter().copied().map(mk_lit).collect()).unwrap());
+            let d = eval_broadcast_in_dim(std::slice::from_ref(&dense), &p_tensor).unwrap();
+            let l = eval_broadcast_in_dim(std::slice::from_ref(&boxed), &p_tensor).unwrap();
+            assert_eq!(lits(&d), lits(&l), "{dtype:?} tensor broadcast");
+            assert!(d.as_tensor().unwrap().elements.as_half_float_slice().is_some(), "{dtype:?} broadcast output dense");
+            let ds = eval_broadcast_in_dim(&[Value::Scalar(mk_lit(0x4000))], &p_scalar).unwrap();
+            assert_eq!(ds.as_tensor().unwrap().dtype, dtype);
+            assert!(ds.as_tensor().unwrap().elements.as_half_float_slice().is_some(), "{dtype:?} scalar broadcast dense");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_broadcast_dense_vs_boxed() {
+        use std::time::Instant;
+        let (rows, cols) = (8192usize, 2048usize); // [cols] -> [rows, cols]
+        let data: Vec<f32> = (0..cols).map(|i| (i as f32) * 0.01 - 1.0).collect();
+        let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: vec![cols as u32] }, data.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::F32, Shape { dims: vec![cols as u32] }, data.iter().copied().map(Literal::from_f32).collect()).unwrap());
+        let p = params(&[("shape", &format!("{rows},{cols}")), ("broadcast_dimensions", "1")]);
+        let time = |x: &Value| {
+            let _ = eval_broadcast_in_dim(std::slice::from_ref(x), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                let _ = eval_broadcast_in_dim(std::slice::from_ref(x), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 broadcast [{cols}]->[{rows},{cols}]: boxed(materialize+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
+        );
     }
 
     /// Dense pad (f32/bf16/f16) must be BIT-FOR-BIT identical to the boxed
