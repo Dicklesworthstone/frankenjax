@@ -2984,6 +2984,49 @@ fn bench_bf16_mul_2m_boxed(c: &mut Criterion) {
     });
 }
 
+// BF16 scalar*tensor (2M): dense half-float scalar-broadcast vs boxed (same-invocation
+// A/B). Scaling a bf16 tensor by a scalar (attention 1/sqrt(d), norm scale, LR) is common.
+fn bench_bf16_scalarmul_2m_dense(c: &mut Criterion) {
+    let n = 1usize << 21;
+    let t = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::BF16,
+            Shape {
+                dims: vec![n as u32],
+            },
+            bf16_bits_vec(n, |i| (i as f64 * 0.013).sin() * 2.0),
+        )
+        .unwrap(),
+    );
+    let s = Value::Scalar(Literal::from_bf16_f64(1.75));
+    let p = no_params();
+    c.bench_function("eval/scalarmul_2m_bf16_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Mul, &[t.clone(), s.clone()], &p))
+    });
+}
+
+fn bench_bf16_scalarmul_2m_boxed(c: &mut Criterion) {
+    let n = 1usize << 21;
+    let lits: Vec<Literal> = (0..n)
+        .map(|i| Literal::from_bf16_f64((i as f64 * 0.013).sin() * 2.0))
+        .collect();
+    let t = Value::Tensor(
+        TensorValue::new(
+            DType::BF16,
+            Shape {
+                dims: vec![n as u32],
+            },
+            lits,
+        )
+        .unwrap(),
+    );
+    let s = Value::Scalar(Literal::from_bf16_f64(1.75));
+    let p = no_params();
+    c.bench_function("eval/scalarmul_2m_bf16_boxed", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Mul, &[t.clone(), s.clone()], &p))
+    });
+}
+
 // BF16 bias-add broadcast [4096,512] + [512] (2.1M out): dense half-float broadcast fast
 // path vs the boxed per-`Literal` broadcast (same-invocation A/B). bias-add after a matmul
 // is the ubiquitous NN pattern.
@@ -3859,6 +3902,8 @@ criterion_group!(
     bench_bf16_mul_2m_boxed,
     bench_bf16_biasadd_dense,
     bench_bf16_biasadd_boxed,
+    bench_bf16_scalarmul_2m_dense,
+    bench_bf16_scalarmul_2m_boxed,
     bench_complex_expm1_1k,
     bench_complex_exp_256k_dense,
     bench_complex_pow_256k_dense,
