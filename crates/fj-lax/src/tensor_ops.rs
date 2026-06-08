@@ -1848,6 +1848,16 @@ pub(crate) fn eval_gather(
         {
             dense_contiguous_gather!(src, f64::NAN, TensorValue::new_f64_values);
         }
+        // Dense F32 gather (the embedding-lookup case: gather rows of an
+        // [vocab, dim] f32 table). f32 is JAX's DEFAULT dtype. Pure contiguous
+        // slice copy — bit-identical to the generic per-`Literal` copy (same
+        // resolved indices, same ranges), and the FILL_OR_DROP OOB fill `f32::NAN`
+        // matches `gather_fill_literal(F32)` == `F32Bits(f32::NAN.to_bits())`.
+        if operand.dtype == DType::F32
+            && let Some(src) = operand.elements.as_f32_slice()
+        {
+            dense_contiguous_gather!(src, f32::NAN, TensorValue::new_f32_values);
+        }
         if operand.dtype == DType::I64
             && let Some(src) = operand.elements.as_i64_slice()
         {
@@ -9179,6 +9189,82 @@ mod tests {
                 "i64 gather mode={mode}"
             );
         }
+    }
+
+    /// Dense f32 gather (embedding-lookup case) must be BIT-FOR-BIT identical to
+    /// the generic per-`Literal` copy, across clip + fill_or_drop (the OOB index
+    /// 999 exercises the `f32::NAN` fill, which must match gather_fill_literal(F32)).
+    #[test]
+    fn dense_f32_gather_contiguous_matches_literal_path() {
+        let (rows, cols) = (32usize, 40usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idx = Value::vector_i64(&[0, 5, 31, 999, 1, 7, 31, 0, 12, 999]).unwrap();
+        for mode in ["clip", "fill_or_drop"] {
+            let params = params(&[("slice_sizes", "1,40"), ("index_mode", mode)]);
+            let f: Vec<f32> = (0..rows * cols).map(|i| (i as f32 - 100.0) * 0.5).collect();
+            let dense = Value::Tensor(
+                TensorValue::new_f32_values(Shape { dims: dims.clone() }, f.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape { dims: dims.clone() },
+                    f.iter().copied().map(Literal::from_f32).collect(),
+                )
+                .unwrap(),
+            );
+            assert!(dense.as_tensor().unwrap().elements.as_f32_slice().is_some());
+            assert!(boxed.as_tensor().unwrap().elements.as_f32_slice().is_none());
+            let bits = |v: &Value| -> Vec<u32> {
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => *b,
+                        o => panic!("expected f32, got {o:?}"),
+                    })
+                    .collect()
+            };
+            let d = super::eval_gather(&[dense, idx.clone()], &params).unwrap();
+            let l = super::eval_gather(&[boxed, idx.clone()], &params).unwrap();
+            assert_eq!(d.as_tensor().unwrap().dtype, DType::F32, "f32 gather dtype mode={mode}");
+            assert_eq!(d.as_tensor().unwrap().shape.dims, l.as_tensor().unwrap().shape.dims);
+            assert_eq!(bits(&d), bits(&l), "f32 gather mode={mode}");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_embedding_gather_dense_vs_generic() {
+        use std::time::Instant;
+        let (vocab, dim) = (50000usize, 256usize); // [50000,256] f32 table
+        let batch = 8192usize;
+        let table: Vec<f32> = (0..vocab * dim).map(|i| ((i % 1009) as f32) * 0.001 - 0.5).collect();
+        let dims = vec![vocab as u32, dim as u32];
+        let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: dims.clone() }, table.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new(DType::F32, Shape { dims: dims.clone() }, table.iter().copied().map(Literal::from_f32).collect()).unwrap(),
+        );
+        let idx: Vec<i64> = (0..batch as i64).map(|i| (i * 7919) % vocab as i64).collect();
+        let idx_v = Value::vector_i64(&idx).unwrap();
+        let p = params(&[("slice_sizes", "1,256"), ("index_mode", "clip")]);
+        let time = |operand: &Value| {
+            let _ = super::eval_gather(&[operand.clone(), idx_v.clone()], &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = super::eval_gather(&[operand.clone(), idx_v.clone()], &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 embedding gather [{vocab},{dim}] x {batch} rows: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
+        );
     }
 
     #[test]
