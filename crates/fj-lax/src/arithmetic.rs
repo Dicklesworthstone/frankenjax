@@ -8509,7 +8509,7 @@ mod tests {
             &p,
         )
         .unwrap();
-        let mut want = vec![0.0f64; 2 * 5];
+        let mut want = [0.0f64; 2 * 5];
         for i in 0..2 {
             for l in 0..5 {
                 let mut s = 0.0;
@@ -11826,7 +11826,7 @@ mod tests {
             Literal::F32Bits(b) => *b,
             o => panic!("expected f32, got {o:?}"),
         };
-        for idx in 0..n {
+        for (idx, &input) in data.iter().enumerate().take(n) {
             assert_eq!(
                 bits(&par_t.elements[idx]),
                 bits(&ser_t.elements[idx]),
@@ -11835,7 +11835,7 @@ mod tests {
             // and vs the direct reference: op in f64, round `as f32`.
             assert_eq!(
                 bits(&par_t.elements[idx]),
-                (f64::exp(data[idx] as f64) as f32).to_bits(),
+                (f64::exp(input as f64) as f32).to_bits(),
                 "f32 exp != reference at {idx}"
             );
         }
@@ -11942,7 +11942,8 @@ mod tests {
                 .collect()
         };
         // (primitive, op) pairs that all route through serial eval_unary_elementwise.
-        let cases: [(Primitive, fn(f64) -> f64); 4] = [
+        type UnaryCase = (Primitive, fn(f64) -> f64);
+        let cases: [UnaryCase; 4] = [
             (Primitive::Sqrt, f64::sqrt),
             (Primitive::Rsqrt, |x| 1.0 / x.sqrt()),
             (Primitive::Floor, f64::floor),

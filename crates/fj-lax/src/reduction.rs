@@ -313,6 +313,7 @@ pub(crate) fn eval_reduce(
 /// whose element count matches the shape), so no malformed-input case reaches
 /// here and the generic path's per-element overflow checks are unnecessary
 /// (`out_idx` stays within `0..out_count`).
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn dense_f64_axis_reduce<T: Copy + Sync>(
     tensor: &TensorValue,
