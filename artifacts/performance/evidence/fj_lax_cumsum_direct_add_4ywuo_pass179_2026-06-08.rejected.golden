@@ -1,0 +1,7 @@
+frankenjax-4ywuo pass179 fj-lax cumsum F64 direct-add specialization rejected
+target=eval/cumsum_4m_f64_1d
+baseline_worker=fmd baseline_ci_ms=24.039..24.142..24.234
+candidate_worker=fmd candidate_ci_ms=24.437..24.774..25.168
+verdict=rejected_no_source_kept
+golden_behavior=large_dense_f64_cumsum_single_line_matches_literal_path passed on fmd
+next=segmented scan/data-movement elimination remains the bit-preserving primitive; FP-reordered parallel prefix needs a contract bead before implementation

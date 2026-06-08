@@ -1,0 +1,74 @@
+{
+  "bead": "frankenjax-4ywuo",
+  "pass": 179,
+  "date": "2026-06-08",
+  "crate": "fj-lax",
+  "target": "eval/cumsum_4m_f64_1d",
+  "artifact": "fj_lax_cumsum_direct_add_4ywuo_pass179_2026-06-08",
+  "skill_pass": "repeatedly-apply-skill -> extreme-software-optimization",
+  "alien_graveyard": {
+    "primitive": "segmented scan/data-movement elimination",
+    "mapping": "The target is a single long prefix-sum dependency. A parallel prefix tree would regroup floating-point additions and is not bit-isomorphic, so the safe experiment was a direct sequential Cumsum add loop that preserves element order."
+  },
+  "alien_artifact": {
+    "family": "numerical linear/algebraic scan invariant",
+    "proof_obligation": "For Cumsum, each output i must be produced by the same ordered recurrence acc_0 = 0.0, acc_i = acc_{i-1} + x_i, with no reassociation, no changed NaN/signed-zero behavior, and no RNG or tie-breaking surface."
+  },
+  "baseline": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd rch exec -- cargo bench -p fj-lax --bench lax_baseline 'eval/cumsum_4m_f64_1d' -- --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot",
+    "ci_ms": [24.039, 24.142, 24.234]
+  },
+  "candidate": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd rch exec -- cargo bench -p fj-lax --bench lax_baseline 'eval/cumsum_4m_f64_1d' -- --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot",
+    "ci_ms": [24.437, 24.774, 25.168],
+    "source_status": "production hunk removed; no runtime source lever kept"
+  },
+  "result": {
+    "speedup_midpoint_x": 0.97449,
+    "speedup_conservative_x": 0.95514,
+    "score": {
+      "impact": 0.0,
+      "confidence": 5.0,
+      "effort": 1.0,
+      "impact_times_confidence_over_effort": 0.0,
+      "kept": false
+    }
+  },
+  "isomorphism": {
+    "ordering": "candidate preserved ordered recurrence, but it was removed because the same-worker benchmark regressed",
+    "tie_breaking": "not applicable",
+    "floating_point": "test-only diff proves the existing dense one-line Cumsum path remains bit-identical to the literal path, including signed zero and NaN propagation through the same left-to-right recurrence",
+    "rng": "not applicable",
+    "errors": "no runtime error-surface change kept"
+  },
+  "validation": [
+    {
+      "name": "focused_cumulative_tests",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd rch exec -- cargo test -p fj-lax cumulative -- --nocapture",
+      "result": "passed on fmd: 4 passed; 0 failed"
+    },
+    {
+      "name": "large_single_line_cumsum_test",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd rch exec -- cargo test -p fj-lax large_dense_f64_cumsum_single_line_matches_literal_path -- --nocapture",
+      "result": "passed on fmd: 1 passed; 0 failed"
+    },
+    {
+      "name": "crate_check",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "passed on fmd"
+    },
+    {
+      "name": "crate_clippy",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "passed on fmd after removing rejected production hunk"
+    },
+    {
+      "name": "fmt_and_diff",
+      "command": "cargo fmt --check --package fj-lax && git diff --check -- crates/fj-lax/src/reduction.rs",
+      "result": "passed locally"
+    }
+  ],
+  "next_target": "Close frankenjax-4ywuo as rejected and reprofile before selecting the next no-gaps perf bead; if returning to one-line Cumsum, file a contract bead for tolerance-based parallel prefix because bit-exact FP order blocks tree-scan regrouping."
+}
