@@ -3048,18 +3048,21 @@ pub(crate) fn eval_dynamic_update_slice(
         starts.push(start_val);
     }
 
-    // Copy operand elements, overwriting the update region
-    let mut elements = operand.elements.to_vec();
-
     let upd_total = update.elements.len();
     if upd_total == 0 {
-        return Ok(Value::Tensor(TensorValue::new(
+        // Nothing to write — output equals the operand exactly. Zero-copy clone
+        // (cheap Arc bump; dense/concat storage preserved).
+        return Ok(Value::Tensor(TensorValue::new_with_literal_buffer(
             operand.dtype,
             operand.shape.clone(),
-            elements,
+            operand.elements.clone(),
         )?));
     }
 
+    // A trailing-contiguous update (full extents + zero starts on every axis but
+    // the first) is a single contiguous run at `start_offset`; otherwise we walk
+    // the update with an odometer. Computed once and shared by the dense and
+    // Literal paths below.
     let has_contiguous_trailing_update = rank > 0
         && update
             .shape
@@ -3069,7 +3072,7 @@ pub(crate) fn eval_dynamic_update_slice(
             .zip(operand.shape.dims.iter().skip(1))
             .all(|(&update_dim, &operand_dim)| update_dim == operand_dim)
         && starts.iter().skip(1).all(|&start| start == 0);
-    if has_contiguous_trailing_update {
+    let contig_start = if has_contiguous_trailing_update {
         let row_len = checked_shape_element_count(
             primitive,
             "dynamic_update_slice row",
@@ -3082,6 +3085,7 @@ pub(crate) fn eval_dynamic_update_slice(
                     primitive,
                     detail: "dynamic_update_slice start offset overflows usize".to_owned(),
                 })?;
+        // Validate the run stays in bounds (overflow + range), as before.
         let end_offset =
             start_offset
                 .checked_add(upd_total)
@@ -3089,7 +3093,73 @@ pub(crate) fn eval_dynamic_update_slice(
                     primitive,
                     detail: "dynamic_update_slice end offset overflows usize".to_owned(),
                 })?;
-        elements[start_offset..end_offset].copy_from_slice(&update.elements);
+        if end_offset > operand.elements.len() {
+            return Err(EvalError::Unsupported {
+                primitive,
+                detail: "dynamic_update_slice update region exceeds operand".to_owned(),
+            });
+        }
+        Some(start_offset)
+    } else {
+        None
+    };
+
+    let op_strides =
+        checked_row_major_strides(primitive, "dynamic_update_slice", &operand.shape.dims)?;
+
+    // Dense fast paths: clone the operand's typed backing and overwrite the update
+    // region straight from the update's typed backing into dense output. This skips
+    // materializing the (large) operand into a `Vec<Literal>` AND preserves dense
+    // storage — critical for the autoregressive KV-cache loop, where the operand is
+    // re-`dynamic_update_slice`d every decode step and a boxed result would demote
+    // every downstream op. Identical writes/order -> bit-for-bit identical. Falls
+    // through to the Literal path for boxed/other dtypes.
+    macro_rules! dense_dus {
+        ($op:expr, $upd:expr, $ctor:expr) => {{
+            let out = dynamic_update_slice_dense(
+                $op,
+                $upd,
+                rank,
+                &update.shape.dims,
+                &starts,
+                &op_strides,
+                contig_start,
+            );
+            return Ok(Value::Tensor($ctor(operand.shape.clone(), out)?));
+        }};
+    }
+    if let (Some(o), Some(u)) = (
+        operand.elements.as_f64_slice(),
+        update.elements.as_f64_slice(),
+    ) {
+        dense_dus!(o, u, TensorValue::new_f64_values);
+    }
+    if let (Some(o), Some(u)) = (
+        operand.elements.as_f32_slice(),
+        update.elements.as_f32_slice(),
+    ) {
+        dense_dus!(o, u, TensorValue::new_f32_values);
+    }
+    if let (Some(o), Some(u)) = (
+        operand.elements.as_half_float_slice(),
+        update.elements.as_half_float_slice(),
+    ) {
+        let dt = operand.dtype;
+        dense_dus!(o, u, |sh, out| TensorValue::new_half_float_values(
+            dt, sh, out
+        ));
+    }
+    if let (Some(o), Some(u)) = (
+        operand.elements.as_i64_slice(),
+        update.elements.as_i64_slice(),
+    ) {
+        dense_dus!(o, u, TensorValue::new_i64_values);
+    }
+
+    // Literal fallback (boxed/other dtypes): the same copy over Literals.
+    let mut elements = operand.elements.to_vec();
+    if let Some(start_offset) = contig_start {
+        elements[start_offset..start_offset + upd_total].copy_from_slice(&update.elements);
         return Ok(Value::Tensor(TensorValue::new(
             operand.dtype,
             operand.shape.clone(),
@@ -3097,42 +3167,15 @@ pub(crate) fn eval_dynamic_update_slice(
         )?));
     }
 
-    let op_strides =
-        checked_row_major_strides(primitive, "dynamic_update_slice", &operand.shape.dims)?;
-
     let mut upd_coords = vec![0_usize; rank];
-
     for upd_flat in 0..upd_total {
         let mut op_flat = 0_usize;
         for ax in 0..rank {
-            let coord =
-                upd_coords[ax]
-                    .checked_add(starts[ax])
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: format!(
-                            "dynamic_update_slice coordinate overflows usize on axis {ax}"
-                        ),
-                    })?;
-            let offset =
-                coord
-                    .checked_mul(op_strides[ax])
-                    .ok_or_else(|| EvalError::Unsupported {
-                        primitive,
-                        detail: format!("dynamic_update_slice offset overflows usize on axis {ax}"),
-                    })?;
-            op_flat = op_flat
-                .checked_add(offset)
-                .ok_or_else(|| EvalError::Unsupported {
-                    primitive,
-                    detail: "dynamic_update_slice flat offset overflows usize".to_owned(),
-                })?;
+            op_flat += (upd_coords[ax] + starts[ax]) * op_strides[ax];
         }
         if op_flat < elements.len() {
             elements[op_flat] = update.elements[upd_flat];
         }
-
-        // Increment update coordinates
         for ax in (0..rank).rev() {
             upd_coords[ax] += 1;
             if upd_coords[ax] < update.shape.dims[ax] as usize {
@@ -3147,6 +3190,45 @@ pub(crate) fn eval_dynamic_update_slice(
         operand.shape.clone(),
         elements,
     )?))
+}
+
+/// Dense, type-generic core of [`eval_dynamic_update_slice`]: clone the operand's
+/// contiguous typed backing and overwrite the update region from the update's
+/// typed backing, emitting dense output. `contig_start` Some means the update is a
+/// single contiguous run at that offset; None means walk it with the odometer.
+/// Identical writes and order to the `Literal` path -> bit-for-bit identical.
+fn dynamic_update_slice_dense<T: Copy>(
+    op_src: &[T],
+    upd: &[T],
+    rank: usize,
+    update_dims: &[u32],
+    starts: &[usize],
+    op_strides: &[usize],
+    contig_start: Option<usize>,
+) -> Vec<T> {
+    let mut out = op_src.to_vec();
+    if let Some(start) = contig_start {
+        out[start..start + upd.len()].copy_from_slice(upd);
+        return out;
+    }
+    let mut upd_coords = vec![0_usize; rank];
+    for &uv in upd.iter() {
+        let mut op_flat = 0_usize;
+        for ax in 0..rank {
+            op_flat += (upd_coords[ax] + starts[ax]) * op_strides[ax];
+        }
+        if op_flat < out.len() {
+            out[op_flat] = uv;
+        }
+        for ax in (0..rank).rev() {
+            upd_coords[ax] += 1;
+            if upd_coords[ax] < update_dims[ax] as usize {
+                break;
+            }
+            upd_coords[ax] = 0;
+        }
+    }
+    out
 }
 
 /// Copy: explicit identity operation that returns an independent cloned value.
@@ -8061,6 +8143,330 @@ mod tests {
             old * 1e3,
             new * 1e3,
             old / new
+        );
+    }
+
+    #[test]
+    fn dense_dynamic_update_slice_matches_literal_and_stays_dense() {
+        // Dense DUS over f64/f32/bf16/f16/i64 must be BIT-FOR-BIT identical to the
+        // boxed per-`Literal` path AND keep dense output, for both the contiguous
+        // -trailing fast path and the general odometer path.
+        let (rows, cols) = (6usize, 4usize);
+        let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+        // (update dims, start indices) — contiguous-trailing then general.
+        let cases: [(&[u32], &[i64]); 2] = [(&[2, 4], &[3, 0]), (&[2, 3], &[1, 1])];
+        for (udims, starts) in cases {
+            let usz = (udims[0] * udims[1]) as usize;
+            let start_lits: Vec<Value> = starts
+                .iter()
+                .map(|&s| Value::Scalar(Literal::I64(s)))
+                .collect();
+            let mk_inputs = |op: Value, up: Value| -> Vec<Value> {
+                let mut v = vec![op, up];
+                v.extend(start_lits.iter().cloned());
+                v
+            };
+            let odims = vec![rows as u32, cols as u32];
+            let udimsv = udims.to_vec();
+
+            // f64
+            let opd: Vec<f64> = (0..rows * cols).map(|i| i as f64 * 0.5 - 3.0).collect();
+            let upd: Vec<f64> = (0..usz).map(|i| 100.0 + i as f64).collect();
+            let dense_op = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: odims.clone(),
+                    },
+                    opd.clone(),
+                )
+                .unwrap(),
+            );
+            let dense_up = Value::Tensor(
+                TensorValue::new_f64_values(
+                    Shape {
+                        dims: udimsv.clone(),
+                    },
+                    upd.clone(),
+                )
+                .unwrap(),
+            );
+            let box_op = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: odims.clone(),
+                    },
+                    opd.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            );
+            let box_up = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape {
+                        dims: udimsv.clone(),
+                    },
+                    upd.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            );
+            let d =
+                eval_dynamic_update_slice(&mk_inputs(dense_op, dense_up), &params(&[])).unwrap();
+            let l = eval_dynamic_update_slice(&mk_inputs(box_op, box_up), &params(&[])).unwrap();
+            assert_eq!(extract_shape(&d), extract_shape(&l), "f64 DUS shape");
+            assert_eq!(lits(&d), lits(&l), "f64 DUS {starts:?}");
+            assert!(
+                d.as_tensor().unwrap().elements.as_f64_slice().is_some(),
+                "f64 DUS dense"
+            );
+
+            // f32
+            let opd: Vec<f32> = (0..rows * cols).map(|i| i as f32 * 0.25 - 1.0).collect();
+            let upd: Vec<f32> = (0..usz).map(|i| 50.0 + i as f32).collect();
+            let dense_op = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: odims.clone(),
+                    },
+                    opd.clone(),
+                )
+                .unwrap(),
+            );
+            let dense_up = Value::Tensor(
+                TensorValue::new_f32_values(
+                    Shape {
+                        dims: udimsv.clone(),
+                    },
+                    upd.clone(),
+                )
+                .unwrap(),
+            );
+            let box_op = Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape {
+                        dims: odims.clone(),
+                    },
+                    opd.iter().copied().map(Literal::from_f32).collect(),
+                )
+                .unwrap(),
+            );
+            let box_up = Value::Tensor(
+                TensorValue::new(
+                    DType::F32,
+                    Shape {
+                        dims: udimsv.clone(),
+                    },
+                    upd.iter().copied().map(Literal::from_f32).collect(),
+                )
+                .unwrap(),
+            );
+            let d =
+                eval_dynamic_update_slice(&mk_inputs(dense_op, dense_up), &params(&[])).unwrap();
+            let l = eval_dynamic_update_slice(&mk_inputs(box_op, box_up), &params(&[])).unwrap();
+            assert_eq!(lits(&d), lits(&l), "f32 DUS {starts:?}");
+            assert!(
+                d.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+                "f32 DUS dense"
+            );
+
+            for dtype in [DType::BF16, DType::F16] {
+                let opr: Vec<u16> = (0..rows * cols)
+                    .map(|i| (i as u16).wrapping_mul(67).wrapping_add(5))
+                    .collect();
+                let upr: Vec<u16> = (0..usz)
+                    .map(|i| (i as u16).wrapping_mul(131).wrapping_add(9))
+                    .collect();
+                let mk = move |b: u16| {
+                    if dtype == DType::BF16 {
+                        Literal::BF16Bits(b)
+                    } else {
+                        Literal::F16Bits(b)
+                    }
+                };
+                let dense_op = Value::Tensor(
+                    TensorValue::new_half_float_values(
+                        dtype,
+                        Shape {
+                            dims: odims.clone(),
+                        },
+                        opr.clone(),
+                    )
+                    .unwrap(),
+                );
+                let dense_up = Value::Tensor(
+                    TensorValue::new_half_float_values(
+                        dtype,
+                        Shape {
+                            dims: udimsv.clone(),
+                        },
+                        upr.clone(),
+                    )
+                    .unwrap(),
+                );
+                let box_op = Value::Tensor(
+                    TensorValue::new(
+                        dtype,
+                        Shape {
+                            dims: odims.clone(),
+                        },
+                        opr.iter().copied().map(mk).collect(),
+                    )
+                    .unwrap(),
+                );
+                let box_up = Value::Tensor(
+                    TensorValue::new(
+                        dtype,
+                        Shape {
+                            dims: udimsv.clone(),
+                        },
+                        upr.iter().copied().map(mk).collect(),
+                    )
+                    .unwrap(),
+                );
+                let d = eval_dynamic_update_slice(&mk_inputs(dense_op, dense_up), &params(&[]))
+                    .unwrap();
+                let l =
+                    eval_dynamic_update_slice(&mk_inputs(box_op, box_up), &params(&[])).unwrap();
+                assert_eq!(lits(&d), lits(&l), "{dtype:?} DUS {starts:?}");
+                assert!(
+                    d.as_tensor()
+                        .unwrap()
+                        .elements
+                        .as_half_float_slice()
+                        .is_some(),
+                    "{dtype:?} DUS dense"
+                );
+            }
+
+            // i64
+            let opi: Vec<i64> = (0..(rows * cols) as i64).map(|i| i - 6).collect();
+            let upi: Vec<i64> = (0..usz as i64).map(|i| 1000 + i).collect();
+            let dense_op = Value::Tensor(
+                TensorValue::new_i64_values(
+                    Shape {
+                        dims: odims.clone(),
+                    },
+                    opi.clone(),
+                )
+                .unwrap(),
+            );
+            let dense_up = Value::Tensor(
+                TensorValue::new_i64_values(
+                    Shape {
+                        dims: udimsv.clone(),
+                    },
+                    upi.clone(),
+                )
+                .unwrap(),
+            );
+            let box_op = Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape {
+                        dims: odims.clone(),
+                    },
+                    opi.iter().copied().map(Literal::I64).collect(),
+                )
+                .unwrap(),
+            );
+            let box_up = Value::Tensor(
+                TensorValue::new(
+                    DType::I64,
+                    Shape {
+                        dims: udimsv.clone(),
+                    },
+                    upi.iter().copied().map(Literal::I64).collect(),
+                )
+                .unwrap(),
+            );
+            let d =
+                eval_dynamic_update_slice(&mk_inputs(dense_op, dense_up), &params(&[])).unwrap();
+            let l = eval_dynamic_update_slice(&mk_inputs(box_op, box_up), &params(&[])).unwrap();
+            assert_eq!(lits(&d), lits(&l), "i64 DUS {starts:?}");
+            assert!(
+                d.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+                "i64 DUS dense"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_dynamic_update_slice_f32_dense_vs_boxed() {
+        use std::time::Instant;
+        // KV-cache style: write one row into a large [seq, dim] cache.
+        let (seq, dim) = (4096usize, 1024usize);
+        let opd: Vec<f32> = (0..seq * dim)
+            .map(|i| ((i % 251) as f32) * 0.013 - 1.6)
+            .collect();
+        let upd: Vec<f32> = (0..dim).map(|i| i as f32 * 0.01).collect();
+        let odims = vec![seq as u32, dim as u32];
+        let udims = vec![1u32, dim as u32];
+        let dense_op = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: odims.clone(),
+                },
+                opd.clone(),
+            )
+            .unwrap(),
+        );
+        let dense_up = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: udims.clone(),
+                },
+                upd.clone(),
+            )
+            .unwrap(),
+        );
+        let box_op = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: odims.clone(),
+                },
+                opd.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let box_up = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: udims.clone(),
+                },
+                upd.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let start = vec![
+            Value::Scalar(Literal::I64(2000)),
+            Value::Scalar(Literal::I64(0)),
+        ];
+        let mk = |op: &Value, up: &Value| {
+            let mut v = vec![op.clone(), up.clone()];
+            v.extend(start.iter().cloned());
+            v
+        };
+        let time = |op: &Value, up: &Value| {
+            let _ = eval_dynamic_update_slice(&mk(op, up), &params(&[])).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_dynamic_update_slice(&mk(op, up), &params(&[])).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&box_op, &box_up);
+        let dense_t = time(&dense_op, &dense_up);
+        println!(
+            "BENCH dynamic_update_slice f32 [{seq},{dim}] write 1 row: boxed(materialize+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
         );
     }
 
