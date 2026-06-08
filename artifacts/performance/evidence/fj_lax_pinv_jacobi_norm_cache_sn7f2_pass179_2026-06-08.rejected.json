@@ -1,0 +1,116 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "artifact": "fj_lax_pinv_jacobi_norm_cache_sn7f2_pass179_2026-06-08",
+  "status": "rejected",
+  "date": "2026-06-08",
+  "agent": "IcyGlacier",
+  "bead": "frankenjax-sn7f2",
+  "crate": "fj-lax",
+  "target": "linalg/pinv_256x128_f64",
+  "skill_pass": "repeatedly-apply-skill pass179 -> extreme-software-optimization",
+  "profile_backing": {
+    "worker": "fmd",
+    "source": "fresh RCH criterion linalg profile after Cholesky closeouts",
+    "top_rows": [
+      {
+        "name": "linalg/matmul_2d_2048x2048x2048_f64",
+        "time_ms": [193.52, 195.19, 196.92],
+        "note": "Top broad-profile row, but direct GEMM remains blocked by the exact-order floating-point contract."
+      },
+      {
+        "name": "linalg/pinv_256x128_f64",
+        "time_ms": [38.498, 38.542, 38.58],
+        "route": "top shippable non-GEMM row for an exact-order-preserving SVD/Jacobi lever"
+      },
+      {
+        "name": "linalg/lu_1024x1024_f64",
+        "time_ms": [35.8, 36.266, 36.689]
+      },
+      {
+        "name": "linalg/qr_1024x1024_f64",
+        "time_ms": [28.696, 28.896, 28.995]
+      }
+    ]
+  },
+  "focused_baseline": {
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=180 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-sn7f2-baseline cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_256x128_f64' --sample-size 20 --warm-up-time 2 --measurement-time 8 --noplot",
+    "time_ms": {
+      "pinv_256x128_f64": [38.391, 38.521, 38.634]
+    }
+  },
+  "candidate": {
+    "lever": "cache per-column squared norms across one-sided Jacobi SVD sweeps",
+    "description": "Maintained col_norm2 in one_sided_jacobi_svd_real so each p/q pair scanned W only for gamma, then recomputed the two changed column norms during the same W rotation loop.",
+    "source_diff_retained": false,
+    "files_touched_temporarily": [
+      "crates/fj-lax/src/linalg.rs"
+    ],
+    "rebench": {
+      "worker": "fmd",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=180 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-fjlax-sn7f2-after cargo bench -p fj-lax --bench lax_baseline -- 'linalg/pinv_256x128_f64' --sample-size 20 --warm-up-time 2 --measurement-time 8 --noplot",
+      "time_ms": {
+        "pinv_256x128_f64": [55.312, 59.783, 67.073]
+      },
+      "median_speedup": 0.644347,
+      "conservative_speedup_low_over_high": 0.572376
+    },
+    "proof_result": {
+      "status": "passed_before_performance_rejection",
+      "commands": [
+        "cargo test -p fj-lax --lib one_sided_jacobi -- --nocapture",
+        "cargo test -p fj-lax --lib pinv -- --nocapture"
+      ],
+      "details": "2 one-sided Jacobi tests and 8 pinv tests passed on fmd before the after-benchmark rejected the lever."
+    }
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 2.0,
+    "impact_x_confidence_over_effort": 0.0,
+    "keep_threshold": 2.0,
+    "decision": "reject_and_restore_source"
+  },
+  "isomorphism_proof": {
+    "ordering": "Candidate preserved Jacobi p/q traversal, gamma accumulation order, W rotation order, V rotation order, singular sort, and pseudo-inverse write order.",
+    "tie_breaking": "Singular-value sort remained total_cmp on the same values; no new tie-breaking surface was introduced.",
+    "floating_point": "Candidate recomputed updated norms in the same row order over newly written W columns and kept gamma accumulation order unchanged; final production source was restored because speed regressed.",
+    "rng": "N/A: pinv and one-sided Jacobi SVD consume no random state.",
+    "errors": "No public dtype, shape, or error surface changed in candidate state; final production source was restored.",
+    "golden_sha256": "0e2d60a3754085a34474be7e3acfdcbe4f9d5f0942a70d0a3720525f8031d4e4"
+  },
+  "validation": [
+    {
+      "command": "git diff -- crates/fj-lax/src/linalg.rs",
+      "result": "empty after source restore"
+    },
+    {
+      "command": "git diff --check -- crates/fj-lax/src/linalg.rs artifacts/performance/evidence/fj_lax_pinv_jacobi_norm_cache_sn7f2_pass179_2026-06-08.rejected.golden",
+      "result": "pass"
+    },
+    {
+      "command": "sha256sum artifacts/performance/evidence/fj_lax_pinv_jacobi_norm_cache_sn7f2_pass179_2026-06-08.rejected.golden",
+      "result": "0e2d60a3754085a34474be7e3acfdcbe4f9d5f0942a70d0a3720525f8031d4e4"
+    }
+  ],
+  "alien_source": {
+    "primary_sources": [
+      "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md",
+      "/data/projects/alien_cs_graveyard/high_level_summary_of_frankensuite_planned_and_implemented_features_and_concepts.md"
+    ],
+    "primitive_family": "stateful cached dense-kernel invariant",
+    "applied_slice": "Tried to reuse Jacobi column norms instead of recomputing alpha and beta for every pair."
+  },
+  "next_primitive": {
+    "target": "reprofile current main and attack a materially different linalg primitive",
+    "reason": "The cached-norm invariant adds enough state traffic to regress pinv_256x128_f64; do not repeat Jacobi norm-caching without a new profile showing alpha/beta scans dominate.",
+    "target_ratio": ">=2.0 score gate with same-worker RCH A/B and unchanged golden sha256",
+    "proof_obligations": [
+      "observable output order unchanged",
+      "floating-point operation order unchanged unless a separate behavior-contract bead admits tolerance",
+      "no RNG, tie-breaking, dtype/shape/error change",
+      "golden sha256 passes before close"
+    ]
+  }
+}

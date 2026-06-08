@@ -1,0 +1,11 @@
+frankenjax-sn7f2 pass179 fj-lax pinv256 Jacobi column-norm cache
+target=linalg/pinv_256x128_f64
+profile_fmd_ms=[38.498,38.542,38.580]
+baseline_fmd_ms=[38.391,38.521,38.634]
+candidate_fmd_ms=[55.312,59.783,67.073]
+median_speedup=0.644347
+conservative_speedup=0.572376
+score=0.0
+behavior=focused one_sided_jacobi and pinv proofs passed before rejection; source restored because performance regressed
+isomorphism=pair order, gamma accumulation order, W and V rotation equations, singular sort, cutoff behavior, dtype/shape/error surface, and RNG absence preserved in candidate; final production source keeps original alpha/beta/gamma scan and final norm scan
+decision=rejected_and_restored
