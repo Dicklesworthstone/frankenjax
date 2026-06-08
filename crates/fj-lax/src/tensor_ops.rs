@@ -536,6 +536,63 @@ pub(crate) fn eval_reshape(
 
 /// Transpose: permute the axes of a tensor.
 /// Params: `permutation` (comma-separated axis indices). If absent, reverses axes.
+/// Rank-2 transpose ([1,0]) over a typed slice via a cache-blocked tile walk:
+/// strided source reads + contiguous destination writes stay tile-local. Generic
+/// over the element type (`T = f64/f32/u16/i64/Literal`) so the dense and Literal
+/// paths share identical index math — pure data movement, bit-for-bit identical.
+fn transpose_2d_blocked<T: Copy>(src: &[T], rows: usize, cols: usize, total: usize) -> Vec<T> {
+    let mut out = vec![src[0]; total];
+    const BLOCK: usize = 64;
+    let mut bi = 0;
+    while bi < rows {
+        let i_end = (bi + BLOCK).min(rows);
+        let mut bj = 0;
+        while bj < cols {
+            let j_end = (bj + BLOCK).min(cols);
+            for i in bi..i_end {
+                let src_row = i * cols;
+                for j in bj..j_end {
+                    out[j * rows + i] = src[src_row + j];
+                }
+            }
+            bj += BLOCK;
+        }
+        bi += BLOCK;
+    }
+    out
+}
+
+/// General N-D transpose over a typed slice via a row-major odometer that
+/// maintains the source flat index incrementally (`step[axis] =
+/// old_strides[permutation[axis]]`). Generic over the element type; pure data
+/// movement, bit-for-bit identical to the per-`Literal` walk.
+fn transpose_general<T: Copy>(
+    src: &[T],
+    step: &[usize],
+    new_extent: &[usize],
+    rank: usize,
+    total: usize,
+) -> Vec<T> {
+    let mut out = Vec::with_capacity(total);
+    let mut coord = vec![0_usize; rank];
+    let mut old_flat = 0_usize;
+    for _ in 0..total {
+        out.push(src[old_flat]);
+        let mut axis = rank;
+        while axis > 0 {
+            axis -= 1;
+            coord[axis] += 1;
+            old_flat += step[axis];
+            if coord[axis] < new_extent[axis] {
+                break;
+            }
+            coord[axis] = 0;
+            old_flat -= step[axis] * new_extent[axis];
+        }
+    }
+    out
+}
+
 pub(crate) fn eval_transpose(
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -605,9 +662,36 @@ pub(crate) fn eval_transpose(
             // the contiguous destination writes local, instead of striding the
             // whole matrix per element. Output is identical (same permutation),
             // so it is bit-for-bit equivalent.
+            // Dense dispatch shared by both transpose paths: copy the permuted
+            // elements straight from the typed backing into dense output, avoiding
+            // the full-buffer `Vec<Literal>` materialization that `tensor.elements[i]`
+            // triggers AND the boxed output. Bit-identical (pure data movement). Falls
+            // through (does nothing) for non-dense storage -> the Literal walk below.
+            macro_rules! dense_transpose {
+                ($kernel:ident ( $($arg:tt)* )) => {{
+                    if let Some(s) = tensor.elements.as_f64_slice() {
+                        return Ok(Value::Tensor(TensorValue::new_f64_values(
+                            Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
+                    }
+                    if let Some(s) = tensor.elements.as_f32_slice() {
+                        return Ok(Value::Tensor(TensorValue::new_f32_values(
+                            Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
+                    }
+                    if let Some(s) = tensor.elements.as_half_float_slice() {
+                        return Ok(Value::Tensor(TensorValue::new_half_float_values(
+                            tensor.dtype, Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
+                    }
+                    if let Some(s) = tensor.elements.as_i64_slice() {
+                        return Ok(Value::Tensor(TensorValue::new_i64_values(
+                            Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
+                    }
+                }};
+            }
+
             if rank == 2 && permutation[0] == 1 && permutation[1] == 0 {
                 let rows = old_dims[0] as usize; // source rows (M)
                 let cols = old_dims[1] as usize; // source cols (N); output is N x M
+                dense_transpose!(transpose_2d_blocked(rows, cols, total));
                 let mut new_elements = vec![tensor.elements[0]; total];
                 const BLOCK: usize = 64;
                 let mut bi = 0;
@@ -634,12 +718,14 @@ pub(crate) fn eval_transpose(
                 )?));
             }
 
-            let mut new_elements = Vec::with_capacity(total);
-
             // Per-axis source stride for the new layout: stepping new-axis k by
             // one moves the source index by `old_strides[permutation[k]]`.
             let step: Vec<usize> = permutation.iter().map(|&p| old_strides[p]).collect();
             let new_extent: Vec<usize> = new_dims.iter().map(|&d| d as usize).collect();
+
+            dense_transpose!(transpose_general(&step, &new_extent, rank, total));
+
+            let mut new_elements = Vec::with_capacity(total);
 
             // Odometer walk over the new layout in row-major order, maintaining
             // the source flat index incrementally instead of recomputing a full
@@ -7569,6 +7655,90 @@ mod tests {
                 assert_eq!(got[j * rows + i], data[i * cols + j], "({i},{j})");
             }
         }
+    }
+
+    /// Dense transpose (f64/f32/bf16/f16/i64) must be BIT-FOR-BIT identical to the
+    /// boxed per-`Literal` path AND keep dense output, for both the rank-2 tiled
+    /// path (perm [1,0], non-block-aligned) and the general rank-3 odometer path.
+    #[test]
+    fn dense_transpose_matches_literal_path_and_stays_dense() {
+        for (dims, perm) in [
+            (vec![70u32, 130u32], "1,0"),     // rank-2 tiled, partial tiles
+            (vec![5u32, 7u32, 4u32], "2,0,1"), // general rank-3
+        ] {
+            let n: usize = dims.iter().map(|&d| d as usize).product();
+            let lits = |v: &Value| v.as_tensor().unwrap().elements.to_vec();
+            let p = params(&[("permutation", perm)]);
+
+            macro_rules! check {
+                ($mk_dense:expr, $mk_boxed:expr, $is_dense:expr) => {{
+                    let dense = $mk_dense;
+                    let boxed = $mk_boxed;
+                    let d = eval_transpose(std::slice::from_ref(&dense), &p).unwrap();
+                    let l = eval_transpose(std::slice::from_ref(&boxed), &p).unwrap();
+                    assert_eq!(extract_shape(&d), extract_shape(&l), "{dims:?} {perm} shape");
+                    assert_eq!(lits(&d), lits(&l), "{dims:?} {perm} values");
+                    assert!($is_dense(d.as_tensor().unwrap()), "{dims:?} {perm} output dense");
+                }};
+            }
+            let sh = || Shape { dims: dims.clone() };
+
+            let f64d: Vec<f64> = (0..n).map(|i| i as f64 * 0.5 - 3.0).collect();
+            check!(
+                Value::Tensor(TensorValue::new_f64_values(sh(), f64d.clone()).unwrap()),
+                Value::Tensor(TensorValue::new(DType::F64, sh(), f64d.iter().copied().map(Literal::from_f64).collect()).unwrap()),
+                |t: &TensorValue| t.elements.as_f64_slice().is_some()
+            );
+            let f32d: Vec<f32> = (0..n).map(|i| i as f32 * 0.25 - 1.0).collect();
+            check!(
+                Value::Tensor(TensorValue::new_f32_values(sh(), f32d.clone()).unwrap()),
+                Value::Tensor(TensorValue::new(DType::F32, sh(), f32d.iter().copied().map(Literal::from_f32).collect()).unwrap()),
+                |t: &TensorValue| t.elements.as_f32_slice().is_some()
+            );
+            for dtype in [DType::BF16, DType::F16] {
+                let raw: Vec<u16> = (0..n).map(|i| (i as u16).wrapping_mul(83).wrapping_add(9)).collect();
+                let mk_lit = move |b: u16| if dtype == DType::BF16 { Literal::BF16Bits(b) } else { Literal::F16Bits(b) };
+                check!(
+                    Value::Tensor(TensorValue::new_half_float_values(dtype, sh(), raw.clone()).unwrap()),
+                    Value::Tensor(TensorValue::new(dtype, sh(), raw.iter().copied().map(mk_lit).collect()).unwrap()),
+                    |t: &TensorValue| t.elements.as_half_float_slice().is_some()
+                );
+            }
+            let i64d: Vec<i64> = (0..n as i64).map(|i| i - 7).collect();
+            check!(
+                Value::Tensor(TensorValue::new_i64_values(sh(), i64d.clone()).unwrap()),
+                Value::Tensor(TensorValue::new(DType::I64, sh(), i64d.iter().copied().map(Literal::I64).collect()).unwrap()),
+                |t: &TensorValue| t.elements.as_i64_slice().is_some()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_transpose_dense_vs_boxed() {
+        use std::time::Instant;
+        let (rows, cols) = (3000usize, 3000usize);
+        let data: Vec<f32> = (0..rows * cols).map(|i| ((i % 251) as f32) * 0.013 - 1.6).collect();
+        let sh = Shape { dims: vec![rows as u32, cols as u32] };
+        let dense = Value::Tensor(TensorValue::new_f32_values(sh.clone(), data.clone()).unwrap());
+        let boxed = Value::Tensor(TensorValue::new(DType::F32, sh.clone(), data.iter().copied().map(Literal::from_f32).collect()).unwrap());
+        let p = params(&[("permutation", "1,0")]);
+        let time = |x: &Value| {
+            let _ = eval_transpose(std::slice::from_ref(x), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..10 {
+                let t = Instant::now();
+                let _ = eval_transpose(std::slice::from_ref(x), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 transpose [{rows},{cols}]: boxed(materialize+box)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3, dense_t * 1e3, generic / dense_t
+        );
     }
 
     // ── Slice ──
