@@ -2163,6 +2163,7 @@ fn broadcast_binary_f64(
 /// f32->f64 is lossless and the single f32 round matches (the generic path also
 /// rounds f64->f32). Returns `Ok(None)` unless both operands are F32 dense
 /// storage, so the caller falls through to the generic path.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn broadcast_binary_f32(
     lhs: &TensorValue,
@@ -3300,6 +3301,25 @@ pub(crate) fn eval_unary_int_or_float(
             // identical while skipping the per-element variant match.
             if let Some(result) = eval_unary_f64_tensor_fast_path(tensor, &float_op) {
                 return result;
+            }
+            // Dense F32 fast path (neg/abs/sign/square over JAX-default f32): the
+            // generic F32 arm below computes `from_f32(float_op(f64::from(f32)) as
+            // f32)`, exactly what eval_unary_f32_tensor_fast_path does — bit-for-bit
+            // identical while skipping the per-`Literal` materialization + boxed out.
+            if let Some(result) = eval_unary_f32_tensor_fast_path(tensor, &float_op) {
+                return result;
+            }
+            // Dense I64 fast path: the generic I64 arm computes `Literal::I64(int_op
+            // (v))`; reading the packed `as_i64_slice` backing and mapping `int_op`
+            // into dense i64 is identical (no NaN/round concerns for integers).
+            if tensor.dtype == DType::I64
+                && let Some(src) = tensor.elements.as_i64_slice()
+            {
+                let out: Vec<i64> = src.iter().map(|&v| int_op(v)).collect();
+                return Ok(Value::Tensor(TensorValue::new_i64_values(
+                    tensor.shape.clone(),
+                    out,
+                )?));
             }
             let mut elements = Vec::with_capacity(tensor.elements.len());
             for literal in tensor.elements.iter().copied() {
@@ -6115,6 +6135,7 @@ fn dot_real_elements_as_f64(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
 /// same products summed over the contracting index in ascending order in f64,
 /// then `real_literal_from_f64(out_dtype, _)` — the permute only reorders memory.
 /// Integer / complex dot_general fall through to the generic loop.
+#[allow(clippy::too_many_arguments)]
 fn general_real_tensordot(
     lhs: &TensorValue,
     rhs: &TensorValue,
@@ -11984,6 +12005,173 @@ mod tests {
         let dense_t = time(&dense);
         println!(
             "BENCH f32 rsqrt serial n={n}: boxed(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
+    }
+
+    #[test]
+    fn dense_neg_abs_sign_f32_i64_bit_identical_to_literal_path() {
+        // eval_unary_int_or_float dense F32/I64 fast paths (neg/abs/sign) must match
+        // the boxed per-Literal path bit-for-bit (incl -0/+-inf/NaN for f32 and
+        // i64::MIN wrapping for int) and keep dense output.
+        let f32d: Vec<f32> = vec![
+            0.0,
+            -0.0,
+            1.5,
+            -3.25,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            1e30,
+            -7.0,
+            0.5,
+        ];
+        let dimsf = vec![f32d.len() as u32];
+        let f32_dense = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: dimsf.clone(),
+                },
+                f32d.clone(),
+            )
+            .unwrap(),
+        );
+        let f32_boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: dimsf.clone(),
+                },
+                f32d.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let canon_f32 = |v: &Value| -> Vec<u32> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => {
+                        if f32::from_bits(*b).is_nan() {
+                            0x7fc0_0000
+                        } else {
+                            *b
+                        }
+                    }
+                    o => panic!("expected f32, got {o:?}"),
+                })
+                .collect()
+        };
+        for prim in [Primitive::Neg, Primitive::Abs, Primitive::Sign] {
+            let d = crate::eval_primitive(prim, std::slice::from_ref(&f32_dense), &BTreeMap::new())
+                .unwrap();
+            let l = crate::eval_primitive(prim, std::slice::from_ref(&f32_boxed), &BTreeMap::new())
+                .unwrap();
+            assert!(
+                d.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+                "f32 {prim:?} dense out"
+            );
+            assert_eq!(
+                canon_f32(&d),
+                canon_f32(&l),
+                "f32 {prim:?} dense != generic"
+            );
+        }
+
+        let i64d: Vec<i64> = vec![0, 1, -1, i64::MIN, i64::MAX, -42, 7, i64::MIN + 1];
+        let dimsi = vec![i64d.len() as u32];
+        let i64_dense = Value::Tensor(
+            TensorValue::new_i64_values(
+                Shape {
+                    dims: dimsi.clone(),
+                },
+                i64d.clone(),
+            )
+            .unwrap(),
+        );
+        let i64_boxed = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape {
+                    dims: dimsi.clone(),
+                },
+                i64d.iter().copied().map(Literal::I64).collect(),
+            )
+            .unwrap(),
+        );
+        let i64_bits = |v: &Value| -> Vec<i64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(x) => *x,
+                    o => panic!("expected i64, got {o:?}"),
+                })
+                .collect()
+        };
+        for prim in [Primitive::Neg, Primitive::Abs, Primitive::Sign] {
+            let d = crate::eval_primitive(prim, std::slice::from_ref(&i64_dense), &BTreeMap::new())
+                .unwrap();
+            let l = crate::eval_primitive(prim, std::slice::from_ref(&i64_boxed), &BTreeMap::new())
+                .unwrap();
+            assert!(
+                d.as_tensor().unwrap().elements.as_i64_slice().is_some(),
+                "i64 {prim:?} dense out"
+            );
+            assert_eq!(i64_bits(&d), i64_bits(&l), "i64 {prim:?} dense != generic");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_abs_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1usize << 22; // 4M — pure memory-bound unary
+        let data: Vec<f32> = (0..n).map(|i| (i as f32) * 0.01 - 2000.0).collect();
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.clone(),
+            )
+            .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                data.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let time = |x: &Value| {
+            let _ =
+                crate::eval_primitive(Primitive::Abs, std::slice::from_ref(x), &BTreeMap::new())
+                    .unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = crate::eval_primitive(
+                    Primitive::Abs,
+                    std::slice::from_ref(x),
+                    &BTreeMap::new(),
+                )
+                .unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH f32 abs n={n}: boxed(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
             generic * 1e3,
             dense_t * 1e3,
             generic / dense_t
