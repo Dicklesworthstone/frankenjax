@@ -1,0 +1,12 @@
+frankenjax-p1vbf.45 pass175 rejected
+target: fj-lax linalg/matmul_2d_2048x2048x2048_f64
+profile route: fmd GEMM2048 [168.85, 171.27, 174.19] ms ranked first
+candidate lever: fixed 64-row morsels inside existing threaded blocked GEMM row blocks
+proof: RCH cargo test -p fj-lax --lib matmul_2d -- --nocapture passed 9 tests, 1 ignored, on vmi1167313
+same-worker old source: fmd [168.85, 171.27, 174.19] ms
+same-worker candidate: fmd [188.44, 192.50, 196.89] ms
+median speedup old/candidate: 0.8897142857142858x
+conservative speedup old-low/candidate-high: 0.8575854538066942x
+score: 0.0
+decision: reject and restore source
+isomorphism: row ownership, row-major output, per-output ascending-k floating-point accumulation, dtype/shape/error behavior, NaN/signed-zero surface, and RNG absence preserved during candidate proof
