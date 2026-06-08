@@ -6305,29 +6305,17 @@ fn conv_vjp(
     g: &Value,
     params: &BTreeMap<String, String>,
 ) -> Result<Vec<Value>, AdError> {
-    // conv_vjp's transposed-conv index math implements stride + padding only. The
-    // forward eval_conv now also supports rhs_dilation (atrous), lhs_dilation
-    // (transposed) and feature_group_count (grouped) — but the gradient for those is
-    // NOT yet derived here, so reject loudly rather than return a silently-wrong
-    // (undilated/ungrouped) gradient. (The JVP path is correct for all params: it
-    // composes forward convs.) Default ("1"/absent) values fall through.
-    let nondefault_list = |key: &str| {
-        params
-            .get(key)
-            .is_some_and(|v| v.split(',').any(|p| !matches!(p.trim(), "" | "1")))
-    };
+    // conv_vjp implements stride + padding directly; rhs_dilation (atrous),
+    // lhs_dilation (transposed) and feature_group_count (grouped) are each reduced to
+    // the trusted plain path: atrous == plain conv with the kernel inflated by
+    // zero-insertion (grad_rhs is then de-inflated); transposed == plain conv over the
+    // zero-dilated input (grad_lhs is then de-dilated); grouped == G independent convs.
+    // batch_group_count is unsupported. Default ("1"/absent) values fall through.
     let nondefault_scalar = |key: &str| {
         params
             .get(key)
             .is_some_and(|v| !matches!(v.trim(), "" | "1"))
     };
-    for key in ["rhs_dilation", "lhs_dilation"] {
-        if nondefault_list(key) {
-            return Err(AdError::EvalFailed(format!(
-                "conv gradient (VJP) does not yet support {key}; forward conv supports it but its reverse-mode derivative is not implemented"
-            )));
-        }
-    }
     if nondefault_scalar("batch_group_count") {
         return Err(AdError::EvalFailed(
             "conv gradient (VJP) does not support batch_group_count".to_owned(),
@@ -6357,7 +6345,75 @@ fn conv_vjp(
         Value::Scalar(_) => return Ok(vec![zeros_like(&inputs[0]), zeros_like(&inputs[1])]),
     };
 
-    // Grouped/depthwise conv VJP (no dilation — guarded above): a grouped conv is G
+    let lhs_rank = lhs.shape.rank();
+    let num_spatial = lhs_rank.saturating_sub(2);
+    let factors = |key: &str| -> Result<Vec<usize>, AdError> {
+        let Some(raw) = params.get(key) else {
+            return Ok(vec![1; num_spatial]);
+        };
+        let parsed: Vec<usize> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                v.parse::<usize>()
+                    .ok()
+                    .filter(|&x| x >= 1)
+                    .ok_or_else(|| AdError::EvalFailed(format!("invalid conv {key} {v:?}")))
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(match parsed.len() {
+            0 => vec![1; num_spatial],
+            1 => vec![parsed[0]; num_spatial],
+            _ => parsed,
+        })
+    };
+
+    // rhs_dilation (atrous): atrous conv == plain conv with the kernel inflated by
+    // (D-1) zeros between taps. grad_lhs is then exact; grad_rhs is the gradient w.r.t.
+    // the inflated kernel de-inflated (strided-slice the tap positions).
+    let rhs_dil = factors("rhs_dilation")?;
+    if rhs_dil.iter().any(|&d| d > 1) {
+        // Kernel layout [spatial.., Cin, Cout]: dilate the leading `num_spatial` axes.
+        let mut kfac = vec![1usize; rhs.shape.rank()];
+        for (i, &d) in rhs_dil.iter().enumerate().take(num_spatial) {
+            kfac[i] = d;
+        }
+        let infl_rhs = dilate_spatial(rhs, &kfac)?;
+        let mut inner = params.clone();
+        inner.remove("rhs_dilation");
+        let grads = conv_vjp(
+            &[Value::Tensor(lhs.clone()), Value::Tensor(infl_rhs)],
+            &Value::Tensor(g_tensor.clone()),
+            &inner,
+        )?;
+        let grad_rhs = deflate_spatial_slice(&grads[1], &kfac)?;
+        return Ok(vec![grads[0].clone(), grad_rhs]);
+    }
+
+    // lhs_dilation (transposed): out == plain conv over the input zero-dilated by L.
+    // grad_rhs is exact; grad_lhs is the gradient w.r.t. the dilated input de-dilated
+    // (the inserted zeros are constants, so only the real positions carry gradient).
+    let lhs_dil = factors("lhs_dilation")?;
+    if lhs_dil.iter().any(|&l| l > 1) {
+        // Input layout [N, spatial.., C]: dilate axes 1..=num_spatial.
+        let mut lfac = vec![1usize; lhs_rank];
+        for (i, &l) in lhs_dil.iter().enumerate().take(num_spatial) {
+            lfac[1 + i] = l;
+        }
+        let dil_lhs = dilate_spatial(lhs, &lfac)?;
+        let mut inner = params.clone();
+        inner.remove("lhs_dilation");
+        let grads = conv_vjp(
+            &[Value::Tensor(dil_lhs), Value::Tensor(rhs.clone())],
+            &Value::Tensor(g_tensor.clone()),
+            &inner,
+        )?;
+        let grad_lhs = deflate_spatial_slice(&grads[0], &lfac)?;
+        return Ok(vec![grad_lhs, grads[1].clone()]);
+    }
+
+    // Grouped/depthwise conv VJP (no dilation — handled above): a grouped conv is G
     // independent convs, so its gradient is G independent ungrouped-conv VJPs. Split
     // input channels (lhs), output channels (rhs Cout, g) per group, reuse the trusted
     // stride+padding conv_vjp on each, then concatenate grad_lhs over input channels
@@ -6379,6 +6435,82 @@ fn conv_vjp(
 /// Grouped-conv VJP via per-group decomposition (see conv_vjp). Reuses the trusted
 /// ungrouped stride+padding conv_vjp on each group's channel slice; assumes no
 /// dilation (the caller guards rhs/lhs_dilation).
+/// Dtype-correct zero literal for building zero-inserted (dilated) conv grad tensors.
+fn conv_grad_zero(dtype: DType) -> Literal {
+    match dtype {
+        DType::F32 => Literal::from_f32(0.0),
+        DType::BF16 => Literal::from_bf16_f64(0.0),
+        DType::F16 => Literal::from_f16_f64(0.0),
+        DType::Complex64 => Literal::from_complex64(0.0, 0.0),
+        DType::Complex128 => Literal::from_complex128(0.0, 0.0),
+        _ => Literal::from_f64(0.0),
+    }
+}
+
+/// Zero-insert (dilate) `tensor` along each axis `ax` by `factors[ax]` (1 = no
+/// change): the new extent is `(n-1)*f+1`, with each element scattered to position
+/// `coord*f`. Used to express atrous conv (inflate the kernel) and transposed conv
+/// (dilate the input) as plain convs in the conv VJP.
+fn dilate_spatial(tensor: &TensorValue, factors: &[usize]) -> Result<TensorValue, AdError> {
+    let dims = &tensor.shape.dims;
+    let rank = dims.len();
+    let mut new_dims = dims.clone();
+    for ax in 0..rank {
+        if factors[ax] > 1 {
+            let n = dims[ax] as usize;
+            let eff = if n == 0 { 0 } else { (n - 1) * factors[ax] + 1 };
+            new_dims[ax] = u32::try_from(eff)
+                .map_err(|_| AdError::EvalFailed("conv VJP dilate dim overflow".to_owned()))?;
+        }
+    }
+    let new_total = new_dims
+        .iter()
+        .try_fold(1usize, |a, &d| a.checked_mul(d as usize))
+        .ok_or_else(|| AdError::EvalFailed("conv VJP dilate size overflow".to_owned()))?;
+    let mut out = vec![conv_grad_zero(tensor.dtype); new_total];
+    let mut out_strides = vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        out_strides[i] = out_strides[i + 1] * new_dims[i + 1] as usize;
+    }
+    let mut coord = vec![0usize; rank];
+    for lit in tensor.elements.iter() {
+        let mut out_flat = 0usize;
+        for ax in 0..rank {
+            out_flat += coord[ax] * factors[ax] * out_strides[ax];
+        }
+        out[out_flat] = *lit;
+        for ax in (0..rank).rev() {
+            coord[ax] += 1;
+            if coord[ax] < dims[ax] as usize {
+                break;
+            }
+            coord[ax] = 0;
+        }
+    }
+    TensorValue::new(tensor.dtype, Shape { dims: new_dims }, out)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
+/// Inverse of [`dilate_spatial`] on a gradient: strided-slice every `factors[ax]`-th
+/// position along each axis, recovering the pre-dilation (original) shape. Implemented
+/// via the Slice primitive (start 0, full limit, stride = factor per axis).
+fn deflate_spatial_slice(v: &Value, factors: &[usize]) -> Result<Value, AdError> {
+    let t = v
+        .as_tensor()
+        .ok_or_else(|| AdError::EvalFailed("conv VJP deflate expects a tensor".to_owned()))?;
+    let dims = &t.shape.dims;
+    let starts = vec!["0".to_owned(); dims.len()];
+    let limits: Vec<String> = dims.iter().map(ToString::to_string).collect();
+    let strides: Vec<String> = factors.iter().map(ToString::to_string).collect();
+    let p = BTreeMap::from([
+        ("start_indices".to_owned(), starts.join(",")),
+        ("limit_indices".to_owned(), limits.join(",")),
+        ("strides".to_owned(), strides.join(",")),
+    ]);
+    eval_primitive(Primitive::Slice, std::slice::from_ref(v), &p)
+        .map_err(|e| AdError::EvalFailed(e.to_string()))
+}
+
 fn conv_vjp_grouped(
     lhs: &TensorValue,
     rhs: &TensorValue,
@@ -14391,11 +14523,11 @@ mod tests {
     }
 
     #[test]
-    fn conv_vjp_rejects_dilation_and_grouping_fail_closed() {
-        // Forward eval_conv supports rhs_dilation / lhs_dilation / feature_group_count,
-        // but conv_vjp's transposed-conv math does not — it must reject loudly rather
-        // than return a silently-wrong (undilated/ungrouped) gradient. Plain conv VJP
-        // still succeeds.
+    fn conv_vjp_rejects_batch_group_count_fail_closed() {
+        // rhs_dilation / lhs_dilation / feature_group_count VJP are all implemented now
+        // (see conv_vjp_{dilation,grouped}_matches_numerical). batch_group_count is the
+        // only conv param whose gradient is unimplemented — it must fail-closed rather
+        // than return a silently-wrong gradient. Plain conv VJP still succeeds.
         let mk = |dims: Vec<u32>, n: usize| {
             Value::Tensor(
                 TensorValue::new(
@@ -14408,30 +14540,22 @@ mod tests {
                 .unwrap(),
             )
         };
-        // 1D: lhs[1,6,2], rhs[2,2,2] (or grouped rhs[2,1,2]), g sized for VALID stride1.
         let lhs = mk(vec![1, 6, 2], 12);
         let rhs = mk(vec![2, 2, 2], 8);
         let g = mk(vec![1, 5, 2], 10); // out_w = 6-2+1 = 5
-        // rhs_dilation/lhs_dilation VJP is still fail-closed (feature_group_count is
-        // now supported — see conv_vjp_grouped_matches_numerical).
-        for (key, val, rhs_in) in [
-            ("rhs_dilation", "2", rhs.clone()),
-            ("lhs_dilation", "2", rhs.clone()),
-        ] {
-            let params = BTreeMap::from([
-                ("padding".to_owned(), "valid".to_owned()),
-                (key.to_owned(), val.to_owned()),
-            ]);
-            let res = vjp_single(Primitive::Conv, &[lhs.clone(), rhs_in], &g, &params);
-            assert!(
-                res.is_err(),
-                "conv VJP must fail-closed on {key}={val} (no silent-wrong gradient)"
-            );
-            assert!(
-                format!("{:?}", res.unwrap_err()).contains(key),
-                "conv VJP error should name {key}"
-            );
-        }
+        let params = BTreeMap::from([
+            ("padding".to_owned(), "valid".to_owned()),
+            ("batch_group_count".to_owned(), "2".to_owned()),
+        ]);
+        let res = vjp_single(Primitive::Conv, &[lhs.clone(), rhs.clone()], &g, &params);
+        assert!(
+            res.is_err(),
+            "conv VJP must fail-closed on batch_group_count"
+        );
+        assert!(
+            format!("{:?}", res.unwrap_err()).contains("batch_group_count"),
+            "conv VJP error should name batch_group_count"
+        );
         // Regression: plain conv VJP still works.
         let plain = BTreeMap::from([("padding".to_owned(), "valid".to_owned())]);
         assert!(
@@ -14530,6 +14654,109 @@ mod tests {
                 grhs[j]
             );
         }
+    }
+
+    #[test]
+    fn conv_vjp_dilation_matches_numerical() {
+        // rhs_dilation (atrous), lhs_dilation (transposed), and a dilation x grouping
+        // combo: VJP vs central finite differences of L = sum(conv . g), to 1e-5.
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let check = |w: usize,
+                     cin: usize,
+                     kcin: usize,
+                     cout: usize,
+                     kw: usize,
+                     extra: &[(&str, &str)],
+                     label: &str| {
+            let mut params = BTreeMap::from([
+                ("padding".to_owned(), "valid".to_owned()),
+                ("strides".to_owned(), "1".to_owned()),
+            ]);
+            for (k, v) in extra {
+                params.insert((*k).to_owned(), (*v).to_owned());
+            }
+            let lhs0: Vec<f64> = (0..w * cin)
+                .map(|i| (i as f64 * 0.017).sin() * 1.3 + 0.2)
+                .collect();
+            let rhs0: Vec<f64> = (0..kw * kcin * cout)
+                .map(|i| (i as f64 * 0.013).cos() * 0.9 - 0.1)
+                .collect();
+            let ld = vec![1, w as u32, cin as u32];
+            let rd = vec![kw as u32, kcin as u32, cout as u32];
+            let fwd = eval_primitive(
+                Primitive::Conv,
+                &[mk(ld.clone(), &lhs0), mk(rd.clone(), &rhs0)],
+                &params,
+            )
+            .unwrap();
+            let out_dims = fwd.as_tensor().unwrap().shape.dims.clone();
+            let out_len: usize = out_dims.iter().map(|&d| d as usize).product();
+            let gv: Vec<f64> = (0..out_len)
+                .map(|i| (i as f64 * 0.011).sin() + 0.3)
+                .collect();
+            let g = mk(out_dims, &gv);
+            let loss = |lv: &[f64], rv: &[f64]| -> f64 {
+                let out = eval_primitive(
+                    Primitive::Conv,
+                    &[mk(ld.clone(), lv), mk(rd.clone(), rv)],
+                    &params,
+                )
+                .unwrap();
+                tensor_f64_values(&out)
+                    .iter()
+                    .zip(&gv)
+                    .map(|(o, gg)| o * gg)
+                    .sum()
+            };
+            let grads = vjp_single(
+                Primitive::Conv,
+                &[mk(ld.clone(), &lhs0), mk(rd.clone(), &rhs0)],
+                &g,
+                &params,
+            )
+            .unwrap();
+            let glhs = tensor_f64_values(&grads[0]);
+            let grhs = tensor_f64_values(&grads[1]);
+            let eps = 1e-6;
+            for j in 0..lhs0.len() {
+                let (mut up, mut dn) = (lhs0.clone(), lhs0.clone());
+                up[j] += eps;
+                dn[j] -= eps;
+                let fd = (loss(&up, &rhs0) - loss(&dn, &rhs0)) / (2.0 * eps);
+                assert!(
+                    (fd - glhs[j]).abs() < 1e-5,
+                    "{label} grad_lhs[{j}]={} fd={fd}",
+                    glhs[j]
+                );
+            }
+            for j in 0..rhs0.len() {
+                let (mut up, mut dn) = (rhs0.clone(), rhs0.clone());
+                up[j] += eps;
+                dn[j] -= eps;
+                let fd = (loss(&lhs0, &up) - loss(&lhs0, &dn)) / (2.0 * eps);
+                assert!(
+                    (fd - grhs[j]).abs() < 1e-5,
+                    "{label} grad_rhs[{j}]={} fd={fd}",
+                    grhs[j]
+                );
+            }
+        };
+        // atrous: kw=2 dilated by 2 -> eff 3; w=6 -> out 4.
+        check(6, 2, 2, 3, 2, &[("rhs_dilation", "2")], "rhs_dilation");
+        // transposed: w=4 dilated by 2 -> eff 7; kw=2 -> out 6.
+        check(4, 2, 2, 3, 2, &[("lhs_dilation", "2")], "lhs_dilation");
+        // combo: grouped (G=2) atrous conv.
+        check(
+            6,
+            4,
+            2,
+            4,
+            2,
+            &[("feature_group_count", "2"), ("rhs_dilation", "2")],
+            "grouped+atrous",
+        );
     }
 
     #[test]
