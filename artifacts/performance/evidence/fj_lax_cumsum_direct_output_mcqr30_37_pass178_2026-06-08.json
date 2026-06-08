@@ -1,0 +1,78 @@
+{
+  "bead": "frankenjax-mcqr.30.37",
+  "pass": 178,
+  "date": "2026-06-08",
+  "crate": "fj-lax",
+  "target": "eval/cumsum_4m_f64_1d",
+  "lever_summary": "For large dense F64 contiguous forward cumulative scans, route through the existing direct-output scan builder even when there is only one scan line. This avoids cloning the full input and then overwriting it in place while keeping the same single accumulator and ascending element order.",
+  "alien_graveyard": {
+    "primitive": "data-movement elimination for sequential prefix primitives",
+    "mapping": "The arithmetic dependency remains sequential, so the safe lever is to remove the redundant full-buffer clone/write pass and preserve the exact prefix fold."
+  },
+  "baseline": {
+    "worker": "vmi1152480",
+    "source": "clean detached worktree at d4382a88",
+    "command": "RCH_REQUIRE_REMOTE=1 rch exec -- cargo bench -p fj-lax --bench lax_baseline 'eval/(add_64k_f64_vec|add_64k_f64_dense_ref|add_broadcast_row_1024x1024_f64|add_broadcast_col_1024x1024_f64|select_1024x1024_f64|lt_same_shape_1024x1024_f64|reduce_sum_4096x1024_axis1_f64|reduce_sum_4096x1024_axis0_f64|cumsum_4m_f64_1d|gather_256x256_f64_vec|scatter_256x256_f64_vec|one_hot_2048x512_f64)' -- --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot",
+    "ci_ms": [25.072, 25.818, 26.655]
+  },
+  "candidate": {
+    "worker": "vmi1152480",
+    "source": "clean detached worktree with only crates/fj-lax/src/reduction.rs direct-output hunk",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1152480 RCH_WORKERS=vmi1152480 rch exec -- cargo bench -p fj-lax --bench lax_baseline 'eval/cumsum_4m_f64_1d' -- --warm-up-time 1 --measurement-time 3 --sample-size 10 --noplot",
+    "ci_ms": [23.865, 24.125, 24.308]
+  },
+  "results": {
+    "speedup_midpoint_x": 1.07018,
+    "speedup_conservative_x": 1.03143
+  },
+  "score": {
+    "impact": 1.5,
+    "confidence": 5.0,
+    "effort": 1.0,
+    "impact_times_confidence_over_effort": 7.5,
+    "kept": true
+  },
+  "change": {
+    "files": ["crates/fj-lax/src/reduction.rs"],
+    "lever": "Change the dense F64 axis_stride == 1 branch to use scan_contiguous_lines_to_vec for large forward scans even when outer_count == 1; reverse one-line and small scans keep clone+in-place."
+  },
+  "isomorphism": {
+    "ordering": "unchanged: forward contiguous scans still use one acc initialized to float_init and visit each line in source order, i=0..axis_dim, storing the prefix for each element immediately after the same float_op call.",
+    "tie_breaking": "not applicable",
+    "floating_point": "unchanged: no reassociation, no parallel prefix for the one-line target, no FMA request, no widened or rounded intermediate beyond the existing f64 accumulator.",
+    "rng": "not applicable",
+    "errors": "axis validation, shape/stride overflow checks, dtype fallback, reverse one-line behavior, small-scan behavior, and strided-axis behavior are unchanged."
+  },
+  "validation": [
+    {
+      "name": "focused_cumulative_tests",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=vmi1152480 RCH_WORKERS=vmi1152480 rch exec -- cargo test -p fj-lax cumulative -- --nocapture",
+      "result": "passed on vmi1152480: 4 passed; 0 failed; includes dense_cumulative_bit_identical_to_literal_path and threaded_cumulative_matches_serial_reference"
+    },
+    {
+      "name": "crate_check",
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec -- cargo check -p fj-lax --all-targets",
+      "result": "passed on vmi1152480"
+    },
+    {
+      "name": "crate_clippy",
+      "command": "RCH_REQUIRE_REMOTE=1 rch exec -- cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "result": "passed on vmi1152480"
+    },
+    {
+      "name": "fmt_and_whitespace",
+      "command": "cargo fmt --check --package fj-lax && git diff --check -- crates/fj-lax/src/reduction.rs .skill-loop-progress.md .beads/issues.jsonl",
+      "result": "passed locally"
+    },
+    {
+      "name": "golden_sha256",
+      "command": "sha256sum -c artifacts/performance/evidence/fj_lax_cumsum_direct_output_mcqr30_37_pass178_2026-06-08.golden.sha256",
+      "result": "passed locally; golden sha256 71fc096b503aa211618f64789e32694bd04ddfa51925377627dd8a1dc678e962"
+    },
+    {
+      "name": "ubs_changed_files",
+      "command": "ubs crates/fj-lax/src/reduction.rs .skill-loop-progress.md artifacts/performance/evidence/fj_lax_cumsum_direct_output_mcqr30_37_pass178_2026-06-08.golden artifacts/performance/evidence/fj_lax_cumsum_direct_output_mcqr30_37_pass178_2026-06-08.golden.sha256 artifacts/performance/evidence/fj_lax_cumsum_direct_output_mcqr30_37_pass178_2026-06-08.json",
+      "result": "exited nonzero from pre-existing broad file inventory in reduction.rs; embedded fmt, clippy, check, and test-build sections were clean"
+    }
+  ]
+}

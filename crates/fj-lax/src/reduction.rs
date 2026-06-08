@@ -1244,11 +1244,14 @@ fn eval_cumulative_dense(
         let Some(src) = tensor.elements.as_f64_slice() else {
             return Ok(None);
         };
-        let out = if axis_stride == 1 && total >= CUMULATIVE_PARALLEL_MIN_ELEMS && outer_count > 1 {
-            // Large contiguous last-axis scans with many independent lines:
-            // write dense output directly and split whole-line blocks across
-            // threads. One-line/small scans keep the clone+in-place path below,
-            // which is measurably faster and preserves the same per-line order.
+        let out = if axis_stride == 1
+            && total >= CUMULATIVE_PARALLEL_MIN_ELEMS
+            && (!reverse || outer_count > 1)
+        {
+            // Large contiguous forward scans write dense output directly from
+            // source slices, including the one-line case where cloning the full
+            // input only adds a complete extra read/write pass. Reverse one-line
+            // scans keep the clone+in-place path below.
             scan_contiguous_lines_to_vec(src, axis_dim, reverse, float_init, float_op)
         } else if axis_stride == 1 {
             let mut out = src.to_vec();

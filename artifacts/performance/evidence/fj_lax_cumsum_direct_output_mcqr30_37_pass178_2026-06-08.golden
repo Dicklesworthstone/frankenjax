@@ -1,0 +1,9 @@
+frankenjax-mcqr.30.37
+target=eval/cumsum_4m_f64_1d
+baseline_vmi1152480_ms=[25.072,25.818,26.655]
+candidate_vmi1152480_ms=[23.865,24.125,24.308]
+sample_shape=[4]
+sample_dtype=F64
+sample_input_bits=[3ff0000000000000,8000000000000000,4000000000000000,4010000000000000]
+sample_forward_cumsum_bits=[3ff0000000000000,3ff0000000000000,4008000000000000,401c000000000000]
+isomorphism=forward contiguous F64 scan keeps acc=0.0 then i=0..axis_dim in ascending order, stores each prefix once, and does not alter reverse/small/strided paths
