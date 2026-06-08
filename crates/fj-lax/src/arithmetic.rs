@@ -3475,6 +3475,102 @@ fn select_i64_same_shape_fast_path(
     )?)))
 }
 
+/// Dense F32 same-shape `select` fast path — the mixed-precision masking hot
+/// path (`jnp.where(mask, a, b)` with f32 branches, e.g. relu/dropout masks).
+/// Reads both branches from their contiguous `as_f32_slice()` backings and picks
+/// per the bool `cond` into dense f32 output, skipping the per-element 24-byte
+/// `Literal` materialization and the f32->f64->f32 round-trip the generic
+/// `select_literal_as_dtype` performs. The picked value's bits round-trip exactly
+/// through `new_f32_values` (`from_f32(v) == F32Bits(v.to_bits())`), so this is an
+/// EXACT bit copy of the chosen operand — JAX `select` is a pure copy. (The
+/// generic path's incidental f32->f64->f32 round-trip is identity for every
+/// finite/inf value and differs only on IEEE-unspecified NaN payloads.) Returns
+/// `Ok(None)` unless both branches are dense F32 and every `cond` is a `Bool`.
+fn select_f32_same_shape_fast_path(
+    cond: &TensorValue,
+    on_true: &TensorValue,
+    on_false: &TensorValue,
+) -> Result<Option<Value>, EvalError> {
+    let (Some(t), Some(f)) = (
+        on_true.elements.as_f32_slice(),
+        on_false.elements.as_f32_slice(),
+    ) else {
+        return Ok(None);
+    };
+    if let Some(conds) = cond.elements.as_bool_slice() {
+        let out: Vec<f32> = conds
+            .iter()
+            .zip(t)
+            .zip(f)
+            .map(|((&c, &tv), &fv)| if c { tv } else { fv })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
+    let mut out = Vec::with_capacity(t.len());
+    for (i, c) in cond.elements.iter().enumerate() {
+        let Literal::Bool(flag) = *c else {
+            return Ok(None);
+        };
+        out.push(if flag { t[i] } else { f[i] });
+    }
+    Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+        cond.shape.clone(),
+        out,
+    )?)))
+}
+
+/// Dense half-float (BF16/F16) same-shape `select` fast path — the half-precision
+/// masking idiom. Reads both branches from their contiguous `as_half_float_slice()`
+/// (raw `u16`) backings and picks per the bool `cond` into dense half-float output.
+/// An exact raw-bit copy of the chosen operand (JAX `select` is a pure copy); the
+/// generic path's `from_{bf16,f16}_f64(as_f64(..))` round-trip is identity for every
+/// representable value and differs only on unspecified NaN payloads. Both branches
+/// must share the half dtype. Returns `Ok(None)` otherwise.
+fn select_half_same_shape_fast_path(
+    cond: &TensorValue,
+    on_true: &TensorValue,
+    on_false: &TensorValue,
+) -> Result<Option<Value>, EvalError> {
+    if on_true.dtype != on_false.dtype {
+        return Ok(None);
+    }
+    let (Some(t), Some(f)) = (
+        on_true.elements.as_half_float_slice(),
+        on_false.elements.as_half_float_slice(),
+    ) else {
+        return Ok(None);
+    };
+    let dt = on_true.dtype;
+    if let Some(conds) = cond.elements.as_bool_slice() {
+        let out: Vec<u16> = conds
+            .iter()
+            .zip(t)
+            .zip(f)
+            .map(|((&c, &tv), &fv)| if c { tv } else { fv })
+            .collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            dt,
+            cond.shape.clone(),
+            out,
+        )?)));
+    }
+    let mut out = Vec::with_capacity(t.len());
+    for (i, c) in cond.elements.iter().enumerate() {
+        let Literal::Bool(flag) = *c else {
+            return Ok(None);
+        };
+        out.push(if flag { t[i] } else { f[i] });
+    }
+    Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+        dt,
+        cond.shape.clone(),
+        out,
+    )?)))
+}
+
 /// Dense fast path for `select(tensor_cond, scalar_true, scalar_false)` — the
 /// `jnp.where(mask, a, b)` masking idiom with scalar branches. Reads the dense
 /// Bool cond slice and writes the chosen scalar straight into a dense f64/i64
@@ -3505,6 +3601,31 @@ fn select_scalar_branches_fast_path(
         (Literal::I64(tv), Literal::I64(fv)) => {
             let out: Vec<i64> = conds.iter().map(|&c| if c { tv } else { fv }).collect();
             Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+                cond.shape.clone(),
+                out,
+            )?)))
+        }
+        (Literal::F32Bits(tb), Literal::F32Bits(fb)) => {
+            let t = f32::from_bits(tb);
+            let f = f32::from_bits(fb);
+            let out: Vec<f32> = conds.iter().map(|&c| if c { t } else { f }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+                cond.shape.clone(),
+                out,
+            )?)))
+        }
+        (Literal::BF16Bits(tb), Literal::BF16Bits(fb)) => {
+            let out: Vec<u16> = conds.iter().map(|&c| if c { tb } else { fb }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+                DType::BF16,
+                cond.shape.clone(),
+                out,
+            )?)))
+        }
+        (Literal::F16Bits(tb), Literal::F16Bits(fb)) => {
+            let out: Vec<u16> = conds.iter().map(|&c| if c { tb } else { fb }).collect();
+            Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+                DType::F16,
                 cond.shape.clone(),
                 out,
             )?)))
@@ -3557,6 +3678,20 @@ pub(crate) fn eval_select(primitive: Primitive, inputs: &[Value]) -> Result<Valu
                 && on_true.dtype == DType::I64
                 && on_false.dtype == DType::I64
                 && let Some(value) = select_i64_same_shape_fast_path(cond, on_true, on_false)?
+            {
+                return Ok(value);
+            }
+            if cond.dtype == DType::Bool
+                && on_true.dtype == DType::F32
+                && on_false.dtype == DType::F32
+                && let Some(value) = select_f32_same_shape_fast_path(cond, on_true, on_false)?
+            {
+                return Ok(value);
+            }
+            if cond.dtype == DType::Bool
+                && matches!(on_true.dtype, DType::BF16 | DType::F16)
+                && on_true.dtype == on_false.dtype
+                && let Some(value) = select_half_same_shape_fast_path(cond, on_true, on_false)?
             {
                 return Ok(value);
             }
@@ -10456,6 +10591,317 @@ mod tests {
             .collect();
         // Raw-bit comparison distinguishes -0.0 and NaN payloads.
         assert_eq!(tensor.elements, expected);
+    }
+
+    #[test]
+    fn select_f32_and_half_same_shape_dense_matches_generic() {
+        // Dense F32/BF16/F16 same-shape select must equal the boxed-Literal generic
+        // path AND keep dense output. NaN payloads are IEEE-unspecified (the generic
+        // path round-trips through f64, the dense path copies bits), so canonicalize
+        // NaN before comparing — JAX `select` parity is about value, not payload.
+        let n = 257usize; // odd, > any SIMD lane width
+        let flags: Vec<bool> = (0..n).map(|i| (i * 2654435761) % 3 == 0).collect();
+        let cond = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                flags.iter().map(|&b| Literal::Bool(b)).collect(),
+            )
+            .unwrap(),
+        );
+
+        // F32 branches incl -0, +-inf, NaN, large/small.
+        let specials_f32 = [
+            0.0_f32,
+            -0.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            1e30,
+            -1e-30,
+        ];
+        let tf32: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < specials_f32.len() {
+                    specials_f32[i]
+                } else {
+                    (i as f32) * 0.5 - 30.0
+                }
+            })
+            .collect();
+        let ff32: Vec<f32> = (0..n)
+            .map(|i| {
+                if i < specials_f32.len() {
+                    specials_f32[specials_f32.len() - 1 - i]
+                } else {
+                    -(i as f32) * 0.25 + 7.0
+                }
+            })
+            .collect();
+        let f32_dense_t = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                tf32.clone(),
+            )
+            .unwrap(),
+        );
+        let f32_dense_f = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                ff32.clone(),
+            )
+            .unwrap(),
+        );
+        let f32_box_t = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                tf32.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let f32_box_f = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                ff32.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let canon_f32 = |v: &Value| -> Vec<u32> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => {
+                        if f32::from_bits(*b).is_nan() {
+                            0x7fc0_0000
+                        } else {
+                            *b
+                        }
+                    }
+                    o => panic!("expected f32, got {o:?}"),
+                })
+                .collect()
+        };
+        let dense =
+            eval_select(Primitive::Select, &[cond.clone(), f32_dense_t, f32_dense_f]).unwrap();
+        let generic =
+            eval_select(Primitive::Select, &[cond.clone(), f32_box_t, f32_box_f]).unwrap();
+        assert!(
+            dense.as_tensor().unwrap().elements.as_f32_slice().is_some(),
+            "f32 select output must be dense"
+        );
+        assert_eq!(
+            canon_f32(&dense),
+            canon_f32(&generic),
+            "f32 select dense vs generic"
+        );
+
+        // BF16/F16 branches via raw u16 bit patterns incl NaN/inf.
+        for dt in [DType::BF16, DType::F16] {
+            let nan = if dt == DType::F16 { 0x7e00 } else { 0x7fc0 };
+            let inf = if dt == DType::F16 { 0x7c00 } else { 0x7f80 };
+            let raw_t: Vec<u16> = (0..n)
+                .map(|i| match i {
+                    0 => 0x0000,
+                    1 => 0x8000,
+                    2 => nan,
+                    3 => inf,
+                    _ => (i as u16).wrapping_mul(53).wrapping_add(1),
+                })
+                .collect();
+            let raw_f: Vec<u16> = (0..n)
+                .map(|i| (i as u16).wrapping_mul(101) ^ 0x55)
+                .collect();
+            let dense_t = Value::Tensor(
+                TensorValue::new_half_float_values(
+                    dt,
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    raw_t.clone(),
+                )
+                .unwrap(),
+            );
+            let dense_f = Value::Tensor(
+                TensorValue::new_half_float_values(
+                    dt,
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    raw_f.clone(),
+                )
+                .unwrap(),
+            );
+            let mk = |b: u16| {
+                if dt == DType::BF16 {
+                    Literal::BF16Bits(b)
+                } else {
+                    Literal::F16Bits(b)
+                }
+            };
+            let box_t = Value::Tensor(
+                TensorValue::new(
+                    dt,
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    raw_t.iter().copied().map(mk).collect(),
+                )
+                .unwrap(),
+            );
+            let box_f = Value::Tensor(
+                TensorValue::new(
+                    dt,
+                    Shape {
+                        dims: vec![n as u32],
+                    },
+                    raw_f.iter().copied().map(mk).collect(),
+                )
+                .unwrap(),
+            );
+            let is_nan_half = |b: u16| -> bool {
+                if dt == DType::F16 {
+                    Literal::F16Bits(b).as_f16_f32().is_some_and(|v| v.is_nan())
+                } else {
+                    Literal::BF16Bits(b)
+                        .as_bf16_f32()
+                        .is_some_and(|v| v.is_nan())
+                }
+            };
+            let canon_half = |v: &Value| -> Vec<u16> {
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .unwrap()
+                    .iter()
+                    .map(|&b| if is_nan_half(b) { nan } else { b })
+                    .collect()
+            };
+            let dense = eval_select(Primitive::Select, &[cond.clone(), dense_t, dense_f]).unwrap();
+            let generic = eval_select(Primitive::Select, &[cond.clone(), box_t, box_f]).unwrap();
+            assert!(
+                dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_some(),
+                "{dt:?} select output must be dense"
+            );
+            // generic output may be boxed; re-read its bits through Literal.
+            let gen_bits: Vec<u16> = generic
+                .as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => {
+                        if is_nan_half(*b) {
+                            nan
+                        } else {
+                            *b
+                        }
+                    }
+                    o => panic!("expected half, got {o:?}"),
+                })
+                .collect();
+            assert_eq!(
+                canon_half(&dense),
+                gen_bits,
+                "{dt:?} select dense vs generic"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_select_f32_same_shape_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1usize << 22; // 4M — jnp.where(mask, a, b) f32 masking
+        let flags: Vec<bool> = (0..n).map(|i| i % 2 == 0).collect();
+        let cond = Value::Tensor(
+            TensorValue::new(
+                DType::Bool,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                flags.iter().map(|&b| Literal::Bool(b)).collect(),
+            )
+            .unwrap(),
+        );
+        let ta: Vec<f32> = (0..n).map(|i| (i as f32) * 0.01 - 1.0).collect();
+        let fb: Vec<f32> = (0..n).map(|i| -(i as f32) * 0.02 + 3.0).collect();
+        let dense_t = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                ta.clone(),
+            )
+            .unwrap(),
+        );
+        let dense_f = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: vec![n as u32],
+                },
+                fb.clone(),
+            )
+            .unwrap(),
+        );
+        let box_t = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                ta.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let box_f = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: vec![n as u32],
+                },
+                fb.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let time = |t: &Value, f: &Value| {
+            let _ = eval_select(Primitive::Select, &[cond.clone(), t.clone(), f.clone()]).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let inst = Instant::now();
+                let _ =
+                    eval_select(Primitive::Select, &[cond.clone(), t.clone(), f.clone()]).unwrap();
+                best = best.min(inst.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&box_t, &box_f);
+        let dense = time(&dense_t, &dense_f);
+        println!(
+            "BENCH select f32 same-shape n={n}: boxed(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense * 1e3,
+            generic / dense
+        );
     }
 
     #[test]
