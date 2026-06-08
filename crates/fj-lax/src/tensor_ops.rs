@@ -3284,6 +3284,63 @@ pub(crate) fn eval_convert_element_type(
                 if let Some(t) = dense {
                     return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
                 }
+            } else if let Some(values) = tensor.elements.as_half_float_slice() {
+                // Half-float source (BF16/F16) — the mixed-precision UPCAST hot path
+                // (decode + compute in f32/f64). convert_literal decodes each tap via
+                // as_{bf16,f16}_f32 -> f32, then routes through f64_val = f64::from(v)
+                // for float targets; I64 uses `f32 as i64` and Bool `f32 != 0.0`.
+                // Decode here from the raw u16 backing (dtype-tagged), bit-identical.
+                let is_bf16 = tensor.dtype == DType::BF16;
+                let decode = |b: u16| -> f32 {
+                    if is_bf16 {
+                        Literal::BF16Bits(b).as_bf16_f32().unwrap_or(0.0)
+                    } else {
+                        Literal::F16Bits(b).as_f16_f32().unwrap_or(0.0)
+                    }
+                };
+                let dense = match target_dtype {
+                    // from_f32(f64::from(v) as f32) == from_f32(v): exact round-trip.
+                    DType::F32 => Some(TensorValue::new_f32_values(
+                        shape.clone(),
+                        values.iter().map(|&b| decode(b)).collect(),
+                    )),
+                    // from_f64(f64::from(v)): exact widen.
+                    DType::F64 => Some(TensorValue::new_f64_values(
+                        shape.clone(),
+                        values.iter().map(|&b| f64::from(decode(b))).collect(),
+                    )),
+                    // Cross/same half: from_{f16,bf16}_f64(f64::from(v)).
+                    DType::F16 => Some(TensorValue::new_half_float_values(
+                        DType::F16,
+                        shape.clone(),
+                        values
+                            .iter()
+                            .map(|&b| convert_f16_bits(f64::from(decode(b))))
+                            .collect(),
+                    )),
+                    DType::BF16 => Some(TensorValue::new_half_float_values(
+                        DType::BF16,
+                        shape.clone(),
+                        values
+                            .iter()
+                            .map(|&b| convert_bf16_bits(f64::from(decode(b))))
+                            .collect(),
+                    )),
+                    // i64_val half branch == `f32 as i64`.
+                    DType::I64 => Some(TensorValue::new_i64_values(
+                        shape.clone(),
+                        values.iter().map(|&b| decode(b) as i64).collect(),
+                    )),
+                    // bool_val half branch == `f32 != 0.0`.
+                    DType::Bool => Some(TensorValue::new_bool_values(
+                        shape.clone(),
+                        values.iter().map(|&b| decode(b) != 0.0).collect(),
+                    )),
+                    _ => None,
+                };
+                if let Some(t) = dense {
+                    return Ok(Value::Tensor(t.map_err(EvalError::InvalidTensor)?));
+                }
             }
 
             let mut out = Vec::with_capacity(tensor.elements.len());
@@ -10335,6 +10392,70 @@ mod tests {
             );
         }
 
+        // Half-float source (BF16/F16) — the mixed-precision upcast hot path.
+        // Hand-built representative bit patterns incl +-0, NaN, +-inf, small/large.
+        for src_dt in [DType::BF16, DType::F16] {
+            let raw: Vec<u16> = vec![
+                0x0000,                                             // +0
+                0x8000,                                             // -0
+                if src_dt == DType::F16 { 0x3c00 } else { 0x3f80 }, // 1.0
+                0x4000,                                             // 2.0 (both layouts)
+                0xc000,                                             // -2.0
+                if src_dt == DType::F16 { 0x7c00 } else { 0x7f80 }, // +inf
+                if src_dt == DType::F16 { 0xfc00 } else { 0xff80 }, // -inf
+                if src_dt == DType::F16 { 0x7e00 } else { 0x7fc0 }, // NaN
+                0x0001,                                             // smallest subnormal
+                0x1234,                                             // arbitrary
+            ];
+            let h_dense = Value::Tensor(
+                TensorValue::new_half_float_values(
+                    src_dt,
+                    Shape::vector(raw.len() as u32),
+                    raw.clone(),
+                )
+                .unwrap(),
+            );
+            let mk_lit = |b: u16| {
+                if src_dt == DType::BF16 {
+                    Literal::BF16Bits(b)
+                } else {
+                    Literal::F16Bits(b)
+                }
+            };
+            let h_lit = Value::Tensor(
+                TensorValue::new(
+                    src_dt,
+                    Shape::vector(raw.len() as u32),
+                    raw.iter().copied().map(mk_lit).collect(),
+                )
+                .unwrap(),
+            );
+            assert!(
+                h_dense
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_some()
+            );
+            assert!(
+                h_lit
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .as_half_float_slice()
+                    .is_none()
+            );
+            for t in targets {
+                let p = params(&[("new_dtype", t)]);
+                assert_eq!(
+                    lits(&eval_convert_element_type(std::slice::from_ref(&h_dense), &p).unwrap()),
+                    lits(&eval_convert_element_type(std::slice::from_ref(&h_lit), &p).unwrap()),
+                    "{src_dt:?} -> {t} dense vs generic"
+                );
+            }
+        }
+
         // The hot mixed-precision casts must keep DENSE output storage (no boxing).
         let is_dense = |v: &Value| -> bool {
             let e = &v.as_tensor().unwrap().elements;
@@ -10342,16 +10463,66 @@ mod tests {
                 || e.as_f32_slice().is_some()
                 || e.as_half_float_slice().is_some()
         };
+        let bf16_dense = Value::Tensor(
+            TensorValue::new_half_float_values(
+                DType::BF16,
+                Shape::vector(3),
+                vec![0x3f80, 0x4000, 0xc000],
+            )
+            .unwrap(),
+        );
         for (src, outs) in [
-            (&f_dense, ["f32", "f16", "bf16"]),
-            (&f32_dense, ["f64", "f16", "bf16"]),
+            (&f_dense, ["f32", "f16", "bf16"].as_slice()),
+            (&f32_dense, ["f64", "f16", "bf16"].as_slice()),
+            (&bf16_dense, ["f32", "f64", "f16"].as_slice()),
         ] {
-            for t in outs {
+            for &t in outs {
                 let p = params(&[("new_dtype", t)]);
                 let got = eval_convert_element_type(std::slice::from_ref(src), &p).unwrap();
                 assert!(is_dense(&got), "convert -> {t} must stay dense");
             }
         }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_convert_bf16_to_f32_dense_vs_boxed() {
+        use std::time::Instant;
+        let n = 1usize << 22; // 4M bf16 -> f32 upcast (mixed-precision compute prologue)
+        let raw: Vec<u16> = (0..n)
+            .map(|i| ((i as u16).wrapping_mul(37)).wrapping_add(0x3f00))
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, Shape::vector(n as u32), raw.clone())
+                .unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::BF16,
+                Shape::vector(n as u32),
+                raw.iter().copied().map(Literal::BF16Bits).collect(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("new_dtype", "f32")]);
+        let time = |x: &Value| {
+            let _ = eval_convert_element_type(std::slice::from_ref(x), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_convert_element_type(std::slice::from_ref(x), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH convert bf16->f32 n={n}: boxed(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
     }
 
     #[test]
