@@ -5,7 +5,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use crate::EvalError;
-use crate::tensor_contraction::{batched_matmul_2d, matmul_2d};
+use crate::tensor_contraction::{batched_matmul_2d, batched_matmul_2d_f32_in, matmul_2d};
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
 /// Expensive per-element cost amortizes the thread fan-out at a lower element
@@ -5970,11 +5970,6 @@ fn general_real_tensordot(
     if rk != k || rbatch != batch {
         return Ok(None);
     }
-    let (Some(lhs_v), Some(rhs_v)) =
-        (dot_real_elements_as_f64(lhs), dot_real_elements_as_f64(rhs))
-    else {
-        return Ok(None);
-    };
     // lhs -> [batch (paired) ++ free (ascending) ++ contract (paired)] = [batch,m,k].
     let mut lhs_perm: Vec<usize> = lhs_batch.to_vec();
     lhs_perm.extend_from_slice(lhs_free_dims);
@@ -5983,6 +5978,38 @@ fn general_real_tensordot(
     let mut rhs_perm: Vec<usize> = rhs_batch.to_vec();
     rhs_perm.extend_from_slice(rhs_contracting);
     rhs_perm.extend_from_slice(rhs_free_dims);
+
+    // NATIVE f32 path (mixed-precision: f32 in, f64 accumulate, f32 out): when the
+    // output is f32, both operands are dense-f32-backed, and BOTH perms are the
+    // identity (so no gather is needed — the standard `[m,k]@[k,n]` and standard
+    // batched `[B,m,k]@[B,k,n]` cases), feed the `f32` slices straight to the
+    // mixed-precision GEMM. This skips the ~19 MB f32->f64 promote alloc+copy AND
+    // halves B's bytes through cache. BIT-IDENTICAL to the promote+f64-GEMM+round
+    // path (see batched_matmul_2d_f32_in). Other f32 cases (non-identity perms,
+    // bf16/f16) fall through to the promote path below.
+    if out_dtype == DType::F32
+        && is_identity_perm(&lhs_perm)
+        && is_identity_perm(&rhs_perm)
+        && let (Some(a32), Some(b32)) =
+            (lhs.elements.as_f32_slice(), rhs.elements.as_f32_slice())
+    {
+        let values = batched_matmul_2d_f32_in(a32, batch, m, k, b32, n);
+        if output_dims.is_empty() {
+            return Ok(Some(Value::Scalar(Literal::from_f32(values[0]))));
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_f32_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            values,
+        )?)));
+    }
+
+    let (Some(lhs_v), Some(rhs_v)) =
+        (dot_real_elements_as_f64(lhs), dot_real_elements_as_f64(rhs))
+    else {
+        return Ok(None);
+    };
     // Skip the permute gather when it's the identity (the common case: a standard
     // [m,k]@[k,n] matmul already has lhs=[free,contract], rhs=[contract,free], so
     // both perms are [0,1,..]). `permute_f64` would otherwise do a per-element

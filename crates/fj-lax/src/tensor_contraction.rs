@@ -780,6 +780,89 @@ fn batched_matmul_row_block(
     }
 }
 
+/// Mixed-precision batched matmul: f32 inputs, **f64 accumulation**, f32 output.
+///
+/// Reads the `f32` operands directly (no f32->f64 promote buffer — for a
+/// `[4096,512]@[512,512]` matmul the promote alloc+copy is ~19 MB) and widens
+/// each element to `f64` inside the inner loop, accumulating in `f64`. Streaming
+/// B as `f32` also halves its bytes through cache (the row-block kernel re-reads
+/// all of B once per output row), which is the binding cost once B spills L1/L2.
+///
+/// BIT-FOR-BIT identical to "promote both operands to f64, run [`batched_matmul_2d`]
+/// (f64 ascending-`l` accumulation), then round each output `as f32`": f32->f64 is
+/// lossless, the per-element products `(a as f64)*(b as f64)` and their ascending-`l`
+/// f64 sum are the same, and the final `acc as f32` is the same round. Proven by
+/// batched_matmul_2d_f32_in_matches_promote_bits.
+pub fn batched_matmul_2d_f32_in(
+    a: &[f32],
+    batch: usize,
+    m: usize,
+    k: usize,
+    b: &[f32],
+    n: usize,
+) -> Vec<f32> {
+    let mut result = vec![0.0f32; batch * m * n];
+    if batch == 0 || m == 0 || n == 0 || k == 0 {
+        return result;
+    }
+    let total_rows = batch * m;
+    let ops = total_rows.saturating_mul(k).saturating_mul(n);
+    let threads = matmul_thread_count(ops, total_rows);
+
+    if threads <= 1 {
+        batched_matmul_row_block_f32_in(a, b, m, k, n, 0, &mut result);
+        return result;
+    }
+
+    let rows_per = total_rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = result.as_mut_slice();
+        let mut g_start = 0usize;
+        while g_start < total_rows {
+            let chunk_rows = rows_per.min(total_rows - g_start);
+            let (block, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            let gs = g_start;
+            scope.spawn(move || batched_matmul_row_block_f32_in(a, b, m, k, n, gs, block));
+            g_start += chunk_rows;
+        }
+    });
+    result
+}
+
+/// f32-input row-block kernel: accumulates each output row in an `f64` scratch
+/// (ascending-`l`, widening f32->f64 per element) then rounds to `f32` into the
+/// output. See [`batched_matmul_2d_f32_in`] for the bit-identity argument. The
+/// `acc` scratch is reused across the block's rows to avoid per-row allocation.
+fn batched_matmul_row_block_f32_in(
+    a: &[f32],
+    b: &[f32],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [f32],
+) {
+    let mut acc = vec![0.0f64; n];
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let g = g_start + ri;
+        let bt = g / m;
+        let a_off = g * k;
+        let b_off = bt * k * n;
+        acc.iter_mut().for_each(|x| *x = 0.0);
+        for l in 0..k {
+            let a_il = a[a_off + l] as f64;
+            let src = &b[b_off + l * n..b_off + l * n + n];
+            for j in 0..n {
+                acc[j] += a_il * src[j] as f64;
+            }
+        }
+        for (cj, &av) in c_row.iter_mut().zip(acc.iter()) {
+            *cj = av as f32;
+        }
+    }
+}
+
 /// Outer product of two vectors.
 ///
 /// Matches `jnp.outer(a, b)`.
@@ -995,6 +1078,66 @@ mod tests {
         }
         for idx in 0..bt * m * n {
             assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
+        }
+    }
+
+    /// The mixed-precision f32-input GEMM must be BIT-FOR-BIT identical to:
+    /// promote both operands f32->f64, run the f64 `batched_matmul_2d`, then round
+    /// each output `as f32`. Sized large enough to exercise the threaded path.
+    #[test]
+    fn batched_matmul_2d_f32_in_matches_promote_bits() {
+        let (bt, m, k, n) = (2usize, 40usize, 33usize, 17usize);
+        let af: Vec<f32> = (0..bt * m * k).map(|i| (i as f32 * 0.013).sin() * 2.0 - 0.5).collect();
+        let bf: Vec<f32> = (0..bt * k * n).map(|i| (i as f32 * 0.019).cos() * 1.6 + 0.3).collect();
+        let got = batched_matmul_2d_f32_in(&af, bt, m, k, &bf, n);
+        // reference: promote -> f64 GEMM -> round as f32.
+        let a64: Vec<f64> = af.iter().map(|&v| v as f64).collect();
+        let b64: Vec<f64> = bf.iter().map(|&v| v as f64).collect();
+        let want64 = batched_matmul_2d(&a64, bt, m, k, &b64, n);
+        assert_eq!(got.len(), want64.len());
+        for idx in 0..got.len() {
+            assert_eq!(got[idx].to_bits(), (want64[idx] as f32).to_bits(), "mismatch at {idx}");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_gemm_native_vs_promote() {
+        use std::time::Instant;
+        let time = |f: &dyn Fn()| {
+            f();
+            let mut best = f64::MAX;
+            for _ in 0..6 {
+                let t = Instant::now();
+                f();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        // Sweep L3-resident -> RAM-bound B: the naive row-block kernel re-streams
+        // all of B once per output row, so once B (k·n) spills cache the f32 path's
+        // HALF-bytes-of-B advantage grows.
+        for &(m, k, n) in &[
+            (4096usize, 512usize, 512usize), // B=1MB f32 / 2MB f64 (L3-resident)
+            (2048, 2048, 2048),              // B=16MB f32 / 32MB f64 (spills L3)
+        ] {
+            let af: Vec<f32> = (0..m * k).map(|i| (i % 100) as f32 * 0.01 - 0.5).collect();
+            let bf: Vec<f32> = (0..k * n).map(|i| (i % 77) as f32 * 0.01).collect();
+            // promote path: f32->f64 alloc+copy, f64 GEMM, round output as f32.
+            let promote = time(&|| {
+                let a64: Vec<f64> = af.iter().map(|&v| v as f64).collect();
+                let b64: Vec<f64> = bf.iter().map(|&v| v as f64).collect();
+                let out = batched_matmul_2d(&a64, 1, m, k, &b64, n);
+                let _: Vec<f32> = out.iter().map(|&v| v as f32).collect();
+            });
+            let native = time(&|| {
+                let _ = batched_matmul_2d_f32_in(&af, 1, m, k, &bf, n);
+            });
+            let gflop = 2.0 * m as f64 * k as f64 * n as f64 / 1e9;
+            println!(
+                "BENCH f32 GEMM [{m},{k}]@[{k},{n}]: promote+f64+round={:.3}ms ({:.1} GFLOP/s) native-f32-in={:.3}ms ({:.1} GFLOP/s) speedup={:.2}x",
+                promote * 1e3, gflop / promote, native * 1e3, gflop / native, promote / native
+            );
         }
     }
 
