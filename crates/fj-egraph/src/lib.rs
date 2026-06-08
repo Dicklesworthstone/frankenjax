@@ -494,7 +494,12 @@ fn safe_algebraic_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         // exp-log moved to numerically_unsafe_rules (fails when a <= 0)
         // log-exp moved to numerically_unsafe_rules (fails when exp(a) overflows)
         // ── Sqrt / Rsqrt relationships ───────────────────────────────
-        rewrite!("rsqrt-to-sqrt"; "(rsqrt ?a)" => "(pow (sqrt ?a) (neg 1))"),
+        // rsqrt-to-sqrt moved to numerically_unsafe_rules: rsqrt(a) evaluates to
+        // 1.0/a.sqrt() but the rewritten pow(sqrt(a), -1) evaluates to
+        // a.sqrt().powf(-1.0) — powf goes through exp/log and is NOT bit-equal to
+        // 1.0/x (±1 ULP), and the literal (neg 1) exponent can change the promoted
+        // output dtype (same hazard that put pow-one / div-one / reciprocal-as-div
+        // there). Not a semantics-preserving rewrite, so it cannot be "safe".
         // ── Floor / Ceil / Round idempotence ─────────────────────────
         rewrite!("floor-floor"; "(floor (floor ?a))" => "(floor ?a)"),
         rewrite!("ceil-ceil"; "(ceil (ceil ?a))" => "(ceil ?a)"),
@@ -679,6 +684,11 @@ fn numerically_unsafe_rules() -> Vec<egg::Rewrite<FjLang, ()>> {
         rewrite!("neg-zero"; "(neg 0)" => "0"),
         // reciprocal(a) => div(1, a) erases output dtype via untyped literal 1
         rewrite!("reciprocal-as-div"; "(reciprocal ?a)" => "(div 1 ?a)"),
+        // rsqrt(a) => pow(sqrt(a), -1): 1.0/a.sqrt() vs a.sqrt().powf(-1.0) differ
+        // by up to 1 ULP (powf uses exp/log), and the literal (neg 1) exponent can
+        // change the promoted output dtype — so it is not bit-exact-preserving and
+        // belongs with the other identity/inverse rewrites that touch a literal.
+        rewrite!("rsqrt-to-sqrt"; "(rsqrt ?a)" => "(pow (sqrt ?a) (neg 1))"),
     ]
 }
 
@@ -3195,9 +3205,19 @@ fn fast_path_safe_no_rewrite_single_output_segment(
     })
 }
 
+/// True when `primitive` can appear as the ROOT of any rule in
+/// [`safe_algebraic_rules`]. The safe-no-rewrite fast path
+/// ([`fast_path_safe_no_rewrite_single_output_segment`]) returns its segment
+/// verbatim, skipping equality saturation, ONLY when no equation matches this
+/// predicate — so EVERY root primitive of a safe rule MUST be listed here, or
+/// that rewrite is silently never applied. The list previously omitted the
+/// unary idempotence / negation / reduction roots (Abs, Max, Min, Floor, Ceil,
+/// Round, ReduceSum/Max/Min/Prod, Sin, Cos, Tan, Sinh, Cosh, Tanh, Asinh,
+/// Atanh), so e.g. cos(neg(x)) and floor(floor(x)) stopped simplifying.
 fn safe_rewrite_may_match(primitive: Primitive) -> bool {
     matches!(
         primitive,
+        // Commutativity / identity / distribution roots
         Primitive::Add
             | Primitive::Mul
             | Primitive::Sub
@@ -3209,6 +3229,29 @@ fn safe_rewrite_may_match(primitive: Primitive) -> bool {
             | Primitive::BitwiseAnd
             | Primitive::BitwiseOr
             | Primitive::BitwiseXor
+            // Abs idempotence (abs-abs) + abs-neg
+            | Primitive::Abs
+            // max-self / min-self
+            | Primitive::Max
+            | Primitive::Min
+            // Floor / Ceil / Round idempotence
+            | Primitive::Floor
+            | Primitive::Ceil
+            | Primitive::Round
+            // Reduction idempotence
+            | Primitive::ReduceSum
+            | Primitive::ReduceMax
+            | Primitive::ReduceMin
+            | Primitive::ReduceProd
+            // Trig / hyperbolic negation (oddness / evenness)
+            | Primitive::Sin
+            | Primitive::Cos
+            | Primitive::Tan
+            | Primitive::Sinh
+            | Primitive::Cosh
+            | Primitive::Tanh
+            | Primitive::Asinh
+            | Primitive::Atanh
     )
 }
 
@@ -7502,6 +7545,28 @@ mod tests {
         assert!(
             !has_div_aggressive,
             "aggressive mode should simplify a/a (no Div remaining)"
+        );
+    }
+
+    #[test]
+    fn rsqrt_to_sqrt_is_classified_numerically_unsafe() {
+        // rsqrt(a) evaluates to 1.0/a.sqrt(); the rewritten pow(sqrt(a), -1)
+        // evaluates to a.sqrt().powf(-1.0), which differs from 1.0/x by up to 1 ULP
+        // (powf routes through exp/log) and whose literal (neg 1) exponent can change
+        // the promoted output dtype. It is therefore NOT a bit-exact-preserving
+        // rewrite and must sit with pow-one / div-one / reciprocal-as-div in the
+        // numerically-unsafe set (disabled in the default safe mode), not in the
+        // safe set where it used to live.
+        let in_safe = safe_algebraic_rules()
+            .iter()
+            .any(|r| r.name.as_str() == "rsqrt-to-sqrt");
+        let in_unsafe = numerically_unsafe_rules()
+            .iter()
+            .any(|r| r.name.as_str() == "rsqrt-to-sqrt");
+        assert!(!in_safe, "rsqrt-to-sqrt must not be a safe algebraic rule");
+        assert!(
+            in_unsafe,
+            "rsqrt-to-sqrt must be in the numerically-unsafe rule set"
         );
     }
 
