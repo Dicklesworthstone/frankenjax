@@ -1,0 +1,95 @@
+{
+  "bead": "frankenjax-iz1qi",
+  "status": "rejected",
+  "source_retained": false,
+  "crate": "fj-lax",
+  "target": "linalg/lu_1024x1024_f64",
+  "lever": "SIMD lane update for blocked LU in-panel row update",
+  "date_utc": "2026-06-08",
+  "profile_route": {
+    "post_shbyh_worker": "vmi1293453",
+    "ranking": [
+      {
+        "target": "linalg/matmul_2d_2048x2048x2048_f64",
+        "ms": [222.85, 234.29, 245.69],
+        "decision": "Still top, but recursive/Strassen GEMM remains blocked by the closed bit-exact contract frankenjax-p1vbf.39 and exact-order GEMM micro/layout families are in a rejection streak."
+      },
+      {
+        "target": "linalg/lu_1024x1024_f64",
+        "ms": [44.224, 46.568, 47.89],
+        "decision": "Top non-GEMM profile-backed row."
+      },
+      {
+        "target": "linalg/cholesky_1024x1024_f64",
+        "ms": [37.309, 44.186, 52.025]
+      },
+      {
+        "target": "linalg/pinv_256x128_f64",
+        "ms": [41.584, 42.695, 43.777]
+      },
+      {
+        "target": "linalg/qr_1024x1024_f64",
+        "ms": [34.891, 35.636, 36.452]
+      },
+      {
+        "target": "linalg/eig_48x48_f64",
+        "ms": [27.718, 28.597, 29.857]
+      }
+    ]
+  },
+  "alien_route": {
+    "source": "/data/projects/alien_cs_graveyard/alien_cs_graveyard.md section 9.6 Communication-Avoiding Algorithms",
+    "applied_slice": "Keep blocked right-looking LU and its BLAS-3 Schur update, but try a safe SIMD in-panel row-update primitive before the existing Schur GEMM.",
+    "rejection_interpretation": "The SIMD panel lane update preserved behavior but made LU1024 slower. Stop panel-lane microtuning; next LU/QR work should move to a communication-avoiding panel algorithm with an explicit pivot/tolerance contract, or route to the next non-GEMM profile row."
+  },
+  "candidate": {
+    "files_touched_temporarily": ["crates/fj-lax/src/linalg.rs"],
+    "description": "Added a LuF64x8 helper that updated adjacent panel columns with portable SIMD for each row after pivoting and diagonal selection. Pivot scan, row swaps, row order, U12 solve, and Schur GEMM were left unchanged.",
+    "restored_after_rejection": true
+  },
+  "benchmarks": {
+    "baseline": {
+      "worker": "vmi1293453",
+      "command": "cargo bench -p fj-lax --bench lax_baseline -- 'linalg/lu_1024x1024_f64' --sample-size 20 --warm-up-time 2 --measurement-time 6 --noplot",
+      "time_ms": [47.466, 48.731, 50.369]
+    },
+    "candidate": {
+      "worker": "vmi1293453",
+      "command": "cargo bench -p fj-lax --bench lax_baseline -- 'linalg/lu_1024x1024_f64' --sample-size 20 --warm-up-time 2 --measurement-time 6 --noplot",
+      "time_ms": [53.611, 55.092, 56.774]
+    },
+    "median_speedup": 0.884539,
+    "conservative_speedup_low_over_high": 0.836052,
+    "score": {
+      "impact": 0,
+      "confidence": 4,
+      "effort": 2,
+      "value": 0.0,
+      "threshold": 2.0
+    }
+  },
+  "behavior_proof": {
+    "isomorphism": [
+      "Pivot scan row order and strict greater-than tie-breaking were unchanged.",
+      "Whole-row swaps were unchanged.",
+      "The candidate still updated rows in ascending row order after each selected pivot.",
+      "For each panel cell, the candidate applied the same single factor * pivot_row[jj] subtraction for the same column update; SIMD lanes only interleaved independent adjacent columns.",
+      "U12 forward solve order and Schur GEMM order were unchanged.",
+      "Output dtype, shape, reconstruction behavior, NaN and signed-zero surfaces, errors, and RNG surface were unchanged."
+    ],
+    "candidate_test": {
+      "worker": "vmi1293453",
+      "command": "cargo test -p fj-lax --lib lu -- --nocapture",
+      "result": "63 passed, 0 failed, 0 ignored, 1122 filtered out",
+      "golden_digest_test": "lu_blocked_path_golden_output_digest passed"
+    },
+    "golden_artifact": "artifacts/performance/evidence/fj_lax_lu_panel_simd_iz1qi_2026-06-08.rejected.golden",
+    "golden_artifact_sha256": "05e6dd00785b0f33287aae27be40d095f98370347bc40b52adb85fb378795499"
+  },
+  "decision": {
+    "gate": "keep only Score >= 2.0",
+    "result": "reject",
+    "reason": "Same-worker candidate regressed LU1024 from 48.731 ms median to 55.092 ms median.",
+    "next_primitive": "Do not continue LU in-panel SIMD lane microtuning. Next route: communication-avoiding LU/QR contract work for tournament pivoting or TSQR if tolerance admits it, or reprofile and attack the next non-GEMM structural primitive."
+  }
+}

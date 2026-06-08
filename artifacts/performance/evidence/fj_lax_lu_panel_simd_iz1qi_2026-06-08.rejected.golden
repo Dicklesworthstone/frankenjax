@@ -1,0 +1,14 @@
+bead=frankenjax-iz1qi
+target=linalg/lu_1024x1024_f64
+lever=SIMD lane update for blocked LU in-panel row update
+status=rejected
+source_retained=false
+baseline_worker=vmi1293453
+baseline_ms=47.466,48.731,50.369
+candidate_worker=vmi1293453
+candidate_ms=53.611,55.092,56.774
+median_speedup=0.884539
+conservative_speedup_low_over_high=0.836052
+score=0.0
+proof=RCH vmi1293453 cargo test -p fj-lax --lib lu -- --nocapture passed 63 tests, 0 failed
+golden_digest_test=lu_blocked_path_golden_output_digest passed in candidate state
