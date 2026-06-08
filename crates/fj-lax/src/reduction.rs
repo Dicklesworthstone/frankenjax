@@ -2837,6 +2837,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn large_dense_f64_cumsum_single_line_matches_literal_path() {
+        let len = CUMULATIVE_PARALLEL_MIN_ELEMS + 17;
+        let dims = vec![len as u32];
+        let data: Vec<f64> = (0..len)
+            .map(|i| match i % 11 {
+                0 => -0.0,
+                1 => 0.0,
+                2 => -1.25,
+                3 => 2.5,
+                _ => ((i % 17) as f64) * 0.125 - 0.75,
+            })
+            .collect();
+        let dense = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims },
+                data.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        let params = BTreeMap::from([("axis".to_owned(), "0".to_owned())]);
+
+        let got = crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&dense), &params)
+            .unwrap();
+        let expect =
+            crate::eval_primitive(Primitive::Cumsum, std::slice::from_ref(&boxed), &params)
+                .unwrap();
+
+        assert!(got.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        let got_bits: Vec<u64> = got
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap().to_bits())
+            .collect();
+        let expect_bits: Vec<u64> = expect
+            .as_tensor()
+            .unwrap()
+            .elements
+            .iter()
+            .map(|l| l.as_f64().unwrap().to_bits())
+            .collect();
+        assert_eq!(got_bits, expect_bits);
+    }
+
     /// Dense f32 cumulative (cumsum/cumprod/cummax/cummin) must be BIT-FOR-BIT
     /// identical to the generic per-`Literal` float scan (forced via a boxed f32
     /// input whose `as_f32_slice` is None), across axes/forward+reverse, incl
