@@ -1,0 +1,86 @@
+{
+  "bead": "frankenjax-p1vbf.46",
+  "pass": 176,
+  "date": "2026-06-08",
+  "crate": "fj-lax",
+  "target": "linalg/lu_1024x1024_f64",
+  "profile_basis": {
+    "source": "frankenjax-p1vbf.46",
+    "summary": "Post-pass174 profile routed from rejected exact-order GEMM micro-levers to the top bit-exact non-GEMM row, LU1024."
+  },
+  "lever": {
+    "kind": "allocation_reuse",
+    "summary": "Add matmul_2d_into and reuse one LU Schur product buffer across blocked panels.",
+    "files": [
+      "crates/fj-lax/src/linalg.rs",
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ]
+  },
+  "benchmark": {
+    "tool": "criterion via rch",
+    "worker": "fmd",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_WORKER=fmd RCH_WORKERS=fmd RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=180 rch exec -- env CARGO_TARGET_DIR=<target> cargo bench -p fj-lax --bench lax_baseline -- 'linalg/lu_1024x1024_f64' --sample-size 10 --warm-up-time 1 --measurement-time 3 --noplot",
+    "baseline_ms": {
+      "low": 39.785,
+      "median": 40.215,
+      "high": 41.109
+    },
+    "after_ms": {
+      "low": 36.413,
+      "median": 36.710,
+      "high": 37.017
+    },
+    "median_speedup": 1.095477,
+    "conservative_speedup": 1.074775,
+    "median_time_reduction_percent": 8.716897
+  },
+  "score": {
+    "impact": 4,
+    "confidence": 4,
+    "effort": 2,
+    "score": 8.0,
+    "decision": "keep"
+  },
+  "proof": {
+    "golden_output_sha256": "4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91",
+    "rch_tests": [
+      {
+        "worker": "fmd",
+        "command": "cargo test -p fj-lax --lib matmul_2d_into_matches_allocating_path -- --nocapture",
+        "result": "1 passed"
+      },
+      {
+        "worker": "fmd",
+        "command": "cargo test -p fj-lax --lib lu_blocked_path_reconstructs_and_matches_scalar -- --nocapture",
+        "result": "1 passed"
+      },
+      {
+        "worker": "fmd",
+        "command": "cargo test -p fj-lax --lib lu_blocked_path_golden_output_digest -- --nocapture",
+        "result": "1 passed"
+      }
+    ],
+    "rch_quality_gates": [
+      "cargo check -p fj-lax --all-targets: passed on fmd",
+      "cargo clippy -p fj-lax --all-targets -- -D warnings: passed on fmd",
+      "git diff --check -- touched files: passed",
+      "UBS touched files: existing linalg/test panic and indexing inventory reported; UBS internal fmt/clippy/check/test-build sections passed"
+    ],
+    "rustfmt_note": "rustfmt --edition 2024 --check on linalg.rs still reports pre-existing unrelated formatting drift outside this lever; tensor_contraction.rs formatting is clean."
+  },
+  "isomorphism": {
+    "matmul": [
+      "matmul_2d_into builds the same MatmulPlan as matmul_2d.",
+      "The output buffer is filled with 0.0 before computation, matching the previous freshly allocated zeroed Vec.",
+      "Each output row is still owned by one worker and accumulated in ascending k order.",
+      "B packing, block-k gating, row chunking, and row-major output layout are unchanged."
+    ],
+    "lu": [
+      "Panel order, pivot scan order, strict greater-than tie behavior, and row swap order are unchanged.",
+      "L11 forward-solve order is unchanged.",
+      "The Schur product computes identical bits into a reused buffer.",
+      "The final lu[row + q] -= prod[pr + q] loop order is unchanged.",
+      "Shape, dtype, error, NaN, signed-zero, and RNG surfaces are unchanged."
+    ]
+  }
+}

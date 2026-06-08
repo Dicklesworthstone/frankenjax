@@ -1,0 +1,5 @@
+bead: frankenjax-p1vbf.46
+target: linalg/lu_1024x1024_f64
+golden_output_sha256: 4015f89e43b02bad7dc3f84df97617fd1d93332a81682e3bada8da779af55a91
+baseline_fmd_ms: [39.785, 40.215, 41.109]
+after_fmd_ms: [36.413, 36.710, 37.017]

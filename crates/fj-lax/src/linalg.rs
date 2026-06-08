@@ -5,7 +5,7 @@
 use fj_core::{DType, Literal, Primitive, Shape, TensorValue, Value};
 
 use crate::EvalError;
-use crate::tensor_contraction::matmul_2d;
+use crate::tensor_contraction::matmul_2d_into;
 use crate::type_promotion::promote_dtype;
 
 type ComplexScalar = (f64, f64);
@@ -1047,6 +1047,7 @@ fn lu_factor_real_blocked(lu: &mut [f64], m: usize, n: usize) -> (Vec<i64>, Vec<
     let nb = LU_BLOCK_SIZE;
     let mut l21 = Vec::with_capacity(m.saturating_mul(nb));
     let mut u12 = Vec::with_capacity(nb.saturating_mul(n));
+    let mut prod = Vec::new();
 
     let mut j = 0;
     while j < k {
@@ -1126,7 +1127,8 @@ fn lu_factor_real_blocked(lu: &mut [f64], m: usize, n: usize) -> (Vec<i64>, Vec<
             }
             debug_assert_eq!(u12.len(), jb * cols_right);
 
-            let prod = matmul_2d(&l21, rows_below, jb, &u12, cols_right);
+            prod.resize(rows_below * cols_right, 0.0);
+            matmul_2d_into(&l21, rows_below, jb, &u12, cols_right, &mut prod);
             for p in 0..rows_below {
                 let row = (panel_end + p) * n + panel_end;
                 let pr = p * cols_right;
@@ -4400,6 +4402,7 @@ pub fn lstsq(a: &[f64], m: usize, n: usize, b: &[f64]) -> Option<Vec<f64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tensor_contraction::matmul_2d;
     use std::collections::BTreeMap;
 
     /// Deterministic Hermitian n×n test matrix (H = (M + Mᴴ)/2, real diagonal).

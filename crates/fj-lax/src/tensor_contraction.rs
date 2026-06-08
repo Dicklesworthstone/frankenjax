@@ -286,6 +286,25 @@ pub fn matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64>
     matmul_2d_with_threads(a, m, k, b, n, plan)
 }
 
+pub(crate) fn matmul_2d_into(
+    a: &[f64],
+    m: usize,
+    k: usize,
+    b: &[f64],
+    n: usize,
+    result: &mut [f64],
+) {
+    let ops = m.saturating_mul(k).saturating_mul(n);
+    let threads = matmul_thread_count(ops, m);
+    let b_elems = k.saturating_mul(n);
+    let plan = MatmulPlan {
+        threads,
+        pack_b: b_elems >= PACK_B_MIN_KN,
+        block_k: b_elems >= BLOCKED_B_MIN_KN,
+    };
+    matmul_2d_with_threads_into(a, m, k, b, n, plan, result);
+}
+
 /// Benchmark-only entry point: identical to [`matmul_2d`] but with the B-panel
 /// packing forced on/off, so an A/B harness can compare both strategies in one
 /// binary on one worker (the only trustworthy way to measure the pack win — cross
@@ -338,8 +357,23 @@ fn matmul_2d_with_threads(
     plan: MatmulPlan,
 ) -> Vec<f64> {
     let mut result = vec![0.0; m * n];
+    matmul_2d_with_threads_into(a, m, k, b, n, plan, &mut result);
+    result
+}
+
+fn matmul_2d_with_threads_into(
+    a: &[f64],
+    m: usize,
+    k: usize,
+    b: &[f64],
+    n: usize,
+    plan: MatmulPlan,
+    result: &mut [f64],
+) {
+    assert_eq!(result.len(), m * n);
+    result.fill(0.0);
     if m == 0 || n == 0 || k == 0 {
-        return result;
+        return;
     }
     // Pack B's column panels once (shared, read-only across all output rows) when
     // B spills L2. Bit-identical to the strided read; just panel-contiguous.
@@ -355,13 +389,13 @@ fn matmul_2d_with_threads(
         block_k: plan.block_k,
     };
     if plan.threads <= 1 {
-        matmul_2d_dispatch(a, k, rhs, 0, &mut result);
-        return result;
+        matmul_2d_dispatch(a, k, rhs, 0, result);
+        return;
     }
 
     let rows_per = m.div_ceil(plan.threads);
     std::thread::scope(|scope| {
-        let mut rest: &mut [f64] = result.as_mut_slice();
+        let mut rest: &mut [f64] = result;
         let mut row_start = 0usize;
         while row_start < m {
             let chunk_rows = rows_per.min(m - row_start);
@@ -372,7 +406,6 @@ fn matmul_2d_with_threads(
             row_start += chunk_rows;
         }
     });
-    result
 }
 
 /// Pick the row-block kernel for one thread's slice. With B packed AND `k` deep
@@ -822,6 +855,26 @@ mod tests {
         assert!((result[1] - 22.0).abs() < 1e-10);
         assert!((result[2] - 43.0).abs() < 1e-10);
         assert!((result[3] - 50.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn matmul_2d_into_matches_allocating_path() {
+        let (m, k, n) = (11usize, 17usize, 13usize);
+        let a: Vec<f64> = (0..m * k)
+            .map(|i| (i as f64 * 0.019_31).sin() * 1.7 - 0.2)
+            .collect();
+        let b: Vec<f64> = (0..k * n)
+            .map(|i| (i as f64 * 0.027_73).cos() * 2.1 + 0.4)
+            .collect();
+
+        let want = matmul_2d(&a, m, k, &b, n);
+        let mut got = vec![f64::NAN; m * n];
+        matmul_2d_into(&a, m, k, &b, n, &mut got);
+
+        assert_eq!(got.len(), want.len());
+        for idx in 0..got.len() {
+            assert_eq!(got[idx].to_bits(), want[idx].to_bits(), "mismatch at {idx}");
+        }
     }
 
     #[test]
