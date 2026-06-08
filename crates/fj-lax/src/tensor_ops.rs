@@ -2043,6 +2043,21 @@ fn eval_scatter_dense(
     {
         scatter_typed!(op, upd, TensorValue::new_f64_values, |a: f64, b: f64| a + b);
     }
+    // Dense F32 scatter (the embedding-gradient scatter-add case). f32 is JAX's
+    // DEFAULT dtype. Overwrite is a contiguous copy; scatter-ADD computes
+    // `(a as f64 + b as f64) as f32`, EXACTLY what the generic `binary_literal_op`
+    // Add does for f32 operands (`literal_from_numeric_f64(F32, a_f64 + b_f64)`),
+    // so it is bit-for-bit identical incl. repeated-index accumulation and NaN.
+    if operand.dtype == DType::F32
+        && let (Some(op), Some(upd)) = (
+            operand.elements.as_f32_slice(),
+            updates.elements.as_f32_slice(),
+        )
+    {
+        scatter_typed!(op, upd, TensorValue::new_f32_values, |a: f32, b: f32| {
+            (f64::from(a) + f64::from(b)) as f32
+        });
+    }
     if operand.dtype == DType::I64
         && let (Some(op), Some(upd)) = (
             operand.elements.as_i64_slice(),
@@ -5197,7 +5212,10 @@ fn conv_real_elements_as_f64(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
     let mut out = Vec::with_capacity(tensor.elements.len());
     for literal in &tensor.elements {
         match literal {
-            Literal::F64Bits(_) | Literal::F32Bits(_) | Literal::BF16Bits(_) | Literal::F16Bits(_) => {
+            Literal::F64Bits(_)
+            | Literal::F32Bits(_)
+            | Literal::BF16Bits(_)
+            | Literal::F16Bits(_) => {
                 out.push(literal.as_f64()?);
             }
             _ => return None,
@@ -5353,9 +5371,14 @@ fn eval_conv_1d(
     // independent output morsels; each output element still performs its own
     // inner reduction in the same serial k/ci order.
     if !is_complex
-        && matches!(out_dtype, DType::F64 | DType::F32 | DType::BF16 | DType::F16)
-        && let (Some(lhs_cow), Some(rhs_cow)) =
-            (conv_real_elements_as_f64(lhs), conv_real_elements_as_f64(rhs))
+        && matches!(
+            out_dtype,
+            DType::F64 | DType::F32 | DType::BF16 | DType::F16
+        )
+        && let (Some(lhs_cow), Some(rhs_cow)) = (
+            conv_real_elements_as_f64(lhs),
+            conv_real_elements_as_f64(rhs),
+        )
     {
         // Re-borrow as &[f64] so the threaded morsel closures below can capture a
         // (Copy) slice reference rather than moving the Cow. The Cow owns the
@@ -5653,9 +5676,14 @@ fn eval_conv_2d(
     // rounding to out_dtype. f32 is the default ML dtype, so this routes the core
     // CNN op through the im2col + GEMM kernel instead of the scalar loop.
     if !is_complex
-        && matches!(out_dtype, DType::F64 | DType::F32 | DType::BF16 | DType::F16)
-        && let (Some(lhs_src), Some(rhs_src)) =
-            (conv_real_elements_as_f64(lhs), conv_real_elements_as_f64(rhs))
+        && matches!(
+            out_dtype,
+            DType::F64 | DType::F32 | DType::BF16 | DType::F16
+        )
+        && let (Some(lhs_src), Some(rhs_src)) = (
+            conv_real_elements_as_f64(lhs),
+            conv_real_elements_as_f64(rhs),
+        )
     {
         // im2col + GEMM fast path. The kernel `rhs_src` is laid out
         // [KH,KW,Cin,Cout] row-major, which is exactly the [(KH·KW·Cin) × Cout]
@@ -6196,17 +6224,23 @@ pub(crate) fn eval_split(
             let raw_axis: i64 = params
                 .get("axis")
                 .map(|raw| {
-                    raw.trim().parse::<i64>().map_err(|_| EvalError::Unsupported {
-                        primitive,
-                        detail: format!("invalid integer in param 'axis': '{raw}'"),
-                    })
+                    raw.trim()
+                        .parse::<i64>()
+                        .map_err(|_| EvalError::Unsupported {
+                            primitive,
+                            detail: format!("invalid integer in param 'axis': '{raw}'"),
+                        })
                 })
                 .transpose()?
                 .unwrap_or(0);
             let dims = &tensor.shape.dims;
             let rank = dims.len();
 
-            let norm = if raw_axis < 0 { raw_axis + rank as i64 } else { raw_axis };
+            let norm = if raw_axis < 0 {
+                raw_axis + rank as i64
+            } else {
+                raw_axis
+            };
             if norm < 0 || norm >= rank as i64 {
                 return Err(EvalError::Unsupported {
                     primitive,
@@ -6343,16 +6377,22 @@ pub(crate) fn eval_split_multi(
     let raw_axis: i64 = params
         .get("axis")
         .map(|raw| {
-            raw.trim().parse::<i64>().map_err(|_| EvalError::Unsupported {
-                primitive,
-                detail: format!("invalid integer in param 'axis': '{raw}'"),
-            })
+            raw.trim()
+                .parse::<i64>()
+                .map_err(|_| EvalError::Unsupported {
+                    primitive,
+                    detail: format!("invalid integer in param 'axis': '{raw}'"),
+                })
         })
         .transpose()?
         .unwrap_or(0);
     let dims = &tensor.shape.dims;
     let rank = dims.len();
-    let norm = if raw_axis < 0 { raw_axis + rank as i64 } else { raw_axis };
+    let norm = if raw_axis < 0 {
+        raw_axis + rank as i64
+    } else {
+        raw_axis
+    };
     if norm < 0 || norm >= rank as i64 {
         return Err(EvalError::Unsupported {
             primitive,
@@ -6473,7 +6513,11 @@ pub(crate) fn eval_expand_dims(
         }
         Value::Tensor(tensor) => {
             let rank = tensor.shape.dims.len();
-            let norm = if raw_axis < 0 { raw_axis + rank as i64 + 1 } else { raw_axis };
+            let norm = if raw_axis < 0 {
+                raw_axis + rank as i64 + 1
+            } else {
+                raw_axis
+            };
             if norm < 0 || norm > rank as i64 {
                 return Err(EvalError::Unsupported {
                     primitive,
@@ -6732,9 +6776,14 @@ mod tests {
         )
         .unwrap();
         let (out_h, out_w) = (h - kh + 1, w - kw + 1);
-        let Value::Tensor(t) = out else { panic!("expected tensor") };
+        let Value::Tensor(t) = out else {
+            panic!("expected tensor")
+        };
         assert_eq!(t.dtype, DType::F32);
-        assert_eq!(t.shape.dims, vec![1, out_h as u32, out_w as u32, c_out as u32]);
+        assert_eq!(
+            t.shape.dims,
+            vec![1, out_h as u32, out_w as u32, c_out as u32]
+        );
         let got: Vec<u32> = t
             .elements
             .iter()
@@ -6761,7 +6810,10 @@ mod tests {
                 }
             }
         }
-        assert_eq!(got, want, "f32 conv2d must be bit-identical to the f64-accum reference");
+        assert_eq!(
+            got, want,
+            "f32 conv2d must be bit-identical to the f64-accum reference"
+        );
     }
 
     /// f32 conv2d now emits DENSE f32 storage so the output feeds downstream f32
@@ -6769,8 +6821,12 @@ mod tests {
     #[test]
     fn f32_conv2d_emits_dense_f32_storage() {
         let (h, w, c_in, c_out, kh, kw) = (20usize, 20usize, 4usize, 8usize, 3usize, 3usize);
-        let xf: Vec<f32> = (0..h * w * c_in).map(|i| (i as f32 * 0.011).sin()).collect();
-        let kf: Vec<f32> = (0..kh * kw * c_in * c_out).map(|i| (i as f32 * 0.017).cos()).collect();
+        let xf: Vec<f32> = (0..h * w * c_in)
+            .map(|i| (i as f32 * 0.011).sin())
+            .collect();
+        let kf: Vec<f32> = (0..kh * kw * c_in * c_out)
+            .map(|i| (i as f32 * 0.017).cos())
+            .collect();
         let mk32 = |dims: Vec<u32>, data: &[f32]| {
             Value::Tensor(
                 TensorValue::new(
@@ -6790,7 +6846,9 @@ mod tests {
             &params(&[("padding", "valid"), ("strides", "1")]),
         )
         .unwrap();
-        let Value::Tensor(t) = out else { panic!("expected tensor") };
+        let Value::Tensor(t) = out else {
+            panic!("expected tensor")
+        };
         assert_eq!(t.dtype, DType::F32);
         assert!(
             t.elements.as_f32_slice().is_some(),
@@ -6803,8 +6861,12 @@ mod tests {
     fn bench_f32_conv2d() {
         use std::time::Instant;
         let run = |b: usize, h: usize, c_in: usize, c_out: usize, k: usize| {
-            let x: Vec<f32> = (0..b * h * h * c_in).map(|i| (i % 7) as f32 * 0.5).collect();
-            let ker: Vec<f32> = (0..k * k * c_in * c_out).map(|i| (i % 5) as f32 * 0.25).collect();
+            let x: Vec<f32> = (0..b * h * h * c_in)
+                .map(|i| (i % 7) as f32 * 0.5)
+                .collect();
+            let ker: Vec<f32> = (0..k * k * c_in * c_out)
+                .map(|i| (i % 5) as f32 * 0.25)
+                .collect();
             let mk = |dims: Vec<u32>, data: &[f32]| {
                 Value::Tensor(
                     TensorValue::new(
@@ -6827,7 +6889,10 @@ mod tests {
                 let _ = eval_conv(Primitive::Conv, &inputs, &p).unwrap();
                 best = best.min(t.elapsed().as_secs_f64());
             }
-            println!("BENCH f32 conv2d [{b},{h},{h},{c_in}]*[{k},{k},{c_in},{c_out}]: {:.4}ms", best * 1e3);
+            println!(
+                "BENCH f32 conv2d [{b},{h},{h},{c_in}]*[{k},{k},{c_in},{c_out}]: {:.4}ms",
+                best * 1e3
+            );
         };
         run(8, 32, 16, 32, 3);
         run(4, 28, 32, 64, 3);
@@ -6989,7 +7054,11 @@ mod tests {
                 .iter()
                 .map(|l| {
                     let x = l.as_f64().unwrap();
-                    if x.is_nan() { 0x7ff8_0000_0000_0000 } else { x.to_bits() }
+                    if x.is_nan() {
+                        0x7ff8_0000_0000_0000
+                    } else {
+                        x.to_bits()
+                    }
                 })
                 .collect()
         };
@@ -7082,7 +7151,11 @@ mod tests {
                 .iter()
                 .map(|l| {
                     let x = l.as_f64().unwrap();
-                    if x.is_nan() { 0x7ff8_0000_0000_0000 } else { x.to_bits() }
+                    if x.is_nan() {
+                        0x7ff8_0000_0000_0000
+                    } else {
+                        x.to_bits()
+                    }
                 })
                 .collect()
         };
@@ -9124,6 +9197,162 @@ mod tests {
         }
     }
 
+    /// Dense f32 scatter (overwrite + scatter-ADD) must be BIT-FOR-BIT identical to
+    /// the generic per-`Literal` path, incl. repeated-index accumulation (index 15)
+    /// and OOB (index 99), across fill_or_drop/clip and NaN/±inf/-0.0. scatter-add
+    /// matches because the dense `(a as f64 + b as f64) as f32` is exactly what the
+    /// generic `binary_literal_op` Add computes for f32.
+    #[test]
+    fn dense_f32_scatter_matches_literal_path() {
+        let (rows, cols) = (16usize, 24usize);
+        let dims = vec![rows as u32, cols as u32];
+        let idxs = [0_i64, 3, 15, 99, 1, 15]; // 99 OOB, 15 repeated -> add accumulates
+        let n_upd = idxs.len();
+        let idx = Value::vector_i64(&idxs).unwrap();
+        let upd_dims = vec![n_upd as u32, cols as u32];
+        let opf: Vec<f32> = (0..rows * cols)
+            .map(|i| match i % 13 {
+                0 => f32::INFINITY,
+                1 => f32::NEG_INFINITY,
+                2 => -0.0,
+                3 => f32::from_bits(0x7fc0_0001),
+                _ => i as f32 * 0.5 - 10.0,
+            })
+            .collect();
+        let updf: Vec<f32> = (0..n_upd * cols).map(|i| i as f32 * 0.25 + 1.0).collect();
+        let mk = |d: &[f32], dm: &[u32], dense: bool| {
+            if dense {
+                Value::Tensor(
+                    TensorValue::new_f32_values(Shape { dims: dm.to_vec() }, d.to_vec()).unwrap(),
+                )
+            } else {
+                Value::Tensor(
+                    TensorValue::new(
+                        DType::F32,
+                        Shape { dims: dm.to_vec() },
+                        d.iter().copied().map(Literal::from_f32).collect(),
+                    )
+                    .unwrap(),
+                )
+            }
+        };
+        let bits = |v: &Value| -> Vec<u32> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F32Bits(b) => *b,
+                    o => panic!("expected f32, got {o:?}"),
+                })
+                .collect()
+        };
+        for mode in ["overwrite", "add"] {
+            for imode in ["fill_or_drop", "clip"] {
+                let p = params(&[("mode", mode), ("index_mode", imode)]);
+                let d = super::eval_scatter(
+                    &[
+                        mk(&opf, &dims, true),
+                        idx.clone(),
+                        mk(&updf, &upd_dims, true),
+                    ],
+                    &p,
+                )
+                .unwrap();
+                let l = super::eval_scatter(
+                    &[
+                        mk(&opf, &dims, false),
+                        idx.clone(),
+                        mk(&updf, &upd_dims, false),
+                    ],
+                    &p,
+                )
+                .unwrap();
+                assert_eq!(
+                    d.as_tensor().unwrap().dtype,
+                    DType::F32,
+                    "f32 scatter dtype {mode} {imode}"
+                );
+                assert_eq!(bits(&d), bits(&l), "f32 scatter mode={mode} imode={imode}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_f32_embedding_scatter_add_dense_vs_generic() {
+        use std::time::Instant;
+        let (vocab, dim) = (50000usize, 256usize);
+        let batch = 8192usize;
+        let zeros: Vec<f32> = vec![0.0; vocab * dim];
+        let updates: Vec<f32> = (0..batch * dim)
+            .map(|i| ((i % 1009) as f32) * 0.001 - 0.5)
+            .collect();
+        let op_dims = vec![vocab as u32, dim as u32];
+        let upd_dims = vec![batch as u32, dim as u32];
+        let dense_op = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: op_dims.clone(),
+                },
+                zeros.clone(),
+            )
+            .unwrap(),
+        );
+        let boxed_op = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: op_dims.clone(),
+                },
+                zeros.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let dense_upd = Value::Tensor(
+            TensorValue::new_f32_values(
+                Shape {
+                    dims: upd_dims.clone(),
+                },
+                updates.clone(),
+            )
+            .unwrap(),
+        );
+        let boxed_upd = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape {
+                    dims: upd_dims.clone(),
+                },
+                updates.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let idx: Vec<i64> = (0..batch as i64)
+            .map(|i| (i * 7919) % vocab as i64)
+            .collect();
+        let idx_v = Value::vector_i64(&idx).unwrap();
+        let p = params(&[("mode", "add"), ("index_mode", "clip")]);
+        let time = |op: &Value, upd: &Value| {
+            let _ = super::eval_scatter(&[op.clone(), idx_v.clone(), upd.clone()], &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..15 {
+                let t = Instant::now();
+                let _ = super::eval_scatter(&[op.clone(), idx_v.clone(), upd.clone()], &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed_op, &boxed_upd);
+        let dense_t = time(&dense_op, &dense_upd);
+        println!(
+            "BENCH f32 embedding scatter-add [{vocab},{dim}] x {batch}: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
+        );
+    }
+
     #[test]
     fn dense_gather_contiguous_matches_literal_path() {
         let rows = 32usize;
@@ -9228,8 +9457,15 @@ mod tests {
             };
             let d = super::eval_gather(&[dense, idx.clone()], &params).unwrap();
             let l = super::eval_gather(&[boxed, idx.clone()], &params).unwrap();
-            assert_eq!(d.as_tensor().unwrap().dtype, DType::F32, "f32 gather dtype mode={mode}");
-            assert_eq!(d.as_tensor().unwrap().shape.dims, l.as_tensor().unwrap().shape.dims);
+            assert_eq!(
+                d.as_tensor().unwrap().dtype,
+                DType::F32,
+                "f32 gather dtype mode={mode}"
+            );
+            assert_eq!(
+                d.as_tensor().unwrap().shape.dims,
+                l.as_tensor().unwrap().shape.dims
+            );
             assert_eq!(bits(&d), bits(&l), "f32 gather mode={mode}");
         }
     }
@@ -9240,13 +9476,24 @@ mod tests {
         use std::time::Instant;
         let (vocab, dim) = (50000usize, 256usize); // [50000,256] f32 table
         let batch = 8192usize;
-        let table: Vec<f32> = (0..vocab * dim).map(|i| ((i % 1009) as f32) * 0.001 - 0.5).collect();
+        let table: Vec<f32> = (0..vocab * dim)
+            .map(|i| ((i % 1009) as f32) * 0.001 - 0.5)
+            .collect();
         let dims = vec![vocab as u32, dim as u32];
-        let dense = Value::Tensor(TensorValue::new_f32_values(Shape { dims: dims.clone() }, table.clone()).unwrap());
-        let boxed = Value::Tensor(
-            TensorValue::new(DType::F32, Shape { dims: dims.clone() }, table.iter().copied().map(Literal::from_f32).collect()).unwrap(),
+        let dense = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: dims.clone() }, table.clone()).unwrap(),
         );
-        let idx: Vec<i64> = (0..batch as i64).map(|i| (i * 7919) % vocab as i64).collect();
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: dims.clone() },
+                table.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let idx: Vec<i64> = (0..batch as i64)
+            .map(|i| (i * 7919) % vocab as i64)
+            .collect();
         let idx_v = Value::vector_i64(&idx).unwrap();
         let p = params(&[("slice_sizes", "1,256"), ("index_mode", "clip")]);
         let time = |operand: &Value| {
@@ -9263,7 +9510,9 @@ mod tests {
         let dense_t = time(&dense);
         println!(
             "BENCH f32 embedding gather [{vocab},{dim}] x {batch} rows: generic(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
-            generic * 1e3, dense_t * 1e3, generic / dense_t
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
         );
     }
 
