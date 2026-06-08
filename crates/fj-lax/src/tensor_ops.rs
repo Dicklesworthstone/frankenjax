@@ -4919,6 +4919,20 @@ fn extremum_along_axis(
             }
             result_elements.push(Literal::I64(best_idx as i64));
         }
+    } else if let Some(values) = tensor.elements.as_f32_slice() {
+        // Dense F32 (JAX's default float, the decode-time argmax-over-logits hot
+        // path): scan the contiguous f32 slice directly, widening each tap to f64
+        // exactly. Identical to the generic float branch below, which reconstructs
+        // a `Literal` via `tensor.elements.get(..)` per element then `as_f64()`
+        // (= `f64::from(f32)`); same `arg_extreme_float` reducer -> identical
+        // -NaN/±0.0 tie behavior.
+        for outer in 0..outer_count {
+            let base = base_of(outer)?;
+            let best_idx = arg_extreme_float(axis_dim, find_max, |i| {
+                f64::from(values[base + i * axis_stride])
+            });
+            result_elements.push(Literal::I64(best_idx as i64));
+        }
     } else if matches!(
         tensor.dtype,
         DType::BF16 | DType::F16 | DType::F32 | DType::F64
@@ -10938,6 +10952,97 @@ mod tests {
                 &eval_argmin(Primitive::Argmin, std::slice::from_ref(&iliteral), &p).unwrap()
             ),
             "i64 argmin dense vs generic"
+        );
+    }
+
+    #[test]
+    fn argmax_argmin_dense_f32_matches_generic() {
+        // Dense F32 (as_f32_slice) takes the new direct fast path; the same data as
+        // a boxed-Literal F32 tensor takes the generic per-element `get().as_f64()`
+        // float branch. Indices must match exactly over NaN/+-inf/+-0/dups (incl.
+        // first-occurrence ties) for both argmax and argmin, axis 1.
+        let rows = 7usize;
+        let cols = 300usize;
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| match i % 17 {
+                0 => f32::NAN,
+                1 => f32::INFINITY,
+                2 => f32::NEG_INFINITY,
+                3 => -0.0,
+                4 => 0.0,
+                5 => 7.0,
+                _ => ((i as f32) * 1.000_173).sin() * 10.0 - (i as f32) * 0.001,
+            })
+            .collect();
+        let shape = Shape {
+            dims: vec![rows as u32, cols as u32],
+        };
+        let dense =
+            Value::Tensor(TensorValue::new_f32_values(shape.clone(), data.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                shape.clone(),
+                data.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(dense.as_tensor().unwrap().elements.as_f32_slice().is_some());
+        assert!(boxed.as_tensor().unwrap().elements.as_f32_slice().is_none());
+        let p = params(&[("axis", "1")]);
+        for prim in [Primitive::Argmax, Primitive::Argmin] {
+            let eval = |v: &Value| -> Vec<i64> {
+                let r = if prim == Primitive::Argmax {
+                    eval_argmax(prim, std::slice::from_ref(v), &p).unwrap()
+                } else {
+                    eval_argmin(prim, std::slice::from_ref(v), &p).unwrap()
+                };
+                extract_i64_vec(&r)
+            };
+            assert_eq!(eval(&dense), eval(&boxed), "f32 {prim:?} dense vs generic");
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_argmax_f32_dense_vs_boxed() {
+        use std::time::Instant;
+        // Decode-time argmax over logits: [batch, vocab] argmax on axis 1.
+        let (batch, vocab) = (256usize, 32768usize);
+        let data: Vec<f32> = (0..batch * vocab)
+            .map(|i| ((i.wrapping_mul(2_654_435_761) % 100_003) as f32) * 0.001 - 50.0)
+            .collect();
+        let shape = Shape {
+            dims: vec![batch as u32, vocab as u32],
+        };
+        let dense =
+            Value::Tensor(TensorValue::new_f32_values(shape.clone(), data.clone()).unwrap());
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                shape.clone(),
+                data.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+        let p = params(&[("axis", "1")]);
+        let time = |v: &Value| {
+            let _ = eval_argmax(Primitive::Argmax, std::slice::from_ref(v), &p).unwrap();
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = Instant::now();
+                let _ = eval_argmax(Primitive::Argmax, std::slice::from_ref(v), &p).unwrap();
+                best = best.min(t.elapsed().as_secs_f64());
+            }
+            best
+        };
+        let generic = time(&boxed);
+        let dense_t = time(&dense);
+        println!(
+            "BENCH argmax f32 [{batch},{vocab}] axis1: boxed(per-Literal)={:.4}ms dense={:.4}ms speedup={:.2}x",
+            generic * 1e3,
+            dense_t * 1e3,
+            generic / dense_t
         );
     }
 
