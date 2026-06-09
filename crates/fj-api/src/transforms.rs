@@ -4,8 +4,10 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use fj_core::{CompatibilityMode, Jaxpr, TraceTransformLedger, Transform, Value};
-use fj_dispatch::{DispatchRequest, dispatch};
+#[cfg(test)]
+use fj_core::TraceTransformLedger;
+use fj_core::{CompatibilityMode, Jaxpr, Transform, Value};
+use fj_dispatch::{DispatchRequestRef, dispatch_ref};
 pub use fj_trace::ShapedArray;
 
 use crate::errors::ApiError;
@@ -582,36 +584,49 @@ fn custom_derivative_rule_key(transform: &str) -> String {
     format!("fj-api:{transform}:{id}")
 }
 
+fn transform_evidence(transforms: &[Transform]) -> Vec<String> {
+    transforms
+        .iter()
+        .enumerate()
+        .map(|(idx, transform)| format!("fj-api-{}-{}", transform.as_str(), idx))
+        .collect()
+}
+
+#[cfg(test)]
 fn build_ledger(jaxpr: Jaxpr, transforms: &[Transform]) -> TraceTransformLedger {
     let mut ledger = TraceTransformLedger::new(jaxpr);
-    for (idx, transform) in transforms.iter().enumerate() {
-        ledger.push_transform(*transform, format!("fj-api-{}-{}", transform.as_str(), idx));
+    for (transform, evidence) in transforms.iter().zip(transform_evidence(transforms)) {
+        ledger.push_transform(*transform, evidence);
     }
     ledger
 }
 
 fn dispatch_with_options(
-    jaxpr: Jaxpr,
+    jaxpr: &Jaxpr,
     transforms: &[Transform],
     args: Vec<Value>,
     backend: &str,
     mode: CompatibilityMode,
     compile_options: BTreeMap<String, String>,
 ) -> Result<Vec<Value>, ApiError> {
-    let response = dispatch(DispatchRequest {
+    let transform_evidence = transform_evidence(transforms);
+    let unknown_incompatible_features: &[String] = &[];
+    let response = dispatch_ref(DispatchRequestRef {
         mode,
-        ledger: build_ledger(jaxpr, transforms),
+        root_jaxpr: jaxpr,
+        transform_stack: transforms,
+        transform_evidence: &transform_evidence,
         args,
-        backend: backend.to_owned(),
+        backend,
         compile_options,
         custom_hook: None,
-        unknown_incompatible_features: vec![],
+        unknown_incompatible_features,
     })?;
     Ok(response.outputs)
 }
 
 fn dispatch_with(
-    jaxpr: Jaxpr,
+    jaxpr: &Jaxpr,
     transforms: &[Transform],
     args: Vec<Value>,
     backend: &str,
@@ -648,7 +663,7 @@ impl JitWrapped {
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
         dispatch_with(
-            self.jaxpr.clone(),
+            &self.jaxpr,
             &[Transform::Jit],
             args,
             self.backend.as_ref(),
@@ -702,7 +717,7 @@ impl GradWrapped {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
         dispatch_with_options(
-            self.jaxpr.clone(),
+            &self.jaxpr,
             &[Transform::Grad],
             args,
             self.backend.as_ref(),
@@ -752,16 +767,14 @@ impl VmapWrapped {
             compile_options.insert("vmap_out_axes".to_owned(), out_axes.clone());
         }
 
-        let response = dispatch(DispatchRequest {
-            mode: self.mode,
-            ledger: build_ledger(self.jaxpr.clone(), &[Transform::Vmap]),
+        dispatch_with_options(
+            &self.jaxpr,
+            &[Transform::Vmap],
             args,
-            backend: self.backend.to_string(),
+            self.backend.as_ref(),
+            self.mode,
             compile_options,
-            custom_hook: None,
-            unknown_incompatible_features: vec![],
-        })?;
-        Ok(response.outputs)
+        )
     }
 
     /// Compose: `vmap(grad(f))`.
@@ -839,7 +852,7 @@ impl ComposedTransform {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
         dispatch_with_options(
-            self.jaxpr.clone(),
+            &self.jaxpr,
             &self.transforms,
             args,
             self.backend.as_ref(),
@@ -869,7 +882,7 @@ impl ValueAndGradWrapped {
             compile_options.insert(CUSTOM_VJP_RULE_KEY_OPTION.to_owned(), rule_key.clone());
         }
         let outputs = dispatch_with_options(
-            self.jaxpr.clone(),
+            &self.jaxpr,
             &[Transform::Grad],
             args,
             self.backend.as_ref(),
@@ -907,13 +920,7 @@ impl CustomVjpWrapped {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(
-            self.jaxpr.clone(),
-            &[],
-            args,
-            self.backend.as_ref(),
-            self.mode,
-        )
+        dispatch_with(&self.jaxpr, &[], args, self.backend.as_ref(), self.mode)
     }
 
     #[must_use]
@@ -964,13 +971,7 @@ impl CustomJvpWrapped {
     }
 
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(
-            self.jaxpr.clone(),
-            &[],
-            args,
-            self.backend.as_ref(),
-            self.mode,
-        )
+        dispatch_with(&self.jaxpr, &[], args, self.backend.as_ref(), self.mode)
     }
 
     pub fn jvp_call(
@@ -1023,13 +1024,7 @@ impl CheckpointWrapped {
 
     /// Execute the checkpointed function (forward pass only).
     pub fn call(&self, args: Vec<Value>) -> Result<Vec<Value>, ApiError> {
-        dispatch_with(
-            self.jaxpr.clone(),
-            &[],
-            args,
-            self.backend.as_ref(),
-            self.mode,
-        )
+        dispatch_with(&self.jaxpr, &[], args, self.backend.as_ref(), self.mode)
     }
 
     /// Compute gradients of the checkpointed function.
@@ -1422,6 +1417,31 @@ mod tests {
         assert!(
             !gradients.is_empty(),
             "should produce at least one gradient"
+        );
+    }
+
+    #[test]
+    fn value_and_grad_borrowed_dispatch_golden_sha256() {
+        use fj_core::ProgramSpec;
+
+        let wrapped = value_and_grad(fj_core::build_program(ProgramSpec::SquarePlusLinear));
+        let (values, gradients) = wrapped
+            .call(vec![Value::scalar_f64(3.0)])
+            .expect("value_and_grad should succeed through borrowed dispatch");
+        let payload = [
+            values[0]
+                .as_f64_scalar()
+                .expect("value should be f64")
+                .to_bits(),
+            gradients[0]
+                .as_f64_scalar()
+                .expect("gradient should be f64")
+                .to_bits(),
+        ];
+        let digest = fj_test_utils::fixture_id_from_json(&payload).expect("payload hashes");
+        assert_eq!(
+            digest,
+            "2d2d457ca9efee1db747a6578e6f6fbf9e5d84802cad03f84b69d3b52d669f96"
         );
     }
 

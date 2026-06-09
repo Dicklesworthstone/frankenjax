@@ -1220,7 +1220,12 @@ impl LiteralBuffer {
                 literals,
             } => literals
                 .get_or_init(|| {
-                    Arc::new(values.iter().map(|&bits| half_bits_to_literal(bits, *dtype)).collect())
+                    Arc::new(
+                        values
+                            .iter()
+                            .map(|&bits| half_bits_to_literal(bits, *dtype))
+                            .collect(),
+                    )
                 })
                 .as_slice(),
             LiteralBufferStorage::RepeatedPatches {
@@ -3819,29 +3824,38 @@ impl TraceTransformLedger {
 
     #[must_use]
     pub fn composition_signature(&self) -> String {
-        let mut out = String::new();
-        out.push_str("stack=");
-        for transform in &self.transform_stack {
-            let _ = write!(&mut out, "{}>", transform.as_str());
-        }
-        out.push_str("|evidence=");
-        for (transform, evidence) in self
-            .transform_stack
-            .iter()
-            .zip(self.transform_evidence.iter())
-        {
-            let _ = write!(
-                &mut out,
-                "{}:{}:{};",
-                transform.as_str(),
-                evidence.len(),
-                evidence
-            );
-        }
-        out.push_str("|jaxpr=");
-        out.push_str(self.root_jaxpr.canonical_fingerprint());
-        out
+        composition_signature_for(
+            &self.root_jaxpr,
+            &self.transform_stack,
+            &self.transform_evidence,
+        )
     }
+}
+
+#[must_use]
+pub fn composition_signature_for(
+    root_jaxpr: &Jaxpr,
+    transform_stack: &[Transform],
+    transform_evidence: &[String],
+) -> String {
+    let mut out = String::new();
+    out.push_str("stack=");
+    for transform in transform_stack {
+        let _ = write!(&mut out, "{}>", transform.as_str());
+    }
+    out.push_str("|evidence=");
+    for (transform, evidence) in transform_stack.iter().zip(transform_evidence.iter()) {
+        let _ = write!(
+            &mut out,
+            "{}:{}:{};",
+            transform.as_str(),
+            evidence.len(),
+            evidence
+        );
+    }
+    out.push_str("|jaxpr=");
+    out.push_str(root_jaxpr.canonical_fingerprint());
+    out
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3923,16 +3937,28 @@ impl std::error::Error for TransformCompositionError {}
 pub fn verify_transform_composition(
     ledger: &TraceTransformLedger,
 ) -> Result<TransformCompositionProof, TransformCompositionError> {
-    if ledger.transform_stack.len() != ledger.transform_evidence.len() {
+    verify_transform_composition_parts(
+        &ledger.root_jaxpr,
+        &ledger.transform_stack,
+        &ledger.transform_evidence,
+    )
+}
+
+pub fn verify_transform_composition_parts(
+    root_jaxpr: &Jaxpr,
+    transform_stack: &[Transform],
+    transform_evidence: &[String],
+) -> Result<TransformCompositionProof, TransformCompositionError> {
+    if transform_stack.len() != transform_evidence.len() {
         return Err(TransformCompositionError::EvidenceCountMismatch {
-            transform_count: ledger.transform_stack.len(),
-            evidence_count: ledger.transform_evidence.len(),
+            transform_count: transform_stack.len(),
+            evidence_count: transform_evidence.len(),
         });
     }
 
     let mut seen_evidence = BTreeSet::new();
-    for (index, transform) in ledger.transform_stack.iter().enumerate() {
-        let evidence = ledger.transform_evidence[index].trim();
+    for (index, transform) in transform_stack.iter().enumerate() {
+        let evidence = transform_evidence[index].trim();
         if evidence.is_empty() {
             return Err(TransformCompositionError::EmptyEvidence {
                 index,
@@ -3954,14 +3980,15 @@ pub fn verify_transform_composition(
         }
     }
 
-    let stack_signature = ledger.composition_signature();
+    let stack_signature =
+        composition_signature_for(root_jaxpr, transform_stack, transform_evidence);
     let stack_hash_hex = format!("{:016x}", fnv1a_64(stack_signature.as_bytes()));
 
     Ok(TransformCompositionProof {
         stack_signature,
         stack_hash_hex,
-        transform_count: ledger.transform_stack.len(),
-        evidence_count: ledger.transform_evidence.len(),
+        transform_count: transform_stack.len(),
+        evidence_count: transform_evidence.len(),
     })
 }
 
@@ -3986,7 +4013,7 @@ mod tests {
     use super::{
         Atom, DType, Equation, Jaxpr, JaxprValidationError, Literal, LiteralBuffer, Primitive,
         ProgramSpec, Shape, TensorValue, TraceTransformLedger, Transform, Value, ValueError, VarId,
-        build_program, verify_transform_composition,
+        build_program, verify_transform_composition, verify_transform_composition_parts,
     };
     use proptest::prelude::*;
     use proptest::test_runner::{Config as ProptestConfig, TestCaseError, TestRunner};
@@ -4775,6 +4802,31 @@ mod tests {
                     assert_eq!(proof.transform_count, 1);
                     assert_eq!(proof.evidence_count, 1);
                 }
+                Ok(Vec::new())
+            },
+        );
+    }
+
+    #[test]
+    fn transform_composition_parts_match_owned_ledger_proof() {
+        run_logged_test(
+            "transform_composition_parts_match_owned_ledger_proof",
+            &("transform-parts-proof", 1_u32),
+            fj_test_utils::TestMode::Strict,
+            || {
+                let mut ttl = TraceTransformLedger::new(build_program(ProgramSpec::Square));
+                ttl.push_transform(Transform::Jit, "evidence-jit");
+                ttl.push_transform(Transform::Grad, "evidence-grad");
+
+                let owned = verify_transform_composition(&ttl)
+                    .map_err(|err| format!("owned proof should validate: {err}"))?;
+                let borrowed = verify_transform_composition_parts(
+                    &ttl.root_jaxpr,
+                    &ttl.transform_stack,
+                    &ttl.transform_evidence,
+                )
+                .map_err(|err| format!("borrowed proof should validate: {err}"))?;
+                assert_eq!(owned, borrowed);
                 Ok(Vec::new())
             },
         );
@@ -6272,7 +6324,10 @@ mod tests {
         assert_eq!(buffer.len(), 3);
         assert!(!buffer.is_empty());
         assert_eq!(buffer.as_f32_slice().expect("dense f32 values").len(), 3);
-        assert!(buffer.as_f64_slice().is_none(), "f32 storage is not f64-backed");
+        assert!(
+            buffer.as_f64_slice().is_none(),
+            "f32 storage is not f64-backed"
+        );
         assert_eq!(buffer.as_slice(), expected.as_slice());
         assert_eq!(buffer.to_vec(), expected);
         assert_eq!(buffer[1], Literal::from_f32(-0.0));
@@ -6322,7 +6377,10 @@ mod tests {
             let expected: Vec<Literal> = raw.iter().copied().map(mk_lit).collect();
             let mut buffer = LiteralBuffer::from_half_float_values(raw.clone(), dtype);
             assert_eq!(buffer.len(), raw.len());
-            assert_eq!(buffer.as_half_float_slice().expect("dense half"), raw.as_slice());
+            assert_eq!(
+                buffer.as_half_float_slice().expect("dense half"),
+                raw.as_slice()
+            );
             assert_eq!(buffer.half_float_dtype(), Some(dtype));
             assert!(buffer.as_f64_slice().is_none());
             assert_eq!(buffer.as_slice(), expected.as_slice());
@@ -6342,9 +6400,17 @@ mod tests {
             assert!(buffer.as_half_float_slice().is_none());
 
             // TensorValue constructor round-trips with the right dtype.
-            let t = TensorValue::new_half_float_values(dtype, Shape::vector(raw.len() as u32), raw.clone()).unwrap();
+            let t = TensorValue::new_half_float_values(
+                dtype,
+                Shape::vector(raw.len() as u32),
+                raw.clone(),
+            )
+            .unwrap();
             assert_eq!(t.dtype, dtype);
-            assert_eq!(t.elements.as_half_float_slice().expect("dense"), raw.as_slice());
+            assert_eq!(
+                t.elements.as_half_float_slice().expect("dense"),
+                raw.as_slice()
+            );
             for (i, &b) in raw.iter().enumerate() {
                 assert_eq!(t.elements[i], mk_lit(b));
             }

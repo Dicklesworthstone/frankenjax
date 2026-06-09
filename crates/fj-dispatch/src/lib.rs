@@ -6,7 +6,7 @@ use fj_cache::{CacheKeyError, CacheKeyInputRef, build_cache_key_ref};
 use fj_core::{
     Atom, CompatibilityMode, DType, Jaxpr, Literal, Primitive, Shape, TensorValue,
     TraceTransformLedger, Transform, TransformCompositionError, Value,
-    verify_transform_composition,
+    verify_transform_composition_parts,
 };
 use fj_interpreters::InterpreterError;
 use fj_ledger::{
@@ -149,6 +149,19 @@ pub struct DispatchRequest {
     pub compile_options: BTreeMap<String, String>,
     pub custom_hook: Option<String>,
     pub unknown_incompatible_features: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct DispatchRequestRef<'a> {
+    pub mode: CompatibilityMode,
+    pub root_jaxpr: &'a Jaxpr,
+    pub transform_stack: &'a [Transform],
+    pub transform_evidence: &'a [String],
+    pub args: Vec<Value>,
+    pub backend: &'a str,
+    pub compile_options: BTreeMap<String, String>,
+    pub custom_hook: Option<&'a str>,
+    pub unknown_incompatible_features: &'a [String],
 }
 
 /// Parse in_axes from compile_options.
@@ -410,48 +423,72 @@ impl From<TransformExecutionError> for DispatchError {
 }
 
 pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchError> {
-    let composition_proof = verify_transform_composition(&request.ledger)?;
-    let nested_trace_summary = simulate_nested_trace_contexts(
-        &request.ledger.transform_stack,
-        &request.args,
-    )
-    .map_err(|err| {
-        TransformExecutionError::TensorBuild(format!("nested trace simulation failed: {err}"))
-    })?;
+    let DispatchRequest {
+        mode,
+        ledger,
+        args,
+        backend,
+        compile_options,
+        custom_hook,
+        unknown_incompatible_features,
+    } = request;
+    dispatch_ref(DispatchRequestRef {
+        mode,
+        root_jaxpr: &ledger.root_jaxpr,
+        transform_stack: &ledger.transform_stack,
+        transform_evidence: &ledger.transform_evidence,
+        args,
+        backend: &backend,
+        compile_options,
+        custom_hook: custom_hook.as_deref(),
+        unknown_incompatible_features: &unknown_incompatible_features,
+    })
+}
+
+pub fn dispatch_ref(request: DispatchRequestRef<'_>) -> Result<DispatchResponse, DispatchError> {
+    let composition_proof = verify_transform_composition_parts(
+        request.root_jaxpr,
+        request.transform_stack,
+        request.transform_evidence,
+    )?;
+    let nested_trace_summary =
+        simulate_nested_trace_contexts(request.transform_stack, &request.args).map_err(|err| {
+            TransformExecutionError::TensorBuild(format!("nested trace simulation failed: {err}"))
+        })?;
 
     let cache_key = build_cache_key_ref(&CacheKeyInputRef {
         mode: request.mode,
-        backend: &request.backend,
-        jaxpr: &request.ledger.root_jaxpr,
-        transform_stack: &request.ledger.transform_stack,
+        backend: request.backend,
+        jaxpr: request.root_jaxpr,
+        transform_stack: request.transform_stack,
         compile_options: &request.compile_options,
-        custom_hook: request.custom_hook.as_deref(),
-        unknown_incompatible_features: &request.unknown_incompatible_features,
+        custom_hook: request.custom_hook,
+        unknown_incompatible_features: request.unknown_incompatible_features,
     })?;
 
     // Thread effect context through Jaxpr/equation effect ordering.
     let mut effect_ctx = EffectContext::new();
-    thread_jaxpr_effect_tokens(&mut effect_ctx, &request.ledger.root_jaxpr);
+    thread_jaxpr_effect_tokens(&mut effect_ctx, request.root_jaxpr);
 
     // Optionally run e-graph equality saturation to simplify the Jaxpr.
     let optimized_jaxpr;
     let exec_jaxpr = if wants_egraph_optimize(&request.compile_options) {
         optimized_jaxpr = fj_egraph::optimize_jaxpr_with_config(
-            &request.ledger.root_jaxpr,
+            request.root_jaxpr,
             &fj_egraph::OptimizationConfig::safe(),
         );
         &optimized_jaxpr
     } else {
-        &request.ledger.root_jaxpr
+        request.root_jaxpr
     };
 
     let backend_registry = BackendRegistry::new(vec![Box::new(fj_backend_cpu::CpuBackend::new())]);
-    let requested_backend = (!request.backend.is_empty()).then_some(request.backend.as_str());
+    let requested_backend = (!request.backend.is_empty()).then_some(request.backend);
     let (backend, device, _fell_back) =
         backend_registry.resolve_with_fallback(&DevicePlacement::Default, requested_backend)?;
     let outputs = execute_with_transforms(
         exec_jaxpr,
-        &request.ledger.transform_stack,
+        request.transform_stack,
         &request.args,
         backend,
         device,
@@ -480,7 +517,8 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         .join(",");
 
     let mut evidence_ledger = EvidenceLedger::new();
-    let posterior_abandoned = heuristic_posterior_abandoned(&request.ledger);
+    let posterior_abandoned =
+        heuristic_posterior_abandoned_parts(request.root_jaxpr, request.transform_stack);
     let matrix = LossMatrix::default();
     let record = DecisionRecord::from_posterior(request.mode, posterior_abandoned, &matrix);
 
@@ -490,13 +528,13 @@ pub fn dispatch(request: DispatchRequest) -> Result<DispatchResponse, DispatchEr
         signals: vec![
             EvidenceSignal {
                 signal_name: "eqn_count".to_owned(),
-                log_likelihood_delta: (request.ledger.root_jaxpr.equations.len() as f64 + 1.0).ln(),
-                detail: format!("eqn_count={}", request.ledger.root_jaxpr.equations.len()),
+                log_likelihood_delta: (request.root_jaxpr.equations.len() as f64 + 1.0).ln(),
+                detail: format!("eqn_count={}", request.root_jaxpr.equations.len()),
             },
             EvidenceSignal {
                 signal_name: "transform_depth".to_owned(),
-                log_likelihood_delta: request.ledger.transform_stack.len() as f64 * 0.1,
-                detail: format!("transform_depth={}", request.ledger.transform_stack.len()),
+                log_likelihood_delta: request.transform_stack.len() as f64 * 0.1,
+                detail: format!("transform_depth={}", request.transform_stack.len()),
             },
             EvidenceSignal {
                 signal_name: "transform_stack_hash".to_owned(),
@@ -1403,8 +1441,13 @@ fn row_major_strides(dims: &[u32]) -> Result<Vec<usize>, String> {
 
 #[inline]
 fn heuristic_posterior_abandoned(ledger: &TraceTransformLedger) -> f64 {
-    let eqn_factor = ledger.root_jaxpr.equations.len() as f64;
-    let depth_factor = ledger.transform_stack.len() as f64;
+    heuristic_posterior_abandoned_parts(&ledger.root_jaxpr, &ledger.transform_stack)
+}
+
+#[inline]
+fn heuristic_posterior_abandoned_parts(root_jaxpr: &Jaxpr, transform_stack: &[Transform]) -> f64 {
+    let eqn_factor = root_jaxpr.equations.len() as f64;
+    let depth_factor = transform_stack.len() as f64;
     let score = (eqn_factor + 2.0 * depth_factor) / (eqn_factor + 2.0 * depth_factor + 20.0);
     score.clamp(0.05, 0.95)
 }
