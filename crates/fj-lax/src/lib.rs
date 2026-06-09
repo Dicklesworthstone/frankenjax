@@ -3309,6 +3309,75 @@ fn eval_reduce_window_dense_float(
     }
 }
 
+/// Separable sliding-window max/min: reduce each window axis with an independent 1D pass,
+/// turning the O(output·∏window) full-window scan into O(output·∑window). Max and min are
+/// associative, commutative AND idempotent, and an out-of-bounds tap contributes the
+/// reduction init (∓∞) which is a no-op for the combine — so the per-axis composition
+/// `max_d2(max_d1(...))` equals the full-window max over exactly the same set of in-bounds
+/// elements, BIT-FOR-BIT (max/min of a finite/∞ set is order-independent; a NaN propagates
+/// regardless of fold order). Only the NaN *payload* of a multi-NaN window is fold-order
+/// dependent, and that is IEEE-unspecified (not JAX parity). Used only when ∏window is
+/// meaningfully larger than ∑window so the pass overhead pays (see the caller's gate).
+fn reduce_window_separable_maxmin(
+    src: &[f64],
+    input_dims: &[usize],
+    window_dims: &[usize],
+    strides: &[usize],
+    pad_lows: &[usize],
+    out_dims: &[usize],
+    is_max: bool,
+) -> Vec<f64> {
+    let init = if is_max {
+        f64::NEG_INFINITY
+    } else {
+        f64::INFINITY
+    };
+    let rank = input_dims.len();
+    let mut cur = src.to_vec();
+    let mut cur_dims = input_dims.to_vec();
+    for d in 0..rank {
+        // Identity axis (window 1, stride 1, no padding): output == input along d.
+        if window_dims[d] == 1 && strides[d] == 1 && pad_lows[d] == 0 && cur_dims[d] == out_dims[d]
+        {
+            continue;
+        }
+        let l = cur_dims[d];
+        let out_l = out_dims[d];
+        let inner: usize = cur_dims[d + 1..].iter().product();
+        let outer: usize = cur_dims[..d].iter().product();
+        let (wd, sd, pd) = (window_dims[d], strides[d], pad_lows[d]);
+        let mut next = vec![init; outer * out_l * inner];
+        for o in 0..outer {
+            let cur_o = o * l * inner;
+            let next_o = o * out_l * inner;
+            for ol in 0..out_l {
+                let start = ol as isize * sd as isize - pd as isize;
+                let dst = &mut next[next_o + ol * inner..next_o + ol * inner + inner];
+                for w in 0..wd {
+                    let pos = start + w as isize;
+                    if pos < 0 || pos as usize >= l {
+                        continue; // OOB tap: combine with init (∓∞) is a no-op
+                    }
+                    let row = &cur
+                        [cur_o + (pos as usize) * inner..cur_o + (pos as usize) * inner + inner];
+                    if is_max {
+                        for (a, &r) in dst.iter_mut().zip(row) {
+                            *a = jax_max_f64(*a, r);
+                        }
+                    } else {
+                        for (a, &r) in dst.iter_mut().zip(row) {
+                            *a = jax_min_f64(*a, r);
+                        }
+                    }
+                }
+            }
+        }
+        cur = next;
+        cur_dims[d] = out_l;
+    }
+    cur
+}
+
 /// Evaluate ReduceWindow: apply a reduction over sliding windows of a tensor.
 ///
 /// inputs: [tensor]
@@ -3421,6 +3490,48 @@ fn eval_reduce_window(
             )
             .map_err(EvalError::InvalidTensor)?,
         ));
+    }
+
+    // Separable max/min fast path (ANY rank): when ∏window is meaningfully larger than
+    // ∑window, reduce each window axis with an independent 1D pass — O(output·∑window)
+    // instead of O(output·∏window). Bit-identical for max/min (see
+    // reduce_window_separable_maxmin). Gated above 2·∑window so the pass/buffer overhead
+    // pays (small windows like 2×2/3×3 stay on the single-pass stencil paths below).
+    if no_window_dilation
+        && matches!(reduce_op, "max" | "min")
+        && matches!(output_dtype, fj_core::DType::F64 | fj_core::DType::F32)
+    {
+        let win_total: usize = window_dims.iter().product();
+        let win_sum: usize = window_dims.iter().sum();
+        if win_total > 2 * win_sum
+            && let Some(src) = reduce_window_dense_f64_view(tensor)
+        {
+            let input_dims: Vec<usize> = tensor.shape.dims.iter().map(|d| *d as usize).collect();
+            let out_dims_usize: Vec<usize> = out_dims.iter().map(|&d| d as usize).collect();
+            let values = reduce_window_separable_maxmin(
+                src.as_ref(),
+                &input_dims,
+                &window_dims,
+                &strides,
+                &pad_lows,
+                &out_dims_usize,
+                reduce_op == "max",
+            );
+            let shape = Shape {
+                dims: out_dims.clone(),
+            };
+            return match output_dtype {
+                fj_core::DType::F32 => {
+                    let f32_values: Vec<f32> = values.iter().map(|&v| v as f32).collect();
+                    Ok(Value::Tensor(
+                        TensorValue::new_f32_values(shape, f32_values).map_err(EvalError::from)?,
+                    ))
+                }
+                _ => Ok(Value::Tensor(
+                    TensorValue::new_f64_values(shape, values).map_err(EvalError::from)?,
+                )),
+            };
+        }
     }
 
     if no_window_dilation
@@ -11107,6 +11218,65 @@ mod tests {
             err.contains("unsupported reduce_window padding mode"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn reduce_window_separable_maxmin_matches_generic() {
+        // The separable max/min fast path (dense input, ∏window > 2·∑window) must equal the
+        // generic per-`Literal` loop (boxed input bypasses every dense path) bit-for-bit.
+        // Covers rank-4 NHWC 7×7 + rank-2 5×5, max & min, VALID + SAME padding + stride 2.
+        // Finite inputs only (a multi-NaN window's payload is fold-order/IEEE-unspecified).
+        let data = |n: usize| -> Vec<f64> {
+            (0..n)
+                .map(|i| (i as f64 * 0.137).sin() * 3.0 - (i as f64 * 0.0411).cos())
+                .collect()
+        };
+        let out_bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| l.as_f64().unwrap().to_bits())
+                .collect()
+        };
+        let cases: &[(Vec<u32>, &str, &str, &str)] = &[
+            (vec![1, 16, 16, 4], "1,7,7,1", "1,1,1,1", "VALID"),
+            (vec![1, 16, 16, 4], "1,7,7,1", "1,2,2,1", "SAME"),
+            (vec![18, 18], "5,5", "1,1", "VALID"),
+            (vec![18, 18], "5,5", "2,2", "SAME"),
+        ];
+        for (dims, window, strides, pad) in cases {
+            let n: usize = dims.iter().map(|&d| d as usize).product();
+            let raw = data(n);
+            let dense = Value::Tensor(
+                TensorValue::new_f64_values(Shape { dims: dims.clone() }, raw.clone()).unwrap(),
+            );
+            let boxed = Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    Shape { dims: dims.clone() },
+                    raw.iter().map(|&v| Literal::from_f64(v)).collect(),
+                )
+                .unwrap(),
+            );
+            assert!(
+                dense.as_tensor().unwrap().elements.as_f64_slice().is_some(),
+                "dense input must be dense-backed to hit the separable path"
+            );
+            for op in ["max", "min"] {
+                let p = rw_params_with_padding(op, window, strides, pad);
+                let got = eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&dense), &p)
+                    .unwrap();
+                let refr =
+                    eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&boxed), &p)
+                        .unwrap();
+                assert_eq!(
+                    out_bits(&got),
+                    out_bits(&refr),
+                    "{op} window={window} pad={pad} dims={dims:?}"
+                );
+            }
+        }
     }
 
     #[test]
