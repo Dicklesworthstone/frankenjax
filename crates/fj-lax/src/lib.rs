@@ -4,6 +4,7 @@
 mod arithmetic;
 pub mod array_creation;
 mod comparison;
+pub mod cz0g0_fma_evidence;
 pub mod dense;
 pub mod einsum;
 mod fft;
