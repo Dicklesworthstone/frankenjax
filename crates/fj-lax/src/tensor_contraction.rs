@@ -974,6 +974,146 @@ fn batched_matmul_row_block(
     }
 }
 
+/// Batched canonical i64 matmul `[batch,m,k]@[batch,k,n]` -> `[batch,m,n]`, threaded
+/// over the flattened batch×output-row space (same structure as [`batched_matmul_2d`]).
+/// Each output accumulates `a[i,l]*b[l,j]` over `l` in strictly ascending order with
+/// `wrapping_mul`/`wrapping_add` — BIT-FOR-BIT identical to the generic integer
+/// dot_general reduction (same ascending-`l` wrapping fold per batch slice). Batched
+/// i64 matmul otherwise has NO fast path and falls to the generic strided per-element
+/// loop. See `batched_rank2_i64_matmul_matches_generic`.
+pub fn batched_rank2_i64_matmul(
+    a: &[i64],
+    batch: usize,
+    m: usize,
+    k: usize,
+    b: &[i64],
+    n: usize,
+) -> Vec<i64> {
+    let mut result = vec![0i64; batch * m * n];
+    if batch == 0 || m == 0 || n == 0 || k == 0 {
+        return result;
+    }
+    let total_rows = batch * m;
+    let ops = total_rows.saturating_mul(k).saturating_mul(n);
+    let threads = matmul_thread_count(ops, total_rows);
+    if threads <= 1 {
+        batched_i64_row_block(a, b, m, k, n, 0, &mut result);
+        return result;
+    }
+    let rows_per = total_rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [i64] = result.as_mut_slice();
+        let mut g_start = 0usize;
+        while g_start < total_rows {
+            let chunk_rows = rows_per.min(total_rows - g_start);
+            let (block, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            let gs = g_start;
+            scope.spawn(move || batched_i64_row_block(a, b, m, k, n, gs, block));
+            g_start += chunk_rows;
+        }
+    });
+    result
+}
+
+/// i64 row-block for [`batched_rank2_i64_matmul`]: global output rows
+/// `[g_start, g_start + block.len()/n)`. Global row `g` is batch `g / m`, row `g % m`.
+fn batched_i64_row_block(
+    a: &[i64],
+    b: &[i64],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [i64],
+) {
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let g = g_start + ri;
+        let bt = g / m;
+        let a_off = g * k;
+        let b_off = bt * k * n;
+        for l in 0..k {
+            let a_il = a[a_off + l];
+            let src = &b[b_off + l * n..b_off + l * n + n];
+            for (c, &bv) in c_row.iter_mut().zip(src) {
+                *c = c.wrapping_add(a_il.wrapping_mul(bv));
+            }
+        }
+    }
+}
+
+/// Batched canonical complex `[batch,m,k]@[batch,k,n]` -> `[batch,m,n]` over dense
+/// `(re, im)` f64 pairs, threaded over the flattened batch×output-row space (same
+/// structure as [`batched_matmul_2d`]). Each output accumulates its `(re, im)` over
+/// `l` in strictly ascending order with the SAME `re += ar*br - ai*bi; im += ar*bi +
+/// ai*br` as the generic complex reduction — BIT-FOR-BIT identical. Batched complex
+/// matmul otherwise has NO fast path. See `batched_rank2_complex_matmul_matches_generic`.
+pub fn batched_rank2_complex_matmul(
+    a: &[(f64, f64)],
+    batch: usize,
+    m: usize,
+    k: usize,
+    b: &[(f64, f64)],
+    n: usize,
+) -> Vec<(f64, f64)> {
+    let mut result = vec![(0.0f64, 0.0f64); batch * m * n];
+    if batch == 0 || m == 0 || n == 0 || k == 0 {
+        return result;
+    }
+    let total_rows = batch * m;
+    // Complex MAC is ~4 real muls + 4 real adds; weight ops ~4x for the thread threshold.
+    let ops = total_rows
+        .saturating_mul(k)
+        .saturating_mul(n)
+        .saturating_mul(4);
+    let threads = matmul_thread_count(ops, total_rows);
+    if threads <= 1 {
+        batched_complex_row_block(a, b, m, k, n, 0, &mut result);
+        return result;
+    }
+    let rows_per = total_rows.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [(f64, f64)] = result.as_mut_slice();
+        let mut g_start = 0usize;
+        while g_start < total_rows {
+            let chunk_rows = rows_per.min(total_rows - g_start);
+            let (block, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            let gs = g_start;
+            scope.spawn(move || batched_complex_row_block(a, b, m, k, n, gs, block));
+            g_start += chunk_rows;
+        }
+    });
+    result
+}
+
+/// complex row-block for [`batched_rank2_complex_matmul`]: global output rows
+/// `[g_start, g_start + block.len()/n)`. Global row `g` is batch `g / m`, row `g % m`.
+fn batched_complex_row_block(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [(f64, f64)],
+) {
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let g = g_start + ri;
+        let bt = g / m;
+        let a_off = g * k;
+        let b_off = bt * k * n;
+        for l in 0..k {
+            let (ar, ai) = a[a_off + l];
+            let src = &b[b_off + l * n..b_off + l * n + n];
+            for (c, &(br, bi)) in c_row.iter_mut().zip(src) {
+                c.0 += ar * br - ai * bi;
+                c.1 += ar * bi + ai * br;
+            }
+        }
+    }
+}
+
 /// Mixed-precision batched matmul: f32 inputs, **f64 accumulation**, f32 output.
 ///
 /// Reads the `f32` operands directly (no f32->f64 promote buffer — for a
@@ -1610,6 +1750,87 @@ mod tests {
                     (g.0.to_bits(), g.1.to_bits()),
                     (w.0.to_bits(), w.1.to_bits()),
                     "[{m},{k}]@[{k},{n}]"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn batched_rank2_i64_matmul_matches_generic() {
+        // The batched i64 kernel must equal a direct per-batch ascending-`l` wrapping
+        // reference (the same fold the generic integer dot_general reduction does),
+        // including overflow wrapping, across batch counts that exercise the threaded
+        // and serial paths.
+        for &(bt, m, k, n) in &[
+            (1usize, 13usize, 17usize, 11usize),
+            (4, 9, 7, 5),
+            (256, 6, 8, 6),
+            (3, 1, 33, 1),
+        ] {
+            let a: Vec<i64> = (0..bt * m * k)
+                .map(|i| (i as i64).wrapping_mul(2_654_435_761).wrapping_sub(7))
+                .collect();
+            let b: Vec<i64> = (0..bt * k * n)
+                .map(|i| (i as i64).wrapping_mul(40_503).wrapping_add(3))
+                .collect();
+            let got = batched_rank2_i64_matmul(&a, bt, m, k, &b, n);
+            let mut want = vec![0i64; bt * m * n];
+            for t in 0..bt {
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut s = 0i64;
+                        for l in 0..k {
+                            s = s.wrapping_add(
+                                a[(t * m + i) * k + l].wrapping_mul(b[(t * k + l) * n + j]),
+                            );
+                        }
+                        want[(t * m + i) * n + j] = s;
+                    }
+                }
+            }
+            assert_eq!(got, want, "batch={bt} [{m},{k}]@[{k},{n}]");
+        }
+    }
+
+    #[test]
+    fn batched_rank2_complex_matmul_matches_generic() {
+        // The batched complex kernel must be BIT-FOR-BIT identical to a direct per-batch
+        // ascending-`l` complex reference (complex_mul + separate real/imag adds), across
+        // batch counts exercising the threaded and serial paths. Compare bit patterns.
+        for &(bt, m, k, n) in &[
+            (1usize, 13usize, 17usize, 11usize),
+            (4, 9, 7, 5),
+            (256, 6, 8, 6),
+            (3, 1, 33, 1),
+        ] {
+            let a: Vec<(f64, f64)> = (0..bt * m * k)
+                .map(|i| ((i as f64) * 0.5 - 3.0, (i as f64) * -0.25 + 1.0))
+                .collect();
+            let b: Vec<(f64, f64)> = (0..bt * k * n)
+                .map(|i| ((i as f64) * -0.125 + 2.0, (i as f64) * 0.375 - 1.5))
+                .collect();
+            let got = batched_rank2_complex_matmul(&a, bt, m, k, &b, n);
+            let mut want = vec![(0.0f64, 0.0f64); bt * m * n];
+            for t in 0..bt {
+                for i in 0..m {
+                    for j in 0..n {
+                        let mut re = 0.0f64;
+                        let mut im = 0.0f64;
+                        for l in 0..k {
+                            let (ar, ai) = a[(t * m + i) * k + l];
+                            let (br, bi) = b[(t * k + l) * n + j];
+                            re += ar * br - ai * bi;
+                            im += ar * bi + ai * br;
+                        }
+                        want[(t * m + i) * n + j] = (re, im);
+                    }
+                }
+            }
+            for (g, w) in got.iter().zip(&want) {
+                assert_eq!(
+                    (g.0.to_bits(), g.1.to_bits()),
+                    (w.0.to_bits(), w.1.to_bits()),
+                    "batch={bt} [{m},{k}]@[{k},{n}]"
                 );
             }
         }

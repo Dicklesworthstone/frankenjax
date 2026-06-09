@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 
 use crate::EvalError;
 use crate::tensor_contraction::{
-    batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f32_in, matmul_2d,
-    rank2_complex_matmul, rank2_i64_matmul,
+    batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f32_in,
+    batched_rank2_complex_matmul, batched_rank2_i64_matmul, matmul_2d, rank2_complex_matmul,
+    rank2_i64_matmul,
 };
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
@@ -6409,6 +6410,137 @@ fn batched_standard_f64_matmul(
     )?)))
 }
 
+/// True when this dot_general is the canonical batched matmul shape
+/// `[batch...,m,k] @ [batch...,k,n] -> [batch...,m,n]` with leading batch dims and a
+/// single trailing contraction, returning `(batch, m, k, n)`. Shared orientation guard
+/// for the f64/i64/complex batched fast paths. Returns None for any other layout.
+fn canonical_batched_matmul_dims(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    lhs_batch: &[usize],
+    rhs_batch: &[usize],
+    lhs_contracting: &[usize],
+    rhs_contracting: &[usize],
+    lhs_free_dims: &[usize],
+    rhs_free_dims: &[usize],
+) -> Option<(usize, usize, usize, usize)> {
+    let nb = lhs_batch.len();
+    if nb == 0
+        || rhs_batch.len() != nb
+        || lhs.rank() != nb + 2
+        || rhs.rank() != nb + 2
+        || (0..nb).any(|i| lhs_batch[i] != i || rhs_batch[i] != i)
+        || lhs_free_dims != [nb]
+        || lhs_contracting != [nb + 1]
+        || rhs_contracting != [nb]
+        || rhs_free_dims != [nb + 1]
+    {
+        return None;
+    }
+    let m = lhs.shape.dims[nb] as usize;
+    let k = lhs.shape.dims[nb + 1] as usize;
+    let n = rhs.shape.dims[nb + 1] as usize;
+    if k == 0 || rhs.shape.dims[nb] as usize != k || m == 0 || n == 0 {
+        return None;
+    }
+    let mut batch = 1usize;
+    for i in 0..nb {
+        if lhs.shape.dims[i] != rhs.shape.dims[i] || lhs.shape.dims[i] == 0 {
+            return None;
+        }
+        batch = batch.saturating_mul(lhs.shape.dims[i] as usize);
+    }
+    // Keep trivially small contractions on the generic path (per-thread setup not worth it).
+    const BATCHED_FASTPATH_MIN_OPS: usize = 1 << 10; // 1024 FMAs
+    if batch.saturating_mul(m).saturating_mul(k).saturating_mul(n) < BATCHED_FASTPATH_MIN_OPS {
+        return None;
+    }
+    Some((batch, m, k, n))
+}
+
+/// Canonical batched I64 matmul -> contiguous multi-threaded `batched_rank2_i64_matmul`
+/// (flattened batch×row threading, ascending-`l` wrapping fold) instead of the generic
+/// strided per-element loop. Bit-identical (associative/exact integer fold). Scoped to
+/// I64 output with both operands I64-backed; mirrors the canonical rank-2 I64 block.
+fn batched_standard_i64_matmul(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    lhs_batch: &[usize],
+    rhs_batch: &[usize],
+    lhs_contracting: &[usize],
+    rhs_contracting: &[usize],
+    lhs_free_dims: &[usize],
+    rhs_free_dims: &[usize],
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    let Some((batch, m, k, n)) = canonical_batched_matmul_dims(
+        lhs,
+        rhs,
+        lhs_batch,
+        rhs_batch,
+        lhs_contracting,
+        rhs_contracting,
+        lhs_free_dims,
+        rhs_free_dims,
+    ) else {
+        return Ok(None);
+    };
+    let (Some(a), Some(b)) = (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice()) else {
+        return Ok(None);
+    };
+    let values = batched_rank2_i64_matmul(a, batch, m, k, b, n);
+    Ok(Some(Value::Tensor(TensorValue::new_i64_values(
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        values,
+    )?)))
+}
+
+/// Canonical batched Complex128 matmul -> contiguous multi-threaded
+/// `batched_rank2_complex_matmul` instead of the generic strided per-element complex
+/// loop. Bit-identical (same ascending-`l` complex_mul + real/imag adds). Scoped to
+/// Complex128 output with both operands dense-complex-backed; mirrors the canonical
+/// rank-2 Complex128 block.
+fn batched_standard_complex_matmul(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    lhs_batch: &[usize],
+    rhs_batch: &[usize],
+    lhs_contracting: &[usize],
+    rhs_contracting: &[usize],
+    lhs_free_dims: &[usize],
+    rhs_free_dims: &[usize],
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    let Some((batch, m, k, n)) = canonical_batched_matmul_dims(
+        lhs,
+        rhs,
+        lhs_batch,
+        rhs_batch,
+        lhs_contracting,
+        rhs_contracting,
+        lhs_free_dims,
+        rhs_free_dims,
+    ) else {
+        return Ok(None);
+    };
+    let (Some(a), Some(b)) = (
+        lhs.elements.as_complex_slice(),
+        rhs.elements.as_complex_slice(),
+    ) else {
+        return Ok(None);
+    };
+    let values = batched_rank2_complex_matmul(a, batch, m, k, b, n);
+    Ok(Some(Value::Tensor(TensorValue::new_complex_values(
+        DType::Complex128,
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        values,
+    )?)))
+}
+
 fn rank2_f64_matmul(
     lhs: &TensorValue,
     rhs: &TensorValue,
@@ -7329,6 +7461,44 @@ pub(crate) fn eval_dot_general(
         &rhs_free_dims,
         &output_dims,
     )? {
+        return Ok(value);
+    }
+
+    // Canonical batched I64 matmul -> contiguous multi-threaded batched_rank2_i64_matmul
+    // (the f64 path above is f64-only, so batched integer matmul fell to the generic
+    // per-element loop). Bit-identical wrapping fold. Scoped to I64 output.
+    if matches!(output_kind, DotOutputKind::Integral(DType::I64))
+        && let Some(value) = batched_standard_i64_matmul(
+            lhs,
+            rhs,
+            &lhs_batch,
+            &rhs_batch,
+            &lhs_contracting,
+            &rhs_contracting,
+            &lhs_free_dims,
+            &rhs_free_dims,
+            &output_dims,
+        )?
+    {
+        return Ok(value);
+    }
+
+    // Canonical batched Complex128 matmul -> contiguous multi-threaded
+    // batched_rank2_complex_matmul (batched complex matmul otherwise has no fast path).
+    // Bit-identical complex reduction. Scoped to Complex128 output.
+    if matches!(output_kind, DotOutputKind::Complex(DType::Complex128))
+        && let Some(value) = batched_standard_complex_matmul(
+            lhs,
+            rhs,
+            &lhs_batch,
+            &rhs_batch,
+            &lhs_contracting,
+            &rhs_contracting,
+            &lhs_free_dims,
+            &rhs_free_dims,
+            &output_dims,
+        )?
+    {
         return Ok(value);
     }
 
@@ -9269,6 +9439,106 @@ mod tests {
                         (gr.to_bits(), gi.to_bits()),
                         (re.to_bits(), im.to_bits()),
                         "(lc={lc},rc={rc}) [{i},{j}] must be bit-identical"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn batched_i64_and_complex_dot_general_match_reference() {
+        // eval_dot_general must route canonical batched [batch,m,k]@[batch,k,n] for I64
+        // and Complex128 through the contiguous batched kernels, bit-identical to a direct
+        // per-batch ascending-`l` reference (the generic dot_general reduction).
+        let (bt, m, k, n) = (4usize, 6usize, 9usize, 5usize);
+        let params = BTreeMap::from([
+            ("lhs_batch_dims".to_owned(), "0".to_owned()),
+            ("rhs_batch_dims".to_owned(), "0".to_owned()),
+            ("lhs_contracting_dims".to_owned(), "2".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "1".to_owned()),
+        ]);
+
+        // I64
+        let ai: Vec<i64> = (0..bt * m * k)
+            .map(|i| (i as i64).wrapping_mul(2_654_435_761).wrapping_sub(7))
+            .collect();
+        let bi: Vec<i64> = (0..bt * k * n)
+            .map(|i| (i as i64).wrapping_mul(40_503).wrapping_add(3))
+            .collect();
+        let lhs = tensor_i64(vec![bt as u32, m as u32, k as u32], &ai);
+        let rhs = tensor_i64(vec![bt as u32, k as u32, n as u32], &bi);
+        let Value::Tensor(out) = eval_dot_general(&[lhs, rhs], &params).unwrap() else {
+            panic!("expected tensor");
+        };
+        assert_eq!(out.shape.dims, vec![bt as u32, m as u32, n as u32]);
+        let got: Vec<i64> = out
+            .elements
+            .iter()
+            .map(|l| match l {
+                Literal::I64(v) => *v,
+                o => panic!("unexpected {o:?}"),
+            })
+            .collect();
+        let mut want = vec![0i64; bt * m * n];
+        for t in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut s = 0i64;
+                    for l in 0..k {
+                        s = s.wrapping_add(
+                            ai[(t * m + i) * k + l].wrapping_mul(bi[(t * k + l) * n + j]),
+                        );
+                    }
+                    want[(t * m + i) * n + j] = s;
+                }
+            }
+        }
+        assert_eq!(got, want, "batched i64");
+
+        // Complex128
+        let ac: Vec<(f64, f64)> = (0..bt * m * k)
+            .map(|i| (i as f64 * 0.5 - 3.0, i as f64 * -0.25 + 1.0))
+            .collect();
+        let bc: Vec<(f64, f64)> = (0..bt * k * n)
+            .map(|i| (i as f64 * -0.125 + 2.0, i as f64 * 0.375 - 1.5))
+            .collect();
+        let lhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: vec![bt as u32, m as u32, k as u32] },
+                ac.clone(),
+            )
+            .unwrap(),
+        );
+        let rhs = Value::Tensor(
+            TensorValue::new_complex_values(
+                DType::Complex128,
+                Shape { dims: vec![bt as u32, k as u32, n as u32] },
+                bc.clone(),
+            )
+            .unwrap(),
+        );
+        let Value::Tensor(out) = eval_dot_general(&[lhs, rhs], &params).unwrap() else {
+            panic!("expected tensor");
+        };
+        assert_eq!(out.shape.dims, vec![bt as u32, m as u32, n as u32]);
+        let gotc = out.elements.as_complex_slice().expect("complex output");
+        for t in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut re = 0.0f64;
+                    let mut im = 0.0f64;
+                    for l in 0..k {
+                        let (ar, ai2) = ac[(t * m + i) * k + l];
+                        let (br, bi2) = bc[(t * k + l) * n + j];
+                        re += ar * br - ai2 * bi2;
+                        im += ar * bi2 + ai2 * br;
+                    }
+                    let (gr, gi) = gotc[(t * m + i) * n + j];
+                    assert_eq!(
+                        (gr.to_bits(), gi.to_bits()),
+                        (re.to_bits(), im.to_bits()),
+                        "batched complex [{t},{i},{j}]"
                     );
                 }
             }

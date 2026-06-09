@@ -3490,6 +3490,93 @@ fn i64_matmul_params() -> BTreeMap<String, String> {
     p
 }
 
+// Canonical batched matmul params: [batch,m,k]@[batch,k,n] (batch dim 0, contract 2/1).
+fn batched_matmul_params() -> BTreeMap<String, String> {
+    let mut p = no_params();
+    p.insert("lhs_batch_dims".to_owned(), "0".to_owned());
+    p.insert("rhs_batch_dims".to_owned(), "0".to_owned());
+    p.insert("lhs_contracting_dims".to_owned(), "2".to_owned());
+    p.insert("rhs_contracting_dims".to_owned(), "1".to_owned());
+    p
+}
+
+// Batched i64 [64,64,64]@[64,64,64]: dense (contiguous batched_rank2_i64_matmul)
+// vs Vec<Literal> boxed (the generic strided per-element loop batched i64 fell to
+// before). Same-invocation A/B.
+fn bench_batched_i64_matmul_dense(c: &mut Criterion) {
+    let (bt, n) = (64usize, 64usize);
+    let a: Vec<i64> = (0..(bt * n * n) as i64)
+        .map(|i| i.wrapping_mul(2_654_435_761))
+        .collect();
+    let b: Vec<i64> = (0..(bt * n * n) as i64)
+        .map(|i| i.wrapping_mul(40_503) ^ 0x5555)
+        .collect();
+    let d = vec![bt as u32, n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new_i64_values(Shape { dims: d.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new_i64_values(Shape { dims: d }, b).unwrap());
+    let p = batched_matmul_params();
+    c.bench_function("eval/matmul_batched64_64x64_i64_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_batched_i64_matmul_literal_reference(c: &mut Criterion) {
+    let (bt, n) = (64usize, 64usize);
+    let a: Vec<Literal> = (0..(bt * n * n) as i64)
+        .map(|i| Literal::I64(i.wrapping_mul(2_654_435_761)))
+        .collect();
+    let b: Vec<Literal> = (0..(bt * n * n) as i64)
+        .map(|i| Literal::I64(i.wrapping_mul(40_503) ^ 0x5555))
+        .collect();
+    let d = vec![bt as u32, n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new(DType::I64, Shape { dims: d.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new(DType::I64, Shape { dims: d }, b).unwrap());
+    let p = batched_matmul_params();
+    c.bench_function("eval/matmul_batched64_64x64_i64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+// Batched Complex128 [64,48,48]@[64,48,48]: dense (contiguous
+// batched_rank2_complex_matmul) vs Vec<Literal> boxed. Same-invocation A/B.
+fn bench_batched_complex_matmul_dense(c: &mut Criterion) {
+    let (bt, n) = (64usize, 48usize);
+    let vals: Vec<(f64, f64)> = (0..(bt * n * n) as i64)
+        .map(|i| (i as f64 * 0.5 - 3.0, i as f64 * -0.25 + 1.0))
+        .collect();
+    let d = vec![bt as u32, n as u32, n as u32];
+    let lhs = Value::Tensor(
+        TensorValue::new_complex_values(DType::Complex128, Shape { dims: d.clone() }, vals.clone())
+            .unwrap(),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new_complex_values(DType::Complex128, Shape { dims: d }, vals).unwrap(),
+    );
+    let p = batched_matmul_params();
+    c.bench_function("eval/matmul_batched64_48x48_complex128_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_batched_complex_matmul_literal_reference(c: &mut Criterion) {
+    let (bt, n) = (64usize, 48usize);
+    let elems: Vec<Literal> = (0..(bt * n * n) as i64)
+        .map(|i| Literal::from_complex128(i as f64 * 0.5 - 3.0, i as f64 * -0.25 + 1.0))
+        .collect();
+    let d = vec![bt as u32, n as u32, n as u32];
+    let lhs = Value::Tensor(
+        TensorValue::new(DType::Complex128, Shape { dims: d.clone() }, elems.clone()).unwrap(),
+    );
+    let rhs = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims: d }, elems).unwrap());
+    let p = batched_matmul_params();
+    c.bench_function(
+        "eval/matmul_batched64_48x48_complex128_literal_ref",
+        |bencher| {
+            bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+        },
+    );
+}
+
 fn bench_i64_matmul_512_dense(c: &mut Criterion) {
     let n = 512usize;
     let a: Vec<i64> = (0..(n * n) as i64)
@@ -4491,6 +4578,10 @@ criterion_group!(
     bench_i64_matmul_512_literal_reference,
     bench_i64_matmul_512_transposed_dense,
     bench_i64_matmul_512_transposed_literal_reference,
+    bench_batched_i64_matmul_dense,
+    bench_batched_i64_matmul_literal_reference,
+    bench_batched_complex_matmul_dense,
+    bench_batched_complex_matmul_literal_reference,
     bench_complex_matmul_256_dense,
     bench_complex_matmul_256_literal_reference,
     bench_complex_matmul_256_transposed_dense,
