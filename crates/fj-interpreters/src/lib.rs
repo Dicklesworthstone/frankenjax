@@ -1347,6 +1347,99 @@ fn f32_fused_neg(value: f32) -> f32 {
     (-f64::from(value)) as f32
 }
 
+#[inline]
+fn seed_f32_row_broadcast(out: &mut [f32], row: &[f32], base: usize) {
+    if out.is_empty() {
+        return;
+    }
+    let row_len = row.len();
+    let mut done = 0;
+    let mut col = base % row_len;
+    while done < out.len() {
+        let take = (row_len - col).min(out.len() - done);
+        out[done..done + take].copy_from_slice(&row[col..col + take]);
+        done += take;
+        col = 0;
+    }
+}
+
+#[inline]
+fn apply_f32_row_broadcast_other(
+    out: &mut [f32],
+    op: CheapOp,
+    chain_left: bool,
+    row: &[f32],
+    base: usize,
+) {
+    if out.is_empty() {
+        return;
+    }
+    let row_len = row.len();
+    let mut done = 0;
+    let mut col = base % row_len;
+    while done < out.len() {
+        let take = (row_len - col).min(out.len() - done);
+        let out_part = &mut out[done..done + take];
+        let row_part = &row[col..col + take];
+        match chain_left {
+            true => out_part
+                .iter_mut()
+                .zip(row_part)
+                .for_each(|(o, e)| *o = f32_fused_binary(op, *o, *e)),
+            false => out_part
+                .iter_mut()
+                .zip(row_part)
+                .for_each(|(o, e)| *o = f32_fused_binary(op, *e, *o)),
+        }
+        done += take;
+        col = 0;
+    }
+}
+
+#[inline]
+fn seed_f32_col_broadcast(out: &mut [f32], col_values: &[f32], cols: usize, base: usize) {
+    let mut done = 0;
+    let mut linear = base;
+    while done < out.len() {
+        let row = linear / cols;
+        let col = linear % cols;
+        let take = (cols - col).min(out.len() - done);
+        out[done..done + take].fill(col_values[row]);
+        done += take;
+        linear += take;
+    }
+}
+
+#[inline]
+fn apply_f32_col_broadcast_other(
+    out: &mut [f32],
+    op: CheapOp,
+    chain_left: bool,
+    col_values: &[f32],
+    cols: usize,
+    base: usize,
+) {
+    let mut done = 0;
+    let mut linear = base;
+    while done < out.len() {
+        let row = linear / cols;
+        let col = linear % cols;
+        let take = (cols - col).min(out.len() - done);
+        let scalar = col_values[row];
+        let out_part = &mut out[done..done + take];
+        match chain_left {
+            true => out_part
+                .iter_mut()
+                .for_each(|o| *o = f32_fused_binary(op, *o, scalar)),
+            false => out_part
+                .iter_mut()
+                .for_each(|o| *o = f32_fused_binary(op, scalar, *o)),
+        }
+        done += take;
+        linear += take;
+    }
+}
+
 /// Apply one f32 chain step's NON-chain operand to the chunk buffer. Each arm
 /// mirrors fj-lax's dense f32 arithmetic: f32->f64, op, round to f32.
 #[inline]
@@ -1382,25 +1475,11 @@ fn apply_f32_fusion_other(
         }
         F32Operand::RowBroadcast(i) => {
             let row = ext[i];
-            match chain_left {
-                true => out.iter_mut().enumerate().for_each(|(offset, o)| {
-                    *o = f32_fused_binary(op, *o, row[(base + offset) % row.len()]);
-                }),
-                false => out.iter_mut().enumerate().for_each(|(offset, o)| {
-                    *o = f32_fused_binary(op, row[(base + offset) % row.len()], *o);
-                }),
-            }
+            apply_f32_row_broadcast_other(out, op, chain_left, row, base);
         }
         F32Operand::ColBroadcast { idx, cols } => {
             let col = ext[idx];
-            match chain_left {
-                true => out.iter_mut().enumerate().for_each(|(offset, o)| {
-                    *o = f32_fused_binary(op, *o, col[(base + offset) / cols]);
-                }),
-                false => out.iter_mut().enumerate().for_each(|(offset, o)| {
-                    *o = f32_fused_binary(op, col[(base + offset) / cols], *o);
-                }),
-            }
+            apply_f32_col_broadcast_other(out, op, chain_left, col, cols, base);
         }
         F32Operand::Chain => {}
     }
@@ -1414,15 +1493,11 @@ fn apply_f32_fusion_chunk(out: &mut [f32], tape: &[F32Step], ext: &[&[f32]], bas
         F32Operand::Ext(i) => out.copy_from_slice(&ext[i][base..base + out.len()]),
         F32Operand::RowBroadcast(i) => {
             let row = ext[i];
-            out.iter_mut()
-                .enumerate()
-                .for_each(|(offset, o)| *o = row[(base + offset) % row.len()]);
+            seed_f32_row_broadcast(out, row, base);
         }
         F32Operand::ColBroadcast { idx, cols } => {
             let col = ext[idx];
-            out.iter_mut()
-                .enumerate()
-                .for_each(|(offset, o)| *o = col[(base + offset) / cols]);
+            seed_f32_col_broadcast(out, col, cols, base);
         }
         F32Operand::Scalar(v) => out.fill(v),
         F32Operand::Chain => {}
