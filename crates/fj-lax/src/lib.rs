@@ -296,8 +296,11 @@ fn eval_primitive_inner(
                 pi_x.sin() / pi_x
             }
         }),
-        Primitive::Sqrt => eval_unary_elementwise(primitive, inputs, f64::sqrt),
-        Primitive::Rsqrt => eval_unary_elementwise(primitive, inputs, |x| 1.0 / x.sqrt()),
+        // sqrt / rsqrt are div-/sqrt-unit-bound (NOT pipelined like add/mul), so they are
+        // compute-bound and thread like the other transcendentals; the parallel path falls
+        // back to the identical serial dense map below the threshold (bit-for-bit identical).
+        Primitive::Sqrt => eval_unary_elementwise_parallel(primitive, inputs, f64::sqrt),
+        Primitive::Rsqrt => eval_unary_elementwise_parallel(primitive, inputs, |x| 1.0 / x.sqrt()),
         Primitive::Floor => eval_unary_elementwise(primitive, inputs, f64::floor),
         Primitive::Ceil => eval_unary_elementwise(primitive, inputs, f64::ceil),
         Primitive::Round => eval_round(primitive, inputs, params),

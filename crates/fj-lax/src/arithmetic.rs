@@ -9383,6 +9383,87 @@ mod tests {
         }
     }
 
+    /// Isomorphism + same-binary A/B for routing sqrt/rsqrt through the threaded
+    /// dense unary path. The parallel path must be bit-for-bit identical to the
+    /// serial dense map (both compute `op(src[i])` into dense f64), and faster on a
+    /// large array since sqrt/rsqrt are div-/sqrt-unit-bound (compute-bound).
+    #[test]
+    fn sqrt_rsqrt_parallel_bit_identical_and_faster() {
+        use std::time::Instant;
+
+        let n: usize = 1 << 22; // 4_194_304 f64 (> PARALLEL_MIN_ELEMS = 262_144)
+        let data: Vec<f64> = (0..n).map(|i| (i as f64) * 7.0e-4 + 0.5).collect();
+        let shape = Shape { dims: vec![n as u32] };
+        let input =
+            Value::Tensor(TensorValue::new_f64_values(shape, data).unwrap());
+        let reps = 5u32; // serial (boxed) arm is slow; bit-identity is the gate, A/B informational
+
+        macro_rules! ab {
+            ($name:expr, $prim:expr, $op:expr) => {{
+                let op = $op;
+                let serial =
+                    eval_unary_elementwise($prim, std::slice::from_ref(&input), op).unwrap();
+                let parallel = eval_unary_elementwise_parallel(
+                    $prim,
+                    std::slice::from_ref(&input),
+                    op,
+                )
+                .unwrap();
+                // The serial dense fast path emits a BOXED Vec<Literal> output, while the
+                // parallel path emits dense f64 storage — same f64 VALUES, so extract both
+                // via `as_f64()` and compare bit-for-bit (the change also de-boxes output).
+                let sv: Vec<f64> = serial
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap())
+                    .collect();
+                let pv: Vec<f64> = parallel
+                    .as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| l.as_f64().unwrap())
+                    .collect();
+                assert!(
+                    sv.iter().zip(&pv).all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "{} parallel != serial bit-for-bit",
+                    $name
+                );
+
+                let t0 = Instant::now();
+                for _ in 0..reps {
+                    std::hint::black_box(
+                        eval_unary_elementwise($prim, std::slice::from_ref(&input), op).unwrap(),
+                    );
+                }
+                let ser_ns = t0.elapsed().as_nanos().max(1);
+                let t1 = Instant::now();
+                for _ in 0..reps {
+                    std::hint::black_box(
+                        eval_unary_elementwise_parallel(
+                            $prim,
+                            std::slice::from_ref(&input),
+                            op,
+                        )
+                        .unwrap(),
+                    );
+                }
+                let par_ns = t1.elapsed().as_nanos().max(1);
+                println!(
+                    "[{} parallel] serial={:.3}ms parallel={:.3}ms ratio={:.2}x",
+                    $name,
+                    ser_ns as f64 / reps as f64 / 1e6,
+                    par_ns as f64 / reps as f64 / 1e6,
+                    ser_ns as f64 / par_ns as f64,
+                );
+            }};
+        }
+        ab!("sqrt", Primitive::Sqrt, f64::sqrt);
+        ab!("rsqrt", Primitive::Rsqrt, |x: f64| 1.0 / x.sqrt());
+    }
+
     /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
     /// `vector_i64` input (folds two i64 slices) must produce element-for-element
     /// identical results to the `Vec<Literal>`-backed tensor (generic loop),
