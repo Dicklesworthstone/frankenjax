@@ -10013,6 +10013,64 @@ mod tests {
         }
     }
 
+    /// int32 TENSOR ops must wrap mod 2^32 like JAX/numpy two's-complement (the
+    /// `narrow_i32_tensor_result` chokepoint + dtype-preservation handle this even though
+    /// the values are stored as `Literal::I64`). Pins the audit items from bead b6w3l:
+    /// neg(i32::MIN) and abs(i32::MIN) wrap to i32::MIN; add/mul overflow wrap mod 2^32;
+    /// output stays dtype I32. (Scalar-i32 binary overflow is the remaining b6w3l gap —
+    /// rank-0 dtype-less Literal::I64 can't wrap — and is NOT covered here.)
+    #[test]
+    fn i32_tensor_neg_abs_add_mul_wrap_mod_2_pow_32() {
+        let i32t = |vals: &[i32]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I32,
+                    Shape { dims: vec![vals.len() as u32] },
+                    vals.iter().map(|&v| Literal::I64(i64::from(v))).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let extract = |v: &Value| -> (DType, Vec<i64>) {
+            let t = v.as_tensor().unwrap();
+            (t.dtype, t.elements.iter().map(|l| l.as_i64().unwrap()).collect())
+        };
+        let p = BTreeMap::new();
+
+        // neg(i32::MIN) wraps to i32::MIN (−(−2^31) overflows back to −2^31).
+        let out = crate::eval_primitive(Primitive::Neg, &[i32t(&[i32::MIN, -1, 5])], &p).unwrap();
+        let (dt, v) = extract(&out);
+        assert_eq!(dt, DType::I32, "neg must preserve i32 dtype");
+        assert_eq!(v, vec![i64::from(i32::MIN), 1, -5], "neg(i32::MIN) must wrap to i32::MIN");
+
+        // abs(i32::MIN) wraps to i32::MIN.
+        let out = crate::eval_primitive(Primitive::Abs, &[i32t(&[i32::MIN, -7, 3])], &p).unwrap();
+        let (dt, v) = extract(&out);
+        assert_eq!(dt, DType::I32, "abs must preserve i32 dtype");
+        assert_eq!(v, vec![i64::from(i32::MIN), 7, 3], "abs(i32::MIN) must wrap to i32::MIN");
+
+        // i32::MAX + 1 wraps to i32::MIN.
+        let out =
+            crate::eval_primitive(Primitive::Add, &[i32t(&[i32::MAX]), i32t(&[1])], &p).unwrap();
+        assert_eq!(extract(&out).1, vec![i64::from(i32::MIN)], "i32::MAX + 1 wraps to i32::MIN");
+
+        // i32::MIN − 1 wraps to i32::MAX.
+        let out =
+            crate::eval_primitive(Primitive::Sub, &[i32t(&[i32::MIN]), i32t(&[1])], &p).unwrap();
+        assert_eq!(extract(&out).1, vec![i64::from(i32::MAX)], "i32::MIN − 1 wraps to i32::MAX");
+
+        // 100000 * 100000 = 1e10; mod 2^32 = 1_410_065_408 (fits i32 positive).
+        let out = crate::eval_primitive(
+            Primitive::Mul,
+            &[i32t(&[100_000]), i32t(&[100_000])],
+            &p,
+        )
+        .unwrap();
+        let (dt, v) = extract(&out);
+        assert_eq!(dt, DType::I32, "mul must preserve i32 dtype");
+        assert_eq!(v, vec![1_410_065_408], "i32 mul must wrap mod 2^32");
+    }
+
     /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
     /// `vector_i64` input (folds two i64 slices) must produce element-for-element
     /// identical results to the `Vec<Literal>`-backed tensor (generic loop),
