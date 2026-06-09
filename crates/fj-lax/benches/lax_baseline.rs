@@ -3524,6 +3524,53 @@ fn bench_i64_matmul_512_literal_reference(c: &mut Criterion) {
     });
 }
 
+// Complex128 canonical [256,256]@[256,256] matmul: dense (contiguous
+// rank2_complex_matmul fast path) vs Vec<Literal> boxed (the generic strided
+// per-element complex reduction). Same-invocation A/B.
+fn bench_complex_matmul_256_dense(c: &mut Criterion) {
+    let n = 256usize;
+    let vals: Vec<(f64, f64)> = (0..(n * n) as i64)
+        .map(|i| (i as f64 * 0.5 - 3.0, i as f64 * -0.25 + 1.0))
+        .collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs = Value::Tensor(
+        TensorValue::new_complex_values(
+            DType::Complex128,
+            Shape { dims: dims.clone() },
+            vals.clone(),
+        )
+        .unwrap(),
+    );
+    let rhs = Value::Tensor(
+        TensorValue::new_complex_values(DType::Complex128, Shape { dims }, vals).unwrap(),
+    );
+    let p = i64_matmul_params();
+    c.bench_function("eval/matmul_256x256_complex128_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_complex_matmul_256_literal_reference(c: &mut Criterion) {
+    let n = 256usize;
+    let elems: Vec<Literal> = (0..(n * n) as i64)
+        .map(|i| Literal::from_complex128(i as f64 * 0.5 - 3.0, i as f64 * -0.25 + 1.0))
+        .collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape { dims: dims.clone() },
+            elems.clone(),
+        )
+        .unwrap(),
+    );
+    let rhs = Value::Tensor(TensorValue::new(DType::Complex128, Shape { dims }, elems).unwrap());
+    let p = i64_matmul_params();
+    c.bench_function("eval/matmul_256x256_complex128_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_complex_expm1_1k(c: &mut Criterion) {
     let input = complex_vector(1000);
     let p = no_params();
@@ -4342,6 +4389,8 @@ criterion_group!(
     bench_bf16_scalarmul_2m_boxed,
     bench_i64_matmul_512_dense,
     bench_i64_matmul_512_literal_reference,
+    bench_complex_matmul_256_dense,
+    bench_complex_matmul_256_literal_reference,
     bench_complex_expm1_1k,
     bench_complex_exp_256k_dense,
     bench_complex_pow_256k_dense,

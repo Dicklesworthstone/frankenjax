@@ -316,10 +316,6 @@ const PACK_B_MIN_KN: usize = 1 << 17;
 /// evidence showed the extra C read/write passes cost more than the B-panel
 /// reuse saves; keep those sizes on the flat packed path.
 const BLOCKED_B_MIN_KN: usize = 1 << 22;
-/// Large exact-order GEMM is memory/cache-traffic bound after the current
-/// blocked panel layout; same-worker pass190 sweep showed full logical fanout
-/// can evict useful C/A residency versus an 8-worker row split.
-const BLOCKED_GEMM_MAX_THREADS: usize = 8;
 
 #[derive(Clone, Copy)]
 struct MatmulPlan {
@@ -354,8 +350,8 @@ pub fn matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64>
     // serial at 256³; the missing primitive was not B-panel reuse, it was
     // right-sizing fanout so each worker owns enough row work.)
     let ops = m.saturating_mul(k).saturating_mul(n);
+    let threads = matmul_thread_count(ops, m);
     let b_elems = k.saturating_mul(n);
-    let threads = cap_blocked_gemm_threads(matmul_thread_count(ops, m), b_elems);
     let plan = MatmulPlan {
         threads,
         pack_b: b_elems >= PACK_B_MIN_KN,
@@ -373,8 +369,8 @@ pub(crate) fn matmul_2d_into(
     result: &mut [f64],
 ) {
     let ops = m.saturating_mul(k).saturating_mul(n);
+    let threads = matmul_thread_count(ops, m);
     let b_elems = k.saturating_mul(n);
-    let threads = cap_blocked_gemm_threads(matmul_thread_count(ops, m), b_elems);
     let plan = MatmulPlan {
         threads,
         pack_b: b_elems >= PACK_B_MIN_KN,
@@ -398,12 +394,11 @@ pub fn matmul_2d_with_pack(
     do_pack: bool,
 ) -> Vec<f64> {
     let ops = m.saturating_mul(k).saturating_mul(n);
-    let b_elems = k.saturating_mul(n);
-    let threads = cap_blocked_gemm_threads(matmul_thread_count(ops, m), b_elems);
+    let threads = matmul_thread_count(ops, m);
     let plan = MatmulPlan {
         threads,
         pack_b: do_pack,
-        block_k: b_elems >= BLOCKED_B_MIN_KN,
+        block_k: k.saturating_mul(n) >= BLOCKED_B_MIN_KN,
     };
     matmul_2d_with_threads(a, m, k, b, n, plan)
 }
@@ -420,15 +415,6 @@ fn matmul_thread_count(ops: usize, rows: usize) -> usize {
         .unwrap_or(1);
     let by_work = (ops / OPS_PER_THREAD).max(1);
     available.min(rows).min(by_work).max(1)
-}
-
-#[inline]
-fn cap_blocked_gemm_threads(threads: usize, b_elems: usize) -> usize {
-    if b_elems >= BLOCKED_B_MIN_KN {
-        threads.min(BLOCKED_GEMM_MAX_THREADS)
-    } else {
-        threads
-    }
 }
 
 /// `matmul_2d` driver with an explicit thread count (1 = serial). Splitting the
@@ -853,6 +839,71 @@ fn rank2_i64_row_block(
             let b_row = &b[l * n..l * n + n];
             for (c, &bv) in c_row.iter_mut().zip(b_row) {
                 *c = c.wrapping_add(a_il.wrapping_mul(bv));
+            }
+        }
+    }
+}
+
+/// Canonical complex `[m,k]@[k,n]` matmul over dense `(re, im)` f64 pairs. Accumulates each
+/// output's `(re, im)` over `l` in strictly ascending order using the SAME arithmetic as
+/// dot_general's generic complex reduction — `re += ar*br - ai*bi; im += ar*bi + ai*br`
+/// (i.e. `complex_mul` followed by separate real/imag adds) — so it is BIT-FOR-BIT identical
+/// while replacing the generic loop's per-element multi-index stride decode with a contiguous
+/// i-k-j inner loop. Complex matmul otherwise has NO fast path (`general_real_tensordot`
+/// returns `None` for complex) and falls to that strided per-element reduction. Threaded over
+/// disjoint output row-blocks.
+pub fn rank2_complex_matmul(
+    a: &[(f64, f64)],
+    m: usize,
+    k: usize,
+    b: &[(f64, f64)],
+    n: usize,
+) -> Vec<(f64, f64)> {
+    let mut result = vec![(0.0f64, 0.0f64); m * n];
+    if m == 0 || n == 0 || k == 0 {
+        return result;
+    }
+    // Complex MAC is ~4 real muls + 4 real adds per step — count it as ~4x the real ops so
+    // the threading threshold matches the extra arithmetic intensity.
+    let ops = m.saturating_mul(k).saturating_mul(n).saturating_mul(4);
+    let threads = matmul_thread_count(ops, m);
+    if threads <= 1 {
+        rank2_complex_row_block(a, b, k, n, 0, &mut result);
+        return result;
+    }
+    let rows_per = m.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [(f64, f64)] = result.as_mut_slice();
+        let mut row_start = 0usize;
+        while row_start < m {
+            let chunk_rows = rows_per.min(m - row_start);
+            let (block, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            let rs = row_start;
+            scope.spawn(move || rank2_complex_row_block(a, b, k, n, rs, block));
+            row_start += chunk_rows;
+        }
+    });
+    result
+}
+
+/// i-k-j row-block for [`rank2_complex_matmul`]: rows `[row_start, row_start+block.len()/n)`.
+fn rank2_complex_row_block(
+    a: &[(f64, f64)],
+    b: &[(f64, f64)],
+    k: usize,
+    n: usize,
+    row_start: usize,
+    block: &mut [(f64, f64)],
+) {
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let a_off = (row_start + ri) * k;
+        for l in 0..k {
+            let (ar, ai) = a[a_off + l];
+            let b_row = &b[l * n..l * n + n];
+            for (c, &(br, bi)) in c_row.iter_mut().zip(b_row) {
+                c.0 += ar * br - ai * bi;
+                c.1 += ar * bi + ai * br;
             }
         }
     }
@@ -1522,6 +1573,49 @@ mod tests {
     }
 
     #[test]
+    fn rank2_complex_matmul_matches_generic() {
+        // The contiguous complex kernel must be BIT-FOR-BIT identical to the generic complex
+        // reduction: per output, ascending-`l` `complex_mul` ((ar*br-ai*bi, ar*bi+ai*br)) with
+        // separate real/imag adds. Compare bit patterns (to_bits) so NaN/sign/rounding can't
+        // hide a divergence. Includes MR/NR remainder dims.
+        for &(m, k, n) in &[
+            (13usize, 17usize, 11usize),
+            (64, 48, 40),
+            (1, 33, 1),
+            (40, 1, 7),
+        ] {
+            let a: Vec<(f64, f64)> = (0..m * k)
+                .map(|i| ((i as f64) * 0.5 - 3.0, (i as f64) * -0.25 + 1.0))
+                .collect();
+            let b: Vec<(f64, f64)> = (0..k * n)
+                .map(|i| ((i as f64) * -0.125 + 2.0, (i as f64) * 0.375 - 1.5))
+                .collect();
+            let got = rank2_complex_matmul(&a, m, k, &b, n);
+            let mut want = vec![(0.0f64, 0.0f64); m * n];
+            for i in 0..m {
+                for j in 0..n {
+                    let mut re = 0.0f64;
+                    let mut im = 0.0f64;
+                    for l in 0..k {
+                        let (ar, ai) = a[i * k + l];
+                        let (br, bi) = b[l * n + j];
+                        re += ar * br - ai * bi;
+                        im += ar * bi + ai * br;
+                    }
+                    want[i * n + j] = (re, im);
+                }
+            }
+            for (g, w) in got.iter().zip(&want) {
+                assert_eq!(
+                    (g.0.to_bits(), g.1.to_bits()),
+                    (w.0.to_bits(), w.1.to_bits()),
+                    "[{m},{k}]@[{k},{n}]"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn batched_matmul_2d_batch1_matches_matmul_2d() {
         // dot_general routes batch==1 f64 contractions to the packed matmul_2d; it must be
         // bit-for-bit identical to the naive batched_matmul_2d(batch=1) it replaces (both
@@ -1584,46 +1678,6 @@ mod tests {
                 packed * 1e3,
                 gflop / packed,
                 naive / packed
-            );
-        }
-    }
-
-    #[test]
-    #[ignore = "perf benchmark; run explicitly"]
-    fn bench_matmul_2d_thread_count_sweep() {
-        use std::time::Instant;
-
-        let (m, k, n) = (2048usize, 2048usize, 2048usize);
-        let a: Vec<f64> = (0..m * k).map(|i| (i as f64) * 1e-5).collect();
-        let b: Vec<f64> = (0..k * n).map(|i| (i as f64) * 2e-5).collect();
-        let available = std::thread::available_parallelism()
-            .map(|p| p.get())
-            .unwrap_or(1);
-        let mut counts = vec![1usize, 2, 4, 6, 8, 12, 16, 24, 32, available];
-        counts.sort_unstable();
-        counts.dedup();
-        counts.retain(|&threads| threads <= available && threads <= m);
-
-        for threads in counts {
-            let plan = super::MatmulPlan {
-                threads,
-                pack_b: true,
-                block_k: true,
-            };
-            let mut best = f64::MAX;
-            let mut digest = 0u64;
-            for run in 0..3 {
-                let start = Instant::now();
-                let out = super::matmul_2d_with_threads(&a, m, k, &b, n, plan);
-                let elapsed = start.elapsed().as_secs_f64();
-                best = best.min(elapsed);
-                digest ^= out[run % out.len()].to_bits();
-            }
-            let gflop = 2.0 * m as f64 * k as f64 * n as f64 / 1e9;
-            println!(
-                "THREAD_SWEEP threads={threads} best_ms={:.3} gflops={:.1} digest={digest:016x}",
-                best * 1e3,
-                gflop / best
             );
         }
     }

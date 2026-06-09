@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use crate::EvalError;
 use crate::tensor_contraction::{
     batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f32_in, matmul_2d,
-    rank2_i64_matmul,
+    rank2_complex_matmul, rank2_i64_matmul,
 };
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
@@ -7084,6 +7084,34 @@ pub(crate) fn eval_dot_general(
         let n = rhs.shape.dims[1] as usize;
         let values = rank2_i64_matmul(a, m, k, b, n);
         return Ok(Value::Tensor(TensorValue::new_i64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            values,
+        )?));
+    }
+
+    // Canonical Complex128 [m,k]@[k,n]: contiguous i-k-j accumulation of each output's
+    // (re, im) pair over the dense (f64,f64) operand buffers, instead of the generic strided
+    // loop (which decodes a multi-index + stride sum per `l` AND boxes every element). The
+    // kernel uses the SAME ascending-`l` complex_mul + separate real/imag adds, so it is
+    // BIT-IDENTICAL to the generic complex reduction (see rank2_complex_matmul_matches_generic).
+    // Complex otherwise has no fast path (general_real_tensordot returns None for complex).
+    // Scoped to Complex128 output (full f64; Complex64 would round at output) with both
+    // operands dense-complex-backed.
+    if standard_rank2_matmul
+        && matches!(output_kind, DotOutputKind::Complex(DType::Complex128))
+        && let (Some(a), Some(b)) = (
+            lhs.elements.as_complex_slice(),
+            rhs.elements.as_complex_slice(),
+        )
+    {
+        let m = lhs.shape.dims[0] as usize;
+        let k = lhs.shape.dims[1] as usize;
+        let n = rhs.shape.dims[1] as usize;
+        let values = rank2_complex_matmul(a, m, k, b, n);
+        return Ok(Value::Tensor(TensorValue::new_complex_values(
+            DType::Complex128,
             Shape {
                 dims: output_dims.to_vec(),
             },
