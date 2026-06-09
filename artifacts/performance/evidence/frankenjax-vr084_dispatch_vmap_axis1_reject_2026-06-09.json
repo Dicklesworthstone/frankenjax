@@ -1,0 +1,50 @@
+{
+  "bead_id": "frankenjax-vr084",
+  "title": "perf(fj-dispatch): accelerate rank2 vmap add_one in_axes=1",
+  "timestamp_utc": "2026-06-09T17:12:30Z",
+  "agent": "BoldFalcon",
+  "target": {
+    "crate": "fj-dispatch",
+    "criterion_row": "dispatch_latency/vmap/rank2_add_one_in_axes_1",
+    "profile_basis": "fresh RCH Criterion profile on vmi1227854 after frankenjax-b6vaq landed",
+    "baseline_context_rows": {
+      "dispatch_latency/vmap/vector_add_one_us": [2.9462, 3.0176, 3.1040],
+      "dispatch_latency/vmap/rank2_add_one_us": [3.7282, 3.7506, 3.7660],
+      "dispatch_latency/vmap/rank2_add_one_in_axes_1_us": [12.546, 12.960, 13.515]
+    }
+  },
+  "candidate": {
+    "description": "exact dispatch-level direct path for rank2 I64 scalar Add with in_axes=1, bypassing BatchTrace setup",
+    "worker": "vmi1227854",
+    "command": "RCH_WORKER=vmi1227854 rch exec -- cargo bench -p fj-dispatch --bench dispatch_baseline -- dispatch_latency/vmap/rank2_add_one_in_axes_1 --sample-size 20 --warm-up-time 1 --measurement-time 3",
+    "mean_us": 13.623,
+    "interval_low_us": 13.414,
+    "interval_high_us": 13.860
+  },
+  "comparison": {
+    "baseline_mean_us": 12.960,
+    "speedup_mean": 0.9513,
+    "speedup_conservative": 0.9052,
+    "decision": "reject_no_ship"
+  },
+  "isomorphism_proof": {
+    "status": "passed before rejection",
+    "details": "Focused test compared the direct path against the forced loop-and-stack fallback via [Vmap, Jit] and preserved the existing golden SHA 29d48dbffb8ba3bc95e29416bbe470cd18432ffd471b8ec7ef068c3b7a61b3ef."
+  },
+  "validation": [
+    {
+      "command": "rustfmt --edition 2024 --config skip_children=true --check crates/fj-dispatch/src/lib.rs",
+      "status": "passed"
+    },
+    {
+      "command": "cargo test -p fj-dispatch test_in_axes_1_i64_add_one_bench_shape_golden_sha256 -- --nocapture",
+      "status": "passed"
+    },
+    {
+      "command": "cargo fmt -p fj-dispatch --check",
+      "status": "blocked_preexisting",
+      "details": "fails on pre-existing formatting drift in crates/fj-dispatch/src/batching.rs, which was not edited for this rejected lever"
+    }
+  ],
+  "next_primitive": "Attack the underlying axis-1 transpose/materialization cost with a blocked transpose-map kernel or typed-buffer route; do not repeat BatchTrace-bypass micro-routes for this row."
+}
