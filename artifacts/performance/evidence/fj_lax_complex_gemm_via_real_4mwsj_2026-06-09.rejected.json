@@ -1,0 +1,39 @@
+{
+  "bead": "frankenjax-4mwsj",
+  "status": "rejected",
+  "date": "2026-06-09",
+  "worker": "ovh-a",
+  "target": "eval/matmul_256x256_complex128_dense",
+  "baseline": {
+    "revision": "fa18f2db",
+    "command": "RCH_WORKER=ovh-a RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RCH_WORKER CARGO_TARGET_DIR=/data/tmp/frankenjax-4mwsj-baseline-target rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/matmul_256x256_complex128_dense --sample-size 20 --warm-up-time 1 --measurement-time 4 --noplot",
+    "criterion_ms": {
+      "lower": 2.3747,
+      "median": 2.3975,
+      "upper": 2.4194
+    }
+  },
+  "candidate": {
+    "revision": "6c05eda7",
+    "preserved_branch": "preserve/6c05eda7-4mwsj-wip",
+    "command": "RCH_WORKER=ovh-a RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RCH_WORKER CARGO_TARGET_DIR=/data/tmp/frankenjax-4mwsj-candidate-target rch exec -- cargo bench -p fj-lax --bench lax_baseline -- eval/matmul_256x256_complex128_dense --sample-size 20 --warm-up-time 1 --measurement-time 4 --noplot",
+    "criterion_artifact": "/data/tmp/frankenjax-4mwsj-candidate-target/criterion/eval_matmul_256x256_complex128_dense/new/estimates.json",
+    "criterion_ms": {
+      "lower": 2.7773,
+      "median": 2.7887,
+      "upper": 2.8125
+    }
+  },
+  "score": {
+    "midpoint_speedup": 0.8600,
+    "conservative_speedup": 0.8440,
+    "impact_confidence_effort": 0.0
+  },
+  "parity": {
+    "ordering_preserved": false,
+    "floating_point_preserved": false,
+    "reason": "The candidate decomposed complex matmul into four independent real GEMMs and combined completed sums, which reassociates floating-point additions versus the existing ascending-l complex_mul recurrence.",
+    "golden_sha256": "not retained; source rejected before shipping"
+  },
+  "verdict": "Reject. Candidate regressed on the same RCH worker and violates absolute FP-bit parity."
+}

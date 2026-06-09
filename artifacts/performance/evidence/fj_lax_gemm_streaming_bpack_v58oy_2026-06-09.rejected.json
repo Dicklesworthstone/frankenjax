@@ -1,0 +1,37 @@
+{
+  "bead": "frankenjax-v58oy",
+  "status": "rejected",
+  "date": "2026-06-09",
+  "worker": "ovh-a",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "baseline": {
+    "revision": "fa18f2db",
+    "command": "RCH_WORKER=ovh-a RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RCH_WORKER CARGO_TARGET_DIR=/data/tmp/frankenjax-v58oy-baseline-target rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --sample-size 10 --warm-up-time 1 --measurement-time 4 --noplot",
+    "criterion_ms": {
+      "lower": 188.51,
+      "median": 221.47,
+      "upper": 266.76
+    }
+  },
+  "candidate": {
+    "preserved_branch": "preserve/f0a9947c-v58oy-4mwsj-wip",
+    "command": "RCH_WORKER=ovh-a RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RCH_WORKER CARGO_TARGET_DIR=/data/tmp/frankenjax-v58oy-candidate-target rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64 --sample-size 10 --warm-up-time 1 --measurement-time 4 --noplot",
+    "criterion_ms": {
+      "lower": 308.95,
+      "median": 348.57,
+      "upper": 395.99
+    }
+  },
+  "score": {
+    "midpoint_speedup": 0.6354,
+    "conservative_speedup": 0.4760,
+    "impact_confidence_effort": 0.0
+  },
+  "parity": {
+    "ordering_preserved": true,
+    "floating_point_preserved": true,
+    "reason": "Candidate was designed to preserve pc order and per-output ascending-k accumulation, but it failed the performance gate.",
+    "golden_sha256": "not retained; source rejected before shipping"
+  },
+  "verdict": "Reject. KC-slab streaming B-pack increased runtime on the same RCH worker."
+}
