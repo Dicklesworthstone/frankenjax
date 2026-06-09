@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use crate::EvalError;
 use crate::tensor_contraction::{
     batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f32_in, matmul_2d,
+    rank2_i64_matmul,
 };
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
@@ -7067,6 +7068,27 @@ pub(crate) fn eval_dot_general(
         && rhs_free_dims.as_slice() == [1usize];
     if standard_rank2_matmul && let Some(value) = rank2_f64_matmul(lhs, rhs, &output_dims)? {
         return Ok(value);
+    }
+
+    // Canonical I64 [m,k]@[k,n]: contiguous i-k-j wrapping kernel instead of the generic
+    // strided per-element loop (which decodes a full multi-index + stride sum per `l`).
+    // Integer +/* are associative and exact, so ascending-`l` wrapping is BIT-IDENTICAL to
+    // the generic integer reduction (see rank2_i64_matmul_matches_generic). I64 matmul
+    // otherwise has no fast path. Scoped to I64 output (Literal::I64 == new_i64_values).
+    if standard_rank2_matmul
+        && matches!(output_kind, DotOutputKind::Integral(DType::I64))
+        && let (Some(a), Some(b)) = (lhs.elements.as_i64_slice(), rhs.elements.as_i64_slice())
+    {
+        let m = lhs.shape.dims[0] as usize;
+        let k = lhs.shape.dims[1] as usize;
+        let n = rhs.shape.dims[1] as usize;
+        let values = rank2_i64_matmul(a, m, k, b, n);
+        return Ok(Value::Tensor(TensorValue::new_i64_values(
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            values,
+        )?));
     }
 
     // General rank-2 single-contracting-dim f64 contraction in any orientation

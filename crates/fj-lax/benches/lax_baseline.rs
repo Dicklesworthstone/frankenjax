@@ -3480,6 +3480,50 @@ fn bench_grouped_conv1d_fast(c: &mut Criterion) {
     });
 }
 
+// i64 canonical [512,512]@[512,512] matmul: dense (contiguous rank2_i64_matmul
+// fast path) vs Vec<Literal> boxed (the generic strided per-element reduction).
+// Same-invocation A/B — the two run in one process so the ratio is trustworthy.
+fn i64_matmul_params() -> BTreeMap<String, String> {
+    let mut p = no_params();
+    p.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
+    p.insert("rhs_contracting_dims".to_owned(), "0".to_owned());
+    p
+}
+
+fn bench_i64_matmul_512_dense(c: &mut Criterion) {
+    let n = 512usize;
+    let a: Vec<i64> = (0..(n * n) as i64)
+        .map(|i| i.wrapping_mul(2_654_435_761))
+        .collect();
+    let b: Vec<i64> = (0..(n * n) as i64)
+        .map(|i| i.wrapping_mul(40_503) ^ 0x5555)
+        .collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new_i64_values(Shape { dims: dims.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new_i64_values(Shape { dims }, b).unwrap());
+    let p = i64_matmul_params();
+    c.bench_function("eval/matmul_512x512_i64_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_i64_matmul_512_literal_reference(c: &mut Criterion) {
+    let n = 512usize;
+    let a: Vec<Literal> = (0..(n * n) as i64)
+        .map(|i| Literal::I64(i.wrapping_mul(2_654_435_761)))
+        .collect();
+    let b: Vec<Literal> = (0..(n * n) as i64)
+        .map(|i| Literal::I64(i.wrapping_mul(40_503) ^ 0x5555))
+        .collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new(DType::I64, Shape { dims: dims.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new(DType::I64, Shape { dims }, b).unwrap());
+    let p = i64_matmul_params();
+    c.bench_function("eval/matmul_512x512_i64_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 fn bench_complex_expm1_1k(c: &mut Criterion) {
     let input = complex_vector(1000);
     let p = no_params();
@@ -4296,6 +4340,8 @@ criterion_group!(
     bench_grouped_conv1d_fast,
     bench_bf16_scalarmul_2m_dense,
     bench_bf16_scalarmul_2m_boxed,
+    bench_i64_matmul_512_dense,
+    bench_i64_matmul_512_literal_reference,
     bench_complex_expm1_1k,
     bench_complex_exp_256k_dense,
     bench_complex_pow_256k_dense,

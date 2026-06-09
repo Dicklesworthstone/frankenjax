@@ -316,6 +316,10 @@ const PACK_B_MIN_KN: usize = 1 << 17;
 /// evidence showed the extra C read/write passes cost more than the B-panel
 /// reuse saves; keep those sizes on the flat packed path.
 const BLOCKED_B_MIN_KN: usize = 1 << 22;
+/// Large exact-order GEMM is memory/cache-traffic bound after the current
+/// blocked panel layout; same-worker pass190 sweep showed full logical fanout
+/// can evict useful C/A residency versus an 8-worker row split.
+const BLOCKED_GEMM_MAX_THREADS: usize = 8;
 
 #[derive(Clone, Copy)]
 struct MatmulPlan {
@@ -350,8 +354,8 @@ pub fn matmul_2d(a: &[f64], m: usize, k: usize, b: &[f64], n: usize) -> Vec<f64>
     // serial at 256³; the missing primitive was not B-panel reuse, it was
     // right-sizing fanout so each worker owns enough row work.)
     let ops = m.saturating_mul(k).saturating_mul(n);
-    let threads = matmul_thread_count(ops, m);
     let b_elems = k.saturating_mul(n);
+    let threads = cap_blocked_gemm_threads(matmul_thread_count(ops, m), b_elems);
     let plan = MatmulPlan {
         threads,
         pack_b: b_elems >= PACK_B_MIN_KN,
@@ -369,8 +373,8 @@ pub(crate) fn matmul_2d_into(
     result: &mut [f64],
 ) {
     let ops = m.saturating_mul(k).saturating_mul(n);
-    let threads = matmul_thread_count(ops, m);
     let b_elems = k.saturating_mul(n);
+    let threads = cap_blocked_gemm_threads(matmul_thread_count(ops, m), b_elems);
     let plan = MatmulPlan {
         threads,
         pack_b: b_elems >= PACK_B_MIN_KN,
@@ -394,11 +398,12 @@ pub fn matmul_2d_with_pack(
     do_pack: bool,
 ) -> Vec<f64> {
     let ops = m.saturating_mul(k).saturating_mul(n);
-    let threads = matmul_thread_count(ops, m);
+    let b_elems = k.saturating_mul(n);
+    let threads = cap_blocked_gemm_threads(matmul_thread_count(ops, m), b_elems);
     let plan = MatmulPlan {
         threads,
         pack_b: do_pack,
-        block_k: k.saturating_mul(n) >= BLOCKED_B_MIN_KN,
+        block_k: b_elems >= BLOCKED_B_MIN_KN,
     };
     matmul_2d_with_threads(a, m, k, b, n, plan)
 }
@@ -415,6 +420,15 @@ fn matmul_thread_count(ops: usize, rows: usize) -> usize {
         .unwrap_or(1);
     let by_work = (ops / OPS_PER_THREAD).max(1);
     available.min(rows).min(by_work).max(1)
+}
+
+#[inline]
+fn cap_blocked_gemm_threads(threads: usize, b_elems: usize) -> usize {
+    if b_elems >= BLOCKED_B_MIN_KN {
+        threads.min(BLOCKED_GEMM_MAX_THREADS)
+    } else {
+        threads
+    }
 }
 
 /// `matmul_2d` driver with an explicit thread count (1 = serial). Splitting the
@@ -789,6 +803,61 @@ fn matmul_2d_blocked_row_block(
 /// element accumulates in ascending-`l` order, bit-for-bit identical to a serial
 /// per-batch matmul / the generic dot_general loop (see
 /// batched_matmul_2d_bit_identical).
+/// Contiguous i-k-j i64 matmul `[m,k]@[k,n]` with wrapping arithmetic, threaded over
+/// disjoint output row-blocks. Each output element accumulates `a[i,l]*b[l,j]` over `l` in
+/// strictly ascending order with `wrapping_mul`/`wrapping_add` — BIT-FOR-BIT identical to
+/// dot_general's generic integer reduction (same ascending-`l` wrapping fold), but the
+/// contiguous inner `j`-loop autovectorizes and replaces the generic loop's per-`l`
+/// multi-index stride decode. For canonical I64 `[m,k]@[k,n]` matmul, which otherwise has
+/// NO fast path and falls to that strided per-element loop.
+pub fn rank2_i64_matmul(a: &[i64], m: usize, k: usize, b: &[i64], n: usize) -> Vec<i64> {
+    let mut result = vec![0i64; m * n];
+    if m == 0 || n == 0 || k == 0 {
+        return result;
+    }
+    let ops = m.saturating_mul(k).saturating_mul(n);
+    let threads = matmul_thread_count(ops, m);
+    if threads <= 1 {
+        rank2_i64_row_block(a, b, k, n, 0, &mut result);
+        return result;
+    }
+    let rows_per = m.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut rest: &mut [i64] = result.as_mut_slice();
+        let mut row_start = 0usize;
+        while row_start < m {
+            let chunk_rows = rows_per.min(m - row_start);
+            let (block, tail) = rest.split_at_mut(chunk_rows * n);
+            rest = tail;
+            let rs = row_start;
+            scope.spawn(move || rank2_i64_row_block(a, b, k, n, rs, block));
+            row_start += chunk_rows;
+        }
+    });
+    result
+}
+
+/// i-k-j row-block for [`rank2_i64_matmul`]: rows `[row_start, row_start+block.len()/n)`.
+fn rank2_i64_row_block(
+    a: &[i64],
+    b: &[i64],
+    k: usize,
+    n: usize,
+    row_start: usize,
+    block: &mut [i64],
+) {
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let a_off = (row_start + ri) * k;
+        for l in 0..k {
+            let a_il = a[a_off + l];
+            let b_row = &b[l * n..l * n + n];
+            for (c, &bv) in c_row.iter_mut().zip(b_row) {
+                *c = c.wrapping_add(a_il.wrapping_mul(bv));
+            }
+        }
+    }
+}
+
 pub fn batched_matmul_2d(
     a: &[f64],
     batch: usize,
@@ -1421,6 +1490,38 @@ mod tests {
     }
 
     #[test]
+    fn rank2_i64_matmul_matches_generic() {
+        // The contiguous i64 kernel must equal a direct ascending-`l` wrapping reference
+        // (the same fold dot_general's generic integer reduction does), including overflow
+        // wrapping and MR/NR remainder dims.
+        for &(m, k, n) in &[
+            (13usize, 17usize, 11usize),
+            (64, 48, 40),
+            (1, 33, 1),
+            (40, 1, 7),
+        ] {
+            let a: Vec<i64> = (0..m * k)
+                .map(|i| (i as i64).wrapping_mul(2_654_435_761).wrapping_sub(7))
+                .collect();
+            let b: Vec<i64> = (0..k * n)
+                .map(|i| (i as i64).wrapping_mul(40_503).wrapping_add(3))
+                .collect();
+            let got = rank2_i64_matmul(&a, m, k, &b, n);
+            let mut want = vec![0i64; m * n];
+            for i in 0..m {
+                for j in 0..n {
+                    let mut s = 0i64;
+                    for l in 0..k {
+                        s = s.wrapping_add(a[i * k + l].wrapping_mul(b[l * n + j]));
+                    }
+                    want[i * n + j] = s;
+                }
+            }
+            assert_eq!(got, want, "[{m},{k}]@[{k},{n}]");
+        }
+    }
+
+    #[test]
     fn batched_matmul_2d_batch1_matches_matmul_2d() {
         // dot_general routes batch==1 f64 contractions to the packed matmul_2d; it must be
         // bit-for-bit identical to the naive batched_matmul_2d(batch=1) it replaces (both
@@ -1483,6 +1584,46 @@ mod tests {
                 packed * 1e3,
                 gflop / packed,
                 naive / packed
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "perf benchmark; run explicitly"]
+    fn bench_matmul_2d_thread_count_sweep() {
+        use std::time::Instant;
+
+        let (m, k, n) = (2048usize, 2048usize, 2048usize);
+        let a: Vec<f64> = (0..m * k).map(|i| (i as f64) * 1e-5).collect();
+        let b: Vec<f64> = (0..k * n).map(|i| (i as f64) * 2e-5).collect();
+        let available = std::thread::available_parallelism()
+            .map(|p| p.get())
+            .unwrap_or(1);
+        let mut counts = vec![1usize, 2, 4, 6, 8, 12, 16, 24, 32, available];
+        counts.sort_unstable();
+        counts.dedup();
+        counts.retain(|&threads| threads <= available && threads <= m);
+
+        for threads in counts {
+            let plan = super::MatmulPlan {
+                threads,
+                pack_b: true,
+                block_k: true,
+            };
+            let mut best = f64::MAX;
+            let mut digest = 0u64;
+            for run in 0..3 {
+                let start = Instant::now();
+                let out = super::matmul_2d_with_threads(&a, m, k, &b, n, plan);
+                let elapsed = start.elapsed().as_secs_f64();
+                best = best.min(elapsed);
+                digest ^= out[run % out.len()].to_bits();
+            }
+            let gflop = 2.0 * m as f64 * k as f64 * n as f64 / 1e9;
+            println!(
+                "THREAD_SWEEP threads={threads} best_ms={:.3} gflops={:.1} digest={digest:016x}",
+                best * 1e3,
+                gflop / best
             );
         }
     }
