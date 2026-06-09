@@ -3780,6 +3780,49 @@ fn bench_i32_matmul_512_literal_reference(c: &mut Criterion) {
     });
 }
 
+// Canonical u32 [512,512]@[512,512] matmul: dense fast path (extract to Vec<u64> +
+// contiguous rank2_u64_matmul) vs the generic strided per-element loop the SAME data
+// hits in the transposed (A·Bᵀ) orientation (which the canonical-only fast path
+// misses). Same-invocation A/B isolating fast-kernel vs generic-decode for u32.
+fn bench_u32_matmul_512_canonical_fast(c: &mut Criterion) {
+    let n = 512usize;
+    let a: Vec<Literal> = (0..(n * n) as u64)
+        .map(|i| Literal::U32((i.wrapping_mul(2_654_435_761) % 70_000) as u32))
+        .collect();
+    let b: Vec<Literal> = (0..(n * n) as u64)
+        .map(|i| Literal::U32((i.wrapping_mul(40_503) % 70_000) as u32))
+        .collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims: dims.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims }, b).unwrap());
+    let mut p = no_params();
+    p.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
+    p.insert("rhs_contracting_dims".to_owned(), "0".to_owned());
+    c.bench_function("eval/matmul_512x512_u32_canonical_fast", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+fn bench_u32_matmul_512_transposed_generic(c: &mut Criterion) {
+    let n = 512usize;
+    let a: Vec<Literal> = (0..(n * n) as u64)
+        .map(|i| Literal::U32((i.wrapping_mul(2_654_435_761) % 70_000) as u32))
+        .collect();
+    let b: Vec<Literal> = (0..(n * n) as u64)
+        .map(|i| Literal::U32((i.wrapping_mul(40_503) % 70_000) as u32))
+        .collect();
+    let dims = vec![n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims: dims.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims }, b).unwrap());
+    // rhs_contracting=1 (A·Bᵀ) misses the canonical fast path -> generic strided loop.
+    let mut p = no_params();
+    p.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
+    p.insert("rhs_contracting_dims".to_owned(), "1".to_owned());
+    c.bench_function("eval/matmul_512x512_u32_transposed_generic", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
 // Transposed i64 [512,512]·[512,512]ᵀ matmul (rhs_contracting=1, i.e. A·Bᵀ):
 // dense (contiguous rank2_i64_any_orientation_matmul: transpose B then
 // rank2_i64_matmul) vs Vec<Literal> boxed (the generic strided per-element
@@ -4874,6 +4917,8 @@ criterion_group!(
     bench_i64_matmul_512_transposed_dense,
     bench_i64_matmul_512_transposed_literal_reference,
     bench_batched_i64_matmul_dense,
+    bench_u32_matmul_512_canonical_fast,
+    bench_u32_matmul_512_transposed_generic,
     bench_i32_matmul_512_dense,
     bench_i32_matmul_512_literal_reference,
     bench_i32_matmul_512_transposed_dense,

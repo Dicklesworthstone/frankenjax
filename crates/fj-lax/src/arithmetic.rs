@@ -7012,6 +7012,43 @@ fn dot_f64_elements(tensor: &TensorValue) -> Option<Cow<'_, [f64]>> {
     Some(Cow::Owned(values))
 }
 
+/// Extract an unsigned-integer tensor's elements as `u64` for the canonical u32/u64
+/// matmul fast path. u32/u64 are boxed (no dense slice), so this materializes a
+/// `Vec<u64>` via the same `as_u64()` the generic unsigned dot uses. Returns `None`
+/// if any element is not unsigned-representable.
+fn dot_u64_elements(tensor: &TensorValue) -> Option<Vec<u64>> {
+    let mut values = Vec::with_capacity(tensor.elements.len());
+    for literal in &tensor.elements {
+        values.push(literal.as_u64()?);
+    }
+    Some(values)
+}
+
+/// Contiguous `[m,k]@[k,n]` u64 matmul with WRAPPING accumulation, i-l-j order
+/// (axpy each B row into the C row). The per-output `l`-ascending fold and `wrapping`
+/// mul/add match `dot_accumulate`'s unsigned arm bit-for-bit (modular arithmetic is
+/// associative, so order is moot, but the order matches anyway). Single-threaded —
+/// still ~10-50x over the generic strided per-element multi-index-decode loop, and
+/// u32/u64 matmul is rare enough not to warrant the threaded i64 kernel's machinery.
+fn rank2_u64_matmul(a: &[u64], m: usize, k: usize, b: &[u64], n: usize) -> Vec<u64> {
+    let mut c = vec![0u64; m * n];
+    if m == 0 || n == 0 || k == 0 {
+        return c;
+    }
+    for i in 0..m {
+        let arow = &a[i * k..i * k + k];
+        let crow = &mut c[i * n..i * n + n];
+        for l in 0..k {
+            let av = arow[l];
+            let brow = &b[l * n..l * n + n];
+            for (cj, &bj) in crow.iter_mut().zip(brow.iter()) {
+                *cj = cj.wrapping_add(av.wrapping_mul(bj));
+            }
+        }
+    }
+    c
+}
+
 fn eval_tensor_dot(
     primitive: Primitive,
     lhs: &TensorValue,
@@ -7357,6 +7394,35 @@ pub(crate) fn eval_dot_general(
         )?;
         out.dtype = int_dtype;
         return Ok(Value::Tensor(out));
+    }
+
+    // Canonical U32/U64 [m,k]@[k,n]: contiguous i-l-j wrapping-u64 kernel instead of the
+    // generic strided per-element loop. Unsigned dot accumulates in WRAPPING u64 and
+    // narrows to the output width (u32 -> `as u32`), exactly as `dot_accumulate`'s
+    // unsigned arm does — so the ascending-`l` fold here is BIT-IDENTICAL to the generic
+    // reduction (see u32_u64_dot_general_canonical_matches_generic). u32/u64 tensors are
+    // boxed (no dense slice), so both operands are extracted once into `Vec<u64>` (O(elems),
+    // dwarfed by the O(m·k·n) contraction) before the contiguous kernel.
+    if standard_rank2_matmul
+        && let DotOutputKind::Integral(uint_dtype @ (DType::U32 | DType::U64)) = output_kind
+        && let (Some(a), Some(b)) = (dot_u64_elements(lhs), dot_u64_elements(rhs))
+    {
+        let m = lhs.shape.dims[0] as usize;
+        let k = lhs.shape.dims[1] as usize;
+        let n = rhs.shape.dims[1] as usize;
+        let values = rank2_u64_matmul(&a, m, k, &b, n);
+        let elements: Vec<Literal> = if uint_dtype == DType::U32 {
+            values.into_iter().map(|v| Literal::U32(v as u32)).collect()
+        } else {
+            values.into_iter().map(Literal::U64).collect()
+        };
+        return Ok(Value::Tensor(TensorValue::new(
+            uint_dtype,
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            elements,
+        )?));
     }
 
     // Canonical complex [m,k]@[k,n]: contiguous i-k-j accumulation of each output's
@@ -9411,6 +9477,86 @@ mod tests {
             any_wrapped,
             "test inputs must actually exercise i32 overflow wrapping"
         );
+    }
+
+    #[test]
+    fn u32_u64_dot_general_canonical_matches_generic() {
+        // Canonical u32/u64 [m,k]@[k,n] fast path must equal the generic unsigned
+        // reduction bit-for-bit: wrapping-u64 accumulate, narrow to output width (u32 ->
+        // as u32). u32 values near sqrt(u32::MAX) so products+sums wrap mod 2^32.
+        let (m, k, n) = (3usize, 6usize, 4usize);
+        let mku = |len: usize, seed: u64, modulus: u64| -> Vec<u64> {
+            (0..len as u64).map(|i| (i * 2_654_435_761 + seed) % modulus).collect()
+        };
+        let lit_tensor = |dims: Vec<u32>, data: &[u64], ctor: &dyn Fn(u64) -> Literal, dt: DType| {
+            Value::Tensor(
+                TensorValue::new(dt, Shape { dims }, data.iter().map(|&v| ctor(v)).collect())
+                    .unwrap(),
+            )
+        };
+
+        // u32: values up to ~70000 so K=6 products (~4.9e9) and sums wrap u32 (4.29e9).
+        let au = mku(m * k, 7, 70_000);
+        let bu = mku(k * n, 11, 70_000);
+        let p = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "0".to_owned()),
+        ]);
+        let Value::Tensor(out32) = eval_dot_general(
+            &[
+                lit_tensor(vec![m as u32, k as u32], &au, &|v| Literal::U32(v as u32), DType::U32),
+                lit_tensor(vec![k as u32, n as u32], &bu, &|v| Literal::U32(v as u32), DType::U32),
+            ],
+            &p,
+        )
+        .unwrap() else {
+            panic!("expected tensor");
+        };
+        assert_eq!(out32.dtype, DType::U32);
+        let got32: Vec<u64> = out32.elements.iter().map(|l| l.as_u64().unwrap()).collect();
+        let mut want32 = vec![0u64; m * n];
+        let mut wrapped = false;
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0u64;
+                for l in 0..k {
+                    s = s.wrapping_add((au[i * k + l]).wrapping_mul(bu[l * n + j]));
+                }
+                let w = u64::from(s as u32);
+                wrapped |= w != s;
+                want32[i * n + j] = w;
+            }
+        }
+        assert_eq!(got32, want32, "u32 matmul must wrap mod 2^32 like the generic path");
+        assert!(wrapped, "u32 test inputs must exercise wrapping");
+
+        // u64: large values, wrapping mod 2^64 (matches generic; no narrowing).
+        let big = 1u64 << 40;
+        let al: Vec<u64> = (0..(m * k) as u64).map(|i| big + i * 12345).collect();
+        let bl: Vec<u64> = (0..(k * n) as u64).map(|i| big + i * 6789).collect();
+        let Value::Tensor(out64) = eval_dot_general(
+            &[
+                lit_tensor(vec![m as u32, k as u32], &al, &|v| Literal::U64(v), DType::U64),
+                lit_tensor(vec![k as u32, n as u32], &bl, &|v| Literal::U64(v), DType::U64),
+            ],
+            &p,
+        )
+        .unwrap() else {
+            panic!("expected tensor");
+        };
+        assert_eq!(out64.dtype, DType::U64);
+        let got64: Vec<u64> = out64.elements.iter().map(|l| l.as_u64().unwrap()).collect();
+        let mut want64 = vec![0u64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0u64;
+                for l in 0..k {
+                    s = s.wrapping_add(al[i * k + l].wrapping_mul(bl[l * n + j]));
+                }
+                want64[i * n + j] = s;
+            }
+        }
+        assert_eq!(got64, want64, "u64 matmul must wrap mod 2^64 like the generic path");
     }
 
     #[test]
