@@ -470,6 +470,13 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
 // ── Tensor-aware value arithmetic helpers ──────────────────────────
 
 fn value_add(a: &Value, b: &Value) -> Result<Value, AdError> {
+    if let (Value::Scalar(Literal::F64Bits(a_bits)), Value::Scalar(Literal::F64Bits(b_bits))) =
+        (a, b)
+    {
+        return Ok(Value::Scalar(Literal::from_f64(
+            f64::from_bits(*a_bits) + f64::from_bits(*b_bits),
+        )));
+    }
     eval_primitive(Primitive::Add, &[a.clone(), b.clone()], &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
@@ -821,6 +828,13 @@ fn trigamma_value(x: &Value) -> Result<Value, AdError> {
 }
 
 fn value_mul(a: &Value, b: &Value) -> Result<Value, AdError> {
+    if let (Value::Scalar(Literal::F64Bits(a_bits)), Value::Scalar(Literal::F64Bits(b_bits))) =
+        (a, b)
+    {
+        return Ok(Value::Scalar(Literal::from_f64(
+            f64::from_bits(*a_bits) * f64::from_bits(*b_bits),
+        )));
+    }
     eval_primitive(Primitive::Mul, &[a.clone(), b.clone()], &BTreeMap::new())
         .map_err(|e| AdError::EvalFailed(e.to_string()))
 }
@@ -18345,6 +18359,54 @@ mod tests {
         assert!(
             (tangent_val - 12.0).abs() < 1e-10,
             "tangent = {tangent_val}"
+        );
+    }
+
+    #[test]
+    fn scalar_f64_ad_arithmetic_matches_eval_primitive_bits() {
+        let cases = [
+            (0.0, -0.0),
+            (-0.0, -0.0),
+            (1.25, -3.5),
+            (f64::INFINITY, 2.0),
+            (f64::from_bits(0x7ff8_0000_0000_0001), 4.0),
+        ];
+
+        for (lhs, rhs) in cases {
+            let lhs = Value::scalar_f64(lhs);
+            let rhs = Value::scalar_f64(rhs);
+            for (primitive, helper) in [
+                (
+                    Primitive::Add,
+                    value_add as fn(&Value, &Value) -> Result<Value, AdError>,
+                ),
+                (Primitive::Mul, value_mul),
+            ] {
+                let expected =
+                    eval_primitive(primitive, &[lhs.clone(), rhs.clone()], &BTreeMap::new())
+                        .expect("reference eval should succeed");
+                let actual = helper(&lhs, &rhs).expect("helper should succeed");
+                assert_eq!(
+                    actual,
+                    expected,
+                    "{} scalar F64 helper must preserve exact evaluator bits",
+                    primitive.as_str()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_non_f64_ad_arithmetic_stays_on_eval_path() {
+        let lhs = Value::scalar_f32(-0.0);
+        let rhs = Value::scalar_f32(0.0);
+        let actual = value_add(&lhs, &rhs).expect("f32 add should succeed");
+        let expected =
+            eval_primitive(Primitive::Add, &[lhs, rhs], &BTreeMap::new()).expect("reference add");
+        assert_eq!(actual, expected);
+        assert!(
+            matches!(actual, Value::Scalar(Literal::F32Bits(_))),
+            "F32 scalar add should keep the existing evaluator dtype"
         );
     }
 
