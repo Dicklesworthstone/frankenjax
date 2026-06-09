@@ -7049,6 +7049,66 @@ fn rank2_u64_matmul(a: &[u64], m: usize, k: usize, b: &[u64], n: usize) -> Vec<u
     c
 }
 
+/// Transpose a contiguous row-major `[rows, cols]` u64 matrix to `[cols, rows]`.
+fn transpose_rows_cols_u64(data: &[u64], rows: usize, cols: usize) -> Vec<u64> {
+    let mut out = vec![0u64; rows * cols];
+    for r in 0..rows {
+        let base = r * cols;
+        for c in 0..cols {
+            out[c * rows + r] = data[base + c];
+        }
+    }
+    out
+}
+
+/// Build the boxed `Literal` output for a u32/u64 matmul result, narrowing to the
+/// output width (u32 -> `as u32`) — exactly `dot_accumulate`'s unsigned arm.
+fn u64_matmul_output(out_dtype: DType, values: Vec<u64>, output_dims: &[u32]) -> Result<Value, EvalError> {
+    let elements: Vec<Literal> = if out_dtype == DType::U32 {
+        values.into_iter().map(|v| Literal::U32(v as u32)).collect()
+    } else {
+        values.into_iter().map(Literal::U64).collect()
+    };
+    Ok(Value::Tensor(TensorValue::new(
+        out_dtype,
+        Shape {
+            dims: output_dims.to_vec(),
+        },
+        elements,
+    )?))
+}
+
+/// Rank-2, single-contracting-dim, NO-batch u32/u64 dot_general in ANY orientation
+/// (A·Bᵀ / Aᵀ·B). Mirrors [`rank2_i64_any_orientation_matmul`] for unsigned output:
+/// extract both boxed operands to `Vec<u64>`, transpose to the canonical `[m,k]`/`[k,n]`
+/// layout, run the wrapping-u64 `rank2_u64_matmul`, then narrow to the output width.
+/// Bit-identical to the generic unsigned reduction (wrapping fold is associative;
+/// transpose only reorders memory). Returns None if any operand isn't unsigned.
+fn rank2_u64_any_orientation_matmul(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    out_dtype: DType,
+    lc: usize,
+    rc: usize,
+    output_dims: &[u32],
+) -> Result<Option<Value>, EvalError> {
+    let (Some(la), Some(rb)) = (dot_u64_elements(lhs), dot_u64_elements(rhs)) else {
+        return Ok(None);
+    };
+    let lf = 1 - lc;
+    let rf = 1 - rc;
+    let m = lhs.shape.dims[lf] as usize;
+    let k = lhs.shape.dims[lc] as usize;
+    let n = rhs.shape.dims[rf] as usize;
+    if rhs.shape.dims[rc] as usize != k {
+        return Ok(None);
+    }
+    let a = if lc == 1 { la } else { transpose_rows_cols_u64(&la, k, m) };
+    let b = if rc == 0 { rb } else { transpose_rows_cols_u64(&rb, n, k) };
+    let values = rank2_u64_matmul(&a, m, k, &b, n);
+    Ok(Some(u64_matmul_output(out_dtype, values, output_dims)?))
+}
+
 fn eval_tensor_dot(
     primitive: Primitive,
     lhs: &TensorValue,
@@ -7506,6 +7566,30 @@ pub(crate) fn eval_dot_general(
         {
             t.dtype = DType::I32;
         }
+        return Ok(value);
+    }
+
+    // Transposed rank-2 single-contracting-dim U32/U64 contraction (A·Bᵀ / Aᵀ·B): the
+    // canonical-only unsigned fast path above misses these orientations. Extract to
+    // Vec<u64>, transpose to canonical, run rank2_u64_matmul, narrow to width — bit-
+    // identical to the generic unsigned reduction (wrapping fold; transpose reorders
+    // memory only).
+    if lhs_rank == 2
+        && rhs_rank == 2
+        && lhs_batch.is_empty()
+        && rhs_batch.is_empty()
+        && lhs_contracting.len() == 1
+        && rhs_contracting.len() == 1
+        && let DotOutputKind::Integral(uint_dtype @ (DType::U32 | DType::U64)) = output_kind
+        && let Some(value) = rank2_u64_any_orientation_matmul(
+            lhs,
+            rhs,
+            uint_dtype,
+            lhs_contracting[0],
+            rhs_contracting[0],
+            &output_dims,
+        )?
+    {
         return Ok(value);
     }
 
@@ -9557,6 +9641,38 @@ mod tests {
             }
         }
         assert_eq!(got64, want64, "u64 matmul must wrap mod 2^64 like the generic path");
+
+        // Transposed u32 A·Bᵀ (rhs_contracting=1): reuse `au`/`bu` (B viewed as [n,k]
+        // here -> reference indexes b[j*k+l]). Must equal the wrapping-u64 fold narrowed
+        // to u32, routed through rank2_u64_any_orientation_matmul.
+        let bt = mku(n * k, 11, 70_000); // [n, k]
+        let pt = BTreeMap::from([
+            ("lhs_contracting_dims".to_owned(), "1".to_owned()),
+            ("rhs_contracting_dims".to_owned(), "1".to_owned()),
+        ]);
+        let Value::Tensor(outt) = eval_dot_general(
+            &[
+                lit_tensor(vec![m as u32, k as u32], &au, &|v| Literal::U32(v as u32), DType::U32),
+                lit_tensor(vec![n as u32, k as u32], &bt, &|v| Literal::U32(v as u32), DType::U32),
+            ],
+            &pt,
+        )
+        .unwrap() else {
+            panic!("expected tensor");
+        };
+        assert_eq!(outt.dtype, DType::U32);
+        let gott: Vec<u64> = outt.elements.iter().map(|l| l.as_u64().unwrap()).collect();
+        let mut wantt = vec![0u64; m * n];
+        for i in 0..m {
+            for j in 0..n {
+                let mut s = 0u64;
+                for l in 0..k {
+                    s = s.wrapping_add(au[i * k + l].wrapping_mul(bt[j * k + l]));
+                }
+                wantt[i * n + j] = u64::from(s as u32);
+            }
+        }
+        assert_eq!(gott, wantt, "transposed u32 A·Bᵀ must wrap mod 2^32 like the generic path");
     }
 
     #[test]

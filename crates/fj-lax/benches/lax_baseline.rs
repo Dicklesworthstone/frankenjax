@@ -3803,7 +3803,10 @@ fn bench_u32_matmul_512_canonical_fast(c: &mut Criterion) {
     });
 }
 
-fn bench_u32_matmul_512_transposed_generic(c: &mut Criterion) {
+// Transposed u32 A·Bᵀ — now a FAST path (rank2_u64_any_orientation_matmul: transpose
+// to canonical + rank2_u64_matmul). Compared against the batched-generic reference
+// below (batched u32 is still the generic strided loop), same 512^3 FLOPs.
+fn bench_u32_matmul_512_transposed_fast(c: &mut Criterion) {
     let n = 512usize;
     let a: Vec<Literal> = (0..(n * n) as u64)
         .map(|i| Literal::U32((i.wrapping_mul(2_654_435_761) % 70_000) as u32))
@@ -3814,11 +3817,34 @@ fn bench_u32_matmul_512_transposed_generic(c: &mut Criterion) {
     let dims = vec![n as u32, n as u32];
     let lhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims: dims.clone() }, a).unwrap());
     let rhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims }, b).unwrap());
-    // rhs_contracting=1 (A·Bᵀ) misses the canonical fast path -> generic strided loop.
     let mut p = no_params();
     p.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
     p.insert("rhs_contracting_dims".to_owned(), "1".to_owned());
-    c.bench_function("eval/matmul_512x512_u32_transposed_generic", |bencher| {
+    c.bench_function("eval/matmul_512x512_u32_transposed_fast", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
+    });
+}
+
+// Batched u32 [1,512,512]@[1,512,512] — batched u32 is NOT in a fast path, so this is
+// the generic strided per-element loop (512^3 FLOPs, directly comparable to the
+// canonical/transposed fast benches above). Same-invocation A/B reference.
+fn bench_u32_matmul_512_batched_generic(c: &mut Criterion) {
+    let n = 512usize;
+    let a: Vec<Literal> = (0..(n * n) as u64)
+        .map(|i| Literal::U32((i.wrapping_mul(2_654_435_761) % 70_000) as u32))
+        .collect();
+    let b: Vec<Literal> = (0..(n * n) as u64)
+        .map(|i| Literal::U32((i.wrapping_mul(40_503) % 70_000) as u32))
+        .collect();
+    let dims = vec![1u32, n as u32, n as u32];
+    let lhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims: dims.clone() }, a).unwrap());
+    let rhs = Value::Tensor(TensorValue::new(DType::U32, Shape { dims }, b).unwrap());
+    let mut p = no_params();
+    p.insert("lhs_batch_dims".to_owned(), "0".to_owned());
+    p.insert("rhs_batch_dims".to_owned(), "0".to_owned());
+    p.insert("lhs_contracting_dims".to_owned(), "2".to_owned());
+    p.insert("rhs_contracting_dims".to_owned(), "1".to_owned());
+    c.bench_function("eval/matmul_512x512_u32_batched_generic", |bencher| {
         bencher.iter(|| eval_primitive(Primitive::DotGeneral, &[lhs.clone(), rhs.clone()], &p))
     });
 }
@@ -4918,7 +4944,8 @@ criterion_group!(
     bench_i64_matmul_512_transposed_literal_reference,
     bench_batched_i64_matmul_dense,
     bench_u32_matmul_512_canonical_fast,
-    bench_u32_matmul_512_transposed_generic,
+    bench_u32_matmul_512_transposed_fast,
+    bench_u32_matmul_512_batched_generic,
     bench_i32_matmul_512_dense,
     bench_i32_matmul_512_literal_reference,
     bench_i32_matmul_512_transposed_dense,
