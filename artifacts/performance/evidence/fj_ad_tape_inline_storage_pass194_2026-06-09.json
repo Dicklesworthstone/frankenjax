@@ -1,0 +1,60 @@
+{
+  "bead": "frankenjax-ow11d",
+  "pass": 194,
+  "target": "value_and_grad_runtime/shared/deep_100_nodes",
+  "profile": {
+    "command": "perf record -F 997 --call-graph dwarf -- api_overhead --bench value_and_grad_runtime/shared/deep_100_nodes --profile-time 8 --noplot",
+    "samples": 8741,
+    "top_self_percent": {
+      "_int_malloc": 18.84,
+      "fj_ad::forward_with_tape": 16.25,
+      "fj_ad::backward": 11.85,
+      "AdValueStore::for_jaxpr": 3.92,
+      "malloc": 3.85,
+      "malloc_consolidate": 3.79
+    }
+  },
+  "lever": "Inline per-equation AD tape VarId and Value scratch/storage with SmallVec<[T; 2]> instead of heap Vec allocations.",
+  "benchmark": {
+    "mode": "RCH-invoked local fallback for both baseline and candidate",
+    "baseline_commit": "b0ba6372",
+    "baseline_us": {
+      "low": 41.999,
+      "mid": 42.367,
+      "high": 42.847
+    },
+    "candidate_us": {
+      "low": 39.515,
+      "mid": 39.763,
+      "high": 40.035
+    },
+    "speedup_mid": 1.065488,
+    "speedup_conservative": 1.049069
+  },
+  "score": {
+    "impact": 2,
+    "confidence": 4,
+    "effort": 2,
+    "ice": 4.0
+  },
+  "isomorphism": {
+    "ordering_preserved": "yes; tape entries, input/output VarId order, reverse traversal, and cotangent accumulation order are unchanged",
+    "tie_breaking_unchanged": "yes; no comparisons or tie rules changed",
+    "floating_point": "identical; arithmetic and VJP calls are unchanged, only container storage moved inline for arity <= 2",
+    "rng": "not applicable; no RNG paths touched",
+    "fallbacks": "unchanged; SmallVec spills to heap for larger arity and existing eval/VJP/error paths remain in place"
+  },
+  "proof": {
+    "golden_digest": "5282853e2bd187c1c1bfdfa612bd74776fb403e6b767eb0a8bf0c8bcd2fe2a19",
+    "golden_file_sha256": "43f4d45a6ab3efc469849412e1dd838d0e73fd1b50895e66b2b44b0b8de7349f",
+    "tests": [
+      "cargo test -p fj-ad scalar_f64_forward_tape_matches_eval_primitive_bits -- --nocapture",
+      "cargo test -p fj-ad grad_sum_x2_plus_x_1k_golden_sha256 -- --nocapture"
+    ],
+    "checks": [
+      "cargo fmt --check --package fj-ad",
+      "cargo check -p fj-ad --all-targets",
+      "RUSTFLAGS=\"--cap-lints allow\" cargo clippy -p fj-ad --all-targets -- -D warnings"
+    ]
+  }
+}

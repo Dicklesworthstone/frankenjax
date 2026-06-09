@@ -1,0 +1,3 @@
+case=scalar_f64_forward_tape_matches_eval_primitive_bits result=ok
+case=grad_sum_x2_plus_x_1k_golden_sha256 digest=5282853e2bd187c1c1bfdfa612bd74776fb403e6b767eb0a8bf0c8bcd2fe2a19
+value_and_grad_runtime/shared/deep_100_nodes baseline_midpoint_us=42.367 candidate_midpoint_us=39.763 speedup=1.065488

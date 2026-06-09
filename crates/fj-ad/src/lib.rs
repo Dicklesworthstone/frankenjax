@@ -3,6 +3,7 @@
 
 use fj_core::{Atom, DType, Jaxpr, Literal, Primitive, Shape, TensorValue, Value, VarId};
 use fj_lax::{eval_igamma_grad_a, eval_primitive, eval_primitive_multi};
+use smallvec::SmallVec;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -245,13 +246,13 @@ fn lookup_custom_jaxpr_jvp_by_key(rule_key: &str) -> Option<CustomJaxprJvpRule> 
 #[derive(Debug, Clone)]
 struct TapeEntry {
     primitive: Primitive,
-    inputs: Vec<VarId>,
+    inputs: TapeVarIds,
     /// All output VarIds (single-output primitives have exactly one).
-    outputs: Vec<VarId>,
-    input_values: Vec<Value>,
+    outputs: TapeVarIds,
+    input_values: TapeValues,
     /// Primal output values — needed by output-dependent and multi-output VJP rules.
     /// Empty for selected single-output primitives whose VJP ignores primal outputs.
-    output_values: Vec<Value>,
+    output_values: TapeValues,
     params: BTreeMap<String, String>,
 }
 
@@ -259,6 +260,9 @@ struct TapeEntry {
 struct Tape {
     entries: Vec<TapeEntry>,
 }
+
+type TapeVarIds = SmallVec<[VarId; 2]>;
+type TapeValues = SmallVec<[Value; 2]>;
 
 const DENSE_AD_VALUE_STORE_MAX_SLOTS: usize = 1_000_000;
 
@@ -421,8 +425,8 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
     };
 
     for eqn in &jaxpr.equations {
-        let mut resolved = Vec::with_capacity(eqn.inputs.len());
-        let mut input_var_ids = Vec::with_capacity(eqn.inputs.len());
+        let mut resolved = TapeValues::with_capacity(eqn.inputs.len());
+        let mut input_var_ids = TapeVarIds::with_capacity(eqn.inputs.len());
 
         for atom in eqn.inputs.iter() {
             match atom {
@@ -445,13 +449,17 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
         let mut output_values = if let Some(output) =
             scalar_f64_forward_output(eqn.primitive, &resolved, &eqn.params)
         {
-            vec![output]
+            let mut values = TapeValues::new();
+            values.push(output);
+            values
         } else {
             fj_lax::eval_primitive_multi(eqn.primitive, &resolved, &eqn.params)
                 .map_err(|e| AdError::EvalFailed(e.to_string()))?
+                .into_iter()
+                .collect()
         };
 
-        let out_var_ids: Vec<VarId> = eqn.outputs.iter().copied().collect();
+        let out_var_ids: TapeVarIds = eqn.outputs.iter().copied().collect();
         if output_values.len() != out_var_ids.len() {
             return Err(AdError::PrimitiveOutputArity {
                 primitive: eqn.primitive,
@@ -467,7 +475,7 @@ fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdE
                     actual: 0,
                 })?;
                 env.insert(out_var_ids[0], output_value);
-                Vec::new()
+                TapeValues::new()
             } else {
                 for (var, val) in out_var_ids.iter().zip(output_values.iter()) {
                     env.insert(*var, val.clone());
@@ -1968,7 +1976,7 @@ fn backward(
             }
             _ => {
                 // Gather gradients for all outputs of this equation.
-                let gs: Vec<Value> = entry
+                let gs: TapeValues = entry
                     .outputs
                     .iter()
                     .enumerate()
