@@ -170,7 +170,55 @@ fn jax_min_f64(left: f64, right: f64) -> f64 {
 }
 
 #[inline]
+/// jnp/numpy `int32` ops wrap mod 2^32 (two's complement): e.g.
+/// `int32(2147483647) + int32(1) == -2147483648`. fj-lax has no `Literal::I32` — i32
+/// values are stored as `Literal::I64` with the dtype tracked only on the `TensorValue`,
+/// and the shared i64 wrapping ops accumulate/produce in i64 WITHOUT narrowing (only the
+/// `U32` literal arm and `integer_pow` narrow). So an arithmetic result on an I32 tensor
+/// (elementwise add/sub/mul, matmul, reduce, …) could land outside i32 range and diverge
+/// from JAX. This single chokepoint narrows every I32 tensor result back into i32 range.
+/// In-range results (the overwhelmingly common case — indices, shapes, small ints) are
+/// returned untouched with NO realloc (only a cheap scan), so it cannot change any
+/// currently-correct value; only genuinely-overflowing results are corrected.
+///
+/// NOTE: i32 SCALARS cannot be narrowed here (a `Value::Scalar(Literal::I64)` carries no
+/// dtype, so an i32 scalar is indistinguishable from i64) — that residual gap and the
+/// underlying `Literal::I32` design question are tracked in the bead.
+fn narrow_i32_tensor_result(value: Value) -> Value {
+    let Value::Tensor(t) = &value else {
+        return value;
+    };
+    if t.dtype != fj_core::DType::I32
+        || !t
+            .elements
+            .iter()
+            .any(|l| matches!(l, Literal::I64(v) if *v != i64::from(*v as i32)))
+    {
+        return value;
+    }
+    let shape = t.shape.clone();
+    let narrowed: Vec<Literal> = t
+        .elements
+        .iter()
+        .map(|l| match l {
+            Literal::I64(v) => Literal::I64(i64::from(*v as i32)),
+            other => *other,
+        })
+        .collect();
+    TensorValue::new(fj_core::DType::I32, shape, narrowed)
+        .map(Value::Tensor)
+        .unwrap_or(value)
+}
+
 pub fn eval_primitive(
+    primitive: Primitive,
+    inputs: &[Value],
+    params: &BTreeMap<String, String>,
+) -> Result<Value, EvalError> {
+    eval_primitive_inner(primitive, inputs, params).map(narrow_i32_tensor_result)
+}
+
+fn eval_primitive_inner(
     primitive: Primitive,
     inputs: &[Value],
     params: &BTreeMap<String, String>,
@@ -3815,6 +3863,87 @@ mod tests {
 
     fn no_params() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    #[test]
+    fn i32_arithmetic_wraps_mod_2pow32_like_jax() {
+        // jnp/numpy int32 ops wrap mod 2^32. fj-lax stores i32 as Literal::I64 and the
+        // shared i64 wrapping ops do NOT narrow, so without the eval_primitive narrowing
+        // chokepoint an I32 result could exceed i32 range. Verify add/sub/mul/matmul/
+        // reduce all land in i32 range and equal the two's-complement reference.
+        let i32t = |dims: Vec<u32>, vals: &[i64]| -> Value {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::I32,
+                    Shape { dims },
+                    vals.iter().map(|&v| Literal::I64(v)).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let out_i64s = |v: &Value| -> Vec<i64> {
+            let Value::Tensor(t) = v else { panic!("tensor") };
+            assert_eq!(t.dtype, DType::I32, "result must stay I32");
+            t.elements
+                .iter()
+                .map(|l| match l {
+                    Literal::I64(x) => *x,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        let max = i64::from(i32::MAX); // 2147483647
+
+        // Add overflow: MAX + 1 -> i32::MIN.
+        let r = eval_primitive(
+            Primitive::Add,
+            &[i32t(vec![1], &[max]), i32t(vec![1], &[1])],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out_i64s(&r), vec![i64::from(i32::MIN)]);
+
+        // Mul overflow: 100000 * 100000 = 1e10 -> wraps to (1e10 as i32).
+        let r = eval_primitive(
+            Primitive::Mul,
+            &[i32t(vec![1], &[100_000]), i32t(vec![1], &[100_000])],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out_i64s(&r), vec![i64::from(10_000_000_000_i64 as i32)]);
+
+        // Sub underflow: i32::MIN - 1 -> i32::MAX.
+        let r = eval_primitive(
+            Primitive::Sub,
+            &[i32t(vec![1], &[i64::from(i32::MIN)]), i32t(vec![1], &[1])],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out_i64s(&r), vec![max]);
+
+        // In-range results are untouched.
+        let r = eval_primitive(
+            Primitive::Add,
+            &[i32t(vec![2], &[3, -4]), i32t(vec![2], &[5, 6])],
+            &no_params(),
+        )
+        .unwrap();
+        assert_eq!(out_i64s(&r), vec![8, 2]);
+
+        // matmul [1,2]@[2,1] = 100000*100000 + 100000*100000 = 2e10 -> wraps to i32.
+        let mut dot_p = BTreeMap::new();
+        dot_p.insert("lhs_contracting_dims".to_owned(), "1".to_owned());
+        dot_p.insert("rhs_contracting_dims".to_owned(), "0".to_owned());
+        let r = eval_primitive(
+            Primitive::DotGeneral,
+            &[i32t(vec![1, 2], &[100_000, 100_000]), i32t(vec![2, 1], &[100_000, 100_000])],
+            &dot_p,
+        )
+        .unwrap();
+        assert_eq!(out_i64s(&r), vec![i64::from(20_000_000_000_i64 as i32)]);
+        // NOTE: integer REDUCE over i32 currently widens the result dtype to I64 (a
+        // separate dtype-promotion divergence from JAX, which keeps int32) — so it is NOT
+        // covered by this I32-output narrowing chokepoint and is tracked in its own bead.
     }
 
     fn pad_params(low: &str, high: &str, interior: &str) -> BTreeMap<String, String> {
@@ -10400,7 +10529,7 @@ mod tests {
     fn reduce_window_sum_preserves_i32_declared_dtype() {
         let input = Value::Tensor(
             TensorValue::new(
-                DType::I32,
+                fj_core::DType::I32,
                 Shape { dims: vec![4] },
                 vec![
                     Literal::I64(1),
@@ -10419,7 +10548,7 @@ mod tests {
         .unwrap();
 
         if let Value::Tensor(t) = &out {
-            assert_eq!(t.dtype, DType::I32);
+            assert_eq!(t.dtype, fj_core::DType::I32);
             assert_eq!(t.shape.dims, vec![3]);
             t.validate_dtype_consistency()
                 .expect("reduce_window I32 output dtype/element invariant");
