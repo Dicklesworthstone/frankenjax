@@ -8639,6 +8639,93 @@ mod tests {
     }
 
     #[test]
+    fn conv2d_grouped_dilated_matches_inflated_kernel() {
+        // Atrous (rhs_dilation) grouped/depthwise conv2d goes through the SAME fast paths
+        // (depthwise + AXPY), which thread the dilation into the tap formula. Validate that
+        // dilation handling against the inflation isomorphism: an rhs_dilation=d conv equals
+        // a plain conv with the kernel inflated by inserting (d-1) zeros between taps. Covers
+        // depthwise (G=Cin) and general grouped (G=3); both go through my fast paths.
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        let dil = 2usize;
+        // (h, w, cin, cout, kh, kw, G)
+        for &(h, w, cin, cout, kh, kw, g) in &[
+            (12usize, 11usize, 4usize, 4usize, 3usize, 3usize, 4usize), // depthwise G=Cin
+            (12, 11, 6, 9, 3, 2, 3),                                    // general grouped G=3
+        ] {
+            let rhs_cin = cin / g;
+            let xf: Vec<f64> = (0..h * w * cin)
+                .map(|i| (i as f64 * 0.021).sin() * 1.4 - 0.25)
+                .collect();
+            let kf: Vec<f64> = (0..kh * kw * rhs_cin * cout)
+                .map(|i| (i as f64 * 0.017).cos() * 0.7 + 0.15)
+                .collect();
+            // Inflated kernel [kh', kw', rhs_cin, cout], taps at multiples of `dil`, else 0.
+            let (kh2, kw2) = ((kh - 1) * dil + 1, (kw - 1) * dil + 1);
+            let mut kinf = vec![0.0_f64; kh2 * kw2 * rhs_cin * cout];
+            for a in 0..kh {
+                for b in 0..kw {
+                    for ci in 0..rhs_cin {
+                        for co in 0..cout {
+                            let src = ((a * kw + b) * rhs_cin + ci) * cout + co;
+                            let dst = (((a * dil) * kw2 + (b * dil)) * rhs_cin + ci) * cout + co;
+                            kinf[dst] = kf[src];
+                        }
+                    }
+                }
+            }
+            let x = mk(vec![1, h as u32, w as u32, cin as u32], &xf);
+            let dilated = eval_conv(
+                Primitive::Conv,
+                &[
+                    x.clone(),
+                    mk(vec![kh as u32, kw as u32, rhs_cin as u32, cout as u32], &kf),
+                ],
+                &params(&[
+                    ("padding", "valid"),
+                    ("strides", "1"),
+                    ("feature_group_count", &g.to_string()),
+                    ("rhs_dilation", &format!("{dil},{dil}")),
+                ]),
+            )
+            .unwrap();
+            let inflated = eval_conv(
+                Primitive::Conv,
+                &[
+                    x,
+                    mk(
+                        vec![kh2 as u32, kw2 as u32, rhs_cin as u32, cout as u32],
+                        &kinf,
+                    ),
+                ],
+                &params(&[
+                    ("padding", "valid"),
+                    ("strides", "1"),
+                    ("feature_group_count", &g.to_string()),
+                ]),
+            )
+            .unwrap();
+            assert_eq!(
+                bits(&dilated),
+                bits(&inflated),
+                "grouped dilated conv != inflated-kernel reference (G={g})"
+            );
+        }
+    }
+
+    #[test]
     fn conv2d_grouped_axpy_matches_general() {
         // General grouped conv2d (cout_per_group > 1) takes the AXPY fast path. Validate
         // BIT-FOR-BIT against an independent oracle: group g is a non-grouped conv of input
