@@ -318,25 +318,43 @@ pub(crate) fn eval_reduce(
             if is_integral {
                 // Dense i64 fast path: fold the contiguous `i64` backing slice
                 // directly. Bit-for-bit identical to the generic loop below —
-                // same `int_init` seed, same ascending order, same `int_op`,
-                // same `Value::scalar_i64` output — but skips the per-element
-                // `Literal::I64` match and the 24-byte enum stride.
-                // `as_i64_slice()` is `Some` only for I64 dense storage.
-                if let Some(values) = tensor.elements.as_i64_slice() {
+                // same `int_init` seed, same ascending order, same `int_op` —
+                // but skips the per-element `Literal::I64` match and the 24-byte
+                // enum stride. `as_i64_slice()` is `Some` for I64 dense storage
+                // (which also backs I32-dtype tensors), so both dtypes use it.
+                let acc = if let Some(values) = tensor.elements.as_i64_slice() {
                     let mut acc = int_init;
                     for &val in values {
                         acc = int_op(acc, val);
                     }
-                    return Ok(Value::scalar_i64(acc));
-                }
-                let mut acc = int_init;
-                for literal in &tensor.elements {
-                    let val = literal.as_i64().ok_or(EvalError::TypeMismatch {
-                        primitive,
-                        detail: "expected i64 tensor",
-                    })?;
-                    acc = int_op(acc, val);
-                }
+                    acc
+                } else {
+                    let mut acc = int_init;
+                    for literal in &tensor.elements {
+                        let val = literal.as_i64().ok_or(EvalError::TypeMismatch {
+                            primitive,
+                            detail: "expected i64 tensor",
+                        })?;
+                        acc = int_op(acc, val);
+                    }
+                    acc
+                };
+                // b6w3l gap (2), full-reduce-to-scalar half: an int32 sum/prod must
+                // wrap two's-complement to int32 (JAX/XLA keep int32 width). The
+                // scalar result carries NO dtype tag (no Literal::I32), so it can't
+                // be re-narrowed downstream by narrow_i32_tensor_result — fix the
+                // value here where tensor.dtype is still known. Wrapping only the
+                // final accumulator equals per-step int32 wrapping because mod 2^32
+                // is a ring homomorphism for + and *. Gated to sum/prod: max/min of
+                // valid int32 inputs always stay in range, so they need no wrap (and
+                // this avoids touching their empty-input init sentinels).
+                let acc = if tensor.dtype == DType::I32
+                    && matches!(primitive, Primitive::ReduceSum | Primitive::ReduceProd)
+                {
+                    i64::from(acc as i32)
+                } else {
+                    acc
+                };
                 Ok(Value::scalar_i64(acc))
             } else {
                 let mut acc = float_init;
@@ -2827,6 +2845,78 @@ mod tests {
             vals,
             vec![i64::from(i32::MIN), 3],
             "2^31 must wrap to i32::MIN; in-range column unchanged"
+        );
+    }
+
+    #[test]
+    fn full_reduce_i32_sum_wraps_to_scalar() {
+        // b6w3l gap (2), full-reduce-to-scalar: jnp.sum over a whole int32 array
+        // wraps two's-complement (int32 stays int32 in JAX/XLA). [2^30, 2^30,
+        // 2^30, 2^30] sums to 2^32 == 0 mod 2^32 → scalar 0. (No axes param ⇒ full
+        // reduction; the result is a dtype-less Value::Scalar, but the VALUE must
+        // already be the wrapped int32.)
+        let big = 1_i64 << 30; // valid int32
+        let t = Value::Tensor(
+            TensorValue::new(
+                DType::I32,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::I64(big),
+                    Literal::I64(big),
+                    Literal::I64(big),
+                    Literal::I64(big),
+                ],
+            )
+            .unwrap(),
+        );
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[t],
+            0,
+            0.0,
+            i64::wrapping_add,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let Value::Scalar(lit) = &result else {
+            panic!("expected scalar result, got {result:?}");
+        };
+        assert_eq!(lit.as_i64().unwrap(), 0, "2^32 must wrap to 0 at int32 width");
+    }
+
+    #[test]
+    fn full_reduce_i64_sum_does_not_wrap() {
+        // Regression guard: int64 full reductions keep full width (no int32 wrap).
+        let big = 1_i64 << 30;
+        let t = Value::Tensor(
+            TensorValue::new(
+                DType::I64,
+                Shape { dims: vec![4] },
+                vec![
+                    Literal::I64(big),
+                    Literal::I64(big),
+                    Literal::I64(big),
+                    Literal::I64(big),
+                ],
+            )
+            .unwrap(),
+        );
+        let result = eval_reduce(
+            Primitive::ReduceSum,
+            &[t],
+            0,
+            0.0,
+            i64::wrapping_add,
+            |a, b| a + b,
+        )
+        .unwrap();
+        let Value::Scalar(lit) = &result else {
+            panic!("expected scalar result, got {result:?}");
+        };
+        assert_eq!(
+            lit.as_i64().unwrap(),
+            4 * big,
+            "int64 sum keeps full width (2^32)"
         );
     }
 
