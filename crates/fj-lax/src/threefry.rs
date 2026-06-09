@@ -465,6 +465,55 @@ fn random_normal_from_uniforms_with_threads(uniforms: &[f64], threads: usize) ->
     out
 }
 
+/// Minimum elements per worker before a distribution's per-element transcendental
+/// transform fans out across threads. The inverse-transform maps (`ln`/`log`/
+/// `tan`/`erf_inv` over the drawn uniforms) are compute-bound, so threading pays
+/// off — but over-spawning tiny slices loses to thread overhead, so the worker
+/// count is capped at `count / this` and small draws run the serial map unchanged.
+const DIST_TRANSFORM_MIN_ELEMS_PER_THREAD: usize = 1 << 16;
+
+/// Apply an elementwise transform `f` to drawn `uniforms`, fanning out across
+/// threads for large counts. Output `i` depends only on `uniforms[i]`, so
+/// threading preserves per-element order and is BIT-IDENTICAL to
+/// `uniforms.into_iter().map(f).collect()` for ANY partition (proven by
+/// `map_uniforms_parallel_matches_serial_bits`). The transcendental
+/// inverse-transform distributions route their now-bottleneck `ln`/`tan`/`erf_inv`
+/// maps through here so the transform keeps pace with the threaded uniform draw.
+fn map_uniforms_parallel<F>(uniforms: Vec<f64>, f: F) -> Vec<f64>
+where
+    F: Fn(f64) -> f64 + Sync,
+{
+    let count = uniforms.len();
+    let hardware = std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get())
+        .unwrap_or(1);
+    let threads = hardware.min(count / DIST_TRANSFORM_MIN_ELEMS_PER_THREAD);
+    if threads <= 1 {
+        return uniforms.into_iter().map(f).collect();
+    }
+
+    let mut out = vec![0.0_f64; count];
+    let chunk = count.div_ceil(threads);
+    std::thread::scope(|scope| {
+        let mut out_rest: &mut [f64] = out.as_mut_slice();
+        let mut in_rest: &[f64] = uniforms.as_slice();
+        let f_ref = &f;
+        while !out_rest.is_empty() {
+            let len = chunk.min(out_rest.len());
+            let (out_block, out_tail) = out_rest.split_at_mut(len);
+            let (in_block, in_tail) = in_rest.split_at(len);
+            out_rest = out_tail;
+            in_rest = in_tail;
+            scope.spawn(move || {
+                for (slot, &u) in out_block.iter_mut().zip(in_block) {
+                    *slot = f_ref(u);
+                }
+            });
+        }
+    });
+    out
+}
+
 /// Generate Bernoulli random boolean values with probability `p` of being true.
 ///
 /// Matches JAX's `jax.random.bernoulli`.
@@ -531,7 +580,7 @@ pub fn random_categorical(
 #[must_use]
 pub fn random_exponential(key: PRNGKey, count: usize, rate: f64) -> Vec<f64> {
     let uniforms = random_uniform(key, count, 0.0, 1.0);
-    uniforms.into_iter().map(|u| -(-u).ln_1p() / rate).collect()
+    map_uniforms_parallel(uniforms, move |u| -(-u).ln_1p() / rate)
 }
 
 /// Generate Gumbel-distributed samples with location `loc` and scale `scale`.
@@ -547,10 +596,7 @@ pub fn random_gumbel(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f6
     // 1e-30, which only matters at the rare u==0 sample) and has no upper clamp.
     let tiny = f64::from(f32::MIN_POSITIVE);
     let uniforms = random_uniform(key, count, tiny, 1.0);
-    uniforms
-        .into_iter()
-        .map(|u| loc - scale * (-u.ln()).ln())
-        .collect()
+    map_uniforms_parallel(uniforms, move |u| loc - scale * (-u.ln()).ln())
 }
 
 /// Generate Laplace (double exponential) distributed samples.
@@ -570,10 +616,9 @@ pub fn random_laplace(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f
     // it diverged per-sample.)
     let minval = f64::from(f32::EPSILON - 1.0);
     let uniforms = random_uniform(key, count, minval, 1.0);
-    uniforms
-        .into_iter()
-        .map(|u| loc + scale * u.signum() * (-u.abs()).ln_1p())
-        .collect()
+    map_uniforms_parallel(uniforms, move |u| {
+        loc + scale * u.signum() * (-u.abs()).ln_1p()
+    })
 }
 
 /// Sample from the logistic distribution.
@@ -589,12 +634,11 @@ pub fn random_laplace(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f
 pub fn random_logistic(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f64> {
     let tiny = f64::from(f32::MIN_POSITIVE);
     let uniforms = random_uniform(key, count, tiny, 1.0);
-    uniforms
-        .into_iter()
-        // log(x) - log1p(-x); JAX computes it in exactly this two-term form
-        // rather than as a single log(x/(1-x)) for accuracy as x -> 1.
-        .map(|x| loc + scale * (x.ln() - (-x).ln_1p()))
-        .collect()
+    // log(x) - log1p(-x); JAX computes it in exactly this two-term form rather
+    // than as a single log(x/(1-x)) for accuracy as x -> 1.
+    map_uniforms_parallel(uniforms, move |x| {
+        loc + scale * (x.ln() - (-x).ln_1p())
+    })
 }
 
 /// Generate random integers uniformly in [minval, maxval).
@@ -957,14 +1001,11 @@ pub fn random_truncated_normal(key: PRNGKey, count: usize, lower: f64, upper: f6
     let lo_clamp = next_after_f64(lower, f64::INFINITY);
     let hi_clamp = next_after_f64(upper, f64::NEG_INFINITY);
 
-    random_uniform(key, count, a, b)
-        .into_iter()
-        .map(|u| {
-            let out = sqrt2 * crate::arithmetic::erf_inv_approx(u);
-            // numpy/jnp clip semantics (max then min — never panics).
-            out.max(lo_clamp).min(hi_clamp)
-        })
-        .collect()
+    map_uniforms_parallel(random_uniform(key, count, a, b), move |u| {
+        let out = sqrt2 * crate::arithmetic::erf_inv_approx(u);
+        // numpy/jnp clip semantics (max then min — never panics).
+        out.max(lo_clamp).min(hi_clamp)
+    })
 }
 
 /// `nextafter(x, toward)` for f64 — the adjacent representable value stepping
@@ -1003,10 +1044,9 @@ fn next_after_f64(x: f64, toward: f64) -> f64 {
 #[must_use]
 pub fn random_cauchy(key: PRNGKey, count: usize) -> Vec<f64> {
     let eps = f64::from(f32::EPSILON);
-    random_uniform(key, count, eps, 1.0)
-        .into_iter()
-        .map(|u| (std::f64::consts::PI * (u - 0.5)).tan())
-        .collect()
+    map_uniforms_parallel(random_uniform(key, count, eps, 1.0), |u| {
+        (std::f64::consts::PI * (u - 0.5)).tan()
+    })
 }
 
 /// Generate samples from a Pareto distribution.
@@ -1049,13 +1089,10 @@ pub fn random_weibull(key: PRNGKey, count: usize, scale: f64, concentration: f64
 /// Uses inverse transform: X = scale * sqrt(-2 * ln(U))
 pub fn random_rayleigh(key: PRNGKey, count: usize, scale: f64) -> Vec<f64> {
     let uniforms = random_uniform(key, count, 0.0, 1.0);
-    uniforms
-        .into_iter()
-        .map(|u| {
-            let clamped = u.max(1e-30);
-            scale * (-2.0 * clamped.ln()).sqrt()
-        })
-        .collect()
+    map_uniforms_parallel(uniforms, move |u| {
+        let clamped = u.max(1e-30);
+        scale * (-2.0 * clamped.ln()).sqrt()
+    })
 }
 
 /// Generate chi-squared distributed random samples.
@@ -1285,6 +1322,43 @@ mod tests {
                             "key={key:?} range=({lo},{hi}) count={count} idx={idx}"
                         );
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn map_uniforms_parallel_matches_serial_bits() {
+        // The threaded distribution-transform map must be BIT-for-bit identical to
+        // the serial `uniforms.into_iter().map(f)` for ANY partition — the map is
+        // elementwise (output i depends only on uniforms[i]). Cover counts above
+        // the parallel threshold, ragged thread boundaries, and the actual
+        // transcendental transforms the distributions use.
+        let key = random_key(0x0BAD_F00D_DEAD_BEEF);
+        let transforms: [(&str, fn(f64) -> f64); 4] = [
+            ("exponential", |u| -(-u).ln_1p()),
+            ("gumbel", |u| -(-u.max(f64::MIN_POSITIVE).ln()).ln()),
+            ("cauchy", |u| (std::f64::consts::PI * (u - 0.5)).tan()),
+            ("rayleigh", |u| (-2.0 * u.max(1e-30).ln()).sqrt()),
+        ];
+        for count in [
+            2 * DIST_TRANSFORM_MIN_ELEMS_PER_THREAD,
+            2 * DIST_TRANSFORM_MIN_ELEMS_PER_THREAD + 1,
+            2 * DIST_TRANSFORM_MIN_ELEMS_PER_THREAD + 13,
+            500_003,
+            1_000_000,
+        ] {
+            let uniforms = random_uniform(key, count, 0.0, 1.0);
+            for (name, f) in transforms {
+                let serial: Vec<f64> = uniforms.iter().copied().map(f).collect();
+                let parallel = map_uniforms_parallel(uniforms.clone(), f);
+                assert_eq!(parallel.len(), serial.len());
+                for (idx, (p, s)) in parallel.iter().zip(serial.iter()).enumerate() {
+                    assert_eq!(
+                        p.to_bits(),
+                        s.to_bits(),
+                        "transform={name} count={count} idx={idx}"
+                    );
                 }
             }
         }
