@@ -179,6 +179,57 @@ fn eval_same_shape_f64_expensive_parallel(
         .map(Value::Tensor)
 }
 
+/// f32 sibling of [`eval_same_shape_f64_expensive_parallel`]: threads the expensive
+/// binary ops over dense f32 operands. f32 is JAX's DEFAULT float dtype, and these ops
+/// (Pow/Atan2/Hypot/LogAddExp/XLogY/Igamma/Igammac/Zeta/Div) are compute-bound. Each
+/// element promotes both taps f32->f64 (lossless), applies `float_op` in f64, and rounds
+/// back with `as f32` — EXACTLY what the generic f32 path does
+/// (`literal_from_numeric_f64(F32, float_op(a as f64, b as f64))` = `from_f32(... as f32)`,
+/// and `eval_same_shape_f32_map` for Div), so the dense threaded output is BIT-FOR-BIT
+/// identical. Without this, expensive f32 binary ops fell to the per-`Literal` generic
+/// path (boxed + serial); f32 Div fell to the dense-but-serial `eval_same_shape_f32_map`.
+fn eval_same_shape_f32_expensive_parallel(
+    primitive: Primitive,
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    float_op: &(impl Fn(f64, f64) -> f64 + Sync),
+) -> Option<Value> {
+    if !is_expensive_binary(primitive) {
+        return None;
+    }
+    let (a, b) = (lhs.elements.as_f32_slice()?, rhs.elements.as_f32_slice()?);
+    let n = a.len();
+    if n < EXPENSIVE_BINARY_PARALLEL_MIN {
+        return None;
+    }
+    let threads = work_scaled_threads(n);
+    if threads <= 1 {
+        return None;
+    }
+    let mut out = vec![0.0f32; n];
+    let chunk = n.div_ceil(threads);
+    let op_ref = float_op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < n {
+            let len = chunk.min(n - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                for (i, o) in blk.iter_mut().enumerate() {
+                    *o = op_ref(f64::from(a[s + i]), f64::from(b[s + i])) as f32;
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f32_values(lhs.shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
 /// Binary elementwise operation dispatching on int/float paths.
 /// Supports full NumPy broadcasting: scalar-scalar, tensor-tensor (same shape),
 /// scalar-tensor, tensor-scalar, and multi-dim broadcasting.
@@ -217,6 +268,13 @@ pub(crate) fn eval_binary_elementwise(
                 if lhs.dtype == DType::F64
                     && rhs.dtype == DType::F64
                     && let Some(value) = eval_same_shape_f64_binop(primitive, lhs, rhs)?
+                {
+                    return Ok(value);
+                }
+                if lhs.dtype == DType::F32
+                    && rhs.dtype == DType::F32
+                    && let Some(value) =
+                        eval_same_shape_f32_expensive_parallel(primitive, lhs, rhs, &float_op)
                 {
                     return Ok(value);
                 }
@@ -9594,6 +9652,69 @@ mod tests {
             serial_ns / 1e6,
             serial_ns / threaded_ns,
         );
+    }
+
+    /// f32 expensive binary ops (Div/Atan2/Hypot/…) now thread via
+    /// eval_same_shape_f32_expensive_parallel. Each output must equal the per-element
+    /// generic-f32 contract `op(a as f64, b as f64) as f32` bit-for-bit (chunking never
+    /// changes a result), and beat the serial map on a large array. Exercises the full
+    /// dispatch via eval_primitive (so it also proves the f32 path is wired in).
+    #[test]
+    fn f32_expensive_binary_threaded_bit_identical_and_faster() {
+        use std::time::Instant;
+
+        let n: usize = 1 << 20; // > EXPENSIVE_BINARY_PARALLEL_MIN
+        let a: Vec<f32> = (0..n).map(|i| (i as f32) * 0.0011 - 3.0).collect();
+        let b: Vec<f32> = (0..n).map(|i| (i as f32) * 0.0007 + 1.5).collect();
+        let shape = Shape { dims: vec![n as u32] };
+        let va = Value::Tensor(TensorValue::new_f32_values(shape.clone(), a.clone()).unwrap());
+        let vb = Value::Tensor(TensorValue::new_f32_values(shape.clone(), b.clone()).unwrap());
+        let p = BTreeMap::new();
+
+        // (primitive, the exact f64 float_op lib.rs passes for it)
+        let cases: [(Primitive, fn(f64, f64) -> f64, &str); 3] = [
+            (Primitive::Div, |x, y| x / y, "div"),
+            (Primitive::Atan2, f64::atan2, "atan2"),
+            (Primitive::Hypot, f64::hypot, "hypot"),
+        ];
+        for (prim, op, name) in cases {
+            let out = crate::eval_primitive(prim, &[va.clone(), vb.clone()], &p).unwrap();
+            let ov = out
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .expect("f32 threaded output must be dense");
+            for i in 0..n {
+                let want = (op(f64::from(a[i]), f64::from(b[i])) as f32).to_bits();
+                assert_eq!(ov[i].to_bits(), want, "f32 {name} mismatch at {i}");
+            }
+
+            let reps = 8u32;
+            let t0 = Instant::now();
+            for _ in 0..reps {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, &[va.clone(), vb.clone()], &p).unwrap(),
+                );
+            }
+            let par = t0.elapsed().as_nanos() as f64 / reps as f64;
+            let t1 = Instant::now();
+            for _ in 0..reps {
+                let r: Vec<f32> = a
+                    .iter()
+                    .zip(&b)
+                    .map(|(&x, &y)| op(f64::from(x), f64::from(y)) as f32)
+                    .collect();
+                std::hint::black_box(TensorValue::new_f32_values(shape.clone(), r).unwrap());
+            }
+            let ser = t1.elapsed().as_nanos() as f64 / reps as f64;
+            println!(
+                "[f32 {name} n={n}] threaded={:.3}ms serial-map={:.3}ms ratio={:.2}x",
+                par / 1e6,
+                ser / 1e6,
+                ser / par,
+            );
+        }
     }
 
     /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
