@@ -4022,6 +4022,20 @@ fn batch_svd_multi(
     let vt_rows = if full_matrices { n } else { k };
     let matrix_len = m * n;
 
+    if tensor.dtype == DType::F64 {
+        return batch_svd_multi_f64_outputs(
+            tensor,
+            batch_size,
+            m,
+            n,
+            k,
+            u_cols,
+            vt_rows,
+            full_matrices,
+            matrix_len,
+        );
+    }
+
     let mut u_elements = Vec::with_capacity(batch_size * m * u_cols);
     let mut s_elements = Vec::with_capacity(batch_size * k);
     let mut vt_elements = Vec::with_capacity(batch_size * vt_rows * n);
@@ -4084,6 +4098,85 @@ fn batch_svd_multi(
         .map(|result| BatchTracer::batched(result, 0))
         .map_err(|e| BatchError::TensorError(e.to_string()))?;
     let vt = TensorValue::new(tensor.dtype, vt_shape, vt_elements)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    Ok(vec![u, s, vt])
+}
+
+fn batch_svd_multi_f64_outputs(
+    tensor: &TensorValue,
+    batch_size: usize,
+    m: usize,
+    n: usize,
+    k: usize,
+    u_cols: usize,
+    vt_rows: usize,
+    full_matrices: bool,
+    matrix_len: usize,
+) -> Result<Vec<BatchTracer>, BatchError> {
+    let mut u_values = Vec::with_capacity(batch_size * m * u_cols);
+    let mut s_values = Vec::with_capacity(batch_size * k);
+    let mut vt_values = Vec::with_capacity(batch_size * vt_rows * n);
+
+    let mut matrix = Vec::with_capacity(matrix_len);
+    let mut svd_scratch = SvdScratch::default();
+    for batch in 0..batch_size {
+        let base = batch * matrix_len;
+        if m == 3 && n == 2 && !full_matrices {
+            let a00 = tensor.elements[base].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a01 = tensor.elements[base + 1].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a10 = tensor.elements[base + 2].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a11 = tensor.elements[base + 3].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a20 = tensor.elements[base + 4].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            let a21 = tensor.elements[base + 5].as_f64().ok_or_else(|| {
+                BatchError::EvalError("type mismatch for svd: expected numeric elements".to_owned())
+            })?;
+            svd_decompose_matrix_3x2_thin([a00, a01, a10, a11, a20, a21], &mut svd_scratch);
+        } else {
+            matrix.clear();
+            for lit in &tensor.elements[base..base + matrix_len] {
+                matrix.push(lit.as_f64().ok_or_else(|| {
+                    BatchError::EvalError(
+                        "type mismatch for svd: expected numeric elements".to_owned(),
+                    )
+                })?);
+            }
+            svd_decompose_matrix(m, n, &matrix, full_matrices, &mut svd_scratch);
+        }
+        u_values.extend(svd_scratch.u_out.iter().copied());
+        s_values.extend(svd_scratch.sigma.iter().copied());
+        vt_values.extend(svd_scratch.vt.iter().copied());
+    }
+
+    let u_shape = Shape {
+        dims: vec![batch_size as u32, m as u32, u_cols as u32],
+    };
+    let s_shape = Shape {
+        dims: vec![batch_size as u32, k as u32],
+    };
+    let vt_shape = Shape {
+        dims: vec![batch_size as u32, vt_rows as u32, n as u32],
+    };
+    let u = TensorValue::new_f64_values(u_shape, u_values)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    let s = TensorValue::new_f64_values(s_shape, s_values)
+        .map(Value::Tensor)
+        .map(|result| BatchTracer::batched(result, 0))
+        .map_err(|e| BatchError::TensorError(e.to_string()))?;
+    let vt = TensorValue::new_f64_values(vt_shape, vt_values)
         .map(Value::Tensor)
         .map(|result| BatchTracer::batched(result, 0))
         .map_err(|e| BatchError::TensorError(e.to_string()))?;
@@ -9698,6 +9791,16 @@ mod tests {
 
         let outputs = apply_batch_rule_multi(Primitive::Svd, &[input], &BTreeMap::new()).unwrap();
         assert_svd_matches_slice_oracle(&outputs, &[matrix0, matrix1], &BTreeMap::new());
+        for output in &outputs {
+            assert!(
+                output
+                    .value
+                    .as_tensor()
+                    .and_then(|tensor| tensor.elements.as_f64_slice())
+                    .is_some(),
+                "F64 batched SVD outputs should use dense f64 storage"
+            );
+        }
         assert_eq!(
             outputs[0].value.as_tensor().unwrap().shape.dims,
             vec![2, 2, 2]
@@ -9706,6 +9809,51 @@ mod tests {
         assert_eq!(
             outputs[2].value.as_tensor().unwrap().shape.dims,
             vec![2, 2, 3]
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_svd_multi_leading_batch_dim_golden_sha256() {
+        let input = BatchTracer::batched(
+            make_f64_tensor(
+                &[2, 2, 3],
+                &[
+                    1.0, 0.0, 0.0, 0.0, 2.0, 0.0, // batch element 0
+                    3.0, 0.0, 0.0, 0.0, 4.0, 0.0, // batch element 1
+                ],
+            ),
+            0,
+        );
+
+        let outputs = apply_batch_rule_multi(Primitive::Svd, &[input], &BTreeMap::new()).unwrap();
+        let u = outputs[0].value.as_tensor().unwrap();
+        let s = outputs[1].value.as_tensor().unwrap();
+        let vt = outputs[2].value.as_tensor().unwrap();
+        let u_bits: Vec<u64> = extract_f64_vec(&outputs[0].value)
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        let s_bits: Vec<u64> = extract_f64_vec(&outputs[1].value)
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        let vt_bits: Vec<u64> = extract_f64_vec(&outputs[2].value)
+            .into_iter()
+            .map(f64::to_bits)
+            .collect();
+        let digest = fj_test_utils::fixture_id_from_json(&(
+            u.shape.dims.clone(),
+            u_bits,
+            s.shape.dims.clone(),
+            s_bits,
+            vt.shape.dims.clone(),
+            vt_bits,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            digest,
+            "165205f8b8911fcc1d544aeb134f92fddf303cebe7ef7770c7718a80735eabbe"
         );
     }
 

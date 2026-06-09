@@ -1,0 +1,102 @@
+{
+  "pass": 209,
+  "bead": "frankenjax-9cpxs",
+  "crate": "fj-dispatch",
+  "date": "2026-06-09",
+  "status": "kept",
+  "target": "vmap_svd/batched_matrix_3x2",
+  "profile_basis": [
+    {
+      "worker": "vmi1227854",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RUSTFLAGS rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-pass208-dispatch-profile cargo bench -p fj-dispatch --bench dispatch_baseline -- 'dispatch_latency|vmap_(eigh|svd|qr|scan|while)|eval_jaxpr_throughput' --sample-size 10 --measurement-time 2 --warm-up-time 1 --noplot",
+      "result_us": {
+        "lower": 53.201,
+        "mid": 53.890,
+        "upper": 54.974
+      }
+    },
+    {
+      "worker": "ovh-a",
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RUSTFLAGS rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-pass208-vmap-profile cargo bench -p fj-dispatch --bench dispatch_baseline -- 'vmap_' --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+      "result_us": {
+        "lower": 71.517,
+        "mid": 72.517,
+        "upper": 73.389
+      }
+    }
+  ],
+  "focused_baseline": {
+    "worker": "vmi1227854",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RUSTFLAGS rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-9cpxs-baseline cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_svd/batched_matrix_3x2 --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+    "result_us": {
+      "lower": 59.900,
+      "mid": 61.038,
+      "upper": 62.424
+    },
+    "note": "The first same-worker candidate attempt queued for vmi1227854 and timed out before execution, so this baseline is not used as the primary scored comparison."
+  },
+  "scored_rebench": {
+    "worker": "ovh-a",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RUSTFLAGS,RCH_WORKER RCH_WORKER=vmi1227854 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-9cpxs-candidate2 cargo bench -p fj-dispatch --bench dispatch_baseline -- vmap_svd/batched_matrix_3x2 --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+    "result_us": {
+      "lower": 45.272,
+      "mid": 45.387,
+      "upper": 45.495
+    },
+    "baseline_source": "pre-edit ovh-a profile row",
+    "speedup_midpoint": 1.5988,
+    "speedup_conservative": 1.5720
+  },
+  "score": {
+    "impact": 4.0,
+    "confidence": 0.8,
+    "effort": 1.0,
+    "impact_x_confidence_div_effort": 3.2
+  },
+  "lever": "For batch_svd_multi with DType::F64 only, accumulate U, S, and Vt outputs in Vec<f64> and construct TensorValue::new_f64_values outputs instead of materializing Vec<Literal> and TensorValue::new. Non-F64 paths keep the existing implementation.",
+  "isomorphism_proof": [
+    "Accepted control-flow guards are unchanged until the new DType::F64 output-storage branch. Non-F64 tensors, non-rank-3 tensors, non-leading batch movement, full_matrices semantics, malformed element counts, and fallback/error paths remain routed as before.",
+    "The 3x2 thin SVD arithmetic path is unchanged: it reads the same six matrix entries in row-major order and calls svd_decompose_matrix_3x2_thin with the same values.",
+    "The generic SVD arithmetic path is unchanged: it pushes the same per-slice matrix entries into the same scratch buffer and calls svd_decompose_matrix with the same m, n, and full_matrices parameters.",
+    "U, singular values, and Vt are extended from svd_scratch in the same order. The only observable storage change is dense F64 LiteralBuffer backing; materializing it yields the same Literal::F64Bits values.",
+    "Output dtype, shapes, output ordering, batch_dim=0, SVD ordering/tie behavior, sign behavior, floating-point arithmetic, RNG absence, cache-key inputs, and transform order are unchanged."
+  ],
+  "golden": {
+    "test": "test_batch_trace_svd_multi_leading_batch_dim_golden_sha256",
+    "sha256": "165205f8b8911fcc1d544aeb134f92fddf303cebe7ef7770c7718a80735eabbe",
+    "payload": "JSON fixture of U/S/Vt shapes and f64 bit patterns via fj_test_utils::fixture_id_from_json"
+  },
+  "validation": [
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RUSTFLAGS rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-9cpxs-test-final cargo test -p fj-dispatch --lib svd -- --nocapture",
+      "worker": "vmi1227854",
+      "result": "6 passed; 0 failed"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 RCH_QUEUE_WHEN_BUSY=1 RCH_PRIORITY=high RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR,RUSTFLAGS,RCH_QUEUE_WHEN_BUSY,RCH_PRIORITY rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-9cpxs-check3 cargo check -p fj-dispatch --all-targets",
+      "worker": "vmi1227854",
+      "result": "passed; unchanged fj-trace unused variable and fj-lax dead_code dependency warnings remain"
+    },
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-dispatch/src/batching.rs",
+      "result": "failed on pre-existing broad formatting drift in batching.rs outside this lever; touched hunk was aligned with rustfmt's suggested style"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-dispatch/src/batching.rs",
+      "result": "exit 0; critical issues 0; UBS shadow fmt/check/clippy/test-build sections clean; broad pre-existing warnings inventory remains"
+    },
+    {
+      "command": "RCH_REQUIRE_REMOTE=1 ... cargo clippy -p fj-dispatch --all-targets --no-deps -- -D warnings",
+      "result": "not executed directly after three attempts because RCH reported no admissible workers (critical_pressure=1, insufficient_slots=1); UBS shadow clippy was clean"
+    }
+  ],
+  "rch_notes": [
+    "First vmi1227854 candidate after-row timed out in the RCH queue before any benchmark executed.",
+    "A later candidate selected ovh-a despite the vmi1227854 hint; it is scored against the pre-edit ovh-a profile row for the same target.",
+    "RCH posture was degraded during validation: 2/10 workers healthy, ovh-a critical pressure, and several workers with stale telemetry."
+  ]
+}
