@@ -2213,6 +2213,26 @@ fn broadcast_binary_tensors(
         return Ok(value);
     }
 
+    // Expensive f32 broadcast: thread it (f32 = JAX's default dtype) before the serial
+    // dense path below. Bit-identical to broadcast_binary_f32, split across the output.
+    if is_expensive_binary(primitive)
+        && lhs.dtype == DType::F32
+        && rhs.dtype == DType::F32
+        && out_count >= EXPENSIVE_BINARY_PARALLEL_MIN
+        && let Some(value) = broadcast_binary_f32_expensive_parallel(
+            lhs,
+            rhs,
+            &out_shape,
+            out_count,
+            &out_strides,
+            &lhs_strides,
+            &rhs_strides,
+            float_op,
+        )
+    {
+        return Ok(value);
+    }
+
     // F32⊗F32 dense broadcast fast path: mirrors the F64 one (gather f32, compute
     // in f64, round to f32) — bit-identical to the generic per-Literal f32 path.
     if lhs.dtype == DType::F32
@@ -2438,6 +2458,61 @@ fn broadcast_binary_f64_expensive_parallel(
         }
     });
     TensorValue::new_f64_values(out_shape.clone(), out)
+        .ok()
+        .map(Value::Tensor)
+}
+
+/// f32 sibling of [`broadcast_binary_f64_expensive_parallel`]: threads an expensive binary
+/// op over a large f32 broadcast. Each thread decodes its own output flat-index range to
+/// broadcast-gathered operand indices and applies `float_op(l as f64, r as f64) as f32` —
+/// EXACTLY the f32 broadcast contract `eval`/`broadcast_binary_f32` uses, so the output is
+/// BIT-FOR-BIT identical (same broadcast index math => same per-flat-index values), just
+/// split across the output space. f32 is JAX's DEFAULT float dtype; without this, expensive
+/// f32 broadcast ops ran on the serial `broadcast_binary_f32`.
+#[allow(clippy::too_many_arguments)]
+fn broadcast_binary_f32_expensive_parallel(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    out_shape: &Shape,
+    out_count: usize,
+    out_strides: &[usize],
+    lhs_strides: &[usize],
+    rhs_strides: &[usize],
+    float_op: &(impl Fn(f64, f64) -> f64 + Sync),
+) -> Option<Value> {
+    let (lhs_values, rhs_values) = (lhs.elements.as_f32_slice()?, rhs.elements.as_f32_slice()?);
+    let threads = std::thread::available_parallelism()
+        .map(|p| p.get())
+        .unwrap_or(1)
+        .min(out_count);
+    if threads <= 1 {
+        return None;
+    }
+    let mut out = vec![0.0f32; out_count];
+    let chunk = out_count.div_ceil(threads);
+    let op_ref = float_op;
+    std::thread::scope(|scope| {
+        let mut rest: &mut [f32] = out.as_mut_slice();
+        let mut start = 0usize;
+        while start < out_count {
+            let len = chunk.min(out_count - start);
+            let (blk, tail) = rest.split_at_mut(len);
+            rest = tail;
+            let s = start;
+            scope.spawn(move || {
+                let mut multi: Vec<usize> = Vec::with_capacity(out_strides.len());
+                for (i, o) in blk.iter_mut().enumerate() {
+                    flat_to_multi_into(s + i, out_strides, &mut multi);
+                    let lhs_idx = broadcast_flat_index(&multi, lhs_strides);
+                    let rhs_idx = broadcast_flat_index(&multi, rhs_strides);
+                    *o = op_ref(f64::from(lhs_values[lhs_idx]), f64::from(rhs_values[rhs_idx]))
+                        as f32;
+                }
+            });
+            start += len;
+        }
+    });
+    TensorValue::new_f32_values(out_shape.clone(), out)
         .ok()
         .map(Value::Tensor)
 }
@@ -9868,6 +9943,74 @@ mod tests {
             ser / 1e6,
             ser / par,
         );
+    }
+
+    /// f32 GENERAL broadcast (different-shape tensor⊗tensor) expensive ops now thread via
+    /// broadcast_binary_f32_expensive_parallel. Output must equal the per-(i,j) broadcast
+    /// contract `op(lhs[i,j] as f64, rhs[j] as f64) as f32` bit-for-bit (row-broadcast
+    /// [M,N] ⊗ [1,N]), plus a light A/B.
+    #[test]
+    fn f32_broadcast_expensive_threaded_bit_identical_and_faster() {
+        use std::time::Instant;
+
+        let (m, n) = (1024usize, 1024usize); // out = 1M > EXPENSIVE_BINARY_PARALLEL_MIN
+        let lhs: Vec<f32> = (0..m * n).map(|i| (i as f32) * 0.0007 - 2.0).collect();
+        let rhs: Vec<f32> = (0..n).map(|j| (j as f32) * 0.0013 + 0.5).collect();
+        let lshape = Shape { dims: vec![m as u32, n as u32] };
+        let lt = Value::Tensor(TensorValue::new_f32_values(lshape.clone(), lhs.clone()).unwrap());
+        let rt = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: vec![1, n as u32] }, rhs.clone()).unwrap(),
+        );
+        let p = BTreeMap::new();
+
+        let cases: [(Primitive, fn(f64, f64) -> f64, &str); 3] = [
+            (Primitive::Div, |a, b| a / b, "div"),
+            (Primitive::Atan2, f64::atan2, "atan2"),
+            (Primitive::Hypot, f64::hypot, "hypot"),
+        ];
+        for (prim, op, name) in cases {
+            let out = crate::eval_primitive(prim, &[lt.clone(), rt.clone()], &p).unwrap();
+            let ot = out.as_tensor().unwrap();
+            assert_eq!(ot.shape.dims, vec![m as u32, n as u32], "{name} broadcast shape");
+            let ov = ot.elements.as_f32_slice().expect("dense f32 broadcast output");
+            for i in 0..m {
+                for j in 0..n {
+                    let want = (op(f64::from(lhs[i * n + j]), f64::from(rhs[j])) as f32).to_bits();
+                    assert_eq!(ov[i * n + j].to_bits(), want, "{name} mismatch at ({i},{j})");
+                }
+            }
+        }
+
+        let reps = 8u32;
+        for (prim, op, name) in [
+            (Primitive::Atan2, f64::atan2 as fn(f64, f64) -> f64, "atan2"),
+            (Primitive::Div, |a: f64, b: f64| a / b, "div"),
+        ] {
+            let t0 = Instant::now();
+            for _ in 0..reps {
+                std::hint::black_box(
+                    crate::eval_primitive(prim, &[lt.clone(), rt.clone()], &p).unwrap(),
+                );
+            }
+            let par = t0.elapsed().as_nanos() as f64 / reps as f64;
+            let t1 = Instant::now();
+            for _ in 0..reps {
+                let mut r = vec![0.0f32; m * n];
+                for i in 0..m {
+                    for j in 0..n {
+                        r[i * n + j] = op(f64::from(lhs[i * n + j]), f64::from(rhs[j])) as f32;
+                    }
+                }
+                std::hint::black_box(TensorValue::new_f32_values(lshape.clone(), r).unwrap());
+            }
+            let ser = t1.elapsed().as_nanos() as f64 / reps as f64;
+            println!(
+                "[f32 {name} broadcast {m}x{n}] threaded={:.3}ms serial={:.3}ms ratio={:.2}x",
+                par / 1e6,
+                ser / 1e6,
+                ser / par,
+            );
+        }
     }
 
     /// Bit-exact parity for the dense-i64 same-shape Add fast path: a dense
