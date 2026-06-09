@@ -1,0 +1,130 @@
+{
+  "artifact": "fj_lax_gemm_pc_pack_row_ingest_zn7ey_pass190_2026-06-09",
+  "bead": "frankenjax-zn7ey",
+  "crate": "fj-lax",
+  "date": "2026-06-09",
+  "status": "kept",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64",
+  "profile_basis": {
+    "source": "post-pass189 RCH linalg profile recorded in bead description",
+    "worker": "ovh-a",
+    "head": "b997be19",
+    "target_ms": {
+      "lower": 196.38,
+      "mid": 197.63,
+      "upper": 202.60
+    },
+    "rank": 1
+  },
+  "lever": {
+    "description": "Pack the pc-major B panel block by scanning each source B row once and writing the same packed layout, instead of walking panel-by-panel and rereading distant row segments.",
+    "files": [
+      "crates/fj-lax/src/tensor_contraction.rs"
+    ],
+    "one_lever": true,
+    "safe_rust": true,
+    "layout_contract": "Output pack remains [column_panel][kc][NR] inside each pc block; only source traversal order changes."
+  },
+  "benchmarks": {
+    "provisional_cross_worker": [
+      {
+        "kind": "baseline_before_edits",
+        "worker": "ovh-b",
+        "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64",
+        "ms": {
+          "lower": 634.35,
+          "mid": 655.11,
+          "upper": 678.96
+        },
+        "used_for_gate": false
+      },
+      {
+        "kind": "candidate",
+        "worker": "ovh-a",
+        "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR rch exec -- cargo bench -p fj-lax --bench lax_baseline -- linalg/matmul_2d_2048x2048x2048_f64",
+        "ms": {
+          "lower": 177.61,
+          "mid": 178.79,
+          "upper": 180.00
+        },
+        "used_for_gate": false
+      }
+    ],
+    "same_worker_gate": {
+      "worker": "vmi1227854",
+      "baseline_old_pack_loop_ms": {
+        "lower": 285.35,
+        "mid": 300.61,
+        "upper": 317.35
+      },
+      "candidate_row_ingest_ms": {
+        "lower": 223.72,
+        "mid": 230.74,
+        "upper": 237.98
+      },
+      "median_speedup": 1.302852,
+      "conservative_speedup": 1.199092,
+      "score": {
+        "impact": 4.0,
+        "confidence": 4.0,
+        "effort": 2.0,
+        "value": 8.0
+      }
+    }
+  },
+  "isomorphism_proof": [
+    "The packed buffer index for every source B element is unchanged: dst = jp * (kc * NR) + l * NR + lane.",
+    "The blocked GEMM loop order and C tile traversal remain pc -> row-superpanel -> column-superpanel -> tile -> jp -> l.",
+    "Every output element still accumulates the same products in strictly ascending k order.",
+    "No FMA request, mixed precision, reassociation, Strassen recursion, tolerance relaxation, RNG, tie-breaking, dtype, shape, or error behavior changed.",
+    "Thread row ownership and output row-major layout are unchanged."
+  ],
+  "goldens": {
+    "matmul_2d_packed_nr8_golden_output_digest": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+    "golden_file": "artifacts/performance/evidence/fj_lax_gemm_pc_pack_row_ingest_zn7ey_pass190_2026-06-09.golden",
+    "golden_sha256_file": "artifacts/performance/evidence/fj_lax_gemm_pc_pack_row_ingest_zn7ey_pass190_2026-06-09.golden.sha256"
+  },
+  "validation": {
+    "rch_tests": [
+      {
+        "command": "cargo test -p fj-lax --lib matmul_2d -- --nocapture",
+        "worker": "ovh-a",
+        "result": "passed",
+        "summary": "13 passed; 0 failed; 2 ignored; 1271 filtered out"
+      },
+      {
+        "command": "cargo test -p fj-lax --lib pack_b_pc_panels -- --nocapture",
+        "worker": "ovh-a",
+        "result": "passed",
+        "summary": "2 passed"
+      }
+    ],
+    "rch_check": {
+      "command": "cargo check -p fj-lax --all-targets",
+      "worker": "ovh-a",
+      "result": "passed"
+    },
+    "rch_clippy": {
+      "command": "cargo clippy -p fj-lax --all-targets -- -D warnings",
+      "worker": "vmi1227854",
+      "result": "failed_unrelated_wip",
+      "note": "Local uncommitted peer-owned arithmetic.rs imported rank2_i64_matmul and triggered an unused-import warning; this pass stages only the B-pack hunk."
+    },
+    "local": [
+      {
+        "command": "cargo fmt --check --package fj-lax",
+        "result": "passed"
+      },
+      {
+        "command": "git diff --check -- crates/fj-lax/src/tensor_contraction.rs",
+        "result": "passed"
+      },
+      {
+        "command": "ubs crates/fj-lax/src/tensor_contraction.rs",
+        "result": "passed",
+        "note": "No critical findings; known broad warning inventory remains."
+      }
+    ]
+  },
+  "next_route": "If exact-order GEMM remains dominant, attack a fundamentally different KC-slab streaming B-pack or a separately approved tolerance-contract primitive; do not repeat row-morsel scheduling."
+}

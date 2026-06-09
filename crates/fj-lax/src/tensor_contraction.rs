@@ -244,12 +244,12 @@ fn pack_b_pc_panel_block(b: &[f64], k: usize, n: usize, pc: usize, out: &mut [f6
     let kc = KC.min(k - pc);
     let panel_elems = kc * NR;
     debug_assert_eq!(out.len(), npanels * panel_elems);
-    for jp in 0..npanels {
-        let panel = &mut out[jp * panel_elems..(jp + 1) * panel_elems];
-        let jbase = jp * NR;
-        for l in 0..kc {
-            let src = (pc + l) * n + jbase;
-            panel[l * NR..l * NR + NR].copy_from_slice(&b[src..src + NR]);
+    for l in 0..kc {
+        let row = &b[(pc + l) * n..(pc + l + 1) * n];
+        for jp in 0..npanels {
+            let src = jp * NR;
+            let dst = jp * panel_elems + l * NR;
+            out[dst..dst + NR].copy_from_slice(&row[src..src + NR]);
         }
     }
 }

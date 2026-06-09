@@ -1,0 +1,7 @@
+{
+  "artifact": "fj_lax_gemm_pc_pack_row_ingest_zn7ey_pass190_2026-06-09",
+  "bead": "frankenjax-zn7ey",
+  "contract": "pc-major B-pack layout unchanged; each output element accumulates products in ascending k order",
+  "golden_output_digest": "e3762befad86e2a81da53a8413643b658a0be2d6136d69e195770b2beba48b3a",
+  "target": "linalg/matmul_2d_2048x2048x2048_f64"
+}
