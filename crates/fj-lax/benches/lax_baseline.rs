@@ -2571,6 +2571,65 @@ fn bench_maxpool_256x256_f64_vec(c: &mut Criterion) {
     });
 }
 
+// Large-window maxpool [256,256] 15x15 VALID: the separable max path (O(out·Σwin)) vs a
+// direct full-window O(out·Πwin) max (the pre-separable dense algorithm), isolating the
+// separability win (both dense f64, no per-Literal overhead).
+fn maxpool_large_data() -> (Vec<f64>, usize, usize) {
+    let n = 256usize;
+    let data: Vec<f64> = (0..n * n)
+        .map(|i| ((i as f64) * 0.123).sin() * 100.0)
+        .collect();
+    (data, n, 15)
+}
+
+fn maxpool_direct_ref(x: &[f64], n: usize, win: usize) -> Vec<f64> {
+    let o = n - win + 1;
+    let mut out = vec![f64::NEG_INFINITY; o * o];
+    for oi in 0..o {
+        for oj in 0..o {
+            let mut acc = f64::NEG_INFINITY;
+            for a in 0..win {
+                for b in 0..win {
+                    let v = x[(oi + a) * n + (oj + b)];
+                    if v > acc {
+                        acc = v;
+                    }
+                }
+            }
+            out[oi * o + oj] = acc;
+        }
+    }
+    out
+}
+
+fn bench_maxpool_large_direct(c: &mut Criterion) {
+    let (data, n, win) = maxpool_large_data();
+    c.bench_function("eval/maxpool_256x256_15x15_direct", |b| {
+        b.iter(|| maxpool_direct_ref(black_box(&data), n, win))
+    });
+}
+
+fn bench_maxpool_large_separable(c: &mut Criterion) {
+    let (data, n, win) = maxpool_large_data();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            data,
+        )
+        .unwrap(),
+    );
+    let mut p = no_params();
+    p.insert("reduce_op".to_owned(), "max".to_owned());
+    p.insert("window_dimensions".to_owned(), format!("{win},{win}"));
+    p.insert("window_strides".to_owned(), "1,1".to_owned());
+    p.insert("padding".to_owned(), "VALID".to_owned());
+    c.bench_function("eval/maxpool_256x256_15x15_separable", |b| {
+        b.iter(|| eval_primitive(Primitive::ReduceWindow, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_maxpool_256x256_f64_literal_reference(c: &mut Criterion) {
     let n = 256usize;
     let elements: Vec<Literal> = (0..n * n)
@@ -4198,6 +4257,8 @@ criterion_group!(
     bench_reduce_window_64x64,
     bench_maxpool_256x256_f64_vec,
     bench_maxpool_256x256_f64_literal_reference,
+    bench_maxpool_large_direct,
+    bench_maxpool_large_separable,
     bench_sumpool_256x256_f64_vec,
     bench_sumpool_256x256_f64_literal_reference,
     bench_sin_1k,
