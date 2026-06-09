@@ -5533,6 +5533,17 @@ fn batch_while_f32_add_lt_batch0(
         .get("max_iter")
         .and_then(|value| value.parse().ok())
         .unwrap_or(1000);
+
+    if let Some(result) = batch_while_f32_add_lt_exact_integer_batch0(
+        &init_values,
+        &step_values,
+        &threshold_values,
+        batch_size,
+        max_iter,
+    )? {
+        return Ok(Some(result));
+    }
+
     let mut outputs = Vec::with_capacity(batch_size);
     for batch_idx in 0..batch_size {
         let mut carry = init_values.at(batch_idx);
@@ -5550,10 +5561,7 @@ fn batch_while_f32_add_lt_batch0(
             iteration += 1;
         }
         if iteration == max_iter {
-            return Err(BatchError::EvalError(format!(
-                "{} exceeded max iterations ({max_iter})",
-                Primitive::While.as_str()
-            )));
+            return Err(while_max_iter_error(max_iter));
         }
         outputs.push(Literal::from_f32(carry));
     }
@@ -5561,6 +5569,93 @@ fn batch_while_f32_add_lt_batch0(
     TensorValue::new(DType::F32, Shape::vector(batch_size as u32), outputs)
         .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
         .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn batch_while_f32_add_lt_exact_integer_batch0(
+    init_values: &F32Batch0Values<'_>,
+    step_values: &F32Batch0Values<'_>,
+    threshold_values: &F32Batch0Values<'_>,
+    batch_size: usize,
+    max_iter: usize,
+) -> Result<Option<BatchTracer>, BatchError> {
+    let mut outputs = Vec::with_capacity(batch_size);
+    for batch_idx in 0..batch_size {
+        let Some(output) = solve_f32_add_lt_exact_integer_lane(
+            init_values.at(batch_idx),
+            step_values.at(batch_idx),
+            threshold_values.at(batch_idx),
+            max_iter,
+        )?
+        else {
+            return Ok(None);
+        };
+        outputs.push(output);
+    }
+
+    TensorValue::new_f32_values(Shape::vector(batch_size as u32), outputs)
+        .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
+        .map_err(|e| BatchError::TensorError(e.to_string()))
+}
+
+fn solve_f32_add_lt_exact_integer_lane(
+    init: f32,
+    step: f32,
+    threshold: f32,
+    max_iter: usize,
+) -> Result<Option<f32>, BatchError> {
+    if max_iter == 0 {
+        return Err(while_max_iter_error(max_iter));
+    }
+    if !matches!(init.partial_cmp(&threshold), Some(std::cmp::Ordering::Less)) {
+        return Ok(Some(init));
+    }
+
+    let Some(init_int) = exact_f32_integer(init) else {
+        return Ok(None);
+    };
+    let Some(step_int) = exact_f32_integer(step) else {
+        return Ok(None);
+    };
+    let Some(threshold_int) = exact_f32_integer(threshold) else {
+        return Ok(None);
+    };
+    if step_int <= 0 {
+        return Ok(None);
+    }
+
+    let diff = i128::from(threshold_int) - i128::from(init_int);
+    let step = i128::from(step_int);
+    if diff <= 0 {
+        return Ok(Some(init));
+    }
+    let iterations = ((diff + step - 1) / step) as usize;
+    if iterations >= max_iter {
+        return Err(while_max_iter_error(max_iter));
+    }
+
+    let final_int = i128::from(init_int) + (iterations as i128) * step;
+    if final_int < i128::from(-F32_EXACT_INTEGER_LIMIT)
+        || final_int > i128::from(F32_EXACT_INTEGER_LIMIT)
+    {
+        return Ok(None);
+    }
+    Ok(Some(final_int as f32))
+}
+
+const F32_EXACT_INTEGER_LIMIT: i64 = 16_777_216;
+
+fn exact_f32_integer(value: f32) -> Option<i64> {
+    if !value.is_finite() || value.abs() > F32_EXACT_INTEGER_LIMIT as f32 || value.fract() != 0.0 {
+        return None;
+    }
+    Some(value as i64)
+}
+
+fn while_max_iter_error(max_iter: usize) -> BatchError {
+    BatchError::EvalError(format!(
+        "{} exceeded max iterations ({max_iter})",
+        Primitive::While.as_str()
+    ))
 }
 
 fn while_f32_batch0_size(inputs: &[BatchTracer]) -> Result<Option<usize>, BatchError> {
@@ -10740,6 +10835,75 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("while_loop exceeded max iterations (1)")
+        );
+    }
+
+    #[test]
+    fn test_batch_trace_while_f32_add_lt_exact_integer_closed_form_is_bit_identical() {
+        let init = BatchTracer::batched(make_f32_vector(&[0.0, 1.0, 7.0, 10.0, -0.0, 4.0]), 0);
+        let step = BatchTracer::batched(make_f32_vector(&[1.0, 2.0, 4.0, 3.0, 1.0, 5.0]), 0);
+        let threshold =
+            BatchTracer::batched(make_f32_vector(&[96.0, 99.0, 111.0, 10.0, 2.0, 20.0]), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "256".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params)
+            .expect("exact-integer f32 while add/lt should batch directly");
+
+        assert_eq!(result.batch_dim, Some(0));
+        let tensor = result.value.as_tensor().unwrap();
+        assert_eq!(tensor.dtype, DType::F32);
+        assert!(
+            tensor.elements.as_f32_slice().is_some(),
+            "closed-form f32 while output should stay dense"
+        );
+        let got_bits = extract_f32_vec(&result.value)
+            .into_iter()
+            .map(f32::to_bits)
+            .collect::<Vec<_>>();
+        let expected_bits = [96.0_f32, 99.0, 111.0, 10.0, 2.0, 24.0]
+            .into_iter()
+            .map(f32::to_bits)
+            .collect::<Vec<_>>();
+        assert_eq!(got_bits, expected_bits);
+    }
+
+    #[test]
+    fn test_batch_trace_while_f32_add_lt_fractional_step_matches_repeated_add_bits() {
+        let init_value = 0.1_f32;
+        let step_value = 0.2_f32;
+        let threshold_value = 1.0_f32;
+        let init = BatchTracer::batched(make_f32_vector(&[init_value]), 0);
+        let step = BatchTracer::batched(make_f32_vector(&[step_value]), 0);
+        let threshold = BatchTracer::batched(make_f32_vector(&[threshold_value]), 0);
+        let params = BTreeMap::from([
+            ("body_op".to_owned(), "add".to_owned()),
+            ("cond_op".to_owned(), "lt".to_owned()),
+            ("max_iter".to_owned(), "32".to_owned()),
+        ]);
+
+        let result = apply_batch_rule(Primitive::While, &[init, step, threshold], &params)
+            .expect("fractional f32 while add/lt should fall back safely");
+
+        let mut expected = init_value;
+        let mut iterations = 0_usize;
+        while iterations < 32 {
+            if !matches!(
+                expected.partial_cmp(&threshold_value),
+                Some(std::cmp::Ordering::Less)
+            ) {
+                break;
+            }
+            expected += step_value;
+            iterations += 1;
+        }
+        assert_ne!(iterations, 32);
+        assert_eq!(
+            extract_f32_vec(&result.value)[0].to_bits(),
+            expected.to_bits()
         );
     }
 
