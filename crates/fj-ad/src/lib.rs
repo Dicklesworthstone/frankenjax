@@ -2670,11 +2670,23 @@ pub fn vjp(
                             )?]);
                         }
                     };
-                    let elements = vec![g_lit; t.elements.len()];
-                    Ok(vec![Value::Tensor(
-                        TensorValue::new(g_dtype, t.shape.clone(), elements)
-                            .map_err(|e| AdError::EvalFailed(e.to_string()))?,
-                    )])
+                    let tensor = match (g_lit, g_dtype) {
+                        (Literal::F64Bits(bits), DType::F64) => TensorValue::new_f64_values(
+                            t.shape.clone(),
+                            vec![f64::from_bits(bits); t.elements.len()],
+                        ),
+                        (Literal::F32Bits(bits), DType::F32) => TensorValue::new_f32_values(
+                            t.shape.clone(),
+                            vec![f32::from_bits(bits); t.elements.len()],
+                        ),
+                        _ => TensorValue::new(
+                            g_dtype,
+                            t.shape.clone(),
+                            vec![g_lit; t.elements.len()],
+                        ),
+                    }
+                    .map_err(|e| AdError::EvalFailed(e.to_string()))?;
+                    Ok(vec![Value::Tensor(tensor)])
                 }
             }
         }
@@ -18380,6 +18392,10 @@ mod tests {
         .expect("grad should succeed");
         let tensor = grads[0].as_tensor().expect("gradient should be tensor");
         assert_eq!(tensor.shape.dims, vec![1024]);
+        assert!(
+            tensor.elements.as_f64_slice().is_some(),
+            "grad_sum_x2_plus_x_1k should keep a dense F64 gradient"
+        );
         let bits_hex: Vec<String> = tensor
             .to_f64_vec()
             .expect("f64 gradient elements")
@@ -20845,12 +20861,52 @@ mod tests {
         let gt = grads[0].as_tensor().unwrap();
         assert_eq!(gt.dtype, fj_core::DType::F32);
         assert_eq!(gt.shape.dims, vec![3]);
+        assert!(
+            gt.elements.as_f32_slice().is_some(),
+            "F32 scalar-cotangent ReduceSum VJP should emit dense F32 storage"
+        );
         for elem in &gt.elements {
             assert!(
                 matches!(elem, fj_core::Literal::F32Bits(bits) if f32::from_bits(*bits) == 7.0),
                 "every gradient element must be F32Bits(7.0); got {elem:?}"
             );
         }
+    }
+
+    #[test]
+    fn reduce_sum_vjp_dense_f64_scalar_cotangent_preserves_bits() {
+        use fj_core::{DType, Primitive, Shape};
+
+        let x = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: vec![4] }, vec![1.0, -2.0, 3.5, f64::NAN])
+                .unwrap(),
+        );
+        let g_bits = (-0.0_f64).to_bits();
+        let g = Value::Scalar(fj_core::Literal::F64Bits(g_bits));
+
+        let grads = super::vjp_single(
+            Primitive::ReduceSum,
+            std::slice::from_ref(&x),
+            &g,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("ReduceSum VJP should accept f64 scalar cotangent");
+
+        let gt = grads[0].as_tensor().unwrap();
+        assert_eq!(gt.dtype, DType::F64);
+        assert_eq!(gt.shape.dims, vec![4]);
+        let dense = gt
+            .elements
+            .as_f64_slice()
+            .expect("F64 scalar-cotangent ReduceSum VJP should emit dense F64 storage");
+        assert_eq!(
+            dense
+                .iter()
+                .map(|value| value.to_bits())
+                .collect::<Vec<_>>(),
+            vec![g_bits; 4],
+            "repeated dense cotangent must preserve raw scalar bits"
+        );
     }
 
     #[test]
