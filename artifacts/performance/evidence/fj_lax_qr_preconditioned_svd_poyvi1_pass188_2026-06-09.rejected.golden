@@ -1,0 +1,5 @@
+frankenjax-poyvi.1 pass188 rejected
+baseline ovh-a pinv_256x128_f64 38.232 38.466 39.405 ms
+diagnostic candidate vmi1227854 pinv_256x128_f64 47.292 47.713 49.397 ms
+prior pass186 same-worker fullrank ovh-a direct 24.878 24.893 24.897 ms qr 26.077 26.119 26.129 ms
+source restored to HEAD; no production hunk kept

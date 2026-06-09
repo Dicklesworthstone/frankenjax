@@ -1,0 +1,72 @@
+{
+  "artifact": "fj_lax_qr_preconditioned_svd_poyvi1_pass188_2026-06-09",
+  "bead": "frankenjax-poyvi.1",
+  "pass": 188,
+  "date": "2026-06-09",
+  "crate": "fj-lax",
+  "target": "linalg/pinv_256x128_f64",
+  "decision": "rejected",
+  "lever": {
+    "name": "QR-preconditioned one-sided Jacobi SVD route",
+    "description": "Test/rescue a QR-preconditioned SVD path: factor A = Q R, run the existing one-sided Jacobi SVD on R, then map U = Q U_R. The pass started from orphan commit a00dc114 and the poyvi.1 follow-up request.",
+    "one_lever": true,
+    "source_kept": false
+  },
+  "fresh_profile": {
+    "worker": "ovh-a",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-poyvi1-baseline-profile cargo bench -p fj-lax --bench lax_baseline -- linalg/ --quick --noplot",
+    "top_rows_ms": {
+      "linalg/matmul_2d_2048x2048x2048_f64": [185.30, 185.54, 186.52],
+      "linalg/pinv_256x128_f64": [38.232, 38.466, 39.405],
+      "linalg/lu_1024x1024_f64": [36.635, 37.994, 38.334],
+      "linalg/qr_1024x1024_f64": [30.308, 30.369, 30.614],
+      "linalg/svd_48x48_f64": [1.0857, 1.0883, 1.0984]
+    },
+    "route_note": "poyvi.1's QR-preconditioned SVD idea does not affect the square svd_48x48 row when guarded for tall matrices; the relevant live public row is the tall SVD-backed pinv_256x128_f64 path."
+  },
+  "proof_attempt": {
+    "worker": "ovh-a",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-poyvi1-test-svd2 cargo test -p fj-lax --lib qr_preconditioned_svd_real_preserves_tall_contract -- --nocapture",
+    "result": "passed: 1 test, 0 failed",
+    "coverage": "Singular values within tolerance of the existing Jacobi reference, deterministic repeat bits for U/S/V, reconstruction tolerance, orthogonality of U and V."
+  },
+  "diagnostic_candidate": {
+    "worker": "vmi1227854",
+    "command": "RCH_REQUIRE_REMOTE=1 RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR RCH_DAEMON_WAIT_RESPONSE_TIMEOUT_SECS=240 rch exec -- env CARGO_TARGET_DIR=/data/tmp/frankenjax-rch-poyvi1-candidate-pinv cargo bench -p fj-lax --bench lax_baseline -- linalg/pinv_256x128_f64 --quick --noplot",
+    "candidate_ms": [47.292, 47.713, 49.397],
+    "note": "Cross-worker relative to the ovh-a fresh baseline, so not used as the official keep gate. It still points in the same direction as prior same-worker evidence: this QR-preprocess family adds overhead on the tall pinv/SVD path."
+  },
+  "prior_same_worker_gate": {
+    "artifact": "artifacts/performance/evidence/fj_lax_pinv_tall_qr_6ili3_pass186_2026-06-08.rejected.json",
+    "target": "linalg/pinv_256x128_f64_fullrank",
+    "worker": "ovh-a",
+    "direct_svd_baseline_ms": [24.878, 24.893, 24.897],
+    "qr_preprocess_candidate_ms": [26.077, 26.119, 26.129],
+    "median_speedup": 0.95306099,
+    "conservative_speedup": 0.952122163,
+    "median_regression_percent": 4.925079
+  },
+  "score": {
+    "impact": 0.0,
+    "confidence": 5.0,
+    "effort": 1.0,
+    "impact_times_confidence_over_effort": 0.0,
+    "threshold": 2.0
+  },
+  "behavior_proof": {
+    "ordering_preserved": "Rejected state restores production source to HEAD; no public ordering changes are kept.",
+    "tie_breaking_unchanged": "Rejected state restores the existing SVD singular-value sorting and cutoff behavior.",
+    "floating_point": "Rejected state keeps the existing one-sided Jacobi floating-point recurrence. The QR candidate would have changed operation order and therefore requires tolerance proof; it was not kept.",
+    "rng": "No RNG in either current or candidate algorithm.",
+    "golden_sha256_file": "artifacts/performance/evidence/fj_lax_qr_preconditioned_svd_poyvi1_pass188_2026-06-09.rejected.golden.sha256"
+  },
+  "source_state": {
+    "production_source_restored": true,
+    "source_diff_after_rejection": "git diff -- crates/fj-lax/src/linalg.rs produced no output",
+    "source_kept": false
+  },
+  "next_route": {
+    "do_not_repeat": "Do not retry QR-preprocess-at-2n for pinv256/full-rank or square SVD. The family already regressed on same-worker full-rank evidence and did not show a credible live win.",
+    "deeper_primitive": "Route away from poyvi.1 to the next ready profile-backed perf bead, or file a new SVD-core bead for a fundamentally different primitive such as blocked one-sided Jacobi sweeps or Golub-Kahan bidiagonalization with an explicit tolerance contract."
+  }
+}
