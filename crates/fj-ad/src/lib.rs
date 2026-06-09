@@ -382,6 +382,7 @@ fn single_output_vjp_ignores_outputs(primitive: Primitive) -> bool {
 }
 
 type ForwardResult = (Vec<Value>, Tape, AdValueStore);
+type ValueAndGradInnerResult = (Vec<Value>, Vec<Value>, usize);
 
 fn scalar_f64_forward_output(
     primitive: Primitive,
@@ -405,6 +406,176 @@ fn scalar_f64_forward_output(
         Primitive::Mul => Some(Value::Scalar(Literal::from_f64(lhs * rhs))),
         _ => None,
     }
+}
+
+fn scalar_f64_atom_value(values: &[Option<f64>], atom: &Atom) -> Result<Option<f64>, AdError> {
+    match atom {
+        Atom::Var(var) => Ok(Some(
+            *values
+                .get(var.0 as usize)
+                .and_then(Option::as_ref)
+                .ok_or(AdError::MissingVariable(*var))?,
+        )),
+        Atom::Lit(Literal::F64Bits(bits)) => Ok(Some(f64::from_bits(*bits))),
+        Atom::Lit(_) => Ok(None),
+    }
+}
+
+fn scalar_f64_add_or_insert(
+    adjoints: &mut [Option<f64>],
+    var: VarId,
+    cotangent: f64,
+) -> Result<(), AdError> {
+    let slot = adjoints
+        .get_mut(var.0 as usize)
+        .ok_or(AdError::MissingVariable(var))?;
+    match slot {
+        Some(existing) => *existing += cotangent,
+        None => *slot = Some(cotangent),
+    }
+    Ok(())
+}
+
+fn scalar_add_mul_fast_path_uses_builtin_vjp(jaxpr: &Jaxpr) -> bool {
+    lookup_custom_vjp(Primitive::Add).is_none()
+        && lookup_custom_vjp(Primitive::Mul).is_none()
+        && lookup_custom_jaxpr_vjp(jaxpr).is_none()
+}
+
+fn try_scalar_f64_add_mul_value_and_grad(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+    custom_vjp_rule_key: Option<&str>,
+) -> Result<Option<ValueAndGradInnerResult>, AdError> {
+    if custom_vjp_rule_key.is_some()
+        || !jaxpr.constvars.is_empty()
+        || jaxpr.outvars.len() != 1
+        || !scalar_add_mul_fast_path_uses_builtin_vjp(jaxpr)
+    {
+        return Ok(None);
+    }
+    if args.len() != jaxpr.invars.len() {
+        return Err(AdError::InputArity {
+            expected: jaxpr.invars.len(),
+            actual: args.len(),
+        });
+    }
+
+    let Some(max_var) = max_var_index(jaxpr) else {
+        return Ok(None);
+    };
+    let Some(slots) = max_var.checked_add(1) else {
+        return Ok(None);
+    };
+    if slots > DENSE_AD_VALUE_STORE_MAX_SLOTS {
+        return Ok(None);
+    }
+
+    let mut values = vec![None; slots];
+    for (var, arg) in jaxpr.invars.iter().zip(args) {
+        let Value::Scalar(Literal::F64Bits(bits)) = arg else {
+            return Ok(None);
+        };
+        let slot = values
+            .get_mut(var.0 as usize)
+            .ok_or(AdError::MissingVariable(*var))?;
+        *slot = Some(f64::from_bits(*bits));
+    }
+
+    for eqn in &jaxpr.equations {
+        if !eqn.params.is_empty()
+            || !eqn.sub_jaxprs.is_empty()
+            || !eqn.effects.is_empty()
+            || eqn.inputs.len() != 2
+            || eqn.outputs.len() != 1
+        {
+            return Ok(None);
+        }
+        let primitive = eqn.primitive;
+        if !matches!(primitive, Primitive::Add | Primitive::Mul) {
+            return Ok(None);
+        }
+
+        let Some(lhs) = scalar_f64_atom_value(&values, &eqn.inputs[0])? else {
+            return Ok(None);
+        };
+        let Some(rhs) = scalar_f64_atom_value(&values, &eqn.inputs[1])? else {
+            return Ok(None);
+        };
+        let output = match primitive {
+            Primitive::Add => lhs + rhs,
+            Primitive::Mul => lhs * rhs,
+            _ => unreachable!("primitive checked above"),
+        };
+        let out_var = eqn.outputs[0];
+        let slot = values
+            .get_mut(out_var.0 as usize)
+            .ok_or(AdError::MissingVariable(out_var))?;
+        *slot = Some(output);
+    }
+
+    let output_var = jaxpr.outvars[0];
+    let output = *values
+        .get(output_var.0 as usize)
+        .and_then(Option::as_ref)
+        .ok_or(AdError::MissingVariable(output_var))?;
+
+    let mut adjoints = vec![None; slots];
+    adjoints[output_var.0 as usize] = Some(1.0);
+    for eqn in jaxpr.equations.iter().rev() {
+        let out_var = eqn.outputs[0];
+        let Some(g) = adjoints[out_var.0 as usize] else {
+            continue;
+        };
+        if g == 0.0 {
+            continue;
+        }
+
+        match eqn.primitive {
+            Primitive::Add => {
+                for atom in &eqn.inputs {
+                    if let Atom::Var(var) = atom {
+                        scalar_f64_add_or_insert(&mut adjoints, *var, g)?;
+                    }
+                }
+            }
+            Primitive::Mul => {
+                if let [Atom::Var(lhs_var), Atom::Var(rhs_var)] = eqn.inputs.as_slice()
+                    && lhs_var == rhs_var
+                {
+                    let x = values[lhs_var.0 as usize].ok_or(AdError::MissingVariable(*lhs_var))?;
+                    let cotangent = g * x;
+                    scalar_f64_add_or_insert(&mut adjoints, *lhs_var, cotangent)?;
+                    scalar_f64_add_or_insert(&mut adjoints, *rhs_var, cotangent)?;
+                    continue;
+                }
+
+                let lhs = scalar_f64_atom_value(&values, &eqn.inputs[0])?
+                    .expect("scalar fast path checked lhs");
+                let rhs = scalar_f64_atom_value(&values, &eqn.inputs[1])?
+                    .expect("scalar fast path checked rhs");
+                if let Atom::Var(var) = eqn.inputs[0] {
+                    scalar_f64_add_or_insert(&mut adjoints, var, g * rhs)?;
+                }
+                if let Atom::Var(var) = eqn.inputs[1] {
+                    scalar_f64_add_or_insert(&mut adjoints, var, g * lhs)?;
+                }
+            }
+            _ => unreachable!("primitive checked during forward pass"),
+        }
+    }
+
+    let grads = jaxpr
+        .invars
+        .iter()
+        .map(|var| Value::Scalar(Literal::from_f64(adjoints[var.0 as usize].unwrap_or(0.0))))
+        .collect();
+
+    Ok(Some((
+        vec![Value::Scalar(Literal::from_f64(output))],
+        grads,
+        jaxpr.equations.len(),
+    )))
 }
 
 fn forward_with_tape(jaxpr: &Jaxpr, args: &[Value]) -> Result<ForwardResult, AdError> {
@@ -10107,6 +10278,10 @@ fn value_and_grad_jaxpr_inner_with_custom_vjp_key(
     args: &[Value],
     custom_vjp_rule_key: Option<&str>,
 ) -> Result<(Vec<Value>, Vec<Value>, usize), AdError> {
+    if let Some(result) = try_scalar_f64_add_mul_value_and_grad(jaxpr, args, custom_vjp_rule_key)? {
+        return Ok(result);
+    }
+
     let (outputs, tape, env) = forward_with_tape(jaxpr, args)?;
 
     let output_val = outputs.first().ok_or(AdError::NonScalarGradientOutput)?;
@@ -18487,6 +18662,144 @@ mod tests {
                 primitive.as_str()
             );
         }
+    }
+
+    #[test]
+    fn scalar_f64_add_mul_fast_path_matches_tape_reverse_bits() {
+        use fj_core::{Equation, Jaxpr, VarId};
+        use smallvec::smallvec;
+
+        clear_custom_derivative_rules();
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0), VarId(1)],
+            vec![],
+            vec![VarId(6)],
+            vec![
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(0)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(2)), Atom::Var(VarId(1))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(3)), Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(4)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Add,
+                    inputs: smallvec![Atom::Var(VarId(4)), Atom::Lit(Literal::from_f64(-0.0))],
+                    outputs: smallvec![VarId(5)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(5)), Atom::Var(VarId(3))],
+                    outputs: smallvec![VarId(6)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let args = [Value::scalar_f64(1.25), Value::scalar_f64(-2.0)];
+
+        let (fast_outputs, fast_grads, fast_steps) =
+            try_scalar_f64_add_mul_value_and_grad(&jaxpr, &args, None)
+                .expect("fast path should not error")
+                .expect("jaxpr should match scalar F64 Add/Mul fast path");
+
+        let (reference_outputs, tape, env) =
+            forward_with_tape(&jaxpr, &args).expect("reference forward should succeed");
+        let reference_grads = backward(
+            &tape,
+            jaxpr.outvars[0],
+            Value::scalar_f64(1.0),
+            &jaxpr,
+            &env,
+        )
+        .expect("reference backward should succeed");
+
+        assert_eq!(fast_outputs, reference_outputs);
+        assert_eq!(fast_grads, reference_grads);
+        assert_eq!(fast_steps, tape.entries.len());
+        clear_custom_derivative_rules();
+    }
+
+    fn deep_scalar_add_mul_jaxpr(node_count: usize) -> Jaxpr {
+        use fj_core::{Equation, VarId};
+        use smallvec::smallvec;
+
+        let mut equations = Vec::with_capacity(node_count.saturating_mul(2));
+        let mut current = VarId(1);
+        let mut next_var_id = 2u32;
+
+        for _ in 0..node_count {
+            let squared = VarId(next_var_id);
+            next_var_id += 1;
+            equations.push(Equation {
+                primitive: Primitive::Mul,
+                inputs: smallvec![Atom::Var(current), Atom::Var(current)],
+                outputs: smallvec![squared],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+
+            let shifted = VarId(next_var_id);
+            next_var_id += 1;
+            equations.push(Equation {
+                primitive: Primitive::Add,
+                inputs: smallvec![Atom::Var(squared), Atom::Lit(Literal::from_f64(1.0))],
+                outputs: smallvec![shifted],
+                params: BTreeMap::new(),
+                sub_jaxprs: vec![],
+                effects: vec![],
+            });
+
+            current = shifted;
+        }
+
+        Jaxpr::new(vec![VarId(1)], vec![], vec![current], equations)
+    }
+
+    #[test]
+    fn value_and_grad_deep_scalar_add_mul_golden_sha256() {
+        clear_custom_derivative_rules();
+        let jaxpr = deep_scalar_add_mul_jaxpr(100);
+        let (outputs, grads) =
+            value_and_grad_jaxpr(&jaxpr, &[Value::scalar_f64(1.5)]).expect("value_and_grad");
+        let bits_hex = [
+            format!(
+                "{:016x}",
+                outputs[0].as_f64_scalar().expect("output scalar").to_bits()
+            ),
+            format!(
+                "{:016x}",
+                grads[0].as_f64_scalar().expect("gradient scalar").to_bits()
+            ),
+        ];
+        let digest = fj_test_utils::fixture_id_from_json(&bits_hex).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "2b1b03372322b4e6042ed0af95c4bfe87c0e15c25e9621c28a2da846689a9e25"
+        );
+        clear_custom_derivative_rules();
     }
 
     #[test]

@@ -1,0 +1,138 @@
+{
+  "schema": "frankenjax.performance_evidence.v1",
+  "project": "frankenjax",
+  "bead": "frankenjax-f2s2l",
+  "pass": 195,
+  "date": "2026-06-09",
+  "base_commit": "b0ba63728dd4f5ad33703569f626e85fa07cc9b6",
+  "artifact": "artifacts/performance/evidence/fj_ad_scalar_value_and_grad_f2s2l_pass195_2026-06-09.json",
+  "target": {
+    "crate": "fj-api",
+    "benchmark": "value_and_grad_runtime/shared/deep_100_nodes",
+    "implementation_crate": "fj-ad",
+    "profile_source": "/data/projects/.scratch/frankenjax-pass194-fj-api-deep100.perf.data",
+    "profile_summary_self_percent": [
+      {
+        "symbol": "_int_malloc",
+        "self_percent": 17.90
+      },
+      {
+        "symbol": "fj_ad::forward_with_tape",
+        "self_percent": 16.82
+      },
+      {
+        "symbol": "fj_ad::backward",
+        "self_percent": 11.83
+      },
+      {
+        "symbol": "fj_ad::AdValueStore::for_jaxpr",
+        "self_percent": 4.41
+      },
+      {
+        "symbol": "alloc::vec::Vec<Option<Value>>::extend_with",
+        "self_percent": 1.99
+      }
+    ]
+  },
+  "lever": {
+    "name": "scalar F64 Add/Mul value_and_grad dense reverse path",
+    "summary": "For guarded scalar-F64, param-free, effect-free, single-output Add/Mul Jaxprs with built-in VJPs, evaluate primals and reverse adjoints in dense f64 slots and bypass per-equation TapeEntry and Value allocation.",
+    "files_changed": [
+      "crates/fj-ad/src/lib.rs"
+    ],
+    "rejected_related_bead": {
+      "id": "frankenjax-ow11d",
+      "reason": "SmallVec tape-entry storage was removed and closed rejected so this pass is a distinct dataflow specialization, not another tape-container micro-lever."
+    }
+  },
+  "benchmark": {
+    "tool": "criterion via rch exec",
+    "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=target/rch-f2s2l-<baseline|candidate>-b0ba637-20260609a rch exec -- cargo bench -p fj-api --bench api_overhead -- value_and_grad_runtime/shared/deep_100_nodes --sample-size 20 --warm-up-time 1 --measurement-time 3 --noplot",
+    "rch_note": "Both final baseline and candidate selected vmi1153651 and fell open locally after the same remote topology preflight failure: sh: 18: Syntax error: newline unexpected (expecting \")\").",
+    "baseline": {
+      "worktree": "/data/projects/.scratch/frankenjax-f2s2l-baseline-b0ba637-20260609a",
+      "commit": "b0ba63728dd4f5ad33703569f626e85fa07cc9b6",
+      "time_us_low": 44.257,
+      "time_us_mid": 44.812,
+      "time_us_high": 45.318
+    },
+    "candidate": {
+      "worktree": "/data/projects/.scratch/frankenjax-f2s2l-candidate-b0ba637-20260609a",
+      "commit": "b0ba63728dd4f5ad33703569f626e85fa07cc9b6 plus crates/fj-ad/src/lib.rs patch only",
+      "time_us_low": 5.0334,
+      "time_us_mid": 5.0885,
+      "time_us_high": 5.1676,
+      "outliers": "1 high severe among 20 measurements"
+    },
+    "speedup_mid": 8.80652,
+    "speedup_conservative": 8.56432,
+    "latency_reduction_percent_mid": 88.6448,
+    "score": {
+      "impact": 5,
+      "confidence": 5,
+      "effort": 2,
+      "impact_x_confidence_over_effort": 12.5,
+      "decision": "keep"
+    }
+  },
+  "isomorphism_proof": {
+    "guard_conditions": [
+      "custom_vjp_rule_key must be absent",
+      "custom Add/Mul primitive VJPs must be absent",
+      "custom Jaxpr VJP must be absent",
+      "constvars must be empty",
+      "exactly one outvar",
+      "args must match invars and be scalar F64",
+      "all equations must be param-free, sub-Jaxpr-free, effect-free, binary Add/Mul, single-output",
+      "all atoms must be vars or F64 literals",
+      "dense slot count must fit DENSE_AD_VALUE_STORE_MAX_SLOTS"
+    ],
+    "ordering": "Forward equations execute in original order; reverse equations execute in reverse tape order. Add accumulates cotangents in input order. Repeated Mul accumulates g*x twice in the same order as try_accumulate_repeated_mul_vjp.",
+    "floating_point": "The fast path uses the same scalar f64 + and * operations and the same exact-zero skip semantics as is_zero_value on F64Bits, including signed zero. It does not reassociate, vectorize, use FMA, or change NaN/Inf propagation.",
+    "tie_breaking": "No tie-sensitive primitive is routed. Add/Mul have no tie-breaking state.",
+    "rng": "No RNG state or stochastic primitive is routed.",
+    "fallback": "Any unsupported shape, dtype, primitive, params, effects, custom VJP, sparse layout, or arity falls back to the existing forward_with_tape/backward path."
+  },
+  "golden": {
+    "fixture_case": "deep_scalar_add_mul_jaxpr(100), input scalar F64 1.5",
+    "fixture_json_payload": [
+      "7ff0000000000000",
+      "7ff0000000000000"
+    ],
+    "fixture_json_sha256": "2b1b03372322b4e6042ed0af95c4bfe87c0e15c25e9621c28a2da846689a9e25",
+    "golden_file": "artifacts/performance/evidence/fj_ad_scalar_value_and_grad_f2s2l_pass195_2026-06-09.golden",
+    "golden_file_sha256": "b2f530d4b19f8feb683dc0da4d3c49d7ef52fcceaabda7bea8b225920d534362",
+    "check_command": "sha256sum -c artifacts/performance/evidence/fj_ad_scalar_value_and_grad_f2s2l_pass195_2026-06-09.golden.sha256"
+  },
+  "validation": [
+    {
+      "command": "rustfmt --edition 2024 --check crates/fj-ad/src/lib.rs",
+      "result": "passed"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=target/rch-f2s2l-check-b0ba637-20260609a rch exec -- cargo check -p fj-ad --all-targets",
+      "result": "passed on remote vmi1227854; pre-existing fj-trace unused-variable warning only"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=target/rch-f2s2l-test-b0ba637-20260609a rch exec -- cargo test -p fj-ad --lib",
+      "result": "passed via RCH local fail-open; 364 passed, 0 failed"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=target/rch-f2s2l-clippy-b0ba637-20260609a rch exec -- cargo clippy -p fj-ad --all-targets -- -D warnings",
+      "result": "failed before the touched crate on pre-existing fj-trace and fj-lax lint debt"
+    },
+    {
+      "command": "RCH_ENV_ALLOWLIST=CARGO_TARGET_DIR CARGO_TARGET_DIR=target/rch-f2s2l-clippy-adjusted2-b0ba637-20260609a rch exec -- cargo clippy -p fj-ad --all-targets -- -D warnings -A unused-variables -A clippy::too_many_arguments -A clippy::doc_lazy_continuation -A clippy::excessive_precision -A clippy::manual_is_multiple_of -A clippy::needless_range_loop -A clippy::useless_vec",
+      "result": "passed"
+    },
+    {
+      "command": "ubs crates/fj-ad/src/lib.rs",
+      "result": "nonzero on broad pre-existing file inventory; UBS fmt, clippy, cargo check, test build, cargo audit, and cargo deny sections were clean"
+    },
+    {
+      "command": "sha256sum -c artifacts/performance/evidence/fj_ad_scalar_value_and_grad_f2s2l_pass195_2026-06-09.golden.sha256",
+      "result": "passed"
+    }
+  ],
+  "next": "Reprofile value_and_grad after landing; if fj-ad remains top, pursue a compiled/arena scalar tape or broader primitive-specific reverse pass rather than another tape-container allocation tweak."
+}

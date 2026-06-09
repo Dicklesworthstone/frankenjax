@@ -1,0 +1,8 @@
+schema=frankenjax.performance_golden.v1
+bead=frankenjax-f2s2l
+pass=195
+benchmark=value_and_grad_runtime/shared/deep_100_nodes
+case=deep_scalar_add_mul_jaxpr_100_input_1.5
+output_bits=7ff0000000000000
+grad_bits=7ff0000000000000
+fixture_json_sha256=2b1b03372322b4e6042ed0af95c4bfe87c0e15c25e9621c28a2da846689a9e25
