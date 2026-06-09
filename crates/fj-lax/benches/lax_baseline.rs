@@ -1197,6 +1197,53 @@ fn bench_transpose_256x256_f64(c: &mut Criterion) {
     });
 }
 
+// Complex128 [512,512] transpose: dense (f64,f64) cache-blocked path vs the boxed
+// per-Literal odometer it used to fall to. Same-invocation A/B (dense storage hits
+// the new path; Vec<Literal> storage hits the boxed walk).
+fn bench_transpose_512x512_complex128_dense(c: &mut Criterion) {
+    let n = 512usize;
+    let vals: Vec<(f64, f64)> = (0..(n * n) as i64)
+        .map(|i| (i as f64 * 0.001, i as f64 * -0.002))
+        .collect();
+    let m = Value::Tensor(
+        TensorValue::new_complex_values(
+            DType::Complex128,
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            vals,
+        )
+        .unwrap(),
+    );
+    let mut p = no_params();
+    p.insert("permutation".to_owned(), "1,0".to_owned());
+    c.bench_function("eval/transpose_512x512_complex128_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Transpose, std::slice::from_ref(&m), &p))
+    });
+}
+
+fn bench_transpose_512x512_complex128_literal_reference(c: &mut Criterion) {
+    let n = 512usize;
+    let lits: Vec<Literal> = (0..(n * n) as i64)
+        .map(|i| Literal::from_complex128(i as f64 * 0.001, i as f64 * -0.002))
+        .collect();
+    let m = Value::Tensor(
+        TensorValue::new(
+            DType::Complex128,
+            Shape {
+                dims: vec![n as u32, n as u32],
+            },
+            lits,
+        )
+        .unwrap(),
+    );
+    let mut p = no_params();
+    p.insert("permutation".to_owned(), "1,0".to_owned());
+    c.bench_function("eval/transpose_512x512_complex128_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Transpose, std::slice::from_ref(&m), &p))
+    });
+}
+
 fn bench_eig_48(c: &mut Criterion) {
     // Real eigendecomposition (Eig) via QR iteration: ~100 iterations, each
     // doing two O(n^3) internal matrix multiplies (matrix_mul / _complex).
@@ -4731,6 +4778,8 @@ criterion_group!(
     bench_concat_axis1_3x_f64,
     bench_concat_axis0_3x_f64,
     bench_transpose_256x256_f64,
+    bench_transpose_512x512_complex128_dense,
+    bench_transpose_512x512_complex128_literal_reference,
     bench_reduce_sum_1k,
     bench_reduce_sum_4096x1024_axis1_f64,
     bench_reduce_sum_4096x1024_axis0_f64,

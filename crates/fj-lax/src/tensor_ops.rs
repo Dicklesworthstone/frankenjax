@@ -689,6 +689,15 @@ pub(crate) fn eval_transpose(
                         return Ok(Value::Tensor(TensorValue::new_i64_values(
                             Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
                     }
+                    // Complex (Complex64/Complex128) transpose over the dense
+                    // (f64,f64) backing — FFT / complex-linalg transposes otherwise
+                    // box every element through the per-`Literal` odometer. Pure data
+                    // movement over Copy pairs; `tensor.dtype` preserves the width and
+                    // `new_complex_values` round-trips the bits, so bit-for-bit identical.
+                    if let Some(s) = tensor.elements.as_complex_slice() {
+                        return Ok(Value::Tensor(TensorValue::new_complex_values(
+                            tensor.dtype, Shape { dims: new_dims.clone() }, $kernel(s, $($arg)*))?));
+                    }
                 }};
             }
 
@@ -10489,6 +10498,48 @@ mod tests {
             extract_shape(&eval_transpose(&[x], &p).unwrap()),
             vec![4, 2, 3]
         );
+    }
+
+    #[test]
+    fn transpose_complex_dense_matches_naive_reference() {
+        // Complex transpose now uses the dense (f64,f64) path. It must equal the
+        // textbook permuted mapping bit-for-bit for both Complex128 and Complex64,
+        // across rank-2 ([1,0]) and rank-3 ([2,0,1]) permutations.
+        for &dtype in &[DType::Complex128, DType::Complex64] {
+            // rank-2 [3,5] -> [5,3]
+            let (m, n) = (3usize, 5usize);
+            let total = m * n;
+            let parts: Vec<(f64, f64)> = (0..total)
+                .map(|i| (i as f64 * 0.5 - 2.0, i as f64 * -0.25 + 1.0))
+                .collect();
+            let lits: Vec<Literal> = parts
+                .iter()
+                .map(|&(re, im)| match dtype {
+                    DType::Complex64 => Literal::from_complex64(re as f32, im as f32),
+                    _ => Literal::from_complex128(re, im),
+                })
+                .collect();
+            let x = Value::Tensor(
+                TensorValue::new(dtype, Shape { dims: vec![m as u32, n as u32] }, lits.clone())
+                    .unwrap(),
+            );
+            let p = params(&[("permutation", "1,0")]);
+            let Value::Tensor(out) = eval_transpose(std::slice::from_ref(&x), &p).unwrap() else {
+                panic!("expected tensor");
+            };
+            assert_eq!(out.dtype, dtype);
+            assert_eq!(out.shape.dims, vec![n as u32, m as u32]);
+            // out[j,i] == in[i,j]
+            for j in 0..n {
+                for i in 0..m {
+                    assert_eq!(
+                        out.elements[j * m + i],
+                        lits[i * n + j],
+                        "complex {dtype:?} transpose mismatch at ({i},{j})"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
