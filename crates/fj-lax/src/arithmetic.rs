@@ -7035,9 +7035,47 @@ fn rank2_u64_matmul(a: &[u64], m: usize, k: usize, b: &[u64], n: usize) -> Vec<u
     if m == 0 || n == 0 || k == 0 {
         return c;
     }
-    for i in 0..m {
+    let full = m - m % 4; // rows covered by whole 4-row register tiles
+    let (blocked, tail) = c.split_at_mut(full * n);
+
+    // 4-row register blocking: four output rows share ONE `brow` load per `l`, so
+    // B is streamed `m/4` times instead of `m` (4x less C-vs-B cache traffic, plus
+    // 4-way ILP on the wrapping MACs). BIT-IDENTICAL: each output still folds its
+    // products over `l` in ascending order with `wrapping_mul`/`wrapping_add`;
+    // `Z/2^64` is a commutative ring, so interleaving four independent output rows
+    // never regroups any one output's partial sum. Mirrors the i64 kernel
+    // `rank2_i64_row_block` (commit 69e37c68). Win is RAM-bound-regime-dependent.
+    for (g, four) in blocked.chunks_mut(4 * n).enumerate() {
+        let (c0, rest) = four.split_at_mut(n);
+        let (c1, rest) = rest.split_at_mut(n);
+        let (c2, c3) = rest.split_at_mut(n);
+        let base = (g * 4) * k;
+        let (a0o, a1o, a2o, a3o) = (base, base + k, base + 2 * k, base + 3 * k);
+        for l in 0..k {
+            let a0 = a[a0o + l];
+            let a1 = a[a1o + l];
+            let a2 = a[a2o + l];
+            let a3 = a[a3o + l];
+            let brow = &b[l * n..l * n + n];
+            for ((((e0, e1), e2), e3), &bj) in c0
+                .iter_mut()
+                .zip(c1.iter_mut())
+                .zip(c2.iter_mut())
+                .zip(c3.iter_mut())
+                .zip(brow)
+            {
+                *e0 = e0.wrapping_add(a0.wrapping_mul(bj));
+                *e1 = e1.wrapping_add(a1.wrapping_mul(bj));
+                *e2 = e2.wrapping_add(a2.wrapping_mul(bj));
+                *e3 = e3.wrapping_add(a3.wrapping_mul(bj));
+            }
+        }
+    }
+
+    // Remainder rows (`m % 4`): the original single-row i-k-j loop, unchanged.
+    for (ri_rem, crow) in tail.chunks_mut(n).enumerate() {
+        let i = full + ri_rem;
         let arow = &a[i * k..i * k + k];
-        let crow = &mut c[i * n..i * n + n];
         for l in 0..k {
             let av = arow[l];
             let brow = &b[l * n..l * n + n];
@@ -9561,6 +9599,38 @@ mod tests {
             any_wrapped,
             "test inputs must actually exercise i32 overflow wrapping"
         );
+    }
+
+    #[test]
+    fn rank2_u64_matmul_4row_block_matches_single_row_reference() {
+        // The 4-row register-blocked u64 kernel must equal a direct ascending-`l`
+        // wrapping reference for every `m % 4` remainder {0,1,2,3} incl. all-remainder
+        // (m<4), with wrapping mul/add over Z/2^64. Inputs near 2^40 so K products+sums
+        // wrap mod 2^64 (exercising the ring, not just small values).
+        for &(m, k, n) in &[
+            (8usize, 7usize, 5usize), // rem 0, full blocked
+            (9, 7, 5),                // rem 1
+            (6, 5, 9),                // rem 2
+            (7, 9, 11),               // rem 3
+            (3, 6, 4),                // m<4: all-remainder
+            (1, 33, 1),               // single row
+        ] {
+            let big = 1u64 << 40;
+            let a: Vec<u64> = (0..(m * k) as u64).map(|i| big + i.wrapping_mul(2_654_435_761)).collect();
+            let b: Vec<u64> = (0..(k * n) as u64).map(|i| big + i.wrapping_mul(40_503).wrapping_add(3)).collect();
+            let got = rank2_u64_matmul(&a, m, k, &b, n);
+            let mut want = vec![0u64; m * n];
+            for i in 0..m {
+                for j in 0..n {
+                    let mut s = 0u64;
+                    for l in 0..k {
+                        s = s.wrapping_add(a[i * k + l].wrapping_mul(b[l * n + j]));
+                    }
+                    want[i * n + j] = s;
+                }
+            }
+            assert_eq!(got, want, "[{m},{k}]@[{k},{n}] u64 row-block4 != single-row");
+        }
     }
 
     #[test]

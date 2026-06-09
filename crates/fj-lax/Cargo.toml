@@ -18,3 +18,7 @@ harness = false
 [[bench]]
 name = "i64_matmul_speed"
 harness = false
+
+[[bench]]
+name = "u64_matmul_speed"
+harness = false
