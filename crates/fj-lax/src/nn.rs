@@ -294,6 +294,110 @@ pub fn standardize(x: &[f64], epsilon: f64) -> Vec<f64> {
     x.iter().map(|&v| (v - mean) / std).collect()
 }
 
+/// Soft-sign: x / (|x| + 1)
+///
+/// JAX-named alias of [`softsign`] (`jax.nn` exposes this as `soft_sign`).
+#[must_use]
+pub fn soft_sign(x: &[f64]) -> Vec<f64> {
+    softsign(x)
+}
+
+/// Identity: returns the input unmodified.
+///
+/// Matches `jax.nn.identity(x)`.
+#[must_use]
+pub fn identity(x: &[f64]) -> Vec<f64> {
+    x.to_vec()
+}
+
+/// Squareplus: (x + sqrt(x^2 + b)) / 2
+///
+/// A smooth approximation of ReLU. `b` is the smoothness parameter (JAX default
+/// 4). Matches `jax.nn.squareplus(x, b)`.
+#[must_use]
+pub fn squareplus(x: &[f64], b: f64) -> Vec<f64> {
+    x.iter().map(|&v| (v + (v * v + b).sqrt()) / 2.0).collect()
+}
+
+/// Sparse plus: 0 for x <= -1, (x+1)^2/4 for -1 < x < 1, x for x >= 1.
+///
+/// The twin of softplus (zero output below -1, linear above 1, smooth/convex
+/// between). Matches `jax.nn.sparse_plus(x)`:
+/// `where(x <= -1, 0, where(x >= 1, x, (x+1)^2/4))`.
+#[must_use]
+pub fn sparse_plus(x: &[f64]) -> Vec<f64> {
+    x.iter()
+        .map(|&v| {
+            if v <= -1.0 {
+                0.0
+            } else if v >= 1.0 {
+                v
+            } else {
+                (v + 1.0).powi(2) / 4.0
+            }
+        })
+        .collect()
+}
+
+/// Sparse sigmoid: 0.5 * clip(x + 1, 0, 2).
+///
+/// The derivative of [`sparse_plus`] and the twin of sigmoid (0 below -1, 1
+/// above 1, linear between). Matches `jax.nn.sparse_sigmoid(x)`.
+#[must_use]
+pub fn sparse_sigmoid(x: &[f64]) -> Vec<f64> {
+    x.iter().map(|&v| 0.5 * (v + 1.0).clamp(0.0, 2.0)).collect()
+}
+
+/// Numerically stable `log(1 - exp(-x))`, undefined for x < 0.
+///
+/// Matches `jax.nn.log1mexp(x)`: with `c = ln 2`, uses `ln(-expm1(-x))` for
+/// `x < c` and `ln1p(-exp(-x))` otherwise — the standard Mächler split that
+/// keeps both branches accurate near 0 and near +inf.
+#[must_use]
+pub fn log1mexp(x: &[f64]) -> Vec<f64> {
+    let c = 2.0_f64.ln();
+    x.iter()
+        .map(|&v| {
+            if v < c {
+                // -expm1(-v) = 1 - exp(-v), accurate for small v.
+                (-(-v).exp_m1()).ln()
+            } else {
+                // ln1p(-exp(-v)) = ln(1 - exp(-v)), accurate for large v.
+                (-(-v).exp()).ln_1p()
+            }
+        })
+        .collect()
+}
+
+/// Gated linear unit: splits the input in half and gates the first half by the
+/// sigmoid of the second.
+///
+/// Matches `jax.nn.glu(x, axis=-1)` for a 1-D input: with `n = len`, returns
+/// `x[0:n/2] * sigmoid(x[n/2:n])` (length `n/2`). The axis size must be even;
+/// an odd middle element (ill-defined per JAX, which asserts) is ignored.
+#[must_use]
+pub fn glu(x: &[f64]) -> Vec<f64> {
+    let half = x.len() / 2;
+    let (a, b) = (&x[..half], &x[half..half + half]);
+    a.iter()
+        .zip(b.iter())
+        .map(|(&g, &v)| g * (1.0 / (1.0 + (-v).exp())))
+        .collect()
+}
+
+/// Log-mean-exp: `logsumexp(x) - ln(n)`.
+///
+/// The log of the mean of the exponentials, a numerically stable companion to
+/// [`logsumexp`]. Matches `jax.nn.logmeanexp(x)` reduced over all elements.
+/// Empty input returns -inf (consistent with [`logsumexp`]).
+#[must_use]
+pub fn logmeanexp(x: &[f64]) -> f64 {
+    if x.is_empty() {
+        return f64::NEG_INFINITY;
+    }
+    logsumexp(x) - (x.len() as f64).ln()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -307,6 +411,100 @@ mod tests {
         let x = vec![-2.0, -1.0, 0.0, 1.0, 2.0];
         let y = relu(&x);
         assert_eq!(y, vec![0.0, 0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_soft_sign_aliases_softsign() {
+        let x = vec![-2.0, -0.5, 0.0, 0.5, 3.0];
+        assert_eq!(soft_sign(&x), softsign(&x));
+        // x / (|x| + 1)
+        assert!(approx_eq(soft_sign(&x)[0], -2.0 / 3.0, 1e-12));
+        assert!(approx_eq(soft_sign(&x)[3], 0.5 / 1.5, 1e-12));
+    }
+
+    #[test]
+    fn test_identity_returns_input() {
+        let x = vec![-2.0, -1.0, -0.5, 0.0, 0.5, 1.0, 2.0];
+        assert_eq!(identity(&x), x);
+    }
+
+    #[test]
+    fn test_squareplus_matches_formula() {
+        // squareplus(x, b) = (x + sqrt(x^2 + b)) / 2; default b = 4.
+        let x = vec![-1.0, 0.0, 2.0];
+        let y = squareplus(&x, 4.0);
+        assert!(approx_eq(y[0], (-1.0 + 5.0_f64.sqrt()) / 2.0, 1e-12));
+        assert!(approx_eq(y[1], 1.0, 1e-12)); // (0 + 2)/2
+        assert!(approx_eq(y[2], (2.0 + 8.0_f64.sqrt()) / 2.0, 1e-12));
+        // x=0, b=0 collapses to relu-like 0; large x ~ x.
+        assert!(approx_eq(squareplus(&[100.0], 4.0)[0], 100.0, 1e-2));
+    }
+
+    #[test]
+    fn test_sparse_plus_piecewise() {
+        // 0 for x<=-1, (x+1)^2/4 for -1<x<1, x for x>=1.
+        let x = vec![-2.0, -1.0, 0.0, 0.5, 1.0, 3.0];
+        let y = sparse_plus(&x);
+        assert!(approx_eq(y[0], 0.0, 1e-12));
+        assert!(approx_eq(y[1], 0.0, 1e-12)); // x = -1 -> 0
+        assert!(approx_eq(y[2], 0.25, 1e-12)); // (0+1)^2/4
+        assert!(approx_eq(y[3], (1.5_f64).powi(2) / 4.0, 1e-12));
+        assert!(approx_eq(y[4], 1.0, 1e-12)); // x = 1 -> x
+        assert!(approx_eq(y[5], 3.0, 1e-12));
+    }
+
+    #[test]
+    fn test_sparse_sigmoid_piecewise() {
+        // 0.5 * clip(x+1, 0, 2): 0 for x<=-1, (x+1)/2 between, 1 for x>=1.
+        let x = vec![-2.0, -1.0, 0.0, 1.0, 5.0];
+        let y = sparse_sigmoid(&x);
+        assert!(approx_eq(y[0], 0.0, 1e-12));
+        assert!(approx_eq(y[1], 0.0, 1e-12));
+        assert!(approx_eq(y[2], 0.5, 1e-12)); // (0+1)/2
+        assert!(approx_eq(y[3], 1.0, 1e-12));
+        assert!(approx_eq(y[4], 1.0, 1e-12));
+    }
+
+    #[test]
+    fn test_log1mexp_stable_both_branches() {
+        // log(1 - exp(-x)). Small-x branch (x < ln2) and large-x branch.
+        let small = 0.1_f64;
+        assert!(approx_eq(
+            log1mexp(&[small])[0],
+            (1.0 - (-small).exp()).ln(),
+            1e-9
+        ));
+        let large = 5.0_f64;
+        assert!(approx_eq(
+            log1mexp(&[large])[0],
+            (1.0 - (-large).exp()).ln(),
+            1e-12
+        ));
+        // As x -> inf, 1 - exp(-x) -> 1, so log -> 0^-.
+        assert!(log1mexp(&[40.0])[0].abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_glu_gates_first_half_by_sigmoid_of_second() {
+        // x = [a0, a1, b0, b1] -> [a0*sigmoid(b0), a1*sigmoid(b1)].
+        let x = vec![1.0, 2.0, 0.0, 100.0];
+        let y = glu(&x);
+        assert_eq!(y.len(), 2);
+        assert!(approx_eq(y[0], 1.0 * 0.5, 1e-12)); // sigmoid(0) = 0.5
+        assert!(approx_eq(y[1], 2.0 * 1.0, 1e-9)); // sigmoid(100) ~ 1
+    }
+
+    #[test]
+    fn test_logmeanexp_is_logsumexp_minus_log_n() {
+        let x = vec![1.0, 2.0, 3.0, 4.0];
+        assert!(approx_eq(
+            logmeanexp(&x),
+            logsumexp(&x) - (4.0_f64).ln(),
+            1e-12
+        ));
+        // mean of equal values v is v: logmeanexp([v;n]) == v.
+        assert!(approx_eq(logmeanexp(&[2.5, 2.5, 2.5]), 2.5, 1e-12));
+        assert_eq!(logmeanexp(&[]), f64::NEG_INFINITY);
     }
 
     #[test]

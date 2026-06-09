@@ -101,12 +101,15 @@ ShiftRightLogical, PopulationCount, CountLeadingZeros
 - GAP: gumbel, logistic, maxwell, multivariate_normal, orthogonal, 
   permutation, choice, shuffle, ball, generalized_normal
 
-### jax.nn Coverage (12/20+ = 60%)
+### jax.nn Coverage (33/35 = ~94%)
 
-- COVERED: relu, relu6, sigmoid, softmax, log_softmax, softplus, 
-  silu/swish, gelu, elu, selu, leaky_relu, hard_sigmoid
-- GAP: celu, glu, hard_swish, hard_tanh, logsumexp, normalize, 
-  one_hot (via lax), standardize
+- COVERED: relu, relu6, sigmoid, hard_sigmoid, hard_tanh, silu/swish,
+  hard_silu/hard_swish, gelu, elu, celu, selu, leaky_relu, softplus, softsign/
+  soft_sign, mish, log_sigmoid, logsumexp, logmeanexp, softmax, log_softmax,
+  standardize (normalize is its deprecated alias), glu, squareplus, sparse_plus,
+  sparse_sigmoid, log1mexp, identity, one_hot (via lax)
+- GAP: dot_product_attention, scaled_matmul/scaled_dot_general (fused
+  attention/matmul kernels — beyond V1 elementwise-activation scope)
 
 ### jax.tree_util Coverage (15/15 = 100%)
 
