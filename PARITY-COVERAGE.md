@@ -93,13 +93,14 @@ ShiftRightLogical, PopulationCount, CountLeadingZeros
 - COVERED: Cond, Scan, While, Switch
 - COVERED: associative_scan (sequential V1)
 
-### jax.random Coverage (18/30+ = 60%)
+### jax.random Coverage (25/31 = ~81%)
 
 - COVERED: key, split, fold_in, uniform, normal, bernoulli, categorical, 
   exponential, gamma, beta, poisson, weibull, rayleigh, chi2, t, laplace, 
-  cauchy, pareto, truncated_normal, dirichlet, geometric
-- GAP: gumbel, logistic, maxwell, multivariate_normal, orthogonal, 
-  permutation, choice, shuffle, ball, generalized_normal
+  cauchy, pareto, truncated_normal, dirichlet, geometric, gumbel, permutation,
+  randint, logistic
+- GAP: maxwell, generalized_normal, ball (derived-distribution transforms),
+  multivariate_normal, orthogonal (need cholesky/QR), choice, shuffle
 
 ### jax.nn Coverage (33/35 = ~94%)
 

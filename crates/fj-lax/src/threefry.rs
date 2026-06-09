@@ -434,6 +434,27 @@ pub fn random_laplace(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f
         .collect()
 }
 
+/// Sample from the logistic distribution.
+///
+/// Matches JAX's `_logistic`: `x ~ uniform(finfo.tiny, 1); logistic = log(x) -
+/// log1p(-x)` (the numerically stable form of `logit(x)`). Generalized here with
+/// loc/scale (`loc + scale·standard_logistic`); `loc=0, scale=1` reproduces
+/// `jax.random.logistic` exactly. The RNG core is JAX-f32-mode bit-exact, so the
+/// uniform lower bound is the f32 `tiny` (matching `_logistic`'s
+/// `minval=finfo(dtype).tiny`, with dtype=float32 when x64 is disabled) and there
+/// is no upper clamp.
+#[must_use]
+pub fn random_logistic(key: PRNGKey, count: usize, loc: f64, scale: f64) -> Vec<f64> {
+    let tiny = f64::from(f32::MIN_POSITIVE);
+    let uniforms = random_uniform(key, count, tiny, 1.0);
+    uniforms
+        .into_iter()
+        // log(x) - log1p(-x); JAX computes it in exactly this two-term form
+        // rather than as a single log(x/(1-x)) for accuracy as x -> 1.
+        .map(|x| loc + scale * (x.ln() - (-x).ln_1p()))
+        .collect()
+}
+
 /// Generate random integers uniformly in [minval, maxval).
 ///
 /// Matches JAX's `jax.random.randint(key, shape, minval, maxval)` with the
@@ -1698,6 +1719,55 @@ mod tests {
                 "loc/scale generalization mismatch at {i}"
             );
             assert!(l[i].is_finite(), "laplace sample must be finite at {i}");
+        }
+    }
+
+    #[test]
+    fn test_logistic_deterministic() {
+        let key = random_key(42);
+        let a = random_logistic(key, 100, 0.0, 1.0);
+        let b = random_logistic(key, 100, 0.0, 1.0);
+        assert_eq!(a, b, "logistic: same key must produce same samples");
+    }
+
+    #[test]
+    fn test_logistic_symmetric() {
+        // Standard logistic is symmetric about 0 (median 0, mean 0).
+        let key = random_key(42);
+        let vals = random_logistic(key, 10_000, 0.0, 1.0);
+        let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+        assert!(
+            mean.abs() < 0.1,
+            "logistic(0,1) should have mean ~0, got {mean:.4}"
+        );
+    }
+
+    #[test]
+    fn test_logistic_matches_jax_log_minus_log1p_transform() {
+        // JAX `_logistic`: x ~ uniform(finfo.tiny, 1); logistic = log(x) - log1p(-x).
+        // Pin the exact two-term transform over the same key (and the loc/scale
+        // generalization), bit-for-bit — guarding against an ad-hoc logit(x) =
+        // log(x/(1-x)) form, which differs in the last ulp as x -> 1.
+        let key = random_key(7);
+        let n = 256;
+        let tiny = f64::from(f32::MIN_POSITIVE);
+        let x = random_uniform(key, n, tiny, 1.0);
+        let s = random_logistic(key, n, 0.0, 1.0);
+        let s2 = random_logistic(key, n, 3.0, 2.0);
+        assert_eq!(s.len(), n);
+        for i in 0..n {
+            let base = x[i].ln() - (-x[i]).ln_1p();
+            assert_eq!(
+                s[i].to_bits(),
+                base.to_bits(),
+                "standard logistic must equal log(x) - log1p(-x) at {i}"
+            );
+            assert_eq!(
+                s2[i].to_bits(),
+                (3.0 + 2.0 * base).to_bits(),
+                "loc/scale generalization mismatch at {i}"
+            );
+            assert!(s[i].is_finite(), "logistic sample must be finite at {i}");
         }
     }
 
