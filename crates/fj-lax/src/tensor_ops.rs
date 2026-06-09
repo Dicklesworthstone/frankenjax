@@ -6240,6 +6240,53 @@ fn eval_conv_1d_grouped(
         return conv_real_output_from_f64(out_dtype, out_dims, out);
     }
 
+    // General grouped fast path (cout_per_group > 1; the depthwise multiplier-1 case
+    // returned above) — the 1D sibling of eval_conv_2d_grouped's AXPY path. For a fixed
+    // tap (k,ci) and group g, every output channel in the group shares the same input
+    // value lhs[…,g·rhs_c_in+ci] and reads CONTIGUOUS kernel weights rhs[k,ci, g·cpg..],
+    // so the inner work is an AXPY over the group's output channels (autovectorizes; lhs
+    // read once per group). Per-channel (k/ci) order + 0.0·rhs OOB preserved -> BIT-FOR-BIT
+    // identical. Verified by conv1d_grouped_axpy_matches_general.
+    if cout_per_group > 1 {
+        let mut out = vec![0.0_f64; total];
+        let mut spatial_base = 0usize;
+        for n in 0..batch {
+            let n_off = n * width_c_in;
+            for w in 0..out_w {
+                let acc = &mut out[spatial_base..spatial_base + c_out];
+                for k in 0..kernel_w {
+                    let in_pos = (w * stride + k * dil) as isize - pad_left as isize;
+                    let oob = in_pos < 0 || (in_pos as usize) >= width;
+                    let lhs_base = if oob {
+                        0
+                    } else {
+                        n_off + (in_pos as usize) * c_in
+                    };
+                    let rhs_k = k * rhs_c_in_c_out;
+                    for ci in 0..rhs_c_in {
+                        let rhs_ci = rhs_k + ci * c_out;
+                        for g in 0..group_count {
+                            let lhs_val = if oob {
+                                0.0
+                            } else {
+                                lhs_src[lhs_base + g * rhs_c_in + ci]
+                            };
+                            let co_base = g * cout_per_group;
+                            let rhs_row =
+                                &rhs_src[rhs_ci + co_base..rhs_ci + co_base + cout_per_group];
+                            let acc_g = &mut acc[co_base..co_base + cout_per_group];
+                            for (a, &r) in acc_g.iter_mut().zip(rhs_row) {
+                                *a += lhs_val * r;
+                            }
+                        }
+                    }
+                }
+                spatial_base += c_out;
+            }
+        }
+        return conv_real_output_from_f64(out_dtype, out_dims, out);
+    }
+
     let mut out = Vec::with_capacity(total);
     for n in 0..batch {
         let n_off = n * width_c_in;
@@ -8682,6 +8729,91 @@ mod tests {
                                  cfg=({h},{w},{cin},{cout},G={g},{pad},s{stride})"
                             );
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conv1d_grouped_axpy_matches_general() {
+        // General grouped conv1d (cout_per_group > 1) AXPY fast path vs an independent
+        // per-group non-grouped 1D conv oracle. Covers SAME padding (border OOB) + stride 2.
+        let mk = |dims: Vec<u32>, d: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(Shape { dims }, d.to_vec()).unwrap())
+        };
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("unexpected {o:?}"),
+                })
+                .collect()
+        };
+        for &(w, cin, cout, kw, g, pad, stride) in &[
+            (16usize, 6usize, 9usize, 3usize, 3usize, "same", 1usize),
+            (17, 8, 8, 3, 2, "same", 2),
+            (14, 6, 12, 3, 3, "valid", 1),
+        ] {
+            let rhs_cin = cin / g;
+            let cpg = cout / g;
+            let xf: Vec<f64> = (0..w * cin)
+                .map(|i| (i as f64 * 0.021).sin() * 1.4 - 0.25)
+                .collect();
+            let kf: Vec<f64> = (0..kw * rhs_cin * cout)
+                .map(|i| (i as f64 * 0.017).cos() * 0.7 + 0.15)
+                .collect();
+            let strides = stride.to_string();
+            let got = eval_conv(
+                Primitive::Conv,
+                &[
+                    mk(vec![1, w as u32, cin as u32], &xf),
+                    mk(vec![kw as u32, rhs_cin as u32, cout as u32], &kf),
+                ],
+                &params(&[
+                    ("padding", pad),
+                    ("strides", &strides),
+                    ("feature_group_count", &g.to_string()),
+                ]),
+            )
+            .unwrap();
+            let gt = got.as_tensor().unwrap();
+            let out_w = gt.shape.dims[1] as usize;
+            let got_bits = bits(&got);
+            for grp in 0..g {
+                let mut x_g = Vec::with_capacity(w * rhs_cin);
+                for p in 0..w {
+                    for ci in 0..rhs_cin {
+                        x_g.push(xf[p * cin + grp * rhs_cin + ci]);
+                    }
+                }
+                let mut k_g = Vec::with_capacity(kw * rhs_cin * cpg);
+                for t in 0..kw * rhs_cin {
+                    for j in 0..cpg {
+                        k_g.push(kf[t * cout + grp * cpg + j]);
+                    }
+                }
+                let ref_out = eval_conv(
+                    Primitive::Conv,
+                    &[
+                        mk(vec![1, w as u32, rhs_cin as u32], &x_g),
+                        mk(vec![kw as u32, rhs_cin as u32, cpg as u32], &k_g),
+                    ],
+                    &params(&[("padding", pad), ("strides", &strides)]),
+                )
+                .unwrap();
+                let ref_bits = bits(&ref_out);
+                for ow in 0..out_w {
+                    for j in 0..cpg {
+                        assert_eq!(
+                            got_bits[ow * cout + grp * cpg + j],
+                            ref_bits[ow * cpg + j],
+                            "conv1d grouped AXPY != per-group ref at (ow={ow},g={grp},j={j}) \
+                             cfg=({w},{cin},{cout},G={g},{pad},s{stride})"
+                        );
                     }
                 }
             }

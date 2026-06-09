@@ -3341,6 +3341,85 @@ fn bench_grouped_conv_fast(c: &mut Criterion) {
     });
 }
 
+// Grouped conv1d [1,512,256] k=3 G=32 (cpg=8, rhs_cin=8) VALID. A/B: AXPY fast path vs
+// the pre-change per-output-channel channel-strided scalar loop.
+fn grouped_conv1d_inputs() -> (Vec<f64>, Vec<f64>, usize, usize, usize, usize, usize) {
+    let (w, cin, cout, kw, g) = (512usize, 256usize, 256usize, 3usize, 32usize);
+    let rhs_cin = cin / g;
+    let x: Vec<f64> = (0..w * cin).map(|i| (i as f64 * 0.0011).sin()).collect();
+    let k: Vec<f64> = (0..kw * rhs_cin * cout)
+        .map(|i| (i as f64 * 0.0023).cos())
+        .collect();
+    (x, k, w, cin, cout, kw, g)
+}
+
+fn grouped_conv1d_general_ref(
+    x: &[f64],
+    k: &[f64],
+    w: usize,
+    cin: usize,
+    cout: usize,
+    kw: usize,
+    g: usize,
+) -> Vec<f64> {
+    let ow = w - kw + 1;
+    let rhs_cin = cin / g;
+    let cpg = cout / g;
+    let mut out = vec![0.0f64; ow * cout];
+    let mut oi = 0usize;
+    for o_w in 0..ow {
+        for co in 0..cout {
+            let in_base = (co / cpg) * rhs_cin;
+            let mut acc = 0.0f64;
+            for a in 0..kw {
+                for ci in 0..rhs_cin {
+                    acc += x[(o_w + a) * cin + in_base + ci] * k[(a * rhs_cin + ci) * cout + co];
+                }
+            }
+            out[oi] = acc;
+            oi += 1;
+        }
+    }
+    out
+}
+
+fn bench_grouped_conv1d_general(c: &mut Criterion) {
+    let (x, k, w, cin, cout, kw, g) = grouped_conv1d_inputs();
+    c.bench_function("conv/grouped1d_512x256_k3_g32_general", |b| {
+        b.iter(|| grouped_conv1d_general_ref(black_box(&x), black_box(&k), w, cin, cout, kw, g))
+    });
+}
+
+fn bench_grouped_conv1d_fast(c: &mut Criterion) {
+    let (x, k, w, cin, cout, kw, g) = grouped_conv1d_inputs();
+    let rhs_cin = cin / g;
+    let x_val = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![1, w as u32, cin as u32],
+            },
+            x,
+        )
+        .unwrap(),
+    );
+    let k_val = Value::Tensor(
+        TensorValue::new_f64_values(
+            Shape {
+                dims: vec![kw as u32, rhs_cin as u32, cout as u32],
+            },
+            k,
+        )
+        .unwrap(),
+    );
+    let mut p = no_params();
+    p.insert("padding".to_owned(), "valid".to_owned());
+    p.insert("strides".to_owned(), "1".to_owned());
+    p.insert("feature_group_count".to_owned(), g.to_string());
+    c.bench_function("conv/grouped1d_512x256_k3_g32_fast", |b| {
+        b.iter(|| eval_primitive(Primitive::Conv, &[x_val.clone(), k_val.clone()], &p))
+    });
+}
+
 fn bench_complex_expm1_1k(c: &mut Criterion) {
     let input = complex_vector(1000);
     let p = no_params();
@@ -4151,6 +4230,8 @@ criterion_group!(
     bench_depthwise_conv1d_fast,
     bench_grouped_conv_general,
     bench_grouped_conv_fast,
+    bench_grouped_conv1d_general,
+    bench_grouped_conv1d_fast,
     bench_bf16_scalarmul_2m_dense,
     bench_bf16_scalarmul_2m_boxed,
     bench_complex_expm1_1k,
