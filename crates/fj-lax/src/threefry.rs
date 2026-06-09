@@ -509,27 +509,55 @@ pub fn random_randint(key: PRNGKey, count: usize, minval: i64, maxval: i64) -> V
         .collect()
 }
 
-/// Randomly permute elements of a sequence.
+/// Randomly permute `0..n`, matching `jax.random.permutation(key, n)` /
+/// `jax.random.shuffle`.
 ///
-/// Matches JAX's `jax.random.permutation(key, n)` returning a permutation of 0..n.
-/// Uses Fisher-Yates shuffle.
+/// JAX does NOT use Fisher-Yates (the previous implementation here, which drew
+/// `n-1` uniforms and swapped — a valid permutation but a DIFFERENT one than JAX
+/// for the same key). JAX's `_shuffle` (tjablin's parallel-friendly algorithm)
+/// runs several rounds of "sort the array by freshly-drawn random u32 keys":
+///
+/// ```text
+/// num_rounds = ceil(3 * ln(max(1, n)) / ln(u32::MAX))
+/// x = [0, 1, ..., n-1]
+/// repeat num_rounds:
+///     key, subkey = split(key)
+///     sort_keys = random_bits(subkey, 32, [n])   # one u32 per element
+///     x = stable_argsort(sort_keys) applied to x  # lax.sort_key_val(sort_keys, x)
+/// ```
+///
+/// Each round permutes by a stable sort on independent u32 keys; repeating until
+/// the concatenated per-element key strings are (almost surely) distinct yields a
+/// uniform permutation. We reuse the JAX-oracle-pinned `random_split` and
+/// `generate_u32_bits` (== JAX `_random_bits` bit_width=32) and a stable ascending
+/// sort, so this follows JAX's algorithm rather than diverging via Fisher-Yates.
+/// `n <= 1` needs zero rounds (the permutation is the identity), exactly as JAX's
+/// `ceil(...)` yields 0 rounds for `n == 1`.
 #[must_use]
 pub fn random_permutation(key: PRNGKey, n: usize) -> Vec<usize> {
-    if n == 0 {
-        return vec![];
+    if n <= 1 {
+        return (0..n).collect();
     }
 
-    let mut result: Vec<usize> = (0..n).collect();
-    // Need n-1 random swaps
-    let uniforms = random_uniform(key, n.saturating_sub(1), 0.0, 1.0);
+    // num_rounds = ceil(3 * ln(n) / ln(u32::MAX)); matches JAX's static stop.
+    let exponent = 3.0_f64;
+    let uint32max = f64::from(u32::MAX);
+    let num_rounds = (exponent * (n as f64).ln() / uint32max.ln()).ceil() as usize;
 
-    for (i, &u) in uniforms.iter().enumerate().take(n.saturating_sub(1)) {
-        let remaining = n - i;
-        let j = i + (u * remaining as f64).floor() as usize;
-        let j = j.min(n - 1); // Safety clamp
-        result.swap(i, j);
+    let mut x: Vec<usize> = (0..n).collect();
+    let mut key = key;
+    for _ in 0..num_rounds {
+        // JAX: `key, subkey = split(key)` — split[0] continues, split[1] draws bits.
+        let (next_key, subkey) = random_split(key);
+        key = next_key;
+        let sort_keys = generate_u32_bits(subkey, n);
+        // Stable ascending argsort by the u32 sort keys (== lax.sort_key_val,
+        // is_stable=True), then reorder x by it.
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by_key(|&i| sort_keys[i]);
+        x = order.into_iter().map(|i| x[i]).collect();
     }
-    result
+    x
 }
 
 /// Generate gamma-distributed samples using Marsaglia & Tsang's method.
@@ -1915,6 +1943,48 @@ mod tests {
         let perm = random_permutation(key, 100);
         let identity: Vec<usize> = (0..100).collect();
         assert_ne!(perm, identity, "permutation should shuffle");
+    }
+
+    #[test]
+    fn test_permutation_deterministic() {
+        let key = random_key(7);
+        assert_eq!(
+            random_permutation(key, 50),
+            random_permutation(key, 50),
+            "same key must produce same permutation"
+        );
+    }
+
+    #[test]
+    fn test_permutation_n1_is_identity() {
+        // JAX: ceil(3*ln(1)/ln(u32max)) == 0 rounds -> identity for n=1.
+        let key = random_key(99);
+        assert_eq!(random_permutation(key, 1), vec![0]);
+    }
+
+    #[test]
+    fn test_permutation_matches_jax_sort_by_random_bits() {
+        // Pin the JAX `_shuffle` algorithm exactly for the single-round regime
+        // (n small enough that num_rounds == 1): permutation == stable argsort of
+        // random_bits(split(key).1, n). This guards against regressing to the old
+        // ad-hoc Fisher-Yates, which is a DIFFERENT permutation for the same key.
+        let key = random_key(42);
+        let n = 64; // ceil(3*ln(64)/ln(u32max)) = ceil(0.56) = 1 round
+        let exponent = 3.0_f64;
+        let num_rounds =
+            (exponent * (n as f64).ln() / f64::from(u32::MAX).ln()).ceil() as usize;
+        assert_eq!(num_rounds, 1, "this test assumes the single-round regime");
+
+        let (_next, subkey) = random_split(key);
+        let sort_keys = generate_u32_bits(subkey, n);
+        let mut expected: Vec<usize> = (0..n).collect();
+        expected.sort_by_key(|&i| sort_keys[i]);
+
+        assert_eq!(
+            random_permutation(key, n),
+            expected,
+            "permutation must equal stable argsort of JAX random_bits"
+        );
     }
 
     // === New distribution tests ===
