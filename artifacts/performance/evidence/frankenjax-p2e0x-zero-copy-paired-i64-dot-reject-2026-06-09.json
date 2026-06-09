@@ -1,0 +1,64 @@
+{
+  "bead": "frankenjax-p2e0x",
+  "pass": 211,
+  "status": "rejected",
+  "target": "fj-dispatch vmap_dot_i64/paired_vectors",
+  "profile_basis": {
+    "worker": "vmi1227854",
+    "command": "cargo bench -j 1 -p fj-dispatch --bench dispatch_baseline -- 'vmap_(dot_i64|qr|svd|gather|scatter|scan)|dispatch_latency/vmap/rank2_add_one_in_axes_1|eval_jaxpr_throughput' --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+    "result_us": {
+      "lower": 53.826,
+      "median": 55.547,
+      "upper": 58.157
+    },
+    "note": "Largest unowned non-Eigh fj-dispatch row after pass210 reprofile while fj-lax dense/linalg files were reserved by IcyGlacier."
+  },
+  "baseline": {
+    "worker": "vmi1227854",
+    "command": "cargo bench -j 1 -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 30 --measurement-time 3 --warm-up-time 1 --noplot",
+    "result_us": {
+      "lower": 55.969,
+      "median": 57.983,
+      "upper": 60.092
+    }
+  },
+  "lever_tested": {
+    "description": "When both vmap dot operands already have batch_dim 0, call batch_paired_i64_vector_dot directly on the borrowed input Values before the existing move_batch_dim_to_front(..., 0) clone path.",
+    "changed_files_during_candidate": [
+      "crates/fj-dispatch/src/batching.rs",
+      "crates/fj-dispatch/src/lib.rs"
+    ],
+    "source_retained": false,
+    "revert_reason": "RCH candidate rebench did not clear the Score >= 2.0 keep gate."
+  },
+  "candidate": {
+    "worker": "vmi1227854",
+    "command": "cargo bench -j 1 -p fj-dispatch --bench dispatch_baseline -- vmap_dot_i64/paired_vectors --sample-size 20 --measurement-time 2 --warm-up-time 1 --noplot",
+    "result_us": {
+      "lower": 55.942,
+      "median": 58.204,
+      "upper": 60.749
+    },
+    "median_speedup": 0.9962,
+    "conservative_speedup": 0.9213,
+    "score": 0.0,
+    "queue_note": "RCH ignored the vmi1153651 worker hint and selected vmi1227854; unrelated jobs were active, but the candidate was flat even on median and below the keep gate."
+  },
+  "behavior_proof": {
+    "test_command": "cargo test -j 1 -p fj-dispatch --lib dispatch_vmap_dot_i64_paired_vectors_wraps_like_lax -- --nocapture",
+    "test_worker": "vmi1227854",
+    "test_result": "passed: 1 passed, 0 failed",
+    "golden_sha256": "060c94e0fe0eed0748b3adfc77d8b95bd7d99e936c44427283815b25e9bc100d",
+    "golden_payload": "[[2],[2,39]]",
+    "isomorphism": [
+      "The candidate called the same batch_paired_i64_vector_dot implementation as the old path after no-op leading-axis moves.",
+      "Row-major batch order, width iteration order, i64 wrapping multiply/add behavior, output dtype, output shape, batch dimension, and fallback/error behavior were unchanged.",
+      "No floating-point arithmetic, RNG, ordering tie-break, or nondeterministic surface was introduced."
+    ]
+  },
+  "decision": {
+    "kept": false,
+    "reason": "Median speedup was 0.996x and conservative speedup was 0.921x, so Impact was zero and Score was below 2.0.",
+    "next_route": "Do not repeat leading-axis no-op clone bypass for paired I64 dot. Reprofile and attack a different dispatch primitive or a deeper algorithmic/layout primitive."
+  }
+}
