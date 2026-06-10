@@ -475,6 +475,144 @@ fn scalar_add_mul_fast_path_uses_builtin_vjp(jaxpr: &Jaxpr) -> bool {
         && lookup_custom_jaxpr_vjp(jaxpr).is_none()
 }
 
+fn scalar_add_mul_fast_path_uses_builtin_jvp() -> bool {
+    lookup_custom_jvp(Primitive::Add).is_none() && lookup_custom_jvp(Primitive::Mul).is_none()
+}
+
+fn scalar_f64_var_index(var: VarId) -> Result<usize, AdError> {
+    usize::try_from(var.0).map_err(|_| AdError::MissingVariable(var))
+}
+
+fn scalar_f64_atom_primal_tangent(
+    primals: &[Option<f64>],
+    tangents: &[Option<f64>],
+    atom: &Atom,
+) -> Result<Option<(f64, f64)>, AdError> {
+    match atom {
+        Atom::Var(var) => {
+            let idx = scalar_f64_var_index(*var)?;
+            if idx >= DENSE_AD_VALUE_STORE_MAX_SLOTS {
+                return Ok(None);
+            }
+            let primal = *primals
+                .get(idx)
+                .and_then(Option::as_ref)
+                .ok_or(AdError::MissingVariable(*var))?;
+            let tangent = tangents
+                .get(idx)
+                .and_then(Option::as_ref)
+                .copied()
+                .unwrap_or(0.0);
+            Ok(Some((primal, tangent)))
+        }
+        Atom::Lit(Literal::F64Bits(bits)) => Ok(Some((f64::from_bits(*bits), 0.0))),
+        Atom::Lit(_) => Ok(None),
+    }
+}
+
+fn try_scalar_f64_add_mul_jvp(
+    jaxpr: &Jaxpr,
+    primals: &[Value],
+    tangents: &[Value],
+) -> Result<Option<JvpResult>, AdError> {
+    if !jaxpr.constvars.is_empty() || !jaxpr.effects.is_empty() {
+        return Ok(None);
+    }
+    for eqn in &jaxpr.equations {
+        let [_, _] = eqn.inputs.as_slice() else {
+            return Ok(None);
+        };
+        let [_] = eqn.outputs.as_slice() else {
+            return Ok(None);
+        };
+        if !eqn.params.is_empty() || !eqn.sub_jaxprs.is_empty() || !eqn.effects.is_empty() {
+            return Ok(None);
+        }
+        let primitive = eqn.primitive;
+        if !matches!(primitive, Primitive::Add | Primitive::Mul) {
+            return Ok(None);
+        }
+    }
+    if !scalar_add_mul_fast_path_uses_builtin_jvp() {
+        return Ok(None);
+    }
+
+    let mut primal_values = vec![None; scalar_f64_presized_slot_count(jaxpr)];
+    let mut tangent_values = vec![None; primal_values.len()];
+    for ((var, primal), tangent) in jaxpr.invars.iter().zip(primals).zip(tangents) {
+        let Value::Scalar(Literal::F64Bits(primal_bits)) = primal else {
+            return Ok(None);
+        };
+        let Value::Scalar(Literal::F64Bits(tangent_bits)) = tangent else {
+            return Ok(None);
+        };
+        if scalar_f64_set_slot(&mut primal_values, *var, f64::from_bits(*primal_bits)).is_none() {
+            return Ok(None);
+        }
+        if scalar_f64_set_slot(&mut tangent_values, *var, f64::from_bits(*tangent_bits)).is_none() {
+            return Ok(None);
+        }
+    }
+
+    for eqn in &jaxpr.equations {
+        let primitive = eqn.primitive;
+        let [lhs_atom, rhs_atom] = eqn.inputs.as_slice() else {
+            return Ok(None);
+        };
+        let [out_var] = eqn.outputs.as_slice() else {
+            return Ok(None);
+        };
+        let Some((lhs_primal, lhs_tangent)) =
+            scalar_f64_atom_primal_tangent(&primal_values, &tangent_values, lhs_atom)?
+        else {
+            return Ok(None);
+        };
+        let Some((rhs_primal, rhs_tangent)) =
+            scalar_f64_atom_primal_tangent(&primal_values, &tangent_values, rhs_atom)?
+        else {
+            return Ok(None);
+        };
+
+        let (primal_out, tangent_out) = match primitive {
+            Primitive::Add => (lhs_primal + rhs_primal, lhs_tangent + rhs_tangent),
+            Primitive::Mul => {
+                let primal_out = lhs_primal * rhs_primal;
+                let da_b = lhs_tangent * rhs_primal;
+                let a_db = lhs_primal * rhs_tangent;
+                (primal_out, da_b + a_db)
+            }
+            _ => return Ok(None),
+        };
+        if scalar_f64_set_slot(&mut primal_values, *out_var, primal_out).is_none()
+            || scalar_f64_set_slot(&mut tangent_values, *out_var, tangent_out).is_none()
+        {
+            return Ok(None);
+        }
+    }
+
+    let mut out_primals = Vec::with_capacity(jaxpr.outvars.len());
+    let mut out_tangents = Vec::with_capacity(jaxpr.outvars.len());
+    for var in &jaxpr.outvars {
+        let idx = scalar_f64_var_index(*var)?;
+        let primal = *primal_values
+            .get(idx)
+            .and_then(Option::as_ref)
+            .ok_or(AdError::MissingVariable(*var))?;
+        let tangent = tangent_values
+            .get(idx)
+            .and_then(Option::as_ref)
+            .copied()
+            .unwrap_or(0.0);
+        out_primals.push(Value::Scalar(Literal::from_f64(primal)));
+        out_tangents.push(Value::Scalar(Literal::from_f64(tangent)));
+    }
+
+    Ok(Some(JvpResult {
+        primals: out_primals,
+        tangents: out_tangents,
+    }))
+}
+
 fn try_scalar_f64_add_mul_value_and_grad(
     jaxpr: &Jaxpr,
     args: &[Value],
@@ -8600,6 +8738,14 @@ fn jvp_inner(
                 result.tangents.len()
             )));
         }
+        return Ok(result);
+    }
+    if jaxpr
+        .equations
+        .first()
+        .is_some_and(|eqn| matches!(eqn.primitive, Primitive::Add | Primitive::Mul))
+        && let Some(result) = try_scalar_f64_add_mul_jvp(jaxpr, primals, tangents)?
+    {
         return Ok(result);
     }
 
