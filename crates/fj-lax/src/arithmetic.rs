@@ -138,7 +138,7 @@ fn eval_f64_scalar_expensive_parallel(
 /// rounds back `as f32` — EXACTLY the generic-f32 contract
 /// (`from_f32(float_op(scalar as f64, x as f64) as f32)`), so it is BIT-FOR-BIT identical.
 /// Without this, expensive f32 scalar ops (Pow/Atan2/Hypot/…) fell to the per-`Literal`
-/// generic path (`eval_f32_scalar_broadcast_binop` handles only Add/Sub/Mul/Div).
+/// generic path (`eval_f32_scalar_broadcast_binop` handles Add/Sub/Mul/Div/Max/Min).
 fn eval_f32_scalar_expensive_parallel(
     primitive: Primitive,
     scalar: Literal,
@@ -810,8 +810,49 @@ fn eval_f64_scalar_broadcast_binop(
             crate::dense::ArithOp::Div,
             |a, b| a / b,
         ),
+        // relu = max(x, 0), clamp/relu6 = min(max(x, lo), hi): the single most
+        // common activations, and each is a lone op that never fuses. Drive the
+        // dense `as_f64_slice` map directly with the NaN-propagating jax_max/min
+        // (bit-identical to the generic per-`Literal` path, which applies the same
+        // `jax_max_f64`/`jax_min_f64` float_op).
+        Primitive::Max => f64_scalar_broadcast_jax(scalar, tensor, scalar_on_left, crate::jax_max_f64),
+        Primitive::Min => f64_scalar_broadcast_jax(scalar, tensor, scalar_on_left, crate::jax_min_f64),
         _ => Ok(None),
     }
+}
+
+/// Dense f64 scalar⊗tensor map for a NaN-propagating op (`jax_max_f64`/`jax_min_f64`)
+/// that has no `dense::ArithOp` variant. Maps the contiguous `as_f64_slice` directly
+/// (the fast path) or falls back to the per-`Literal` loop; bit-for-bit identical to
+/// the generic broadcast path, which applies the same `op` in the same operand order.
+#[inline]
+fn f64_scalar_broadcast_jax(
+    scalar: f64,
+    tensor: &TensorValue,
+    scalar_on_left: bool,
+    op: fn(f64, f64) -> f64,
+) -> Result<Option<Value>, EvalError> {
+    let apply = |x: f64| if scalar_on_left { op(scalar, x) } else { op(x, scalar) };
+    if let Some(values) = tensor.elements.as_f64_slice() {
+        let out: Vec<f64> = values.iter().map(|&x| apply(x)).collect();
+        return Ok(Some(Value::Tensor(TensorValue::new_f64_values(
+            tensor.shape.clone(),
+            out,
+        )?)));
+    }
+
+    let mut elements = Vec::with_capacity(tensor.elements.len());
+    for &elem in &tensor.elements {
+        let Literal::F64Bits(bits) = elem else {
+            return Ok(None);
+        };
+        elements.push(Literal::from_f64(apply(f64::from_bits(bits))));
+    }
+    Ok(Some(Value::Tensor(TensorValue::new(
+        DType::F64,
+        tensor.shape.clone(),
+        elements,
+    )?)))
 }
 
 #[inline]
@@ -879,11 +920,16 @@ fn eval_f32_scalar_broadcast_binop(
         return Ok(None);
     };
     let scalar = f64::from(f32::from_bits(scalar_bits));
+    // Max/Min cover relu/clamp on f32 (JAX's default dtype) — widen, NaN-propagating
+    // op, round to f32 (exact: the result equals one input, already f32). Bit-identical
+    // to the generic path's `jax_max_f64`/`jax_min_f64` float_op.
     let op: fn(f64, f64) -> f64 = match primitive {
         Primitive::Add => |a, b| a + b,
         Primitive::Sub => |a, b| a - b,
         Primitive::Mul => |a, b| a * b,
         Primitive::Div => |a, b| a / b,
+        Primitive::Max => crate::jax_max_f64,
+        Primitive::Min => crate::jax_min_f64,
         _ => return Ok(None),
     };
     let out: Vec<f32> = values
@@ -910,8 +956,8 @@ fn eval_f32_scalar_broadcast_binop(
 /// mixed BF16/F16 or non-half scalar promotes to F32 / falls to the generic path).
 /// Widens each via `Literal::{BF16,F16}Bits.as_f64()` (the generic path's conversion),
 /// applies `op` in f64, rounds via `from_{bf16,f16}_f64` — BIT-IDENTICAL to the boxed
-/// per-`Literal` scalar broadcast. Covers Add/Sub/Mul/Div (Max/Min not on the scalar
-/// path, matching the f32/f64 siblings).
+/// per-`Literal` scalar broadcast. Covers Add/Sub/Mul/Div plus Max/Min (relu/clamp),
+/// the latter via the NaN-propagating `jax_max_f64`/`jax_min_f64`.
 fn eval_half_float_scalar_broadcast_binop(
     primitive: Primitive,
     scalar: Literal,
@@ -931,6 +977,8 @@ fn eval_half_float_scalar_broadcast_binop(
         Primitive::Sub => |a, b| a - b,
         Primitive::Mul => |a, b| a * b,
         Primitive::Div => |a, b| a / b,
+        Primitive::Max => crate::jax_max_f64,
+        Primitive::Min => crate::jax_min_f64,
         _ => return Ok(None),
     };
     let widen = |bits: u16| -> f64 {
@@ -15497,6 +15545,9 @@ mod tests {
                 Primitive::Sub,
                 Primitive::Mul,
                 Primitive::Div,
+                // relu/clamp scalar-broadcast (NaN-propagating jax_max/min).
+                Primitive::Max,
+                Primitive::Min,
             ] {
                 // tensor ⊗ scalar
                 let fast =
@@ -15526,6 +15577,82 @@ mod tests {
                     bits(&fast2),
                     bits(&slow2),
                     "f32 {prim:?} scalar⊗tensor(s={s}) dense != serial"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn f64_scalar_broadcast_max_min_dense_bit_identical_to_serial() {
+        // relu/clamp scalar-broadcast on f64: the dense as_f64_slice path must equal
+        // the boxed per-Literal generic path bit-for-bit, incl. ±0/±inf/NaN (the
+        // jax_max_f64/jax_min_f64 any-NaN -> canonical NaN contract).
+        let specials = [
+            0.0f64,
+            -0.0,
+            1.0,
+            -1.0,
+            0.5,
+            3.5,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            1e300,
+            -2.5e-200,
+            7.0,
+        ];
+        let dims = vec![specials.len() as u32];
+        let dense = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, specials.to_vec()).unwrap(),
+        );
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: dims.clone() },
+                specials.iter().map(|&v| Literal::from_f64(v)).collect(),
+            )
+            .unwrap(),
+        );
+        let bits = |v: &Value| -> Vec<u64> {
+            v.as_tensor()
+                .unwrap()
+                .elements
+                .iter()
+                .map(|l| match l {
+                    Literal::F64Bits(b) => *b,
+                    o => panic!("expected f64, got {o:?}"),
+                })
+                .collect()
+        };
+        for &s in &[0.0f64, -2.0, 6.0, f64::INFINITY, f64::NAN] {
+            let sc = Value::scalar_f64(s);
+            for prim in [Primitive::Max, Primitive::Min] {
+                let fast =
+                    crate::eval_primitive(prim, &[dense.clone(), sc.clone()], &BTreeMap::new())
+                        .unwrap();
+                let slow =
+                    crate::eval_primitive(prim, &[boxed.clone(), sc.clone()], &BTreeMap::new())
+                        .unwrap();
+                assert!(
+                    fast.as_tensor().unwrap().elements.as_f64_slice().is_some(),
+                    "{prim:?} dense output should stay dense"
+                );
+                assert_eq!(
+                    bits(&fast),
+                    bits(&slow),
+                    "f64 {prim:?} tensor⊗scalar(s={s}) dense != serial"
+                );
+                // scalar ⊗ tensor (commutative, but exercise the other order).
+                let fast2 =
+                    crate::eval_primitive(prim, &[sc.clone(), dense.clone()], &BTreeMap::new())
+                        .unwrap();
+                let slow2 =
+                    crate::eval_primitive(prim, &[sc.clone(), boxed.clone()], &BTreeMap::new())
+                        .unwrap();
+                assert_eq!(
+                    bits(&fast2),
+                    bits(&slow2),
+                    "f64 {prim:?} scalar⊗tensor(s={s}) dense != serial"
                 );
             }
         }

@@ -793,6 +793,46 @@ fn bench_scalar_mul_64k_i64_literal_reference(c: &mut Criterion) {
     });
 }
 
+// relu = max(x, 0.0) on 64k f32 (JAX default dtype): dense scalar-broadcast fast
+// path (bead frankenjax-d15qd) vs the Vec<Literal> generic per-element broadcast.
+// relu/clamp are lone ops (never fuse), so the generic path is what they hit today.
+fn relu_f32_dense_64k() -> Value {
+    let data: Vec<f32> = (0..LARGE_ELEMENTWISE_LEN).map(|i| i as f32 * 1e-3 - 30.0).collect();
+    Value::vector_f32(&data).unwrap()
+}
+
+fn relu_f32_literal_64k() -> Value {
+    let elements: Vec<Literal> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| Literal::from_f32(i as f32 * 1e-3 - 30.0))
+        .collect();
+    Value::Tensor(
+        TensorValue::new(
+            DType::F32,
+            Shape::vector(LARGE_ELEMENTWISE_LEN as u32),
+            elements,
+        )
+        .unwrap(),
+    )
+}
+
+fn bench_relu_64k_f32_vec(c: &mut Criterion) {
+    let tensor = relu_f32_dense_64k();
+    let zero = Value::scalar_f32(0.0);
+    let p = no_params();
+    c.bench_function("eval/relu_64k_f32_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Max, &[tensor.clone(), zero.clone()], &p))
+    });
+}
+
+fn bench_relu_64k_f32_literal_reference(c: &mut Criterion) {
+    let tensor = relu_f32_literal_64k();
+    let zero = Value::scalar_f32(0.0);
+    let p = no_params();
+    c.bench_function("eval/relu_64k_f32_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::Max, &[tensor.clone(), zero.clone()], &p))
+    });
+}
+
 // Dense i64 comparisons (pass70): same-shape Lt + scalar-broadcast Lt, each
 // paired with a Vec<Literal> reference run in the same process for a same-worker
 // ratio. The scalar reference path runs the heavy generic compare_literals.
@@ -4818,6 +4858,8 @@ criterion_group!(
     bench_mul_64k_i64_literal_reference,
     bench_scalar_mul_64k_i64_vec,
     bench_scalar_mul_64k_i64_literal_reference,
+    bench_relu_64k_f32_vec,
+    bench_relu_64k_f32_literal_reference,
     bench_lt_64k_i64_vec,
     bench_lt_64k_i64_literal_reference,
     bench_lt_scalar_64k_i64_vec,
