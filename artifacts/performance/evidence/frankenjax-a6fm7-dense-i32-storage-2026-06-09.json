@@ -1,0 +1,78 @@
+{
+  "bead": "frankenjax-a6fm7",
+  "pass": 212,
+  "status": "kept",
+  "target": "fj-core TensorValue I32 dense storage unlocks fj-lax i32 fast paths",
+  "profile_basis": {
+    "source": "ready bead frankenjax-a6fm7, filed by cc from rejected i32 compare debox attempt",
+    "finding": "TensorValue::new(DType::I32, Vec<Literal::I64>) boxed i32 tensors, so as_i64_slice() was None and i32 missed dense i64-backed fast paths."
+  },
+  "baseline": {
+    "worker": "vmi1227854",
+    "command": "cargo bench -j 1 -p fj-lax --bench lax_baseline -- 'eval/matmul_512x512_i32_(dense|literal_ref)' --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+    "rows": {
+      "eval/matmul_512x512_i32_dense": {
+        "lower_ms": 13.938,
+        "median_ms": 14.522,
+        "upper_ms": 15.319
+      },
+      "eval/matmul_512x512_i32_literal_ref": {
+        "lower_ms": 557.47,
+        "median_ms": 576.72,
+        "upper_ms": 592.42
+      }
+    }
+  },
+  "lever": {
+    "description": "Densify TensorValue::new(DType::I32, Vec<Literal::I64>) into the existing LiteralBuffer::I64 storage while preserving the TensorValue dtype tag as I32. Add explicit TensorValue::new_i32_values as the same storage contract.",
+    "changed_files": [
+      "crates/fj-core/src/lib.rs"
+    ]
+  },
+  "candidate": {
+    "worker": "vmi1227854",
+    "command": "cargo bench -j 1 -p fj-lax --bench lax_baseline -- 'eval/matmul_512x512_i32_(dense|literal_ref)' --sample-size 10 --measurement-time 1 --warm-up-time 1 --noplot",
+    "rows": {
+      "eval/matmul_512x512_i32_dense": {
+        "lower_ms": 11.267,
+        "median_ms": 11.56,
+        "upper_ms": 12.15
+      },
+      "eval/matmul_512x512_i32_literal_ref": {
+        "lower_ms": 12.555,
+        "median_ms": 12.903,
+        "upper_ms": 13.313
+      }
+    },
+    "scored_row": "eval/matmul_512x512_i32_literal_ref",
+    "median_speedup": 44.6966,
+    "conservative_speedup": 41.8741,
+    "score": 12.5
+  },
+  "behavior_proof": {
+    "golden_sha256": "a5749ee53dedc45fde6e86c9ec1b6fa9bc13cde391b6eac6a6c1f5d0a8d54daa",
+    "golden_payload": "[[5],[7,-3,-2147483648,2147483647,9223372036854775807]]",
+    "isomorphism": [
+      "Tensor dtype, shape, element count, and materialized Literal::I64 sequence are unchanged for I32 tensors.",
+      "Only backing storage changes from boxed LiteralBuffer::Literals to dense LiteralBuffer::I64 for all-I64 I32 tensors.",
+      "Existing fj-lax i32 arithmetic, reduction, and matmul code still uses the same i64 values, the same row-major iteration order, and the existing narrow_i32_tensor_result wrap chokepoint.",
+      "No floating-point arithmetic, RNG, ordering tie-break, or error-class surface is introduced."
+    ],
+    "tests": [
+      "RCH vmi1227854: cargo test -j 1 -p fj-core i32_tensor_constructor_uses_dense_i64_storage -- --nocapture: passed, 1 test",
+      "RCH vmi1227854: cargo test -j 1 -p fj-lax i32 -- --nocapture: passed, 10 tests"
+    ]
+  },
+  "validation": [
+    "RCH vmi1227854: cargo check -j 1 -p fj-core -p fj-lax --all-targets: passed; pre-existing fj-lax dead_code warning remained.",
+    "RCH vmi1227854: cargo clippy -j 1 -p fj-core --all-targets -- -D warnings: passed.",
+    "cargo fmt -p fj-core --check: passed.",
+    "git diff --check: passed.",
+    "ubs crates/fj-core/src/lib.rs: nonzero on pre-existing broad fj-core inventory; UBS fmt/check/clippy/test-build/audit/deny sections clean."
+  ],
+  "decision": {
+    "kept": true,
+    "reason": "Production I32 literal-constructor path now reaches the existing dense i64-backed i32 matmul fast path, improving the scored same-worker row from 576.72ms to 12.903ms median.",
+    "next_route": "Reprofile after landing; likely follow-up targets are dense I32 compare/elementwise producer coverage and other i32 producers now that the storage contract is in place."
+  }
+}

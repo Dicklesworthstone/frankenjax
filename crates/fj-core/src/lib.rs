@@ -1807,10 +1807,27 @@ impl TensorValue {
             });
         }
 
+        let elements = if dtype == DType::I32
+            && elements
+                .iter()
+                .all(|literal| matches!(literal, Literal::I64(_)))
+        {
+            let values = elements
+                .into_iter()
+                .map(|literal| match literal {
+                    Literal::I64(value) => value,
+                    _ => unreachable!("all elements were checked as i64"),
+                })
+                .collect();
+            LiteralBuffer::from_i64_values(values)
+        } else {
+            elements.into()
+        };
+
         Ok(Self {
             dtype,
             shape,
-            elements: elements.into(),
+            elements,
         })
     }
 
@@ -1924,6 +1941,26 @@ impl TensorValue {
 
         Ok(Self {
             dtype: DType::I64,
+            shape,
+            elements: LiteralBuffer::from_i64_values(values),
+        })
+    }
+
+    pub fn new_i32_values(shape: Shape, values: Vec<i64>) -> Result<Self, ValueError> {
+        let expected_count = shape.element_count().ok_or(ValueError::ShapeOverflow {
+            shape: shape.clone(),
+        })?;
+
+        if expected_count != values.len() as u64 {
+            return Err(ValueError::ElementCountMismatch {
+                shape,
+                expected_count,
+                actual_count: values.len(),
+            });
+        }
+
+        Ok(Self {
+            dtype: DType::I32,
             shape,
             elements: LiteralBuffer::from_i64_values(values),
         })
@@ -6492,6 +6529,33 @@ mod tests {
         assert!(
             buffer.as_i64_slice().is_none(),
             "mutating dense storage should materialize to literal storage"
+        );
+    }
+
+    #[test]
+    fn i32_tensor_constructor_uses_dense_i64_storage() {
+        let values = vec![7, -3, i64::from(i32::MIN), i64::from(i32::MAX), i64::MAX];
+        let literals = values.iter().copied().map(Literal::I64).collect::<Vec<_>>();
+        let shape = Shape::vector(values.len() as u32);
+        let tensor = TensorValue::new(DType::I32, shape.clone(), literals.clone())
+            .expect("valid i32 tensor");
+
+        assert_eq!(tensor.dtype, DType::I32);
+        assert_eq!(tensor.shape, shape);
+        assert_eq!(tensor.elements.as_i64_slice(), Some(values.as_slice()));
+        assert_eq!(tensor.elements.as_slice(), literals.as_slice());
+
+        let explicit =
+            TensorValue::new_i32_values(shape.clone(), values.clone()).expect("valid dense i32");
+        assert_eq!(explicit.dtype, DType::I32);
+        assert_eq!(explicit.elements.as_i64_slice(), Some(values.as_slice()));
+        assert_eq!(explicit.elements.as_slice(), literals.as_slice());
+
+        let digest = fj_test_utils::fixture_id_from_json(&(shape.dims, values))
+            .expect("i32 dense golden digest should build");
+        assert_eq!(
+            digest,
+            "a5749ee53dedc45fde6e86c9ec1b6fa9bc13cde391b6eac6a6c1f5d0a8d54daa"
         );
     }
 
