@@ -475,6 +475,13 @@ fn scalar_add_mul_fast_path_uses_builtin_vjp(jaxpr: &Jaxpr) -> bool {
         && lookup_custom_jaxpr_vjp(jaxpr).is_none()
 }
 
+fn scalar_sin_cos_mul_fast_path_uses_builtin_vjp(jaxpr: &Jaxpr) -> bool {
+    lookup_custom_vjp(Primitive::Sin).is_none()
+        && lookup_custom_vjp(Primitive::Cos).is_none()
+        && lookup_custom_vjp(Primitive::Mul).is_none()
+        && lookup_custom_jaxpr_vjp(jaxpr).is_none()
+}
+
 fn scalar_add_mul_fast_path_uses_builtin_jvp() -> bool {
     lookup_custom_jvp(Primitive::Add).is_none() && lookup_custom_jvp(Primitive::Mul).is_none()
 }
@@ -735,6 +742,96 @@ fn try_scalar_f64_add_mul_value_and_grad(
         grads,
         jaxpr.equations.len(),
     )))
+}
+
+#[inline(never)]
+fn scalar_f64_sin_cos_mul_input(jaxpr: &Jaxpr) -> Option<VarId> {
+    if !jaxpr.constvars.is_empty()
+        || !jaxpr.effects.is_empty()
+        || jaxpr.invars.len() != 1
+        || jaxpr.outvars.len() != 1
+        || jaxpr.equations.len() != 3
+    {
+        return None;
+    }
+
+    let input_var = jaxpr.invars.first().copied()?;
+    let [sin_eqn, cos_eqn, mul_eqn] = jaxpr.equations.as_slice() else {
+        return None;
+    };
+
+    if sin_eqn.primitive != Primitive::Sin
+        || !sin_eqn.params.is_empty()
+        || !sin_eqn.sub_jaxprs.is_empty()
+        || !sin_eqn.effects.is_empty()
+        || sin_eqn.inputs.as_slice() != [Atom::Var(input_var)]
+        || sin_eqn.outputs.len() != 1
+    {
+        return None;
+    }
+    let sin_var = sin_eqn.outputs.first().copied()?;
+
+    if cos_eqn.primitive != Primitive::Cos
+        || !cos_eqn.params.is_empty()
+        || !cos_eqn.sub_jaxprs.is_empty()
+        || !cos_eqn.effects.is_empty()
+        || cos_eqn.inputs.as_slice() != [Atom::Var(input_var)]
+        || cos_eqn.outputs.len() != 1
+    {
+        return None;
+    }
+    let cos_var = cos_eqn.outputs.first().copied()?;
+
+    if mul_eqn.primitive != Primitive::Mul
+        || !mul_eqn.params.is_empty()
+        || !mul_eqn.sub_jaxprs.is_empty()
+        || !mul_eqn.effects.is_empty()
+        || mul_eqn.inputs.as_slice() != [Atom::Var(sin_var), Atom::Var(cos_var)]
+        || mul_eqn.outputs.as_slice() != jaxpr.outvars.as_slice()
+    {
+        return None;
+    }
+
+    Some(input_var)
+}
+
+#[inline(never)]
+fn try_scalar_f64_sin_cos_mul_grad(
+    jaxpr: &Jaxpr,
+    args: &[Value],
+) -> Result<Option<Vec<Value>>, AdError> {
+    if scalar_f64_sin_cos_mul_input(jaxpr).is_none() {
+        return Ok(None);
+    }
+    if !scalar_sin_cos_mul_fast_path_uses_builtin_vjp(jaxpr) {
+        return Ok(None);
+    }
+    if args.len() != jaxpr.invars.len() {
+        return Err(AdError::InputArity {
+            expected: jaxpr.invars.len(),
+            actual: args.len(),
+        });
+    }
+
+    let [Value::Scalar(Literal::F64Bits(bits))] = args else {
+        return Ok(None);
+    };
+    let x = f64::from_bits(*bits);
+    if !x.is_finite() {
+        return Ok(None);
+    }
+
+    let forward_sin = x.sin();
+    let forward_cos = x.cos();
+    let sin_cotangent = 1.0_f64 * forward_cos;
+    let cos_cotangent = 1.0_f64 * forward_sin;
+    let cos_vjp_sin = x.sin();
+    let cos_grad = -(cos_cotangent * cos_vjp_sin);
+    let sin_vjp_cos = x.cos();
+    let sin_grad = sin_cotangent * sin_vjp_cos;
+    let grad = cos_grad + sin_grad;
+
+    Ok(Some(vec![Value::Scalar(Literal::from_f64(grad))]))
 }
 
 fn dense_f64_add_mul_reducesum_fast_path_uses_builtin_vjp(jaxpr: &Jaxpr) -> bool {
@@ -10643,6 +10740,14 @@ pub fn grad_jaxpr(jaxpr: &Jaxpr, args: &[Value]) -> Result<Vec<Value>, AdError> 
     if let Some(grads) = try_dense_f64_square_plus_linear_reducesum_grad(jaxpr, args)? {
         return Ok(grads);
     }
+    if jaxpr
+        .equations
+        .first()
+        .is_some_and(|eqn| eqn.primitive == Primitive::Sin)
+        && let Some(grads) = try_scalar_f64_sin_cos_mul_grad(jaxpr, args)?
+    {
+        return Ok(grads);
+    }
     let (_, grads, _) = value_and_grad_jaxpr_inner(jaxpr, args)?;
     Ok(grads)
 }
@@ -19478,6 +19583,85 @@ mod tests {
             .map(|value| value.to_bits())
             .collect();
         assert_eq!(fast_bits, generic_bits);
+        clear_custom_derivative_rules();
+        Ok(())
+    }
+
+    #[test]
+    fn scalar_f64_sin_cos_mul_grad_matches_generic_bits() -> Result<(), String> {
+        use fj_core::{Jaxpr, VarId};
+        use smallvec::smallvec;
+
+        let _guard = custom_rule_test_guard();
+        clear_custom_derivative_rules();
+
+        let jaxpr = Jaxpr::new(
+            vec![VarId(0)],
+            vec![],
+            vec![VarId(3)],
+            vec![
+                Equation {
+                    primitive: Primitive::Sin,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(1)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Cos,
+                    inputs: smallvec![Atom::Var(VarId(0))],
+                    outputs: smallvec![VarId(2)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+                Equation {
+                    primitive: Primitive::Mul,
+                    inputs: smallvec![Atom::Var(VarId(1)), Atom::Var(VarId(2))],
+                    outputs: smallvec![VarId(3)],
+                    params: BTreeMap::new(),
+                    sub_jaxprs: vec![],
+                    effects: vec![],
+                },
+            ],
+        );
+        let data = [
+            0.0,
+            -0.0,
+            1.0,
+            -2.5,
+            std::f64::consts::FRAC_PI_4,
+            f64::INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_0042),
+        ];
+        let mut bits_hex = Vec::new();
+
+        for x in data {
+            let args = [Value::scalar_f64(x)];
+            let fast_grads = grad_jaxpr(&jaxpr, &args).map_err(|e| e.to_string())?;
+            let generic_grads = grad_jaxpr_with_custom_vjp_key(&jaxpr, &args, "force-generic")
+                .map_err(|e| e.to_string())?;
+            let fast_bits = fast_grads
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "fast scalar gradient missing".to_string())?
+                .to_bits();
+            let generic_bits = generic_grads
+                .first()
+                .and_then(Value::as_f64_scalar)
+                .ok_or_else(|| "generic scalar gradient missing".to_string())?
+                .to_bits();
+            assert_eq!(fast_bits, generic_bits, "x={x:?}");
+            bits_hex.push(format!("{fast_bits:016x}"));
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&bits_hex).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "903936a8b8dba3772ffb21833698efe29716639a722e7eabf78ebbc9fe6958fe"
+        );
+
         clear_custom_derivative_rules();
         Ok(())
     }
