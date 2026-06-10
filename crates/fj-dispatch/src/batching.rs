@@ -748,7 +748,7 @@ fn insert_unit_axes_after_batch(
     }
     let mut dims: Vec<u32> = Vec::with_capacity(tensor.shape.dims.len() + count);
     dims.push(tensor.shape.dims[0]);
-    dims.extend(std::iter::repeat(1u32).take(count));
+    dims.extend(std::iter::repeat_n(1u32, count));
     dims.extend_from_slice(&tensor.shape.dims[1..]);
     let new_shape = dims
         .iter()
@@ -4104,6 +4104,7 @@ fn batch_svd_multi(
     Ok(vec![u, s, vt])
 }
 
+#[allow(clippy::too_many_arguments)]
 fn batch_svd_multi_f64_outputs(
     tensor: &TensorValue,
     batch_size: usize,
@@ -5285,30 +5286,47 @@ fn batch_scan_f32_add_shared_init_batch0(
     }
 
     let reverse = params.get("reverse").is_some_and(|value| value == "true");
-    let elements = xs.elements.as_slice();
     let mut outputs = Vec::with_capacity(batch_size);
-    for batch_idx in 0..batch_size {
-        let mut carry = init;
-        let row_offset = batch_idx * scan_len;
-        if reverse {
-            for scan_idx in (0..scan_len).rev() {
-                let Literal::F32Bits(bits) = elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry += f32::from_bits(bits);
+    if let Some(values) = xs.elements.as_f32_slice() {
+        for batch_idx in 0..batch_size {
+            let mut carry = init;
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    carry += values[row_offset + scan_idx];
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    carry += values[row_offset + scan_idx];
+                }
             }
-        } else {
-            for scan_idx in 0..scan_len {
-                let Literal::F32Bits(bits) = elements[row_offset + scan_idx] else {
-                    return Ok(None);
-                };
-                carry += f32::from_bits(bits);
-            }
+            outputs.push(carry);
         }
-        outputs.push(Literal::from_f32(carry));
+    } else {
+        let elements = xs.elements.as_slice();
+        for batch_idx in 0..batch_size {
+            let mut carry = init;
+            let row_offset = batch_idx * scan_len;
+            if reverse {
+                for scan_idx in (0..scan_len).rev() {
+                    let Literal::F32Bits(bits) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry += f32::from_bits(bits);
+                }
+            } else {
+                for scan_idx in 0..scan_len {
+                    let Literal::F32Bits(bits) = elements[row_offset + scan_idx] else {
+                        return Ok(None);
+                    };
+                    carry += f32::from_bits(bits);
+                }
+            }
+            outputs.push(carry);
+        }
     }
 
-    TensorValue::new(DType::F32, Shape::vector(batch_size as u32), outputs)
+    TensorValue::new_f32_values(Shape::vector(batch_size as u32), outputs)
         .map(|tensor| Some(BatchTracer::batched(Value::Tensor(tensor), 0)))
         .map_err(|e| BatchError::TensorError(e.to_string()))
 }
@@ -10742,7 +10760,41 @@ mod tests {
         .expect("f32 scan scalar fast path should batch rows");
         assert_eq!(result.batch_dim, Some(0));
         assert_eq!(result.value.dtype(), DType::F32);
+        assert!(
+            result
+                .value
+                .as_tensor()
+                .unwrap()
+                .elements
+                .as_f32_slice()
+                .is_some(),
+            "f32 scan add output should stay dense"
+        );
         assert_f32_close(&extract_f32_vec(&result.value), &[6.5, 60.5]);
+    }
+
+    #[test]
+    fn test_batch_trace_scan_shared_f32_add_golden_sha256() {
+        let result = apply_batch_rule(
+            Primitive::Scan,
+            &[
+                BatchTracer::unbatched(Value::scalar_f32(0.5)),
+                BatchTracer::batched(make_f32_matrix(2, 3, &[1.0, 2.0, 3.0, 10.0, 20.0, 30.0]), 0),
+            ],
+            &BTreeMap::from([("body_op".to_owned(), "add".to_owned())]),
+        )
+        .expect("f32 scan scalar fast path should batch rows");
+        let tensor = result.value.as_tensor().unwrap();
+        let bits = extract_f32_vec(&result.value)
+            .into_iter()
+            .map(f32::to_bits)
+            .collect::<Vec<_>>();
+        let digest = fj_test_utils::fixture_id_from_json(&(tensor.shape.dims.clone(), bits)).unwrap();
+
+        assert_eq!(
+            digest,
+            "f3f6fe931a2c5d011cf17a2a30d786dce659711cda29d8c1850155103623ed91"
+        );
     }
 
     #[test]
