@@ -13862,6 +13862,7 @@ mod tests {
 
     #[test]
     fn jvp_dense_store_matches_sparse_store_and_golden_sha256() {
+        let _guard = custom_rule_test_guard();
         clear_custom_derivative_rules();
         let dense = poly_jvp_jaxpr_from_base(0);
         let sparse = poly_jvp_jaxpr_from_base(DENSE_AD_VALUE_STORE_MAX_SLOTS as u32);
