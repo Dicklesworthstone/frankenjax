@@ -294,6 +294,43 @@ fn simd_minmax_axis_reduce_f32(values: &[f32], is_max: bool, outer: usize, reduc
     result
 }
 
+/// BF16 sibling — each cell's per-`reduce` max/min via [`simd_reduce_minmax_bf16`]
+/// (widen u16→f32, simd_max). `bf16 max(x, axis=-1)` is a real training path
+/// (attention-score max for stability). Returns Vec<f64>; the caller rounds back to
+/// BF16 via `reduce_real_literal(BF16, …)`, which round-trips an exact bf16 value.
+fn simd_minmax_axis_reduce_bf16(values: &[u16], is_max: bool, outer: usize, reduce: usize) -> Vec<f64> {
+    let mut result = vec![0.0f64; outer];
+    let threads = if values.len() >= (1 << 18) {
+        crate::arithmetic::work_scaled_threads(values.len()).min(outer)
+    } else {
+        1
+    };
+    if threads > 1 {
+        let rows_per = outer.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut res_rest: &mut [f64] = result.as_mut_slice();
+            let mut row0 = 0usize;
+            while row0 < outer {
+                let rows = rows_per.min(outer - row0);
+                let (blk, tail) = res_rest.split_at_mut(rows);
+                res_rest = tail;
+                let vblk = &values[row0 * reduce..(row0 + rows) * reduce];
+                row0 += rows;
+                scope.spawn(move || {
+                    for (r, slot) in blk.iter_mut().enumerate() {
+                        *slot = simd_reduce_minmax_bf16(&vblk[r * reduce..r * reduce + reduce], is_max);
+                    }
+                });
+            }
+        });
+    } else {
+        for (o, slot) in result.iter_mut().enumerate() {
+            *slot = simd_reduce_minmax_bf16(&values[o * reduce..o * reduce + reduce], is_max);
+        }
+    }
+    result
+}
+
 /// SIMD full-reduce max/min over a dense BF16 slice (the dominant TRAINING dtype),
 /// bit-identical to the scalar `jax_max`/`jax_min` fold over `BF16Bits.as_f64()`.
 /// bf16→f32 is the exact top-16-bits widen (`f32::from_bits((b as u32) << 16)`), so
@@ -1270,6 +1307,10 @@ pub(crate) fn eval_reduce_axes(
                             .elements
                             .as_f32_slice()
                             .map(|v| simd_minmax_axis_reduce_f32(v, is_max, outer, reduce)),
+                        (DType::BF16, Some((outer, reduce, 1))) => tensor
+                            .elements
+                            .as_half_float_slice()
+                            .map(|v| simd_minmax_axis_reduce_bf16(v, is_max, outer, reduce)),
                         _ => None,
                     }
                 } else {
@@ -2575,6 +2616,66 @@ mod tests {
                 other => panic!("expected bf16 scalar, got {other:?}"),
             };
             assert_eq!(bits_of(&d), bits_of(&b), "bf16 {primitive:?} ±0 fallback mismatch");
+        }
+    }
+
+    #[test]
+    fn simd_bf16_axis_minmax_bit_identical() {
+        // BF16 `max/min(x, axis=-1)` (e.g. attention-score max for stability): the
+        // dense SIMD per-cell path must equal the boxed scalar fold over NaN / ±0
+        // (per-cell ±0 fallback) / general data. cols=19: spans bf16 SIMD chunks+tail.
+        let rows = 5u32;
+        let cols = 19u32;
+        let n = (rows * cols) as usize;
+        let nan = f64::NAN;
+        let src: Vec<f64> = (0..n)
+            .map(|i| {
+                let r = i / cols as usize;
+                let c = i % cols as usize;
+                match r {
+                    0 => ((i as f64) * 0.3).sin() * 6.0 + 0.25, // general, NaN-free
+                    1 => if c == cols as usize - 1 { nan } else { (c as f64) - 9.0 }, // NaN in row
+                    2 => if c % 2 == 0 { -0.0 } else { -(1.0 + c as f64) }, // all ≤0 ⇒ max ±0
+                    3 => if c % 2 == 0 { 0.0 } else { 1.0 + c as f64 },     // all ≥0 ⇒ min ±0
+                    _ => (c as f64) * 0.5 - 4.0,
+                }
+            })
+            .collect();
+        let lits: Vec<Literal> = src.iter().map(|&v| Literal::from_bf16_f64(v)).collect();
+        let bits: Vec<u16> = lits
+            .iter()
+            .map(|l| match l {
+                Literal::BF16Bits(b) => *b,
+                o => panic!("expected bf16, got {o:?}"),
+            })
+            .collect();
+        let dims = vec![rows, cols];
+        let dense = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, Shape { dims: dims.clone() }, bits)
+                .unwrap(),
+        );
+        assert!(dense.as_tensor().unwrap().elements.as_half_float_slice().is_some());
+        let boxed = Value::Tensor(
+            TensorValue::new(DType::BF16, Shape { dims: dims.clone() }, lits).unwrap(),
+        );
+        assert!(boxed.as_tensor().unwrap().elements.as_half_float_slice().is_none());
+        let mut p = BTreeMap::new();
+        p.insert("axes".to_owned(), "1".to_owned());
+        for primitive in [Primitive::ReduceMax, Primitive::ReduceMin] {
+            let d = crate::eval_primitive(primitive, std::slice::from_ref(&dense), &p).unwrap();
+            let b = crate::eval_primitive(primitive, std::slice::from_ref(&boxed), &p).unwrap();
+            let bits_of = |v: &Value| -> Vec<u16> {
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::BF16Bits(x) => *x,
+                        o => panic!("expected bf16, got {o:?}"),
+                    })
+                    .collect()
+            };
+            assert_eq!(bits_of(&d), bits_of(&b), "bf16 axis {primitive:?} SIMD != scalar");
         }
     }
 

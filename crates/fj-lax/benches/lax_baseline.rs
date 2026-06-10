@@ -2004,6 +2004,27 @@ fn bench_reduce_max_64k_bf16_dense(c: &mut Criterion) {
     });
 }
 
+// BF16 `max(x, axis=-1)` over a [256,256] matrix (attention-score max in bf16): the
+// inner==1 axis path folds each output cell via the bf16 SIMD min/max reduce.
+fn bench_reduce_max_axis1_256_bf16(c: &mut Criterion) {
+    let n = 256usize;
+    let bits: Vec<u16> = (0..n * n)
+        .map(|i| match Literal::from_bf16_f64(((i % 4099) as f64) * 1e-2 - 20.0) {
+            Literal::BF16Bits(b) => b,
+            _ => unreachable!(),
+        })
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_half_float_values(DType::BF16, Shape { dims: vec![n as u32, n as u32] }, bits)
+            .unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_owned(), "1".to_owned());
+    c.bench_function("eval/reduce_max_axis1_256_bf16", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &p))
+    });
+}
+
 // 64k bool ReduceAnd full reduction: dense bool storage fold (pass80) vs the
 // Vec<Literal> per-element match, run in the same process for a same-worker ratio.
 fn bench_reduce_and_64k_bool_vec(c: &mut Criterion) {
@@ -4977,6 +4998,7 @@ criterion_group!(
     bench_reduce_sum_64k_f32_literal_reference,
     bench_reduce_sum_64k_bf16_dense,
     bench_reduce_max_64k_bf16_dense,
+    bench_reduce_max_axis1_256_bf16,
     bench_reduce_sum_64k_bf16_literal_reference,
     bench_reduce_and_64k_bool_vec,
     bench_reduce_and_64k_bool_literal_reference,
