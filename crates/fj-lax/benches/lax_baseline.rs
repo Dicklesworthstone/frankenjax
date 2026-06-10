@@ -2547,6 +2547,23 @@ fn bench_reduce_max_64k_f64_literal_reference(c: &mut Criterion) {
     });
 }
 
+// `jnp.max(x, axis=-1)` over a [256,256] f64 matrix (65536 elems — the common
+// single-threaded softmax/attention-stability regime, below the 2^18 thread gate):
+// the inner==1 contiguous-block path now folds each output cell via a SIMD min/max
+// reduce instead of the scalar jax_max fold.
+fn bench_reduce_max_axis1_256_f64(c: &mut Criterion) {
+    let n = 256usize;
+    let data: Vec<f64> = (0..n * n).map(|i| ((i % 4099) as f64) * 0.013 - 26.0).collect();
+    let input = Value::Tensor(
+        TensorValue::new_f64_values(Shape { dims: vec![n as u32, n as u32] }, data).unwrap(),
+    );
+    let mut p = BTreeMap::new();
+    p.insert("axes".to_owned(), "1".to_owned());
+    c.bench_function("eval/reduce_max_axis1_256_f64", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &p))
+    });
+}
+
 // Axis (partial) F64 reduction over a 256x256 matrix: the dense fast path uses
 // an incremental out-index odometer over the contiguous f64 slice instead of
 // decoding each element's full multi-index (flat_to_multi_into +
@@ -4919,6 +4936,7 @@ criterion_group!(
     bench_reduce_sum_64k_f64_literal_reference,
     bench_reduce_max_64k_f64,
     bench_reduce_max_64k_f64_literal_reference,
+    bench_reduce_max_axis1_256_f64,
     bench_reduce_sum_256_axis1_f64,
     bench_reduce_sum_256_axis1_f64_literal_reference,
     bench_reduce_sum_256_axis0_f64,

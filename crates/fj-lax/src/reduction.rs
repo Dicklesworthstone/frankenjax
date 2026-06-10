@@ -212,6 +212,88 @@ fn simd_reduce_minmax_f32(values: &[f32], is_max: bool) -> f32 {
     m
 }
 
+/// SIMD axis-reduce max/min for the trailing-axes (`inner == 1`) contiguous-block
+/// layout — i.e. `jnp.max(x, axis=-1)` / softmax/attention stability, the dominant
+/// case. Each of the `outer` output cells reduces one contiguous run of `reduce`
+/// elements, so apply [`simd_reduce_minmax_f64`] (bit-identical to the scalar
+/// `jax_max`/`jax_min` fold) per cell. Rows are independent, so large reductions
+/// fan out across threads (same gate/sizing as `dense_f64_axis_reduce`). The Vec<f64>
+/// result feeds the caller's existing `reduce_real_literal` wrap unchanged.
+fn simd_minmax_axis_reduce_f64(values: &[f64], is_max: bool, outer: usize, reduce: usize) -> Vec<f64> {
+    let mut result = vec![0.0f64; outer];
+    let threads = if values.len() >= (1 << 18) {
+        crate::arithmetic::work_scaled_threads(values.len()).min(outer)
+    } else {
+        1
+    };
+    if threads > 1 {
+        let rows_per = outer.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut res_rest: &mut [f64] = result.as_mut_slice();
+            let mut row0 = 0usize;
+            while row0 < outer {
+                let rows = rows_per.min(outer - row0);
+                let (blk, tail) = res_rest.split_at_mut(rows);
+                res_rest = tail;
+                let vblk = &values[row0 * reduce..(row0 + rows) * reduce];
+                row0 += rows;
+                scope.spawn(move || {
+                    for (r, slot) in blk.iter_mut().enumerate() {
+                        *slot = simd_reduce_minmax_f64(&vblk[r * reduce..r * reduce + reduce], is_max);
+                    }
+                });
+            }
+        });
+    } else {
+        for (o, slot) in result.iter_mut().enumerate() {
+            *slot = simd_reduce_minmax_f64(&values[o * reduce..o * reduce + reduce], is_max);
+        }
+    }
+    result
+}
+
+/// f32 sibling — each cell's per-`reduce` max/min via [`simd_reduce_minmax_f32`],
+/// stored as f64 (exact: the result is an input f32 value). The caller rounds back
+/// to f32 via `reduce_real_literal(F32, …)`, which round-trips exactly.
+fn simd_minmax_axis_reduce_f32(values: &[f32], is_max: bool, outer: usize, reduce: usize) -> Vec<f64> {
+    let mut result = vec![0.0f64; outer];
+    let threads = if values.len() >= (1 << 18) {
+        crate::arithmetic::work_scaled_threads(values.len()).min(outer)
+    } else {
+        1
+    };
+    if threads > 1 {
+        let rows_per = outer.div_ceil(threads);
+        std::thread::scope(|scope| {
+            let mut res_rest: &mut [f64] = result.as_mut_slice();
+            let mut row0 = 0usize;
+            while row0 < outer {
+                let rows = rows_per.min(outer - row0);
+                let (blk, tail) = res_rest.split_at_mut(rows);
+                res_rest = tail;
+                let vblk = &values[row0 * reduce..(row0 + rows) * reduce];
+                row0 += rows;
+                scope.spawn(move || {
+                    for (r, slot) in blk.iter_mut().enumerate() {
+                        *slot = f64::from(simd_reduce_minmax_f32(
+                            &vblk[r * reduce..r * reduce + reduce],
+                            is_max,
+                        ));
+                    }
+                });
+            }
+        });
+    } else {
+        for (o, slot) in result.iter_mut().enumerate() {
+            *slot = f64::from(simd_reduce_minmax_f32(
+                &values[o * reduce..o * reduce + reduce],
+                is_max,
+            ));
+        }
+    }
+    result
+}
+
 #[inline]
 fn eval_dense_float_full_reduce(
     primitive: Primitive,
@@ -1109,13 +1191,39 @@ pub(crate) fn eval_reduce_axes(
                     elements,
                 )?))
             } else {
+                // SIMD ReduceMax/ReduceMin axis path (F64/F32, trailing-axes `inner==1`
+                // contiguous block — the `jnp.max(x, axis=-1)` case): each output cell
+                // folds a contiguous run via the vectorized min/max reduce, bit-identical
+                // to the scalar `jax_max`/`jax_min` per-cell fold. Falls through to the
+                // generic dense path for inner>1 / non-contiguous axis sets / Sum/Prod.
+                let simd_minmax = if matches!(primitive, Primitive::ReduceMax | Primitive::ReduceMin)
+                {
+                    let is_max = primitive == Primitive::ReduceMax;
+                    match (
+                        tensor.dtype,
+                        contiguous_reduce_block(&tensor.shape.dims, &axes_sorted),
+                    ) {
+                        (DType::F64, Some((outer, reduce, 1))) => tensor
+                            .elements
+                            .as_f64_slice()
+                            .map(|v| simd_minmax_axis_reduce_f64(v, is_max, outer, reduce)),
+                        (DType::F32, Some((outer, reduce, 1))) => tensor
+                            .elements
+                            .as_f32_slice()
+                            .map(|v| simd_minmax_axis_reduce_f32(v, is_max, outer, reduce)),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
                 // Dense axis-reduce fast path, reading the native backing slice and
                 // widening F32->f64 INLINE (no buffer). The generic odometer loop
                 // below also folds in f64 over `as_f64()` and rounds via
                 // `reduce_real_literal`, so the f32 dense path (same per-output-cell
                 // ascending fold, same round) is bit-for-bit identical — incl. NaN
                 // bits, since both fold the same f64 values in the same order.
-                let dense = match tensor.dtype {
+                let dense = simd_minmax.or_else(|| match tensor.dtype {
                     DType::F64 => tensor.elements.as_f64_slice().and_then(|v| {
                         dense_f64_axis_reduce(
                             tensor,
@@ -1169,7 +1277,7 @@ pub(crate) fn eval_reduce_axes(
                         )
                     }),
                     _ => None,
-                };
+                });
                 let result = if let Some(values) = dense {
                     values
                 } else {
@@ -3385,6 +3493,125 @@ mod tests {
                     "mismatch {primitive:?} axes={axes}"
                 );
             }
+        }
+    }
+
+    /// SIMD axis-reduce max/min (`axis=-1`, inner==1) must be bit-identical to the
+    /// boxed scalar fold across the SIMD hazards in a PER-CELL setting: a tail
+    /// (reduce length not a multiple of the lane count), and — critically — cells
+    /// whose reduced value is exactly ±0 (so the per-cell SIMD ±0 fallback fires).
+    #[test]
+    fn simd_axis_minmax_bit_identical_to_scalar_fold() {
+        let rows = 6u32;
+        let cols = 11u32; // not a multiple of 8 (f64) or 16 (f32): exercises tails
+        let n = (rows * cols) as usize;
+        let nan_payload = f64::from_bits(0x7ff8_0000_0000_0001);
+        let mut data = vec![0.0f64; n];
+        let c = cols as usize;
+        for r in 0..rows as usize {
+            for j in 0..c {
+                let idx = r * c + j;
+                data[idx] = match r {
+                    // all negative except a trailing -0.0 ⇒ max cell result is ±0.
+                    0 => if j == c - 1 { -0.0 } else { -1.0 - j as f64 },
+                    // +0.0 then a later -0.0, all else negative ⇒ max result ±0 (last-zero).
+                    1 => {
+                        if j == 2 {
+                            0.0
+                        } else if j == c - 1 {
+                            -0.0
+                        } else {
+                            -2.0
+                        }
+                    }
+                    // all positive except -0.0 then +0.0 ⇒ min result ±0 (last-zero).
+                    2 => {
+                        if j == 4 {
+                            -0.0
+                        } else if j == c - 2 {
+                            0.0
+                        } else {
+                            3.0
+                        }
+                    }
+                    // NaN payload in the row ⇒ canonical NaN.
+                    3 => if j == 5 { nan_payload } else { j as f64 - 4.0 },
+                    // ±inf mixed.
+                    4 => match j {
+                        1 => f64::INFINITY,
+                        8 => f64::NEG_INFINITY,
+                        _ => (j as f64 - 5.0) * 0.5,
+                    },
+                    // ordinary values.
+                    _ => (j as f64 - 5.0) * 1.25 + 0.3,
+                };
+            }
+        }
+        let dims = vec![rows, cols];
+        let dense = Value::Tensor(
+            TensorValue::new_f64_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
+        );
+        assert!(dense.as_tensor().unwrap().elements.as_f64_slice().is_some());
+        let boxed = Value::Tensor(
+            TensorValue::new(
+                DType::F64,
+                Shape { dims: dims.clone() },
+                data.iter().copied().map(Literal::from_f64).collect(),
+            )
+            .unwrap(),
+        );
+        assert!(boxed.as_tensor().unwrap().elements.as_f64_slice().is_none());
+
+        let f32_data: Vec<f32> = data.iter().map(|&v| v as f32).collect();
+        let dense32 = Value::Tensor(
+            TensorValue::new_f32_values(Shape { dims: dims.clone() }, f32_data.clone()).unwrap(),
+        );
+        let boxed32 = Value::Tensor(
+            TensorValue::new(
+                DType::F32,
+                Shape { dims: dims.clone() },
+                f32_data.iter().copied().map(Literal::from_f32).collect(),
+            )
+            .unwrap(),
+        );
+
+        let mut params = BTreeMap::new();
+        params.insert("axes".to_owned(), "1".to_owned());
+        for primitive in [Primitive::ReduceMax, Primitive::ReduceMin] {
+            let d = crate::eval_primitive(primitive, std::slice::from_ref(&dense), &params).unwrap();
+            let b = crate::eval_primitive(primitive, std::slice::from_ref(&boxed), &params).unwrap();
+            assert_eq!(
+                extract_f64_vec(&d)
+                    .iter()
+                    .map(|x| x.to_bits())
+                    .collect::<Vec<_>>(),
+                extract_f64_vec(&b)
+                    .iter()
+                    .map(|x| x.to_bits())
+                    .collect::<Vec<_>>(),
+                "f64 axis {primitive:?}: SIMD != scalar"
+            );
+
+            let d32 = crate::eval_primitive(primitive, std::slice::from_ref(&dense32), &params)
+                .unwrap();
+            let b32 = crate::eval_primitive(primitive, std::slice::from_ref(&boxed32), &params)
+                .unwrap();
+            let bits32 = |v: &Value| -> Vec<u32> {
+                v.as_tensor()
+                    .unwrap()
+                    .elements
+                    .iter()
+                    .map(|l| match l {
+                        Literal::F32Bits(b) => *b,
+                        other => panic!("expected f32, got {other:?}"),
+                    })
+                    .collect()
+            };
+            assert_eq!(
+                bits32(&d32),
+                bits32(&b32),
+                "f32 axis {primitive:?}: SIMD != scalar"
+            );
         }
     }
 
