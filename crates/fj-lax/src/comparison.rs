@@ -76,6 +76,70 @@ fn broadcast_flat_index(multi: &[usize], strides: &[usize]) -> usize {
     multi.iter().zip(strides.iter()).map(|(&m, &s)| m * s).sum()
 }
 
+fn eval_f64_rank2_row_broadcast_compare(
+    lhs: &TensorValue,
+    rhs: &TensorValue,
+    out_shape: &Shape,
+    float_cmp: &impl Fn(f64, f64) -> bool,
+) -> Result<Option<Value>, EvalError> {
+    let (Some(left), Some(right)) = (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
+    else {
+        return Ok(None);
+    };
+
+    if lhs.shape.rank() == 2
+        && rhs.shape.rank() == 1
+        && lhs.shape.dims[1] == rhs.shape.dims[0]
+        && out_shape.dims == lhs.shape.dims
+    {
+        let rows = lhs.shape.dims[0] as usize;
+        let cols = lhs.shape.dims[1] as usize;
+        if cols == 0 {
+            return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+                out_shape.clone(),
+                Vec::new(),
+            )?)));
+        }
+        let mut out = Vec::with_capacity(rows * cols);
+        for row in left.chunks_exact(cols).take(rows) {
+            for (&a, &b) in row.iter().zip(right) {
+                out.push(float_cmp(a, b));
+            }
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            out_shape.clone(),
+            out,
+        )?)));
+    }
+
+    if lhs.shape.rank() == 1
+        && rhs.shape.rank() == 2
+        && lhs.shape.dims[0] == rhs.shape.dims[1]
+        && out_shape.dims == rhs.shape.dims
+    {
+        let rows = rhs.shape.dims[0] as usize;
+        let cols = rhs.shape.dims[1] as usize;
+        if cols == 0 {
+            return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+                out_shape.clone(),
+                Vec::new(),
+            )?)));
+        }
+        let mut out = Vec::with_capacity(rows * cols);
+        for row in right.chunks_exact(cols).take(rows) {
+            for (&a, &b) in left.iter().zip(row) {
+                out.push(float_cmp(a, b));
+            }
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_bool_values(
+            out_shape.clone(),
+            out,
+        )?)));
+    }
+
+    Ok(None)
+}
+
 /// Comparison operators: return Bool scalars/tensors.
 #[inline]
 pub(crate) fn eval_comparison(
@@ -171,6 +235,11 @@ pub(crate) fn eval_comparison(
             if let (Some(left), Some(right)) =
                 (lhs.elements.as_f64_slice(), rhs.elements.as_f64_slice())
             {
+                if let Some(value) =
+                    eval_f64_rank2_row_broadcast_compare(lhs, rhs, &out_shape, &float_cmp)?
+                {
+                    return Ok(value);
+                }
                 let mut out = Vec::with_capacity(out_count);
                 crate::arithmetic::broadcast_visit_row_major(
                     &out_shape.dims,
@@ -951,6 +1020,80 @@ mod tests {
                 assert_eq!(di, lir, "i64 {p:?} {ls:?} {rs:?}");
             }
         }
+    }
+
+    #[test]
+    fn f64_row_broadcast_compare_bit_identical_to_literal_path() {
+        let matrix_shape = Shape { dims: vec![4, 5] };
+        let row_shape = Shape { dims: vec![5] };
+        let matrix: Vec<f64> = (0..20)
+            .map(|i| match i % 7 {
+                0 => f64::NAN,
+                1 => -0.0,
+                2 => f64::INFINITY,
+                3 => f64::NEG_INFINITY,
+                _ => (i as f64 - 8.0) * 0.25,
+            })
+            .collect();
+        let row = vec![f64::NAN, 0.0, f64::NEG_INFINITY, 0.75, f64::INFINITY];
+        let dense = |shape: Shape, data: &[f64]| {
+            Value::Tensor(TensorValue::new_f64_values(shape, data.to_vec()).unwrap())
+        };
+        let literal = |shape: Shape, data: &[f64]| {
+            Value::Tensor(
+                TensorValue::new(
+                    DType::F64,
+                    shape,
+                    data.iter().copied().map(Literal::from_f64).collect(),
+                )
+                .unwrap(),
+            )
+        };
+        let params = BTreeMap::new();
+        let mut golden_rows = Vec::new();
+
+        for (label, dense_lhs, dense_rhs, lit_lhs, lit_rhs) in [
+            (
+                "matrix_row",
+                dense(matrix_shape.clone(), &matrix),
+                dense(row_shape.clone(), &row),
+                literal(matrix_shape.clone(), &matrix),
+                literal(row_shape.clone(), &row),
+            ),
+            (
+                "row_matrix",
+                dense(row_shape.clone(), &row),
+                dense(matrix_shape.clone(), &matrix),
+                literal(row_shape.clone(), &row),
+                literal(matrix_shape.clone(), &matrix),
+            ),
+        ] {
+            for prim in [
+                Primitive::Eq,
+                Primitive::Ne,
+                Primitive::Lt,
+                Primitive::Le,
+                Primitive::Gt,
+                Primitive::Ge,
+            ] {
+                let dense_out = extract_bools(
+                    &crate::eval_primitive(prim, &[dense_lhs.clone(), dense_rhs.clone()], &params)
+                        .unwrap(),
+                );
+                let literal_out = extract_bools(
+                    &crate::eval_primitive(prim, &[lit_lhs.clone(), lit_rhs.clone()], &params)
+                        .unwrap(),
+                );
+                assert_eq!(dense_out, literal_out, "{label} {prim:?}");
+                golden_rows.push(format!("{label}:{prim:?}:{dense_out:?}"));
+            }
+        }
+
+        let digest = fj_test_utils::fixture_id_from_json(&golden_rows).expect("sha256 digest");
+        assert_eq!(
+            digest,
+            "fd7293300699f850c5fd274a548f8ee215b9cc4f3b75e86cfbea2fa0e02e00c6"
+        );
     }
 
     fn s_f64(v: f64) -> Value {
