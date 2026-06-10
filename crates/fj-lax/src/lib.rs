@@ -5705,6 +5705,27 @@ mod tests {
     }
 
     #[test]
+    fn test_reduce_and_middle_axis_rank3_contiguous_block() {
+        // Rank-3 [2,2,2] reducing the MIDDLE axis exercises the general
+        // contiguous-block fast path with outer>1 AND inner>1 (outer=2, reduce=2,
+        // inner=2) — the per-row vectorized fold, not the inner==1 scalar fold.
+        // out[o,i] = AND over r of in[o,r,i]; layout in[((o*2+r)*2)+i].
+        let input = bool_tensor(
+            &[2, 2, 2],
+            &[
+                true, false, // o0 r0
+                true, true, // o0 r1
+                false, true, // o1 r0
+                true, true, // o1 r1
+            ],
+        );
+        let out = eval_primitive(Primitive::ReduceAnd, &[input], &axes_params("1")).unwrap();
+        // o0: [t&t, f&t]=[t,f]; o1: [f&t, t&t]=[f,t]
+        let expected = bool_tensor(&[2, 2], &[true, false, false, true]);
+        assert_eq!(out, expected);
+    }
+
+    #[test]
     fn test_reduce_or_empty_axes_identity() {
         let input = bool_tensor(&[2, 2], &[true, false, false, true]);
         let out = eval_primitive(

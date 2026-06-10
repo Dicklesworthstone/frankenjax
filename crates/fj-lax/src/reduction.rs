@@ -552,6 +552,28 @@ impl OutIndexOdometer {
     }
 }
 
+/// If the sorted reduced axes form a single contiguous block `[lo..=hi]` of the
+/// shape, factor the row-major layout as `[outer, reduce, inner]` — the product
+/// of axes strictly before the block, within it, and strictly after it. A flat
+/// element at `((o * reduce) + r) * inner + i` reduces into output cell
+/// `o * inner + i`, folding `r` in ascending order — exactly the visitation
+/// order of the generic `OutIndexOdometer`, so the result is bit-identical while
+/// the inner `i` (or, when `inner == 1`, the `r`) loop is a contiguous, hoistable
+/// fold that autovectorizes. Returns `None` for a non-contiguous axis set (e.g.
+/// `{0, 2}` of a rank-3 tensor), which keeps the generic odometer.
+fn contiguous_reduce_block(dims: &[u32], axes_sorted: &[usize]) -> Option<(usize, usize, usize)> {
+    let &lo = axes_sorted.first()?;
+    let &hi = axes_sorted.last()?;
+    if hi - lo + 1 != axes_sorted.len() {
+        return None;
+    }
+    let prod = |slice: &[u32]| slice.iter().map(|&d| d as usize).product::<usize>();
+    let outer = prod(&dims[..lo]);
+    let reduce = prod(&dims[lo..=hi]);
+    let inner = prod(&dims[hi + 1..]);
+    Some((outer, reduce, inner))
+}
+
 pub(crate) fn eval_reduce_axes(
     primitive: Primitive,
     inputs: &[Value],
@@ -947,6 +969,45 @@ pub(crate) fn eval_reduce_bitwise_axes(
                         out_count,
                         bool_init,
                     )?;
+                    // Contiguous-block fast path: when the reduced axes form one
+                    // contiguous block, the layout factors as [outer, reduce, inner]
+                    // and each output cell is a hoistable, autovectorizing fold over
+                    // a contiguous run — no per-element odometer carry. Covers the
+                    // dominant `any/all(mask, axis=-1)` (inner == 1) and
+                    // `any/all(mask, axis=0)` (outer == 1) idioms. Bit-identical:
+                    // same ascending-`r` accumulation order per cell as the odometer.
+                    if let (Some(values), Some((outer, reduce, inner))) = (
+                        tensor.elements.as_bool_slice(),
+                        contiguous_reduce_block(&tensor.shape.dims, &axes_sorted),
+                    ) {
+                        if inner == 1 {
+                            for (o, slot) in result.iter_mut().enumerate() {
+                                let base = o * reduce;
+                                let mut acc = bool_init;
+                                for &v in &values[base..base + reduce] {
+                                    acc = bool_op(acc, v);
+                                }
+                                *slot = acc;
+                            }
+                        } else {
+                            for o in 0..outer {
+                                let out_row = &mut result[o * inner..(o + 1) * inner];
+                                for r in 0..reduce {
+                                    let in_row = &values[(o * reduce + r) * inner..][..inner];
+                                    for (slot, &v) in out_row.iter_mut().zip(in_row) {
+                                        *slot = bool_op(*slot, v);
+                                    }
+                                }
+                            }
+                        }
+                        let elements = result.into_iter().map(Literal::Bool).collect();
+                        return Ok(Value::Tensor(TensorValue::new(
+                            DType::Bool,
+                            Shape { dims: out_dims },
+                            elements,
+                        )?));
+                    }
+
                     // Drive an incremental out-index odometer (no per-element
                     // flat_to_multi decode); for dense Bool storage fold the
                     // contiguous bool slice directly (no Literal::Bool match,
