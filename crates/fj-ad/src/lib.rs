@@ -8612,8 +8612,8 @@ fn jvp_inner(
     }
 
     for eqn in &jaxpr.equations {
-        let mut resolved_primals = Vec::with_capacity(eqn.inputs.len());
-        let mut resolved_tangents = Vec::with_capacity(eqn.inputs.len());
+        let mut resolved_primals = TapeValues::with_capacity(eqn.inputs.len());
+        let mut resolved_tangents = TapeValues::with_capacity(eqn.inputs.len());
 
         for atom in eqn.inputs.iter() {
             match atom {
