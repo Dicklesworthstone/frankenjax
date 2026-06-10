@@ -468,9 +468,13 @@ fn random_normal_from_uniforms_with_threads(uniforms: &[f64], threads: usize) ->
 /// Minimum elements per worker before a distribution's per-element transcendental
 /// transform fans out across threads. The inverse-transform maps (`ln`/`log`/
 /// `tan`/`erf_inv` over the drawn uniforms) are compute-bound, so threading pays
-/// off — but over-spawning tiny slices loses to thread overhead, so the worker
-/// count is capped at `count / this` and small draws run the serial map unchanged.
-const DIST_TRANSFORM_MIN_ELEMS_PER_THREAD: usize = 1 << 16;
+/// off on large draws — but the uniforms are themselves drawn on the threaded
+/// path, so a mid-size transform competes with that fan-out and an aggressive
+/// threshold REGRESSES (measured on a 64-core box: a 131072-element draw fell to
+/// 0.71x at `1<<16`). Matching the uniform generator's `1<<18` keeps each worker's
+/// slice large enough that threading is a clear win (≥2x from ~1M up) and leaves
+/// mid-size draws on the unchanged serial map.
+const DIST_TRANSFORM_MIN_ELEMS_PER_THREAD: usize = 1 << 18;
 
 /// Apply an elementwise transform `f` to drawn `uniforms`, fanning out across
 /// threads for large counts. Output `i` depends only on `uniforms[i]`, so
