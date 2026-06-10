@@ -798,7 +798,9 @@ fn bench_scalar_mul_64k_i64_literal_reference(c: &mut Criterion) {
 // relu/clamp are lone ops (never fuse), so the generic path is what they hit today.
 fn relu_f32_dense_64k() -> Value {
     let data: Vec<f32> = (0..LARGE_ELEMENTWISE_LEN).map(|i| i as f32 * 1e-3 - 30.0).collect();
-    Value::vector_f32(&data).unwrap()
+    Value::Tensor(
+        TensorValue::new_f32_values(Shape::vector(LARGE_ELEMENTWISE_LEN as u32), data).unwrap(),
+    )
 }
 
 fn relu_f32_literal_64k() -> Value {
