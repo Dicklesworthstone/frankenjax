@@ -2647,6 +2647,25 @@ fn bench_reduce_sum_256_axis0_i64_literal_reference(c: &mut Criterion) {
     });
 }
 
+// 256x256 Complex128 ReduceSum along axis 1: dense (re,im) contiguous-block fold
+// (bead frankenjax-wobjv) vs the Vec<Literal> per-element odometer reference.
+// Same process for a same-worker ratio isolating the block fold vs the odometer.
+fn bench_reduce_sum_256_axis1_complex_vec(c: &mut Criterion) {
+    let input = complex_matrix_dense(256, 256);
+    let p = axis_params("1");
+    c.bench_function("eval/reduce_sum_256_axis1_complex_vec", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p))
+    });
+}
+
+fn bench_reduce_sum_256_axis1_complex_literal_reference(c: &mut Criterion) {
+    let input = complex_matrix(256, 256);
+    let p = axis_params("1");
+    c.bench_function("eval/reduce_sum_256_axis1_complex_literal_ref", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceSum, std::slice::from_ref(&input), &p))
+    });
+}
+
 fn bench_reduce_window_64x64(c: &mut Criterion) {
     let input = real_matrix(64, 64);
     let mut params = BTreeMap::new();
@@ -4864,6 +4883,8 @@ criterion_group!(
     bench_reduce_sum_256_axis1_i64_literal_reference,
     bench_reduce_sum_256_axis0_i64,
     bench_reduce_sum_256_axis0_i64_literal_reference,
+    bench_reduce_sum_256_axis1_complex_vec,
+    bench_reduce_sum_256_axis1_complex_literal_reference,
     bench_reduce_sum_64k_i64,
     bench_reduce_sum_4096x128_axis1_f64,
     bench_reduce_sum_64k_i64_literal_reference,

@@ -707,38 +707,133 @@ pub(crate) fn eval_reduce_axes(
                     out_count,
                     init_im,
                 )?;
-                let mut odometer = OutIndexOdometer::new(&tensor.shape.dims, &kept_axes, &out_dims);
-                for literal in tensor.elements.iter() {
-                    let out_idx = odometer.next_index();
-                    let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                // One accumulation step into output cell `idx` for value `(re, im)`,
+                // shared by the dense contiguous-block fast path and the generic
+                // odometer fallback so they stay bit-identical.
+                let accumulate = |result_re: &mut [f64], result_im: &mut [f64], idx: usize, re: f64, im: f64| {
                     match primitive {
                         Primitive::ReduceProd => {
-                            let acc_re = result_re[out_idx];
-                            let acc_im = result_im[out_idx];
-                            result_re[out_idx] = acc_re * re - acc_im * im;
-                            result_im[out_idx] = acc_re * im + acc_im * re;
+                            let acc_re = result_re[idx];
+                            let acc_im = result_im[idx];
+                            result_re[idx] = acc_re * re - acc_im * im;
+                            result_im[idx] = acc_re * im + acc_im * re;
                         }
                         Primitive::ReduceMax => {
-                            if complex_lex_cmp((re, im), (result_re[out_idx], result_im[out_idx]))
-                                .is_gt()
-                            {
-                                result_re[out_idx] = re;
-                                result_im[out_idx] = im;
+                            if complex_lex_cmp((re, im), (result_re[idx], result_im[idx])).is_gt() {
+                                result_re[idx] = re;
+                                result_im[idx] = im;
                             }
                         }
                         Primitive::ReduceMin => {
-                            if complex_lex_cmp((re, im), (result_re[out_idx], result_im[out_idx]))
-                                .is_lt()
-                            {
-                                result_re[out_idx] = re;
-                                result_im[out_idx] = im;
+                            if complex_lex_cmp((re, im), (result_re[idx], result_im[idx])).is_lt() {
+                                result_re[idx] = re;
+                                result_im[idx] = im;
                             }
                         }
                         _ => {
                             // ReduceSum: component-wise float_op (addition).
-                            result_re[out_idx] = float_op(result_re[out_idx], re);
-                            result_im[out_idx] = float_op(result_im[out_idx], im);
+                            result_re[idx] = float_op(result_re[idx], re);
+                            result_im[idx] = float_op(result_im[idx], im);
                         }
+                    }
+                };
+
+                // Dense complex contiguous-block fast path: when the reduced axes
+                // form one contiguous block, factor [outer, reduce, inner] and fold
+                // each output cell over a contiguous run — no per-element odometer
+                // carry. `as_complex_slice()` yields the same (re, im) pairs as
+                // `literal_to_complex_parts` (Complex64 storage is f32-exact), and
+                // each cell accumulates ascending-r — exactly the odometer's order —
+                // so the result is bit-identical (incl. non-associative sum order and
+                // lexicographic max/min). Non-contiguous axis sets keep the odometer.
+                let block = tensor.elements.as_complex_slice().and_then(|v| {
+                    contiguous_reduce_block(&tensor.shape.dims, &axes_sorted).map(|b| (v, b))
+                });
+                if let Some((values, (outer, reduce, inner))) = block {
+                    // Hoist the per-op match OUT of the element loop. For the
+                    // dominant inner==1 (reduce trailing axes) case, fold the
+                    // contiguous run into scalar (re, im) accumulators — no closure
+                    // call, no per-element match, no indexed write — then store once.
+                    // inner>1 reuses the shared `accumulate` step (still ascending-r,
+                    // bit-identical). ReduceSum keeps `float_op` so its addition
+                    // semantics stay identical to the generic path.
+                    if inner == 1 {
+                        match primitive {
+                            Primitive::ReduceSum => {
+                                for o in 0..outer {
+                                    let base = o * reduce;
+                                    let mut acc_re = init_re;
+                                    let mut acc_im = init_im;
+                                    for &(re, im) in &values[base..base + reduce] {
+                                        acc_re = float_op(acc_re, re);
+                                        acc_im = float_op(acc_im, im);
+                                    }
+                                    result_re[o] = acc_re;
+                                    result_im[o] = acc_im;
+                                }
+                            }
+                            Primitive::ReduceProd => {
+                                for o in 0..outer {
+                                    let base = o * reduce;
+                                    let mut acc_re = init_re;
+                                    let mut acc_im = init_im;
+                                    for &(re, im) in &values[base..base + reduce] {
+                                        let nr = acc_re * re - acc_im * im;
+                                        let ni = acc_re * im + acc_im * re;
+                                        acc_re = nr;
+                                        acc_im = ni;
+                                    }
+                                    result_re[o] = acc_re;
+                                    result_im[o] = acc_im;
+                                }
+                            }
+                            Primitive::ReduceMax => {
+                                for o in 0..outer {
+                                    let base = o * reduce;
+                                    let mut best = (init_re, init_im);
+                                    for &(re, im) in &values[base..base + reduce] {
+                                        if complex_lex_cmp((re, im), best).is_gt() {
+                                            best = (re, im);
+                                        }
+                                    }
+                                    result_re[o] = best.0;
+                                    result_im[o] = best.1;
+                                }
+                            }
+                            _ => {
+                                // ReduceMin
+                                for o in 0..outer {
+                                    let base = o * reduce;
+                                    let mut best = (init_re, init_im);
+                                    for &(re, im) in &values[base..base + reduce] {
+                                        if complex_lex_cmp((re, im), best).is_lt() {
+                                            best = (re, im);
+                                        }
+                                    }
+                                    result_re[o] = best.0;
+                                    result_im[o] = best.1;
+                                }
+                            }
+                        }
+                    } else {
+                        for o in 0..outer {
+                            for r in 0..reduce {
+                                let in_base = (o * reduce + r) * inner;
+                                let out_base = o * inner;
+                                for i in 0..inner {
+                                    let (re, im) = values[in_base + i];
+                                    accumulate(&mut result_re, &mut result_im, out_base + i, re, im);
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let mut odometer =
+                        OutIndexOdometer::new(&tensor.shape.dims, &kept_axes, &out_dims);
+                    for literal in tensor.elements.iter() {
+                        let out_idx = odometer.next_index();
+                        let (re, im) = literal_to_complex_parts(primitive, *literal)?;
+                        accumulate(&mut result_re, &mut result_im, out_idx, re, im);
                     }
                 }
 
