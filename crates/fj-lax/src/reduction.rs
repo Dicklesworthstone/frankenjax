@@ -486,6 +486,44 @@ fn dense_f64_axis_reduce<T: Copy + Sync>(
         return Some(result);
     }
 
+    // General contiguous-block serial path: the two threaded fast paths above
+    // cover only LARGE leading-prefix / trailing-suffix reductions. Any other
+    // contiguous-block reduction — a middle block, or a small tensor below the
+    // threading gate — still beats the per-element odometer by a wide margin
+    // with a plain hoistable fold. Factor [outer, reduce, inner]; inner==1 folds
+    // a contiguous run into a scalar accumulator, inner>1 does per-row folds.
+    // Each cell accumulates ascending-r — identical to the odometer's emission
+    // order (and to the dense_f64 round below), so bit-for-bit identical incl.
+    // NaN bits and non-associative sum order. Non-contiguous axis sets fall
+    // through to the odometer.
+    let reduced_axes: Vec<usize> = (0..rank).filter(|i| !kept_axes.contains(i)).collect();
+    if let Some((outer, reduce, inner)) =
+        contiguous_reduce_block(&tensor.shape.dims, &reduced_axes)
+    {
+        let mut result = vec![float_init; out_count];
+        if inner == 1 {
+            for (o, slot) in result.iter_mut().enumerate() {
+                let base = o * reduce;
+                let mut acc = float_init;
+                for &v in &values[base..base + reduce] {
+                    acc = float_op(acc, widen(v));
+                }
+                *slot = acc;
+            }
+        } else {
+            for o in 0..outer {
+                let out_row = &mut result[o * inner..(o + 1) * inner];
+                for r in 0..reduce {
+                    let in_row = &values[(o * reduce + r) * inner..][..inner];
+                    for (slot, &v) in out_row.iter_mut().zip(in_row) {
+                        *slot = float_op(*slot, widen(v));
+                    }
+                }
+            }
+        }
+        return Some(result);
+    }
+
     let mut odometer = OutIndexOdometer::new(&tensor.shape.dims, kept_axes, out_dims);
     let mut result = vec![float_init; out_count];
     for &value in values {
