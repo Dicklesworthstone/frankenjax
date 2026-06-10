@@ -294,6 +294,57 @@ fn simd_minmax_axis_reduce_f32(values: &[f32], is_max: bool, outer: usize, reduc
     result
 }
 
+/// SIMD full-reduce max/min over a dense BF16 slice (the dominant TRAINING dtype),
+/// bit-identical to the scalar `jax_max`/`jax_min` fold over `BF16Bits.as_f64()`.
+/// bf16→f32 is the exact top-16-bits widen (`f32::from_bits((b as u32) << 16)`), so
+/// the f32 max/min equals the f64 fold's value and `reduce_real_literal(BF16, …)`
+/// rounds it back exactly. Same NaN / ±0 handling as [`simd_reduce_minmax_f64`]
+/// (any-NaN → canonical NaN; ±0 → scalar-fold fallback for the order-dependent sign).
+fn simd_reduce_minmax_bf16(values: &[u16], is_max: bool) -> f64 {
+    use std::simd::{
+        Simd,
+        num::{SimdFloat, SimdUint},
+    };
+    const L: usize = 16;
+    let init = if is_max { f32::NEG_INFINITY } else { f32::INFINITY };
+    let widen = |b: u16| f32::from_bits((b as u32) << 16);
+
+    let mut vacc = Simd::<f32, L>::splat(init);
+    let mut any_nan = false;
+    let chunks = values.chunks_exact(L);
+    let tail = chunks.remainder();
+    for chunk in chunks {
+        let u = Simd::<u16, L>::from_slice(chunk);
+        let f = Simd::<f32, L>::from_bits(u.cast::<u32>() << Simd::splat(16u32));
+        any_nan |= f.is_nan().any();
+        vacc = if is_max { vacc.simd_max(f) } else { vacc.simd_min(f) };
+    }
+    let mut m = init;
+    for &lane in vacc.to_array().iter() {
+        m = if is_max { m.max(lane) } else { m.min(lane) };
+    }
+    for &b in tail {
+        let v = widen(b);
+        if v.is_nan() {
+            any_nan = true;
+        } else {
+            m = if is_max { m.max(v) } else { m.min(v) };
+        }
+    }
+    if any_nan {
+        return f64::NAN;
+    }
+    if m == 0.0 {
+        let mut acc = init;
+        for &b in values {
+            let v = widen(b);
+            acc = if is_max { acc.max(v) } else { acc.min(v) };
+        }
+        return f64::from(acc);
+    }
+    f64::from(m)
+}
+
 #[inline]
 fn eval_dense_float_full_reduce(
     primitive: Primitive,
@@ -342,6 +393,14 @@ fn eval_dense_float_full_reduce(
                     return Some(Value::Scalar(Literal::from_f32(simd_reduce_minmax_f32(
                         values, is_max,
                     ))));
+                }
+            }
+            DType::BF16 => {
+                if let Some(values) = tensor.elements.as_half_float_slice() {
+                    return Some(Value::Scalar(reduce_real_literal(
+                        DType::BF16,
+                        simd_reduce_minmax_bf16(values, is_max),
+                    )));
                 }
             }
             _ => {}
@@ -2477,6 +2536,45 @@ mod tests {
                     "{dtype:?} {prim:?} dense vs boxed half-float full-reduce must be bit-identical"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn simd_bf16_minmax_zero_fallback_bit_identical() {
+        // BF16 full-reduce max/min where the result is ±0 (every value ≤ 0 for max,
+        // with ±0 present) — exercises the SIMD ±0 scalar-fold fallback. >=16 elems
+        // to span SIMD chunks + tail. dense (SIMD) vs boxed (scalar) bit-for-bit.
+        let src: Vec<f64> = vec![
+            -1.0, -0.0, -2.5, -3.0, -0.0, -1.5, -4.0, -2.0, 0.0, -1.0, -5.0, -0.0, -2.0, -3.5,
+            -1.0, -6.0, 0.0, -2.0, -0.0,
+        ];
+        let lits: Vec<Literal> = src.iter().map(|&v| Literal::from_bf16_f64(v)).collect();
+        let bits: Vec<u16> = lits
+            .iter()
+            .map(|l| match l {
+                Literal::BF16Bits(b) => *b,
+                other => panic!("expected bf16, got {other:?}"),
+            })
+            .collect();
+        let dims = vec![src.len() as u32];
+        let dense = Value::Tensor(
+            TensorValue::new_half_float_values(DType::BF16, Shape { dims: dims.clone() }, bits)
+                .unwrap(),
+        );
+        assert!(dense.as_tensor().unwrap().elements.as_half_float_slice().is_some());
+        let boxed = Value::Tensor(
+            TensorValue::new(DType::BF16, Shape { dims: dims.clone() }, lits).unwrap(),
+        );
+        assert!(boxed.as_tensor().unwrap().elements.as_half_float_slice().is_none());
+        let params = BTreeMap::new();
+        for primitive in [Primitive::ReduceMax, Primitive::ReduceMin] {
+            let d = crate::eval_primitive(primitive, std::slice::from_ref(&dense), &params).unwrap();
+            let b = crate::eval_primitive(primitive, std::slice::from_ref(&boxed), &params).unwrap();
+            let bits_of = |v: &Value| match v {
+                Value::Scalar(Literal::BF16Bits(x)) => *x,
+                other => panic!("expected bf16 scalar, got {other:?}"),
+            };
+            assert_eq!(bits_of(&d), bits_of(&b), "bf16 {primitive:?} ±0 fallback mismatch");
         }
     }
 

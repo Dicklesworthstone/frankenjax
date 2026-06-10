@@ -1981,6 +1981,29 @@ fn bench_reduce_sum_64k_bf16_literal_reference(c: &mut Criterion) {
     });
 }
 
+// BF16 ReduceMax (the dominant training dtype; max-norm grad clipping etc.): the
+// dense path now widens u16->f32 and folds via a SIMD min/max reduce.
+fn bench_reduce_max_64k_bf16_dense(c: &mut Criterion) {
+    let bits: Vec<u16> = (0..LARGE_ELEMENTWISE_LEN)
+        .map(|i| match Literal::from_bf16_f64(((i % 4099) as f64) * 1e-2 - 20.0) {
+            Literal::BF16Bits(b) => b,
+            _ => unreachable!(),
+        })
+        .collect();
+    let input = Value::Tensor(
+        TensorValue::new_half_float_values(
+            DType::BF16,
+            Shape::vector(LARGE_ELEMENTWISE_LEN as u32),
+            bits,
+        )
+        .unwrap(),
+    );
+    let p = no_params();
+    c.bench_function("eval/reduce_max_64k_bf16_dense", |bencher| {
+        bencher.iter(|| eval_primitive(Primitive::ReduceMax, std::slice::from_ref(&input), &p))
+    });
+}
+
 // 64k bool ReduceAnd full reduction: dense bool storage fold (pass80) vs the
 // Vec<Literal> per-element match, run in the same process for a same-worker ratio.
 fn bench_reduce_and_64k_bool_vec(c: &mut Criterion) {
@@ -4953,6 +4976,7 @@ criterion_group!(
     bench_reduce_sum_64k_f32_dense,
     bench_reduce_sum_64k_f32_literal_reference,
     bench_reduce_sum_64k_bf16_dense,
+    bench_reduce_max_64k_bf16_dense,
     bench_reduce_sum_64k_bf16_literal_reference,
     bench_reduce_and_64k_bool_vec,
     bench_reduce_and_64k_bool_literal_reference,
