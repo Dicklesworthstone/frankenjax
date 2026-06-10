@@ -706,10 +706,20 @@ fn fft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
 }
 
 fn fft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
-    if input.len().is_power_of_two() {
+    let n = input.len();
+    if n.is_power_of_two() {
         radix2_fft_1d_into(input, output, false);
+    } else if is_mixed_radix_smooth(n) {
+        // Smooth composite (every prime factor ≤ 13): mixed-radix Cooley-Tukey runs
+        // on a length-`n` buffer, while Bluestein zero-pads to the next pow2 ≥ 2n-1
+        // and runs FFTs of THAT length — ~2-4x more memory for the same result. The
+        // BATCHED path already chooses mixed-radix here; this makes the single-row
+        // path consistent. Tolerance parity (mixed_radix == DFT, like Bluestein).
+        let roots = precompute_twiddles(n, false);
+        let mut scratch = Vec::new();
+        mixed_radix_into(input, &roots, false, output, &mut scratch);
     } else {
-        // Non-power-of-two: Bluestein O(n log n) instead of the O(n²) direct DFT.
+        // Large prime factor / prime length: Bluestein O(n log n) vs the O(n²) DFT.
         bluestein_dft_into(input, output, false);
     }
 }
@@ -722,10 +732,17 @@ fn ifft_1d(input: &[(f64, f64)]) -> Vec<(f64, f64)> {
 }
 
 fn ifft_1d_into(input: &[(f64, f64)], output: &mut Vec<(f64, f64)>) {
-    if input.len().is_power_of_two() {
+    let n = input.len();
+    if n.is_power_of_two() {
         radix2_fft_1d_into(input, output, true);
+    } else if is_mixed_radix_smooth(n) {
+        // Smooth composite: mixed-radix (the inverse `1/n` normalization is applied
+        // inside mixed_radix_into, matching radix-2 / Bluestein). See fft_1d_into.
+        let roots = precompute_twiddles(n, true);
+        let mut scratch = Vec::new();
+        mixed_radix_into(input, &roots, true, output, &mut scratch);
     } else {
-        // Non-power-of-two: Bluestein O(n log n) instead of the O(n²) direct IDFT.
+        // Large prime factor / prime length: Bluestein O(n log n) vs the O(n²) IDFT.
         bluestein_dft_into(input, output, true);
     }
 }
@@ -2177,6 +2194,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn single_row_smooth_fft_routes_mixed_radix_matching_dft() {
+        // The single-row fft_1d/ifft_1d path now routes smooth composites through
+        // mixed-radix (consistent with the batched path) instead of Bluestein. Verify
+        // the public path matches the direct DFT to tolerance for sizes that exercise
+        // mixed-radix (smooth) AND a prime that stays on Bluestein, plus round-trip.
+        for &n in &[18usize, 24, 36, 50, 81, 125, 250, 1080] {
+            assert!(is_mixed_radix_smooth(n), "n={n} should be smooth");
+            let input: Vec<(f64, f64)> = (0..n)
+                .map(|j| ((j as f64 * 0.41).cos() * 3.0 - 0.7, (j as f64 * 0.23).sin() + 0.1))
+                .collect();
+            assert_complex_close(&fft_1d(&input), &dft_1d(&input), 1e-9);
+            assert_complex_close(&ifft_1d(&input), &idft_1d(&input), 1e-9);
+            assert_complex_close(&ifft_1d(&fft_1d(&input)), &input, 1e-9);
+        }
+        // A prime length stays on Bluestein and must still match the DFT.
+        let p = 59usize;
+        assert!(!is_mixed_radix_smooth(p));
+        let pin: Vec<(f64, f64)> = (0..p).map(|j| (j as f64 * 0.1, -(j as f64) * 0.05)).collect();
+        assert_complex_close(&fft_1d(&pin), &dft_1d(&pin), 1e-9);
     }
 
     #[test]
