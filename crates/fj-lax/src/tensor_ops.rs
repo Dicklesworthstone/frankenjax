@@ -6158,6 +6158,81 @@ fn conv_f32_elements(tensor: &TensorValue) -> Option<Cow<'_, [f32]>> {
     Some(Cow::Owned(out))
 }
 
+/// Decode an `F32`/`BF16`/`F16` conv operand to `f32`. F32 borrows/unpacks directly;
+/// BF16/F16 widen EXACTLY to f32 (`as_{bf16,f16}_f32` — bf16 is a 16-bit shift, f16
+/// the canonical half decode) WITHOUT going through f64. This feeds the native-f32
+/// conv accumulation (XLA parity: XLA accumulates half/f32 conv in f32). Returns
+/// `None` for any other dtype / storage.
+fn conv_decode_to_f32(tensor: &TensorValue) -> Option<Cow<'_, [f32]>> {
+    if tensor.dtype == DType::F32 {
+        return conv_f32_elements(tensor);
+    }
+    let is_bf16 = match tensor.dtype {
+        DType::BF16 => true,
+        DType::F16 => false,
+        _ => return None,
+    };
+    let decode = |lit: Literal| -> Option<f32> {
+        if is_bf16 {
+            lit.as_bf16_f32()
+        } else {
+            lit.as_f16_f32()
+        }
+    };
+    if let Some(bits) = tensor.elements.as_half_float_slice() {
+        let mut out = Vec::with_capacity(bits.len());
+        for &b in bits {
+            let lit = if is_bf16 {
+                Literal::BF16Bits(b)
+            } else {
+                Literal::F16Bits(b)
+            };
+            out.push(decode(lit)?);
+        }
+        return Some(Cow::Owned(out));
+    }
+    let mut out = Vec::with_capacity(tensor.elements.len());
+    for &lit in &tensor.elements {
+        match lit {
+            Literal::BF16Bits(_) if is_bf16 => out.push(decode(lit)?),
+            Literal::F16Bits(_) if !is_bf16 => out.push(decode(lit)?),
+            _ => return None,
+        }
+    }
+    Some(Cow::Owned(out))
+}
+
+/// Materialize a native-f32-accum conv result (`out`, one f32 per output element)
+/// into an `out_dtype` tensor: F32 stays dense f32; BF16/F16 round each f32 to half
+/// via `conv_float_literal_from_f64(out_dtype, f64::from(v))` (= round-to-nearest-even
+/// f32->half, since `f64::from(f32)` is exact and the round-to-odd step is then the
+/// identity — exactly XLA's half conv output rounding).
+fn conv_f32_output_to_value(
+    out_dtype: DType,
+    dims: Vec<u32>,
+    out: Vec<f32>,
+) -> Result<Value, EvalError> {
+    let shape = Shape { dims };
+    match out_dtype {
+        DType::F32 => Ok(Value::Tensor(TensorValue::new_f32_values(shape, out)?)),
+        DType::BF16 | DType::F16 => {
+            let bits: Vec<u16> = out
+                .iter()
+                .map(
+                    |&v| match conv_float_literal_from_f64(out_dtype, f64::from(v)) {
+                        Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                        _ => 0,
+                    },
+                )
+                .collect();
+            Ok(Value::Tensor(TensorValue::new_half_float_values(
+                out_dtype, shape, bits,
+            )?))
+        }
+        _ => unreachable!("conv_f32_output_to_value handles only F32/BF16/F16"),
+    }
+}
+
 /// Build a conv output tensor from f64 accumulators, rounding each to `out_dtype`
 /// with `conv_float_literal_from_f64` (F64 keeps the dense new_f64_values path).
 fn conv_real_output_from_f64(
@@ -7166,19 +7241,20 @@ fn eval_conv_2d(
 
     let is_complex = matches!(out_dtype, DType::Complex64 | DType::Complex128);
 
-    // NATIVE f32 conv path (XLA parity: XLA accumulates f32 convolution in f32, NOT
-    // f64 — fj's f64-promote path was MORE precise than the reference, the same gap
-    // fixed for f32/bf16/f16 matmul). When the output is f32 and both operands are
-    // f32, accumulate the im2col GEMM / direct conv in f32 (16-lane native-f32 GEMM
-    // for the large case; ascending-(kh,kw,ci) f32 fold for the small case) — matching
-    // XLA and halving the im2col bytes. Storage-independent (dense f32 borrowed, boxed
-    // F32Bits unpacked). Bit-identical to the scalar f32-accum reference (same index
+    // NATIVE f32-accum conv path (XLA parity: XLA accumulates f32/bf16/f16 convolution
+    // in f32, NOT f64 — fj's f64-promote path was MORE precise than the reference, the
+    // same gap fixed for f32/bf16/f16 matmul). When the output is f32/bf16/f16 and BOTH
+    // operands share that dtype, decode operands to f32 (bf16/f16 widen EXACTLY, never
+    // via f64) and accumulate the im2col GEMM / direct conv in f32 (16-lane native-f32
+    // GEMM for the large case; ascending-(kh,kw,ci) f32 fold for the small case), then
+    // round to out_dtype. Matches XLA and halves/quarters the im2col bytes vs f64.
+    // Storage-independent. Bit-identical to the scalar f32-accum reference (same index
     // math + ascending order; the native-f32 GEMM matches the scalar f32 fold per the
-    // cz0g0 contract). Verified by conv2d_f32_im2col_gemm_bit_identical_to_reference.
-    if out_dtype == DType::F32
-        && lhs.dtype == DType::F32
-        && rhs.dtype == DType::F32
-        && let (Some(lhs_f32), Some(rhs_f32)) = (conv_f32_elements(lhs), conv_f32_elements(rhs))
+    // cz0g0 contract). Verified by conv2d_{f32,bf16,f16}_*_matches_reference.
+    if matches!(out_dtype, DType::F32 | DType::BF16 | DType::F16)
+        && lhs.dtype == out_dtype
+        && rhs.dtype == out_dtype
+        && let (Some(lhs_f32), Some(rhs_f32)) = (conv_decode_to_f32(lhs), conv_decode_to_f32(rhs))
     {
         let kdim = kernel_h
             .checked_mul(kernel_w)
@@ -7220,12 +7296,11 @@ fn eval_conv_2d(
             }
             let num_rows = total / c_out;
             let out = batched_matmul_2d_f32_in(&col, 1, num_rows, kdim, rhs_f32.as_ref(), c_out);
-            return Ok(Value::Tensor(TensorValue::new_f32_values(
-                Shape {
-                    dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
-                },
+            return conv_f32_output_to_value(
+                out_dtype,
+                vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
                 out,
-            )?));
+            );
         }
 
         // Small conv: direct ascending-(kh,kw,ci) f32 fold (below CONV_IM2COL_MIN_OPS,
@@ -7264,12 +7339,11 @@ fn eval_conv_2d(
                 }
             }
         }
-        return Ok(Value::Tensor(TensorValue::new_f32_values(
-            Shape {
-                dims: vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
-            },
+        return conv_f32_output_to_value(
+            out_dtype,
+            vec![batch as u32, out_h as u32, out_w as u32, c_out as u32],
             out,
-        )?));
+        );
     }
 
     // Dense real-float fast path (F64/F32/BF16/F16): read both operands as f64
@@ -7277,7 +7351,8 @@ fn eval_conv_2d(
     // Literal materialization + match in the innermost conv loop. Bit-identical to
     // the generic non-complex path — same index math, same ascending kh/kw/ci
     // accumulation order in f64, same `*`/`+`, same `conv_float_literal_from_f64`
-    // rounding to out_dtype. bf16/f16/f64 outputs (f32 took the native path above).
+    // rounding to out_dtype. Reached by F64 outputs and MIXED-dtype convs (same-dtype
+    // f32/bf16/f16 took the native-f32-accum path above).
     if !is_complex
         && matches!(
             out_dtype,
@@ -8593,6 +8668,76 @@ mod tests {
     }
 
     #[test]
+    fn conv2d_half_native_f32_accum_matches_reference() {
+        // BF16/F16 conv2d now accumulates in f32 (XLA parity — the prior path promoted
+        // to f64). Must be bit-for-bit identical to the textbook reference: decode the
+        // half operands to f32, fold each output ascending-(kh,kw,ci) in f32, then round
+        // f32->half (round-to-nearest-even). Sized above CONV_IM2COL_MIN_OPS.
+        let (h, w, c_in, c_out, kh, kw) = (20usize, 20usize, 4usize, 8usize, 3usize, 3usize);
+        for half_dt in [DType::BF16, DType::F16] {
+            let to_half = |v: f64| -> u16 {
+                match conv_float_literal_from_f64(half_dt, v) {
+                    Literal::BF16Bits(b) | Literal::F16Bits(b) => b,
+                    _ => 0,
+                }
+            };
+            let decode = |bits: u16| -> f32 {
+                if half_dt == DType::BF16 {
+                    Literal::BF16Bits(bits).as_bf16_f32().unwrap()
+                } else {
+                    Literal::F16Bits(bits).as_f16_f32().unwrap()
+                }
+            };
+            let x16: Vec<u16> = (0..h * w * c_in)
+                .map(|i| to_half((i as f64 * 0.011).sin() * 1.3 - 0.2))
+                .collect();
+            let k16: Vec<u16> = (0..kh * kw * c_in * c_out)
+                .map(|i| to_half((i as f64 * 0.017).cos() * 0.9 + 0.1))
+                .collect();
+            let mk = |dims: Vec<u32>, data: &[u16]| {
+                Value::Tensor(
+                    TensorValue::new_half_float_values(half_dt, Shape { dims }, data.to_vec())
+                        .unwrap(),
+                )
+            };
+            let out = eval_conv(
+                Primitive::Conv,
+                &[
+                    mk(vec![1, h as u32, w as u32, c_in as u32], &x16),
+                    mk(vec![kh as u32, kw as u32, c_in as u32, c_out as u32], &k16),
+                ],
+                &params(&[("padding", "valid"), ("strides", "1")]),
+            )
+            .unwrap();
+            let (out_h, out_w) = (h - kh + 1, w - kw + 1);
+            let Value::Tensor(t) = out else {
+                panic!("expected tensor")
+            };
+            assert_eq!(t.dtype, half_dt);
+            let got = t.elements.as_half_float_slice().expect("dense half output").to_vec();
+            let mut want = Vec::new();
+            for oh in 0..out_h {
+                for ow in 0..out_w {
+                    for co in 0..c_out {
+                        let mut acc = 0.0f32;
+                        for dh in 0..kh {
+                            for dw in 0..kw {
+                                for ci in 0..c_in {
+                                    let lv = decode(x16[((oh + dh) * w + (ow + dw)) * c_in + ci]);
+                                    let kv = decode(k16[((dh * kw + dw) * c_in + ci) * c_out + co]);
+                                    acc += lv * kv;
+                                }
+                            }
+                        }
+                        want.push(to_half(f64::from(acc)));
+                    }
+                }
+            }
+            assert_eq!(got, want, "{half_dt:?} conv2d must match the f32-accum reference");
+        }
+    }
+
+    #[test]
     fn conv2d_f32_native_accum_golden_sha256() -> Result<(), Box<dyn std::error::Error>> {
         fn run_case(
             h: usize,
@@ -8653,7 +8798,7 @@ mod tests {
         ];
         let digest = fj_test_utils::fixture_id_from_json(&fixtures)?;
         assert_eq!(
-            digest, "",
+            digest, "4642006de6ba3f3a608d30fb5a7904647f37a9a8d0277894fb7c45b1c8491490",
             "native-f32 conv2d golden output digest changed"
         );
         Ok(())
