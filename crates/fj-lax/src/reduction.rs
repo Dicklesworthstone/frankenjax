@@ -3382,11 +3382,14 @@ mod tests {
             TensorValue::new_i64_values(Shape { dims: dims.clone() }, data.clone()).unwrap(),
         );
         assert!(dense.as_tensor().unwrap().elements.as_i64_slice().is_some());
+        // Boxed (Vec<Literal>) reference: TensorValue::new now densifies all-I64 inputs
+        // (fj-core i64-densify), so build the boxed buffer explicitly to keep exercising
+        // the generic path against the dense reduce fast path.
         let literal = Value::Tensor(
-            TensorValue::new(
+            TensorValue::new_with_literal_buffer(
                 DType::I64,
                 Shape { dims: dims.clone() },
-                data.iter().copied().map(Literal::I64).collect(),
+                fj_core::LiteralBuffer::new(data.iter().copied().map(Literal::I64).collect()),
             )
             .unwrap(),
         );

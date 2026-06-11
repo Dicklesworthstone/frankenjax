@@ -1256,13 +1256,16 @@ mod tests {
             .unwrap(),
         )
     }
+    // Boxed (Vec<Literal>) i64 reference: TensorValue::new now densifies all-I64
+    // inputs into dense storage (fj-core i64-densify), so build the boxed buffer
+    // explicitly via new_with_literal_buffer to keep exercising the generic path.
     fn v_i64(data: &[i64]) -> Result<Value, EvalError> {
-        Ok(Value::Tensor(TensorValue::new(
+        Ok(Value::Tensor(TensorValue::new_with_literal_buffer(
             DType::I64,
             fj_core::Shape {
                 dims: vec![data.len() as u32],
             },
-            data.iter().copied().map(Literal::I64).collect(),
+            fj_core::LiteralBuffer::new(data.iter().copied().map(Literal::I64).collect()),
         )?))
     }
     fn extract_bool(val: &Value) -> bool {
