@@ -167,6 +167,8 @@ fn index_to_contracted_coords(idx: usize, axes: &[usize], shape: &[usize]) -> Ve
 const MR: usize = 4;
 const NR: usize = 8;
 type F64xN = std::simd::Simd<f64, NR>;
+const F32_NR: usize = 16;
+type F32xN = std::simd::Simd<f32, F32_NR>;
 
 #[inline]
 fn f64xnr_from_slice(values: &[f64]) -> F64xN {
@@ -1161,19 +1163,12 @@ fn batched_complex_row_block(
     }
 }
 
-/// Mixed-precision batched matmul: f32 inputs, **f64 accumulation**, f32 output.
+/// Native-f32 batched matmul: f32 inputs, **f32 accumulation**, f32 output.
 ///
-/// Reads the `f32` operands directly (no f32->f64 promote buffer — for a
-/// `[4096,512]@[512,512]` matmul the promote alloc+copy is ~19 MB) and widens
-/// each element to `f64` inside the inner loop, accumulating in `f64`. Streaming
-/// B as `f32` also halves its bytes through cache (the row-block kernel re-reads
-/// all of B once per output row), which is the binding cost once B spills L1/L2.
-///
-/// BIT-FOR-BIT identical to "promote both operands to f64, run [`batched_matmul_2d`]
-/// (f64 ascending-`l` accumulation), then round each output `as f32`": f32->f64 is
-/// lossless, the per-element products `(a as f64)*(b as f64)` and their ascending-`l`
-/// f64 sum are the same, and the final `acc as f32` is the same round. Proven by
-/// batched_matmul_2d_f32_in_matches_promote_bits.
+/// Reads the `f32` operands directly and keeps each scalar product in the output
+/// dtype, matching the XLA/JAX f32 dot contract tracked by `frankenjax-cz0g0`.
+/// Each output element still folds `l` in strictly ascending order; the only
+/// intentional behavior change is accumulator precision.
 pub fn batched_matmul_2d_f32_in(
     a: &[f32],
     batch: usize,
@@ -1211,10 +1206,9 @@ pub fn batched_matmul_2d_f32_in(
     result
 }
 
-/// f32-input row-block kernel: accumulates each output row in an `f64` scratch
-/// (ascending-`l`, widening f32->f64 per element) then rounds to `f32` into the
-/// output. See [`batched_matmul_2d_f32_in`] for the bit-identity argument. The
-/// `acc` scratch is reused across the block's rows to avoid per-row allocation.
+/// f32-input row-block kernel: accumulates each output row in an `f32` scratch
+/// (ascending-`l`) and writes it directly into the output. The `acc` scratch is
+/// reused across the block's rows to avoid per-row allocation.
 fn batched_matmul_row_block_f32_in(
     a: &[f32],
     b: &[f32],
@@ -1224,23 +1218,38 @@ fn batched_matmul_row_block_f32_in(
     g_start: usize,
     block: &mut [f32],
 ) {
-    let mut acc = vec![0.0f64; n];
+    let full_cols = n / F32_NR;
+    let tail_cols = n - full_cols * F32_NR;
+    let mut acc_chunks = vec![F32xN::splat(0.0); full_cols];
+    let mut acc_tail = vec![0.0f32; tail_cols];
     for (ri, c_row) in block.chunks_mut(n).enumerate() {
         let g = g_start + ri;
         let bt = g / m;
         let a_off = g * k;
         let b_off = bt * k * n;
-        acc.iter_mut().for_each(|x| *x = 0.0);
+        acc_chunks
+            .iter_mut()
+            .for_each(|acc| *acc = F32xN::splat(0.0));
+        acc_tail.iter_mut().for_each(|x| *x = 0.0);
         for l in 0..k {
-            let a_il = a[a_off + l] as f64;
+            let a_scalar = a[a_off + l];
+            let a_il = F32xN::splat(a_scalar);
             let src = &b[b_off + l * n..b_off + l * n + n];
-            for j in 0..n {
-                acc[j] += a_il * src[j] as f64;
+            for (chunk_idx, acc) in acc_chunks.iter_mut().enumerate() {
+                let j = chunk_idx * F32_NR;
+                *acc += a_il * F32xN::from_slice(&src[j..j + F32_NR]);
+            }
+            let tail_start = full_cols * F32_NR;
+            for j in 0..tail_cols {
+                acc_tail[j] += a_scalar * src[tail_start + j];
             }
         }
-        for (cj, &av) in c_row.iter_mut().zip(acc.iter()) {
-            *cj = av as f32;
+        for (chunk_idx, acc) in acc_chunks.iter().enumerate() {
+            let j = chunk_idx * F32_NR;
+            c_row[j..j + F32_NR].copy_from_slice(acc.as_array());
         }
+        let tail_start = full_cols * F32_NR;
+        c_row[tail_start..].copy_from_slice(&acc_tail);
     }
 }
 
@@ -1558,11 +1567,10 @@ mod tests {
         }
     }
 
-    /// The mixed-precision f32-input GEMM must be BIT-FOR-BIT identical to:
-    /// promote both operands f32->f64, run the f64 `batched_matmul_2d`, then round
-    /// each output `as f32`. Sized large enough to exercise the threaded path.
+    /// The f32-input GEMM must be BIT-FOR-BIT identical to a native-f32
+    /// ascending-`l` reference. Sized large enough to exercise the threaded path.
     #[test]
-    fn batched_matmul_2d_f32_in_matches_promote_bits() {
+    fn batched_matmul_2d_f32_in_matches_native_f32_bits() {
         let (bt, m, k, n) = (2usize, 40usize, 33usize, 17usize);
         let af: Vec<f32> = (0..bt * m * k)
             .map(|i| (i as f32 * 0.013).sin() * 2.0 - 0.5)
@@ -1571,18 +1579,84 @@ mod tests {
             .map(|i| (i as f32 * 0.019).cos() * 1.6 + 0.3)
             .collect();
         let got = batched_matmul_2d_f32_in(&af, bt, m, k, &bf, n);
-        // reference: promote -> f64 GEMM -> round as f32.
-        let a64: Vec<f64> = af.iter().map(|&v| v as f64).collect();
-        let b64: Vec<f64> = bf.iter().map(|&v| v as f64).collect();
-        let want64 = batched_matmul_2d(&a64, bt, m, k, &b64, n);
-        assert_eq!(got.len(), want64.len());
-        for idx in 0..got.len() {
-            assert_eq!(
-                got[idx].to_bits(),
-                (want64[idx] as f32).to_bits(),
-                "mismatch at {idx}"
-            );
+        assert_eq!(got.len(), bt * m * n);
+        for batch in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut want = 0.0f32;
+                    for l in 0..k {
+                        want += af[(batch * m + i) * k + l] * bf[(batch * k + l) * n + j];
+                    }
+                    let idx = (batch * m + i) * n + j;
+                    assert_eq!(
+                        got[idx].to_bits(),
+                        want.to_bits(),
+                        "mismatch at batch={batch}, row={i}, col={j}"
+                    );
+                }
+            }
         }
+    }
+
+    /// The native-f32 path intentionally gives up the old f64-accum self-golden,
+    /// but the delta stays inside the documented f32 matmul tolerance envelope.
+    #[test]
+    fn batched_matmul_2d_f32_in_delta_from_f64_accum_is_bounded() {
+        let (bt, m, k, n) = (2usize, 4usize, 257usize, 8usize);
+        let af: Vec<f32> = (0..bt * m * k)
+            .map(|i| (i as f32 * 0.000_7).sin() * 1.3 - 0.2)
+            .collect();
+        let bf: Vec<f32> = (0..bt * k * n)
+            .map(|i| (i as f32 * 0.001_1).cos() * 0.9 + 0.1)
+            .collect();
+        let got = batched_matmul_2d_f32_in(&af, bt, m, k, &bf, n);
+        let mut any_differ = false;
+        let mut max_rel = 0.0f64;
+        for batch in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut f64_sum = 0.0f64;
+                    for l in 0..k {
+                        f64_sum += f64::from(af[(batch * m + i) * k + l])
+                            * f64::from(bf[(batch * k + l) * n + j]);
+                    }
+                    let idx = (batch * m + i) * n + j;
+                    let old = f64_sum as f32;
+                    any_differ |= got[idx].to_bits() != old.to_bits();
+                    if f64_sum.abs() > 1e-6 {
+                        max_rel = max_rel
+                            .max((f64::from(got[idx]) - f64::from(old)).abs() / f64_sum.abs());
+                    }
+                }
+            }
+        }
+        assert!(
+            any_differ,
+            "K=257 should expose f32 vs f64 accumulation drift"
+        );
+        assert!(
+            max_rel < 1e-3,
+            "f32 vs f64 accumulation relative delta {max_rel:e}"
+        );
+    }
+
+    #[test]
+    fn batched_matmul_2d_f32_native_golden_digest() -> Result<(), Box<dyn std::error::Error>> {
+        let (bt, m, k, n) = (2usize, 7usize, 19usize, 5usize);
+        let af: Vec<f32> = (0..bt * m * k)
+            .map(|i| (i as f32 * 0.013).sin() * 1.7 - 0.3)
+            .collect();
+        let bf: Vec<f32> = (0..bt * k * n)
+            .map(|i| (i as f32 * 0.019).cos() * 1.3 + 0.2)
+            .collect();
+        let got = batched_matmul_2d_f32_in(&af, bt, m, k, &bf, n);
+        let bits: Vec<u32> = got.iter().map(|v| v.to_bits()).collect();
+        let digest = fj_test_utils::fixture_id_from_json(&bits)?;
+        assert_eq!(
+            digest, "02399fb13d6e0643dc9d8ade2c1dd2ce7cb985e38dcd41513cf80e438c0e54c8",
+            "native-f32 matmul golden output digest changed"
+        );
+        Ok(())
     }
 
     /// Native BF16-input mixed-precision GEMM must be bit-for-bit identical to:

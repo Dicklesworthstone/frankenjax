@@ -5,11 +5,11 @@
 //!
 //! ## The decision this quantifies
 //!
-//! fj's production f32 matmul (`tensor_contraction::batched_matmul_2d_f32_in`, used by
-//! `general_real_tensordot`) loads f32, **accumulates in f64**, and rounds to f32 at the
-//! end — bit-identical to promoting f32→f64 and running the f64 GEMM, which is fj's
-//! self-golden. JAX/XLA's f32 matmul instead **accumulates in f32** (the element type).
-//! So fj is MORE accurate than JAX here, at a cost:
+//! fj's original production f32 matmul (`tensor_contraction::batched_matmul_2d_f32_in`,
+//! used by `general_real_tensordot`) loaded f32, **accumulated in f64**, and rounded to
+//! f32 at the end — bit-identical to promoting f32→f64 and running the f64 GEMM, which
+//! was fj's self-golden. JAX/XLA's f32 matmul instead **accumulates in f32** (the element
+//! type). So the old fj path was MORE accurate than JAX here, at a cost:
 //!
 //! 1. **Parity:** fj's f32 matmul does NOT bit-match (nor tolerance-trivially match) XLA's
 //!    f32 matmul — XLA's f32 accumulation has ~√K·ε error that fj's f64 accumulation does
@@ -20,9 +20,9 @@
 //!
 //! This module provides two otherwise-identical register-tiled (MR×NR) kernels — one
 //! f64-accumulate (mirrors production arithmetic), one f32-accumulate (mirrors XLA) — so
-//! the speed win and the accuracy/parity delta can be measured head-to-head. It is
-//! UNWIRED (evidence only): switching production to f32-accum would change fj's f32 matmul
-//! output bits (break the self-golden) — exactly the relaxation cz0g0 is blocked on.
+//! the speed win and the accuracy/parity delta can be measured head-to-head. The production
+//! path is now the f32-accumulate SIMD kernel; this module keeps the old-vs-new comparison
+//! and precision-delta proof local to `frankenjax-cz0g0`.
 
 use std::simd::Simd;
 
@@ -33,7 +33,7 @@ type F64s = Simd<f64, NR64>;
 type F32s = Simd<f32, NR32>;
 
 /// Register-tiled `[m,k]@[k,n]` GEMM: f32 in, **f64 accumulate**, f32 out — mirrors fj's
-/// production `batched_matmul_2d_f32_in` arithmetic (load f32 → widen f64 → `c += a*b` in
+/// previous `batched_matmul_2d_f32_in` arithmetic (load f32 → widen f64 → `c += a*b` in
 /// f64 → round to f32). `n` and `m` are assumed multiples of `NR64`/`MR` (the evidence
 /// benches use such shapes); a scalar tail is omitted for clarity.
 pub fn matmul_f32_f64_accumulate(a: &[f32], m: usize, k: usize, b: &[f32], n: usize) -> Vec<f32> {
@@ -101,6 +101,7 @@ pub fn matmul_f32_f32_accumulate(a: &[f32], m: usize, k: usize, b: &[f32], n: us
 /// Scalar f64-accumulate reference (the "true" value at f64 precision) for a single output
 /// cell — used to measure how far each kernel's f32 output sits from the high-precision
 /// result. Ascending-`l` fold, matching the production accumulation order.
+#[cfg(test)]
 fn cell_f64_reference(a: &[f32], k: usize, b: &[f32], n: usize, i: usize, jcol: usize) -> f64 {
     let mut s = 0.0_f64;
     for l in 0..k {
@@ -118,11 +119,11 @@ mod tests {
     }
 
     #[test]
-    fn f64accum_kernel_matches_production_semantics() {
-        // The f64-accumulate evidence kernel must reproduce fj's production f32 matmul
+    fn f64accum_kernel_matches_old_production_semantics() {
+        // The f64-accumulate evidence kernel must reproduce fj's old production f32 matmul
         // (f32 in, f64 accumulate, round to f32) bit-for-bit: same ascending-`l` fold,
         // f64 accumulator, single round at output. Verify against a direct scalar
-        // f64-accumulate-then-round-to-f32 reference (the production semantics).
+        // f64-accumulate-then-round-to-f32 reference (the former production semantics).
         let (m, k, n) = (8usize, 24usize, 16usize);
         let a = mk(m * k, 0.011);
         let b = mk(k * n, 0.017);
@@ -133,7 +134,7 @@ mod tests {
                 assert_eq!(
                     got[i * n + jcol].to_bits(),
                     want.to_bits(),
-                    "f64-accum kernel must match production f64-accumulate-then-round at ({i},{jcol})"
+                    "f64-accum kernel must match old f64-accumulate-then-round at ({i},{jcol})"
                 );
             }
         }

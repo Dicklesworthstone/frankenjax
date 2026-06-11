@@ -7239,14 +7239,14 @@ fn general_real_tensordot(
     rhs_perm.extend_from_slice(rhs_contracting);
     rhs_perm.extend_from_slice(rhs_free_dims);
 
-    // NATIVE f32 path (mixed-precision: f32 in, f64 accumulate, f32 out): when the
+    // NATIVE f32 path (f32 in, f32 accumulate, f32 out): when the
     // output is f32, both operands are dense-f32-backed, and BOTH perms are the
     // identity (so no gather is needed — the standard `[m,k]@[k,n]` and standard
     // batched `[B,m,k]@[B,k,n]` cases), feed the `f32` slices straight to the
-    // mixed-precision GEMM. This skips the ~19 MB f32->f64 promote alloc+copy AND
-    // halves B's bytes through cache. BIT-IDENTICAL to the promote+f64-GEMM+round
-    // path (see batched_matmul_2d_f32_in). Other f32 cases (non-identity perms,
-    // bf16/f16) fall through to the promote path below.
+    // native-f32 GEMM. This skips the f32->f64 promote alloc+copy, halves the B
+    // bytes through cache, and matches the f32 dot accumulation contract tracked
+    // by frankenjax-cz0g0. Other f32 cases (non-identity perms, bf16/f16) fall
+    // through to the promote path below.
     if out_dtype == DType::F32
         && is_identity_perm(&lhs_perm)
         && is_identity_perm(&rhs_perm)
@@ -11230,15 +11230,13 @@ mod tests {
     #[test]
     fn f32_dot_general_gemm_bit_identical_to_reference() {
         // f32 dot_general (the default ML dtype) now routes through the GEMM path
-        // (promote f32->f64, matmul in f64, round to f32). Must be bit-for-bit
-        // identical to the generic Real loop: f64 accumulation of exact f32
-        // products, then real_literal_from_f64(F32, sum) = (sum as f32).
+        // (f32 inputs, f32 accumulation, f32 output). Must be bit-for-bit
+        // identical to an ascending-k native-f32 reference.
         let mk32 = |dims: Vec<u32>, data: &[f32]| {
             Value::Tensor(
-                TensorValue::new(
-                    DType::F32,
+                TensorValue::new_f32_values(
                     Shape { dims },
-                    data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                    data.to_vec(),
                 )
                 .unwrap(),
             )
@@ -11276,30 +11274,29 @@ mod tests {
         let mut want = Vec::new();
         for i in 0..m {
             for j in 0..n {
-                let mut s = 0.0f64;
+                let mut s = 0.0f32;
                 for l in 0..k {
-                    s += af[i * k + l] as f64 * bf[l * n + j] as f64;
+                    s += af[i * k + l] * bf[l * n + j];
                 }
-                want.push((s as f32).to_bits());
+                want.push(s.to_bits());
             }
         }
         assert_eq!(
             got, want,
-            "f32 matmul must be bit-identical to the f64-accum reference"
+            "f32 matmul must be bit-identical to the native-f32 reference"
         );
     }
 
     /// f32 dot_general now emits DENSE f32 storage (not boxed `Literal`s) so the
     /// GEMM result feeds downstream f32 elementwise densely. Verify the output is
-    /// `as_f32_slice`-backed AND bit-identical to the boxed reference.
+    /// `as_f32_slice`-backed AND bit-identical to the native-f32 reference.
     #[test]
     fn f32_dot_general_emits_dense_f32_storage() {
         let mk32 = |dims: Vec<u32>, data: &[f32]| {
             Value::Tensor(
-                TensorValue::new(
-                    DType::F32,
+                TensorValue::new_f32_values(
                     Shape { dims },
-                    data.iter().map(|&v| Literal::from_f32(v)).collect(),
+                    data.to_vec(),
                 )
                 .unwrap(),
             )
@@ -11326,17 +11323,17 @@ mod tests {
             out.elements.as_f32_slice().is_some(),
             "f32 dot_general output must be dense-f32-backed (not boxed Literals)"
         );
-        // Values still bit-identical to the f64-accum reference.
+        // Values still bit-identical to the native-f32 reference.
         let got = out.elements.as_f32_slice().unwrap();
         for i in 0..m {
             for j in 0..n {
-                let mut s = 0.0f64;
+                let mut s = 0.0f32;
                 for l in 0..k {
-                    s += af[i * k + l] as f64 * bf[l * n + j] as f64;
+                    s += af[i * k + l] * bf[l * n + j];
                 }
                 assert_eq!(
                     got[i * n + j].to_bits(),
-                    (s as f32).to_bits(),
+                    s.to_bits(),
                     "mismatch at {i},{j}"
                 );
             }
