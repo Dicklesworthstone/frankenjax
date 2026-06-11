@@ -1652,6 +1652,42 @@ fn bench_bf16_matmul_512_f64accum_reference(c: &mut Criterion) {
     });
 }
 
+// F16 GEMM. Same-invocation A/B isolating the native-f32 lever: native (decode
+// F16->f32 once + 16-lane f32-accum GEMM, XLA parity) vs the prior promote path
+// (F16->f64 + 8-lane f64 GEMM + round). Compute-bound O(mkn) kernel.
+fn f16_512_inputs() -> (Vec<u16>, Vec<u16>) {
+    let (m, k, n) = (512usize, 512usize, 512usize);
+    let a: Vec<u16> = (0..m * k)
+        .map(|i| match Literal::from_f16_f64((i as f64) * 1e-3 - 13.0) {
+            Literal::F16Bits(b) => b,
+            _ => 0,
+        })
+        .collect();
+    let b: Vec<u16> = (0..k * n)
+        .map(|i| match Literal::from_f16_f64((i as f64) * 2e-3 - 7.0) {
+            Literal::F16Bits(b) => b,
+            _ => 0,
+        })
+        .collect();
+    (a, b)
+}
+
+fn bench_f16_matmul_512_f32accum(c: &mut Criterion) {
+    let (m, k, n) = (512usize, 512usize, 512usize);
+    let (a, b) = f16_512_inputs();
+    c.bench_function("linalg/f16_matmul_512_f32accum", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::f16_matmul_bench(&a, m, k, &b, n, true))
+    });
+}
+
+fn bench_f16_matmul_512_promote_reference(c: &mut Criterion) {
+    let (m, k, n) = (512usize, 512usize, 512usize);
+    let (a, b) = f16_512_inputs();
+    c.bench_function("linalg/f16_matmul_512_promote_ref", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::f16_matmul_bench(&a, m, k, &b, n, false))
+    });
+}
+
 fn bench_matmul_2d_512(c: &mut Criterion) {
     // Public conformance-tested GEMM kernel: 512x512 @ 512x512.
     let (m, k, n) = (512usize, 512usize, 512usize);
@@ -5033,6 +5069,8 @@ criterion_group!(
     bench_matmul_2d_256,
     bench_bf16_matmul_512_f32accum,
     bench_bf16_matmul_512_f64accum_reference,
+    bench_f16_matmul_512_f32accum,
+    bench_f16_matmul_512_promote_reference,
     bench_matmul_2d_512,
     bench_matmul_2d_1024,
     bench_matmul_2d_2048,

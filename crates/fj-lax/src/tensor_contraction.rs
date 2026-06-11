@@ -1365,6 +1365,33 @@ pub fn bf16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, mod
     out
 }
 
+/// Bench-only single-batch F16 matmul A/B. `native=true` runs the production
+/// native-f32-accum path ([`batched_matmul_2d_f16_in`]); `native=false` runs the
+/// prior promote path (decode F16->f64, f64 [`batched_matmul_2d`], round F16) so the
+/// native-f32 lever's speedup is measurable in one process.
+#[doc(hidden)]
+pub fn f16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, native: bool) -> Vec<u16> {
+    if native {
+        return batched_matmul_2d_f16_in(a, 1, m, k, b, n);
+    }
+    let a64: Vec<f64> = a
+        .iter()
+        .map(|&x| fj_core::Literal::F16Bits(x).as_f64().unwrap_or(0.0))
+        .collect();
+    let b64: Vec<f64> = b
+        .iter()
+        .map(|&x| fj_core::Literal::F16Bits(x).as_f64().unwrap_or(0.0))
+        .collect();
+    let out64 = batched_matmul_2d(&a64, 1, m, k, &b64, n);
+    out64
+        .iter()
+        .map(|&v| match fj_core::Literal::from_f16_f64(v) {
+            fj_core::Literal::F16Bits(bits) => bits,
+            _ => 0,
+        })
+        .collect()
+}
+
 /// BF16-input row-block kernel: accumulates each output row in an `f64` scratch
 /// (ascending-`l`, widening BF16->f64 per element) then rounds to BF16. See
 /// [`batched_matmul_2d_bf16_in`] for the bit-identity argument.
@@ -1414,6 +1441,53 @@ fn round_f32_to_bf16(acc: f32) -> u16 {
         fj_core::Literal::BF16Bits(bits) => bits,
         _ => 0,
     }
+}
+
+/// Round an f32 F16-matmul accumulator to F16 bits, identically to the XLA
+/// rounding `from_f16_f64(f64::from(acc))`: `f64::from(f32)` is exact and the
+/// round-to-odd f64->f32 step inside `from_f16_f64` is then the identity, so this
+/// collapses to a single round-to-nearest-even f32->F16 (matching XLA's f16 dot).
+#[inline]
+fn round_f32_to_f16(acc: f32) -> u16 {
+    match fj_core::Literal::from_f16_f64(f64::from(acc)) {
+        fj_core::Literal::F16Bits(bits) => bits,
+        _ => 0,
+    }
+}
+
+/// Mixed-precision batched matmul: **F16 inputs, native f32 accumulation, F16
+/// output** — the F16 sibling of [`batched_matmul_2d_bf16_in`], matching XLA's f16
+/// dot (which accumulates in f32, NOT f64; fj's f64-promote path was MORE precise
+/// than the reference).
+///
+/// Unlike BF16, an F16 value is NOT the high bits of an f32 (5-bit vs 8-bit
+/// exponent), so the widen is the canonical `f16 -> f32` decode (`as_f16_f32` =
+/// `f32::from(f16::from_bits(_))`). We decode both operands into f32 buffers ONCE
+/// (O(mk + kn), negligible beside the O(batch·m·k·n) GEMM) and reuse the optimized
+/// native-f32 [`batched_matmul_2d_f32_in`] (16-lane SIMD, ascending-`l` f32
+/// accumulation), then round each output f32 -> F16.
+///
+/// BIT-FOR-BIT identical to the scalar XLA-parity reference "decode F16->f32,
+/// accumulate each output ascending-`l` in f32, round f32->F16": `batched_matmul_2d_f32_in`
+/// is itself bit-identical to that scalar f32 fold (the cz0g0 contract), and the
+/// decode/round are elementwise. Proven by `f16_in_matches_f32_accum`.
+pub fn batched_matmul_2d_f16_in(
+    a: &[u16],
+    batch: usize,
+    m: usize,
+    k: usize,
+    b: &[u16],
+    n: usize,
+) -> Vec<u16> {
+    let decode = |bits: u16| -> f32 {
+        fj_core::Literal::F16Bits(bits)
+            .as_f16_f32()
+            .unwrap_or(0.0)
+    };
+    let a32: Vec<f32> = a.iter().map(|&x| decode(x)).collect();
+    let b32: Vec<f32> = b.iter().map(|&x| decode(x)).collect();
+    let out32 = batched_matmul_2d_f32_in(&a32, batch, m, k, &b32, n);
+    out32.iter().map(|&v| round_f32_to_f16(v)).collect()
 }
 
 /// Native-f32-accumulation BF16 GEMM row-block (XLA parity: XLA accumulates bf16
@@ -1905,6 +1979,50 @@ mod tests {
             let diff = (xv - yv).abs();
             // bf16 has a ~7-bit mantissa; allow up to a couple of bf16 ULP-scale steps.
             assert!(diff <= 0.06 * yv.abs().max(1.0), "f32 vs f64 accum diverged: {xv} vs {yv}");
+        }
+    }
+
+    /// Native F16-input GEMM must be bit-for-bit identical to the XLA-parity
+    /// reference: decode both operands F16->f32, accumulate each output ascending-`l`
+    /// in f32, then round f32->F16 (round-to-nearest-even). XLA accumulates f16 dot in
+    /// f32 — the kernel's native-f32 accumulation matches that (the old f64-promote
+    /// path was MORE precise than the reference).
+    #[test]
+    fn f16_in_matches_f32_accum() {
+        let (bt, m, k, n) = (2usize, 40usize, 33usize, 17usize);
+        let to_f16 = |v: f64| -> u16 {
+            match fj_core::Literal::from_f16_f64(v) {
+                fj_core::Literal::F16Bits(b) => b,
+                _ => 0,
+            }
+        };
+        let decode = |bits: u16| -> f32 { fj_core::Literal::F16Bits(bits).as_f16_f32().unwrap() };
+        let a16: Vec<u16> = (0..bt * m * k)
+            .map(|i| to_f16((i as f64 * 0.013).sin() * 2.0 - 0.5))
+            .collect();
+        let b16: Vec<u16> = (0..bt * k * n)
+            .map(|i| to_f16((i as f64 * 0.019).cos() * 1.6 + 0.3))
+            .collect();
+        let got = batched_matmul_2d_f16_in(&a16, bt, m, k, &b16, n);
+        // Reference: F16->f32 decode, ascending-`l` f32 accumulation per output, round
+        // f32->F16 (exactly what XLA's f16 dot does).
+        let mut want = vec![0u16; bt * m * n];
+        for batch in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0f32;
+                    for l in 0..k {
+                        let av = decode(a16[batch * m * k + i * k + l]);
+                        let bv = decode(b16[batch * k * n + l * n + j]);
+                        acc += av * bv;
+                    }
+                    want[batch * m * n + i * n + j] = round_f32_to_f16(acc);
+                }
+            }
+        }
+        assert_eq!(got.len(), want.len());
+        for idx in 0..got.len() {
+            assert_eq!(got[idx], want[idx], "mismatch at {idx}");
         }
     }
 

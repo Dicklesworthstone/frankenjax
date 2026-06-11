@@ -6,9 +6,9 @@ use std::collections::BTreeMap;
 
 use crate::EvalError;
 use crate::tensor_contraction::{
-    batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f32_in,
-    batched_rank2_complex_matmul, batched_rank2_i64_matmul, matmul_2d, rank2_complex_matmul,
-    rank2_i64_matmul,
+    batched_matmul_2d, batched_matmul_2d_bf16_in, batched_matmul_2d_f16_in,
+    batched_matmul_2d_f32_in, batched_rank2_complex_matmul, batched_rank2_i64_matmul, matmul_2d,
+    rank2_complex_matmul, rank2_i64_matmul,
 };
 use crate::type_promotion::{binary_literal_op, promote_dtype};
 
@@ -7286,6 +7286,33 @@ fn general_real_tensordot(
         }
         return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
             DType::BF16,
+            Shape {
+                dims: output_dims.to_vec(),
+            },
+            values,
+        )?)));
+    }
+
+    // NATIVE F16 path (mixed-precision: F16 in, native f32 accumulate, F16 out): the
+    // F16 sibling of the BF16 path above. F16->f32 is a real decode (not a shift), done
+    // once per operand, then the optimized native-f32 GEMM accumulates in f32 to MATCH
+    // XLA's f16 dot (fj's f64-promote path was too accurate). Identity perms only.
+    if out_dtype == DType::F16
+        && lhs.dtype == DType::F16
+        && rhs.dtype == DType::F16
+        && is_identity_perm(&lhs_perm)
+        && is_identity_perm(&rhs_perm)
+        && let (Some(a16), Some(b16)) = (
+            lhs.elements.as_half_float_slice(),
+            rhs.elements.as_half_float_slice(),
+        )
+    {
+        let values = batched_matmul_2d_f16_in(a16, batch, m, k, b16, n);
+        if output_dims.is_empty() {
+            return Ok(Some(Value::Scalar(Literal::F16Bits(values[0]))));
+        }
+        return Ok(Some(Value::Tensor(TensorValue::new_half_float_values(
+            DType::F16,
             Shape {
                 dims: output_dims.to_vec(),
             },
