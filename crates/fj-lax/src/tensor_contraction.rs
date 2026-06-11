@@ -1253,22 +1253,23 @@ fn batched_matmul_row_block_f32_in(
     }
 }
 
-/// Mixed-precision batched matmul: **BF16 inputs, f64 accumulation, BF16 output** —
-/// the BF16 sibling of [`batched_matmul_2d_f32_in`].
+/// Mixed-precision batched matmul: **BF16 inputs, native f32 accumulation, BF16
+/// output** — the BF16 sibling of [`batched_matmul_2d_f32_in`], matching XLA's bf16
+/// dot (which accumulates in f32, NOT f64).
 ///
 /// BF16 is the high 16 bits of an f32 (low mantissa bits zero), so widening a BF16 bit
-/// pattern to f64 is the exact `f64::from(f32::from_bits((bits as u32) << 16))` — equal
-/// to `Literal::BF16Bits(bits).as_f64()` (which the f64-promote path uses) for EVERY
-/// value including inf/NaN/subnormals. Reading BF16 directly avoids the u16->f64 promote
-/// buffer (a 4x byte expansion) AND streams B at 2 bytes/elem — a QUARTER of f64 — which
-/// is the binding cost once B spills cache (the row-block kernel re-reads all of B once
-/// per output row). Each output rounds f64->BF16 via `Literal::from_bf16_f64` (XLA-correct
-/// single round), exactly the promote path's `real_literal_from_f64(BF16, _)`.
+/// pattern to f32 is the exact `f32::from_bits((bits as u32) << 16)` for EVERY value
+/// including inf/NaN/subnormals. Reading BF16 directly avoids the promote buffer AND
+/// streams B at 2 bytes/elem; accumulating in f32 (`F32_NR == 16` SIMD lanes, 2x the
+/// f64 kernel) further halves the accumulator bytes and matches XLA's precision. Each
+/// output rounds f32->BF16 via `round_f32_to_bf16` (round-to-nearest-even), exactly
+/// XLA's bf16 dot rounding.
 ///
-/// BIT-FOR-BIT identical to "promote both operands to f64, run [`batched_matmul_2d`]
-/// (ascending-`l` row-block f64 accumulation), round each output to BF16": same widened
-/// values, same accumulation order, same final round. Proven by
-/// `batched_matmul_2d_bf16_in_matches_promote_bits`.
+/// BIT-FOR-BIT identical to the scalar XLA-parity reference "widen BF16->f32,
+/// accumulate each output ascending-`l` in f32, round f32->BF16": same widened values,
+/// same accumulation order, same final round. Proven by `bf16_in_matches_f32_accum`.
+/// (This restores XLA bf16 parity; the prior f64 accumulation was MORE precise than
+/// the reference — the BF16 analog of the cz0g0 f32 native-accum parity fix.)
 pub fn batched_matmul_2d_bf16_in(
     a: &[u16],
     batch: usize,
@@ -1349,16 +1350,17 @@ fn batched_matmul_row_block_bf16_in_scalar(
     }
 }
 
-/// Bench-only single-thread BF16 matmul over one batch (`batch == 1`), running
-/// either the SIMD row-block or the scalar reference so a same-invocation A/B can
-/// isolate the SIMD accumulation win.
+/// Bench-only single-thread BF16 matmul over one batch (`batch == 1`). `mode`
+/// selects the kernel so a same-invocation A/B can isolate each lever:
+///   "f32simd" — native-f32-accum SIMD (production), "f64simd" — prior f64-accum
+///   SIMD (a71f4c78), "f64scalar" — original scalar f64-accum reference.
 #[doc(hidden)]
-pub fn bf16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, simd: bool) -> Vec<u16> {
+pub fn bf16_matmul_bench(a: &[u16], m: usize, k: usize, b: &[u16], n: usize, mode: &str) -> Vec<u16> {
     let mut out = vec![0u16; m * n];
-    if simd {
-        batched_matmul_row_block_bf16_in(a, b, m, k, n, 0, &mut out);
-    } else {
-        batched_matmul_row_block_bf16_in_scalar(a, b, m, k, n, 0, &mut out);
+    match mode {
+        "f64simd" => batched_matmul_row_block_bf16_in_f64acc(a, b, m, k, n, 0, &mut out),
+        "f64scalar" => batched_matmul_row_block_bf16_in_scalar(a, b, m, k, n, 0, &mut out),
+        _ => batched_matmul_row_block_bf16_in(a, b, m, k, n, 0, &mut out),
     }
     out
 }
@@ -1381,6 +1383,47 @@ fn bf16_chunk_to_f64xn(src: &[u16]) -> F64xN {
     f32v.cast::<f64>()
 }
 
+/// Widen a BF16 bit pattern to f32 — BF16 is the high 16 bits of an f32 (low 16
+/// mantissa bits zero), so the `<< 16` shift is the EXACT decoded value for finite,
+/// subnormal, inf and NaN alike (no rounding). Identically `f32::from(bf16)`.
+#[inline]
+fn bf16_bits_to_f32(bits: u16) -> f32 {
+    f32::from_bits((bits as u32) << 16)
+}
+
+/// Widen `F32_NR` contiguous BF16 patterns to an `F32xN` lane vector — a pure
+/// integer SIMD shift (`u16 -> u32 << 16 -> f32::from_bits`), no f32->f64 cast and
+/// no comparison/mask traits (whose import paths drift across nightlies).
+#[inline]
+fn bf16_chunk_to_f32xn(src: &[u16]) -> F32xN {
+    use std::simd::{
+        Simd,
+        num::{SimdFloat, SimdUint},
+    };
+    let u = Simd::<u16, F32_NR>::from_slice(src);
+    Simd::<f32, F32_NR>::from_bits(u.cast::<u32>() << Simd::splat(16u32))
+}
+
+/// Round an f32 BF16-matmul accumulator to BF16 bits, identically to the XLA
+/// rounding `from_bf16_f64(f64::from(acc))`: `f64::from(f32)` is exact and the
+/// round-to-odd f64->f32 step inside `from_bf16_f64` is then the identity, so this
+/// collapses to a single round-to-nearest-even f32->BF16 (matching XLA's bf16 dot).
+#[inline]
+fn round_f32_to_bf16(acc: f32) -> u16 {
+    match fj_core::Literal::from_bf16_f64(f64::from(acc)) {
+        fj_core::Literal::BF16Bits(bits) => bits,
+        _ => 0,
+    }
+}
+
+/// Native-f32-accumulation BF16 GEMM row-block (XLA parity: XLA accumulates bf16
+/// matmul in f32, NOT f64 — fj's earlier f64 accumulation diverged by being MORE
+/// precise than the reference). SIMD across OUTPUT COLUMNS (lanes = independent
+/// outputs), each lane folding its own ascending-`l` f32 multiply-add — bit-identical
+/// to the scalar f32-accum reference (same per-output order, same f32 mul/add, same
+/// `round_f32_to_bf16`). `F32_NR == 16` lanes (2x the f64-accum kernel) and the
+/// bf16->f32 widen is a bare shift (no f32->f64 cast), so this is the analog of the
+/// approved cz0g0 native-f32 dot_general lever. See `bf16_in_matches_f32_accum`.
 fn batched_matmul_row_block_bf16_in(
     a: &[u16],
     b: &[u16],
@@ -1390,12 +1433,55 @@ fn batched_matmul_row_block_bf16_in(
     g_start: usize,
     block: &mut [u16],
 ) {
-    // SIMD across OUTPUT COLUMNS (lanes = independent outputs), each lane folding
-    // its own ascending-`l` f64 accumulation — bit-identical to the scalar
-    // `acc[j] += a_il * widen(b[l][j])` row-block (same per-output order, same f64
-    // mul/add, same `from_bf16_f64` rounding), just NR columns at a time. Mirrors
-    // the f32 native-SIMD kernel; keeps f64 accumulation so the committed
-    // `batched_matmul_2d_bf16_in_matches_promote_bits` golden is unchanged.
+    let full_cols = n / F32_NR;
+    let tail_cols = n - full_cols * F32_NR;
+    let mut acc_chunks = vec![F32xN::splat(0.0); full_cols];
+    let mut acc_tail = vec![0.0f32; tail_cols];
+    for (ri, c_row) in block.chunks_mut(n).enumerate() {
+        let g = g_start + ri;
+        let bt = g / m;
+        let a_off = g * k;
+        let b_off = bt * k * n;
+        acc_chunks.iter_mut().for_each(|acc| *acc = F32xN::splat(0.0));
+        acc_tail.iter_mut().for_each(|x| *x = 0.0);
+        for l in 0..k {
+            let a_scalar = bf16_bits_to_f32(a[a_off + l]);
+            let a_il = F32xN::splat(a_scalar);
+            let src = &b[b_off + l * n..b_off + l * n + n];
+            for (chunk_idx, acc) in acc_chunks.iter_mut().enumerate() {
+                let j = chunk_idx * F32_NR;
+                *acc += a_il * bf16_chunk_to_f32xn(&src[j..j + F32_NR]);
+            }
+            let tail_start = full_cols * F32_NR;
+            for j in 0..tail_cols {
+                acc_tail[j] += a_scalar * bf16_bits_to_f32(src[tail_start + j]);
+            }
+        }
+        for (chunk_idx, acc) in acc_chunks.iter().enumerate() {
+            let j = chunk_idx * F32_NR;
+            for (lane, &av) in acc.as_array().iter().enumerate() {
+                c_row[j + lane] = round_f32_to_bf16(av);
+            }
+        }
+        let tail_start = full_cols * F32_NR;
+        for (j, &av) in acc_tail.iter().enumerate() {
+            c_row[tail_start + j] = round_f32_to_bf16(av);
+        }
+    }
+}
+
+/// Prior f64-accumulation SIMD row-block (the a71f4c78 kernel), kept only as a
+/// same-binary A/B reference so the native-f32 lever's speedup is measurable.
+#[doc(hidden)]
+fn batched_matmul_row_block_bf16_in_f64acc(
+    a: &[u16],
+    b: &[u16],
+    m: usize,
+    k: usize,
+    n: usize,
+    g_start: usize,
+    block: &mut [u16],
+) {
     let full_cols = n / NR;
     let tail_cols = n - full_cols * NR;
     let mut acc_chunks = vec![F64xN::splat(0.0); full_cols];
@@ -1749,12 +1835,14 @@ mod tests {
         Ok(())
     }
 
-    /// Native BF16-input mixed-precision GEMM must be bit-for-bit identical to:
-    /// promote both operands BF16->f64 (via `Literal::BF16Bits.as_f64()`), run the f64
-    /// `batched_matmul_2d`, then round each output via `Literal::from_bf16_f64`. Sized
-    /// large enough to exercise the threaded path.
+    /// Native BF16-input GEMM must be bit-for-bit identical to the XLA-parity
+    /// reference: promote both operands BF16->f32 (exact `<< 16` widen), accumulate
+    /// each output in f32 ascending-`l`, then round f32->BF16 (round-to-nearest-even).
+    /// XLA accumulates bf16 dot in f32 — the kernel's native-f32 accumulation matches
+    /// that exactly (the prior f64 accumulation was MORE precise than XLA). Sized large
+    /// enough to exercise the threaded path.
     #[test]
-    fn batched_matmul_2d_bf16_in_matches_promote_bits() {
+    fn bf16_in_matches_f32_accum() {
         let (bt, m, k, n) = (2usize, 40usize, 33usize, 17usize);
         let to_bf16 = |v: f64| -> u16 {
             match fj_core::Literal::from_bf16_f64(v) {
@@ -1769,20 +1857,54 @@ mod tests {
             .map(|i| to_bf16((i as f64 * 0.019).cos() * 1.6 + 0.3))
             .collect();
         let got = batched_matmul_2d_bf16_in(&a16, bt, m, k, &b16, n);
-        // reference: promote BF16->f64 (same as_f64 the dot path uses) -> f64 GEMM ->
-        // round each output via from_bf16_f64.
-        let a64: Vec<f64> = a16
-            .iter()
-            .map(|&b| fj_core::Literal::BF16Bits(b).as_f64().unwrap())
-            .collect();
-        let b64: Vec<f64> = b16
-            .iter()
-            .map(|&b| fj_core::Literal::BF16Bits(b).as_f64().unwrap())
-            .collect();
-        let want64 = batched_matmul_2d(&a64, bt, m, k, &b64, n);
-        assert_eq!(got.len(), want64.len());
+        // Reference: BF16->f32 widen, ascending-`l` f32 accumulation per output, round
+        // f32->BF16 (exactly what XLA's bf16 dot does).
+        let mut want = vec![0u16; bt * m * n];
+        for batch in 0..bt {
+            for i in 0..m {
+                for j in 0..n {
+                    let mut acc = 0.0f32;
+                    for l in 0..k {
+                        let av = bf16_bits_to_f32(a16[batch * m * k + i * k + l]);
+                        let bv = bf16_bits_to_f32(b16[batch * k * n + l * n + j]);
+                        acc += av * bv;
+                    }
+                    want[batch * m * n + i * n + j] = round_f32_to_bf16(acc);
+                }
+            }
+        }
+        assert_eq!(got.len(), want.len());
         for idx in 0..got.len() {
-            assert_eq!(got[idx], to_bf16(want64[idx]), "mismatch at {idx}");
+            assert_eq!(got[idx], want[idx], "mismatch at {idx}");
+        }
+    }
+
+    /// The native-f32 accumulation must stay within bf16 tolerance of the old
+    /// f64-accumulation path (i.e. the precision given up to match XLA is bounded —
+    /// ~sqrt(K)*eps_f32, far inside bf16's ~1/256 resolution).
+    #[test]
+    fn bf16_f32_accum_within_tolerance_of_f64_accum() {
+        let (m, k, n) = (24usize, 50usize, 24usize);
+        let to_bf16 = |v: f64| -> u16 {
+            match fj_core::Literal::from_bf16_f64(v) {
+                fj_core::Literal::BF16Bits(b) => b,
+                _ => 0,
+            }
+        };
+        let a16: Vec<u16> = (0..m * k)
+            .map(|i| to_bf16((i as f64 * 0.017).sin()))
+            .collect();
+        let b16: Vec<u16> = (0..k * n)
+            .map(|i| to_bf16((i as f64 * 0.023).cos()))
+            .collect();
+        let f32acc = bf16_matmul_bench(&a16, m, k, &b16, n, "f32simd");
+        let f64acc = bf16_matmul_bench(&a16, m, k, &b16, n, "f64scalar");
+        for (x, y) in f32acc.iter().zip(f64acc.iter()) {
+            let xv = bf16_bits_to_f32(*x);
+            let yv = bf16_bits_to_f32(*y);
+            let diff = (xv - yv).abs();
+            // bf16 has a ~7-bit mantissa; allow up to a couple of bf16 ULP-scale steps.
+            assert!(diff <= 0.06 * yv.abs().max(1.0), "f32 vs f64 accum diverged: {xv} vs {yv}");
         }
     }
 

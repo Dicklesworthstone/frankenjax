@@ -1616,11 +1616,10 @@ fn bench_matmul_2d_256(c: &mut Criterion) {
     });
 }
 
-// BF16 GEMM (the dominant TRAINING matmul): widen bf16->f64 + f64 accumulation +
-// bf16 output. Same-invocation A/B — SIMD (lanes = output columns, f64xN) vs the
-// scalar reference row-block. Bit-identical (same per-output ascending-k f64 fold);
-// the ratio isolates the SIMD accumulation win on a compute-bound O(mkn) kernel.
-fn bench_bf16_matmul_512_simd(c: &mut Criterion) {
+// BF16 GEMM (the dominant TRAINING matmul). Same-invocation A/B isolating the
+// native-f32-accumulation lever: f32-accum SIMD (16 lanes + bare-shift widen, XLA
+// parity) vs the prior f64-accum SIMD (8 lanes). Compute-bound O(mkn) kernel.
+fn bf16_512_inputs() -> (Vec<u16>, Vec<u16>) {
     let (m, k, n) = (512usize, 512usize, 512usize);
     let a: Vec<u16> = (0..m * k)
         .map(|i| match Literal::from_bf16_f64((i as f64) * 1e-4 - 13.0) {
@@ -1634,27 +1633,22 @@ fn bench_bf16_matmul_512_simd(c: &mut Criterion) {
             _ => 0,
         })
         .collect();
-    c.bench_function("linalg/bf16_matmul_512_simd", |bencher| {
-        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, m, k, &b, n, true))
+    (a, b)
+}
+
+fn bench_bf16_matmul_512_f32accum(c: &mut Criterion) {
+    let (m, k, n) = (512usize, 512usize, 512usize);
+    let (a, b) = bf16_512_inputs();
+    c.bench_function("linalg/bf16_matmul_512_f32accum", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, m, k, &b, n, "f32simd"))
     });
 }
 
-fn bench_bf16_matmul_512_scalar_reference(c: &mut Criterion) {
+fn bench_bf16_matmul_512_f64accum_reference(c: &mut Criterion) {
     let (m, k, n) = (512usize, 512usize, 512usize);
-    let a: Vec<u16> = (0..m * k)
-        .map(|i| match Literal::from_bf16_f64((i as f64) * 1e-4 - 13.0) {
-            Literal::BF16Bits(b) => b,
-            _ => 0,
-        })
-        .collect();
-    let b: Vec<u16> = (0..k * n)
-        .map(|i| match Literal::from_bf16_f64((i as f64) * 2e-4 - 7.0) {
-            Literal::BF16Bits(b) => b,
-            _ => 0,
-        })
-        .collect();
-    c.bench_function("linalg/bf16_matmul_512_scalar_ref", |bencher| {
-        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, m, k, &b, n, false))
+    let (a, b) = bf16_512_inputs();
+    c.bench_function("linalg/bf16_matmul_512_f64accum_ref", |bencher| {
+        bencher.iter(|| fj_lax::tensor_contraction::bf16_matmul_bench(&a, m, k, &b, n, "f64simd"))
     });
 }
 
@@ -5037,8 +5031,8 @@ criterion_group!(
     bench_svd_48_full_f64,
     bench_svd_48_full_complex_path,
     bench_matmul_2d_256,
-    bench_bf16_matmul_512_simd,
-    bench_bf16_matmul_512_scalar_reference,
+    bench_bf16_matmul_512_f32accum,
+    bench_bf16_matmul_512_f64accum_reference,
     bench_matmul_2d_512,
     bench_matmul_2d_1024,
     bench_matmul_2d_2048,

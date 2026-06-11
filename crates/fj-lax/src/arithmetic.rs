@@ -7264,12 +7264,12 @@ fn general_real_tensordot(
         )?)));
     }
 
-    // NATIVE BF16 path (mixed-precision: BF16 in, f64 accumulate, BF16 out): out_dtype
-    // BF16 means both operands are BF16. When both perms are the identity and both are
-    // dense-BF16-backed, feed the u16 slices straight to the mixed-precision GEMM —
-    // skips the u16->f64 promote alloc (4x bytes) and streams B at a QUARTER of f64's
-    // bytes. BIT-IDENTICAL to promote+f64-GEMM+round (see batched_matmul_2d_bf16_in);
-    // also yields a dense BF16 output. f16/non-identity-perm BF16 fall through to promote.
+    // NATIVE BF16 path (mixed-precision: BF16 in, native f32 accumulate, BF16 out):
+    // out_dtype BF16 means both operands are BF16. When both perms are the identity and
+    // both are dense-BF16-backed, feed the u16 slices straight to the mixed-precision
+    // GEMM — skips the promote alloc and streams B at 2 bytes/elem. Accumulates in f32
+    // to MATCH XLA's bf16 dot (see batched_matmul_2d_bf16_in); also yields a dense BF16
+    // output. f16/non-identity-perm BF16 fall through to promote.
     if out_dtype == DType::BF16
         && lhs.dtype == DType::BF16
         && rhs.dtype == DType::BF16
